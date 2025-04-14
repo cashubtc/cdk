@@ -1,5 +1,6 @@
 use cdk_common::common::PaymentProcessorKey;
 use cdk_common::mint::MintQuote;
+use cdk_common::payment::{Bolt12IncomingPaymentOptions, IncomingPaymentOptions};
 use cdk_common::{CurrencyUnit, PaymentMethod};
 use tracing::instrument;
 use uuid::Uuid;
@@ -85,15 +86,17 @@ impl Mint {
             None => unix_time() + mint_ttl,
         };
 
+        let bolt12_options = Bolt12IncomingPaymentOptions {
+            description,
+            amount,
+            unix_expiry: Some(quote_expiry),
+            single_use,
+        };
+
+        let incoming_options = IncomingPaymentOptions::Bolt12(bolt12_options);
+
         let create_invoice_response = ln
-            .create_incoming_payment_request(
-                // TODO: We need to make this an option on the trait
-                amount.unwrap_or_default(),
-                &unit,
-                &payment_method,
-                description.unwrap_or("".to_string()),
-                Some(quote_expiry),
-            )
+            .create_incoming_payment_request(&unit, incoming_options)
             .await
             .map_err(|err| {
                 tracing::error!("Could not create invoice: {}", err);

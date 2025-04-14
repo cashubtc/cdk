@@ -18,8 +18,8 @@ use async_trait::async_trait;
 use bitcoin::hashes::sha256::Hash;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
+    self, Bolt11Settings, CreateIncomingPaymentResponse, IncomingPaymentOptions,
+    MakePaymentResponse, MintPayment, PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, PaymentMethod};
 use cdk::types::FeeReserve;
@@ -449,7 +449,7 @@ impl MintPayment for Lnd {
                 let description = bolt11_options.description.unwrap_or_default();
                 let amount = bolt11_options.amount;
                 let unix_expiry = bolt11_options.unix_expiry;
-                
+
                 let amount_msat = to_unit(amount, unit, &CurrencyUnit::Msat)?;
 
                 let invoice_request = fedimint_tonic_lnd::lnrpc::Invoice {

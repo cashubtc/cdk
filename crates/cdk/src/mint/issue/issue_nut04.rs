@@ -1,4 +1,6 @@
-use cdk_common::payment::{Bolt11Settings, WaitPaymentResponse};
+use cdk_common::payment::{
+    Bolt11IncomingPaymentOptions, Bolt11Settings, IncomingPaymentOptions, WaitPaymentResponse,
+};
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -75,14 +77,16 @@ impl Mint {
             return Err(Error::InvoiceDescriptionUnsupported);
         }
 
+        let bolt11_options = Bolt11IncomingPaymentOptions {
+            description,
+            amount,
+            unix_expiry: Some(quote_expiry),
+        };
+
+        let incoming_options = IncomingPaymentOptions::Bolt11(bolt11_options);
+
         let create_invoice_response = ln
-            .create_incoming_payment_request(
-                amount,
-                &unit,
-                &PaymentMethod::Bolt11,
-                description.unwrap_or("".to_string()),
-                Some(quote_expiry),
-            )
+            .create_incoming_payment_request(&unit, incoming_options)
             .await
             .map_err(|err| {
                 tracing::error!("Could not create invoice: {}", err);

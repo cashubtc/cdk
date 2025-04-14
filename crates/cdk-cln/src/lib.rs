@@ -17,7 +17,7 @@ use bitcoin::hashes::sha256::Hash;
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse, WaitPaymentResponse,
+    PaymentQuoteResponse, WaitPaymentResponse, IncomingPaymentOptions, Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions
 };
 use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, PaymentMethod};
 use cdk::types::FeeReserve;
@@ -368,15 +368,11 @@ impl MintPayment for Cln {
     #[instrument(skip_all)]
     async fn create_incoming_payment_request(
         &self,
-        amount: Amount,
         unit: &CurrencyUnit,
-        payment_method: &PaymentMethod,
-        description: String,
-        unix_expiry: Option<u64>,
-        // TODO: need single use
+        options: IncomingPaymentOptions
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        match payment_method {
-            PaymentMethod::Bolt11 => {
+        match options {
+            IncomingPaymentOptions::Bolt11(Bolt11IncomingPaymentOptions { description, amount, unix_expiry })=> {
                 let time_now = unix_time();
 
                 let mut cln_client = self.cln_client.lock().await;
@@ -389,7 +385,7 @@ impl MintPayment for Cln {
                 let invoice_response = cln_client
                     .call_typed(&InvoiceRequest {
                         amount_msat,
-                        description,
+                        description: description.unwrap_or("".to_string()),
                         label: label.clone(),
                         expiry: unix_expiry.map(|t| t - time_now),
                         fallbacks: None,
@@ -411,19 +407,19 @@ impl MintPayment for Cln {
                     expiry,
                 })
             }
-            PaymentMethod::Bolt12 => {
+            IncomingPaymentOptions::Bolt12(Bolt12IncomingPaymentOptions { description, amount, unix_expiry, single_use }) => {
                 let mut cln_client = self.cln_client.lock().await;
 
                 let label = Uuid::new_v4().to_string();
 
                 // Match like this until we change to option
-                let amount = match amount == Amount::ZERO {
-                    false => {
+                let amount = match amount  {
+                    Some(amount) => {
                         let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
 
                         amount.to_string()
                     }
-                    true => "any".to_string(),
+                    None => "any".to_string(),
                 };
 
                 // It seems that the only way to force cln to create a unique offer
@@ -434,10 +430,10 @@ impl MintPayment for Cln {
                     .call_typed(&OfferRequest {
                         amount,
                         absolute_expiry: unix_expiry,
-                        description: Some(description),
+                        description,
                         issuer: Some(issuer.to_string()),
                         label: Some(label.to_string()),
-                        single_use: Some(false),
+                        single_use: Some(single_use),
                         quantity_max: None,
                         recurrence: None,
                         recurrence_base: None,
@@ -453,10 +449,6 @@ impl MintPayment for Cln {
                     request: offer_response.bolt12,
                     expiry: unix_expiry,
                 })
-            }
-            PaymentMethod::Custom(method) => {
-                tracing::error!("payment method {} is not supported by cln.", method);
-                Err(cdk_payment::Error::UnsupportedPaymentOption)
             }
         }
     }

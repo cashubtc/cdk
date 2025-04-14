@@ -262,17 +262,17 @@ impl MintPayment for FakeWallet {
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        let (payment_hash, request, amount, description, expiry) = match options {
+        let (payment_hash, request, amount, expiry) = match options {
             IncomingPaymentOptions::Bolt12(bolt12_options) => {
                 let description = bolt12_options.description.unwrap_or_default();
                 let amount = bolt12_options.amount;
                 let expiry = bolt12_options.unix_expiry;
-                
+
                 let secret_key = SecretKey::new(&mut thread_rng());
                 let secp_ctx = Secp256k1::new();
 
-                let offer_builder =
-                    OfferBuilder::new(secret_key.public_key(&secp_ctx)).description(description);
+                let offer_builder = OfferBuilder::new(secret_key.public_key(&secp_ctx))
+                    .description(description.clone());
 
                 let offer_builder = match amount {
                     Some(amount) => {
@@ -288,7 +288,6 @@ impl MintPayment for FakeWallet {
                     PaymentIdentifier::OfferId(offer.id().to_string()),
                     offer.to_string(),
                     amount.unwrap_or(Amount::ZERO),
-                    description,
                     expiry,
                 )
             }
@@ -296,16 +295,15 @@ impl MintPayment for FakeWallet {
                 let description = bolt11_options.description.unwrap_or_default();
                 let amount = bolt11_options.amount;
                 let expiry = bolt11_options.unix_expiry;
-                
+
                 // Since this is fake we just use the amount no matter the unit to create an invoice
-                let invoice = create_fake_invoice(amount.into(), description);
+                let invoice = create_fake_invoice(amount.into(), description.clone());
                 let payment_hash = invoice.payment_hash();
 
                 (
                     PaymentIdentifier::PaymentHash(*payment_hash),
                     invoice.to_string(),
                     amount,
-                    description,
                     expiry,
                 )
             }
