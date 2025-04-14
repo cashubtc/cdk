@@ -163,6 +163,12 @@ impl MintQuote {
         self.compute_quote_state()
     }
 
+    /// Add a payment ID to the list of payment IDs
+    #[instrument(skip(self))]
+    pub fn add_payment_id(&mut self, payment_id: String) {
+        self.payment_ids.push(payment_id);
+    }
+
     /// Compute quote state
     #[instrument(skip(self))]
     fn compute_quote_state(&self) -> MintQuoteState {
