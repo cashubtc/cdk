@@ -438,44 +438,48 @@ impl MintPayment for Lnd {
         }
     }
 
-    #[instrument(skip(self, description))]
+    #[instrument(skip(self))]
     async fn create_incoming_payment_request(
         &self,
-        amount: Amount,
         unit: &CurrencyUnit,
-        payment_method: &PaymentMethod,
-        description: String,
-        unix_expiry: Option<u64>,
+        options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        if payment_method != &PaymentMethod::Bolt11 {
-            return Err(cdk_payment::Error::UnsupportedPaymentOption);
+        match options {
+            IncomingPaymentOptions::Bolt11(bolt11_options) => {
+                let description = bolt11_options.description.unwrap_or_default();
+                let amount = bolt11_options.amount;
+                let unix_expiry = bolt11_options.unix_expiry;
+                
+                let amount_msat = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+
+                let invoice_request = fedimint_tonic_lnd::lnrpc::Invoice {
+                    value_msat: u64::from(amount_msat) as i64,
+                    memo: description,
+                    ..Default::default()
+                };
+
+                let invoice = self
+                    .client
+                    .lock()
+                    .await
+                    .lightning()
+                    .add_invoice(fedimint_tonic_lnd::tonic::Request::new(invoice_request))
+                    .await
+                    .unwrap()
+                    .into_inner();
+
+                let bolt11 = Bolt11Invoice::from_str(&invoice.payment_request)?;
+
+                Ok(CreateIncomingPaymentResponse {
+                    request_lookup_id: PaymentIdentifier::PaymentHash(*bolt11.payment_hash()),
+                    request: bolt11.to_string(),
+                    expiry: unix_expiry,
+                })
+            }
+            IncomingPaymentOptions::Bolt12(_) => {
+                Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
+            }
         }
-
-        let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
-
-        let invoice_request = fedimint_tonic_lnd::lnrpc::Invoice {
-            value_msat: u64::from(amount) as i64,
-            memo: description,
-            ..Default::default()
-        };
-
-        let invoice = self
-            .client
-            .lock()
-            .await
-            .lightning()
-            .add_invoice(fedimint_tonic_lnd::tonic::Request::new(invoice_request))
-            .await
-            .unwrap()
-            .into_inner();
-
-        let bolt11 = Bolt11Invoice::from_str(&invoice.payment_request)?;
-
-        Ok(CreateIncomingPaymentResponse {
-            request_lookup_id: PaymentIdentifier::PaymentHash(*bolt11.payment_hash()),
-            request: bolt11.to_string(),
-            expiry: unix_expiry,
-        })
     }
 
     #[instrument(skip(self))]
