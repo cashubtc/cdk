@@ -273,8 +273,8 @@ FROM mint
             sqlx::query(
                 r#"
     INSERT INTO keyset
-    (mint_url, id, unit, active, input_fee_ppk)
-    VALUES (?, ?, ?, ?, ?)
+    (mint_url, id, unit, active, input_fee_ppk, final_expiry)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
         mint_url = excluded.mint_url,
         unit = excluded.unit,
@@ -287,6 +287,7 @@ FROM mint
             .bind(keyset.unit.to_string())
             .bind(keyset.active)
             .bind(keyset.input_fee_ppk as i64)
+            .bind(keyset.final_expiry.map(|v| v as i64))
             .execute(&self.pool)
             .await
             .map_err(Error::from)?;
@@ -956,14 +957,14 @@ fn sqlite_row_to_keyset(row: &SqliteRow) -> Result<KeySetInfo, Error> {
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
     let active: bool = row.try_get("active").map_err(Error::from)?;
     let row_keyset_ppk: Option<i64> = row.try_get("input_fee_ppk").map_err(Error::from)?;
-    let valid_to: Option<i64> = row.try_get("valid_to").map_err(Error::from)?;
+    let final_expiry: Option<i64> = row.try_get("final_expiry").map_err(Error::from)?;
 
     Ok(KeySetInfo {
         id: Id::from_str(&row_id)?,
         unit: CurrencyUnit::from_str(&row_unit).map_err(Error::from)?,
         active,
         input_fee_ppk: row_keyset_ppk.unwrap_or(0) as u64,
-        final_expiry: valid_to.map(|v| v as u64),
+        final_expiry: final_expiry.map(|v| v as u64),
     })
 }
 
