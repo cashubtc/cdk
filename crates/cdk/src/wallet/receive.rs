@@ -214,11 +214,11 @@ impl Wallet {
         let unit = token.unit().unwrap_or_default();
 
         ensure_cdk!(unit == self.unit, Error::UnsupportedUnit);
-        
+
         // We need the keysets information to properly convert from token proof to proof
         let keysets_info = match self.localstore.get_mint_keysets(token.mint_url()?).await? {
             Some(keysets_info) => keysets_info,
-            None => self.get_mint_keysets().await?          // Hit the keysets endpoint if we don't have the keysets for this Mint
+            None => self.get_mint_keysets().await?, // Hit the keysets endpoint if we don't have the keysets for this Mint
         };
         let proofs = token.proofs(&keysets_info)?;
 

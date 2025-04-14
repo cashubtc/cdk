@@ -36,7 +36,6 @@ async fn get_mint_url(mint: &Mint) -> MintUrl {
     MintUrl::from_str(url).expect("Mint has a valid URL")
 }
 
-
 /// Tests the token swap and send functionality:
 /// 1. Alice gets funded with 64 sats
 /// 2. Alice prepares to send 40 sats (which requires internal swapping)
@@ -90,10 +89,12 @@ async fn test_swap_to_send() {
     let keysets_info = match wallet_alice
         .localstore
         .get_mint_keysets(get_mint_url(&mint_bob).await)
-        .await.unwrap() {
-            Some(keysets_info) => keysets_info,
-            None => wallet_alice.get_mint_keysets().await.unwrap()
-        };
+        .await
+        .unwrap()
+    {
+        Some(keysets_info) => keysets_info,
+        None => wallet_alice.get_mint_keysets().await.unwrap(),
+    };
     let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
         Amount::from(40),
@@ -120,7 +121,8 @@ async fn test_swap_to_send() {
         )
     );
 
-    let transaction_id = TransactionId::from_proofs(token_proofs.clone()).expect("Failed to get tx id");
+    let transaction_id =
+        TransactionId::from_proofs(token_proofs.clone()).expect("Failed to get tx id");
 
     let transaction = wallet_alice
         .get_transaction(transaction_id)

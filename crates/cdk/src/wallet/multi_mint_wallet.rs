@@ -285,17 +285,20 @@ impl MultiMintWallet {
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
         // We need the keysets information to properly convert from token proof to proof
-        let keysets_info = match self.localstore.get_mint_keysets(token_data.mint_url()?).await? {
+        let keysets_info = match self
+            .localstore
+            .get_mint_keysets(token_data.mint_url()?)
+            .await?
+        {
             Some(keysets_info) => keysets_info,
             // Hit the keysets endpoint if we don't have the keysets for this Mint
-            None => wallet.get_mint_keysets().await?
+            None => wallet.get_mint_keysets().await?,
         };
         let proofs = token_data.proofs(&keysets_info)?;
 
         let mut amount_received = Amount::ZERO;
 
         let mut mint_errors = None;
-        
 
         match wallet
             .receive_proofs(proofs, opts, token_data.memo().clone())
