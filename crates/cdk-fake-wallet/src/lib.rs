@@ -19,8 +19,8 @@ use bitcoin::secp256k1::rand::{thread_rng, Rng};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
+    self, Bolt11Settings, CreateIncomingPaymentResponse, IncomingPaymentOptions,
+    MakePaymentResponse, MintPayment, PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, PaymentMethod};
 use cdk::types::FeeReserve;
@@ -259,11 +259,8 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn create_incoming_payment_request(
         &self,
-        amount: Amount,
         unit: &CurrencyUnit,
-        payment_method: &PaymentMethod,
-        description: String,
-        _unix_expiry: Option<u64>,
+        options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         let (payment_hash, request) = if payment_method == &PaymentMethod::Bolt12 {
             let secret_key = bitcoin::secp256k1::SecretKey::new(&mut rand::thread_rng());

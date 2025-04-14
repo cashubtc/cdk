@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use bitcoin::hashes::sha256::Hash;
-use cashu::{MeltOptions, PaymentMethod};
+use cashu::MeltOptions;
 use futures::Stream;
 use lightning_invoice::ParseOrSemanticError;
 use serde::{Deserialize, Serialize};
@@ -88,7 +88,7 @@ pub struct Bolt11IncomingPaymentOptions {
     /// Optional description for the payment request
     pub description: Option<String>,
     /// Optional amount for the payment request in sats
-    pub amount: Option<Amount>,
+    pub amount: Amount,
     /// Optional expiry time as Unix timestamp in seconds
     pub unix_expiry: Option<u64>,
 }
@@ -127,13 +127,8 @@ pub trait MintPayment {
     /// Create a new invoice
     async fn create_incoming_payment_request(
         &self,
-        // TODO: needs to be an option
-        amount: Amount,
         unit: &CurrencyUnit,
-        method: &PaymentMethod,
-        description: String,
-        unix_expiry: Option<u64>,
-        // TODO: need single use
+        options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err>;
 
     /// Get payment quote
