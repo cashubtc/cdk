@@ -82,6 +82,27 @@ impl ToString for PaymentIdentifier {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct Bolt11IncomingPaymentOptions {
+    pub description: Option<String>,
+    pub amount: Option<Amount>,
+    pub unix_expiry: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct Bolt12IncomingPaymentOptions {
+    pub description: Option<String>,
+    pub amount: Option<Amount>,
+    pub unix_expiry: Option<u64>,
+    pub single_use: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum IncomingPaymentOptions {
+    Bolt11(Bolt11IncomingPaymentOptions),
+    Bolt12(Bolt12IncomingPaymentOptions),
+}
+
 /// Mint payment trait
 #[async_trait]
 pub trait MintPayment {
