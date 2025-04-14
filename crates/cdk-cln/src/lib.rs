@@ -16,13 +16,15 @@ use async_trait::async_trait;
 use bitcoin::hashes::sha256::Hash;
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse, WaitPaymentResponse, IncomingPaymentOptions, Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions
+    self, Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
+    CreateIncomingPaymentResponse, IncomingPaymentOptions, MakePaymentResponse, MintPayment,
+    PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, PaymentMethod};
 use cdk::types::FeeReserve;
 use cdk::util::{hex, unix_time};
 use cdk::{mint, Bolt11Invoice, MeltPaymentRequest};
+use cdk_payment::PaymentIdentifier;
 use cln_rpc::model::requests::{
     InvoiceRequest, ListinvoicesRequest, ListpaysRequest, OfferRequest, PayRequest,
     WaitanyinvoiceRequest,
@@ -39,7 +41,6 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use uuid::Uuid;
-use cdk_payment::PaymentIdentifier;
 
 pub mod error;
 
@@ -192,7 +193,7 @@ impl MintPayment for Cln {
                                     }
                                 }
                                 None => {
-                                 PaymentIdentifier::PaymentHash(payment_hash.clone())   
+                                 PaymentIdentifier::PaymentHash(payment_hash.clone())
                                 },
                             };
 
@@ -369,10 +370,14 @@ impl MintPayment for Cln {
     async fn create_incoming_payment_request(
         &self,
         unit: &CurrencyUnit,
-        options: IncomingPaymentOptions
+        options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         match options {
-            IncomingPaymentOptions::Bolt11(Bolt11IncomingPaymentOptions { description, amount, unix_expiry })=> {
+            IncomingPaymentOptions::Bolt11(Bolt11IncomingPaymentOptions {
+                description,
+                amount,
+                unix_expiry,
+            }) => {
                 let time_now = unix_time();
 
                 let mut cln_client = self.cln_client.lock().await;
@@ -407,13 +412,18 @@ impl MintPayment for Cln {
                     expiry,
                 })
             }
-            IncomingPaymentOptions::Bolt12(Bolt12IncomingPaymentOptions { description, amount, unix_expiry, single_use }) => {
+            IncomingPaymentOptions::Bolt12(Bolt12IncomingPaymentOptions {
+                description,
+                amount,
+                unix_expiry,
+                single_use,
+            }) => {
                 let mut cln_client = self.cln_client.lock().await;
 
                 let label = Uuid::new_v4().to_string();
 
                 // Match like this until we change to option
-                let amount = match amount  {
+                let amount = match amount {
                     Some(amount) => {
                         let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
 
@@ -445,7 +455,9 @@ impl MintPayment for Cln {
                     .map_err(Error::from)?;
 
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: PaymentIdentifier::OfferId(offer_response.offer_id.to_string()),
+                    request_lookup_id: PaymentIdentifier::OfferId(
+                        offer_response.offer_id.to_string(),
+                    ),
                     request: offer_response.bolt12,
                     expiry: unix_expiry,
                 })
@@ -515,7 +527,7 @@ impl MintPayment for Cln {
         let status = match listinvoices_response.invoices.first() {
             Some(invoice_response) => cln_invoice_status_to_mint_state(invoice_response.status),
             None => {
-        let id_value = payment_identifier.to_string();
+                let id_value = payment_identifier.to_string();
                 tracing::info!("Check invoice called on unknown identifier: {}", id_value);
                 return Err(Error::WrongClnResponse.into());
             }
