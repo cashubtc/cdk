@@ -164,7 +164,7 @@ impl MintQuote {
     }
 
     /// Add a payment ID to the list of payment IDs
-    /// 
+    ///
     /// Returns an error if the payment ID is already in the list
     #[instrument(skip(self))]
     pub fn add_payment_id(&mut self, payment_id: String) -> Result<(), crate::Error> {

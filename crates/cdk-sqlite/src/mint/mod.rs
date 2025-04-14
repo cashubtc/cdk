@@ -511,6 +511,7 @@ WHERE request=?;
         &self,
         quote_id: &Uuid,
         amount_paid: Amount,
+        payment_id: String,
     ) -> Result<Amount, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
