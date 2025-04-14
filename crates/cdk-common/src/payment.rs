@@ -82,10 +82,14 @@ impl ToString for PaymentIdentifier {
     }
 }
 
+/// Options for creating a BOLT11 incoming payment request
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Bolt11IncomingPaymentOptions {
+    /// Optional description for the payment request
     pub description: Option<String>,
+    /// Optional amount for the payment request in sats
     pub amount: Option<Amount>,
+    /// Optional expiry time as Unix timestamp in seconds
     pub unix_expiry: Option<u64>,
 }
 
