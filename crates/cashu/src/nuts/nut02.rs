@@ -516,6 +516,7 @@ pub struct MintKeySet {
     pub unit: CurrencyUnit,
     /// Keyset [`MintKeys`]
     pub keys: MintKeys,
+    #[serde(skip_serializing_if = "Option::is_none")]
     /// Expiry [`Option<u64>`]
     pub final_expiry: Option<u64>,
 }
