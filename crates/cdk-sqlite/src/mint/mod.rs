@@ -17,7 +17,7 @@ use cdk_common::nut05::QuoteState;
 use cdk_common::secret::Secret;
 use cdk_common::util::unix_time;
 use cdk_common::{
-    Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltBolt11Request,
+    Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Error as CdkError, Id, MeltBolt11Request,
     MeltQuoteState, MintInfo, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey,
     State,
 };
@@ -515,6 +515,35 @@ WHERE request=?;
     ) -> Result<Amount, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
+        // Check if payment_id already exists in mint_quote_payments
+        let payment_check = sqlx::query(
+            r#"
+SELECT payment_id
+FROM mint_quote_payments
+WHERE payment_id = ?;
+            "#,
+        )
+        .bind(&payment_id)
+        .fetch_optional(&mut *transaction)
+        .await;
+
+        match payment_check {
+            Ok(Some(_)) => {
+                // Payment ID already exists
+                tracing::error!("Payment ID already exists: {}", payment_id);
+                transaction.rollback().await.map_err(Error::from)?;
+                return Err(database::Error::DuplicatePaymentId);
+            }
+            Ok(None) => {
+                // Payment ID doesn't exist, continue processing
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not check payment ID: {}", err);
+                transaction.rollback().await.map_err(Error::from)?;
+                return Err(Error::from(err).into());
+            }
+        }
+
         // First get the current quote to check its current amount_paid
         let rec = sqlx::query(
             r#"
@@ -534,9 +563,7 @@ WHERE id=?;
             }
             Err(err) => {
                 tracing::error!("SQLite could not get mint quote amount_paid");
-                if let Err(err) = transaction.rollback().await {
-                    tracing::error!("Could not rollback sql transaction: {}", err);
-                }
+                transaction.rollback().await.map_err(Error::from)?;
                 return Err(Error::from(err).into());
             }
         };
@@ -559,16 +586,35 @@ WHERE id = ?
         .execute(&mut *transaction)
         .await;
 
-        match update {
+        if let Err(err) = update {
+            tracing::error!("SQLite could not update mint quote amount_paid");
+            transaction.rollback().await.map_err(Error::from)?;
+            return Err(Error::from(err).into());
+        }
+
+        // Add payment_id to mint_quote_payments table
+        let current_time = unix_time();
+        let insert_payment = sqlx::query(
+            r#"
+INSERT INTO mint_quote_payments
+(quote_id, payment_id, timestamp)
+VALUES (?, ?, ?);
+            "#,
+        )
+        .bind(quote_id.as_hyphenated())
+        .bind(&payment_id)
+        .bind(current_time as i64)
+        .execute(&mut *transaction)
+        .await;
+
+        match insert_payment {
             Ok(_) => {
                 transaction.commit().await.map_err(Error::from)?;
                 Ok(new_amount_paid)
             }
             Err(err) => {
-                tracing::error!("SQLite could not update mint quote amount_paid");
-                if let Err(err) = transaction.rollback().await {
-                    tracing::error!("Could not rollback sql transaction: {}", err);
-                }
+                tracing::error!("SQLite could not insert payment ID: {}", err);
+                transaction.rollback().await.map_err(Error::from)?;
                 Err(Error::from(err).into())
             }
         }
