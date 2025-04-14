@@ -464,56 +464,44 @@ impl MintPayment for Cln {
         payment_identifier: &PaymentIdentifier,
     ) -> Result<MintQuoteState, Self::Err> {
         let mut cln_client = self.cln_client.lock().await;
+        let id_value = payment_identifier.inner();
 
-
-        match payment_identifier {
+        let listinvoices_response = match payment_identifier {
             PaymentIdentifier::Label(label) => {
-                todo!()
-            }
-            PaymentIdentifier::OfferId(offer) => {
-                todo!()
-            }
-            PaymentIdentifier::PaymentHash(hash) => {
-                todo!()
-            }
-        }
-
-        let listinvoices_response = match cln_client
-            .call_typed(&ListinvoicesRequest {
-                payment_hash: None,
-                label: None,
-                invstring: None,
-                offer_id: Some(label.to_string()),
-                index: None,
-                limit: None,
-                start: None,
-            })
-            .await
-        {
-            Ok(response) => {
-                if response.invoices.is_empty() {
-                    // First call succeeded but returned empty invoices, try second query
-                    cln_client
-                        .call_typed(&ListinvoicesRequest {
-                            payment_hash: Some(label.to_string()),
-                            label: None,
-                            invstring: None,
-                            offer_id: None,
-                            index: None,
-                            limit: None,
-                            start: None,
-                        })
-                        .await
-                        .map_err(Error::from)?
-                } else {
-                    response
-                }
-            }
-            Err(_) => {
-                // First call failed, try the second query
+                // Query by label
                 cln_client
                     .call_typed(&ListinvoicesRequest {
-                        payment_hash: Some(label.to_string()),
+                        payment_hash: None,
+                        label: Some(label.to_string()),
+                        invstring: None,
+                        offer_id: None,
+                        index: None,
+                        limit: None,
+                        start: None,
+                    })
+                    .await
+                    .map_err(Error::from)?
+            }
+            PaymentIdentifier::OfferId(offer_id) => {
+                // Query by offer_id
+                cln_client
+                    .call_typed(&ListinvoicesRequest {
+                        payment_hash: None,
+                        label: None,
+                        invstring: None,
+                        offer_id: Some(offer_id.to_string()),
+                        index: None,
+                        limit: None,
+                        start: None,
+                    })
+                    .await
+                    .map_err(Error::from)?
+            }
+            PaymentIdentifier::PaymentHash(payment_hash) => {
+                // Query by payment_hash
+                cln_client
+                    .call_typed(&ListinvoicesRequest {
+                        payment_hash: Some(payment_hash.to_string()),
                         label: None,
                         invstring: None,
                         offer_id: None,
@@ -529,7 +517,7 @@ impl MintPayment for Cln {
         let status = match listinvoices_response.invoices.first() {
             Some(invoice_response) => cln_invoice_status_to_mint_state(invoice_response.status),
             None => {
-                tracing::info!("Check invoice called on unknown look up id: {}", label);
+                tracing::info!("Check invoice called on unknown identifier: {}", id_value);
                 return Err(Error::WrongClnResponse.into());
             }
         };
