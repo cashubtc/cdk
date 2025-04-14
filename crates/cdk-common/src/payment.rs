@@ -70,14 +70,13 @@ pub enum PaymentIdentifier {
     CustomId(String),
 }
 
-impl PaymentIdentifier {
-    /// Get inner string value
-    pub fn inner(&self) -> &str {
+impl ToString for PaymentIdentifier {
+    fn to_string(&self) -> String {
         match self {
-            Self::Label(l) => l,
-            Self::OfferId(o) => o,
-            Self::PaymentHash(h) => &h.to_string(),
-            Self::CustomId(c) => c,
+            Self::Label(l) => l.clone(),
+            Self::OfferId(o) => o.clone(),
+            Self::PaymentHash(h) => h.to_string(),
+            Self::CustomId(c) => c.clone(),
         }
     }
 }
