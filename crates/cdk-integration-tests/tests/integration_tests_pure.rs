@@ -575,7 +575,7 @@ async fn test_swap_overpay_underpay_fee() {
         .unwrap()
         .clone();
 
-    let keyset_id = Id::v2_from_data(&keys.keys, &keys.unit, keys.final_expiry);
+    let keyset_id = Id::v1_from_keys(&keys.keys);
 
     let preswap = PreMintSecrets::random(keyset_id, 9998.into(), &SplitTarget::default()).unwrap();
 
