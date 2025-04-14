@@ -181,28 +181,44 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
         request: Request<CreatePaymentRequest>,
     ) -> Result<Response<CreatePaymentResponse>, Status> {
         let CreatePaymentRequest {
-            amount,
             unit,
-            description,
-            unix_expiry,
-            method,
+            options,
         } = request.into_inner();
 
-        let unit =
-            CurrencyUnit::from_str(&unit).map_err(|_| Status::invalid_argument("Invalid unit"))?;
+        let unit = CurrencyUnit::from_str(&unit)
+            .map_err(|_| Status::invalid_argument("Invalid unit"))?;
 
-        let method = method.map_or(Ok(PaymentMethod::Bolt11), |m| {
-            PaymentMethod::from_str(&m).map_err(|_| Status::invalid_argument("Invalid method"))
-        })?;
+        let options = options.ok_or_else(|| Status::invalid_argument("Payment options required"))?;
+        
+        // Convert from protobuf IncomingPaymentOptions to common IncomingPaymentOptions
+        let payment_options = match options.options {
+            Some(crate::proto::incoming_payment_options::Options::Bolt11(bolt11_options)) => {
+                cdk_common::payment::IncomingPaymentOptions::Bolt11(
+                    cdk_common::payment::Bolt11IncomingPaymentOptions {
+                        description: bolt11_options.description,
+                        amount: bolt11_options.amount.into(),
+                        unix_expiry: bolt11_options.unix_expiry,
+                    },
+                )
+            }
+            Some(crate::proto::incoming_payment_options::Options::Bolt12(bolt12_options)) => {
+                cdk_common::payment::IncomingPaymentOptions::Bolt12(
+                    cdk_common::payment::Bolt12IncomingPaymentOptions {
+                        description: bolt12_options.description,
+                        amount: bolt12_options.amount.map(|a| a.into()),
+                        unix_expiry: bolt12_options.unix_expiry,
+                        single_use: bolt12_options.single_use,
+                    },
+                )
+            }
+            None => return Err(Status::invalid_argument("No payment options provided")),
+        };
 
         let invoice_response = self
             .inner
             .create_incoming_payment_request(
-                amount.into(),
                 &unit,
-                &method,
-                description,
-                unix_expiry,
+                payment_options,
             )
             .await
             .map_err(|_| Status::internal("Could not create invoice"))?;

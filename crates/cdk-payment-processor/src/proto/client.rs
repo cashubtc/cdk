@@ -10,7 +10,7 @@ use cdk_common::payment::{
     CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse, MintPayment,
     PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
 };
-use cdk_common::{mint, Amount, CurrencyUnit, MeltOptions, MintQuoteState, PaymentMethod};
+use cdk_common::{mint, Amount, CurrencyUnit, MeltOptions, MintQuoteState};
 use futures::{Stream, StreamExt};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -116,20 +116,42 @@ impl MintPayment for PaymentProcessorClient {
     /// Create a new invoice
     async fn create_incoming_payment_request(
         &self,
-        amount: Amount,
         unit: &CurrencyUnit,
-        method: &PaymentMethod,
-        description: String,
-        unix_expiry: Option<u64>,
+        options: cdk_common::payment::IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         let mut inner = self.inner.clone();
+
+        // Convert from common IncomingPaymentOptions to protobuf IncomingPaymentOptions
+        let proto_options = match options {
+            cdk_common::payment::IncomingPaymentOptions::Bolt11(bolt11_options) => {
+                super::IncomingPaymentOptions {
+                    options: Some(super::incoming_payment_options::Options::Bolt11(
+                        super::Bolt11IncomingPaymentOptions {
+                            description: bolt11_options.description,
+                            amount: bolt11_options.amount.into(),
+                            unix_expiry: bolt11_options.unix_expiry,
+                        },
+                    )),
+                }
+            }
+            cdk_common::payment::IncomingPaymentOptions::Bolt12(bolt12_options) => {
+                super::IncomingPaymentOptions {
+                    options: Some(super::incoming_payment_options::Options::Bolt12(
+                        super::Bolt12IncomingPaymentOptions {
+                            description: bolt12_options.description,
+                            amount: bolt12_options.amount.map(|a| a.into()),
+                            unix_expiry: bolt12_options.unix_expiry,
+                            single_use: bolt12_options.single_use,
+                        },
+                    )),
+                }
+            }
+        };
+
         let response = inner
             .create_payment(Request::new(CreatePaymentRequest {
-                amount: amount.into(),
                 unit: unit.to_string(),
-                method: Some(method.to_string()),
-                description,
-                unix_expiry,
+                options: Some(proto_options),
             }))
             .await
             .map_err(|err| {
