@@ -440,7 +440,7 @@ impl MintPayment for Cln {
                     .call_typed(&OfferRequest {
                         amount,
                         absolute_expiry: unix_expiry,
-                        description,
+                        description: Some(description.unwrap_or("".to_string())),
                         issuer: Some(issuer.to_string()),
                         label: Some(label.to_string()),
                         single_use: Some(single_use),
