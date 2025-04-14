@@ -1,11 +1,11 @@
 //! SQLite Mint
-
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
+use bitcoin::hashes::sha256::Hash;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::{
     self, MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
@@ -14,15 +14,15 @@ use cdk_common::database::{
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::nut05::QuoteState;
+use cdk_common::payment::PaymentIdentifier;
 use cdk_common::secret::Secret;
 use cdk_common::util::unix_time;
 use cdk_common::{
-    Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltBolt11Request,
+    Amount, BlindSignature, BlindSignatureDleq, Bolt11Invoice, CurrencyUnit, Id, MeltBolt11Request,
     MeltQuoteState, MintInfo, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey,
     State,
 };
 use error::Error;
-use lightning_invoice::Bolt11Invoice;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Executor, Pool, Row, Sqlite};
 use tracing::instrument;
@@ -399,7 +399,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(quote.unit.to_string())
         .bind(quote.request.clone())
         .bind(quote.expiry as i64)
-        .bind(&quote.request_lookup_id)
+        .bind(&serde_json::to_string(&quote.request_lookup_id)?)
         .bind(quote.pubkey.map(|p| p.to_string()))
         .bind(quote.created_time as i64)
         .bind(quote.paid_time.map(|t| t as i64))
@@ -680,7 +680,7 @@ WHERE id = ?
     #[instrument(skip(self))]
     async fn get_mint_quote_by_request_lookup_id(
         &self,
-        request_lookup_id: &str,
+        request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintQuote>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
@@ -688,10 +688,11 @@ WHERE id = ?
             r#"
 SELECT *
 FROM mint_quote
-WHERE request_lookup_id=?;
+WHERE request_lookup_id=? OR request_lookup_id=?;
         "#,
         )
-        .bind(request_lookup_id)
+        .bind(serde_json::to_string(&request_lookup_id)?)
+        .bind(request_lookup_id.to_string())
         .fetch_one(&mut *transaction)
         .await;
 
@@ -1880,12 +1881,28 @@ fn sqlite_row_to_mint_quote(row: SqliteRow) -> Result<MintQuote, Error> {
     let row_paid_time: Option<i64> = row.try_get("paid_time").map_err(Error::from)?;
     let row_issued_time: Option<i64> = row.try_get("issued_time").map_err(Error::from)?;
 
-    let request_lookup_id = match row_request_lookup_id {
-        Some(id) => id,
-        None => match Bolt11Invoice::from_str(&row_request) {
-            Ok(invoice) => invoice.payment_hash().to_string(),
-            Err(_) => row_request.clone(),
+    let request_lookup_id: PaymentIdentifier = match row_request_lookup_id {
+        Some(lookup_id) => match serde_json::from_str(&lookup_id).map_err(Error::from) {
+            Ok(payment_id) => payment_id,
+            Err(err) => {
+                tracing::error!(
+                    "Could not deserialize payment identifyer {}: {}.",
+                    lookup_id,
+                    err
+                );
+                if let Ok(hash) = Hash::from_str(&lookup_id) {
+                    PaymentIdentifier::PaymentHash(hash)
+                } else if let Ok(bolt11) = Bolt11Invoice::from_str(&lookup_id) {
+                    PaymentIdentifier::PaymentHash(*bolt11.payment_hash())
+                } else {
+                    PaymentIdentifier::CustomId(lookup_id)
+                }
+            }
         },
+        None => {
+            let bolt11 = Bolt11Invoice::from_str(&row_request).map_err(Error::from)?;
+            PaymentIdentifier::PaymentHash(*bolt11.payment_hash())
+        }
     };
 
     let pubkey = row_pubkey

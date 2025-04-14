@@ -120,7 +120,7 @@ impl Mint {
         );
 
         tracing::debug!(
-            "New bolt12 mint quote {} for {} {} with request id {}",
+            "New bolt12 mint quote {} for {} {} with request id {:?}",
             quote.id,
             amount.unwrap_or_default(),
             unit,

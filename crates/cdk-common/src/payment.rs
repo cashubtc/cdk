@@ -58,7 +58,8 @@ pub enum Error {
 }
 
 /// Payment identifier types
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(tag = "type", content = "value")]
 pub enum PaymentIdentifier {
     /// Label identifier
     Label(String),
@@ -74,7 +75,7 @@ impl ToString for PaymentIdentifier {
     fn to_string(&self) -> String {
         match self {
             Self::Label(l) => l.clone(),
-            Self::OfferId(o) => o.clone(),
+            Self::OfferId(o) => o.to_string(),
             Self::PaymentHash(h) => h.to_string(),
             Self::CustomId(c) => c.clone(),
         }

@@ -5,9 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::anyhow;
+use bitcoin::hashes::sha256::Hash;
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse, MintPayment,
-    PaymentQuoteResponse, WaitPaymentResponse,
+    PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk_common::{mint, Amount, CurrencyUnit, MeltOptions, MintQuoteState, PaymentMethod};
 use futures::{Stream, StreamExt};
@@ -227,7 +228,10 @@ impl MintPayment for PaymentProcessorClient {
             .filter_map(|item| async move {
                 match item {
                     Ok(value) => Some(WaitPaymentResponse {
-                        request_lookup_id: value.lookup_id,
+                        // TODO: this might no be hash add to proto
+                        payment_identifier: PaymentIdentifier::PaymentHash(
+                            Hash::from_str(&value.lookup_id).unwrap(),
+                        ),
                         payment_amount: value.payment_amount.into(),
                         // TODO: Handle this error
                         unit: CurrencyUnit::from_str(&value.unit).expect("Valid unit"),
@@ -260,7 +264,7 @@ impl MintPayment for PaymentProcessorClient {
 
     async fn check_incoming_payment_status(
         &self,
-        request_lookup_id: &str,
+        request_lookup_id: &PaymentIdentifier,
     ) -> Result<MintQuoteState, Self::Err> {
         let mut inner = self.inner.clone();
         let response = inner

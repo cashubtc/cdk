@@ -5,6 +5,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bitcoin::hashes::sha256::Hash;
 use cdk_common::payment::MintPayment;
 use futures::{Stream, StreamExt};
 use serde_json::Value;
@@ -278,7 +279,9 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
 
         let check_response = self
             .inner
-            .check_incoming_payment_status(&request.request_lookup_id)
+            .check_incoming_payment_status(&PaymentIdentifier::PaymentHash(
+                Hash::from_str(&request.request_lookup_id).unwrap(),
+            ))
             .await
             .map_err(|_| Status::internal("Could not check incoming payment status"))?;
 
@@ -328,7 +331,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     match result {
                         Ok(mut stream) => {
                             while let Some(response) = stream.next().await {
-                                                match tx.send(Result::<_, Status>::Ok(WaitIncomingPaymentResponse{lookup_id: response.request_lookup_id, payment_amount: response.payment_amount.into(), unit: response.unit.to_string(), payment_id: response.payment_id} )).await {
+                                                match tx.send(Result::<_, Status>::Ok(WaitIncomingPaymentResponse{lookup_id: response.payment_identifier.to_string(), payment_amount: response.payment_amount.into(), unit: response.unit.to_string(), payment_id: response.payment_id} )).await {
                     Ok(_) => {
                         // item (server response) was queued to be send to client
                     }

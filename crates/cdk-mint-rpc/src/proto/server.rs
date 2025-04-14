@@ -647,7 +647,7 @@ impl CdkMint for MintRPCServer {
                     .pay_mint_quote(
                         &mint_quote,
                         WaitPaymentResponse {
-                            request_lookup_id: mint_quote.request_lookup_id.clone(),
+                            payment_identifier: mint_quote.request_lookup_id.clone(),
                             payment_amount: payment_amount.into(),
                             unit: mint_quote.unit.clone(),
                             // TODO: Get this from rpc

@@ -2,8 +2,9 @@
 
 use std::str::FromStr;
 
+use bitcoin::hashes::sha256::Hash;
 use cdk_common::payment::{
-    CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse,
+    CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse, PaymentIdentifier,
 };
 use cdk_common::{Bolt11Invoice, CurrencyUnit, MeltQuoteBolt11Request, PaymentMethod};
 use melt_options::Options;
@@ -43,7 +44,7 @@ impl From<CdkMakePaymentResponse> for MakePaymentResponse {
 impl From<CreateIncomingPaymentResponse> for CreatePaymentResponse {
     fn from(value: CreateIncomingPaymentResponse) -> Self {
         Self {
-            request_lookup_id: value.request_lookup_id,
+            request_lookup_id: value.request_lookup_id.to_string(),
             request: value.request.to_string(),
             expiry: value.expiry,
         }
@@ -55,7 +56,11 @@ impl TryFrom<CreatePaymentResponse> for CreateIncomingPaymentResponse {
 
     fn try_from(value: CreatePaymentResponse) -> Result<Self, Self::Error> {
         Ok(Self {
-            request_lookup_id: value.request_lookup_id,
+            // TODO: This might not be hash
+            request_lookup_id: PaymentIdentifier::PaymentHash(
+                Hash::from_str(&value.request_lookup_id)
+                    .map_err(|_| crate::error::Error::InvalidHash)?,
+            ),
             request: value.request,
             expiry: value.expiry,
         })

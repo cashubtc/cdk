@@ -15,13 +15,13 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+use bitcoin::hashes::sha256::Hash;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse, WaitPaymentResponse,
+    PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, PaymentMethod};
-use cdk::secp256k1::hashes::Hash;
 use cdk::types::FeeReserve;
 use cdk::util::hex;
 use cdk::{ensure_cdk, mint, Bolt11Invoice, MeltPaymentRequest};
@@ -177,12 +177,15 @@ impl MintPayment for Lnd {
                 match msg {
                     Ok(Some(msg)) => {
                         if msg.state == 1 {
-                            let payment_hash =  hex::encode(msg.r_hash);
+
+                            let slice: [u8; 32] = msg.r_hash.try_into().unwrap();
+
+                            let hash= Hash::from_bytes_ref(&slice);
                             let wait_response = WaitPaymentResponse {
-                                request_lookup_id: payment_hash.clone(),
+                                payment_identifier: PaymentIdentifier::PaymentHash(*hash),
                                 payment_amount: Amount::ZERO,
                                 unit: CurrencyUnit::Sat,
-                                payment_id: payment_hash
+                                payment_id: hash.to_string()
                             };
                             Some((wait_response, (stream, cancel_token, is_active)))
                         } else {
@@ -343,7 +346,7 @@ impl MintPayment for Lnd {
                         .await
                         .router()
                         .send_to_route_v2(fedimint_tonic_lnd::routerrpc::SendToRouteRequest {
-                            payment_hash: payment_hash.to_byte_array().to_vec(),
+                            payment_hash: hex::decode(payment_hash.to_string()).unwrap(),
                             route: Some(route),
                             ..Default::default()
                         })
@@ -469,7 +472,7 @@ impl MintPayment for Lnd {
         let bolt11 = Bolt11Invoice::from_str(&invoice.payment_request)?;
 
         Ok(CreateIncomingPaymentResponse {
-            request_lookup_id: bolt11.payment_hash().to_string(),
+            request_lookup_id: PaymentIdentifier::PaymentHash(*bolt11.payment_hash()),
             request: bolt11.to_string(),
             expiry: unix_expiry,
         })
@@ -478,10 +481,10 @@ impl MintPayment for Lnd {
     #[instrument(skip(self))]
     async fn check_incoming_payment_status(
         &self,
-        request_lookup_id: &str,
+        request_lookup_id: &PaymentIdentifier,
     ) -> Result<MintQuoteState, Self::Err> {
         let invoice_request = fedimint_tonic_lnd::lnrpc::PaymentHash {
-            r_hash: hex::decode(request_lookup_id).unwrap(),
+            r_hash: hex::decode(request_lookup_id.to_string()).unwrap(),
             ..Default::default()
         };
 

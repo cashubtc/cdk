@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use cdk_common::mint::MintQuote;
 use cdk_common::mint_url::MintUrl;
+use cdk_common::payment::PaymentIdentifier;
 use cdk_common::{Amount, CurrencyUnit, MintQuoteState, PaymentMethod, Proof, State};
 use lightning_invoice::Bolt11Invoice;
 use redb::{
@@ -206,7 +207,11 @@ impl From<V1MintQuote> for MintQuote {
             quote.unit,
             Some(quote.amount),
             quote.expiry,
-            Bolt11Invoice::from_str(&quote.request).unwrap().to_string(),
+            PaymentIdentifier::PaymentHash(
+                *Bolt11Invoice::from_str(&quote.request)
+                    .unwrap()
+                    .payment_hash(),
+            ),
             None,
             Amount::ZERO,
             Amount::ZERO,
@@ -218,6 +223,7 @@ impl From<V1MintQuote> for MintQuote {
             None,
             None,
             // TODO: Create real migrations
+            // We need to migrate the payment ident to use the enum
         )
     }
 }

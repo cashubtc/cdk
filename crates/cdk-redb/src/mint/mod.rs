@@ -15,6 +15,7 @@ use cdk_common::database::{
 use cdk_common::dhke::hash_to_curve;
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
+use cdk_common::payment::PaymentIdentifier;
 use cdk_common::util::unix_time;
 use cdk_common::{
     Amount, BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintInfo,
@@ -505,7 +506,7 @@ impl MintQuotesDatabase for MintRedbDatabase {
 
     async fn get_mint_quote_by_request_lookup_id(
         &self,
-        request_lookup_id: &str,
+        request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintQuote>, Self::Err> {
         let quotes = self.get_mint_quotes().await?;
 

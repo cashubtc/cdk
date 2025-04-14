@@ -12,6 +12,7 @@ use tracing::instrument;
 use uuid::Uuid;
 
 use crate::nuts::{MeltQuoteState, MintQuoteState};
+use crate::payment::PaymentIdentifier;
 use crate::{Amount, CurrencyUnit, Id, KeySetInfo, PublicKey};
 
 /// Mint Quote Info
@@ -31,7 +32,7 @@ pub struct MintQuote {
     /// Expiration time of quote
     pub expiry: u64,
     /// Value used by ln backend to look up state of request
-    pub request_lookup_id: String,
+    pub request_lookup_id: PaymentIdentifier,
     /// Pubkey
     pub pubkey: Option<PublicKey>,
     /// Unix time quote was created
@@ -67,7 +68,7 @@ impl MintQuote {
         unit: CurrencyUnit,
         amount: Option<Amount>,
         expiry: u64,
-        request_lookup_id: String,
+        request_lookup_id: PaymentIdentifier,
         pubkey: Option<PublicKey>,
         amount_paid: Amount,
         amount_issued: Amount,

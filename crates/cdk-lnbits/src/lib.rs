@@ -13,10 +13,11 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use axum::Router;
+use bitcoin::hashes::sha256::Hash;
 use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk::cdk_payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse, WaitPaymentResponse,
+    PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, PaymentMethod};
 use cdk::types::FeeReserve;
@@ -131,7 +132,7 @@ impl MintPayment for LNbits {
                                 Ok(state) => {
                                     if state {
                                         let response = WaitPaymentResponse {
-                                            request_lookup_id: msg.clone(),
+                                            payment_identifier: PaymentIdentifier::PaymentHash(Hash::from_str(&msg).unwrap()),
                                             payment_amount: Amount::ZERO,
                                             unit: CurrencyUnit::Sat,
                                             payment_id: msg
@@ -306,7 +307,7 @@ impl MintPayment for LNbits {
         let expiry = request.expires_at().map(|t| t.as_secs());
 
         Ok(CreateIncomingPaymentResponse {
-            request_lookup_id: create_invoice_response.payment_hash,
+            request_lookup_id: PaymentIdentifier::PaymentHash(*request.payment_hash()),
             request: request.to_string(),
             expiry,
         })
@@ -314,11 +315,11 @@ impl MintPayment for LNbits {
 
     async fn check_incoming_payment_status(
         &self,
-        payment_hash: &str,
+        payment_hash: &PaymentIdentifier,
     ) -> Result<MintQuoteState, Self::Err> {
         let paid = self
             .lnbits_api
-            .is_invoice_paid(payment_hash)
+            .is_invoice_paid(&payment_hash.to_string())
             .await
             .map_err(|err| {
                 tracing::error!("Could not check invoice status");

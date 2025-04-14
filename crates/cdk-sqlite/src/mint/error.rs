@@ -62,6 +62,9 @@ pub enum Error {
     /// Quote already pending
     #[error("Quote is alreadu pending")]
     QuotePending,
+    /// Parse invoice error
+    #[error(transparent)]
+    Invoice(#[from] lightning_invoice::ParseOrSemanticError),
 }
 
 impl From<Error> for cdk_common::database::Error {

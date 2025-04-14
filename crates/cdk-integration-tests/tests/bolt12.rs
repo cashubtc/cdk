@@ -93,6 +93,6 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_regtest_bolt12_attempt_doube_pay_single() -> Result<()> {
+async fn test_regtest_bolt12_attempt_double_pay_single() -> Result<()> {
     Ok(())
 }

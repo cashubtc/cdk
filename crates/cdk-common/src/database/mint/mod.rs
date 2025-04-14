@@ -13,6 +13,7 @@ use crate::nuts::{
     BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState, Proof,
     Proofs, PublicKey, State,
 };
+use crate::payment::PaymentIdentifier;
 
 #[cfg(feature = "auth")]
 mod auth;
@@ -74,7 +75,7 @@ pub trait QuotesDatabase {
     /// Get all [`MintMintQuote`]s
     async fn get_mint_quote_by_request_lookup_id(
         &self,
-        request_lookup_id: &str,
+        request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintMintQuote>, Self::Err>;
     /// Get Mint Quotes
     async fn get_mint_quotes(&self) -> Result<Vec<MintMintQuote>, Self::Err>;

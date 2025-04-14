@@ -20,7 +20,7 @@ use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse, WaitPaymentResponse,
+    PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, PaymentMethod};
 use cdk::types::FeeReserve;
@@ -45,9 +45,9 @@ pub mod error;
 pub struct FakeWallet {
     fee_reserve: FeeReserve,
     #[allow(clippy::type_complexity)]
-    sender: tokio::sync::mpsc::Sender<(String, Amount)>,
+    sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount)>,
     #[allow(clippy::type_complexity)]
-    receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<(String, Amount)>>>>,
+    receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<(PaymentIdentifier, Amount)>>>>,
     payment_states: Arc<Mutex<HashMap<String, MeltQuoteState>>>,
     failed_payment_check: Arc<Mutex<HashSet<String>>>,
     payment_delay: u64,
@@ -139,10 +139,10 @@ impl MintPayment for FakeWallet {
 
         Ok(Box::pin(receiver_stream.map(
             |(request_lookup_id, payment_amount)| WaitPaymentResponse {
-                request_lookup_id: request_lookup_id.clone(),
+                payment_identifier: request_lookup_id.clone(),
                 payment_amount,
                 unit: CurrencyUnit::Sat,
-                payment_id: request_lookup_id,
+                payment_id: request_lookup_id.to_string(),
             },
         )))
     }
@@ -285,7 +285,10 @@ impl MintPayment for FakeWallet {
 
             let offer = offer_builder.build().unwrap();
 
-            (offer.to_string(), offer.to_string())
+            (
+                PaymentIdentifier::OfferId(offer.id().to_string()),
+                offer.to_string(),
+            )
         } else {
             // Since this is fake we just use the amount no matter the unit to create an invoice
             let amount_msat = amount;
@@ -294,12 +297,14 @@ impl MintPayment for FakeWallet {
 
             let payment_hash = invoice.payment_hash();
 
-            (payment_hash.to_string(), invoice.to_string())
+            (
+                PaymentIdentifier::PaymentHash(*payment_hash),
+                invoice.to_string(),
+            )
         };
 
         let sender = self.sender.clone();
         let duration = time::Duration::from_secs(self.payment_delay);
-        let payment_hash_clone = payment_hash.to_string();
 
         let amount = if amount == Amount::ZERO {
             let mut rng = rand::thread_rng();
@@ -311,6 +316,8 @@ impl MintPayment for FakeWallet {
             amount
         };
 
+        let payment_hash_clone = payment_hash.clone();
+
         tokio::spawn(async move {
             // Wait for the random delay to elapse
             time::sleep(duration).await;
@@ -321,12 +328,12 @@ impl MintPayment for FakeWallet {
                 .await
                 .is_err()
             {
-                tracing::error!("Failed to send label: {}", payment_hash_clone);
+                tracing::error!("Failed to send label: {:?}", payment_hash_clone);
             }
         });
 
         Ok(CreateIncomingPaymentResponse {
-            request_lookup_id: payment_hash.to_string(),
+            request_lookup_id: payment_hash,
             request,
             expiry: None,
         })
@@ -335,7 +342,7 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn check_incoming_payment_status(
         &self,
-        _request_lookup_id: &str,
+        _request_lookup_id: &PaymentIdentifier,
     ) -> Result<MintQuoteState, Self::Err> {
         Ok(MintQuoteState::Paid)
     }

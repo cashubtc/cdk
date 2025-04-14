@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bitcoin::hashes::sha256::Hash;
 use cdk::amount::{to_unit, Amount};
 use cdk::cdk_payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
@@ -153,12 +154,14 @@ impl MintPayment for Cln {
 
                             last_pay_idx = wait_any_response.pay_index;
 
-                            let payment_hash = wait_any_response.payment_hash.to_string();
+                            let payment_hash = wait_any_response.payment_hash;
 
 
                             // TODO: Handle unit conversion
                             let amount_msats = wait_any_response.amount_received_msat.expect("status is paid there should be an amount");
                             let amount_sats =  amount_msats.msat() / 1000;
+
+                            let payment_hash = Hash::from_bytes_ref(payment_hash.as_ref());
 
                             let request_lookup_id = match wait_any_response.bolt12 {
                                 // If it is a bolt12 payment we need to get the offer_id as this is what we use as the request look up.
@@ -197,7 +200,7 @@ impl MintPayment for Cln {
                                 payment_identifier: request_lookup_id,
                                 payment_amount: amount_sats.into(),
                                 unit: CurrencyUnit::Sat,
-                                payment_id: payment_hash
+                                payment_id: payment_hash.to_string()
                             };
 
                             break Some((response, (cln_client, last_pay_idx, cancel_token, is_active)));
@@ -403,7 +406,7 @@ impl MintPayment for Cln {
                 let payment_hash = request.payment_hash();
 
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: PaymentIdentifier::PaymentHash(payment_hash.to_string()),
+                    request_lookup_id: PaymentIdentifier::PaymentHash(*payment_hash),
                     request: request.to_string(),
                     expiry,
                 })
@@ -464,7 +467,6 @@ impl MintPayment for Cln {
         payment_identifier: &PaymentIdentifier,
     ) -> Result<MintQuoteState, Self::Err> {
         let mut cln_client = self.cln_client.lock().await;
-        let id_value = payment_identifier.inner();
 
         let listinvoices_response = match payment_identifier {
             PaymentIdentifier::Label(label) => {
@@ -512,11 +514,16 @@ impl MintPayment for Cln {
                     .await
                     .map_err(Error::from)?
             }
+            PaymentIdentifier::CustomId(_) => {
+                tracing::error!("Unsupported payment id for CLN");
+                return Err(cdk_payment::Error::UnknownPaymentState);
+            }
         };
 
         let status = match listinvoices_response.invoices.first() {
             Some(invoice_response) => cln_invoice_status_to_mint_state(invoice_response.status),
             None => {
+        let id_value = payment_identifier.to_string();
                 tracing::info!("Check invoice called on unknown identifier: {}", id_value);
                 return Err(Error::WrongClnResponse.into());
             }
@@ -611,7 +618,7 @@ fn cln_pays_status_to_mint_state(status: ListpaysPaysStatus) -> MeltQuoteState {
 
 async fn fetch_invoice_by_payment_hash(
     cln_client: &mut cln_rpc::ClnRpc,
-    payment_hash: &str,
+    payment_hash: &Hash,
 ) -> Result<Option<ListinvoicesInvoices>, Error> {
     match cln_client
         .call_typed(&ListinvoicesRequest {

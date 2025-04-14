@@ -109,7 +109,7 @@ impl Mint {
         );
 
         tracing::debug!(
-            "New mint quote {} for {} {} with request id {}",
+            "New mint quote {} for {} {} with request id {:?}",
             quote.id,
             amount,
             unit,
@@ -212,7 +212,7 @@ impl Mint {
     ) -> Result<(), Error> {
         if let Ok(Some(mint_quote)) = self
             .localstore
-            .get_mint_quote_by_request_lookup_id(&wait_payment_response.request_lookup_id)
+            .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
             .await
         {
             self.pay_mint_quote(&mint_quote, wait_payment_response)
