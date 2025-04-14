@@ -14,7 +14,7 @@ use crate::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState};
 use crate::{mint, Amount};
 
 /// Payment identifier types
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize)]
 pub enum PaymentIdentifier {
     /// Label identifier
     Label(String),
@@ -22,6 +22,26 @@ pub enum PaymentIdentifier {
     OfferId(String),
     /// Payment hash identifier
     PaymentHash(String),
+}
+
+impl<'de> Deserialize<'de> for PaymentIdentifier {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum PaymentIdentifierHelper {
+            Known(PaymentIdentifier),
+            Unknown(String),
+        }
+
+        let helper = PaymentIdentifierHelper::deserialize(deserializer)?;
+        match helper {
+            PaymentIdentifierHelper::Known(identifier) => Ok(identifier),
+            PaymentIdentifierHelper::Unknown(value) => Ok(PaymentIdentifier::PaymentHash(value)),
+        }
+    }
 }
 
 /// CDK Lightning Error
