@@ -190,7 +190,7 @@ impl TokenV3Token {
     pub fn new(mint_url: MintUrl, proofs: Proofs) -> Self {
         Self {
             mint: mint_url,
-            proofs: proofs.into_iter().map(|p| ProofV3::from(p)).collect(),
+            proofs: proofs.into_iter().map(ProofV3::from).collect(),
         }
     }
 }
