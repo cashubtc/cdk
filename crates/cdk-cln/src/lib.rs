@@ -36,6 +36,7 @@ use futures::{Stream, StreamExt};
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+use tracing::instrument;
 use uuid::Uuid;
 
 pub mod error;
@@ -69,6 +70,7 @@ impl Cln {
 impl MintPayment for Cln {
     type Err = cdk_payment::Error;
 
+    #[instrument(skip_all)]
     async fn get_settings(&self) -> Result<Value, Self::Err> {
         Ok(serde_json::to_value(Bolt11Settings {
             mpp: true,
@@ -79,17 +81,20 @@ impl MintPayment for Cln {
     }
 
     /// Is wait invoice active
+    #[instrument(skip_all)]
     fn is_wait_invoice_active(&self) -> bool {
         self.wait_invoice_is_active.load(Ordering::SeqCst)
     }
 
     /// Cancel wait invoice
+    #[instrument(skip_all)]
     fn cancel_wait_invoice(&self) {
         self.wait_invoice_cancel_token.cancel()
     }
 
     // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
     #[allow(clippy::incompatible_msrv)]
+    #[instrument(skip_all)]
     async fn wait_any_incoming_payment(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
@@ -167,6 +172,7 @@ impl MintPayment for Cln {
                                     {
                                         Ok(Some(invoice)) => {
                                             if let Some(local_offer_id) = invoice.local_offer_id {
+                                                tracing::info!("Received bolt12 payment of {} sats for {}", amount_sats, local_offer_id);
                                                 local_offer_id.to_string()
                                             } else {
                                                 continue;
@@ -209,6 +215,7 @@ impl MintPayment for Cln {
         Ok(stream)
     }
 
+    #[instrument(skip_all)]
     async fn get_payment_quote(
         &self,
         request: &str,
@@ -243,6 +250,7 @@ impl MintPayment for Cln {
         })
     }
 
+    #[instrument(skip_all)]
     async fn make_payment(
         &self,
         melt_quote: mint::MeltQuote,
@@ -351,6 +359,7 @@ impl MintPayment for Cln {
         Ok(response)
     }
 
+    #[instrument(skip_all)]
     async fn create_incoming_payment_request(
         &self,
         amount: Amount,
@@ -422,7 +431,7 @@ impl MintPayment for Cln {
                         description: Some(description),
                         issuer: Some(issuer.to_string()),
                         label: Some(label.to_string()),
-                        single_use: Some(true),
+                        single_use: Some(false),
                         quantity_max: None,
                         recurrence: None,
                         recurrence_base: None,
@@ -446,32 +455,65 @@ impl MintPayment for Cln {
         }
     }
 
+    #[instrument(skip(self))]
     async fn check_incoming_payment_status(
         &self,
-        payment_hash: &str,
+        label: &str,
     ) -> Result<MintQuoteState, Self::Err> {
         let mut cln_client = self.cln_client.lock().await;
 
-        let listinvoices_response = cln_client
+        let listinvoices_response = match cln_client
             .call_typed(&ListinvoicesRequest {
-                payment_hash: Some(payment_hash.to_string()),
+                payment_hash: None,
                 label: None,
                 invstring: None,
-                offer_id: None,
+                offer_id: Some(label.to_string()),
                 index: None,
                 limit: None,
                 start: None,
             })
             .await
-            .map_err(Error::from)?;
+        {
+            Ok(response) => {
+                if response.invoices.is_empty() {
+                    // First call succeeded but returned empty invoices, try second query
+                    cln_client
+                        .call_typed(&ListinvoicesRequest {
+                            payment_hash: Some(label.to_string()),
+                            label: None,
+                            invstring: None,
+                            offer_id: None,
+                            index: None,
+                            limit: None,
+                            start: None,
+                        })
+                        .await
+                        .map_err(Error::from)?
+                } else {
+                    response
+                }
+            }
+            Err(_) => {
+                // First call failed, try the second query
+                cln_client
+                    .call_typed(&ListinvoicesRequest {
+                        payment_hash: Some(label.to_string()),
+                        label: None,
+                        invstring: None,
+                        offer_id: None,
+                        index: None,
+                        limit: None,
+                        start: None,
+                    })
+                    .await
+                    .map_err(Error::from)?
+            }
+        };
 
         let status = match listinvoices_response.invoices.first() {
             Some(invoice_response) => cln_invoice_status_to_mint_state(invoice_response.status),
             None => {
-                tracing::info!(
-                    "Check invoice called on unknown look up id: {}",
-                    payment_hash
-                );
+                tracing::info!("Check invoice called on unknown look up id: {}", label);
                 return Err(Error::WrongClnResponse.into());
             }
         };
@@ -479,6 +521,7 @@ impl MintPayment for Cln {
         Ok(status)
     }
 
+    #[instrument(skip(self))]
     async fn check_outgoing_payment(
         &self,
         payment_hash: &str,

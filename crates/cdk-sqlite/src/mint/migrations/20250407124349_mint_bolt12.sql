@@ -1,29 +1,8 @@
+
+
 -- Add new columns to mint_quote table
 ALTER TABLE mint_quote ADD COLUMN amount_paid INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE mint_quote ADD COLUMN amount_minted INTEGER NOT NULL DEFAULT 0;
-
--- Remove NOT NULL constraint from amount column
-CREATE TABLE mint_quote_temp (
-    id TEXT PRIMARY KEY,
-    amount INTEGER,
-    unit TEXT NOT NULL,
-    request TEXT NOT NULL,
-    expiry INTEGER NOT NULL,
-    request_lookup_id TEXT,
-    pubkey TEXT,
-    created_time INTEGER NOT NULL DEFAULT 0,
-    paid_time INTEGER,
-    issued_time INTEGER,
-    amount_paid INTEGER NOT NULL DEFAULT 0,
-    amount_minted INTEGER NOT NULL DEFAULT 0,
-    payment_method TEXT NOT NULL DEFAULT 'bolt11',
-    single_use BOOLEAN NOT NULL DEFAULT TRUE,
-    pending BOOLEAN NOT NULL DEFAULT FALSE
-);
-
-INSERT INTO mint_quote_temp SELECT * FROM mint_quote;
-DROP TABLE mint_quote;
-ALTER TABLE mint_quote_temp RENAME TO mint_quote;
 ALTER TABLE mint_quote ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'bolt11';
 ALTER TABLE mint_quote ADD COLUMN single_use BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE mint_quote ADD COLUMN pending BOOLEAN NOT NULL DEFAULT FALSE;
@@ -41,6 +20,29 @@ DROP INDEX IF EXISTS mint_quote_state_index;
 
 -- Remove the state column from mint_quote table
 ALTER TABLE mint_quote DROP COLUMN state;
+
+-- Remove NOT NULL constraint from amount column
+CREATE TABLE mint_quote_temp (
+    id TEXT PRIMARY KEY,
+    amount INTEGER,
+    unit TEXT NOT NULL,
+    request TEXT NOT NULL,
+    expiry INTEGER NOT NULL,
+    request_lookup_id TEXT UNIQUE,
+    pubkey TEXT,
+    created_time INTEGER NOT NULL DEFAULT 0,
+    paid_time INTEGER,
+    issued_time INTEGER,
+    amount_paid INTEGER NOT NULL DEFAULT 0,
+    amount_minted INTEGER NOT NULL DEFAULT 0,
+    payment_method TEXT NOT NULL DEFAULT 'bolt11',
+    single_use BOOLEAN NOT NULL DEFAULT TRUE,
+    pending BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+INSERT INTO mint_quote_temp SELECT * FROM mint_quote;
+DROP TABLE mint_quote;
+ALTER TABLE mint_quote_temp RENAME TO mint_quote;
 
 -- Create mint_quote_payments table
 CREATE TABLE mint_quote_payments (

@@ -535,9 +535,12 @@ impl Mint {
         }
 
         // REVIEW: We increment the mint quote here but there are error cases after this where this should be reverted.
-        // How to handle payment id
         self.localstore
-            .increment_mint_quote_amount_paid(&mint_quote.id, melt_quote.amount, "".to_string())
+            .increment_mint_quote_amount_paid(
+                &mint_quote.id,
+                melt_quote.amount,
+                format!("{}:{}", mint_quote.id, melt_quote.id),
+            )
             .await?;
 
         Ok(Some(melt_quote.amount))

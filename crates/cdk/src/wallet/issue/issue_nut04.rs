@@ -210,6 +210,11 @@ impl Wallet {
 
         let amount_mintable = quote_info.amount_mintable();
 
+        if amount_mintable == Amount::ZERO {
+            tracing::debug!("Amount mintable 0.");
+            return Err(Error::AmountUndefined);
+        }
+
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
                 active_keyset_id,
@@ -260,7 +265,9 @@ impl Wallet {
         )?;
 
         // Remove filled quote from store
-        self.localstore.remove_mint_quote(&quote_info.id).await?;
+        if quote_info.single_use || quote_info.payment_method == PaymentMethod::Bolt11 {
+            self.localstore.remove_mint_quote(&quote_info.id).await?;
+        }
 
         if spending_conditions.is_none() {
             tracing::debug!(

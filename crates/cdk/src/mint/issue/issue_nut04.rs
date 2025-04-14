@@ -235,14 +235,18 @@ impl Mint {
             wait_payment_response.payment_id
         );
 
+        println!("{}", mint_quote.state());
+
+        let quote_state = mint_quote.state();
         if !mint_quote
             .payment_ids
             .contains(&wait_payment_response.payment_id)
         {
-            if (mint_quote.single_use || mint_quote.payment_method == PaymentMethod::Bolt11)
-                && mint_quote.state() != MintQuoteState::Issued
-                && mint_quote.state() != MintQuoteState::Paid
+            if mint_quote.payment_method == PaymentMethod::Bolt11
+                && (quote_state == MintQuoteState::Issued || quote_state == MintQuoteState::Paid)
             {
+                tracing::info!("Received payment notification for already seen payment.");
+            } else {
                 self.localstore
                     .increment_mint_quote_amount_paid(
                         &mint_quote.id,
@@ -253,12 +257,6 @@ impl Mint {
 
                 self.pubsub_manager
                     .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
-            } else {
-                tracing::debug!(
-                    "{} Quote already {} continuing",
-                    mint_quote.id,
-                    mint_quote.state()
-                );
             }
         } else {
             tracing::info!("Received payment notification for already seen payment.");
@@ -364,7 +362,8 @@ impl Mint {
             ));
         }
 
-        let unit = unit.ok_or(Error::UnsupportedUnit)?;
+        let unit = unit.ok_or(Error::UnsupportedUnit).unwrap();
+        println!("{}", unit);
         ensure_cdk!(unit == mint_quote.unit, Error::UnsupportedUnit);
 
         let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());

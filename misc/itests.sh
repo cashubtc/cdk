@@ -203,26 +203,26 @@ export CDK_TEST_MINT_URL_2="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1
 
 # Run cargo test
 echo "Running regtest test with CLN mint"
-# cargo test -p cdk-integration-tests --test regtest
-# if [ $? -ne 0 ]; then
-#     echo "regtest test failed, exiting"
-#     exit 1
-# fi
+cargo test -p cdk-integration-tests --test regtest
+if [ $? -ne 0 ]; then
+    echo "regtest test failed, exiting"
+    exit 1
+fi
 
-# # echo "Running happy_path_mint_wallet test with CLN mint"
-# cargo test -p cdk-integration-tests --test happy_path_mint_wallet
-# if [ $? -ne 0 ]; then
-#     echo "happy_path_mint_wallet test failed, exiting"
-#     exit 1
-# fi
+# echo "Running happy_path_mint_wallet test with CLN mint"
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+if [ $? -ne 0 ]; then
+    echo "happy_path_mint_wallet test failed, exiting"
+    exit 1
+fi
 
-# # Run cargo test with the http_subscription feature
-# echo "Running regtest test with http_subscription feature"
-# cargo test -p cdk-integration-tests --test regtest --features http_subscription
-# if [ $? -ne 0 ]; then
-#     echo "regtest test with http_subscription failed, exiting"
-#     exit 1
-# fi
+# Run cargo test with the http_subscription feature
+echo "Running regtest test with http_subscription feature"
+cargo test -p cdk-integration-tests --test regtest --features http_subscription
+if [ $? -ne 0 ]; then
+    echo "regtest test with http_subscription failed, exiting"
+    exit 1
+fi
 
 echo "Running regtest test with cln mint for bolt12"
 cargo test -p cdk-integration-tests --test bolt12
@@ -232,25 +232,25 @@ if [ $? -ne 0 ]; then
 fi
 
 # Switch Mints: Run tests with LND mint
-# echo "Switching to LND mint for tests"
-# export CDK_ITESTS_MINT_PORT_0=8087
-# export CDK_ITESTS_MINT_PORT_1=8085
-# export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
-# export CDK_TEST_MINT_URL_2="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1"
+echo "Switching to LND mint for tests"
+export CDK_ITESTS_MINT_PORT_0=8087
+export CDK_ITESTS_MINT_PORT_1=8085
+export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
+export CDK_TEST_MINT_URL_2="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1"
 
-# echo "Running regtest test with LND mint"
-# cargo test -p cdk-integration-tests --test regtest 
-# if [ $? -ne 0 ]; then
-#     echo "regtest test with LND mint failed, exiting"
-#     exit 1
-# fi
+echo "Running regtest test with LND mint"
+cargo test -p cdk-integration-tests --test regtest 
+if [ $? -ne 0 ]; then
+    echo "regtest test with LND mint failed, exiting"
+    exit 1
+fi
 
-# echo "Running happy_path_mint_wallet test with LND mint"
-# cargo test -p cdk-integration-tests --test happy_path_mint_wallet
-# if [ $? -ne 0 ]; then
-#     echo "happy_path_mint_wallet test with LND mint failed, exiting"
-#     exit 1
-# fi
+echo "Running happy_path_mint_wallet test with LND mint"
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+if [ $? -ne 0 ]; then
+    echo "happy_path_mint_wallet test with LND mint failed, exiting"
+    exit 1
+fi
 
-# echo "All tests passed successfully"
-# exit 0
+echo "All tests passed successfully"
+exit 0

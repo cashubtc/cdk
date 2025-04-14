@@ -391,17 +391,7 @@ ON CONFLICT(id) DO UPDATE SET
     created_time = excluded.created_time,
     paid_time = excluded.paid_time,
     issued_time = excluded.issued_time,
-    pending = excluded.pending
-ON CONFLICT(request_lookup_id) DO UPDATE SET
-    amount = excluded.amount,
-    unit = excluded.unit,
-    request = excluded.request,
-    expiry = excluded.expiry,
-    id = excluded.id,
-    created_time = excluded.created_time,
-    paid_time = excluded.paid_time,
-    issued_time = excluded.issued_time,
-    pending = excluded.pending
+    pending = excluded.pending;
         "#,
         )
         .bind(quote.id.to_string())
