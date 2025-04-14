@@ -1,8 +1,8 @@
 //! CDK Mint Lightning
-
 use std::pin::Pin;
 
 use async_trait::async_trait;
+use bitcoin::hashes::sha256::Hash;
 use cashu::{MeltOptions, PaymentMethod};
 use futures::Stream;
 use lightning_invoice::ParseOrSemanticError;
@@ -12,37 +12,6 @@ use thiserror::Error;
 
 use crate::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState};
 use crate::{mint, Amount};
-
-/// Payment identifier types
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize)]
-pub enum PaymentIdentifier {
-    /// Label identifier
-    Label(String),
-    /// Offer ID identifier
-    OfferId(String),
-    /// Payment hash identifier
-    PaymentHash(String),
-}
-
-impl<'de> Deserialize<'de> for PaymentIdentifier {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum PaymentIdentifierHelper {
-            Known(PaymentIdentifier),
-            Unknown(String),
-        }
-
-        let helper = PaymentIdentifierHelper::deserialize(deserializer)?;
-        match helper {
-            PaymentIdentifierHelper::Known(identifier) => Ok(identifier),
-            PaymentIdentifierHelper::Unknown(value) => Ok(PaymentIdentifier::PaymentHash(value)),
-        }
-    }
-}
 
 /// CDK Lightning Error
 #[derive(Debug, Error)]
@@ -86,6 +55,31 @@ pub enum Error {
     /// Custom
     #[error("`{0}`")]
     Custom(String),
+}
+
+/// Payment identifier types
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaymentIdentifier {
+    /// Label identifier
+    Label(String),
+    /// Offer ID identifier
+    OfferId(String),
+    /// Payment hash identifier
+    PaymentHash(Hash),
+    /// Custom Payment ID
+    CustomId(String),
+}
+
+impl PaymentIdentifier {
+    /// Get inner string value
+    pub fn inner(&self) -> &str {
+        match self {
+            Self::Label(l) => l,
+            Self::OfferId(o) => o,
+            Self::PaymentHash(h) => &h.to_string(),
+            Self::CustomId(c) => c,
+        }
+    }
 }
 
 /// Mint payment trait
@@ -155,7 +149,7 @@ pub trait MintPayment {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateIncomingPaymentResponse {
     /// Id that is used to look up the payment from the ln backend
-    pub request_lookup_id: String,
+    pub request_lookup_id: PaymentIdentifier,
     /// Payment request
     pub request: String,
     /// Unix Expiry of Invoice
@@ -203,7 +197,7 @@ pub enum PaymentQuoteOptions {
 }
 
 /// Wait any invoice response
-#[derive(Debug, Clone, Hash, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Hash, Serialize, Deserialize)]
 pub struct WaitPaymentResponse {
     /// Request look up id
     /// Id that relates the quote and payment request
