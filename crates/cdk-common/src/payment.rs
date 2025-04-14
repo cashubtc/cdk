@@ -93,17 +93,25 @@ pub struct Bolt11IncomingPaymentOptions {
     pub unix_expiry: Option<u64>,
 }
 
+/// Options for creating a BOLT12 incoming payment request
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Bolt12IncomingPaymentOptions {
+    /// Optional description for the payment request
     pub description: Option<String>,
+    /// Optional amount for the payment request in sats
     pub amount: Option<Amount>,
+    /// Optional expiry time as Unix timestamp in seconds
     pub unix_expiry: Option<u64>,
+    /// Whether the offer should be single-use
     pub single_use: bool,
 }
 
+/// Options for creating an incoming payment request
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IncomingPaymentOptions {
+    /// BOLT11 payment request options
     Bolt11(Bolt11IncomingPaymentOptions),
+    /// BOLT12 payment request options
     Bolt12(Bolt12IncomingPaymentOptions),
 }
 
