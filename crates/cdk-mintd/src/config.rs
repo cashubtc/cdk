@@ -26,14 +26,17 @@ pub struct Info {
 
 impl std::fmt::Debug for Info {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mnemonic_hash = sha256::Hash::from_slice(&self.mnemonic.clone().into_bytes())
-            .map_err(|_| std::fmt::Error)?;
+        // Use a fallback approach that won't panic
+        let mnemonic_display = {
+            let hash = sha256::Hash::hash(self.mnemonic.clone().into_bytes().as_ref());
+            format!("<hashed: {}>", hash)
+        };
 
         f.debug_struct("Info")
             .field("url", &self.url)
             .field("listen_host", &self.listen_host)
             .field("listen_port", &self.listen_port)
-            .field("mnemonic", &format!("<hashed: {}>", mnemonic_hash))
+            .field("mnemonic", &mnemonic_display)
             .field("input_fee_ppk", &self.input_fee_ppk)
             .field("http_cache", &self.http_cache)
             .field("enable_swagger_ui", &self.enable_swagger_ui)
@@ -359,5 +362,76 @@ impl Settings {
         }
 
         Ok(settings)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn test_info_debug_impl() {
+        // Create a sample Info struct with test data
+        let info = Info {
+            url: "http://example.com".to_string(),
+            listen_host: "127.0.0.1".to_string(),
+            listen_port: 8080,
+            mnemonic: "test secret mnemonic phrase".to_string(),
+            input_fee_ppk: Some(100),
+            ..Default::default()
+        };
+
+        // Convert the Info struct to a debug string
+        let debug_output = format!("{:?}", info);
+
+        // Verify the debug output contains expected fields
+        assert!(debug_output.contains("url: \"http://example.com\""));
+        assert!(debug_output.contains("listen_host: \"127.0.0.1\""));
+        assert!(debug_output.contains("listen_port: 8080"));
+
+        // The mnemonic should be hashed, not displayed in plaintext
+        assert!(!debug_output.contains("test secret mnemonic phrase"));
+        assert!(debug_output.contains("<hashed: "));
+
+        assert!(debug_output.contains("input_fee_ppk: Some(100)"));
+    }
+
+    #[test]
+    fn test_info_debug_with_empty_mnemonic() {
+        // Test with an empty mnemonic to ensure it doesn't panic
+        let info = Info {
+            url: "http://example.com".to_string(),
+            listen_host: "127.0.0.1".to_string(),
+            listen_port: 8080,
+            mnemonic: "".to_string(), // Empty mnemonic
+            enable_swagger_ui: Some(false),
+            ..Default::default()
+        };
+
+        // This should not panic
+        let debug_output = format!("{:?}", info);
+
+        // The empty mnemonic should still be hashed
+        assert!(debug_output.contains("<hashed: "));
+    }
+
+    #[test]
+    fn test_info_debug_with_special_chars() {
+        // Test with a mnemonic containing special characters
+        let info = Info {
+            url: "http://example.com".to_string(),
+            listen_host: "127.0.0.1".to_string(),
+            listen_port: 8080,
+            mnemonic: "特殊字符 !@#$%^&*()".to_string(), // Special characters
+            ..Default::default()
+        };
+
+        // This should not panic
+        let debug_output = format!("{:?}", info);
+
+        // The mnemonic with special chars should be hashed
+        assert!(!debug_output.contains("特殊字符 !@#$%^&*()"));
+        assert!(debug_output.contains("<hashed: "));
     }
 }
