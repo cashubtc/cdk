@@ -346,8 +346,8 @@ impl Mint {
                     result = ln.wait_any_incoming_payment() => {
                         match result {
                             Ok(mut stream) => {
-                                while let Some(request_lookup_id) = stream.next().await {
-                                    if let Err(err) = mint.pay_mint_quote_for_request_id(request_lookup_id).await {
+                                while let Some(wait_payment_response) = stream.next().await {
+                                    if let Err(err) = mint.pay_mint_quote_for_request_id(wait_payment_response).await {
                                         tracing::warn!("{:?}", err);
                                     }
                                 }
@@ -535,8 +535,9 @@ impl Mint {
         }
 
         // REVIEW: We increment the mint quote here but there are error cases after this where this should be reverted.
+        // How to handle payment id
         self.localstore
-            .increment_mint_quote_amount_paid(&mint_quote.id, melt_quote.amount)
+            .increment_mint_quote_amount_paid(&mint_quote.id, melt_quote.amount, "".to_string())
             .await?;
 
         Ok(Some(melt_quote.amount))

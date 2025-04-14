@@ -54,6 +54,7 @@ pub trait QuotesDatabase {
         &self,
         quote_id: &Uuid,
         amount_paid: Amount,
+        payment_id: String,
     ) -> Result<Amount, Self::Err>;
     /// Increment amount paid [`MintMintQuote`]
     async fn increment_mint_quote_amount_issued(

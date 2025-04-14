@@ -229,30 +229,39 @@ impl Mint {
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
         tracing::debug!(
-            "Received payment notification of {} for mint quote {}",
+            "Received payment notification of {} for mint quote {} with payment id {}",
             wait_payment_response.payment_amount,
-            mint_quote.id
+            mint_quote.id,
+            wait_payment_response.payment_id
         );
 
-        if (mint_quote.single_use || mint_quote.payment_method == PaymentMethod::Bolt11)
-            && mint_quote.state() != MintQuoteState::Issued
-            && mint_quote.state() != MintQuoteState::Paid
+        if !mint_quote
+            .payment_ids
+            .contains(&wait_payment_response.payment_id)
         {
-            self.localstore
-                .increment_mint_quote_amount_paid(
-                    &mint_quote.id,
-                    wait_payment_response.payment_amount,
-                )
-                .await?;
+            if (mint_quote.single_use || mint_quote.payment_method == PaymentMethod::Bolt11)
+                && mint_quote.state() != MintQuoteState::Issued
+                && mint_quote.state() != MintQuoteState::Paid
+            {
+                self.localstore
+                    .increment_mint_quote_amount_paid(
+                        &mint_quote.id,
+                        wait_payment_response.payment_amount,
+                        wait_payment_response.payment_id,
+                    )
+                    .await?;
 
-            self.pubsub_manager
-                .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
+                self.pubsub_manager
+                    .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
+            } else {
+                tracing::debug!(
+                    "{} Quote already {} continuing",
+                    mint_quote.id,
+                    mint_quote.state()
+                );
+            }
         } else {
-            tracing::debug!(
-                "{} Quote already {} continuing",
-                mint_quote.id,
-                mint_quote.state()
-            );
+            tracing::info!("Received payment notification for already seen payment.");
         }
 
         Ok(())

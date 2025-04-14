@@ -112,7 +112,6 @@ impl MintQuote {
     ///
     ///
     pub fn amount_mintable(&self) -> Amount {
-        println!("{:?}", self);
         let difference = self.amount_paid - self.amount_minted;
 
         if difference == Amount::ZERO && self.state != MintQuoteState::Issued {

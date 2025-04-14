@@ -97,6 +97,9 @@ pub enum Error {
     /// Invoice not created
     #[error("Invoice not created")]
     InvoiceMissing,
+    /// Duplicate Payment id
+    #[error("Payment id seen for mint")]
+    DuplicatePaymentId,
 
     // Mint Errors
     /// Minting is disabled

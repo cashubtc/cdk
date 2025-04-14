@@ -17,7 +17,7 @@ use cdk_common::nut05::QuoteState;
 use cdk_common::secret::Secret;
 use cdk_common::util::unix_time;
 use cdk_common::{
-    Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Error as CdkError, Id, MeltBolt11Request,
+    Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltBolt11Request,
     MeltQuoteState, MintInfo, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey,
     State,
 };
@@ -532,7 +532,7 @@ WHERE payment_id = ?;
                 // Payment ID already exists
                 tracing::error!("Payment ID already exists: {}", payment_id);
                 transaction.rollback().await.map_err(Error::from)?;
-                return Err(database::Error::DuplicatePaymentId);
+                return Err(Error::from(cdk_common::Error::DuplicatePaymentId).into());
             }
             Ok(None) => {
                 // Payment ID doesn't exist, continue processing

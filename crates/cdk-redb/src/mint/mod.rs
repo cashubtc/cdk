@@ -316,6 +316,7 @@ impl MintQuotesDatabase for MintRedbDatabase {
         &self,
         quote_id: &Uuid,
         amount_paid: Amount,
+        payment_id: String,
     ) -> Result<Amount, Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
@@ -336,6 +337,8 @@ impl MintQuotesDatabase for MintRedbDatabase {
 
                 mint_quote = serde_json::from_str(quote).map_err(Error::from)?;
             }
+
+            mint_quote.add_payment_id(payment_id).map_err(Error::from)?;
 
             total_paid = mint_quote
                 .increment_amount_paid(amount_paid)

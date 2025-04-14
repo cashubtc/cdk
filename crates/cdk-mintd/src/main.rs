@@ -205,6 +205,15 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await?;
 
+            mint_builder = mint_builder
+                .add_ln_backend(
+                    CurrencyUnit::Sat,
+                    PaymentMethod::Bolt12,
+                    mint_melt_limits,
+                    cln.clone(),
+                )
+                .await?;
+
             if let Some(input_fee) = settings.info.input_fee_ppk {
                 mint_builder = mint_builder.set_unit_fee(&CurrencyUnit::Sat, input_fee)?;
             }
@@ -233,7 +242,9 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
+            mint_builder = mint_builder.add_supported_websockets(nut17_supported);
 
+            let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt12, CurrencyUnit::Sat);
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
         }
         #[cfg(feature = "lnd")]
