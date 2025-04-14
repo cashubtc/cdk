@@ -265,52 +265,55 @@ impl MintPayment for LNbits {
 
     async fn create_incoming_payment_request(
         &self,
-        amount: Amount,
         unit: &CurrencyUnit,
-        payment_method: &PaymentMethod,
-        description: String,
-        unix_expiry: Option<u64>,
+        options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         if unit != &CurrencyUnit::Sat {
             return Err(Self::Err::Anyhow(anyhow!("Unsupported unit")));
         }
 
-        if payment_method != &PaymentMethod::Bolt11 {
-            return Err(Self::Err::Anyhow(anyhow!("Unsupported method")));
+        match options {
+            IncomingPaymentOptions::Bolt11(bolt11_options) => {
+                let description = bolt11_options.description.unwrap_or_default();
+                let amount = bolt11_options.amount;
+                let unix_expiry = bolt11_options.unix_expiry;
+                
+                let time_now = unix_time();
+                let expiry = unix_expiry.map(|t| t - time_now);
+
+                let invoice_request = CreateInvoiceRequest {
+                    amount: to_unit(amount, unit, &CurrencyUnit::Sat)?.into(),
+                    memo: Some(description),
+                    unit: unit.to_string(),
+                    expiry,
+                    webhook: Some(self.webhook_url.clone()),
+                    internal: None,
+                    out: false,
+                };
+
+                let create_invoice_response = self
+                    .lnbits_api
+                    .create_invoice(&invoice_request)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!("Could not create invoice");
+                        tracing::error!("{}", err.to_string());
+                        Self::Err::Anyhow(anyhow!("Could not create invoice"))
+                    })?;
+
+                let request: Bolt11Invoice = create_invoice_response.payment_request.parse()?;
+                let expiry = request.expires_at().map(|t| t.as_secs());
+
+                Ok(CreateIncomingPaymentResponse {
+                    request_lookup_id: PaymentIdentifier::PaymentHash(*request.payment_hash()),
+                    request: request.to_string(),
+                    expiry,
+                })
+            }
+            IncomingPaymentOptions::Bolt12(_) => {
+                Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
+            }
         }
-
-        let time_now = unix_time();
-
-        let expiry = unix_expiry.map(|t| t - time_now);
-
-        let invoice_request = CreateInvoiceRequest {
-            amount: to_unit(amount, unit, &CurrencyUnit::Sat)?.into(),
-            memo: Some(description),
-            unit: unit.to_string(),
-            expiry,
-            webhook: Some(self.webhook_url.clone()),
-            internal: None,
-            out: false,
-        };
-
-        let create_invoice_response = self
-            .lnbits_api
-            .create_invoice(&invoice_request)
-            .await
-            .map_err(|err| {
-                tracing::error!("Could not create invoice");
-                tracing::error!("{}", err.to_string());
-                Self::Err::Anyhow(anyhow!("Could not create invoice"))
-            })?;
-
-        let request: Bolt11Invoice = create_invoice_response.payment_request.parse()?;
-        let expiry = request.expires_at().map(|t| t.as_secs());
-
-        Ok(CreateIncomingPaymentResponse {
-            request_lookup_id: PaymentIdentifier::PaymentHash(*request.payment_hash()),
-            request: request.to_string(),
-            expiry,
-        })
     }
 
     async fn check_incoming_payment_status(
