@@ -262,50 +262,60 @@ impl MintPayment for FakeWallet {
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        let (payment_hash, request) = if payment_method == &PaymentMethod::Bolt12 {
-            let secret_key = bitcoin::secp256k1::SecretKey::new(&mut rand::thread_rng());
+        let (payment_hash, request, amount, description, expiry) = match options {
+            IncomingPaymentOptions::Bolt12(bolt12_options) => {
+                let description = bolt12_options.description.unwrap_or_default();
+                let amount = bolt12_options.amount;
+                let expiry = bolt12_options.unix_expiry;
+                
+                let secret_key = SecretKey::new(&mut thread_rng());
+                let secp_ctx = Secp256k1::new();
 
-            let secp_ctx = Secp256k1::new();
+                let offer_builder =
+                    OfferBuilder::new(secret_key.public_key(&secp_ctx)).description(description);
 
-            let offer_builder =
-                OfferBuilder::new(secret_key.public_key(&secp_ctx)).description(description);
+                let offer_builder = match amount {
+                    Some(amount) => {
+                        let amount_msat = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+                        offer_builder.amount_msats(amount_msat.into())
+                    }
+                    None => offer_builder,
+                };
 
-            let amount = Some(amount);
+                let offer = offer_builder.build().unwrap();
 
-            let offer_builder = match amount {
-                Some(amount) => {
-                    let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
-                    offer_builder.amount_msats(amount.into())
-                }
-                None => offer_builder,
-            };
+                (
+                    PaymentIdentifier::OfferId(offer.id().to_string()),
+                    offer.to_string(),
+                    amount.unwrap_or(Amount::ZERO),
+                    description,
+                    expiry,
+                )
+            }
+            IncomingPaymentOptions::Bolt11(bolt11_options) => {
+                let description = bolt11_options.description.unwrap_or_default();
+                let amount = bolt11_options.amount;
+                let expiry = bolt11_options.unix_expiry;
+                
+                // Since this is fake we just use the amount no matter the unit to create an invoice
+                let invoice = create_fake_invoice(amount.into(), description);
+                let payment_hash = invoice.payment_hash();
 
-            let offer = offer_builder.build().unwrap();
-
-            (
-                PaymentIdentifier::OfferId(offer.id().to_string()),
-                offer.to_string(),
-            )
-        } else {
-            // Since this is fake we just use the amount no matter the unit to create an invoice
-            let amount_msat = amount;
-
-            let invoice = create_fake_invoice(amount_msat.into(), description);
-
-            let payment_hash = invoice.payment_hash();
-
-            (
-                PaymentIdentifier::PaymentHash(*payment_hash),
-                invoice.to_string(),
-            )
+                (
+                    PaymentIdentifier::PaymentHash(*payment_hash),
+                    invoice.to_string(),
+                    amount,
+                    description,
+                    expiry,
+                )
+            }
         };
 
         let sender = self.sender.clone();
         let duration = time::Duration::from_secs(self.payment_delay);
 
-        let amount = if amount == Amount::ZERO {
-            let mut rng = rand::thread_rng();
-
+        let final_amount = if amount == Amount::ZERO {
+            let mut rng = thread_rng();
             // Generate a random number between 1 and 1000 (inclusive)
             let random_number: u64 = rng.gen_range(1..=1000);
             random_number.into()
@@ -321,7 +331,7 @@ impl MintPayment for FakeWallet {
 
             // Send the message after waiting for the specified duration
             if sender
-                .send((payment_hash_clone.clone(), amount))
+                .send((payment_hash_clone.clone(), final_amount))
                 .await
                 .is_err()
             {
@@ -332,7 +342,7 @@ impl MintPayment for FakeWallet {
         Ok(CreateIncomingPaymentResponse {
             request_lookup_id: payment_hash,
             request,
-            expiry: None,
+            expiry,
         })
     }
 
