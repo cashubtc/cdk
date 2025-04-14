@@ -184,6 +184,9 @@ pub enum Error {
     /// NUT11 error
     #[error(transparent)]
     NUT11(#[from] crate::nuts::nut11::Error),
+    /// Short keyset id -> id error
+    #[error(transparent)]
+    NUT02(#[from] crate::nuts::nut02::Error),
 }
 
 /// Blinded Message (also called `output`)

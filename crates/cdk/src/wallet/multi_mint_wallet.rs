@@ -272,12 +272,6 @@ impl MultiMintWallet {
         let token_data = Token::from_str(encoded_token)?;
         let unit = token_data.unit().unwrap_or_default();
 
-        let proofs = token_data.proofs();
-
-        let mut amount_received = Amount::ZERO;
-
-        let mut mint_errors = None;
-
         let mint_url = token_data.mint_url()?;
 
         // Check that all mints in tokes have wallets
@@ -285,12 +279,23 @@ impl MultiMintWallet {
         if !self.has(&wallet_key).await {
             return Err(Error::UnknownWallet(wallet_key.clone()));
         }
-
-        let wallet_key = WalletKey::new(mint_url.clone(), unit);
         let wallet = self
             .get_wallet(&wallet_key)
             .await
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
+
+        // We need the keysets information to properly convert from token proof to proof
+        let keysets_info = match self.localstore.get_mint_keysets(token_data.mint_url()?).await? {
+            Some(keysets_info) => keysets_info,
+            // Hit the keysets endpoint if we don't have the keysets for this Mint
+            None => wallet.get_mint_keysets().await?
+        };
+        let proofs = token_data.proofs(&keysets_info)?;
+
+        let mut amount_received = Amount::ZERO;
+
+        let mut mint_errors = None;
+        
 
         match wallet
             .receive_proofs(proofs, opts, token_data.memo().clone())
@@ -357,7 +362,7 @@ impl MultiMintWallet {
             .await
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
-        wallet.verify_token_p2pk(token, conditions)
+        wallet.verify_token_p2pk(token, conditions).await
     }
 
     /// Verifys all proofs in token have valid dleq proof

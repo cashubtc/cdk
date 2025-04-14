@@ -66,7 +66,7 @@ impl Token {
     }
 
     /// Proofs in [`Token`]
-    pub fn proofs(&self, mint_keysets: &[KeySetInfo]) -> Proofs {
+    pub fn proofs(&self, mint_keysets: &[KeySetInfo]) -> Result<Proofs, Error> {
         match self {
             Self::TokenV3(token) => token.proofs(mint_keysets),
             Self::TokenV4(token) => token.proofs(mint_keysets),
@@ -226,16 +226,15 @@ impl TokenV3 {
     }
 
     /// Proofs
-    pub fn proofs(&self, mint_keysets: &[KeySetInfo]) -> Proofs {
-        self.token
-            .iter()
-            .flat_map(|token| {
-                token.proofs.iter().map(|p| {
-                    let long_id = Id::from_short_keyset_id(&p.keyset_id, mint_keysets).unwrap();
-                    p.into_proof(&long_id)
-                })
-            })
-            .collect()
+    pub fn proofs(&self, mint_keysets: &[KeySetInfo]) -> Result<Proofs, Error> {
+        let mut proofs: Proofs = vec![];
+        for t in self.token.iter() {
+            for p in t.proofs.iter() {
+                let long_id = Id::from_short_keyset_id(&p.keyset_id, mint_keysets)?;
+                proofs.push(p.into_proof(&long_id));
+            }
+        }
+        Ok(proofs)
     }
 
     /// Value - errors if duplicate proofs are found
@@ -362,14 +361,13 @@ pub struct TokenV4 {
 
 impl TokenV4 {
     /// Proofs from token
-    pub fn proofs(&self, mint_keysets: &[KeySetInfo]) -> Proofs {
-        self.token
-            .iter()
-            .flat_map(|token| {
-                let long_id = Id::from_short_keyset_id(&token.keyset_id, mint_keysets).unwrap();
-                token.proofs.iter().map(move |p| p.into_proof(&long_id))
-            })
-            .collect()
+    pub fn proofs(&self, mint_keysets: &[KeySetInfo]) -> Result<Proofs, Error> {
+        let mut proofs: Proofs = vec![];
+        for t in self.token.iter() {
+            let long_id = Id::from_short_keyset_id(&t.keyset_id, mint_keysets)?;
+            proofs.extend(t.proofs.iter().map(|p| p.into_proof(&long_id)));
+        }
+        Ok(proofs)
     }
 
     /// Value - errors if duplicate proofs are found
