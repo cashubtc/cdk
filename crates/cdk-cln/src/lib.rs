@@ -38,6 +38,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use uuid::Uuid;
+use cdk_payment::PaymentIdentifier;
 
 pub mod error;
 
@@ -173,7 +174,7 @@ impl MintPayment for Cln {
                                         Ok(Some(invoice)) => {
                                             if let Some(local_offer_id) = invoice.local_offer_id {
                                                 tracing::info!("Received bolt12 payment of {} sats for {}", amount_sats, local_offer_id);
-                                                local_offer_id.to_string()
+                                                PaymentIdentifier::OfferId(local_offer_id.to_string())
                                             } else {
                                                 continue;
                                             }
@@ -187,11 +188,13 @@ impl MintPayment for Cln {
                                         }
                                     }
                                 }
-                                None => payment_hash.clone(),
+                                None => {
+                                 PaymentIdentifier::PaymentHash(payment_hash.clone())   
+                                },
                             };
 
                             let response = WaitPaymentResponse {
-                                request_lookup_id,
+                                payment_identifier: request_lookup_id,
                                 payment_amount: amount_sats.into(),
                                 unit: CurrencyUnit::Sat,
                                 payment_id: payment_hash
@@ -400,7 +403,7 @@ impl MintPayment for Cln {
                 let payment_hash = request.payment_hash();
 
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: payment_hash.to_string(),
+                    request_lookup_id: PaymentIdentifier::PaymentHash(payment_hash.to_string()),
                     request: request.to_string(),
                     expiry,
                 })
@@ -443,7 +446,7 @@ impl MintPayment for Cln {
                     .map_err(Error::from)?;
 
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: offer_response.offer_id.to_string(),
+                    request_lookup_id: PaymentIdentifier::OfferId(offer_response.offer_id.to_string()),
                     request: offer_response.bolt12,
                     expiry: unix_expiry,
                 })
@@ -458,9 +461,22 @@ impl MintPayment for Cln {
     #[instrument(skip(self))]
     async fn check_incoming_payment_status(
         &self,
-        label: &str,
+        payment_identifier: &PaymentIdentifier,
     ) -> Result<MintQuoteState, Self::Err> {
         let mut cln_client = self.cln_client.lock().await;
+
+
+        match payment_identifier {
+            PaymentIdentifier::Label(label) => {
+                todo!()
+            }
+            PaymentIdentifier::OfferId(offer) => {
+                todo!()
+            }
+            PaymentIdentifier::PaymentHash(hash) => {
+                todo!()
+            }
+        }
 
         let listinvoices_response = match cln_client
             .call_typed(&ListinvoicesRequest {
