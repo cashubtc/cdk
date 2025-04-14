@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use cashu_kvac::kvac::BootstrapProof;
 use cashu_kvac::transcript::CashuTranscript;
 use cdk_common::kvac::Error::{
-    BootstrapVerificationError, InputsToProofsLengthMismatch, RequestInvalidInputLength,
+    BootstrapVerificationError, InputsToProofsLengthMismatch
 };
 use cdk_common::kvac::{KvacBootstrapRequest, KvacBootstrapResponse, KvacIssuedMac};
 use tracing::instrument;
@@ -22,13 +22,7 @@ impl Mint {
     ) -> Result<KvacBootstrapResponse, Error> {
         tracing::info!("Bootstrap has been called");
 
-        // Length of the input vector must be 2
-        // further privacy hardening
-        // (if enforced at a protocol level)
         let outputs = bootstrap_request.outputs;
-        if outputs.len() < 2 {
-            return Err(Error::from(RequestInvalidInputLength));
-        }
 
         let proofs = bootstrap_request.proofs;
         if outputs.len() != proofs.len() {
