@@ -180,16 +180,14 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
         &self,
         request: Request<CreatePaymentRequest>,
     ) -> Result<Response<CreatePaymentResponse>, Status> {
-        let CreatePaymentRequest {
-            unit,
-            options,
-        } = request.into_inner();
+        let CreatePaymentRequest { unit, options } = request.into_inner();
 
-        let unit = CurrencyUnit::from_str(&unit)
-            .map_err(|_| Status::invalid_argument("Invalid unit"))?;
+        let unit =
+            CurrencyUnit::from_str(&unit).map_err(|_| Status::invalid_argument("Invalid unit"))?;
 
-        let options = options.ok_or_else(|| Status::invalid_argument("Payment options required"))?;
-        
+        let options =
+            options.ok_or_else(|| Status::invalid_argument("Payment options required"))?;
+
         // Convert from protobuf IncomingPaymentOptions to common IncomingPaymentOptions
         let payment_options = match options.options {
             Some(crate::proto::incoming_payment_options::Options::Bolt11(bolt11_options)) => {
@@ -216,10 +214,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
 
         let invoice_response = self
             .inner
-            .create_incoming_payment_request(
-                &unit,
-                payment_options,
-            )
+            .create_incoming_payment_request(&unit, payment_options)
             .await
             .map_err(|_| Status::internal("Could not create invoice"))?;
 
