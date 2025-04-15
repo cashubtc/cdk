@@ -14,6 +14,6 @@ pub use proto::{client::SignatoryRpcClient, server::grpc_server};
 
 mod common;
 
-pub mod memory;
+pub mod db_signatory;
 pub mod service;
 pub mod signatory;
