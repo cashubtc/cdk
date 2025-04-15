@@ -9,6 +9,10 @@ use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::nuts::{
+    self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind, MintKeySet, Proof,
+};
+use cdk_common::secret;
 use cdk_signatory::signatory::Signatory;
 use futures::StreamExt;
 #[cfg(feature = "auth")]
@@ -350,6 +354,25 @@ impl Mint {
     /// Verify [`Proof`] meets conditions and is signed
     #[instrument(skip_all)]
     pub async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
+        // Check if secret is a nut10 secret with conditions
+        if let Ok(secret) =
+            <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
+        {
+            // Checks and verifies known secret kinds.
+            // If it is an unknown secret kind it will be treated as a normal secret.
+            // Spending conditions will **not** be check. It is up to the wallet to ensure
+            // only supported secret kinds are used as there is no way for the mint to
+            // enforce only signing supported secrets as they are blinded at
+            // that point.
+            match secret.kind {
+                Kind::P2PK => {
+                    proof.verify_p2pk()?;
+                }
+                Kind::HTLC => {
+                    proof.verify_htlc()?;
+                }
+            }
+        }
         self.signatory.verify_proof(proof.to_owned()).await
     }
 
@@ -559,7 +582,7 @@ mod tests {
         );
 
         let signatory = Arc::new(
-            cdk_signatory::memory::Memory::new(
+            cdk_signatory::db_signatory::DbSignatory::new(
                 localstore.clone(),
                 None,
                 config.seed,
@@ -634,7 +657,7 @@ mod tests {
 
         let keysets = mint.keysets().await.unwrap();
 
-        assert!(keysets.keysets.len().eq(&2));
+        assert_eq!(2, keysets.keysets.len());
         for keyset in &keysets.keysets {
             if keyset.id == first_keyset_id {
                 assert!(!keyset.active);

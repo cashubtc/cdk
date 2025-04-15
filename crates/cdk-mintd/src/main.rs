@@ -12,7 +12,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
-use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase};
+use cdk::cdk_database::{self, MintAuthDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 // Feature-gated imports
 #[cfg(any(
@@ -107,8 +107,6 @@ async fn main() -> anyhow::Result<()> {
         None => work_dir.join("config.toml"),
     };
 
-    let mut mint_builder = MintBuilder::new();
-
     let mut settings = if config_file_arg.exists() {
         config::Settings::new(Some(config_file_arg))
     } else {
@@ -120,25 +118,28 @@ async fn main() -> anyhow::Result<()> {
     // ENV VARS will take **priority** over those in the config
     let settings = settings.from_env()?;
 
-    let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
-        match settings.database.engine {
-            DatabaseEngine::Sqlite => {
-                let sql_db_path = work_dir.join("cdk-mintd.sqlite");
-                #[cfg(not(feature = "sqlcipher"))]
-                let sqlite_db = MintSqliteDatabase::new(&sql_db_path).await?;
-                #[cfg(feature = "sqlcipher")]
-                let sqlite_db = MintSqliteDatabase::new(&sql_db_path, args.password).await?;
+    let mut mint_builder = match settings.database.engine {
+        DatabaseEngine::Sqlite => {
+            let sql_db_path = work_dir.join("cdk-mintd.sqlite");
+            #[cfg(not(feature = "sqlcipher"))]
+            let sqlite_db = MintSqliteDatabase::new(&sql_db_path).await?;
+            #[cfg(feature = "sqlcipher")]
+            let sqlite_db = MintSqliteDatabase::new(&sql_db_path, args.password).await?;
 
-                Arc::new(sqlite_db)
-            }
-            #[cfg(feature = "redb")]
-            DatabaseEngine::Redb => {
-                let redb_path = work_dir.join("cdk-mintd.redb");
-                Arc::new(MintRedbDatabase::new(&redb_path)?)
-            }
-        };
-
-    mint_builder = mint_builder.with_localstore(localstore);
+            let db = Arc::new(sqlite_db);
+            MintBuilder::new()
+                .with_localstore(db.clone())
+                .with_keystore(db)
+        }
+        #[cfg(feature = "redb")]
+        DatabaseEngine::Redb => {
+            let redb_path = work_dir.join("cdk-mintd.redb");
+            let db = Arc::new(MintRedbDatabase::new(&redb_path)?);
+            MintBuilder::new()
+                .with_localstore(db.clone())
+                .with_keystore(db)
+        }
+    };
 
     let mut contact_info: Option<Vec<ContactInfo>> = None;
 

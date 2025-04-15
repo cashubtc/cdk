@@ -35,6 +35,7 @@ impl Mint {
                 .keysets()
                 .await?
                 .into_iter()
+                .filter(|keyset| keyset.info.active && keyset.info.unit != CurrencyUnit::Auth)
                 .map(|key| key.key)
                 .collect::<Vec<_>>(),
         })

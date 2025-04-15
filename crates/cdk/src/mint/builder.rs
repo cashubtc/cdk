@@ -35,8 +35,8 @@ pub struct MintBuilder {
     /// Mint Info
     pub mint_info: MintInfo,
     /// Mint Storage backend
-    localstore: Option<Arc<dyn MintDatabase<database::Error> + Send + Sync>>,
-    ///
+    pub localstore: Option<Arc<dyn MintDatabase<database::Error> + Send + Sync>>,
+    /// Database for the Signatory
     keystore: Option<Arc<dyn MintKeysDatabase<Err = database::Error> + Send + Sync>>,
     /// Mint Storage backend
     #[cfg(feature = "auth")]
@@ -344,7 +344,7 @@ impl MintBuilder {
             signatory.clone()
         } else {
             let seed = self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?;
-            let in_memory_signatory = cdk_signatory::memory::Memory::new(
+            let in_memory_signatory = cdk_signatory::db_signatory::DbSignatory::new(
                 self.keystore.clone().ok_or(anyhow!("keystore not set"))?,
                 None,
                 seed,
