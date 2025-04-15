@@ -3,16 +3,11 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
-use cdk_common::amount::Amount;
 use cdk_common::database;
 use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
-use cdk_common::nuts::nut01::MintKeyPair;
-use cdk_common::nuts::{
-    self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind, MintKeySet, Proof,
-};
-use cdk_common::secret;
+use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
 use tokio::sync::RwLock;
 
 use crate::common::{create_new_keyset, derivation_path_from_unit, init_keysets};
@@ -24,8 +19,9 @@ use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet};
 ///
 /// The private keys and the all key-related data is stored in memory, in the same process, but it
 /// is not accessible from the outside.
-pub struct Memory {
+pub struct DbSignatory {
     keysets: RwLock<HashMap<Id, (MintKeySetInfo, MintKeySet)>>,
+    active_keysets: RwLock<HashMap<CurrencyUnit, Id>>,
     localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
     auth_localstore:
         Option<Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>>,
@@ -34,7 +30,7 @@ pub struct Memory {
     xpriv: Xpriv,
 }
 
-impl Memory {
+impl DbSignatory {
     /// Creates a new MemorySignatory instance
     pub async fn new(
         localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
@@ -108,111 +104,71 @@ impl Memory {
             }
         }
 
-        Ok(Self {
-            keysets: RwLock::new(HashMap::new()),
+        let keys = Self {
+            keysets: Default::default(),
+            active_keysets: Default::default(),
             auth_localstore,
             secp_ctx,
             localstore,
             custom_paths,
             xpriv,
-        })
-    }
-}
+        };
+        keys.reload_keys_from_db().await?;
 
-impl Memory {
-    fn generate_keyset(&self, keyset_info: MintKeySetInfo) -> MintKeySet {
+        Ok(keys)
+    }
+
+    /// Load all the keysets from the database, even if they are not active.
+    ///
+    /// Since the database is owned by this process, we can load all the keysets in memory, and use
+    /// it as the primary source, and the database as the persistence layer.
+    ///
+    /// Any operation performed with keysets, are done through this trait and never to the database
+    /// directly.
+    async fn reload_keys_from_db(&self) -> Result<(), Error> {
+        let mut keysets = self.keysets.write().await;
+        let mut active_keysets = self.active_keysets.write().await;
+        keysets.clear();
+        active_keysets.clear();
+        for info in self.localstore.get_keyset_infos().await? {
+            let id = info.id;
+            let keyset = self.generate_keyset(&info);
+            if info.active {
+                active_keysets.insert(info.unit.clone(), id);
+            }
+            keysets.insert(id, (info, keyset));
+        }
+
+        if let Some(auth_db) = self.auth_localstore.clone() {
+            for info in auth_db.get_keyset_infos().await? {
+                let id = info.id;
+                let keyset = self.generate_keyset(&info);
+                if info.unit != CurrencyUnit::Auth {
+                    continue;
+                }
+                if info.active {
+                    active_keysets.insert(info.unit.clone(), id);
+                }
+                keysets.insert(id, (info, keyset));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn generate_keyset(&self, keyset_info: &MintKeySetInfo) -> MintKeySet {
         MintKeySet::generate_from_xpriv(
             &self.secp_ctx,
             self.xpriv,
             keyset_info.max_order,
-            keyset_info.unit,
-            keyset_info.derivation_path,
+            keyset_info.unit.clone(),
+            keyset_info.derivation_path.clone(),
         )
-    }
-
-    async fn load_and_get_keyset(&self, id: &Id) -> Result<MintKeySetInfo, Error> {
-        let keysets = self.keysets.read().await;
-        let keyset_info = if let Some(info) = self.localstore.get_keyset_info(id).await? {
-            info
-        } else {
-            let auth_localstore = self.auth_localstore.as_ref().ok_or(Error::UnknownKeySet)?;
-            let keyset_info = auth_localstore
-                .get_keyset_info(id)
-                .await?
-                .ok_or(Error::UnknownKeySet)?;
-
-            let active = match auth_localstore.get_active_keyset_id().await {
-                Ok(Some(id)) => id,
-                Ok(None) => {
-                    tracing::error!("No active keyset found");
-                    return Err(Error::InactiveKeyset);
-                }
-                Err(e) => {
-                    tracing::error!("Error retrieving active keyset ID: {:?}", e);
-                    return Err(e.into());
-                }
-            };
-
-            // Check that the keyset is active and should be used to sign
-            if keyset_info.id.ne(&active) {
-                tracing::warn!(
-                    "Keyset {:?} is not active. Active keyset is {:?}",
-                    keyset_info.id,
-                    active
-                );
-                return Err(Error::InactiveKeyset);
-            }
-
-            keyset_info
-        };
-
-        if keysets.contains_key(id) {
-            return Ok(keyset_info);
-        }
-        drop(keysets);
-
-        let id = keyset_info.id;
-        let mut keysets = self.keysets.write().await;
-        keysets.insert(
-            id,
-            (
-                keyset_info.clone(),
-                self.generate_keyset(keyset_info.clone()),
-            ),
-        );
-        Ok(keyset_info)
-    }
-
-    #[tracing::instrument(skip(self))]
-    async fn get_keypair_for_amount(
-        &self,
-        keyset_id: &Id,
-        amount: &Amount,
-    ) -> Result<MintKeyPair, Error> {
-        let keyset_info = self.load_and_get_keyset(keyset_id).await?;
-        let active = self
-            .localstore
-            .get_active_keyset_id(&keyset_info.unit)
-            .await?
-            .ok_or(Error::InactiveKeyset)?;
-
-        // Check that the keyset is active and should be used to sign
-        if keyset_info.id != active {
-            return Err(Error::InactiveKeyset);
-        }
-
-        let keysets = self.keysets.read().await;
-        let keyset = keysets.get(keyset_id).ok_or(Error::UnknownKeySet)?;
-
-        match keyset.1.keys.get(amount) {
-            Some(key_pair) => Ok(key_pair.clone()),
-            None => Err(Error::AmountKey),
-        }
     }
 }
 
 #[async_trait::async_trait]
-impl Signatory for Memory {
+impl Signatory for DbSignatory {
     async fn blind_sign(&self, blinded_message: BlindedMessage) -> Result<BlindSignature, Error> {
         let BlindedMessage {
             amount,
@@ -220,7 +176,14 @@ impl Signatory for Memory {
             keyset_id,
             ..
         } = blinded_message;
-        let key_pair = self.get_keypair_for_amount(&keyset_id, &amount).await?;
+
+        let keysets = self.keysets.read().await;
+        let (info, key) = keysets.get(&keyset_id).ok_or(Error::UnknownKeySet)?;
+        if !info.active {
+            return Err(Error::InactiveKeyset);
+        }
+
+        let key_pair = key.keys.get(&amount).ok_or(Error::UnknownKeySet)?;
         let c = sign_message(&key_pair.secret_key, &blinded_secret)?;
 
         let blinded_signature = BlindSignature::new(
@@ -228,55 +191,29 @@ impl Signatory for Memory {
             c,
             keyset_id,
             &blinded_message.blinded_secret,
-            key_pair.secret_key,
+            key_pair.secret_key.clone(),
         )?;
 
         Ok(blinded_signature)
     }
 
     async fn verify_proof(&self, proof: Proof) -> Result<(), Error> {
-        // Check if secret is a nut10 secret with conditions
-        if let Ok(secret) =
-            <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
-        {
-            // Checks and verifies known secret kinds.
-            // If it is an unknown secret kind it will be treated as a normal secret.
-            // Spending conditions will **not** be check. It is up to the wallet to ensure
-            // only supported secret kinds are used as there is no way for the mint to
-            // enforce only signing supported secrets as they are blinded at
-            // that point.
-            match secret.kind {
-                Kind::P2PK => {
-                    proof.verify_p2pk()?;
-                }
-                Kind::HTLC => {
-                    proof.verify_htlc()?;
-                }
-            }
-        }
-
-        let key_pair = self
-            .get_keypair_for_amount(&proof.keyset_id, &proof.amount)
-            .await?;
-
+        let keysets = self.keysets.read().await;
+        let (_, key) = keysets.get(&proof.keyset_id).ok_or(Error::UnknownKeySet)?;
+        let key_pair = key.keys.get(&proof.amount).ok_or(Error::UnknownKeySet)?;
         verify_message(&key_pair.secret_key, proof.c, proof.secret.as_bytes())?;
 
         Ok(())
     }
 
     async fn auth_keysets(&self) -> Result<Option<Vec<SignatoryKeySet>>, Error> {
-        let db = if let Some(db) = self.auth_localstore.as_ref() {
-            db.clone()
-        } else {
-            return Ok(None);
-        };
-
-        let keyset_id: Id = db
-            .get_active_keyset_id()
-            .await?
+        let keyset_id = self
+            .active_keysets
+            .read()
+            .await
+            .get(&CurrencyUnit::Auth)
+            .cloned()
             .ok_or(Error::NoActiveKeyset)?;
-
-        _ = self.load_and_get_keyset(&keyset_id).await?;
 
         let active_keyset = self
             .keysets
@@ -290,19 +227,12 @@ impl Signatory for Memory {
     }
 
     async fn keysets(&self) -> Result<Vec<SignatoryKeySet>, Error> {
-        for (_, id) in self.localstore.get_active_keysets().await? {
-            let _ = self.load_and_get_keyset(&id).await?;
-        }
-
         Ok(self
             .keysets
             .read()
             .await
             .values()
-            .filter_map(|k| match k.0.active {
-                true => Some(k.into()),
-                false => None,
-            })
+            .map(|k| k.into())
             .collect::<Vec<_>>())
     }
 
@@ -334,7 +264,7 @@ impl Signatory for Memory {
                 .ok_or(Error::UnsupportedUnit)?,
         };
 
-        let (keyset, keyset_info) = create_new_keyset(
+        let (_, keyset_info) = create_new_keyset(
             &self.secp_ctx,
             self.xpriv,
             derivation_path,
@@ -347,8 +277,7 @@ impl Signatory for Memory {
         self.localstore.add_keyset_info(keyset_info.clone()).await?;
         self.localstore.set_active_keyset(args.unit, id).await?;
 
-        let mut keysets = self.keysets.write().await;
-        keysets.insert(id, (keyset_info.clone(), keyset));
+        self.reload_keys_from_db().await?;
 
         Ok(keyset_info)
     }
@@ -360,8 +289,8 @@ mod test {
 
     use bitcoin::key::Secp256k1;
     use bitcoin::Network;
+    use cashu::{Amount, PublicKey};
     use cdk_common::MintKeySet;
-    use nuts::PublicKey;
 
     use super::*;
 
