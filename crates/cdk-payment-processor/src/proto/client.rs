@@ -5,9 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::anyhow;
+use bitcoin::hashes::sha256::Hash;
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk_common::{mint, Amount, CurrencyUnit, MeltOptions, MintQuoteState};
 use futures::{Stream, StreamExt};
@@ -115,18 +116,42 @@ impl MintPayment for PaymentProcessorClient {
     /// Create a new invoice
     async fn create_incoming_payment_request(
         &self,
-        amount: Amount,
         unit: &CurrencyUnit,
-        description: String,
-        unix_expiry: Option<u64>,
+        options: cdk_common::payment::IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         let mut inner = self.inner.clone();
+
+        // Convert from common IncomingPaymentOptions to protobuf IncomingPaymentOptions
+        let proto_options = match options {
+            cdk_common::payment::IncomingPaymentOptions::Bolt11(bolt11_options) => {
+                super::IncomingPaymentOptions {
+                    options: Some(super::incoming_payment_options::Options::Bolt11(
+                        super::Bolt11IncomingPaymentOptions {
+                            description: bolt11_options.description,
+                            amount: bolt11_options.amount.into(),
+                            unix_expiry: bolt11_options.unix_expiry,
+                        },
+                    )),
+                }
+            }
+            cdk_common::payment::IncomingPaymentOptions::Bolt12(bolt12_options) => {
+                super::IncomingPaymentOptions {
+                    options: Some(super::incoming_payment_options::Options::Bolt12(
+                        super::Bolt12IncomingPaymentOptions {
+                            description: bolt12_options.description,
+                            amount: bolt12_options.amount.map(|a| a.into()),
+                            unix_expiry: bolt12_options.unix_expiry,
+                            single_use: bolt12_options.single_use,
+                        },
+                    )),
+                }
+            }
+        };
+
         let response = inner
             .create_payment(Request::new(CreatePaymentRequest {
-                amount: amount.into(),
                 unit: unit.to_string(),
-                description,
-                unix_expiry,
+                options: Some(proto_options),
             }))
             .await
             .map_err(|err| {
@@ -202,7 +227,7 @@ impl MintPayment for PaymentProcessorClient {
     #[instrument(skip_all)]
     async fn wait_any_incoming_payment(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
         self.wait_incoming_payment_stream_is_active
             .store(true, Ordering::SeqCst);
         tracing::debug!("Client waiting for payment");
@@ -224,10 +249,16 @@ impl MintPayment for PaymentProcessorClient {
             .take_until(cancel_fut)
             .filter_map(|item| async move {
                 match item {
-                    Ok(value) => {
-                        tracing::warn!("{}", value.lookup_id);
-                        Some(value.lookup_id)
-                    }
+                    Ok(value) => Some(WaitPaymentResponse {
+                        // TODO: this might no be hash add to proto
+                        payment_identifier: PaymentIdentifier::PaymentHash(
+                            Hash::from_str(&value.lookup_id).unwrap(),
+                        ),
+                        payment_amount: value.payment_amount.into(),
+                        // TODO: Handle this error
+                        unit: CurrencyUnit::from_str(&value.unit).expect("Valid unit"),
+                        payment_id: value.payment_id,
+                    }),
                     Err(e) => {
                         tracing::error!("Error in payment stream: {}", e);
                         None // Skip this item and continue with the stream
@@ -255,7 +286,7 @@ impl MintPayment for PaymentProcessorClient {
 
     async fn check_incoming_payment_status(
         &self,
-        request_lookup_id: &str,
+        request_lookup_id: &PaymentIdentifier,
     ) -> Result<MintQuoteState, Self::Err> {
         let mut inner = self.inner.clone();
         let response = inner

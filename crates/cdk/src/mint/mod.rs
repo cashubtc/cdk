@@ -9,6 +9,8 @@ use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::mint::MeltPaymentRequest;
+use cdk_common::nut05::MeltRequestTrait;
 use futures::StreamExt;
 #[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
@@ -327,6 +329,13 @@ impl Mint {
                 let key = key.clone();
                 join_set.spawn(async move {
             loop {
+
+                // HACK: Think is is a hack
+                // if ln.is_wait_invoice_active() {
+                //     tracing::warn!("Wait invoice is active for: {:?}", key);
+                //     break;
+                // }
+
                 tracing::info!("Restarting wait for: {:?}", key);
                 tokio::select! {
                     _ = shutdown.notified() => {
@@ -337,8 +346,8 @@ impl Mint {
                     result = ln.wait_any_incoming_payment() => {
                         match result {
                             Ok(mut stream) => {
-                                while let Some(request_lookup_id) = stream.next().await {
-                                    if let Err(err) = mint.pay_mint_quote_for_request_id(&request_lookup_id).await {
+                                while let Some(wait_payment_response) = stream.next().await {
+                                    if let Err(err) = mint.pay_mint_quote_for_request_id(wait_payment_response).await {
                                         tracing::warn!("{:?}", err);
                                     }
                                 }
@@ -479,16 +488,20 @@ impl Mint {
     /// In this case the mint can settle the payment internally and no ln payment is
     /// needed
     #[instrument(skip_all)]
-    pub async fn handle_internal_melt_mint(
+    pub async fn handle_internal_melt_mint<R>(
         &self,
         melt_quote: &MeltQuote,
-        melt_request: &MeltBolt11Request<Uuid>,
-    ) -> Result<Option<Amount>, Error> {
-        let mint_quote = match self
-            .localstore
-            .get_mint_quote_by_request(&melt_quote.request)
-            .await
-        {
+        melt_request: &R,
+    ) -> Result<Option<Amount>, Error>
+    where
+        R: MeltRequestTrait<Uuid>,
+    {
+        let request = match &melt_quote.request {
+            MeltPaymentRequest::Bolt11 { bolt11 } => bolt11.to_string(),
+            MeltPaymentRequest::Bolt12 { offer, invoice: _ } => offer.to_string(),
+        };
+
+        let mint_quote = match self.localstore.get_mint_quote_by_request(&request).await {
             Ok(Some(mint_quote)) => mint_quote,
             // Not an internal melt -> mint
             Ok(None) => return Ok(None),
@@ -499,33 +512,38 @@ impl Mint {
         };
 
         // Mint quote has already been settled, proofs should not be burned or held.
-        if mint_quote.state == MintQuoteState::Issued || mint_quote.state == MintQuoteState::Paid {
+        if mint_quote.state() == MintQuoteState::Issued
+            || mint_quote.state() == MintQuoteState::Paid
+        {
             return Err(Error::RequestAlreadyPaid);
         }
 
-        let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
+        let inputs_amount_quote_unit = melt_request.inputs_amount().map_err(|_| {
             tracing::error!("Proof inputs in melt quote overflowed");
             Error::AmountOverflow
         })?;
 
-        let mut mint_quote = mint_quote;
-
-        if mint_quote.amount > inputs_amount_quote_unit {
-            tracing::debug!(
-                "Not enough inuts provided: {} needed {}",
-                inputs_amount_quote_unit,
-                mint_quote.amount
-            );
-            return Err(Error::InsufficientFunds);
+        if let Some(amount) = mint_quote.amount {
+            if amount > inputs_amount_quote_unit {
+                tracing::debug!(
+                    "Not enough inuts provided: {} needed {}",
+                    inputs_amount_quote_unit,
+                    amount
+                );
+                return Err(Error::InsufficientFunds);
+            }
         }
 
-        mint_quote.state = MintQuoteState::Paid;
+        // REVIEW: We increment the mint quote here but there are error cases after this where this should be reverted.
+        self.localstore
+            .increment_mint_quote_amount_paid(
+                &mint_quote.id,
+                melt_quote.amount,
+                format!("{}:{}", mint_quote.id, melt_quote.id),
+            )
+            .await?;
 
-        let amount = melt_quote.amount;
-
-        self.update_mint_quote(mint_quote).await?;
-
-        Ok(Some(amount))
+        Ok(Some(melt_quote.amount))
     }
 
     /// Restore

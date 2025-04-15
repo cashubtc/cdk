@@ -1,8 +1,8 @@
 //! CDK Mint Lightning
-
 use std::pin::Pin;
 
 use async_trait::async_trait;
+use bitcoin::hashes::sha256::Hash;
 use cashu::MeltOptions;
 use futures::Stream;
 use lightning_invoice::ParseOrSemanticError;
@@ -57,6 +57,64 @@ pub enum Error {
     Custom(String),
 }
 
+/// Payment identifier types
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(tag = "type", content = "value")]
+pub enum PaymentIdentifier {
+    /// Label identifier
+    Label(String),
+    /// Offer ID identifier
+    OfferId(String),
+    /// Payment hash identifier
+    PaymentHash(Hash),
+    /// Custom Payment ID
+    CustomId(String),
+}
+
+impl std::fmt::Display for PaymentIdentifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Label(l) => write!(f, "{}", l),
+            Self::OfferId(o) => write!(f, "{}", o),
+            Self::PaymentHash(h) => write!(f, "{}", h),
+            Self::CustomId(c) => write!(f, "{}", c),
+        }
+    }
+}
+
+/// Options for creating a BOLT11 incoming payment request
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct Bolt11IncomingPaymentOptions {
+    /// Optional description for the payment request
+    pub description: Option<String>,
+    /// Amount for the payment request in sats
+    pub amount: Amount,
+    /// Optional expiry time as Unix timestamp in seconds
+    pub unix_expiry: Option<u64>,
+}
+
+/// Options for creating a BOLT12 incoming payment request
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct Bolt12IncomingPaymentOptions {
+    /// Optional description for the payment request
+    pub description: Option<String>,
+    /// Optional amount for the payment request in sats
+    pub amount: Option<Amount>,
+    /// Optional expiry time as Unix timestamp in seconds
+    pub unix_expiry: Option<u64>,
+    /// Whether the offer should be single-use
+    pub single_use: bool,
+}
+
+/// Options for creating an incoming payment request
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum IncomingPaymentOptions {
+    /// BOLT11 payment request options
+    Bolt11(Bolt11IncomingPaymentOptions),
+    /// BOLT12 payment request options
+    Bolt12(Bolt12IncomingPaymentOptions),
+}
+
 /// Mint payment trait
 #[async_trait]
 pub trait MintPayment {
@@ -69,10 +127,8 @@ pub trait MintPayment {
     /// Create a new invoice
     async fn create_incoming_payment_request(
         &self,
-        amount: Amount,
         unit: &CurrencyUnit,
-        description: String,
-        unix_expiry: Option<u64>,
+        options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err>;
 
     /// Get payment quote
@@ -96,7 +152,7 @@ pub trait MintPayment {
     /// Returns a stream of request_lookup_id once invoices are paid
     async fn wait_any_incoming_payment(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err>;
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err>;
 
     /// Is wait invoice active
     fn is_wait_invoice_active(&self) -> bool;
@@ -107,7 +163,7 @@ pub trait MintPayment {
     /// Check the status of an incoming payment
     async fn check_incoming_payment_status(
         &self,
-        request_lookup_id: &str,
+        payment_identifier: &PaymentIdentifier,
     ) -> Result<MintQuoteState, Self::Err>;
 
     /// Check the status of an outgoing payment
@@ -121,7 +177,7 @@ pub trait MintPayment {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateIncomingPaymentResponse {
     /// Id that is used to look up the payment from the ln backend
-    pub request_lookup_id: String,
+    pub request_lookup_id: PaymentIdentifier,
     /// Payment request
     pub request: String,
     /// Unix Expiry of Invoice
@@ -154,6 +210,33 @@ pub struct PaymentQuoteResponse {
     pub fee: Amount,
     /// Status
     pub state: MeltQuoteState,
+    /// Payment Quote Options
+    pub options: Option<PaymentQuoteOptions>,
+}
+
+/// Payment quote options
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PaymentQuoteOptions {
+    /// Bolt12 payment options
+    Bolt12 {
+        /// Bolt12 invoice
+        invoice: String,
+    },
+}
+
+/// Wait any invoice response
+#[derive(Debug, Clone, Hash, Serialize, Deserialize)]
+pub struct WaitPaymentResponse {
+    /// Request look up id
+    /// Id that relates the quote and payment request
+    pub payment_identifier: PaymentIdentifier,
+    /// Payment amount
+    pub payment_amount: Amount,
+    /// Unit
+    pub unit: CurrencyUnit,
+    /// Unique id of payment
+    // Payment hash
+    pub payment_id: String,
 }
 
 /// Ln backend settings

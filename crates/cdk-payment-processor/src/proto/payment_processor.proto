@@ -18,11 +18,34 @@ message SettingsResponse {
   string inner = 1;
 }
 
+message Bolt11IncomingPaymentOptions {
+  optional string description = 1;
+  uint64 amount = 2;
+  optional uint64 unix_expiry = 3;
+}
+
+message Bolt12IncomingPaymentOptions {
+  optional string description = 1;
+  optional uint64 amount = 2;
+  optional uint64 unix_expiry = 3;
+  bool single_use = 4;
+}
+
+enum PaymentMethodType {
+  BOLT11 = 0;
+  BOLT12 = 1;
+}
+
+message IncomingPaymentOptions {
+  oneof options {
+    Bolt11IncomingPaymentOptions bolt11 = 1;
+    Bolt12IncomingPaymentOptions bolt12 = 2;
+  }
+}
+
 message CreatePaymentRequest {
-  uint64 amount = 1;
-  string unit = 2;
-  string description = 3;
-  optional uint64 unix_expiry = 4;
+  string unit = 1;
+  IncomingPaymentOptions options = 2;
 }
 
 message CreatePaymentResponse {
@@ -62,12 +85,22 @@ enum QuoteState {
     ISSUED = 5;
 }
 
+message Bolt12Options {
+  string invoice = 1;
+}
+
+message PaymentQuoteOptions {
+  oneof melt_options {
+    Bolt12Options bolt12 = 1;
+  }
+}
 
 message PaymentQuoteResponse {
   string request_lookup_id = 1;
   uint64 amount = 2;
   uint64 fee = 3;
   QuoteState state = 4;
+  optional PaymentQuoteOptions melt_options = 5;
 }
 
 message MeltQuote {
@@ -83,6 +116,7 @@ message MeltQuote {
     optional uint64 msat_to_pay = 10;
     uint64 created_time = 11;
     optional uint64 paid_time = 12;
+    string payment_method = 13;
 }
 
 message MakePaymentRequest {
@@ -118,4 +152,7 @@ message WaitIncomingPaymentRequest {
 
 message WaitIncomingPaymentResponse {
   string lookup_id = 1;
+  uint64 payment_amount = 2;
+  string unit = 3;
+  string payment_id = 4;
 }

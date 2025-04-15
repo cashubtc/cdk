@@ -413,6 +413,63 @@ impl<Q: Serialize + DeserializeOwned> MeltBolt11Request<Q> {
     }
 }
 
+/// MeltRequest trait
+pub trait MeltRequestTrait<Q>
+where
+    Q: ToString,
+{
+    // async fn verify(&self, service: &MyService) -> Result<Quote, Error>;
+    /// Get id for MeltRequest
+    fn quote_id(&self) -> &Q;
+    /// Get inputs for MeltRequest
+    fn inputs(&self) -> &Proofs;
+    /// Get outputs for MeltRequest
+    fn outputs(&self) -> &Option<Vec<BlindedMessage>>;
+    /// Total [`Amount`] of [`Proofs`]
+    fn inputs_amount(&self) -> Result<Amount, Error>;
+    /// Total [`Amount`] of outputs
+    fn outputs_amount(&self) -> Result<Amount, Error>;
+    /// [`PaymentMethod`] of request
+    fn get_payment_method(&self) -> PaymentMethod;
+}
+
+impl<Q> MeltRequestTrait<Q> for MeltBolt11Request<Q>
+where
+    Q: ToString,
+{
+    fn quote_id(&self) -> &Q {
+        &self.quote
+    }
+
+    fn inputs(&self) -> &Proofs {
+        &self.inputs
+    }
+
+    fn outputs(&self) -> &Option<Vec<BlindedMessage>> {
+        &self.outputs
+    }
+
+    fn inputs_amount(&self) -> Result<Amount, Error> {
+        Amount::try_sum(self.inputs.iter().map(|proof| proof.amount))
+            .map_err(|_| Error::AmountOverflow)
+    }
+
+    fn outputs_amount(&self) -> Result<Amount, Error> {
+        Amount::try_sum(
+            self.outputs
+                .as_ref()
+                .unwrap_or(&vec![])
+                .iter()
+                .map(|proof| proof.amount),
+        )
+        .map_err(|_| Error::AmountOverflow)
+    }
+
+    fn get_payment_method(&self) -> PaymentMethod {
+        PaymentMethod::Bolt11
+    }
+}
+
 /// Melt Method Settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]

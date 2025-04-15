@@ -324,6 +324,14 @@ pub struct Nuts {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg(feature = "auth")]
     pub nut22: Option<BlindAuthSettings>,
+    /// NUT23 Settings
+    #[serde(rename = "23")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut23: Option<nut04::Settings>,
+    /// NUT24 Settings
+    #[serde(rename = "24")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut24: Option<nut05::Settings>,
 }
 
 impl Nuts {

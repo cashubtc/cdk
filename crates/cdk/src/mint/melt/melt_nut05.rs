@@ -1,42 +1,53 @@
 use std::str::FromStr;
 
 use anyhow::bail;
+use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 use cdk_common::nut00::ProofsMethods;
+use cdk_common::nut05::MeltRequestTrait;
 use cdk_common::MeltOptions;
-use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 use uuid::Uuid;
 
-use super::{
-    CurrencyUnit, MeltBolt11Request, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    Mint, PaymentMethod, PublicKey, State,
-};
 use crate::amount::to_unit;
 use crate::cdk_payment::{MakePaymentResponse, MintPayment};
 use crate::mint::verification::Verification;
 use crate::mint::SigFlag;
 use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
-use crate::nuts::MeltQuoteState;
+use crate::nuts::{
+    CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteState, PaymentMethod,
+    PublicKey, State,
+};
 use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
-use crate::{cdk_payment, ensure_cdk, Amount, Error};
+use crate::{cdk_payment, ensure_cdk, Amount, Error, Mint};
 
 impl Mint {
+    /// Check melt request is within current mint settings
     #[instrument(skip_all)]
-    async fn check_melt_request_acceptable(
+    pub async fn check_melt_request_acceptable(
         &self,
         amount: Amount,
         unit: CurrencyUnit,
         method: PaymentMethod,
-        request: String,
+        request: &str,
         options: Option<MeltOptions>,
     ) -> Result<(), Error> {
         let mint_info = self.localstore.get_mint_info().await?;
-        let nut05 = mint_info.nuts.nut05;
 
-        ensure_cdk!(!nut05.disabled, Error::MeltingDisabled);
+        let melt_info = match method {
+            PaymentMethod::Bolt11 => mint_info.nuts.nut05,
+            PaymentMethod::Bolt12 => mint_info
+                .nuts
+                .nut24
+                .ok_or(Error::UnsupportedPaymentMethod)?,
+            PaymentMethod::Custom(_) => {
+                return Err(Error::UnsupportedPaymentMethod);
+            }
+        };
 
-        let settings = nut05
+        ensure_cdk!(!melt_info.disabled, Error::MeltingDisabled);
+
+        let settings = melt_info
             .get_settings(&unit, &method)
             .ok_or(Error::UnsupportedUnit)?;
 
@@ -46,15 +57,17 @@ impl Mint {
                 // Verify there is no corresponding mint quote.
                 // Otherwise a wallet is trying to pay someone internally, but
                 // with a multi-part quote. And that's just not possible.
-                if (self.localstore.get_mint_quote_by_request(&request).await?).is_some() {
+                if (self.localstore.get_mint_quote_by_request(request).await?).is_some() {
                     return Err(Error::InternalMultiPartMeltQuote);
                 }
+
                 // Verify MPP is enabled for unit and method
                 if !nut15
                     .methods
                     .into_iter()
                     .any(|m| m.method == method && m.unit == unit)
                 {
+                    tracing::warn!("Mpp attempted when not supported.");
                     return Err(Error::MppUnitMethodNotSupported(unit, method));
                 }
                 // Assign `amount`
@@ -62,8 +75,19 @@ impl Mint {
                 amount
             }
             Some(MeltOptions::Amountless { amountless: _ }) => {
-                if !settings.amountless {
-                    return Err(Error::AmountlessInvoiceNotSupported(unit, method));
+                match method {
+                    PaymentMethod::Bolt11 => {
+                        if !settings.amountless {
+                            tracing::warn!("Amountless invoice attempted when not supported.");
+                            return Err(Error::AmountlessInvoiceNotSupported(unit, method));
+                        }
+                    }
+                    PaymentMethod::Bolt12 => {
+                        // Amountless is always supported for bolt12
+                    }
+                    PaymentMethod::Custom(_) => {
+                        return Err(Error::UnsupportedPaymentMethod);
+                    }
                 }
 
                 amount
@@ -75,7 +99,7 @@ impl Mint {
         let is_below_min = matches!(settings.min_amount, Some(min) if amount < min);
         match is_above_max || is_below_min {
             true => {
-                tracing::error!(
+                tracing::warn!(
                     "Melt amount out of range: {} is not within {} and {}",
                     amount,
                     settings.min_amount.unwrap_or_default(),
@@ -112,7 +136,7 @@ impl Mint {
             amount_quote_unit,
             unit.clone(),
             PaymentMethod::Bolt11,
-            request.to_string(),
+            &request.to_string(),
             *options,
         )
         .await?;
@@ -153,13 +177,16 @@ impl Mint {
         let melt_ttl = self.localstore.get_quote_ttl().await?.melt_ttl;
 
         let quote = MeltQuote::new(
-            request.to_string(),
+            MeltPaymentRequest::Bolt11 {
+                bolt11: request.clone(),
+            },
             unit.clone(),
             payment_quote.amount,
             payment_quote.fee,
             unix_time() + melt_ttl,
             payment_quote.request_lookup_id.clone(),
             msats_to_pay,
+            PaymentMethod::Bolt11,
         );
 
         tracing::debug!(
@@ -203,7 +230,7 @@ impl Mint {
             fee_reserve: quote.fee_reserve,
             payment_preimage: quote.payment_preimage,
             change,
-            request: Some(quote.request.clone()),
+            request: Some(quote.request.clone().to_string()),
             unit: Some(quote.unit.clone()),
         })
     }
@@ -232,21 +259,44 @@ impl Mint {
 
     /// Check melt has expected fees
     #[instrument(skip_all)]
-    pub async fn check_melt_expected_ln_fees(
+    pub async fn check_melt_expected_ln_fees<R>(
         &self,
         melt_quote: &MeltQuote,
-        melt_request: &MeltBolt11Request<Uuid>,
-    ) -> Result<Option<Amount>, Error> {
-        let invoice = Bolt11Invoice::from_str(&melt_quote.request)?;
-
+        melt_request: &R,
+    ) -> Result<Option<Amount>, Error>
+    where
+        R: MeltRequestTrait<Uuid>,
+    {
         let quote_msats = to_unit(melt_quote.amount, &melt_quote.unit, &CurrencyUnit::Msat)
             .expect("Quote unit is checked above that it can convert to msat");
 
-        let invoice_amount_msats: Amount = match invoice.amount_milli_satoshis() {
-            Some(amt) => amt.into(),
-            None => melt_quote
-                .msat_to_pay
-                .ok_or(Error::InvoiceAmountUndefined)?,
+        let invoice_amount_msats = match &melt_quote.request {
+            MeltPaymentRequest::Bolt11 { bolt11 } => match bolt11.amount_milli_satoshis() {
+                Some(amount) => amount.into(),
+                None => melt_quote
+                    .msat_to_pay
+                    .ok_or(Error::InvoiceAmountUndefined)?,
+            },
+            MeltPaymentRequest::Bolt12 { offer, invoice: _ } => match offer.amount() {
+                Some(amount) => {
+                    let (amount, currency) = match amount {
+                        lightning::offers::offer::Amount::Bitcoin { amount_msats } => {
+                            (amount_msats, CurrencyUnit::Msat)
+                        }
+                        lightning::offers::offer::Amount::Currency {
+                            iso4217_code,
+                            amount,
+                        } => (
+                            amount,
+                            CurrencyUnit::from_str(&String::from_utf8(iso4217_code.to_vec())?)?,
+                        ),
+                    };
+
+                    to_unit(amount, &currency, &CurrencyUnit::Msat)
+                        .map_err(|_err| Error::UnsupportedUnit)?
+                }
+                None => return Err(Error::InvoiceAmountUndefined),
+            },
         };
 
         let partial_amount = match invoice_amount_msats > quote_msats {
@@ -266,7 +316,7 @@ impl Mint {
                 .map_err(|_| Error::UnsupportedUnit)?,
         };
 
-        let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
+        let inputs_amount_quote_unit = melt_request.inputs_amount().map_err(|_| {
             tracing::error!("Proof inputs in melt quote overflowed");
             Error::AmountOverflow
         })?;
@@ -290,13 +340,15 @@ impl Mint {
 
     /// Verify melt request is valid
     #[instrument(skip_all)]
-    pub async fn verify_melt_request(
-        &self,
-        melt_request: &MeltBolt11Request<Uuid>,
-    ) -> Result<MeltQuote, Error> {
+    pub async fn verify_melt_request<R, Q>(&self, melt_request: &R) -> Result<MeltQuote, Error>
+    where
+        Q: ToString,
+        R: MeltRequestTrait<Q>,
+    {
+        let quote_id: Uuid = melt_request.quote_id().to_string().parse().unwrap();
         let state = self
             .localstore
-            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending)
+            .update_melt_quote_state(&quote_id, MeltQuoteState::Pending)
             .await?;
 
         match state {
@@ -308,7 +360,7 @@ impl Mint {
 
         let quote = self
             .localstore
-            .get_melt_quote(melt_request.quote())
+            .get_melt_quote(&quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
 
@@ -369,7 +421,10 @@ impl Mint {
             }
         }
 
-        tracing::debug!("Verified melt quote: {}", melt_request.quote());
+        tracing::debug!(
+            "Verified melt quote: {}",
+            melt_request.quote_id().to_string()
+        );
         Ok(quote)
     }
 
@@ -378,21 +433,25 @@ impl Mint {
     /// made The proofs should be returned to an unspent state and the
     /// quote should be unpaid
     #[instrument(skip_all)]
-    pub async fn process_unpaid_melt(
-        &self,
-        melt_request: &MeltBolt11Request<Uuid>,
-    ) -> Result<(), Error> {
+    pub async fn process_unpaid_melt<R>(&self, melt_request: &R) -> Result<(), Error>
+    where
+        R: MeltRequestTrait<Uuid>,
+    {
         let input_ys = melt_request.inputs().ys()?;
 
         self.localstore
-            .remove_proofs(&input_ys, Some(*melt_request.quote()))
+            .remove_proofs(&input_ys, Some(*melt_request.quote_id()))
             .await?;
 
         self.localstore
-            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Unpaid)
+            .update_melt_quote_state(melt_request.quote_id(), MeltQuoteState::Unpaid)
             .await?;
 
-        if let Ok(Some(quote)) = self.localstore.get_melt_quote(melt_request.quote()).await {
+        if let Ok(Some(quote)) = self
+            .localstore
+            .get_melt_quote(melt_request.quote_id())
+            .await
+        {
             self.pubsub_manager
                 .melt_quote_status(quote, None, None, MeltQuoteState::Unpaid);
         }
@@ -407,10 +466,13 @@ impl Mint {
 
     /// Melt Bolt11
     #[instrument(skip_all)]
-    pub async fn melt_bolt11(
+    pub async fn melt_bolt11<R>(
         &self,
-        melt_request: &MeltBolt11Request<Uuid>,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+        melt_request: &R,
+    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error>
+    where
+        R: MeltRequestTrait<Uuid>,
+    {
         use std::sync::Arc;
         async fn check_payment_state(
             ln: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
@@ -441,7 +503,7 @@ impl Mint {
                 if let Err(err) = self.process_unpaid_melt(melt_request).await {
                     tracing::error!(
                         "Could not reset melt quote {} state: {}",
-                        melt_request.quote(),
+                        melt_request.quote_id(),
                         err
                     );
                 }
@@ -457,7 +519,7 @@ impl Mint {
                     if let Err(err) = self.process_unpaid_melt(melt_request).await {
                         tracing::error!(
                             "Could not reset melt quote {} state: {}",
-                            melt_request.quote(),
+                            melt_request.quote_id(),
                             err
                         );
                     }
@@ -494,7 +556,7 @@ impl Mint {
                 tracing::debug!("partial_amount: {:?}", partial_amount);
                 let ln = match self.ln.get(&PaymentProcessorKey::new(
                     quote.unit.clone(),
-                    PaymentMethod::Bolt11,
+                    quote.payment_method.clone(),
                 )) {
                     Some(ln) => ln,
                     None => {
@@ -559,7 +621,7 @@ impl Mint {
                     MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => {
                         tracing::info!(
                             "Lightning payment for quote {} failed.",
-                            melt_request.quote()
+                            melt_request.quote_id()
                         );
                         if let Err(err) = self.process_unpaid_melt(melt_request).await {
                             tracing::error!("Could not reset melt quote state: {}", err);
@@ -569,7 +631,7 @@ impl Mint {
                     MeltQuoteState::Pending => {
                         tracing::warn!(
                             "LN payment pending, proofs are stuck as pending for quote: {}",
-                            melt_request.quote()
+                            melt_request.quote_id()
                         );
                         return Err(Error::PendingQuote);
                     }
@@ -618,17 +680,20 @@ impl Mint {
     /// The melt request must be verifyed using [`Self::verify_melt_request`]
     /// before calling [`Self::process_melt_request`]
     #[instrument(skip_all)]
-    pub async fn process_melt_request(
+    pub async fn process_melt_request<R>(
         &self,
-        melt_request: &MeltBolt11Request<Uuid>,
+        melt_request: &R,
         payment_preimage: Option<String>,
         total_spent: Amount,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
-        tracing::debug!("Processing melt quote: {}", melt_request.quote());
+    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error>
+    where
+        R: MeltRequestTrait<Uuid>,
+    {
+        tracing::debug!("Processing melt quote: {}", melt_request.quote_id());
 
         let quote = self
             .localstore
-            .get_melt_quote(melt_request.quote())
+            .get_melt_quote(melt_request.quote_id())
             .await?
             .ok_or(Error::UnknownQuote)?;
 
@@ -639,7 +704,7 @@ impl Mint {
             .await?;
 
         self.localstore
-            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Paid)
+            .update_melt_quote_state(melt_request.quote_id(), MeltQuoteState::Paid)
             .await?;
 
         self.pubsub_manager.melt_quote_status(
@@ -656,7 +721,7 @@ impl Mint {
         let mut change = None;
 
         // Check if there is change to return
-        if melt_request.proofs_amount()? > total_spent {
+        if melt_request.inputs_amount()? > total_spent {
             // Check if wallet provided change outputs
             if let Some(outputs) = melt_request.outputs().clone() {
                 let blinded_messages: Vec<PublicKey> =
@@ -678,7 +743,7 @@ impl Mint {
 
                 let fee = self.get_proofs_fee(melt_request.inputs()).await?;
 
-                let change_target = melt_request.proofs_amount()? - total_spent - fee;
+                let change_target = melt_request.inputs_amount()? - total_spent - fee;
 
                 let mut amounts = change_target.split();
                 let mut change_sigs = Vec::with_capacity(amounts.len());
@@ -729,7 +794,7 @@ impl Mint {
             fee_reserve: quote.fee_reserve,
             state: MeltQuoteState::Paid,
             expiry: quote.expiry,
-            request: Some(quote.request.clone()),
+            request: Some(quote.request.to_string()),
             unit: Some(quote.unit.clone()),
         })
     }
