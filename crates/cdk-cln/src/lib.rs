@@ -171,7 +171,7 @@ impl MintPayment for Cln {
                                 Some(_) => {
                                     match fetch_invoice_by_payment_hash(
                                         &mut cln_client,
-                                        &payment_hash,
+                                        payment_hash,
                                     )
                                     .await
                                     {
@@ -193,7 +193,7 @@ impl MintPayment for Cln {
                                     }
                                 }
                                 None => {
-                                 PaymentIdentifier::PaymentHash(payment_hash.clone())
+                                 PaymentIdentifier::PaymentHash(*payment_hash )
                                 },
                             };
 
