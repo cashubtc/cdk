@@ -71,13 +71,13 @@ pub enum PaymentIdentifier {
     CustomId(String),
 }
 
-impl ToString for PaymentIdentifier {
-    fn to_string(&self) -> String {
+impl std::fmt::Display for PaymentIdentifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Label(l) => l.clone(),
-            Self::OfferId(o) => o.to_string(),
-            Self::PaymentHash(h) => h.to_string(),
-            Self::CustomId(c) => c.clone(),
+            Self::Label(l) => write!(f, "{}", l),
+            Self::OfferId(o) => write!(f, "{}", o),
+            Self::PaymentHash(h) => write!(f, "{}", h),
+            Self::CustomId(c) => write!(f, "{}", c),
         }
     }
 }
