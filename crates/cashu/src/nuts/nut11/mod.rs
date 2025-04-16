@@ -928,4 +928,43 @@ mod tests {
 
         assert!(invalid_proof.verify_p2pk().is_err());
     }
+
+    #[test]
+    fn test_duplicate_signatures_counting() {
+        let key_one = SecretKey::generate();
+        let key_two = SecretKey::generate();
+        let key_three = SecretKey::generate();
+
+        let conditions = Conditions::new(
+            Some(unix_time() + 100),
+            Some(vec![key_two.public_key(), key_three.public_key()]),
+            None,
+            Some(2),
+            None,
+        )
+        .unwrap();
+
+        let spend_conditions = SpendingConditions::new_p2pk(key_one.public_key(), Some(conditions));
+
+        let nut_10: Nut10Secret = spend_conditions.into();
+
+        // Create a proof with the secret
+        let mut proof = Proof {
+            amount: Amount::ONE,
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            secret: nut_10.try_into().unwrap(),
+            c: PublicKey::from_str(
+                "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+            )
+            .unwrap(),
+            witness: Some(Witness::P2PKWitness(P2PKWitness { signatures: vec![] })),
+            dleq: None,
+        };
+
+        // Sign the proof twice with the same key
+        proof.sign_p2pk(key_one.clone()).unwrap();
+        proof.sign_p2pk(key_one.clone()).unwrap();
+
+        assert!(proof.verify_p2pk().is_err());
+    }
 }
