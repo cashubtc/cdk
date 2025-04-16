@@ -114,7 +114,6 @@ impl Mint {
         let inputs_keyset_ids: HashSet<Id> = inputs.iter().map(|p| p.keyset_id).collect();
 
         for id in &inputs_keyset_ids {
-            // TODO: Should ping the signatory instead of DB
             match self.get_keyset_info(id).await? {
                 Some(keyset) => {
                     keyset_units.insert(keyset.unit);
