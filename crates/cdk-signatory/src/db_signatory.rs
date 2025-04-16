@@ -130,9 +130,13 @@ impl DbSignatory {
         let mut active_keysets = self.active_keysets.write().await;
         keysets.clear();
         active_keysets.clear();
-        for info in self.localstore.get_keyset_infos().await? {
+
+        let db_active_keysets = self.localstore.get_active_keysets().await?;
+
+        for mut info in self.localstore.get_keyset_infos().await? {
             let id = info.id;
             let keyset = self.generate_keyset(&info);
+            info.active = db_active_keysets.get(&info.unit) == Some(&info.id);
             if info.active {
                 active_keysets.insert(info.unit.clone(), id);
             }
@@ -140,12 +144,13 @@ impl DbSignatory {
         }
 
         if let Some(auth_db) = self.auth_localstore.clone() {
-            for info in auth_db.get_keyset_infos().await? {
+            for mut info in auth_db.get_keyset_infos().await? {
                 let id = info.id;
                 let keyset = self.generate_keyset(&info);
                 if info.unit != CurrencyUnit::Auth {
                     continue;
                 }
+                info.active = db_active_keysets.get(&info.unit) == Some(&info.id);
                 if info.active {
                     active_keysets.insert(info.unit.clone(), id);
                 }

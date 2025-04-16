@@ -3,7 +3,7 @@ use tracing::instrument;
 use super::nut11::{enforce_sig_flag, EnforceSigFlag};
 use super::{Mint, PublicKey, SigFlag, State, SwapRequest, SwapResponse};
 use crate::nuts::nut00::ProofsMethods;
-use crate::Error;
+use crate::{cdk_database, Error};
 
 impl Mint {
     /// Process Swap
@@ -36,9 +36,19 @@ impl Mint {
             promises.push(blinded_signature);
         }
 
+        // TODO: It may be possible to have a race condition, that's why an error when changing the
+        // state can be converted to a TokenAlreadySpent error.
+        //
+        // A concept of transaction/writer for the Database trait would eliminate this problem and
+        // will remove all the "reset" codebase, resulting in fewer lines of code, and less
+        // error-prone database updates
         self.localstore
             .update_proofs_states(&input_ys, State::Spent)
-            .await?;
+            .await
+            .map_err(|e| match e {
+                cdk_database::Error::AttemptUpdateSpentProof => Error::TokenAlreadySpent,
+                e => e.into(),
+            })?;
 
         for pub_key in input_ys {
             self.pubsub_manager.proof_state((pub_key, State::Spent));
