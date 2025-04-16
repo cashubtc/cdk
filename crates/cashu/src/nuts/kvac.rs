@@ -194,7 +194,7 @@ impl From<MintKvacKeySet> for KvacKeySet {
 ///     * keyset ID
 ///     * commitments
 ///     * identifying tag
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KvacCoinMessage {
     /// Keyset ID

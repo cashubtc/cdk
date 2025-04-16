@@ -68,7 +68,7 @@ impl Mint {
         Ok(())
     }
 
-    /// Checks no duplicate inputs where provided
+    /// Checks no duplicate inputs were provided
     pub fn check_no_kvac_duplicate_inputs(
         &self,
         nullifiers_inner: &[GroupElement],
@@ -80,6 +80,23 @@ impl Mint {
             .ne(&nullifiers_inner.len())
         {
             return Err(Error::DuplicateInputs);
+        }
+
+        Ok(())
+    }
+
+    /// Checks no duplicate outputs were provided
+    pub fn check_no_kvac_duplicate_outputs(
+        &self,
+        outputs: &[KvacCoinMessage],
+    ) -> Result<(), Error> {
+        if outputs
+            .iter()
+            .collect::<HashSet<&KvacCoinMessage>>()
+            .len()
+            .ne(&outputs.len())
+        {
+            return Err(Error::DuplicateOutputs);
         }
 
         Ok(())
@@ -199,8 +216,15 @@ impl Mint {
             .collect::<Vec<GroupElement>>();
 
         // Check that there are no duplicate proofs in request
-        let ok = self.check_no_kvac_duplicate_inputs(&nullifiers_inner);
-        if let Err(e) = ok {
+        if let Err(e) = self.check_no_kvac_duplicate_inputs(&nullifiers_inner) {
+            self.localstore
+                .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
+                .await?;
+            return Err(e);
+        }
+
+        // Check that there are no duplicate output commitments in the request
+        if let Err(e) = self.check_no_kvac_duplicate_outputs(&outputs) {
             self.localstore
                 .update_kvac_nullifiers_states(&nullifiers_inner, State::Unspent)
                 .await?;

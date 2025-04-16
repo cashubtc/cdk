@@ -1638,7 +1638,7 @@ INSERT INTO kvac_issued_macs
 VALUES (?, ?, ?, ?, ?, ?, ?);
         "#,
             )
-            .bind(Vec::<u8>::from(&issued.mac.t))
+            .bind(issued.mac.t.to_bytes())
             .bind(issued.mac.V.to_bytes())
             .bind(issued.commitments.0.to_bytes())
             .bind(issued.commitments.1.to_bytes())
@@ -1716,7 +1716,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
             .fetch_all(&mut *transaction)
             .await
             .map_err(|err| {
-                tracing::error!("SQLite could not get the state: {err:?}");
+                tracing::error!("SQLite could not get issued macs: {err:?}");
                 Error::SQLX(err)
             })?
             .into_iter()
