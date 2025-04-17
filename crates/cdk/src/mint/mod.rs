@@ -681,7 +681,7 @@ mod tests {
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
             None,
-            KeySetVersion::Version01,
+            KeySetVersion::Version00,
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
@@ -727,7 +727,7 @@ mod tests {
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
             None,
-            KeySetVersion::Version01,
+            KeySetVersion::Version00,
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);

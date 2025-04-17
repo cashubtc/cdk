@@ -734,33 +734,37 @@ mod tests {
     fn test_token_from_proofs_with_idv2_round_trip() {
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
 
-        let keysets_info: Vec<KeySetInfo> = (0..10).map(|_| {
-            let mut bytes: [u8; 32] = [0u8; 32];
-            bytes[0] = 1u8;
-            rand::thread_rng().fill_bytes(&mut bytes[1..]);
-            let id = Id::from_bytes(&bytes).unwrap();
-            KeySetInfo {
-                id,
-                unit: CurrencyUnit::Sat,
-                active: true,
-                input_fee_ppk: 0,
-                final_expiry: None,
-            }
-        }).collect();
+        let keysets_info: Vec<KeySetInfo> = (0..10)
+            .map(|_| {
+                let mut bytes: [u8; 32] = [0u8; 32];
+                bytes[0] = 1u8;
+                rand::thread_rng().fill_bytes(&mut bytes[1..]);
+                let id = Id::from_bytes(&bytes).unwrap();
+                KeySetInfo {
+                    id,
+                    unit: CurrencyUnit::Sat,
+                    active: true,
+                    input_fee_ppk: 0,
+                    final_expiry: None,
+                }
+            })
+            .collect();
 
         let chosen_keyset_id = keysets_info[0].id;
         // Make up a bunch of fake proofs
-        let proofs = (0..5).map(|_| {
-            let mut c_preimage: [u8; 33] = [0u8; 33];
-            c_preimage[0] = 1u8;
-            rand::thread_rng().fill_bytes(&mut c_preimage[1..]);
-            Proof::new(
-                Amount::from(1),
-                chosen_keyset_id,
-                Secret::generate(),
-                hash_to_curve(&c_preimage).unwrap(),
-            )
-        }).collect();
+        let proofs = (0..5)
+            .map(|_| {
+                let mut c_preimage: [u8; 33] = [0u8; 33];
+                c_preimage[0] = 1u8;
+                rand::thread_rng().fill_bytes(&mut c_preimage[1..]);
+                Proof::new(
+                    Amount::from(1),
+                    chosen_keyset_id,
+                    Secret::generate(),
+                    hash_to_curve(&c_preimage).unwrap(),
+                )
+            })
+            .collect();
 
         let token = Token::new(mint_url.clone(), proofs, None, CurrencyUnit::Sat);
         let token_str = token.to_string();
@@ -772,41 +776,46 @@ mod tests {
         assert!(proofs1.is_ok());
 
         //println!("{:?}", proofs1);
-
     }
 
     #[test]
     fn test_token_proofs_with_unknown_short_keyset_id() {
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
 
-        let keysets_info: Vec<KeySetInfo> = (0..10).map(|_| {
-            let mut bytes: [u8; 32] = [0u8; 32];
-            bytes[0] = 1u8;
-            rand::thread_rng().fill_bytes(&mut bytes[1..]);
-            let id = Id::from_bytes(&bytes).unwrap();
-            KeySetInfo {
-                id,
-                unit: CurrencyUnit::Sat,
-                active: true,
-                input_fee_ppk: 0,
-                final_expiry: None,
-            }
-        }).collect();
+        let keysets_info: Vec<KeySetInfo> = (0..10)
+            .map(|_| {
+                let mut bytes: [u8; 32] = [0u8; 32];
+                bytes[0] = 1u8;
+                rand::thread_rng().fill_bytes(&mut bytes[1..]);
+                let id = Id::from_bytes(&bytes).unwrap();
+                KeySetInfo {
+                    id,
+                    unit: CurrencyUnit::Sat,
+                    active: true,
+                    input_fee_ppk: 0,
+                    final_expiry: None,
+                }
+            })
+            .collect();
 
-        let chosen_keyset_id = Id::from_str("01c352c0b47d42edb764bddf8c53d77b85f057157d92084d9d05e876251ecd84").unwrap();
-        
+        let chosen_keyset_id =
+            Id::from_str("01c352c0b47d42edb764bddf8c53d77b85f057157d92084d9d05e876251ecd84")
+                .unwrap();
+
         // Make up a bunch of fake proofs
-        let proofs = (0..5).map(|_| {
-            let mut c_preimage: [u8; 33] = [0u8; 33];
-            c_preimage[0] = 1u8;
-            rand::thread_rng().fill_bytes(&mut c_preimage[1..]);
-            Proof::new(
-                Amount::from(1),
-                chosen_keyset_id,
-                Secret::generate(),
-                hash_to_curve(&c_preimage).unwrap(),
-            )
-        }).collect();
+        let proofs = (0..5)
+            .map(|_| {
+                let mut c_preimage: [u8; 33] = [0u8; 33];
+                c_preimage[0] = 1u8;
+                rand::thread_rng().fill_bytes(&mut c_preimage[1..]);
+                Proof::new(
+                    Amount::from(1),
+                    chosen_keyset_id,
+                    Secret::generate(),
+                    hash_to_curve(&c_preimage).unwrap(),
+                )
+            })
+            .collect();
 
         let token = Token::new(mint_url.clone(), proofs, None, CurrencyUnit::Sat);
         let token_str = token.to_string();
