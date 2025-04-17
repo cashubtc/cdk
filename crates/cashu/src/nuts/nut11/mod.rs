@@ -60,6 +60,9 @@ pub enum Error {
     /// Witness Signatures not provided
     #[error("Witness signatures not provided")]
     SignaturesNotProvided,
+    /// Duplicate signature from same pubkey
+    #[error("Duplicate signature from the same pubkey detected")]
+    DuplicateSignature,
     /// Parse Url Error
     #[error(transparent)]
     UrlParseError(#[from] url::ParseError),
@@ -128,7 +131,7 @@ impl Proof {
             secret.secret_data.tags.unwrap_or_default().try_into()?;
         let msg: &[u8] = self.secret.as_bytes();
 
-        let mut valid_sigs = 0;
+        let mut verified_pubkeys = HashSet::new();
 
         let witness_signatures = match &self.witness {
             Some(witness) => witness.signatures(),
@@ -148,7 +151,10 @@ impl Proof {
                 let sig = Signature::from_str(signature)?;
 
                 if v.verify(msg, &sig).is_ok() {
-                    valid_sigs += 1;
+                    // If the pubkey is already verified, return a duplicate signature error
+                    if !verified_pubkeys.insert(v.clone()) {
+                        return Err(Error::DuplicateSignature);
+                    }
                 } else {
                     tracing::debug!(
                         "Could not verify signature: {sig} on message: {}",
@@ -157,6 +163,8 @@ impl Proof {
                 }
             }
         }
+
+        let valid_sigs = verified_pubkeys.len() as u64;
 
         if valid_sigs >= spending_conditions.num_sigs.unwrap_or(1) {
             return Ok(());
@@ -185,19 +193,27 @@ impl Proof {
     }
 }
 
-/// Returns count of valid signatures
-pub fn valid_signatures(msg: &[u8], pubkeys: &[PublicKey], signatures: &[Signature]) -> u64 {
-    let mut count = 0;
+/// Returns count of valid signatures (each public key is only counted once)
+/// Returns error if the same pubkey has multiple valid signatures
+pub fn valid_signatures(
+    msg: &[u8],
+    pubkeys: &[PublicKey],
+    signatures: &[Signature],
+) -> Result<u64, Error> {
+    let mut verified_pubkeys = HashSet::new();
 
     for pubkey in pubkeys {
         for signature in signatures {
             if pubkey.verify(msg, signature).is_ok() {
-                count += 1;
+                // If the pubkey is already verified, return a duplicate signature error
+                if !verified_pubkeys.insert(pubkey.clone()) {
+                    return Err(Error::DuplicateSignature);
+                }
             }
         }
     }
 
-    count
+    Ok(verified_pubkeys.len() as u64)
 }
 
 impl BlindedMessage {
@@ -224,7 +240,7 @@ impl BlindedMessage {
 
     /// Verify P2PK conditions on [BlindedMessage]
     pub fn verify_p2pk(&self, pubkeys: &Vec<PublicKey>, required_sigs: u64) -> Result<(), Error> {
-        let mut valid_sigs = 0;
+        let mut verified_pubkeys = HashSet::new();
         if let Some(witness) = &self.witness {
             for signature in witness
                 .signatures()
@@ -236,7 +252,10 @@ impl BlindedMessage {
                     let sig = Signature::from_str(signature)?;
 
                     if v.verify(msg, &sig).is_ok() {
-                        valid_sigs += 1;
+                        // If the pubkey is already verified, return a duplicate signature error
+                        if !verified_pubkeys.insert(v.clone()) {
+                            return Err(Error::DuplicateSignature);
+                        }
                     } else {
                         tracing::debug!(
                             "Could not verify signature: {sig} on message: {}",
@@ -246,6 +265,8 @@ impl BlindedMessage {
                 }
             }
         }
+
+        let valid_sigs = verified_pubkeys.len() as u64;
 
         if valid_sigs.ge(&required_sigs) {
             Ok(())
@@ -931,39 +952,9 @@ mod tests {
 
     #[test]
     fn test_duplicate_signatures_counting() {
-        let key_one = SecretKey::generate();
-        let key_two = SecretKey::generate();
-        let key_three = SecretKey::generate();
-
-        let conditions = Conditions::new(
-            Some(unix_time() + 100),
-            Some(vec![key_two.public_key(), key_three.public_key()]),
-            None,
-            Some(2),
-            None,
-        )
-        .unwrap();
-
-        let spend_conditions = SpendingConditions::new_p2pk(key_one.public_key(), Some(conditions));
-
-        let nut_10: Nut10Secret = spend_conditions.into();
-
-        // Create a proof with the secret
-        let mut proof = Proof {
-            amount: Amount::ONE,
-            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
-            secret: nut_10.try_into().unwrap(),
-            c: PublicKey::from_str(
-                "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
-            )
-            .unwrap(),
-            witness: Some(Witness::P2PKWitness(P2PKWitness { signatures: vec![] })),
-            dleq: None,
-        };
-
-        // Sign the proof twice with the same key
-        proof.sign_p2pk(key_one.clone()).unwrap();
-        proof.sign_p2pk(key_one.clone()).unwrap();
+        let proof: Proof = serde_json::from_str(
+            r#"{"amount":1,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"e434a9efbc5f65d144a620e368c9a6dc12c719d0ebc57e0c74f7341864dc449a\",\"data\":\"02a60c27104cf6023581e790970fc33994a320abe36e7ceed16771b0f8d76f0666\",\"tags\":[[\"pubkeys\",\"039c6a20a6ba354b7bb92eb9750716c1098063006362a1fa2afca7421f262d45c5\",\"0203eb2f7cd72a4f725d3327216365d2df18bb4bbc810522fd973c9af987e9b05b\"],[\"locktime\",\"1744876528\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","witness":"{\"signatures\":[\"3e9ff9e55c9eccb9e5aa0b6c62d54500b40d0eebadb06efcc8e76f3ce38e0923f956ec1bccb9080db96a17c1e98a1b857abfd1a56bb25670037cea3db1f73d81\",\"c5e29c38e60c4db720cf3f78e590358cf1291a06b9eadf77c1108ae84d533520c2707ffda224eb6a63fddaee9abd5ecf8f2cd263d2556950550e3061a5511f65\"]}"}"#,
+        ).unwrap();
 
         assert!(proof.verify_p2pk().is_err());
     }
