@@ -20,11 +20,11 @@ sqlcipher = ["libsqlite3-sys"]
 
 [dependencies]
 async-trait.workspace = true
-cdk-common.workspace = true
+cdk-common = { workspace = true, features = ["test"] }
 bitcoin.workspace = true
 sqlx = { version = "0.7.4", default-features = false, features = [
     "runtime-tokio-rustls",
-    "sqlite", 
+    "sqlite",
     "macros",
     "migrate",
     "uuid",
