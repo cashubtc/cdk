@@ -32,7 +32,9 @@ async fn test_correct_keyset() -> Result<()> {
 
     let mut mint_builder = MintBuilder::new();
     let localstore = Arc::new(database);
-    mint_builder = mint_builder.with_localstore(localstore.clone());
+    mint_builder = mint_builder
+        .with_localstore(localstore.clone())
+        .with_keystore(localstore.clone());
 
     mint_builder = mint_builder
         .add_ln_backend(
@@ -59,14 +61,13 @@ async fn test_correct_keyset() -> Result<()> {
     mint.rotate_next_keyset(CurrencyUnit::Sat, 32, 0).await?;
     mint.rotate_next_keyset(CurrencyUnit::Sat, 32, 0).await?;
 
-    let active = mint.localstore.get_active_keysets().await?;
+    let active = mint.get_active_keysets().await?;
 
     let active = active
         .get(&CurrencyUnit::Sat)
         .expect("There is a keyset for unit");
 
     let keyset_info = mint
-        .localstore
         .get_keyset_info(active)
         .await?
         .expect("There is keyset");
@@ -75,14 +76,13 @@ async fn test_correct_keyset() -> Result<()> {
 
     let mint = mint_builder.build().await?;
 
-    let active = mint.localstore.get_active_keysets().await?;
+    let active = mint.get_active_keysets().await?;
 
     let active = active
         .get(&CurrencyUnit::Sat)
         .expect("There is a keyset for unit");
 
     let keyset_info = mint
-        .localstore
         .get_keyset_info(active)
         .await?
         .expect("There is keyset");

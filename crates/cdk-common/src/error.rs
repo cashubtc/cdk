@@ -92,6 +92,14 @@ pub enum Error {
     #[error("Amountless invoices are not supported for unit `{0}` and method `{1}`")]
     AmountlessInvoiceNotSupported(CurrencyUnit, PaymentMethod),
 
+    /// Internal Error - Send error
+    #[error("Internal send error: {0}")]
+    SendError(String),
+
+    /// Internal Error - Recv error
+    #[error("Internal receive error: {0}")]
+    RecvError(String),
+
     // Mint Errors
     /// Minting is disabled
     #[error("Minting is disabled")]
@@ -317,7 +325,7 @@ pub enum Error {
     NUT22(#[from] crate::nuts::nut22::Error),
     /// Database Error
     #[error(transparent)]
-    Database(#[from] crate::database::Error),
+    Database(crate::database::Error),
     /// Payment Error
     #[error(transparent)]
     #[cfg(feature = "mint")]
@@ -498,6 +506,19 @@ impl From<Error> for ErrorResponse {
                 error: Some(err.to_string()),
                 detail: None,
             },
+        }
+    }
+}
+
+impl From<crate::database::Error> for Error {
+    fn from(db_error: crate::database::Error) -> Self {
+        match db_error {
+            crate::database::Error::InvalidStateTransition(state) => match state {
+                crate::state::Error::Pending => Self::TokenPending,
+                crate::state::Error::AlreadySpent => Self::TokenAlreadySpent,
+                state => Self::Database(crate::database::Error::InvalidStateTransition(state)),
+            },
+            db_error => Self::Database(db_error),
         }
     }
 }
