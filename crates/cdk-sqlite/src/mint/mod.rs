@@ -15,6 +15,7 @@ use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::nut05::QuoteState;
 use cdk_common::secret::Secret;
+use cdk_common::state::check_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
     Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltBolt11Request,
@@ -1311,10 +1312,8 @@ WHERE keyset_id=?;
 
         let states = current_states.values().collect::<HashSet<_>>();
 
-        if states.contains(&State::Spent) {
-            transaction.rollback().await.map_err(Error::from)?;
-            tracing::warn!("Attempted to update state of spent proof");
-            return Err(database::Error::AttemptUpdateSpentProof);
+        for state in states {
+            check_state_transition(*state, proofs_state)?;
         }
 
         // If no proofs are spent, proceed with update
@@ -1843,7 +1842,7 @@ fn sqlite_row_to_melt_request(
 #[cfg(test)]
 mod tests {
     use cdk_common::mint::MintKeySetInfo;
-    use cdk_common::Amount;
+    use cdk_common::{mint_db_test, Amount};
 
     use super::*;
 
@@ -1985,4 +1984,10 @@ mod tests {
         assert_eq!(states[0], Some(State::Spent));
         assert_eq!(states[1], Some(State::Unspent));
     }
+
+    async fn provide_db() -> MintSqliteDatabase {
+        memory::empty().await.unwrap()
+    }
+
+    mint_db_test!(provide_db);
 }
