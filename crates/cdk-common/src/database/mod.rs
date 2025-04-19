@@ -1,7 +1,7 @@
 //! CDK Database
 
 #[cfg(feature = "mint")]
-mod mint;
+pub mod mint;
 #[cfg(feature = "wallet")]
 mod wallet;
 
@@ -15,6 +15,8 @@ pub use mint::{
 };
 #[cfg(feature = "wallet")]
 pub use wallet::Database as WalletDatabase;
+
+use crate::state;
 
 /// CDK_database error
 #[derive(Debug, thiserror::Error)]
@@ -53,4 +55,16 @@ pub enum Error {
     /// Invalid keyset
     #[error("Unknown or invalid keyset")]
     InvalidKeysetId,
+    /// Invalid state transition
+    #[error("Invalid state transition")]
+    InvalidStateTransition(state::Error),
+}
+
+impl From<state::Error> for Error {
+    fn from(state: state::Error) -> Self {
+        match state {
+            state::Error::AlreadySpent => Error::AttemptUpdateSpentProof,
+            _ => Error::InvalidStateTransition(state),
+        }
+    }
 }

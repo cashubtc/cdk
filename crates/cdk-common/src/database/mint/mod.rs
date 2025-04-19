@@ -17,6 +17,9 @@ use crate::nuts::{
 #[cfg(feature = "auth")]
 mod auth;
 
+#[cfg(feature = "test")]
+pub mod test;
+
 #[cfg(feature = "auth")]
 pub use auth::MintAuthDatabase;
 
