@@ -25,9 +25,9 @@ pub fn check_state_transition(current_state: State, new_state: State) -> Result<
             State::Pending | State::Reserved | State::PendingSpent | State::Spent
         ),
         State::Pending => matches!(new_state, State::Unspent | State::Spent),
-        State::Reserved => matches!(new_state, State::Pending | State::Unspent),
-        State::PendingSpent => matches!(new_state, State::Unspent | State::Spent),
-        State::Spent => false,
+        // Any other state shouldn't be updated by the mint, and the wallet does not use this
+        // function
+        _ => false,
     };
 
     if !is_valid_transition {
