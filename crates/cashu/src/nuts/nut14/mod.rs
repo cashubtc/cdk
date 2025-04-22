@@ -94,7 +94,7 @@ impl Proof {
                         .collect::<Result<Vec<Signature>, _>>()?;
 
                     // If secret includes refund keys check that there is a valid signature
-                    if valid_signatures(self.secret.as_bytes(), &refund_key, &signatures).ge(&1) {
+                    if valid_signatures(self.secret.as_bytes(), &refund_key, &signatures)?.ge(&1) {
                         return Ok(());
                     }
                 }
@@ -113,7 +113,7 @@ impl Proof {
                     .map(|s| Signature::from_str(s))
                     .collect::<Result<Vec<Signature>, _>>()?;
 
-                let valid_sigs = valid_signatures(self.secret.as_bytes(), &pubkey, &signatures);
+                let valid_sigs = valid_signatures(self.secret.as_bytes(), &pubkey, &signatures)?;
                 ensure_cdk!(valid_sigs >= req_sigs, Error::IncorrectSecretKind);
             }
         }
