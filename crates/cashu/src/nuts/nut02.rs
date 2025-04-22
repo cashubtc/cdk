@@ -439,7 +439,7 @@ pub struct KeySet {
 }
 
 impl KeySet {
-    /// Verify the keyset is matches keys
+    /// Verify the keyset id matches keys
     pub fn verify_id(&self) -> Result<(), Error> {
         match self.id.version {
             KeySetVersion::Version00 => {
