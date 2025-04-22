@@ -1,7 +1,7 @@
 //! CDK Database
 
 #[cfg(feature = "mint")]
-mod mint;
+pub mod mint;
 #[cfg(feature = "wallet")]
 mod wallet;
 
@@ -53,4 +53,18 @@ pub enum Error {
     /// Invalid keyset
     #[error("Unknown or invalid keyset")]
     InvalidKeysetId,
+    #[cfg(feature = "mint")]
+    /// Invalid state transition
+    #[error("Invalid state transition")]
+    InvalidStateTransition(crate::state::Error),
+}
+
+#[cfg(feature = "mint")]
+impl From<crate::state::Error> for Error {
+    fn from(state: crate::state::Error) -> Self {
+        match state {
+            crate::state::Error::AlreadySpent => Error::AttemptUpdateSpentProof,
+            _ => Error::InvalidStateTransition(state),
+        }
+    }
 }

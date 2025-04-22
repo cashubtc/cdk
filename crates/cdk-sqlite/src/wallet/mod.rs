@@ -1116,7 +1116,7 @@ mod tests {
             .await
             .unwrap();
 
-        db.migrate().await;
+        db.migrate().await.unwrap();
 
         let mint_info = MintInfo::new().description("test");
         let mint_url = MintUrl::from_str("https://mint.xyz").unwrap();

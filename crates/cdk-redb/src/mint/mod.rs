@@ -15,6 +15,7 @@ use cdk_common::database::{
 use cdk_common::dhke::hash_to_curve;
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
+use cdk_common::state::check_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
     BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintInfo, MintQuoteState,
@@ -787,19 +788,17 @@ impl MintProofsDatabase for MintRedbDatabase {
                 for y in ys {
                     let current_state = match table.get(y.to_bytes()).map_err(Error::from)? {
                         Some(state) => {
-                            Some(serde_json::from_str(state.value()).map_err(Error::from)?)
+                            let current_state =
+                                serde_json::from_str(state.value()).map_err(Error::from)?;
+                            check_state_transition(current_state, proofs_state)?;
+                            Some(current_state)
                         }
                         None => None,
                     };
+
                     states.push(current_state);
                 }
             }
-        }
-
-        // Check if any proofs are spent
-        if states.contains(&Some(State::Spent)) {
-            write_txn.abort().map_err(Error::from)?;
-            return Err(database::Error::AttemptUpdateSpentProof);
         }
 
         {
@@ -1007,7 +1006,7 @@ impl MintDatabase<database::Error> for MintRedbDatabase {
 #[cfg(test)]
 mod tests {
     use cdk_common::secret::Secret;
-    use cdk_common::{Amount, SecretKey};
+    use cdk_common::{mint_db_test, Amount, SecretKey};
     use tempfile::tempdir;
 
     use super::*;
@@ -1136,4 +1135,12 @@ mod tests {
         assert_eq!(states[0], Some(State::Spent));
         assert_eq!(states[1], Some(State::Unspent));
     }
+
+    async fn provide_db() -> MintRedbDatabase {
+        let tmp_dir = tempdir().unwrap();
+
+        MintRedbDatabase::new(&tmp_dir.path().join("mint.redb")).unwrap()
+    }
+
+    mint_db_test!(provide_db);
 }
