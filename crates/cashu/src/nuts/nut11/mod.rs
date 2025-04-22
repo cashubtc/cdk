@@ -152,7 +152,7 @@ impl Proof {
 
                 if v.verify(msg, &sig).is_ok() {
                     // If the pubkey is already verified, return a duplicate signature error
-                    if !verified_pubkeys.insert(v.clone()) {
+                    if !verified_pubkeys.insert(*v) {
                         return Err(Error::DuplicateSignature);
                     }
                 } else {
@@ -206,7 +206,7 @@ pub fn valid_signatures(
         for signature in signatures {
             if pubkey.verify(msg, signature).is_ok() {
                 // If the pubkey is already verified, return a duplicate signature error
-                if !verified_pubkeys.insert(pubkey.clone()) {
+                if !verified_pubkeys.insert(*pubkey) {
                     return Err(Error::DuplicateSignature);
                 }
             }
@@ -253,7 +253,7 @@ impl BlindedMessage {
 
                     if v.verify(msg, &sig).is_ok() {
                         // If the pubkey is already verified, return a duplicate signature error
-                        if !verified_pubkeys.insert(v.clone()) {
+                        if !verified_pubkeys.insert(*v) {
                             return Err(Error::DuplicateSignature);
                         }
                     } else {
