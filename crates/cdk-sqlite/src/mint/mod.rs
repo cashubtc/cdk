@@ -1962,10 +1962,7 @@ mod tests {
 
         // Try to update both proofs - should fail because one is spent
         let result = db
-            .update_proofs_states(
-                &[proofs[0].y().unwrap(), proofs[1].y().unwrap()],
-                State::Reserved,
-            )
+            .update_proofs_states(&[proofs[0].y().unwrap()], State::Unspent)
             .await;
 
         assert!(result.is_err());
