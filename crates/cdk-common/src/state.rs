@@ -22,7 +22,7 @@ pub fn check_state_transition(current_state: State, new_state: State) -> Result<
     let is_valid_transition = match current_state {
         State::Unspent => matches!(
             new_state,
-            State::Pending | State::Reserved | State::PendingSpent | State::Spent
+            State::Pending | State::Spent
         ),
         State::Pending => matches!(new_state, State::Unspent | State::Spent),
         // Any other state shouldn't be updated by the mint, and the wallet does not use this
