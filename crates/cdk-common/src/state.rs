@@ -20,10 +20,7 @@ pub enum Error {
 /// Check if the state transition is allowed
 pub fn check_state_transition(current_state: State, new_state: State) -> Result<(), Error> {
     let is_valid_transition = match current_state {
-        State::Unspent => matches!(
-            new_state,
-            State::Pending | State::Spent
-        ),
+        State::Unspent => matches!(new_state, State::Pending | State::Spent),
         State::Pending => matches!(new_state, State::Unspent | State::Spent),
         // Any other state shouldn't be updated by the mint, and the wallet does not use this
         // function

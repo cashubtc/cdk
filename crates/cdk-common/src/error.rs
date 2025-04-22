@@ -502,6 +502,7 @@ impl From<Error> for ErrorResponse {
     }
 }
 
+#[cfg(feature = "mint")]
 impl From<crate::database::Error> for Error {
     fn from(db_error: crate::database::Error) -> Self {
         match db_error {
@@ -512,6 +513,13 @@ impl From<crate::database::Error> for Error {
             },
             db_error => Self::Database(db_error),
         }
+    }
+}
+
+#[cfg(not(feature = "mint"))]
+impl From<crate::database::Error> for Error {
+    fn from(db_error: crate::database::Error) -> Self {
+        Self::Database(db_error)
     }
 }
 

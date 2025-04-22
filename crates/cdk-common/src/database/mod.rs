@@ -16,8 +16,6 @@ pub use mint::{
 #[cfg(feature = "wallet")]
 pub use wallet::Database as WalletDatabase;
 
-use crate::state;
-
 /// CDK_database error
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -55,15 +53,17 @@ pub enum Error {
     /// Invalid keyset
     #[error("Unknown or invalid keyset")]
     InvalidKeysetId,
+    #[cfg(feature = "mint")]
     /// Invalid state transition
     #[error("Invalid state transition")]
-    InvalidStateTransition(state::Error),
+    InvalidStateTransition(crate::state::Error),
 }
 
-impl From<state::Error> for Error {
-    fn from(state: state::Error) -> Self {
+#[cfg(feature = "mint")]
+impl From<crate::state::Error> for Error {
+    fn from(state: crate::state::Error) -> Self {
         match state {
-            state::Error::AlreadySpent => Error::AttemptUpdateSpentProof,
+            crate::state::Error::AlreadySpent => Error::AttemptUpdateSpentProof,
             _ => Error::InvalidStateTransition(state),
         }
     }
