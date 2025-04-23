@@ -371,7 +371,11 @@ impl CdkMint for MintRPCServer {
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
         let urls = info.urls;
-        urls.clone().unwrap_or_default().push(url);
+        let mut urls = urls.clone().unwrap_or_default();
+
+        urls.retain(|u| u != &url);
+
+        let urls = if urls.is_empty() { None } else { Some(urls) };
 
         info.urls = urls;
 
