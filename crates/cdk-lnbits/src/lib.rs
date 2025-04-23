@@ -276,7 +276,10 @@ impl MintPayment for LNbits {
                 Self::Err::Anyhow(anyhow!("Could not create invoice"))
             })?;
 
-        let request: Bolt11Invoice = create_invoice_response.payment_request.parse()?;
+        let request: Bolt11Invoice = create_invoice_response
+            .bolt11()
+            .ok_or_else(|| Self::Err::Anyhow(anyhow!("Missing bolt11 invoice")))?
+            .parse()?;
         let expiry = request.expires_at().map(|t| t.as_secs());
 
         Ok(CreateIncomingPaymentResponse {
