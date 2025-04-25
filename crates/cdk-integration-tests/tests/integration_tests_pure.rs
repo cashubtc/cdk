@@ -509,10 +509,16 @@ pub async fn test_p2pk_swap() {
         }
     }
 
-    for keys in public_keys_to_listen {
-        let statuses = msgs.remove(&keys).expect("some events");
+    for (i, key) in public_keys_to_listen.into_iter().enumerate() {
+        let statuses = msgs.remove(&key).expect("some events");
         // Every input pk receives two state updates, as there are only two state transitions
-        assert_eq!(statuses, vec![State::Pending, State::Spent]);
+        assert_eq!(
+            statuses,
+            vec![State::Pending, State::Spent],
+            "failed to test key {:?} (pos {})",
+            key,
+            i,
+        );
     }
 
     assert!(listener.try_recv().is_err(), "no other event is happening");
