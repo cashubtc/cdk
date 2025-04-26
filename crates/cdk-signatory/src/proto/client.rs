@@ -41,28 +41,6 @@ impl Signatory for SignatoryRpcClient {
             .map_err(|e| Error::Custom(e.to_string()))?
     }
 
-    async fn auth_keysets(&self) -> Result<Option<Vec<SignatoryKeySet>>, Error> {
-        self.client
-            .clone()
-            .auth_keysets(super::Empty {})
-            .await
-            .map(|response| {
-                let response = response.into_inner();
-
-                if response.is_none == Some(true) {
-                    Ok(None)
-                } else {
-                    response
-                        .keysets
-                        .into_iter()
-                        .map(|x| x.try_into())
-                        .collect::<Result<Vec<SignatoryKeySet>, _>>()
-                        .map(Some)
-                }
-            })
-            .map_err(|e| Error::Custom(e.to_string()))?
-    }
-
     async fn keysets(&self) -> Result<Vec<SignatoryKeySet>, Error> {
         self.client
             .clone()

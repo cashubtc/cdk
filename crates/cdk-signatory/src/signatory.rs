@@ -66,9 +66,6 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
 #[async_trait::async_trait]
 /// Signatory trait
 pub trait Signatory {
-    /// Get all the mint keysets for authentication
-    async fn auth_keysets(&self) -> Result<Option<Vec<SignatoryKeySet>>, Error>;
-
     /// Blind sign a message.
     ///
     /// The message can be for a coin or an auth token.

@@ -7,8 +7,6 @@ service Signatory {
 
     rpc VerifyProof(Proof) returns (Empty);
 
-    rpc AuthKeysets(Empty) returns (VecSignatoryKeySet);
-
     rpc Keysets(Empty) returns (VecSignatoryKeySet);
 
     rpc RotateKeyset(RotateKeyArguments) returns (MintKeySetInfo);
