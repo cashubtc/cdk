@@ -3,11 +3,10 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
-use cdk_common::database;
 use cdk_common::dhke::{sign_message, verify_message};
-use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
+use cdk_common::{database, Error};
 use tokio::sync::RwLock;
 
 use crate::common::{create_new_keyset, derivation_path_from_unit, init_keysets};

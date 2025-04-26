@@ -11,19 +11,17 @@ license.workspace = true
 
 
 [features]
-default = ["mint", "wallet", "auth", "grpc"]
+default = ["mint", "wallet", "auth"]
 wallet = ["dep:reqwest", "cdk-common/wallet"]
 mint = ["dep:futures", "dep:reqwest", "cdk-common/mint"]
 auth = ["dep:jsonwebtoken", "cdk-common/auth", "cdk-common/auth"]
 # We do not commit to a MSRV with swagger enabled
 swagger = ["mint", "dep:utoipa", "cdk-common/swagger"]
 bench = []
-grpc = ["cdk-signatory/grpc"]
 http_subscription = []
 
 
 [dependencies]
-cdk-signatory.workspace = true
 cdk-common.workspace = true
 cbor-diag.workspace = true
 async-trait.workspace = true
@@ -52,6 +50,7 @@ tokio = { workspace = true, features = [
     "sync",
 ] }
 getrandom = { version = "0.2" }
+cdk-signatory = { workspace = true, features = ["grpc"] }
 tokio-tungstenite = { workspace = true, features = [
     "rustls",
     "rustls-tls-native-roots",
@@ -60,6 +59,7 @@ tokio-tungstenite = { workspace = true, features = [
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+cdk-signatory = { workspace = true, features = [] }
 getrandom = { version = "0.2", features = ["js"] }
 
 [[example]]
