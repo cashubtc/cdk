@@ -359,7 +359,7 @@ impl MintBuilder {
             )
             .await?;
 
-            Arc::new(cdk_signatory::service::Service::new(Arc::new(
+            Arc::new(cdk_signatory::embedded::Service::new(Arc::new(
                 in_memory_signatory,
             )))
         };
