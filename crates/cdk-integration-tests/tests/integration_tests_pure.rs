@@ -8,6 +8,7 @@ use std::assert_eq;
 use std::collections::{HashMap, HashSet};
 use std::hash::RandomState;
 use std::str::FromStr;
+use std::time::Duration;
 
 use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
@@ -24,6 +25,7 @@ use cdk::wallet::{ReceiveOptions, SendMemo, SendOptions};
 use cdk::Amount;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
+use tokio::time::sleep;
 
 /// Tests the token swap and send functionality:
 /// 1. Alice gets funded with 64 sats
@@ -495,6 +497,8 @@ pub async fn test_p2pk_swap() {
     let attempt_swap = mint_bob.process_swap_request(swap_request).await;
 
     assert!(attempt_swap.is_ok());
+
+    sleep(Duration::from_secs(1)).await;
 
     let mut msgs = HashMap::new();
     while let Ok((sub_id, msg)) = listener.try_recv() {
