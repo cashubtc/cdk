@@ -144,13 +144,15 @@ impl DbSignatory {
         }
 
         if let Some(auth_db) = self.auth_localstore.clone() {
+            let active_auth_keyset = auth_db.get_active_keyset_id().await?;
             for mut info in auth_db.get_keyset_infos().await? {
                 let id = info.id;
                 let keyset = self.generate_keyset(&info);
                 if info.unit != CurrencyUnit::Auth {
                     continue;
                 }
-                info.active = db_active_keysets.get(&info.unit) == Some(&info.id);
+                info.active = active_auth_keyset == Some(info.id);
+                tracing::info!("Loading auth key from {} {:?}", id, info);
                 if info.active {
                     active_keysets.insert(info.unit.clone(), id);
                 }
@@ -209,26 +211,6 @@ impl Signatory for DbSignatory {
         verify_message(&key_pair.secret_key, proof.c, proof.secret.as_bytes())?;
 
         Ok(())
-    }
-
-    async fn auth_keysets(&self) -> Result<Option<Vec<SignatoryKeySet>>, Error> {
-        let keyset_id = self
-            .active_keysets
-            .read()
-            .await
-            .get(&CurrencyUnit::Auth)
-            .cloned()
-            .ok_or(Error::NoActiveKeyset)?;
-
-        let active_keyset = self
-            .keysets
-            .read()
-            .await
-            .get(&keyset_id)
-            .ok_or(Error::UnknownKeySet)?
-            .into();
-
-        Ok(Some(vec![active_keyset]))
     }
 
     async fn keysets(&self) -> Result<Vec<SignatoryKeySet>, Error> {

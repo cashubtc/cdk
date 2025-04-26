@@ -1,5 +1,6 @@
 //! Auth keyset functions
 
+use cdk_common::CurrencyUnit;
 use tracing::instrument;
 
 use crate::mint::{KeysResponse, KeysetResponse};
@@ -12,11 +13,11 @@ impl Mint {
     pub async fn auth_pubkeys(&self) -> Result<KeysResponse, Error> {
         let key = self
             .signatory
-            .auth_keysets()
+            .keysets()
             .await?
-            .ok_or(Error::AuthLocalstoreUndefined)?
-            .pop()
-            .ok_or(Error::AuthLocalstoreUndefined)?;
+            .into_iter()
+            .find(|key| key.info.unit == CurrencyUnit::Auth)
+            .ok_or(Error::NoActiveKeyset)?;
 
         Ok(KeysResponse {
             keysets: vec![key.key],
@@ -26,12 +27,20 @@ impl Mint {
     /// Return a list of auth keysets
     #[instrument(skip_all)]
     pub async fn auth_keysets(&self) -> Result<KeysetResponse, Error> {
-        self.signatory
-            .auth_keysets()
-            .await?
-            .map(|all_keysets| KeysetResponse {
-                keysets: all_keysets.into_iter().map(|k| k.info.into()).collect(),
-            })
-            .ok_or(Error::AuthLocalstoreUndefined)
+        Ok(KeysetResponse {
+            keysets: self
+                .signatory
+                .keysets()
+                .await?
+                .into_iter()
+                .filter_map(|key| {
+                    if key.info.unit == CurrencyUnit::Auth {
+                        Some(key.info.into())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        })
     }
 }
