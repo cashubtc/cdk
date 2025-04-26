@@ -16,7 +16,6 @@ enum Request {
         ),
     ),
     VerifyProof((Proof, oneshot::Sender<Result<(), Error>>)),
-    AuthKeysets(oneshot::Sender<Result<Option<Vec<SignatoryKeySet>>, Error>>),
     Keysets(oneshot::Sender<Result<Vec<SignatoryKeySet>, Error>>),
     RotateKeyset(
         (
@@ -73,12 +72,6 @@ impl Service {
                         tracing::error!("Error sending response: {:?}", err);
                     }
                 }
-                Request::AuthKeysets(response) => {
-                    let output = handler.auth_keysets().await;
-                    if let Err(err) = response.send(output) {
-                        tracing::error!("Error sending response: {:?}", err);
-                    }
-                }
                 Request::Keysets(response) => {
                     let output = handler.keysets().await;
                     if let Err(err) = response.send(output) {
@@ -112,16 +105,6 @@ impl Signatory for Service {
         let (tx, rx) = oneshot::channel();
         self.pipeline
             .send(Request::VerifyProof((proof, tx)))
-            .await
-            .map_err(|e| Error::SendError(e.to_string()))?;
-
-        rx.await.map_err(|e| Error::RecvError(e.to_string()))?
-    }
-
-    async fn auth_keysets(&self) -> Result<Option<Vec<SignatoryKeySet>>, Error> {
-        let (tx, rx) = oneshot::channel();
-        self.pipeline
-            .send(Request::AuthKeysets(tx))
             .await
             .map_err(|e| Error::SendError(e.to_string()))?;
 

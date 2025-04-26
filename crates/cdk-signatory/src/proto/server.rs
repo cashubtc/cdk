@@ -41,28 +41,6 @@ where
         Ok(Response::new(proto::Empty {}))
     }
 
-    async fn auth_keysets(
-        &self,
-        _request: Request<proto::Empty>,
-    ) -> Result<Response<proto::VecSignatoryKeySet>, Status> {
-        let keys_response = self
-            .inner
-            .auth_keysets()
-            .await
-            .map_err(|e| Status::from_error(Box::new(e)))?;
-        Ok(Response::new(if let Some(keys_response) = keys_response {
-            proto::VecSignatoryKeySet {
-                keysets: keys_response.into_iter().map(|k| k.into()).collect(),
-                is_none: Some(false),
-            }
-        } else {
-            proto::VecSignatoryKeySet {
-                keysets: vec![],
-                is_none: Some(true),
-            }
-        }))
-    }
-
     async fn keysets(
         &self,
         _request: Request<proto::Empty>,
