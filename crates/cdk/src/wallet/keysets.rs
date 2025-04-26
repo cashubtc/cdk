@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+
 use tracing::instrument;
 
 use crate::nuts::{Id, KeySetInfo, Keys};
@@ -31,10 +32,14 @@ impl Wallet {
     /// Checks the database for keysets and queries the Mint if
     /// it can't find any.
     #[instrument(skip(self))]
-    pub async fn load_mint_keysets(&self)-> Result<Vec<KeySetInfo>, Error> {
-        match self.localstore.get_mint_keysets(self.mint_url.clone()).await? {
+    pub async fn load_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
+        match self
+            .localstore
+            .get_mint_keysets(self.mint_url.clone())
+            .await?
+        {
             Some(keysets_info) => Ok(keysets_info),
-            None => self.get_mint_keysets().await // Hit the keysets endpoint if we don't have the keysets for this Mint
+            None => self.get_mint_keysets().await, // Hit the keysets endpoint if we don't have the keysets for this Mint
         }
     }
 
