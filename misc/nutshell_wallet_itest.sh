@@ -156,8 +156,8 @@ export CDK_TEST_MINT_URL=${MINT_URL}
 
 # Run the integration test
 echo "Running integration test..."
-cargo test -p cdk-integration-tests --test nutshell_wallet
-cargo test -p cdk-integration-tests --test test_fees
+cargo test -p cdk-integration-tests --test nutshell_wallet -- --test-threads 1
+cargo test -p cdk-integration-tests --test test_fees -- --test-threads 1
 TEST_STATUS=$?
 
 # Exit with the test status
