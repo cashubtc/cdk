@@ -35,7 +35,7 @@ impl Mint {
     #[instrument(skip(self, token))]
     pub async fn verify_blind_auth(&self, token: &BlindAuthToken) -> Result<(), Error> {
         self.signatory
-            .verify_proof(token.auth_proof.clone().into())
+            .verify_proofs(vec![token.auth_proof.clone().into()])
             .await
     }
 
@@ -214,6 +214,10 @@ impl Mint {
         &self,
         blinded_message: &BlindedMessage,
     ) -> Result<BlindSignature, Error> {
-        self.signatory.blind_sign(blinded_message.to_owned()).await
+        self.signatory
+            .blind_sign(vec![blinded_message.to_owned()])
+            .await?
+            .pop()
+            .ok_or(Error::Internal)
     }
 }

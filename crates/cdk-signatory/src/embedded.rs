@@ -3,26 +3,25 @@
 use std::sync::Arc;
 
 use cashu::{BlindSignature, BlindedMessage, Proof};
-use cdk_common::mint::MintKeySetInfo;
 use cdk_common::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet};
+use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
 
 enum Request {
     BlindSign(
         (
-            BlindedMessage,
-            oneshot::Sender<Result<BlindSignature, Error>>,
+            Vec<BlindedMessage>,
+            oneshot::Sender<Result<Vec<BlindSignature>, Error>>,
         ),
     ),
-    VerifyProof((Proof, oneshot::Sender<Result<(), Error>>)),
-    Keysets(oneshot::Sender<Result<Vec<SignatoryKeySet>, Error>>),
+    VerifyProof((Vec<Proof>, oneshot::Sender<Result<(), Error>>)),
+    Keysets(oneshot::Sender<Result<SignatoryKeysets, Error>>),
     RotateKeyset(
         (
             RotateKeyArguments,
-            oneshot::Sender<Result<MintKeySetInfo, Error>>,
+            oneshot::Sender<Result<SignatoryKeySet, Error>>,
         ),
     ),
 }
@@ -69,7 +68,7 @@ impl Service {
                     }
                 }
                 Request::VerifyProof((proof, response)) => {
-                    let output = handler.verify_proof(proof).await;
+                    let output = handler.verify_proofs(proof).await;
                     if let Err(err) = response.send(output) {
                         tracing::error!("Error sending response: {:?}", err);
                     }
@@ -93,27 +92,30 @@ impl Service {
 
 #[async_trait::async_trait]
 impl Signatory for Service {
-    async fn blind_sign(&self, blinded_message: BlindedMessage) -> Result<BlindSignature, Error> {
+    async fn blind_sign(
+        &self,
+        blinded_messages: Vec<BlindedMessage>,
+    ) -> Result<Vec<BlindSignature>, Error> {
         let (tx, rx) = oneshot::channel();
         self.pipeline
-            .send(Request::BlindSign((blinded_message, tx)))
+            .send(Request::BlindSign((blinded_messages, tx)))
             .await
             .map_err(|e| Error::SendError(e.to_string()))?;
 
         rx.await.map_err(|e| Error::RecvError(e.to_string()))?
     }
 
-    async fn verify_proof(&self, proof: Proof) -> Result<(), Error> {
+    async fn verify_proofs(&self, proofs: Vec<Proof>) -> Result<(), Error> {
         let (tx, rx) = oneshot::channel();
         self.pipeline
-            .send(Request::VerifyProof((proof, tx)))
+            .send(Request::VerifyProof((proofs, tx)))
             .await
             .map_err(|e| Error::SendError(e.to_string()))?;
 
         rx.await.map_err(|e| Error::RecvError(e.to_string()))?
     }
 
-    async fn keysets(&self) -> Result<Vec<SignatoryKeySet>, Error> {
+    async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
         let (tx, rx) = oneshot::channel();
         self.pipeline
             .send(Request::Keysets(tx))
@@ -123,7 +125,7 @@ impl Signatory for Service {
         rx.await.map_err(|e| Error::RecvError(e.to_string()))?
     }
 
-    async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<MintKeySetInfo, Error> {
+    async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
         let (tx, rx) = oneshot::channel();
         self.pipeline
             .send(Request::RotateKeyset((args, tx)))

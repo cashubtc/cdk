@@ -1,26 +1,112 @@
 //! Type conversions between Rust types and the generated protobuf types.
 use std::collections::BTreeMap;
-use std::str::FromStr;
 
 use cashu::secret::Secret;
+use cashu::util::hex;
+use cashu::{Amount, PublicKey};
 use cdk_common::{HTLCWitness, P2PKWitness};
 use tonic::Status;
 
 use super::*;
 
-impl From<cashu::Id> for Id {
-    fn from(value: cashu::Id) -> Self {
-        Id {
-            inner: value.to_bytes().to_vec(),
+const INTERNAL_ERROR: &str = "Missing property";
+
+impl From<crate::signatory::SignatoryKeysets> for SignatoryKeysets {
+    fn from(keyset: crate::signatory::SignatoryKeysets) -> Self {
+        Self {
+            pubkey: keyset.pubkey.to_bytes().to_vec(),
+            keysets: keyset
+                .keysets
+                .into_iter()
+                .map(|keyset| keyset.into())
+                .collect(),
         }
     }
 }
 
-impl TryInto<cashu::Id> for Id {
-    type Error = cdk_common::error::Error;
+impl TryInto<crate::signatory::SignatoryKeysets> for SignatoryKeysets {
+    type Error = cdk_common::Error;
 
-    fn try_into(self) -> Result<cashu::Id, Self::Error> {
-        Ok(cashu::Id::from_bytes(&self.inner)?)
+    fn try_into(self) -> Result<crate::signatory::SignatoryKeysets, Self::Error> {
+        Ok(crate::signatory::SignatoryKeysets {
+            pubkey: PublicKey::from_slice(&self.pubkey)?,
+            keysets: self
+                .keysets
+                .into_iter()
+                .map(|keyset| keyset.try_into())
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
+    type Error = cdk_common::Error;
+
+    fn try_into(self) -> Result<crate::signatory::SignatoryKeySet, Self::Error> {
+        Ok(crate::signatory::SignatoryKeySet {
+            id: self.id.parse()?,
+            unit: self
+                .unit
+                .ok_or(cdk_common::Error::Custom(INTERNAL_ERROR.to_owned()))?
+                .try_into()
+                .map_err(|_| cdk_common::Error::Custom("Invalid currency unit".to_owned()))?,
+            active: self.active,
+            input_fee_ppk: self.input_fee_ppk,
+            keys: cdk_common::Keys::new(
+                self.keys
+                    .ok_or(cdk_common::Error::Custom(INTERNAL_ERROR.to_owned()))?
+                    .keys
+                    .into_iter()
+                    .map(|(amount, pk)| PublicKey::from_slice(&pk).map(|pk| (amount.into(), pk)))
+                    .collect::<Result<BTreeMap<Amount, _>, _>>()?,
+            ),
+        })
+    }
+}
+
+impl From<crate::signatory::SignatoryKeySet> for KeySet {
+    fn from(keyset: crate::signatory::SignatoryKeySet) -> Self {
+        Self {
+            id: keyset.id.to_string(),
+            unit: Some(keyset.unit.into()),
+            active: keyset.active,
+            input_fee_ppk: keyset.input_fee_ppk,
+            keys: Some(Keys {
+                keys: keyset
+                    .keys
+                    .iter()
+                    .map(|(key, value)| ((*key).into(), value.to_bytes().to_vec()))
+                    .collect(),
+            }),
+        }
+    }
+}
+
+impl From<cdk_common::Error> for Error {
+    fn from(err: cdk_common::Error) -> Self {
+        let code = match err {
+            cdk_common::Error::AmountError(_) => ErrorCode::AmountOutsideLimit,
+            cdk_common::Error::DuplicateInputs => ErrorCode::DuplicateInputsProvided,
+            cdk_common::Error::DuplicateOutputs => ErrorCode::DuplicateInputsProvided,
+            cdk_common::Error::UnknownKeySet => ErrorCode::KeysetNotKnown,
+            cdk_common::Error::InactiveKeyset => ErrorCode::KeysetInactive,
+            _ => ErrorCode::Unknown,
+        };
+
+        Error {
+            code: code.into(),
+            detail: err.to_string(),
+        }
+    }
+}
+
+impl From<Error> for cdk_common::Error {
+    fn from(val: Error) -> Self {
+        match val.code.try_into().expect("valid code") {
+            ErrorCode::DuplicateInputsProvided => cdk_common::Error::DuplicateInputs,
+            ErrorCode::Unknown => cdk_common::Error::Custom(val.detail),
+            _ => todo!(),
+        }
     }
 }
 
@@ -43,36 +129,6 @@ impl TryInto<cdk_common::BlindSignatureDleq> for BlindSignatureDleq {
     }
 }
 
-impl From<crate::signatory::SignatoryKeySet> for SignatoryKeySet {
-    fn from(value: crate::signatory::SignatoryKeySet) -> Self {
-        SignatoryKeySet {
-            key: Some(value.key.into()),
-            info: Some(value.info.into()),
-        }
-    }
-}
-
-impl TryInto<crate::signatory::SignatoryKeySet> for SignatoryKeySet {
-    type Error = cdk_common::error::Error;
-
-    fn try_into(self) -> Result<crate::signatory::SignatoryKeySet, Self::Error> {
-        Ok(crate::signatory::SignatoryKeySet {
-            key: self
-                .key
-                .ok_or(cdk_common::Error::RecvError(
-                    "Missing property key".to_owned(),
-                ))?
-                .try_into()?,
-            info: self
-                .info
-                .ok_or(cdk_common::Error::RecvError(
-                    "Missing property info".to_owned(),
-                ))?
-                .try_into()?,
-        })
-    }
-}
-
 impl From<cdk_common::BlindSignature> for BlindSignature {
     fn from(value: cdk_common::BlindSignature) -> Self {
         BlindSignature {
@@ -84,15 +140,21 @@ impl From<cdk_common::BlindSignature> for BlindSignature {
     }
 }
 
+impl From<Vec<cdk_common::Proof>> for Proofs {
+    fn from(value: Vec<cdk_common::Proof>) -> Self {
+        Proofs {
+            proof: value.into_iter().map(|x| x.into()).collect(),
+        }
+    }
+}
+
 impl From<cdk_common::Proof> for Proof {
     fn from(value: cdk_common::Proof) -> Self {
         Proof {
             amount: value.amount.into(),
             keyset_id: value.keyset_id.to_string(),
-            secret: value.secret.to_string(),
+            secret: value.secret.to_bytes(),
             c: value.c.to_bytes().to_vec(),
-            witness: value.witness.map(|w| w.into()),
-            dleq: value.dleq.map(|dleq| dleq.into()),
         }
     }
 }
@@ -100,17 +162,23 @@ impl From<cdk_common::Proof> for Proof {
 impl TryInto<cdk_common::Proof> for Proof {
     type Error = Status;
     fn try_into(self) -> Result<cdk_common::Proof, Self::Error> {
+        let secret = if let Ok(str) = String::from_utf8(self.secret.clone()) {
+            str
+        } else {
+            hex::encode(&self.secret)
+        };
+
         Ok(cdk_common::Proof {
             amount: self.amount.into(),
             keyset_id: self
                 .keyset_id
                 .parse()
                 .map_err(|e| Status::from_error(Box::new(e)))?,
-            secret: Secret::from_str(&self.secret).map_err(|e| Status::from_error(Box::new(e)))?,
+            secret: Secret::new(secret),
             c: cdk_common::PublicKey::from_slice(&self.c)
                 .map_err(|e| Status::from_error(Box::new(e)))?,
-            witness: self.witness.map(|w| w.try_into()).transpose()?,
-            dleq: self.dleq.map(|x| x.try_into()).transpose()?,
+            witness: None,
+            dleq: None,
         })
     }
 }
@@ -159,7 +227,6 @@ impl From<cdk_common::BlindedMessage> for BlindedMessage {
             amount: value.amount.into(),
             keyset_id: value.keyset_id.to_string(),
             blinded_secret: value.blinded_secret.to_bytes().to_vec(),
-            witness: value.witness.map(|x| x.into()),
         }
     }
 }
@@ -175,7 +242,7 @@ impl TryInto<cdk_common::BlindedMessage> for BlindedMessage {
                 .map_err(|e| Status::from_error(Box::new(e)))?,
             blinded_secret: cdk_common::PublicKey::from_slice(&self.blinded_secret)
                 .map_err(|e| Status::from_error(Box::new(e)))?,
-            witness: self.witness.map(|x| x.try_into()).transpose()?,
+            witness: None,
         })
     }
 }
@@ -222,13 +289,13 @@ impl TryInto<cdk_common::Witness> for Witness {
     }
 }
 
-impl From<()> for Empty {
+impl From<()> for EmptyRequest {
     fn from(_: ()) -> Self {
-        Empty {}
+        EmptyRequest {}
     }
 }
 
-impl TryInto<()> for Empty {
+impl TryInto<()> for EmptyRequest {
     type Error = cdk_common::error::Error;
 
     fn try_into(self) -> Result<(), Self::Error> {
@@ -280,117 +347,12 @@ impl TryInto<cashu::CurrencyUnit> for CurrencyUnit {
                 CurrencyUnitType::Msat => Ok(cashu::CurrencyUnit::Msat),
                 CurrencyUnitType::Usd => Ok(cashu::CurrencyUnit::Usd),
                 CurrencyUnitType::Eur => Ok(cashu::CurrencyUnit::Eur),
+                CurrencyUnitType::Auth => Ok(cashu::CurrencyUnit::Auth),
             },
             Some(currency_unit::CurrencyUnit::CustomUnit(name)) => {
                 Ok(cashu::CurrencyUnit::Custom(name))
             }
             None => Err(Status::invalid_argument("Currency unit not set")),
-        }
-    }
-}
-
-impl From<&bitcoin::bip32::ChildNumber> for derivation_path::ChildNumber {
-    fn from(value: &bitcoin::bip32::ChildNumber) -> Self {
-        match value {
-            bitcoin::bip32::ChildNumber::Normal { index } => {
-                derivation_path::ChildNumber::Normal(*index)
-            }
-            bitcoin::bip32::ChildNumber::Hardened { index } => {
-                derivation_path::ChildNumber::Hardened(*index)
-            }
-        }
-    }
-}
-
-impl TryInto<bitcoin::bip32::ChildNumber> for derivation_path::ChildNumber {
-    type Error = cdk_common::error::Error;
-
-    fn try_into(self) -> Result<bitcoin::bip32::ChildNumber, Self::Error> {
-        Ok(match self {
-            derivation_path::ChildNumber::Normal(index) => {
-                bitcoin::bip32::ChildNumber::Normal { index }
-            }
-            derivation_path::ChildNumber::Hardened(index) => {
-                bitcoin::bip32::ChildNumber::Hardened { index }
-            }
-        })
-    }
-}
-
-impl From<cdk_common::mint::MintKeySetInfo> for MintKeySetInfo {
-    fn from(value: cdk_common::mint::MintKeySetInfo) -> Self {
-        Self {
-            id: Some(value.id.into()),
-            unit: Some(value.unit.into()),
-            active: value.active,
-            valid_from: value.valid_from,
-            valid_to: value.valid_to,
-            derivation_path: value
-                .derivation_path
-                .into_iter()
-                .map(|x| DerivationPath {
-                    child_number: Some(x.into()),
-                })
-                .collect(),
-            derivation_path_index: value.derivation_path_index,
-            max_order: value.max_order.into(),
-            input_fee_ppk: value.input_fee_ppk,
-        }
-    }
-}
-
-impl TryInto<cdk_common::mint::MintKeySetInfo> for MintKeySetInfo {
-    type Error = cdk_common::error::Error;
-
-    fn try_into(self) -> Result<cdk_common::mint::MintKeySetInfo, Self::Error> {
-        Ok(cdk_common::mint::MintKeySetInfo {
-            id: self
-                .id
-                .ok_or(cdk_common::error::Error::Custom("id not set".to_owned()))?
-                .try_into()?,
-            unit: self
-                .unit
-                .ok_or(cdk_common::error::Error::Custom("unit not set".to_owned()))?
-                .try_into()
-                .map_err(|_| cdk_common::Error::Custom("Invalid unit encoding".to_owned()))?,
-            active: self.active,
-            valid_from: self.valid_from,
-            valid_to: self.valid_to,
-            max_order: self
-                .max_order
-                .try_into()
-                .map_err(|_| cdk_common::Error::Custom("Invalid max_order".to_owned()))?,
-            input_fee_ppk: self.input_fee_ppk,
-            derivation_path: self
-                .derivation_path
-                .into_iter()
-                .map(|derivation_path| {
-                    derivation_path
-                        .child_number
-                        .ok_or(cdk_common::error::Error::Custom(
-                            "child_number not set".to_owned(),
-                        ))?
-                        .try_into()
-                })
-                .collect::<Result<Vec<bitcoin::bip32::ChildNumber>, _>>()?
-                .into(),
-            derivation_path_index: self.derivation_path_index,
-        })
-    }
-}
-
-impl From<cashu::KeySet> for KeySet {
-    fn from(value: cashu::KeySet) -> Self {
-        Self {
-            id: Some(value.id.into()),
-            unit: Some(value.unit.into()),
-            keys: Some(Keys {
-                keys: value
-                    .keys
-                    .iter()
-                    .map(|(amount, pk)| (*(amount.as_ref()), pk.to_bytes().to_vec()))
-                    .collect(),
-            }),
         }
     }
 }
@@ -401,16 +363,16 @@ impl TryInto<cashu::KeySet> for KeySet {
         Ok(cashu::KeySet {
             id: self
                 .id
-                .ok_or(cdk_common::error::Error::Custom("id not set".to_owned()))?
-                .try_into()?,
+                .parse()
+                .map_err(|_| cdk_common::error::Error::Custom("Invalid ID".to_owned()))?,
             unit: self
                 .unit
-                .ok_or(cdk_common::error::Error::Custom("unit not set".to_owned()))?
+                .ok_or(cdk_common::error::Error::Custom(INTERNAL_ERROR.to_owned()))?
                 .try_into()
                 .map_err(|_| cdk_common::Error::Custom("Invalid unit encoding".to_owned()))?,
             keys: cashu::Keys::new(
                 self.keys
-                    .ok_or(cdk_common::error::Error::Custom("keys not set".to_owned()))?
+                    .ok_or(cdk_common::error::Error::Custom(INTERNAL_ERROR.to_owned()))?
                     .keys
                     .into_iter()
                     .map(|(k, v)| cdk_common::PublicKey::from_slice(&v).map(|pk| (k.into(), pk)))
@@ -420,40 +382,17 @@ impl TryInto<cashu::KeySet> for KeySet {
     }
 }
 
-impl From<cashu::KeysResponse> for KeysResponse {
-    fn from(value: cashu::KeysResponse) -> Self {
-        Self {
-            keysets: value.keysets.into_iter().map(|x| x.into()).collect(),
-        }
-    }
-}
-
-impl TryInto<cashu::KeysResponse> for KeysResponse {
-    type Error = cdk_common::error::Error;
-
-    fn try_into(self) -> Result<cashu::KeysResponse, Self::Error> {
-        Ok(cashu::KeysResponse {
-            keysets: self
-                .keysets
-                .into_iter()
-                .map(|x| x.try_into())
-                .collect::<Result<Vec<cashu::KeySet>, _>>()?,
-        })
-    }
-}
-
-impl From<crate::signatory::RotateKeyArguments> for RotateKeyArguments {
+impl From<crate::signatory::RotateKeyArguments> for RotationRequest {
     fn from(value: crate::signatory::RotateKeyArguments) -> Self {
         Self {
             unit: Some(value.unit.into()),
-            derivation_path_index: value.derivation_path_index,
             max_order: value.max_order.into(),
             input_fee_ppk: value.input_fee_ppk,
         }
     }
 }
 
-impl TryInto<crate::signatory::RotateKeyArguments> for RotateKeyArguments {
+impl TryInto<crate::signatory::RotateKeyArguments> for RotationRequest {
     type Error = Status;
 
     fn try_into(self) -> Result<crate::signatory::RotateKeyArguments, Self::Error> {
@@ -462,7 +401,6 @@ impl TryInto<crate::signatory::RotateKeyArguments> for RotateKeyArguments {
                 .unit
                 .ok_or(Status::invalid_argument("unit not set"))?
                 .try_into()?,
-            derivation_path_index: self.derivation_path_index,
             max_order: self
                 .max_order
                 .try_into()
@@ -472,29 +410,27 @@ impl TryInto<crate::signatory::RotateKeyArguments> for RotateKeyArguments {
     }
 }
 
-impl From<cdk_common::KeySetInfo> for KeySetInfo {
+impl From<cdk_common::KeySetInfo> for KeySet {
     fn from(value: cdk_common::KeySetInfo) -> Self {
         Self {
-            id: Some(value.id.into()),
+            id: value.id.into(),
             unit: Some(value.unit.into()),
             active: value.active,
             input_fee_ppk: value.input_fee_ppk,
+            keys: Default::default(),
         }
     }
 }
 
-impl TryInto<cdk_common::KeySetInfo> for KeySetInfo {
+impl TryInto<cdk_common::KeySetInfo> for KeySet {
     type Error = cdk_common::Error;
 
     fn try_into(self) -> Result<cdk_common::KeySetInfo, Self::Error> {
         Ok(cdk_common::KeySetInfo {
-            id: self
-                .id
-                .ok_or(cdk_common::Error::Custom("id not set".to_owned()))?
-                .try_into()?,
+            id: self.id.try_into()?,
             unit: self
                 .unit
-                .ok_or(cdk_common::Error::Custom("unit not set".to_owned()))?
+                .ok_or(cdk_common::Error::Custom(INTERNAL_ERROR.to_owned()))?
                 .try_into()
                 .map_err(|_| cdk_common::Error::Custom("Invalid unit encoding".to_owned()))?,
             active: self.active,

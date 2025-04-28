@@ -164,7 +164,7 @@ impl Mint {
             ln,
             #[cfg(feature = "auth")]
             auth_localstore,
-            keysets: Arc::new(ArcSwap::new(keysets.into())),
+            keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
         })
     }
 
@@ -319,8 +319,8 @@ impl Mint {
             .load()
             .iter()
             .filter_map(|keyset| {
-                if keyset.info.active {
-                    Some((keyset.info.unit.clone(), keyset.info.id))
+                if keyset.active {
+                    Some((keyset.unit.clone(), keyset.id))
                 } else {
                     None
                 }
@@ -334,8 +334,8 @@ impl Mint {
             .load()
             .iter()
             .filter_map(|keyset| {
-                if keyset.info.id == *id {
-                    Some(keyset.info.clone())
+                if keyset.id == *id {
+                    Some(keyset.into())
                 } else {
                     None
                 }
@@ -349,32 +349,43 @@ impl Mint {
         &self,
         blinded_message: &BlindedMessage,
     ) -> Result<BlindSignature, Error> {
-        self.signatory.blind_sign(blinded_message.to_owned()).await
+        self.signatory
+            .blind_sign(vec![blinded_message.to_owned()])
+            .await?
+            .pop()
+            .ok_or(Error::Internal)
     }
 
     /// Verify [`Proof`] meets conditions and is signed
     #[instrument(skip_all)]
-    pub async fn verify_proof(&self, proof: &Proof) -> Result<(), Error> {
-        // Check if secret is a nut10 secret with conditions
-        if let Ok(secret) =
-            <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
-        {
-            // Checks and verifies known secret kinds.
-            // If it is an unknown secret kind it will be treated as a normal secret.
-            // Spending conditions will **not** be check. It is up to the wallet to ensure
-            // only supported secret kinds are used as there is no way for the mint to
-            // enforce only signing supported secrets as they are blinded at
-            // that point.
-            match secret.kind {
-                Kind::P2PK => {
-                    proof.verify_p2pk()?;
+    pub async fn verify_proofs(&self, proofs: &[Proof]) -> Result<(), Error> {
+        proofs
+            .iter()
+            .map(|proof| {
+                // Check if secret is a nut10 secret with conditions
+                if let Ok(secret) =
+                    <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
+                {
+                    // Checks and verifies known secret kinds.
+                    // If it is an unknown secret kind it will be treated as a normal secret.
+                    // Spending conditions will **not** be check. It is up to the wallet to ensure
+                    // only supported secret kinds are used as there is no way for the mint to
+                    // enforce only signing supported secrets as they are blinded at
+                    // that point.
+                    match secret.kind {
+                        Kind::P2PK => {
+                            proof.verify_p2pk()?;
+                        }
+                        Kind::HTLC => {
+                            proof.verify_htlc()?;
+                        }
+                    }
                 }
-                Kind::HTLC => {
-                    proof.verify_htlc()?;
-                }
-            }
-        }
-        self.signatory.verify_proof(proof.to_owned()).await
+                Ok(())
+            })
+            .collect::<Result<Vec<()>, Error>>()?;
+
+        self.signatory.verify_proofs(proofs.to_owned()).await
     }
 
     /// Verify melt request is valid
@@ -642,7 +653,7 @@ mod tests {
         assert!(keysets.keysets.is_empty());
 
         // generate the first keyset and set it to active
-        mint.rotate_keyset(CurrencyUnit::default(), 0, 1, 1)
+        mint.rotate_keyset(CurrencyUnit::default(), 1, 1)
             .await
             .expect("test");
 
@@ -652,7 +663,7 @@ mod tests {
         let first_keyset_id = keysets.keysets[0].id;
 
         // set the first keyset to inactive and generate a new keyset
-        mint.rotate_keyset(CurrencyUnit::default(), 1, 1, 1)
+        mint.rotate_keyset(CurrencyUnit::default(), 1, 1)
             .await
             .expect("test");
 
