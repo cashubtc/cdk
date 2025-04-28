@@ -17,10 +17,10 @@ impl Mint {
         self.keysets
             .load()
             .iter()
-            .find(|keyset| &keyset.key.id == keyset_id)
+            .find(|keyset| &keyset.id == keyset_id)
             .ok_or(Error::UnknownKeySet)
             .map(|key| KeysResponse {
-                keysets: vec![key.key.clone()],
+                keysets: vec![key.into()],
             })
     }
 
@@ -33,8 +33,8 @@ impl Mint {
                 .keysets
                 .load()
                 .iter()
-                .filter(|keyset| keyset.info.active && keyset.info.unit != CurrencyUnit::Auth)
-                .map(|key| key.key.clone())
+                .filter(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
+                .map(|key| key.into())
                 .collect::<Vec<_>>(),
         }
     }
@@ -47,12 +47,12 @@ impl Mint {
                 .keysets
                 .load()
                 .iter()
-                .filter(|k| k.key.unit != CurrencyUnit::Auth)
+                .filter(|k| k.unit != CurrencyUnit::Auth)
                 .map(|k| KeySetInfo {
-                    id: k.key.id,
-                    unit: k.key.unit.clone(),
-                    active: k.info.active,
-                    input_fee_ppk: k.info.input_fee_ppk,
+                    id: k.id,
+                    unit: k.unit.clone(),
+                    active: k.active,
+                    input_fee_ppk: k.input_fee_ppk,
                 })
                 .collect(),
         }
@@ -64,8 +64,8 @@ impl Mint {
         self.keysets
             .load()
             .iter()
-            .find(|key| &key.key.id == id)
-            .map(|x| x.key.clone())
+            .find(|key| &key.id == id)
+            .map(|x| x.into())
     }
 
     /// Add current keyset to inactive keysets
@@ -74,31 +74,6 @@ impl Mint {
     pub async fn rotate_keyset(
         &self,
         unit: CurrencyUnit,
-        derivation_path_index: u32,
-        max_order: u8,
-        input_fee_ppk: u64,
-    ) -> Result<MintKeySetInfo, Error> {
-        let result = self
-            .signatory
-            .rotate_keyset(RotateKeyArguments {
-                unit,
-                derivation_path_index: Some(derivation_path_index),
-                max_order,
-                input_fee_ppk,
-            })
-            .await?;
-
-        let new_keyset = self.signatory.keysets().await?;
-        self.keysets.store(new_keyset.into());
-
-        Ok(result)
-    }
-
-    /// Rotate to next keyset for unit
-    #[instrument(skip(self))]
-    pub async fn rotate_next_keyset(
-        &self,
-        unit: CurrencyUnit,
         max_order: u8,
         input_fee_ppk: u64,
     ) -> Result<MintKeySetInfo, Error> {
@@ -107,14 +82,13 @@ impl Mint {
             .rotate_keyset(RotateKeyArguments {
                 unit,
                 max_order,
-                derivation_path_index: None,
                 input_fee_ppk,
             })
             .await?;
 
         let new_keyset = self.signatory.keysets().await?;
-        self.keysets.store(new_keyset.into());
+        self.keysets.store(new_keyset.keysets.into());
 
-        Ok(result)
+        Ok(result.into())
     }
 }

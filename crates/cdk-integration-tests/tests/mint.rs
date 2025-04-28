@@ -59,12 +59,14 @@ async fn test_correct_keyset() {
     let quote_ttl = QuoteTTL::new(10000, 10000);
     localstore.set_quote_ttl(quote_ttl).await.unwrap();
 
-    mint.rotate_next_keyset(CurrencyUnit::Sat, 32, 0)
-        .await
-        .unwrap();
-    mint.rotate_next_keyset(CurrencyUnit::Sat, 32, 0)
-        .await
-        .unwrap();
+    let active = mint.get_active_keysets();
+
+    let active = active
+        .get(&CurrencyUnit::Sat)
+        .expect("There is a keyset for unit");
+    let old_keyset_info = mint.get_keyset_info(active).expect("There is keyset");
+
+    mint.rotate_keyset(CurrencyUnit::Sat, 32, 0).await.unwrap();
 
     let active = mint.get_active_keysets();
 
@@ -74,8 +76,9 @@ async fn test_correct_keyset() {
 
     let keyset_info = mint.get_keyset_info(active).expect("There is keyset");
 
-    assert_eq!(keyset_info.derivation_path_index, Some(2));
+    assert_ne!(keyset_info.id, old_keyset_info.id);
 
+    mint.rotate_keyset(CurrencyUnit::Sat, 32, 0).await.unwrap();
     let mint = mint_builder.build().await.unwrap();
 
     let active = mint.get_active_keysets();
@@ -84,7 +87,7 @@ async fn test_correct_keyset() {
         .get(&CurrencyUnit::Sat)
         .expect("There is a keyset for unit");
 
-    let keyset_info = mint.get_keyset_info(active).expect("There is keyset");
+    let new_keyset_info = mint.get_keyset_info(active).expect("There is keyset");
 
-    assert!(keyset_info.derivation_path_index == Some(2));
+    assert_ne!(new_keyset_info.id, keyset_info.id);
 }

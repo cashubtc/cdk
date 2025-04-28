@@ -513,7 +513,7 @@ async fn test_swap_overpay_underpay_fee() {
         .expect("Failed to create test mint");
 
     mint_bob
-        .rotate_keyset(CurrencyUnit::Sat, 1, 32, 1)
+        .rotate_keyset(CurrencyUnit::Sat, 32, 1)
         .await
         .unwrap();
 
@@ -575,7 +575,7 @@ async fn test_mint_enforce_fee() {
         .expect("Failed to create test mint");
 
     mint_bob
-        .rotate_keyset(CurrencyUnit::Sat, 1, 32, 1)
+        .rotate_keyset(CurrencyUnit::Sat, 32, 1)
         .await
         .unwrap();
 
@@ -659,7 +659,7 @@ async fn test_mint_change_with_fee_melt() {
         .expect("Failed to create test mint");
 
     mint_bob
-        .rotate_keyset(CurrencyUnit::Sat, 1, 32, 1)
+        .rotate_keyset(CurrencyUnit::Sat, 32, 1)
         .await
         .unwrap();
 

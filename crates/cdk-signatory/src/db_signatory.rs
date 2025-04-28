@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
+use cashu::PublicKey;
 use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
@@ -10,7 +11,7 @@ use cdk_common::{database, Error};
 use tokio::sync::RwLock;
 
 use crate::common::{create_new_keyset, derivation_path_from_unit, init_keysets};
-use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet};
+use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
 
 /// In-memory Signatory
 ///
@@ -27,6 +28,7 @@ pub struct DbSignatory {
     secp_ctx: Secp256k1<secp256k1::All>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     xpriv: Xpriv,
+    xpub: PublicKey,
 }
 
 impl DbSignatory {
@@ -107,9 +109,10 @@ impl DbSignatory {
             keysets: Default::default(),
             active_keysets: Default::default(),
             auth_localstore,
-            secp_ctx,
             localstore,
             custom_paths,
+            xpub: xpriv.to_keypair(&secp_ctx).public_key().into(),
+            secp_ctx,
             xpriv,
         };
         keys.reload_keys_from_db().await?;
@@ -175,66 +178,74 @@ impl DbSignatory {
 
 #[async_trait::async_trait]
 impl Signatory for DbSignatory {
-    async fn blind_sign(&self, blinded_message: BlindedMessage) -> Result<BlindSignature, Error> {
-        let BlindedMessage {
-            amount,
-            blinded_secret,
-            keyset_id,
-            ..
-        } = blinded_message;
-
+    async fn blind_sign(
+        &self,
+        blinded_messages: Vec<BlindedMessage>,
+    ) -> Result<Vec<BlindSignature>, Error> {
         let keysets = self.keysets.read().await;
-        let (info, key) = keysets.get(&keyset_id).ok_or(Error::UnknownKeySet)?;
-        if !info.active {
-            return Err(Error::InactiveKeyset);
-        }
 
-        let key_pair = key.keys.get(&amount).ok_or(Error::UnknownKeySet)?;
-        let c = sign_message(&key_pair.secret_key, &blinded_secret)?;
+        blinded_messages
+            .into_iter()
+            .map(|blinded_message| {
+                let BlindedMessage {
+                    amount,
+                    blinded_secret,
+                    keyset_id,
+                    ..
+                } = blinded_message;
 
-        let blinded_signature = BlindSignature::new(
-            amount,
-            c,
-            keyset_id,
-            &blinded_message.blinded_secret,
-            key_pair.secret_key.clone(),
-        )?;
+                let (info, key) = keysets.get(&keyset_id).ok_or(Error::UnknownKeySet)?;
+                if !info.active {
+                    return Err(Error::InactiveKeyset);
+                }
 
-        Ok(blinded_signature)
+                let key_pair = key.keys.get(&amount).ok_or(Error::UnknownKeySet)?;
+                let c = sign_message(&key_pair.secret_key, &blinded_secret)?;
+
+                let blinded_signature = BlindSignature::new(
+                    amount,
+                    c,
+                    keyset_id,
+                    &blinded_message.blinded_secret,
+                    key_pair.secret_key.clone(),
+                )?;
+
+                Ok(blinded_signature)
+            })
+            .collect::<Result<Vec<_>, _>>()
     }
 
-    async fn verify_proof(&self, proof: Proof) -> Result<(), Error> {
+    async fn verify_proofs(&self, proofs: Vec<Proof>) -> Result<(), Error> {
         let keysets = self.keysets.read().await;
-        let (_, key) = keysets.get(&proof.keyset_id).ok_or(Error::UnknownKeySet)?;
-        let key_pair = key.keys.get(&proof.amount).ok_or(Error::UnknownKeySet)?;
-        verify_message(&key_pair.secret_key, proof.c, proof.secret.as_bytes())?;
 
-        Ok(())
+        proofs.into_iter().try_for_each(|proof| {
+            let (_, key) = keysets.get(&proof.keyset_id).ok_or(Error::UnknownKeySet)?;
+            let key_pair = key.keys.get(&proof.amount).ok_or(Error::UnknownKeySet)?;
+            verify_message(&key_pair.secret_key, proof.c, proof.secret.as_bytes())?;
+            Ok(())
+        })
     }
 
-    async fn keysets(&self) -> Result<Vec<SignatoryKeySet>, Error> {
-        Ok(self
-            .keysets
-            .read()
-            .await
-            .values()
-            .map(|k| k.into())
-            .collect::<Vec<_>>())
+    async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
+        Ok(SignatoryKeysets {
+            pubkey: self.xpub,
+            keysets: self
+                .keysets
+                .read()
+                .await
+                .values()
+                .map(|k| k.into())
+                .collect::<Vec<_>>(),
+        })
     }
 
     /// Add current keyset to inactive keysets
     /// Generate new keyset
     #[tracing::instrument(skip(self))]
-    async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<MintKeySetInfo, Error> {
-        let path_index = if let Some(path_index) = args.derivation_path_index {
-            path_index
-        } else {
-            let current_keyset_id = self
-                .localstore
-                .get_active_keyset_id(&args.unit)
-                .await?
-                .ok_or(Error::UnsupportedUnit)?;
-
+    async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
+        let path_index = if let Some(current_keyset_id) =
+            self.localstore.get_active_keyset_id(&args.unit).await?
+        {
             let keyset_info = self
                 .localstore
                 .get_keyset_info(&current_keyset_id)
@@ -242,6 +253,8 @@ impl Signatory for DbSignatory {
                 .ok_or(Error::UnknownKeySet)?;
 
             keyset_info.derivation_path_index.unwrap_or(1) + 1
+        } else {
+            1
         };
 
         let derivation_path = match self.custom_paths.get(&args.unit) {
@@ -250,7 +263,7 @@ impl Signatory for DbSignatory {
                 .ok_or(Error::UnsupportedUnit)?,
         };
 
-        let (_, keyset_info) = create_new_keyset(
+        let (keyset, info) = create_new_keyset(
             &self.secp_ctx,
             self.xpriv,
             derivation_path,
@@ -259,13 +272,13 @@ impl Signatory for DbSignatory {
             args.max_order,
             args.input_fee_ppk,
         );
-        let id = keyset_info.id;
-        self.localstore.add_keyset_info(keyset_info.clone()).await?;
+        let id = info.id;
+        self.localstore.add_keyset_info(info.clone()).await?;
         self.localstore.set_active_keyset(args.unit, id).await?;
 
         self.reload_keys_from_db().await?;
 
-        Ok(keyset_info)
+        Ok((&(info, keyset)).into())
     }
 }
 
