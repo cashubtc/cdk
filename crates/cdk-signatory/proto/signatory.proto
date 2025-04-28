@@ -2,57 +2,85 @@ syntax = "proto3";
 
 package signatory;
 
+/// TODO: research about the stream, to notify when RotateKeyset is triggered.
 service Signatory {
-    rpc BlindSign(BlindedMessage) returns (BlindSignature);
+  rpc BlindSign (BlindedMessages) returns (BlindSignResponse);
 
-    rpc VerifyProof(Proof) returns (Empty);
+  rpc VerifyProofs (Proofs) returns (BooleanResponse);
 
-    rpc Keysets(Empty) returns (VecSignatoryKeySet);
+  rpc Keysets (EmptyRequest) returns (KeysResponse);
 
-    rpc RotateKeyset(RotateKeyArguments) returns (MintKeySetInfo);
+  rpc RotateKeyset (RotationRequest) returns (KeyRotationResponse);
 }
 
-message Empty {}
-
-message VecSignatoryKeySet {
-    repeated SignatoryKeySet keysets = 1;
-
-    optional bool is_none = 2;
+message BlindSignResponse {
+    oneof result {
+        BlindSignatures sigs  = 1;
+        Error error = 2;
+    }
 }
 
-message SignatoryKeySet {
-    KeySet key = 1;
-    MintKeySetInfo info = 2;
+message BlindedMessages {
+    repeated BlindedMessage blinded_messages = 1;
+}
+
+// Represents a blinded message
+message BlindedMessage {
+    uint64 amount = 1;
+    string keyset_id = 2;
+    bytes blinded_secret = 3;
+}
+
+message BooleanResponse {
+    oneof result {
+        bool success  = 1;
+        Error error = 2;
+    }
+}
+
+message KeyRotationResponse {
+    oneof result {
+        KeySet keyset  = 1;
+        Error error = 2;
+    }
+}
+
+message KeysResponse {
+    oneof result {
+        SignatoryKeysets keysets = 1;
+        Error error = 2;
+    }
+}
+
+message SignatoryKeysets {
+    bytes pubkey = 1;
+    repeated KeySet keysets = 2;
 }
 
 message KeySet {
-    Id id = 1;
+    string id = 1;
     CurrencyUnit unit = 2;
-    Keys keys = 3;
+    bool active = 3;
+    uint64 input_fee_ppk = 4;
+    Keys keys = 5;
 }
 
 message Keys {
     map<uint64, bytes> keys = 1;
 }
 
-
-message RotateKeyArguments {
-    CurrencyUnit unit = 1;
-    optional uint32 derivation_path_index = 2;
-    uint32 max_order = 3;
-    uint64 input_fee_ppk = 4;
-}
-
-message CustomDerivationPath {
-    CurrencyUnit unit = 1;
-    repeated DerivationPath derivation_path = 2;
+message RotationRequest {
+    CurrencyUnit unit  = 1;
+    uint64 input_fee_ppk  = 2;
+    uint64 max_order = 3;
 }
 
 enum CurrencyUnitType {
-  SAT = 0;
-  MSAT = 1;
-  USD = 2;
-  EUR = 3;
+    SAT = 0;
+    MSAT = 1;
+    USD = 2;
+    EUR = 3;
+    AUTH = 4;
 }
 
 message CurrencyUnit {
@@ -62,19 +90,31 @@ message CurrencyUnit {
     }
 }
 
+message Proofs {
+    repeated Proof proof = 1;
+}
+
 message Proof {
     uint64 amount = 1;
     string keyset_id = 2;
-    string secret = 3;
+    bytes secret = 3;
     bytes C = 4;
-    optional Witness witness = 5;
-    optional ProofDLEQ dleq = 6;
 }
 
 message ProofDLEQ {
     bytes e = 1;
     bytes s = 2;
     bytes r = 3;
+}
+
+message SigningResponse {
+    oneof result {
+        BlindSignatures blind_signatures = 1;
+        Error error = 2;
+    }
+}
+message BlindSignatures {
+    repeated BlindSignature blind_signatures = 1;
 }
 
 message BlindSignature {
@@ -87,13 +127,6 @@ message BlindSignature {
 message BlindSignatureDLEQ {
     bytes e = 1;
     bytes s = 2;
-}
-
-message KeySetInfo {
-    Id id = 1;
-    CurrencyUnit unit = 2;
-    bool active = 3;
-    uint64 input_fee_ppk = 4;
 }
 
 // Witness type
@@ -114,42 +147,27 @@ message P2PKWitness {
 message HTLCWitness {
     // Preimage
     string preimage = 1;
-
     // List of signatures
     repeated string signatures = 2;
 }
 
-message BlindedMessage {
-    uint64 amount = 1;
-    string keyset_id = 2;
-    bytes blinded_secret = 3;
-    optional Witness witness = 4; // This field is optional by default in proto3
+enum ErrorCode {
+    UNKNOWN = 0;
+    AMOUNT_OUTSIDE_LIMIT = 1;
+    DUPLICATE_INPUTS_PROVIDED = 2;
+    DUPLICATE_OUTPUTS_PROVIDED = 3;
+    KEYSET_NOT_KNOWN = 4;
+    KEYSET_INACTIVE = 5;
+    MINTING_DISABLED = 6;
+    COULD_NOT_ROTATE_KEYSET = 7;
+    INVALID_PROOF = 8;
+    INVALID_BLIND_MESSAGE = 9;
+    UNIT_NOT_SUPPORTED = 10;
 }
 
-message KeysResponse {
-    repeated KeySet keysets = 1;
+message Error {
+  ErrorCode code = 1;
+  string detail = 2;
 }
 
-
-message Id {
-    bytes inner = 1;
-}
-
-message DerivationPath {
-    oneof child_number {
-        uint32 normal = 1;
-        uint32 hardened = 2;
-    }
-}
-
-message MintKeySetInfo {
-    Id id = 1;
-    CurrencyUnit unit = 2;
-    bool active = 3;
-    uint64 valid_from = 4;
-    optional uint64 valid_to = 5;
-    repeated DerivationPath derivation_path = 6;
-    optional uint32 derivation_path_index = 7;
-    uint32 max_order = 8;
-    uint64 input_fee_ppk = 9;
-}
+message EmptyRequest {}

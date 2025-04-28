@@ -6,7 +6,9 @@
 //! There is an in memory implementation, when the keys are stored in memory, in the same process,
 //! but it is isolated from the rest of the application, and they communicate through a channel with
 //! the defined API.
-use cashu::{BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, MintKeySet, Proof};
+use cashu::{
+    BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet, Proof, PublicKey,
+};
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
 
@@ -36,10 +38,21 @@ impl From<CurrencyUnit> for KeysetIdentifier {
 /// This struct is used to pass the arguments to the rotate_keyset function
 #[derive(Debug, Clone)]
 pub struct RotateKeyArguments {
+    /// Unit
     pub unit: CurrencyUnit,
-    pub derivation_path_index: Option<u32>,
+    /// Max order
     pub max_order: u8,
+    /// Input fee
     pub input_fee_ppk: u64,
+}
+
+#[derive(Debug, Clone)]
+/// Signatory keysets
+pub struct SignatoryKeysets {
+    /// The public key
+    pub pubkey: PublicKey,
+    /// The list of keysets
+    pub keysets: Vec<SignatoryKeySet>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,17 +61,59 @@ pub struct RotateKeyArguments {
 /// This struct is used to represent a keyset and its info, pretty much all the information but the
 /// private key, that will never leave the signatory
 pub struct SignatoryKeySet {
-    /// KeySet
-    pub key: KeySet,
-    /// MintSetInfo
-    pub info: MintKeySetInfo,
+    pub id: Id,
+    pub unit: CurrencyUnit,
+    pub active: bool,
+    pub keys: Keys,
+    pub input_fee_ppk: u64,
+}
+
+impl From<&SignatoryKeySet> for KeySet {
+    fn from(val: &SignatoryKeySet) -> Self {
+        val.to_owned().into()
+    }
+}
+
+impl From<SignatoryKeySet> for KeySet {
+    fn from(val: SignatoryKeySet) -> Self {
+        KeySet {
+            id: val.id,
+            unit: val.unit,
+            keys: val.keys,
+        }
+    }
+}
+
+impl From<&SignatoryKeySet> for MintKeySetInfo {
+    fn from(val: &SignatoryKeySet) -> Self {
+        val.to_owned().into()
+    }
+}
+
+impl From<SignatoryKeySet> for MintKeySetInfo {
+    fn from(val: SignatoryKeySet) -> Self {
+        MintKeySetInfo {
+            id: val.id,
+            unit: val.unit,
+            active: val.active,
+            input_fee_ppk: val.input_fee_ppk,
+            derivation_path: Default::default(),
+            derivation_path_index: Default::default(),
+            max_order: 0,
+            valid_to: None,
+            valid_from: 0,
+        }
+    }
 }
 
 impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
     fn from((info, key): &(MintKeySetInfo, MintKeySet)) -> Self {
         Self {
-            key: key.clone().into(),
-            info: info.clone(),
+            id: info.id,
+            unit: key.unit.clone(),
+            active: info.active,
+            input_fee_ppk: info.input_fee_ppk,
+            keys: key.keys.clone().into(),
         }
     }
 }
@@ -69,15 +124,18 @@ pub trait Signatory {
     /// Blind sign a message.
     ///
     /// The message can be for a coin or an auth token.
-    async fn blind_sign(&self, blinded_message: BlindedMessage) -> Result<BlindSignature, Error>;
+    async fn blind_sign(
+        &self,
+        blinded_messages: Vec<BlindedMessage>,
+    ) -> Result<Vec<BlindSignature>, Error>;
 
     /// Verify [`Proof`] meets conditions and is signed
-    async fn verify_proof(&self, proofs: Proof) -> Result<(), Error>;
+    async fn verify_proofs(&self, proofs: Vec<Proof>) -> Result<(), Error>;
 
     /// Retrieve the list of all mint keysets
-    async fn keysets(&self) -> Result<Vec<SignatoryKeySet>, Error>;
+    async fn keysets(&self) -> Result<SignatoryKeysets, Error>;
 
     /// Add current keyset to inactive keysets
     /// Generate new keyset
-    async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<MintKeySetInfo, Error>;
+    async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error>;
 }

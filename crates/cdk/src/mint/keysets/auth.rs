@@ -1,6 +1,6 @@
 //! Auth keyset functions
 
-use cdk_common::CurrencyUnit;
+use cdk_common::{CurrencyUnit, KeySetInfo};
 use tracing::instrument;
 
 use crate::mint::{KeysResponse, KeysetResponse};
@@ -15,12 +15,12 @@ impl Mint {
             .keysets
             .load()
             .iter()
-            .find(|key| key.info.unit == CurrencyUnit::Auth)
+            .find(|key| key.unit == CurrencyUnit::Auth)
             .ok_or(Error::NoActiveKeyset)?
             .clone();
 
         Ok(KeysResponse {
-            keysets: vec![key.key],
+            keysets: vec![key.into()],
         })
     }
 
@@ -33,8 +33,13 @@ impl Mint {
                 .load()
                 .iter()
                 .filter_map(|key| {
-                    if key.info.unit == CurrencyUnit::Auth {
-                        Some(key.info.clone().into())
+                    if key.unit == CurrencyUnit::Auth {
+                        Some(KeySetInfo {
+                            id: key.id,
+                            unit: key.unit.clone(),
+                            active: key.active,
+                            input_fee_ppk: key.input_fee_ppk,
+                        })
                     } else {
                         None
                     }
