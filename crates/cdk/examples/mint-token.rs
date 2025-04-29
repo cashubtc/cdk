@@ -28,7 +28,7 @@ async fn main() -> Result<(), Error> {
     let seed = random::<[u8; 32]>();
 
     // Define the mint URL and currency unit
-    let mint_url = "https://testnut.cashu.space";
+    let mint_url = "https://fake.thesimplekid.dev";
     let unit = CurrencyUnit::Sat;
     let amount = Amount::from(10);
 
