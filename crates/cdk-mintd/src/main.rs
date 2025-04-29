@@ -201,6 +201,7 @@ async fn main() -> anyhow::Result<()> {
                     CurrencyUnit::Sat,
                     PaymentMethod::Bolt11,
                     mint_melt_limits,
+                    None,
                     cln.clone(),
                 )
                 .await?;
@@ -210,6 +211,7 @@ async fn main() -> anyhow::Result<()> {
                     CurrencyUnit::Sat,
                     PaymentMethod::Bolt12,
                     mint_melt_limits,
+                    None,
                     cln.clone(),
                 )
                 .await?;
@@ -234,6 +236,7 @@ async fn main() -> anyhow::Result<()> {
                     CurrencyUnit::Sat,
                     PaymentMethod::Bolt11,
                     mint_melt_limits,
+                    None,
                     Arc::new(lnbits),
                 )
                 .await?;
@@ -259,6 +262,7 @@ async fn main() -> anyhow::Result<()> {
                     CurrencyUnit::Sat,
                     PaymentMethod::Bolt11,
                     mint_melt_limits,
+                    None,
                     Arc::new(lnd),
                 )
                 .await?;
@@ -288,6 +292,7 @@ async fn main() -> anyhow::Result<()> {
                         unit.clone(),
                         PaymentMethod::Bolt11,
                         mint_melt_limits,
+                        None,
                         fake.clone(),
                     )
                     .await?;
@@ -297,6 +302,7 @@ async fn main() -> anyhow::Result<()> {
                         unit.clone(),
                         PaymentMethod::Bolt12,
                         mint_melt_limits,
+                        None,
                         fake.clone(),
                     )
                     .await?;
@@ -341,6 +347,7 @@ async fn main() -> anyhow::Result<()> {
                         unit.clone(),
                         PaymentMethod::Bolt11,
                         mint_melt_limits,
+                        None,
                         Arc::new(processor),
                     )
                     .await?;

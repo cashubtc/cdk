@@ -68,5 +68,5 @@ pub use nut18::{
     PaymentRequest, PaymentRequestBuilder, PaymentRequestPayload, Transport, TransportBuilder,
     TransportType,
 };
-pub use nut23::{MintQuoteBolt12Request, MintQuoteBolt12Response};
+pub use nut23::{MintQuoteBolt12Request, MintQuoteBolt12Response, Settings as NUT23Settings};
 pub use nut24::{MeltBolt12Request, MeltQuoteBolt12Request};

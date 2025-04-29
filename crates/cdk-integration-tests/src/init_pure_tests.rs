@@ -288,6 +288,7 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
             CurrencyUnit::Sat,
             PaymentMethod::Bolt11,
             MintMeltLimits::new(1, 10_000),
+            None,
             Arc::new(ln_fake_backend),
         )
         .await?;

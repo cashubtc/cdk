@@ -115,11 +115,12 @@ impl Mint {
         amount: Option<Amount>,
         unit: &CurrencyUnit,
         payment_method: &PaymentMethod,
+        expiry: Option<u64>,
     ) -> Result<(), Error> {
         let mint_info = self.localstore.get_mint_info().await?;
 
         // Get the appropriate settings based on payment method
-        let (settings, disabled) = match payment_method {
+        let (disabled, min_amount, max_amount) = match payment_method {
             PaymentMethod::Bolt11 => {
                 let nut04 = &mint_info.nuts.nut04;
                 ensure_cdk!(!nut04.disabled, Error::MintingDisabled);
@@ -128,7 +129,7 @@ impl Mint {
                     .get_settings(unit, payment_method)
                     .ok_or(Error::UnsupportedUnit)?;
 
-                (settings, nut04.disabled)
+                (nut04.disabled, settings.min_amount, settings.max_amount)
             }
             PaymentMethod::Bolt12 => {
                 let nut23 = &mint_info.nuts.nut23.ok_or_else(|| {
@@ -142,7 +143,13 @@ impl Mint {
                     .get_settings(unit, payment_method)
                     .ok_or(Error::UnsupportedUnit)?;
 
-                (settings, nut23.disabled)
+                if let (Some(expiry), Some(max_expiry)) = (expiry, settings.max_expiry) {
+                    if expiry > max_expiry {
+                        return Err(Error::InvalidExpiry);
+                    }
+                }
+
+                (nut23.disabled, settings.min_amount, settings.max_amount)
             }
             _ => return Err(Error::UnsupportedPaymentMethod),
         };
@@ -151,19 +158,15 @@ impl Mint {
 
         // Check amount limits if an amount is provided
         if let Some(amount) = amount {
-            let is_above_max = settings
-                .max_amount
-                .is_some_and(|max_amount| amount > max_amount);
-            let is_below_min = settings
-                .min_amount
-                .is_some_and(|min_amount| amount < min_amount);
+            let is_above_max = max_amount.is_some_and(|max_amount| amount > max_amount);
+            let is_below_min = min_amount.is_some_and(|min_amount| amount < min_amount);
             let is_out_of_range = is_above_max || is_below_min;
 
             ensure_cdk!(
                 !is_out_of_range,
                 Error::AmountOutofLimitRange(
-                    settings.min_amount.unwrap_or_default(),
-                    settings.max_amount.unwrap_or_default(),
+                    min_amount.unwrap_or_default(),
+                    max_amount.unwrap_or_default(),
                     amount,
                 )
             );
@@ -209,6 +212,7 @@ impl Mint {
                     Some(bolt11_request.amount),
                     &unit,
                     &payment_method,
+                    None,
                 )
                 .await?;
 
@@ -252,13 +256,13 @@ impl Mint {
 
                 println!("{}", single_use);
 
-                self.check_mint_request_acceptable(amount, &unit, &payment_method)
+                let expiry = bolt12_request.expiry;
+                self.check_mint_request_acceptable(amount, &unit, &payment_method, expiry)
                     .await?;
 
                 let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
 
                 let description = bolt12_request.description;
-                let expiry = bolt12_request.expiry;
 
                 let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
                 let quote_expiry = match expiry {

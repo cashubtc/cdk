@@ -103,6 +103,9 @@ pub enum Error {
     /// Duplicate Payment id
     #[error("Payment id seen for mint")]
     DuplicatePaymentId,
+    /// Expiry invalid
+    #[error("Invalid expiry")]
+    InvalidExpiry,
 
     // Mint Errors
     /// Minting is disabled

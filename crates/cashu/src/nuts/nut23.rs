@@ -8,7 +8,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::nut00::CurrencyUnit;
-use super::PublicKey;
+use super::{PaymentMethod, PublicKey};
 use crate::Amount;
 
 /// NUT23 Error
@@ -100,5 +100,71 @@ impl From<MintQuoteBolt12Response<Uuid>> for MintQuoteBolt12Response<String> {
             amount: value.amount,
             unit: value.unit,
         }
+    }
+}
+
+/// Mint Method Settings
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct MintBolt12MethodSettings {
+    /// Payment Method e.g. bolt11
+    pub method: PaymentMethod,
+    /// Currency Unit e.g. sat
+    pub unit: CurrencyUnit,
+    /// Min Amount
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_amount: Option<Amount>,
+    /// Max Amount
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_amount: Option<Amount>,
+    /// Quote Description
+    #[serde(default)]
+    pub description: bool,
+    /// Max Expiry
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_expiry: Option<u64>,
+}
+
+/// Mint Settings
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = nut04::Settings))]
+pub struct Settings {
+    /// Methods to mint
+    pub methods: Vec<MintBolt12MethodSettings>,
+    /// Minting disabled
+    pub disabled: bool,
+}
+
+impl Settings {
+    /// Create new [`Settings`]
+    pub fn new(methods: Vec<MintBolt12MethodSettings>, disabled: bool) -> Self {
+        Self { methods, disabled }
+    }
+
+    /// Get [`MintMethodSettings`] for unit method pair
+    pub fn get_settings(
+        &self,
+        unit: &CurrencyUnit,
+        method: &PaymentMethod,
+    ) -> Option<MintBolt12MethodSettings> {
+        for method_settings in self.methods.iter() {
+            if method_settings.method.eq(method) && method_settings.unit.eq(unit) {
+                return Some(method_settings.clone());
+            }
+        }
+
+        None
+    }
+
+    /// Remove [`MintMethodSettings`] for unit method pair
+    pub fn remove_settings(
+        &mut self,
+        unit: &CurrencyUnit,
+        method: &PaymentMethod,
+    ) -> Option<MintBolt12MethodSettings> {
+        self.methods
+            .iter()
+            .position(|settings| &settings.method == method && &settings.unit == unit)
+            .map(|index| self.methods.remove(index))
     }
 }
