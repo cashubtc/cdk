@@ -98,7 +98,7 @@ pub enum IdBytes {
     /// Bytes for v1
     V1([u8; 7]),
     /// Bytes for v2
-    V2([u8; 31]),
+    V2([u8; 32]),
 }
 
 impl IdBytes {
@@ -126,8 +126,8 @@ pub struct Id {
 impl Id {
     const STRLEN_V1: usize = 14;
     const BYTELEN_V1: usize = 7;
-    const STRLEN_V2: usize = 62;
-    const BYTELEN_V2: usize = 31;
+    const STRLEN_V2: usize = 64;
+    const BYTELEN_V2: usize = 32;
 
     /// [`Id`] to bytes
     pub fn to_bytes(&self) -> Vec<u8> {
