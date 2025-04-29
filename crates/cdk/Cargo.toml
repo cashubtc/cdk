@@ -11,7 +11,7 @@ license.workspace = true
 
 
 [features]
-default = ["mint", "wallet", "auth"]
+default = ["wallet", "auth"]
 wallet = ["dep:reqwest", "cdk-common/wallet"]
 mint = ["dep:futures", "dep:reqwest", "cdk-common/mint"]
 auth = ["dep:jsonwebtoken", "cdk-common/auth", "cdk-common/auth"]
@@ -90,7 +90,7 @@ required-features = ["wallet", "auth"]
 
 [dev-dependencies]
 rand.workspace = true
-cdk-sqlite.workspace = true
+cdk-sqlite = { workspace = true, features = ["mint"] }
 bip39.workspace = true
 tracing-subscriber.workspace = true
 criterion = "0.5.1"
