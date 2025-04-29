@@ -42,32 +42,49 @@ pub struct SupportedMethods {
     /// Unit
     pub unit: CurrencyUnit,
     /// Command
-    pub commands: Vec<String>,
+    pub commands: Vec<WsCommand>,
 }
 
 impl SupportedMethods {
     /// Create [`SupportedMethods`]
-    pub fn new(method: PaymentMethod, unit: CurrencyUnit) -> Self {
+    pub fn new(method: PaymentMethod, unit: CurrencyUnit, commands: Vec<WsCommand>) -> Self {
         Self {
             method,
             unit,
-            commands: Vec::new(),
+            commands,
+        }
+    }
+
+    /// Create [`SupportedMethods`] for Bolt11 with all supported commands
+    pub fn default_bolt11(unit: CurrencyUnit) -> Self {
+        let commands = vec![
+            WsCommand::Bolt11MintQuote,
+            WsCommand::Bolt11MeltQuote,
+            WsCommand::ProofState,
+        ];
+
+        Self {
+            method: PaymentMethod::Bolt11,
+            unit,
+            commands,
         }
     }
 }
 
-impl Default for SupportedMethods {
-    fn default() -> Self {
-        SupportedMethods {
-            method: PaymentMethod::Bolt11,
-            unit: CurrencyUnit::Sat,
-            commands: vec![
-                "bolt11_mint_quote".to_owned(),
-                "bolt11_melt_quote".to_owned(),
-                "proof_state".to_owned(),
-            ],
-        }
-    }
+/// WebSocket commands supported by the Cashu mint
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum WsCommand {
+    /// Command to request a Lightning invoice for minting tokens
+    #[serde(rename = "bolt11_mint_quote")]
+    Bolt11MintQuote,
+    /// Command to request a Lightning payment for melting tokens
+    #[serde(rename = "bolt11_melt_quote")]
+    Bolt11MeltQuote,
+    /// Command to check the state of a proof
+    #[serde(rename = "proof_state")]
+    ProofState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
