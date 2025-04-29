@@ -293,7 +293,10 @@ impl TryFrom<String> for Id {
     type Error = Error;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        ensure_cdk!(s.len() == Self::STRLEN_V1 + 2 || s.len() == Self::STRLEN_V2 + 2, Error::Length);
+        ensure_cdk!(
+            s.len() == Self::STRLEN_V1 + 2 || s.len() == Self::STRLEN_V2 + 2,
+            Error::Length
+        );
 
         let version: KeySetVersion = KeySetVersion::from_byte(&hex::decode(&s[..2])?[0])?;
         let id = match version {
@@ -746,17 +749,23 @@ mod test {
         let expiry: u64 = 2059210353; // +10 years from now
 
         let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
-        let id_from_str = Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035").unwrap();
+        let id_from_str =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
         let id = Id::v2_from_data(&keys, &unit, Some(expiry));
         assert_eq!(id, id_from_str);
 
         let keys: Keys = serde_json::from_str(KEYSET).unwrap();
-        let id_from_str = Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9e0").unwrap();
+        let id_from_str =
+            Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9e0")
+                .unwrap();
         let id = Id::v2_from_data(&keys, &unit, Some(expiry));
         assert_eq!(id, id_from_str);
 
         let id = Id::v2_from_data(&keys, &unit, None);
-        let id_from_str = Id::from_str("016d72f27c8d22808ad66d1959b3dab83af17e2510db7ffd57d2365d9eec3ced75").unwrap();
+        let id_from_str =
+            Id::from_str("016d72f27c8d22808ad66d1959b3dab83af17e2510db7ffd57d2365d9eec3ced75")
+                .unwrap();
         assert_eq!(id, id_from_str);
     }
 
@@ -881,8 +890,9 @@ mod test {
     #[test]
     fn test_short_keyset_id_from_id() {
         let idv1 = Id::from_str("009a1f293253e41e").unwrap();
-        let idv2 = Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
-            .unwrap();
+        let idv2 =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
 
         let short_id_1: ShortKeysetId = idv1.into();
         let short_id_2: ShortKeysetId = idv2.into();
