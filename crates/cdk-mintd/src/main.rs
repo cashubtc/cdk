@@ -209,7 +209,7 @@ async fn main() -> anyhow::Result<()> {
                 mint_builder = mint_builder.set_unit_fee(&CurrencyUnit::Sat, input_fee)?;
             }
 
-            let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
+            let nut17_supported = SupportedMethods::default_bolt11(CurrencyUnit::Sat);
 
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
         }
@@ -232,7 +232,7 @@ async fn main() -> anyhow::Result<()> {
                 mint_builder = mint_builder.set_unit_fee(&CurrencyUnit::Sat, input_fee)?;
             }
 
-            let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
+            let nut17_supported = SupportedMethods::default_bolt11(CurrencyUnit::Sat);
 
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
         }
@@ -255,7 +255,7 @@ async fn main() -> anyhow::Result<()> {
                 mint_builder = mint_builder.set_unit_fee(&CurrencyUnit::Sat, input_fee)?;
             }
 
-            let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, CurrencyUnit::Sat);
+            let nut17_supported = SupportedMethods::default_bolt11(CurrencyUnit::Sat);
 
             mint_builder = mint_builder.add_supported_websockets(nut17_supported);
         }
@@ -284,7 +284,7 @@ async fn main() -> anyhow::Result<()> {
                     mint_builder = mint_builder.set_unit_fee(&unit, input_fee)?;
                 }
 
-                let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
+                let nut17_supported = SupportedMethods::default_bolt11(unit);
 
                 mint_builder = mint_builder.add_supported_websockets(nut17_supported);
             }
@@ -323,7 +323,7 @@ async fn main() -> anyhow::Result<()> {
                     mint_builder = mint_builder.set_unit_fee(&unit, input_fee)?;
                 }
 
-                let nut17_supported = SupportedMethods::new(PaymentMethod::Bolt11, unit);
+                let nut17_supported = SupportedMethods::default_bolt11(unit);
                 mint_builder = mint_builder.add_supported_websockets(nut17_supported);
             }
         }
