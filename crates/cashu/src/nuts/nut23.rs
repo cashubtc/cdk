@@ -141,7 +141,7 @@ impl Settings {
         Self { methods, disabled }
     }
 
-    /// Get [`MintMethodSettings`] for unit method pair
+    /// Get [`MintBolt12MethodSettings`] for unit method pair
     pub fn get_settings(
         &self,
         unit: &CurrencyUnit,
@@ -156,7 +156,7 @@ impl Settings {
         None
     }
 
-    /// Remove [`MintMethodSettings`] for unit method pair
+    /// Remove [`MintBolt12MethodSettings`] for unit method pair
     pub fn remove_settings(
         &mut self,
         unit: &CurrencyUnit,
