@@ -839,7 +839,7 @@ impl Mint {
             offer: offer.clone(),
             max_fee_amount: None,
             timeout_secs: None,
-            amount: options.map(|a| a.amount_msat()),
+            melt_options: *options,
             invoice: None,
         };
 

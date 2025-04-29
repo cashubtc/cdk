@@ -21,8 +21,8 @@ use tracing::instrument;
 use super::cdk_payment_processor_client::CdkPaymentProcessorClient;
 use super::{
     cdk_payment_id_to_proto, proto_to_cdk_payment_id, CheckIncomingPaymentRequest,
-    CheckOutgoingPaymentRequest, CreatePaymentRequest, MakePaymentRequest, SettingsRequest,
-    WaitIncomingPaymentRequest,
+    CheckOutgoingPaymentRequest, CreatePaymentRequest, EmptyRequest, MakePaymentRequest,
+    OutgoingPaymentVariant,
 };
 
 /// Payment Processor
@@ -102,7 +102,7 @@ impl MintPayment for PaymentProcessorClient {
     async fn get_settings(&self) -> Result<Value, Self::Err> {
         let mut inner = self.inner.clone();
         let response = inner
-            .get_settings(Request::new(SettingsRequest {}))
+            .get_settings(Request::new(EmptyRequest {}))
             .await
             .map_err(|err| {
                 tracing::error!("Could not get settings: {err}");
@@ -195,9 +195,7 @@ impl MintPayment for PaymentProcessorClient {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => bolt11_options.melt_options,
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
                 // For Bolt12, we might have MeltOptions in the form of Amountless
-                bolt12_options
-                    .amount
-                    .map(cdk_common::MeltOptions::new_amountless)
+                bolt12_options.melt_options
             }
         };
 
@@ -224,69 +222,10 @@ impl MintPayment for PaymentProcessorClient {
 
     async fn make_payment(
         &self,
-        unit: &CurrencyUnit,
+        _unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<CdkMakePaymentResponse, Self::Err> {
         let mut inner = self.inner.clone();
-
-        // We need to create a MeltQuote from the OutgoingPaymentOptions
-        // This is a bit of a hack since the gRPC API expects a MeltQuote
-        // First, we need to get a payment quote to construct the MeltQuote
-        let payment_quote = self.get_payment_quote(unit, options.clone()).await?;
-
-        // Construct a minimal MeltQuote for the request
-        let melt_quote = super::MeltQuote {
-            // Use the payment_quote's ID
-            id: payment_quote.request_lookup_id.to_string(),
-            // Use the provided unit
-            unit: unit.to_string(),
-            // Use the payment_quote's amount
-            amount: payment_quote.amount.into(),
-            // Convert the request from OutgoingPaymentOptions to string
-            request: match &options {
-                OutgoingPaymentOptions::Bolt11(bolt11) => bolt11.bolt11.to_string(),
-                OutgoingPaymentOptions::Bolt12(bolt12) => {
-                    // Access the boxed Bolt12 options
-                    bolt12.offer.to_string()
-                }
-            },
-            // Use the payment_quote's fee
-            fee_reserve: payment_quote.fee.into(),
-            // Set the state to UNPAID
-            state: super::QuoteState::Unpaid.into(),
-            // Default expiry
-            expiry: 0,
-            // No payment preimage yet
-            payment_preimage: None,
-            // Use the payment_quote's request_identifier
-            request_identifier: Some(cdk_payment_id_to_proto(&payment_quote.request_lookup_id)),
-            // Use the payment_quote's amount
-            msat_to_pay: Some(payment_quote.amount.into()),
-            // Current time in seconds
-            created_time: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            // No paid time yet
-            paid_time: None,
-            // Payment method based on the options
-            payment_method: match &options {
-                OutgoingPaymentOptions::Bolt11(_) => "bolt11".to_string(),
-                OutgoingPaymentOptions::Bolt12(_) => "bolt12".to_string(),
-            },
-            // MeltOptions from options if available
-            options: match &options {
-                OutgoingPaymentOptions::Bolt11(bolt11_options) => {
-                    bolt11_options.melt_options.map(|o| o.into())
-                }
-                OutgoingPaymentOptions::Bolt12(bolt12_options) => {
-                    // For Bolt12, we might have MeltOptions in the form of Amountless
-                    bolt12_options
-                        .amount
-                        .map(|amount| cdk_common::MeltOptions::new_amountless(amount).into())
-                }
-            },
-        };
 
         // Extract max fee amount if present
         let max_fee_amount = match &options {
@@ -296,7 +235,31 @@ impl MintPayment for PaymentProcessorClient {
 
         let response = inner
             .make_payment(Request::new(MakePaymentRequest {
-                melt_quote: Some(melt_quote),
+                payment_options: Some(OutgoingPaymentVariant {
+                    options: Some(match &options {
+                        OutgoingPaymentOptions::Bolt11(bolt11_options) => {
+                            super::outgoing_payment_variant::Options::Bolt11(
+                                super::Bolt11OutgoingPaymentOptions {
+                                    bolt11: bolt11_options.bolt11.to_string(),
+                                    max_fee_amount: max_fee_amount.map(|a| a.into()),
+                                    timeout_secs: None,
+                                    melt_options: bolt11_options.melt_options.map(|o| o.into()),
+                                },
+                            )
+                        }
+                        OutgoingPaymentOptions::Bolt12(bolt12_options) => {
+                            super::outgoing_payment_variant::Options::Bolt12(
+                                super::Bolt12OutgoingPaymentOptions {
+                                    offer: bolt12_options.offer.to_string(),
+                                    max_fee_amount: max_fee_amount.map(|a| a.into()),
+                                    timeout_secs: None,
+                                    invoice: bolt12_options.invoice.clone(),
+                                    melt_options: bolt12_options.melt_options.map(|o| o.into()),
+                                },
+                            )
+                        }
+                    }),
+                }),
                 partial_amount: None,
                 max_fee_amount: max_fee_amount.map(|a| a.into()),
             }))
@@ -330,7 +293,7 @@ impl MintPayment for PaymentProcessorClient {
         tracing::debug!("Client waiting for payment");
         let mut inner = self.inner.clone();
         let stream = inner
-            .wait_incoming_payment(WaitIncomingPaymentRequest {})
+            .wait_incoming_payment(EmptyRequest {})
             .await
             .map_err(|err| {
                 tracing::error!("Could not check incoming payment stream: {err}");

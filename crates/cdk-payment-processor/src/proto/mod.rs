@@ -7,7 +7,7 @@ use cdk_common::payment::{
     PaymentIdentifier as CdkPaymentIdentifier,
 };
 use cdk_common::util::hex;
-use cdk_common::{Bolt11Invoice, CurrencyUnit, MeltQuoteBolt11Request, PaymentMethod};
+use cdk_common::{Bolt11Invoice, CurrencyUnit, MeltQuoteBolt11Request};
 use melt_options::Options;
 mod client;
 mod server;
@@ -265,59 +265,6 @@ impl From<cdk_common::nut04::QuoteState> for QuoteState {
             cdk_common::MintQuoteState::Paid => Self::Paid,
             cdk_common::MintQuoteState::Issued => Self::Issued,
         }
-    }
-}
-
-impl From<cdk_common::mint::MeltQuote> for MeltQuote {
-    fn from(value: cdk_common::mint::MeltQuote) -> Self {
-        Self {
-            id: value.id.to_string(),
-            unit: value.unit.to_string(),
-            amount: value.amount.into(),
-            request: value.request.to_string(),
-            fee_reserve: value.fee_reserve.into(),
-            state: QuoteState::from(value.state).into(),
-            expiry: value.expiry,
-            payment_preimage: value.payment_preimage,
-            request_identifier: Some(cdk_payment_id_to_proto(&value.request_lookup_id)),
-            msat_to_pay: Some(value.amount.into()),
-            payment_method: value.payment_method.to_string(),
-            created_time: value.created_time,
-            paid_time: value.paid_time,
-            options: value.options.map(|o| o.into()),
-        }
-    }
-}
-
-impl TryFrom<MeltQuote> for cdk_common::mint::MeltQuote {
-    type Error = crate::error::Error;
-
-    fn try_from(value: MeltQuote) -> Result<Self, Self::Error> {
-        let bolt11 = Bolt11Invoice::from_str(&value.request)?;
-        let request_lookup_id = value
-            .request_identifier
-            .as_ref()
-            .ok_or(crate::error::Error::InvalidId)
-            .and_then(proto_to_cdk_payment_id)?;
-
-        Ok(Self {
-            id: value
-                .id
-                .parse()
-                .map_err(|_| crate::error::Error::InvalidId)?,
-            unit: value.unit.parse()?,
-            amount: value.amount.into(),
-            request: cdk_common::mint::MeltPaymentRequest::Bolt11 { bolt11 },
-            fee_reserve: value.fee_reserve.into(),
-            state: cdk_common::nut05::QuoteState::from(value.state()),
-            expiry: value.expiry,
-            payment_preimage: value.payment_preimage,
-            request_lookup_id,
-            created_time: value.created_time,
-            paid_time: value.paid_time,
-            payment_method: PaymentMethod::from_str(&value.payment_method)?,
-            options: value.options.map(|o| o.into()),
-        })
     }
 }
 

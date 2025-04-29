@@ -156,8 +156,8 @@ pub struct Bolt12OutgoingPaymentOptions {
     pub timeout_secs: Option<u64>,
     /// Bolt12 Invoice
     pub invoice: Option<Vec<u8>>,
-    /// Amount
-    pub amount: Option<Amount>,
+    /// Melt options
+    pub melt_options: Option<MeltOptions>,
 }
 
 /// Options for creating an outgoing payment
@@ -183,10 +183,10 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
                 },
             ))),
             MeltPaymentRequest::Bolt12 { offer, invoice } => {
-                let amount = match melt_quote.options {
-                    Some(MeltOptions::Amountless { amountless }) => Some(amountless.amount_msat),
+                let melt_options = match melt_quote.options {
                     None => None,
                     Some(MeltOptions::Mpp { mpp: _ }) => return Err(Error::UnsupportedUnit),
+                    Some(options) => Some(options),
                 };
 
                 Ok(OutgoingPaymentOptions::Bolt12(Box::new(
@@ -195,7 +195,7 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
                         timeout_secs: None,
                         offer: *offer,
                         invoice: Some(invoice),
-                        amount,
+                        melt_options,
                     },
                 )))
             }

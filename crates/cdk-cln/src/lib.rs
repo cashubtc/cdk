@@ -279,9 +279,8 @@ impl MintPayment for Cln {
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
                 let offer = bolt12_options.offer;
 
-                let amount_msat: u64 = if let Some(amount) = bolt12_options.amount {
-                    let msat = to_unit(amount, unit, &CurrencyUnit::Msat)?;
-                    msat.into()
+                let amount_msat: u64 = if let Some(amount) = bolt12_options.melt_options {
+                    amount.amount_msat().into()
                 } else {
                     // Fall back to offer amount
                     let decode_response = self.decode_string(offer.to_string()).await?;

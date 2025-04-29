@@ -8,6 +8,7 @@ use std::time::Duration;
 use cdk_common::payment::{MintPayment, OutgoingPaymentOptions};
 use cdk_common::CurrencyUnit;
 use futures::{Stream, StreamExt};
+use lightning::offers::offer::Offer;
 use lightning_invoice::Bolt11Invoice;
 use serde_json::Value;
 use tokio::sync::{mpsc, Notify};
@@ -19,7 +20,7 @@ use tonic::{async_trait, Request, Response, Status};
 use tracing::instrument;
 
 use super::cdk_payment_processor_server::{CdkPaymentProcessor, CdkPaymentProcessorServer};
-use super::{cdk_payment_id_to_proto, proto_to_cdk_payment_id};
+use super::{cdk_payment_id_to_proto, outgoing_payment_variant, proto_to_cdk_payment_id};
 use crate::proto::*;
 
 type ResponseStream =
@@ -165,7 +166,7 @@ impl Drop for PaymentProcessorServer {
 impl CdkPaymentProcessor for PaymentProcessorServer {
     async fn get_settings(
         &self,
-        _request: Request<SettingsRequest>,
+        _request: Request<EmptyRequest>,
     ) -> Result<Response<SettingsResponse>, Status> {
         let settings: Value = self
             .inner
@@ -246,8 +247,18 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                 ))
             }
             OutgoingPaymentRequestType::Bolt12Offer => {
-                // We'll skip the Offer parse for now since we removed the dependency
-                return Err(Status::unimplemented("BOLT12 is not yet supported"));
+                let offer = Offer::from_str(&request.request)
+                    .map_err(|_| Status::invalid_argument("Invalid BOLT12 invoice"))?;
+
+                cdk_common::payment::OutgoingPaymentOptions::Bolt12(Box::new(
+                    cdk_common::payment::Bolt12OutgoingPaymentOptions {
+                        offer,
+                        max_fee_amount: None,
+                        timeout_secs: None,
+                        invoice: None,
+                        melt_options: request.options.as_ref().map(|o| (*o).into()),
+                    },
+                ))
             }
         };
 
@@ -273,39 +284,57 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
     ) -> Result<Response<MakePaymentResponse>, Status> {
         let request = request.into_inner();
 
-        let melt_quote = request
-            .melt_quote
-            .ok_or(Status::invalid_argument("Meltquote is required"))?;
+        let payment_options = request
+            .payment_options
+            .ok_or(Status::invalid_argument("Payment options are required"))?;
 
-        // Instead of trying to convert MeltQuote to OutgoingPaymentOptions,
-        // let's manually create the appropriate OutgoingPaymentOptions
-        let options = if melt_quote.payment_method == "bolt11" {
-            // For BOLT11, create Bolt11OutgoingPaymentOptions
-            let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)
-                .map_err(|_| Status::invalid_argument("Invalid BOLT11 invoice"))?;
+        let options_type = match payment_options.options.clone() {
+            Some(outgoing_payment_variant::Options::Bolt11(bolt11_options)) => {
+                // For BOLT11, create Bolt11OutgoingPaymentOptions
+                let bolt11 = Bolt11Invoice::from_str(&bolt11_options.bolt11)
+                    .map_err(|_| Status::invalid_argument("Invalid BOLT11 invoice"))?;
 
-            OutgoingPaymentOptions::Bolt11(Box::new(
-                cdk_common::payment::Bolt11OutgoingPaymentOptions {
-                    bolt11,
-                    max_fee_amount: Some(melt_quote.fee_reserve.into()),
-                    timeout_secs: None,
-                    melt_options: melt_quote.options.map(|o| o.into()),
-                },
-            ))
-        } else if melt_quote.payment_method == "bolt12" {
-            // For now, return not implemented for BOLT12
-            return Err(Status::unimplemented("BOLT12 not yet supported"));
-        } else {
-            return Err(Status::invalid_argument("Unsupported payment method"));
+                OutgoingPaymentOptions::Bolt11(Box::new(
+                    cdk_common::payment::Bolt11OutgoingPaymentOptions {
+                        bolt11,
+                        max_fee_amount: bolt11_options.max_fee_amount.map(|a| a.into()),
+                        timeout_secs: bolt11_options.timeout_secs,
+                        melt_options: bolt11_options.melt_options.map(|o| o.into()),
+                    },
+                ))
+            }
+            Some(outgoing_payment_variant::Options::Bolt12(bolt12_options)) => {
+                // For BOLT12
+                let offer = Offer::from_str(&bolt12_options.offer)
+                    .map_err(|_| Status::invalid_argument("Invalid BOLT12 offer"))?;
+
+                cdk_common::payment::OutgoingPaymentOptions::Bolt12(Box::new(
+                    cdk_common::payment::Bolt12OutgoingPaymentOptions {
+                        offer,
+                        max_fee_amount: bolt12_options.max_fee_amount.map(|a| a.into()),
+                        timeout_secs: bolt12_options.timeout_secs,
+                        invoice: bolt12_options.invoice,
+                        melt_options: bolt12_options.melt_options.map(|o| o.into()),
+                    },
+                ))
+            }
+            None => return Err(Status::invalid_argument("No payment options specified")),
         };
 
-        // Extract currency unit from the melt quote
-        let unit = CurrencyUnit::from_str(&melt_quote.unit)
-            .map_err(|_| Status::invalid_argument("Invalid currency unit"))?;
+        // Extract currency unit based on the first variant found
+        let unit = match &payment_options.options {
+            Some(outgoing_payment_variant::Options::Bolt11(_)) => {
+                CurrencyUnit::Sat // Default to SAT for Bolt11
+            }
+            Some(outgoing_payment_variant::Options::Bolt12(_)) => {
+                CurrencyUnit::Sat // Default to SAT for Bolt12
+            }
+            None => return Err(Status::invalid_argument("No payment options specified")),
+        };
 
         let pay_invoice = self
             .inner
-            .make_payment(&unit, options)
+            .make_payment(&unit, options_type)
             .await
             .map_err(|err| {
                 tracing::error!("Could not make payment: {}", err);
@@ -389,7 +418,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
     #[instrument(skip_all)]
     async fn wait_incoming_payment(
         &self,
-        _request: Request<WaitIncomingPaymentRequest>,
+        _request: Request<EmptyRequest>,
     ) -> Result<Response<Self::WaitIncomingPaymentStream>, Status> {
         tracing::debug!("Server waiting for payment stream");
         let (tx, rx) = mpsc::channel(128);
