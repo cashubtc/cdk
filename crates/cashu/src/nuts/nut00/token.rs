@@ -799,7 +799,7 @@ mod tests {
             .collect();
 
         let chosen_keyset_id =
-            Id::from_str("01c352c0b47d42edb764bddf8c53d77b85f057157d92084d9d05e876251ecd84")
+            Id::from_str("01c352c0b47d42edb764bddf8c53d77b85f057157d92084d9d05e876251ecd8422")
                 .unwrap();
 
         // Make up a bunch of fake proofs
