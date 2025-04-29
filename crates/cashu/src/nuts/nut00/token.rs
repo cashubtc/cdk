@@ -736,7 +736,7 @@ mod tests {
 
         let keysets_info: Vec<KeySetInfo> = (0..10)
             .map(|_| {
-                let mut bytes: [u8; 32] = [0u8; 32];
+                let mut bytes: [u8; 33] = [0u8; 33];
                 bytes[0] = 1u8;
                 rand::thread_rng().fill_bytes(&mut bytes[1..]);
                 let id = Id::from_bytes(&bytes).unwrap();
@@ -784,7 +784,7 @@ mod tests {
 
         let keysets_info: Vec<KeySetInfo> = (0..10)
             .map(|_| {
-                let mut bytes: [u8; 32] = [0u8; 32];
+                let mut bytes: [u8; 33] = [0u8; 33];
                 bytes[0] = 1u8;
                 rand::thread_rng().fill_bytes(&mut bytes[1..]);
                 let id = Id::from_bytes(&bytes).unwrap();
