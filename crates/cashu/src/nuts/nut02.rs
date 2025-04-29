@@ -293,7 +293,7 @@ impl TryFrom<String> for Id {
     type Error = Error;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        ensure_cdk!(s.len() == 16 || s.len() == 64, Error::Length);
+        ensure_cdk!(s.len() == Self::STRLEN_V1 + 2 || s.len() == Self::STRLEN_V2 + 2, Error::Length);
 
         let version: KeySetVersion = KeySetVersion::from_byte(&hex::decode(&s[..2])?[0])?;
         let id = match version {
@@ -742,15 +742,21 @@ mod test {
 
     #[test]
     fn test_v2_deserialization_and_id_generation() {
-        let id_from_str =
-            Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9")
-                .unwrap();
-
-        let keys: Keys = serde_json::from_str(KEYSET).unwrap();
         let unit: CurrencyUnit = CurrencyUnit::from_str("sat").unwrap();
         let expiry: u64 = 2059210353; // +10 years from now
 
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
+        let id_from_str = Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035").unwrap();
         let id = Id::v2_from_data(&keys, &unit, Some(expiry));
+        assert_eq!(id, id_from_str);
+
+        let keys: Keys = serde_json::from_str(KEYSET).unwrap();
+        let id_from_str = Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9e0").unwrap();
+        let id = Id::v2_from_data(&keys, &unit, Some(expiry));
+        assert_eq!(id, id_from_str);
+
+        let id = Id::v2_from_data(&keys, &unit, None);
+        let id_from_str = Id::from_str("016d72f27c8d22808ad66d1959b3dab83af17e2510db7ffd57d2365d9eec3ced75").unwrap();
         assert_eq!(id, id_from_str);
     }
 
@@ -782,11 +788,11 @@ mod test {
 
     #[test]
     fn test_v2_to_int() {
-        let id = Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9")
+        let id = Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
             .unwrap();
 
         let id_int = u32::from(id);
-        assert_eq!(1349682077, id_int);
+        assert_eq!(2113471806, id_int);
     }
 
     #[test]
@@ -828,7 +834,7 @@ mod test {
                 })
             }
             KeySetVersion::Version01 => {
-                let mut rand_bytes = vec![1u8; 32];
+                let mut rand_bytes = vec![1u8; 33];
                 rand::thread_rng().fill_bytes(&mut rand_bytes[1..]);
                 Id::from_bytes(&rand_bytes).unwrap_or_else(|e| {
                     panic!("Failed to create Id from {}: {e}", hex::encode(rand_bytes))
@@ -853,7 +859,7 @@ mod test {
         let id_str = id.to_string();
 
         assert!(id_str.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_eq!(64, id_str.len());
+        assert_eq!(66, id_str.len());
         assert_eq!(id_str.to_lowercase(), id_str);
     }
 
@@ -875,13 +881,13 @@ mod test {
     #[test]
     fn test_short_keyset_id_from_id() {
         let idv1 = Id::from_str("009a1f293253e41e").unwrap();
-        let idv2 = Id::from_str("0125bc634e270ad7e937af5b957f8396bb627d73f6e1fd2ffe4294c26b57daf9")
+        let idv2 = Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
             .unwrap();
 
         let short_id_1: ShortKeysetId = idv1.into();
         let short_id_2: ShortKeysetId = idv2.into();
 
         assert!(short_id_1.to_string() == "009a1f293253e41e");
-        assert!(short_id_2.to_string() == "0125bc634e270ad7");
+        assert!(short_id_2.to_string() == "01adc013fa9d8517");
     }
 }
