@@ -383,7 +383,7 @@ mod tests {
         };
 
         // Convert the Info struct to a debug string
-        let debug_output = format!("{:?}", info);
+        let debug_output = format!("{info:?}");
 
         // Verify the debug output contains expected fields
         assert!(debug_output.contains("url: \"http://example.com\""));

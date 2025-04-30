@@ -507,9 +507,9 @@ mod tests {
             Wallet::select_proofs(1024.into(), proofs, &vec![id()], &HashMap::new(), false)
                 .unwrap();
         assert_eq!(selected_proofs.len(), 1024);
-        for i in 0..1024 {
-            assert_eq!(selected_proofs[i].amount, 1.into());
-        }
+        selected_proofs
+            .iter()
+            .for_each(|proof| assert_eq!(proof.amount, Amount::ONE));
     }
 
     #[test]
@@ -527,9 +527,11 @@ mod tests {
         .unwrap();
         selected_proofs.sort();
         assert_eq!(selected_proofs.len(), 32);
-        for i in 0..32 {
-            assert_eq!(selected_proofs[i].amount, (1 << i).into());
-        }
+
+        selected_proofs
+            .iter()
+            .enumerate()
+            .for_each(|(i, proof)| assert_eq!(proof.amount, (1 << i).into()));
     }
 
     #[test]
