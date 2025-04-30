@@ -66,33 +66,25 @@ async fn test_correct_keyset() {
         .await
         .unwrap();
 
-    let active = mint.get_active_keysets().await.expect("get_active_keysets");
+    let active = mint.get_active_keysets();
 
     let active = active
         .get(&CurrencyUnit::Sat)
         .expect("There is a keyset for unit");
 
-    let keyset_info = mint
-        .get_keyset_info(active)
-        .await
-        .unwrap()
-        .expect("There is keyset");
+    let keyset_info = mint.get_keyset_info(active).expect("There is keyset");
 
-    assert!(keyset_info.derivation_path_index == Some(2));
+    assert_eq!(keyset_info.derivation_path_index, Some(2));
 
     let mint = mint_builder.build().await.unwrap();
 
-    let active = mint.get_active_keysets().await.expect("get_active_keysets");
+    let active = mint.get_active_keysets();
 
     let active = active
         .get(&CurrencyUnit::Sat)
         .expect("There is a keyset for unit");
 
-    let keyset_info = mint
-        .get_keyset_info(active)
-        .await
-        .unwrap()
-        .expect("There is keyset");
+    let keyset_info = mint.get_keyset_info(active).expect("There is keyset");
 
     assert!(keyset_info.derivation_path_index == Some(2));
 }

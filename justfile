@@ -57,7 +57,7 @@ test-pure db="memory": build
   fi
 
   # Run pure integration tests
-  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure
+  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1
 
 test-all db="memory":
     #!/usr/bin/env bash

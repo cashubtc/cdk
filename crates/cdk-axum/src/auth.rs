@@ -103,12 +103,7 @@ where
 pub async fn get_auth_keysets(
     State(state): State<MintState>,
 ) -> Result<Json<KeysetResponse>, Response> {
-    let keysets = state.mint.auth_keysets().await.map_err(|err| {
-        tracing::error!("Could not get keysets: {}", err);
-        into_response(err)
-    })?;
-
-    Ok(Json(keysets))
+    Ok(Json(state.mint.auth_keysets()))
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -125,7 +120,7 @@ pub async fn get_auth_keysets(
 pub async fn get_blind_auth_keys(
     State(state): State<MintState>,
 ) -> Result<Json<KeysResponse>, Response> {
-    let pubkeys = state.mint.auth_pubkeys().await.map_err(|err| {
+    let pubkeys = state.mint.auth_pubkeys().map_err(|err| {
         tracing::error!("Could not get keys: {}", err);
         into_response(err)
     })?;

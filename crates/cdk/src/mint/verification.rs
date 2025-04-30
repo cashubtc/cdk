@@ -66,7 +66,7 @@ impl Mint {
         let output_keyset_ids: HashSet<Id> = outputs.iter().map(|p| p.keyset_id).collect();
 
         for id in &output_keyset_ids {
-            match self.get_keyset_info(id).await? {
+            match self.get_keyset_info(id) {
                 Some(keyset) => {
                     if !keyset.active {
                         tracing::debug!(
@@ -114,7 +114,7 @@ impl Mint {
         let inputs_keyset_ids: HashSet<Id> = inputs.iter().map(|p| p.keyset_id).collect();
 
         for id in &inputs_keyset_ids {
-            match self.get_keyset_info(id).await? {
+            match self.get_keyset_info(id) {
                 Some(keyset) => {
                     keyset_units.insert(keyset.unit);
                 }
