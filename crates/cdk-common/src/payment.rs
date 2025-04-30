@@ -194,7 +194,7 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
                         max_fee_amount: Some(melt_quote.fee_reserve),
                         timeout_secs: None,
                         offer: *offer,
-                        invoice: Some(invoice),
+                        invoice,
                         melt_options,
                     },
                 )))
@@ -306,7 +306,7 @@ pub enum PaymentQuoteOptions {
     /// Bolt12 payment options
     Bolt12 {
         /// Bolt12 invoice
-        invoice: Vec<u8>,
+        invoice: Option<Vec<u8>>,
     },
 }
 

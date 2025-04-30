@@ -326,7 +326,7 @@ impl MintPayment for Cln {
                 let decode_response = self.decode_string(cln_response.invoice.clone()).await?;
 
                 let options = cdk_payment::PaymentQuoteOptions::Bolt12 {
-                    invoice: cln_response.invoice.into(),
+                    invoice: Some(cln_response.invoice.into()),
                 };
 
                 Ok(PaymentQuoteResponse {

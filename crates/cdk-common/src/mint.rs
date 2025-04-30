@@ -288,7 +288,7 @@ pub enum MeltPaymentRequest {
         #[serde(with = "offer_serde")]
         offer: Box<Offer>,
         /// Invoice
-        invoice: Vec<u8>,
+        invoice: Option<Vec<u8>>,
     },
 }
 

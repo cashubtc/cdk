@@ -196,7 +196,7 @@ impl From<PaymentQuoteOptions> for cdk_common::payment::PaymentQuoteOptions {
         // Extract the Bolt12Options from the oneof field
         let payment_quote_options::MeltOptions::Bolt12(bolt12) = melt_options;
         Self::Bolt12 {
-            invoice: bolt12.invoice.into_bytes(),
+            invoice: bolt12.invoice.map(|i| i.into_bytes()),
         }
     }
 }
@@ -206,7 +206,7 @@ impl From<cdk_common::payment::PaymentQuoteOptions> for PaymentQuoteOptions {
         match value {
             cdk_common::payment::PaymentQuoteOptions::Bolt12 { invoice } => Self {
                 melt_options: Some(payment_quote_options::MeltOptions::Bolt12(Bolt12Options {
-                    invoice: String::from_utf8(invoice).unwrap_or_default(),
+                    invoice: invoice.map(|invoice| String::from_utf8(invoice).unwrap_or_default()),
                 })),
             },
         }

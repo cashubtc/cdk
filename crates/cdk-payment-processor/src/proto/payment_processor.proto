@@ -108,7 +108,7 @@ enum QuoteState {
 }
 
 message Bolt12Options {
-  string invoice = 1;
+  optional string invoice = 1;
 }
 
 message PaymentQuoteOptions {
