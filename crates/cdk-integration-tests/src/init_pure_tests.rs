@@ -56,18 +56,15 @@ impl Debug for DirectMintConnection {
 #[async_trait]
 impl MintConnector for DirectMintConnection {
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
-        self.mint.pubkeys().await.map(|pks| pks.keysets)
+        Ok(self.mint.pubkeys().keysets)
     }
 
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
-        self.mint
-            .keyset(&keyset_id)
-            .await
-            .and_then(|res| res.ok_or(Error::UnknownKeySet))
+        self.mint.keyset(&keyset_id).ok_or(Error::UnknownKeySet)
     }
 
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
-        self.mint.keysets().await
+        Ok(self.mint.keysets())
     }
 
     async fn post_mint_quote(

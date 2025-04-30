@@ -237,15 +237,7 @@ async fn test_mint_double_spend() {
         .await
         .expect("Could not get proofs");
 
-    let keys = mint_bob
-        .pubkeys()
-        .await
-        .unwrap()
-        .keysets
-        .first()
-        .unwrap()
-        .clone()
-        .keys;
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
     let preswap = PreMintSecrets::random(
@@ -302,15 +294,7 @@ async fn test_attempt_to_swap_by_overflowing() {
 
     let amount = 2_u64.pow(63);
 
-    let keys = mint_bob
-        .pubkeys()
-        .await
-        .unwrap()
-        .keysets
-        .first()
-        .unwrap()
-        .clone()
-        .keys;
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
     let pre_mint_amount =
@@ -431,15 +415,7 @@ pub async fn test_p2pk_swap() {
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_swap.blinded_messages());
 
-    let keys = mint_bob
-        .pubkeys()
-        .await
-        .unwrap()
-        .keysets
-        .first()
-        .cloned()
-        .unwrap()
-        .keys;
+    let keys = mint_bob.pubkeys().keysets.first().cloned().unwrap().keys;
 
     let post_swap = mint_bob.process_swap_request(swap_request).await.unwrap();
 
@@ -555,15 +531,7 @@ async fn test_swap_overpay_underpay_fee() {
         .await
         .expect("Could not get proofs");
 
-    let keys = mint_bob
-        .pubkeys()
-        .await
-        .unwrap()
-        .keysets
-        .first()
-        .unwrap()
-        .clone()
-        .keys;
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
     let preswap = PreMintSecrets::random(keyset_id, 9998.into(), &SplitTarget::default()).unwrap();
@@ -629,15 +597,7 @@ async fn test_mint_enforce_fee() {
         .await
         .expect("Could not get proofs");
 
-    let keys = mint_bob
-        .pubkeys()
-        .await
-        .unwrap()
-        .keysets
-        .first()
-        .unwrap()
-        .clone()
-        .keys;
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
     let five_proofs: Vec<_> = proofs.drain(..5).collect();
@@ -924,14 +884,6 @@ async fn test_concurrent_double_spend_melt() {
 }
 
 async fn get_keyset_id(mint: &Mint) -> Id {
-    let keys = mint
-        .pubkeys()
-        .await
-        .unwrap()
-        .keysets
-        .first()
-        .unwrap()
-        .clone()
-        .keys;
+    let keys = mint.pubkeys().keysets.first().unwrap().clone().keys;
     Id::from(&keys)
 }

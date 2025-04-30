@@ -10,14 +10,14 @@ impl Mint {
     /// Retrieve the auth public keys of the active keyset for distribution to wallet
     /// clients
     #[instrument(skip_all)]
-    pub async fn auth_pubkeys(&self) -> Result<KeysResponse, Error> {
+    pub fn auth_pubkeys(&self) -> Result<KeysResponse, Error> {
         let key = self
-            .signatory
-            .keysets()
-            .await?
-            .into_iter()
+            .keysets
+            .load()
+            .iter()
             .find(|key| key.info.unit == CurrencyUnit::Auth)
-            .ok_or(Error::NoActiveKeyset)?;
+            .ok_or(Error::NoActiveKeyset)?
+            .clone();
 
         Ok(KeysResponse {
             keysets: vec![key.key],
@@ -26,21 +26,20 @@ impl Mint {
 
     /// Return a list of auth keysets
     #[instrument(skip_all)]
-    pub async fn auth_keysets(&self) -> Result<KeysetResponse, Error> {
-        Ok(KeysetResponse {
+    pub fn auth_keysets(&self) -> KeysetResponse {
+        KeysetResponse {
             keysets: self
-                .signatory
-                .keysets()
-                .await?
-                .into_iter()
+                .keysets
+                .load()
+                .iter()
                 .filter_map(|key| {
                     if key.info.unit == CurrencyUnit::Auth {
-                        Some(key.info.into())
+                        Some(key.info.clone().into())
                     } else {
                         None
                     }
                 })
                 .collect(),
-        })
+        }
     }
 }

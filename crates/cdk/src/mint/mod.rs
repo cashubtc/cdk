@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
@@ -13,7 +14,7 @@ use cdk_common::nuts::{
     self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind, MintKeySet, Proof,
 };
 use cdk_common::secret;
-use cdk_signatory::signatory::Signatory;
+use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
 #[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
@@ -69,6 +70,8 @@ pub struct Mint {
     pub pubsub_manager: Arc<PubSubManager>,
     #[cfg(feature = "auth")]
     oidc_client: Option<OidcClient>,
+    /// In-memory keyset
+    keysets: Arc<ArcSwap<Vec<SignatoryKeySet>>>,
 }
 
 impl Mint {
@@ -150,6 +153,8 @@ impl Mint {
         let oidc_client =
             open_id_discovery.map(|openid_discovery| OidcClient::new(openid_discovery.clone()));
 
+        let keysets = signatory.keysets().await?;
+
         Ok(Self {
             signatory,
             pubsub_manager: Arc::new(localstore.clone().into()),
@@ -159,6 +164,7 @@ impl Mint {
             ln,
             #[cfg(feature = "auth")]
             auth_localstore,
+            keysets: Arc::new(ArcSwap::new(keysets.into())),
         })
     }
 
@@ -292,7 +298,6 @@ impl Mint {
             {
                 let mint_keyset_info = self
                     .get_keyset_info(&proof.keyset_id)
-                    .await?
                     .ok_or(Error::UnknownKeySet)?;
                 e.insert(mint_keyset_info.input_fee_ppk);
             }
@@ -309,12 +314,10 @@ impl Mint {
     }
 
     /// Get active keysets
-    pub async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Error> {
-        Ok(self
-            .signatory
-            .keysets()
-            .await?
-            .into_iter()
+    pub fn get_active_keysets(&self) -> HashMap<CurrencyUnit, Id> {
+        self.keysets
+            .load()
+            .iter()
             .filter_map(|keyset| {
                 if keyset.info.active {
                     Some((keyset.info.unit.clone(), keyset.info.id))
@@ -322,24 +325,22 @@ impl Mint {
                     None
                 }
             })
-            .collect())
+            .collect()
     }
 
     /// Get keyset info
-    pub async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Error> {
-        Ok(self
-            .signatory
-            .keysets()
-            .await?
-            .into_iter()
+    pub fn get_keyset_info(&self, id: &Id) -> Option<MintKeySetInfo> {
+        self.keysets
+            .load()
+            .iter()
             .filter_map(|keyset| {
                 if keyset.info.id == *id {
-                    Some(keyset.info)
+                    Some(keyset.info.clone())
                 } else {
                     None
                 }
             })
-            .next())
+            .next()
     }
 
     /// Blind Sign
@@ -467,7 +468,7 @@ impl Mint {
     /// Get the total amount issed by keyset
     #[instrument(skip_all)]
     pub async fn total_issued(&self) -> Result<HashMap<Id, Amount>, Error> {
-        let keysets = self.keysets().await?.keysets;
+        let keysets = self.keysets().keysets;
 
         let mut total_issued = HashMap::new();
 
@@ -488,7 +489,7 @@ impl Mint {
     /// Total redeemed for keyset
     #[instrument(skip_all)]
     pub async fn total_redeemed(&self) -> Result<HashMap<Id, Amount>, Error> {
-        let keysets = self.keysets().await?.keysets;
+        let keysets = self.keysets().keysets;
 
         let mut total_redeemed = HashMap::new();
 
@@ -606,14 +607,14 @@ mod tests {
         let mint = create_mint(config).await;
 
         assert_eq!(
-            mint.pubkeys().await.unwrap(),
+            mint.pubkeys(),
             KeysResponse {
                 keysets: Vec::new()
             }
         );
 
         assert_eq!(
-            mint.keysets().await.unwrap(),
+            mint.keysets(),
             KeysetResponse {
                 keysets: Vec::new()
             }
@@ -637,7 +638,7 @@ mod tests {
         };
         let mint = create_mint(config).await;
 
-        let keysets = mint.keysets().await.unwrap();
+        let keysets = mint.keysets();
         assert!(keysets.keysets.is_empty());
 
         // generate the first keyset and set it to active
@@ -645,7 +646,7 @@ mod tests {
             .await
             .expect("test");
 
-        let keysets = mint.keysets().await.unwrap();
+        let keysets = mint.keysets();
         assert!(keysets.keysets.len().eq(&1));
         assert!(keysets.keysets[0].active);
         let first_keyset_id = keysets.keysets[0].id;
@@ -655,7 +656,7 @@ mod tests {
             .await
             .expect("test");
 
-        let keysets = mint.keysets().await.unwrap();
+        let keysets = mint.keysets();
 
         assert_eq!(2, keysets.keysets.len());
         for keyset in &keysets.keysets {
