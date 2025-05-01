@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cashu::Amount;
 use cdk::amount::SplitTarget;
@@ -19,22 +18,26 @@ const MINT_URL: &str = "http://127.0.0.1:8086";
 
 /// Tests that when both pay and check return pending status, input proofs should remain pending
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_tokens_pending() -> Result<()> {
+async fn test_fake_tokens_pending() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+        .await
+        .unwrap();
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
@@ -45,36 +48,38 @@ async fn test_fake_tokens_pending() -> Result<()> {
 
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     let melt = wallet.melt(&melt_quote.id).await;
 
     assert!(melt.is_err());
 
-    attempt_to_swap_pending(&wallet).await?;
-
-    Ok(())
+    attempt_to_swap_pending(&wallet).await.unwrap();
 }
 
 /// Tests that if the pay error fails and the check returns unknown or failed,
 /// the input proofs should be unset as spending (returned to unspent state)
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_melt_payment_fail() -> Result<()> {
+async fn test_fake_melt_payment_fail() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("Failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+        .await
+        .unwrap();
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Unknown,
@@ -85,7 +90,7 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
 
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
@@ -100,44 +105,46 @@ async fn test_fake_melt_payment_fail() -> Result<()> {
 
     let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
     assert!(melt.is_err());
 
     // The mint should have unset proofs from pending since payment failed
-    let all_proof = wallet.get_unspent_proofs().await?;
-    let states = wallet.check_proofs_spent(all_proof).await?;
+    let all_proof = wallet.get_unspent_proofs().await.unwrap();
+    let states = wallet.check_proofs_spent(all_proof).await.unwrap();
     for state in states {
         assert!(state.state == State::Unspent);
     }
 
-    let wallet_bal = wallet.total_balance().await?;
+    let wallet_bal = wallet.total_balance().await.unwrap();
     assert_eq!(wallet_bal, 100.into());
-
-    Ok(())
 }
 
 /// Tests that when both the pay_invoice and check_invoice both fail,
 /// the proofs should remain in pending state
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
+async fn test_fake_melt_payment_fail_and_check() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("Failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+        .await
+        .unwrap();
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Unknown,
@@ -148,7 +155,7 @@ async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
@@ -157,32 +164,35 @@ async fn test_fake_melt_payment_fail_and_check() -> Result<()> {
     let pending = wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await?;
+        .await
+        .unwrap();
 
     assert!(!pending.is_empty());
-
-    Ok(())
 }
 
 /// Tests that when the ln backend returns a failed status but does not error,
 /// the mint should do a second check, then remove proofs from pending state
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
+async fn test_fake_melt_payment_return_fail_status() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("Failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+        .await
+        .unwrap();
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Failed,
@@ -193,7 +203,7 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
@@ -208,7 +218,7 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
@@ -217,32 +227,35 @@ async fn test_fake_melt_payment_return_fail_status() -> Result<()> {
     let pending = wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await?;
+        .await
+        .unwrap();
 
     assert!(pending.is_empty());
-
-    Ok(())
 }
 
 /// Tests that when the ln backend returns an error with unknown status,
 /// the mint should do a second check, then remove proofs from pending state
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_melt_payment_error_unknown() -> Result<()> {
+async fn test_fake_melt_payment_error_unknown() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .unwrap();
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+        .await
+        .unwrap();
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Failed,
@@ -253,7 +266,7 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
@@ -268,7 +281,7 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
@@ -277,32 +290,35 @@ async fn test_fake_melt_payment_error_unknown() -> Result<()> {
     let pending = wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await?;
+        .await
+        .unwrap();
 
     assert!(pending.is_empty());
-
-    Ok(())
 }
 
 /// Tests that when the ln backend returns an error but the second check returns paid,
 /// proofs should remain in pending state
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_melt_payment_err_paid() -> Result<()> {
+async fn test_fake_melt_payment_err_paid() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("Failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+        .await
+        .unwrap();
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Failed,
@@ -313,39 +329,42 @@ async fn test_fake_melt_payment_err_paid() -> Result<()> {
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
     assert!(melt.is_err());
 
-    attempt_to_swap_pending(&wallet).await?;
-
-    Ok(())
+    attempt_to_swap_pending(&wallet).await.unwrap();
 }
 
 /// Tests that change outputs in a melt quote are correctly handled
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_melt_change_in_quote() -> Result<()> {
+async fn test_fake_melt_change_in_quote() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("Failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+        .await
+        .unwrap();
 
     let transaction = wallet
         .list_transactions(Some(TransactionDirection::Incoming))
-        .await?
+        .await
+        .unwrap()
         .pop()
         .expect("No transaction found");
     assert_eq!(wallet.mint_url, transaction.mint_url);
@@ -358,15 +377,16 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
 
     let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
 
-    let proofs = wallet.get_unspent_proofs().await?;
+    let proofs = wallet.get_unspent_proofs().await.unwrap();
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
-    let keyset = wallet.get_active_mint_keyset().await?;
+    let keyset = wallet.get_active_mint_keyset().await.unwrap();
 
-    let premint_secrets = PreMintSecrets::random(keyset.id, 100.into(), &SplitTarget::default())?;
+    let premint_secrets =
+        PreMintSecrets::random(keyset.id, 100.into(), &SplitTarget::default()).unwrap();
 
-    let client = HttpClient::new(MINT_URL.parse()?, None);
+    let client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
     let melt_request = MeltBolt11Request::new(
         melt_quote.id.clone(),
@@ -374,11 +394,11 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
         Some(premint_secrets.blinded_messages()),
     );
 
-    let melt_response = client.post_melt(melt_request).await?;
+    let melt_response = client.post_melt(melt_request).await.unwrap();
 
     assert!(melt_response.change.is_some());
 
-    let check = wallet.melt_quote_status(&melt_quote.id).await?;
+    let check = wallet.melt_quote_status(&melt_quote.id).await.unwrap();
     let mut melt_change = melt_response.change.unwrap();
     melt_change.sort_by(|a, b| a.amount.cmp(&b.amount));
 
@@ -386,13 +406,11 @@ async fn test_fake_melt_change_in_quote() -> Result<()> {
     check.sort_by(|a, b| a.amount.cmp(&b.amount));
 
     assert_eq!(melt_change, check);
-
-    Ok(())
 }
 
 /// Tests that the correct database type is used based on environment variables
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_database_type() -> Result<()> {
+async fn test_database_type() {
     // Get the database type and work dir from environment
     let db_type = std::env::var("CDK_MINTD_DATABASE").expect("MINT_DATABASE env var should be set");
     let work_dir =
@@ -420,55 +438,58 @@ async fn test_database_type() -> Result<()> {
             // Memory database has no file to check
             println!("Memory database in use - no file to check");
         }
-        _ => bail!("Unknown database type: {}", db_type),
+        _ => panic!("Unknown database type: {}", db_type),
     }
-
-    Ok(())
 }
 
 /// Tests minting tokens with a valid witness signature
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_mint_with_witness() -> Result<()> {
+async fn test_fake_mint_with_witness() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    )
+    .expect("failed to create new wallet");
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await?;
+        .await
+        .unwrap();
 
-    let mint_amount = proofs.total_amount()?;
+    let mint_amount = proofs.total_amount().unwrap();
 
     assert!(mint_amount == 100.into());
-
-    Ok(())
 }
 
 /// Tests that minting without a witness signature fails with the correct error
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_mint_without_witness() -> Result<()> {
+async fn test_fake_mint_without_witness() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
 
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
@@ -482,30 +503,33 @@ async fn test_fake_mint_without_witness() -> Result<()> {
     let response = http_client.post_mint(request.clone()).await;
 
     match response {
-        Err(cdk::error::Error::SignatureMissingOrInvalid) => Ok(()),
-        Err(err) => bail!("Wrong mint response for minting without witness: {}", err),
-        Ok(_) => bail!("Minting should not have succeed without a witness"),
+        Err(cdk::error::Error::SignatureMissingOrInvalid) => {} //pass
+        Err(err) => panic!("Wrong mint response for minting without witness: {}", err),
+        Ok(_) => panic!("Minting should not have succeed without a witness"),
     }
 }
 
 /// Tests that minting with an incorrect witness signature fails with the correct error
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_mint_with_wrong_witness() -> Result<()> {
+async fn test_fake_mint_with_wrong_witness() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
 
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
@@ -518,40 +542,47 @@ async fn test_fake_mint_with_wrong_witness() -> Result<()> {
 
     let secret_key = SecretKey::generate();
 
-    request.sign(secret_key)?;
+    request
+        .sign(secret_key)
+        .expect("failed to sign the mint request");
 
     let response = http_client.post_mint(request.clone()).await;
 
     match response {
-        Err(cdk::error::Error::SignatureMissingOrInvalid) => Ok(()),
-        Err(err) => bail!("Wrong mint response for minting without witness: {}", err),
-        Ok(_) => bail!("Minting should not have succeed without a witness"),
+        Err(cdk::error::Error::SignatureMissingOrInvalid) => {} //pass
+        Err(err) => panic!("Wrong mint response for minting without witness: {}", err),
+        Ok(_) => panic!("Minting should not have succeed without a witness"),
     }
 }
 
 /// Tests that attempting to mint more tokens than allowed by the quote fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_mint_inflated() -> Result<()> {
+async fn test_fake_mint_inflated() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
 
-    let pre_mint = PreMintSecrets::random(active_keyset_id, 500.into(), &SplitTarget::None)?;
+    let pre_mint =
+        PreMintSecrets::random(active_keyset_id, 500.into(), &SplitTarget::None).unwrap();
 
     let quote_info = wallet
         .localstore
         .get_mint_quote(&mint_quote.id)
-        .await?
+        .await
+        .unwrap()
         .expect("there is a quote");
 
     let mut mint_request = MintBolt11Request {
@@ -561,9 +592,11 @@ async fn test_fake_mint_inflated() -> Result<()> {
     };
 
     if let Some(secret_key) = quote_info.secret_key {
-        mint_request.sign(secret_key)?;
+        mint_request
+            .sign(secret_key)
+            .expect("failed to sign the mint request");
     }
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
     let response = http_client.post_mint(mint_request.clone()).await;
 
@@ -571,52 +604,56 @@ async fn test_fake_mint_inflated() -> Result<()> {
         Err(err) => match err {
             cdk::Error::TransactionUnbalanced(_, _, _) => (),
             err => {
-                bail!("Wrong mint error returned: {}", err.to_string());
+                panic!("Wrong mint error returned: {}", err);
             }
         },
         Ok(_) => {
-            bail!("Should not have allowed second payment");
+            panic!("Should not have allowed second payment");
         }
     }
-
-    Ok(())
 }
 
 /// Tests that attempting to mint with multiple currency units in the same request fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_mint_multiple_units() -> Result<()> {
+async fn test_fake_mint_multiple_units() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
 
-    let pre_mint = PreMintSecrets::random(active_keyset_id, 50.into(), &SplitTarget::None)?;
+    let pre_mint = PreMintSecrets::random(active_keyset_id, 50.into(), &SplitTarget::None).unwrap();
 
     let wallet_usd = Wallet::new(
         MINT_URL,
         CurrencyUnit::Usd,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
-    let active_keyset_id = wallet_usd.get_active_mint_keyset().await?.id;
+    let active_keyset_id = wallet_usd.get_active_mint_keyset().await.unwrap().id;
 
-    let usd_pre_mint = PreMintSecrets::random(active_keyset_id, 50.into(), &SplitTarget::None)?;
+    let usd_pre_mint =
+        PreMintSecrets::random(active_keyset_id, 50.into(), &SplitTarget::None).unwrap();
 
     let quote_info = wallet
         .localstore
         .get_mint_quote(&mint_quote.id)
-        .await?
+        .await
+        .unwrap()
         .expect("there is a quote");
 
     let mut sat_outputs = pre_mint.blinded_messages();
@@ -632,9 +669,11 @@ async fn test_fake_mint_multiple_units() -> Result<()> {
     };
 
     if let Some(secret_key) = quote_info.secret_key {
-        mint_request.sign(secret_key)?;
+        mint_request
+            .sign(secret_key)
+            .expect("failed to sign the mint request");
     }
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
     let response = http_client.post_mint(mint_request.clone()).await;
 
@@ -642,51 +681,59 @@ async fn test_fake_mint_multiple_units() -> Result<()> {
         Err(err) => match err {
             cdk::Error::MultipleUnits => (),
             err => {
-                bail!("Wrong mint error returned: {}", err.to_string());
+                panic!("Wrong mint error returned: {}", err);
             }
         },
         Ok(_) => {
-            bail!("Should not have allowed to mint with multiple units");
+            panic!("Should not have allowed to mint with multiple units");
         }
     }
-
-    Ok(())
 }
 
 /// Tests that attempting to swap tokens with multiple currency units fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
+async fn test_fake_mint_multiple_unit_swap() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
-    let proofs = wallet.mint(&mint_quote.id, SplitTarget::None, None).await?;
+    let proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::None, None)
+        .await
+        .unwrap();
 
     let wallet_usd = Wallet::new(
         MINT_URL,
         CurrencyUnit::Usd,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create usd wallet");
 
-    let mint_quote = wallet_usd.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet_usd.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet_usd, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet_usd, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
     let usd_proofs = wallet_usd
         .mint(&mint_quote.id, SplitTarget::None, None)
-        .await?;
+        .await
+        .unwrap();
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
 
     {
         let inputs: Proofs = vec![
@@ -694,37 +741,43 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
             usd_proofs.first().expect("There is a proof").clone(),
         ];
 
-        let pre_mint =
-            PreMintSecrets::random(active_keyset_id, inputs.total_amount()?, &SplitTarget::None)?;
+        let pre_mint = PreMintSecrets::random(
+            active_keyset_id,
+            inputs.total_amount().unwrap(),
+            &SplitTarget::None,
+        )
+        .unwrap();
 
         let swap_request = SwapRequest::new(inputs, pre_mint.blinded_messages());
 
-        let http_client = HttpClient::new(MINT_URL.parse()?, None);
+        let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
         let response = http_client.post_swap(swap_request.clone()).await;
 
         match response {
             Err(err) => match err {
                 cdk::Error::MultipleUnits => (),
                 err => {
-                    bail!("Wrong mint error returned: {}", err.to_string());
+                    panic!("Wrong mint error returned: {}", err);
                 }
             },
             Ok(_) => {
-                bail!("Should not have allowed to mint with multiple units");
+                panic!("Should not have allowed to mint with multiple units");
             }
         }
     }
 
     {
-        let usd_active_keyset_id = wallet_usd.get_active_mint_keyset().await?.id;
+        let usd_active_keyset_id = wallet_usd.get_active_mint_keyset().await.unwrap().id;
         let inputs: Proofs = proofs.into_iter().take(2).collect();
 
-        let total_inputs = inputs.total_amount()?;
+        let total_inputs = inputs.total_amount().unwrap();
 
         let half = total_inputs / 2.into();
-        let usd_pre_mint = PreMintSecrets::random(usd_active_keyset_id, half, &SplitTarget::None)?;
+        let usd_pre_mint =
+            PreMintSecrets::random(usd_active_keyset_id, half, &SplitTarget::None).unwrap();
         let pre_mint =
-            PreMintSecrets::random(active_keyset_id, total_inputs - half, &SplitTarget::None)?;
+            PreMintSecrets::random(active_keyset_id, total_inputs - half, &SplitTarget::None)
+                .unwrap();
 
         let mut usd_outputs = usd_pre_mint.blinded_messages();
         let mut sat_outputs = pre_mint.blinded_messages();
@@ -733,39 +786,40 @@ async fn test_fake_mint_multiple_unit_swap() -> Result<()> {
 
         let swap_request = SwapRequest::new(inputs, usd_outputs);
 
-        let http_client = HttpClient::new(MINT_URL.parse()?, None);
+        let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
         let response = http_client.post_swap(swap_request.clone()).await;
 
         match response {
             Err(err) => match err {
                 cdk::Error::MultipleUnits => (),
                 err => {
-                    bail!("Wrong mint error returned: {}", err.to_string());
+                    panic!("Wrong mint error returned: {}", err);
                 }
             },
             Ok(_) => {
-                bail!("Should not have allowed to mint with multiple units");
+                panic!("Should not have allowed to mint with multiple units");
             }
         }
     }
-
-    Ok(())
 }
 
 /// Tests that attempting to melt tokens with multiple currency units fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
+async fn test_fake_mint_multiple_unit_melt() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::None, None)
@@ -777,15 +831,18 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
     let wallet_usd = Wallet::new(
         MINT_URL,
         CurrencyUnit::Usd,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
     let mint_quote = wallet_usd.mint_quote(100.into(), None).await.unwrap();
     println!("Minted quote usd");
 
-    wait_for_mint_to_be_paid(&wallet_usd, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet_usd, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
     let usd_proofs = wallet_usd
         .mint(&mint_quote.id, SplitTarget::None, None)
@@ -798,24 +855,24 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
             usd_proofs.first().expect("There is a proof").clone(),
         ];
 
-        let input_amount: u64 = inputs.total_amount()?.into();
+        let input_amount: u64 = inputs.total_amount().unwrap().into();
         let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
-        let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+        let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
         let melt_request = MeltBolt11Request::new(melt_quote.id, inputs, None);
 
-        let http_client = HttpClient::new(MINT_URL.parse()?, None);
+        let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
         let response = http_client.post_melt(melt_request.clone()).await;
 
         match response {
             Err(err) => match err {
                 cdk::Error::MultipleUnits => (),
                 err => {
-                    bail!("Wrong mint error returned: {}", err.to_string());
+                    panic!("Wrong mint error returned: {}", err);
                 }
             },
             Ok(_) => {
-                bail!("Should not have allowed to melt with multiple units");
+                panic!("Should not have allowed to melt with multiple units");
             }
         }
     }
@@ -823,28 +880,30 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
     {
         let inputs: Proofs = vec![proofs.first().expect("There is a proof").clone()];
 
-        let input_amount: u64 = inputs.total_amount()?.into();
+        let input_amount: u64 = inputs.total_amount().unwrap().into();
 
         let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
-        let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
-        let usd_active_keyset_id = wallet_usd.get_active_mint_keyset().await?.id;
+        let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
+        let usd_active_keyset_id = wallet_usd.get_active_mint_keyset().await.unwrap().id;
 
         let usd_pre_mint = PreMintSecrets::random(
             usd_active_keyset_id,
-            inputs.total_amount()? + 100.into(),
+            inputs.total_amount().unwrap() + 100.into(),
             &SplitTarget::None,
-        )?;
-        let pre_mint = PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None)?;
+        )
+        .unwrap();
+        let pre_mint =
+            PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None).unwrap();
 
         let mut usd_outputs = usd_pre_mint.blinded_messages();
         let mut sat_outputs = pre_mint.blinded_messages();
 
         usd_outputs.append(&mut sat_outputs);
-        let quote = wallet.melt_quote(invoice.to_string(), None).await?;
+        let quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
         let melt_request = MeltBolt11Request::new(quote.id, inputs, Some(usd_outputs));
 
-        let http_client = HttpClient::new(MINT_URL.parse()?, None);
+        let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
         let response = http_client.post_melt(melt_request.clone()).await;
 
@@ -852,280 +911,312 @@ async fn test_fake_mint_multiple_unit_melt() -> Result<()> {
             Err(err) => match err {
                 cdk::Error::MultipleUnits => (),
                 err => {
-                    bail!("Wrong mint error returned: {}", err.to_string());
+                    panic!("Wrong mint error returned: {}", err);
                 }
             },
             Ok(_) => {
-                bail!("Should not have allowed to melt with multiple units");
+                panic!("Should not have allowed to melt with multiple units");
             }
         }
     }
-
-    Ok(())
 }
 
 /// Tests that swapping tokens where input unit doesn't match output unit fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_mint_input_output_mismatch() -> Result<()> {
+async fn test_fake_mint_input_output_mismatch() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
-    let proofs = wallet.mint(&mint_quote.id, SplitTarget::None, None).await?;
+    let proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::None, None)
+        .await
+        .unwrap();
 
     let wallet_usd = Wallet::new(
         MINT_URL,
         CurrencyUnit::Usd,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
-    let usd_active_keyset_id = wallet_usd.get_active_mint_keyset().await?.id;
+    )
+    .expect("failed to create new  usd wallet");
+    let usd_active_keyset_id = wallet_usd.get_active_mint_keyset().await.unwrap().id;
 
     let inputs = proofs;
 
     let pre_mint = PreMintSecrets::random(
         usd_active_keyset_id,
-        inputs.total_amount()?,
+        inputs.total_amount().unwrap(),
         &SplitTarget::None,
-    )?;
+    )
+    .unwrap();
 
     let swap_request = SwapRequest::new(inputs, pre_mint.blinded_messages());
 
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
         Err(err) => match err {
             cdk::Error::UnitMismatch => (),
-            err => bail!("Wrong error returned: {}", err),
+            err => panic!("Wrong error returned: {}", err),
         },
         Ok(_) => {
-            bail!("Should not have allowed to mint with multiple units");
+            panic!("Should not have allowed to mint with multiple units");
         }
     }
-
-    Ok(())
 }
 
 /// Tests that swapping tokens where output amount is greater than input amount fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_mint_swap_inflated() -> Result<()> {
+async fn test_fake_mint_swap_inflated() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
-    let proofs = wallet.mint(&mint_quote.id, SplitTarget::None, None).await?;
-    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
-    let pre_mint = PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None)?;
+    let proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::None, None)
+        .await
+        .unwrap();
+    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
+    let pre_mint =
+        PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None).unwrap();
 
     let swap_request = SwapRequest::new(proofs, pre_mint.blinded_messages());
 
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
         Err(err) => match err {
             cdk::Error::TransactionUnbalanced(_, _, _) => (),
             err => {
-                bail!("Wrong mint error returned: {}", err.to_string());
+                panic!("Wrong mint error returned: {}", err);
             }
         },
         Ok(_) => {
-            bail!("Should not have allowed to mint with multiple units");
+            panic!("Should not have allowed to mint with multiple units");
         }
     }
-
-    Ok(())
 }
 
 /// Tests that tokens cannot be spent again after a failed swap attempt
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_mint_swap_spend_after_fail() -> Result<()> {
+async fn test_fake_mint_swap_spend_after_fail() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
-    let proofs = wallet.mint(&mint_quote.id, SplitTarget::None, None).await?;
-    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::None, None)
+        .await
+        .unwrap();
+    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
 
-    let pre_mint = PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None)?;
+    let pre_mint =
+        PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None).unwrap();
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_mint.blinded_messages());
 
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     assert!(response.is_ok());
 
-    let pre_mint = PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None)?;
+    let pre_mint =
+        PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None).unwrap();
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_mint.blinded_messages());
 
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
         Err(err) => match err {
             cdk::Error::TransactionUnbalanced(_, _, _) => (),
-            err => bail!("Wrong mint error returned expected TransactionUnbalanced, got: {err}"),
+            err => panic!("Wrong mint error returned expected TransactionUnbalanced, got: {err}"),
         },
-        Ok(_) => bail!("Should not have allowed swap with unbalanced"),
+        Ok(_) => panic!("Should not have allowed swap with unbalanced"),
     }
 
-    let pre_mint = PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None)?;
+    let pre_mint =
+        PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None).unwrap();
 
     let swap_request = SwapRequest::new(proofs, pre_mint.blinded_messages());
 
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
         Err(err) => match err {
             cdk::Error::TokenAlreadySpent => (),
             err => {
-                bail!("Wrong mint error returned: {}", err.to_string());
+                panic!("Wrong mint error returned: {}", err);
             }
         },
         Ok(_) => {
-            bail!("Should not have allowed to mint with multiple units");
+            panic!("Should not have allowed to mint with multiple units");
         }
     }
-
-    Ok(())
 }
 
 /// Tests that tokens cannot be melted after a failed swap attempt
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_mint_melt_spend_after_fail() -> Result<()> {
+async fn test_fake_mint_melt_spend_after_fail() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
-    let proofs = wallet.mint(&mint_quote.id, SplitTarget::None, None).await?;
-    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::None, None)
+        .await
+        .unwrap();
+    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
 
-    let pre_mint = PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None)?;
+    let pre_mint =
+        PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None).unwrap();
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_mint.blinded_messages());
 
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     assert!(response.is_ok());
 
-    let pre_mint = PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None)?;
+    let pre_mint =
+        PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None).unwrap();
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_mint.blinded_messages());
 
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
         Err(err) => match err {
             cdk::Error::TransactionUnbalanced(_, _, _) => (),
-            err => bail!("Wrong mint error returned expected TransactionUnbalanced, got: {err}"),
+            err => panic!("Wrong mint error returned expected TransactionUnbalanced, got: {err}"),
         },
-        Ok(_) => bail!("Should not have allowed swap with unbalanced"),
+        Ok(_) => panic!("Should not have allowed swap with unbalanced"),
     }
 
-    let input_amount: u64 = proofs.total_amount()?.into();
+    let input_amount: u64 = proofs.total_amount().unwrap().into();
     let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     let melt_request = MeltBolt11Request::new(melt_quote.id, proofs, None);
 
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client.post_melt(melt_request.clone()).await;
 
     match response {
         Err(err) => match err {
             cdk::Error::TokenAlreadySpent => (),
             err => {
-                bail!("Wrong mint error returned: {}", err.to_string());
+                panic!("Wrong mint error returned: {}", err);
             }
         },
         Ok(_) => {
-            bail!("Should not have allowed to melt with multiple units");
+            panic!("Should not have allowed to melt with multiple units");
         }
     }
-
-    Ok(())
 }
 
 /// Tests that attempting to swap with duplicate proofs fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
+async fn test_fake_mint_duplicate_proofs_swap() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
-    let proofs = wallet.mint(&mint_quote.id, SplitTarget::None, None).await?;
+    let proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::None, None)
+        .await
+        .unwrap();
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
 
     let inputs = vec![proofs[0].clone(), proofs[0].clone()];
 
-    let pre_mint =
-        PreMintSecrets::random(active_keyset_id, inputs.total_amount()?, &SplitTarget::None)?;
+    let pre_mint = PreMintSecrets::random(
+        active_keyset_id,
+        inputs.total_amount().unwrap(),
+        &SplitTarget::None,
+    )
+    .unwrap();
 
     let swap_request = SwapRequest::new(inputs.clone(), pre_mint.blinded_messages());
 
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
         Err(err) => match err {
             cdk::Error::DuplicateInputs => (),
             err => {
-                bail!(
+                panic!(
                     "Wrong mint error returned, expected duplicate inputs: {}",
-                    err.to_string()
+                    err
                 );
             }
         },
         Ok(_) => {
-            bail!("Should not have allowed duplicate inputs");
+            panic!("Should not have allowed duplicate inputs");
         }
     }
 
@@ -1135,66 +1226,68 @@ async fn test_fake_mint_duplicate_proofs_swap() -> Result<()> {
 
     let swap_request = SwapRequest::new(inputs, outputs);
 
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client.post_swap(swap_request.clone()).await;
 
     match response {
         Err(err) => match err {
             cdk::Error::DuplicateOutputs => (),
             err => {
-                bail!(
+                panic!(
                     "Wrong mint error returned, expected duplicate outputs: {}",
-                    err.to_string()
+                    err
                 );
             }
         },
         Ok(_) => {
-            bail!("Should not have allow duplicate inputs");
+            panic!("Should not have allow duplicate inputs");
         }
     }
-
-    Ok(())
 }
 
 /// Tests that attempting to melt with duplicate proofs fails
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_fake_mint_duplicate_proofs_melt() -> Result<()> {
+async fn test_fake_mint_duplicate_proofs_melt() {
     let wallet = Wallet::new(
         MINT_URL,
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Arc::new(memory::empty().await.unwrap()),
+        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
-    )?;
+    )
+    .expect("failed to create new wallet");
 
-    let mint_quote = wallet.mint_quote(100.into(), None).await?;
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+        .await
+        .unwrap();
 
-    let proofs = wallet.mint(&mint_quote.id, SplitTarget::None, None).await?;
+    let proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::None, None)
+        .await
+        .unwrap();
 
     let inputs = vec![proofs[0].clone(), proofs[0].clone()];
 
     let invoice = create_fake_invoice(7000, "".to_string());
 
-    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await?;
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     let melt_request = MeltBolt11Request::new(melt_quote.id, inputs, None);
 
-    let http_client = HttpClient::new(MINT_URL.parse()?, None);
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client.post_melt(melt_request.clone()).await;
 
     match response {
         Err(err) => match err {
             cdk::Error::DuplicateInputs => (),
             err => {
-                bail!("Wrong mint error returned: {}", err.to_string());
+                panic!("Wrong mint error returned: {}", err);
             }
         },
         Ok(_) => {
-            bail!("Should not have allow duplicate inputs");
+            panic!("Should not have allow duplicate inputs");
         }
     }
-
-    Ok(())
 }
