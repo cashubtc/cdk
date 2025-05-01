@@ -1,5 +1,4 @@
-use std::io;
-use std::io::Write;
+use std::io::{self, Write};
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
@@ -22,6 +21,15 @@ pub struct MeltSubCommand {
     mpp: bool,
 }
 
+/// Helper function to get user input with a prompt
+fn get_user_input(prompt: &str) -> Result<String> {
+    println!("{}", prompt);
+    let mut user_input = String::new();
+    io::stdout().flush()?;
+    io::stdin().read_line(&mut user_input)?;
+    Ok(user_input.trim().to_string())
+}
+
 pub async fn pay(
     multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &MeltSubCommand,
@@ -29,14 +37,7 @@ pub async fn pay(
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
     let mints_amounts = mint_balances(multi_mint_wallet, &unit).await?;
 
-    println!("Enter mint number to melt from");
-
-    let mut user_input = String::new();
-    let stdin = io::stdin();
-    io::stdout().flush().unwrap();
-    stdin.read_line(&mut user_input)?;
-
-    let mint_number: usize = user_input.trim().parse()?;
+    let mint_number: usize = get_user_input("Enter mint number to melt from")?.parse()?;
 
     if mint_number.gt(&(mints_amounts.len() - 1)) {
         bail!("Invalid mint number");
@@ -49,13 +50,7 @@ pub async fn pay(
         .await
         .expect("Known wallet");
 
-    println!("Enter bolt11 invoice request");
-
-    let mut user_input = String::new();
-    let stdin = io::stdin();
-    io::stdout().flush().unwrap();
-    stdin.read_line(&mut user_input)?;
-    let bolt11 = Bolt11Invoice::from_str(user_input.trim())?;
+    let bolt11 = Bolt11Invoice::from_str(&get_user_input("Enter bolt11 invoice request")?)?;
 
     let available_funds =
         <cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * MSAT_IN_SAT;
@@ -63,7 +58,7 @@ pub async fn pay(
     // Determine payment amount and options
     let options = if sub_command_args.mpp || bolt11.amount_milli_satoshis().is_none() {
         // Get user input for amount
-        println!(
+        let prompt = format!(
             "Enter the amount you would like to pay in sats for a {} payment.",
             if sub_command_args.mpp {
                 "MPP"
@@ -72,11 +67,7 @@ pub async fn pay(
             }
         );
 
-        let mut user_input = String::new();
-        io::stdout().flush()?;
-        io::stdin().read_line(&mut user_input)?;
-
-        let user_amount = user_input.trim_end().parse::<u64>()? * MSAT_IN_SAT;
+        let user_amount = get_user_input(&prompt)?.parse::<u64>()? * MSAT_IN_SAT;
 
         if user_amount > available_funds {
             bail!("Not enough funds");
