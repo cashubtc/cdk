@@ -104,8 +104,6 @@ async fn get_wallet_balance(base_url: &str) -> u64 {
         .await
         .expect("Failed to parse balance response");
 
-    println!("Wallet balance: {:?}", balance);
-
     balance["balance"]
         .as_u64()
         .expect("Could not parse balance as u64")

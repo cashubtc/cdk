@@ -42,7 +42,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_calc_fee() -> anyhow::Result<()> {
+    fn test_calc_fee() {
         let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
 
         let fee = 2;
@@ -54,34 +54,32 @@ mod tests {
 
         proofs_count.insert(keyset_id, 1);
 
-        let sum_fee = calculate_fee(&proofs_count, &keyset_fees)?;
+        let sum_fee = calculate_fee(&proofs_count, &keyset_fees).unwrap();
 
         assert_eq!(sum_fee, 1.into());
 
         proofs_count.insert(keyset_id, 500);
 
-        let sum_fee = calculate_fee(&proofs_count, &keyset_fees)?;
+        let sum_fee = calculate_fee(&proofs_count, &keyset_fees).unwrap();
 
         assert_eq!(sum_fee, 1.into());
 
         proofs_count.insert(keyset_id, 1000);
 
-        let sum_fee = calculate_fee(&proofs_count, &keyset_fees)?;
+        let sum_fee = calculate_fee(&proofs_count, &keyset_fees).unwrap();
 
         assert_eq!(sum_fee, 2.into());
 
         proofs_count.insert(keyset_id, 2000);
-        let sum_fee = calculate_fee(&proofs_count, &keyset_fees)?;
+        let sum_fee = calculate_fee(&proofs_count, &keyset_fees).unwrap();
         assert_eq!(sum_fee, 4.into());
 
         proofs_count.insert(keyset_id, 3500);
-        let sum_fee = calculate_fee(&proofs_count, &keyset_fees)?;
+        let sum_fee = calculate_fee(&proofs_count, &keyset_fees).unwrap();
         assert_eq!(sum_fee, 7.into());
 
         proofs_count.insert(keyset_id, 3501);
-        let sum_fee = calculate_fee(&proofs_count, &keyset_fees)?;
+        let sum_fee = calculate_fee(&proofs_count, &keyset_fees).unwrap();
         assert_eq!(sum_fee, 8.into());
-
-        Ok(())
     }
 }

@@ -145,7 +145,7 @@ impl Wallet {
     ///
     /// async fn test() -> anyhow::Result<()> {
     ///     let seed = random::<[u8; 32]>();
-    ///     let mint_url = "https://testnut.cashu.space";
+    ///     let mint_url = "https://fake.thesimplekid.dev";
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = memory::empty().await?;
