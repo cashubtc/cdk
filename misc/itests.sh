@@ -50,7 +50,7 @@ cleanup() {
 }
 
 # Set up trap to call cleanup on script exit
-trap cleanup EXIT
+# trap cleanup EXIT
 
 export CDK_TEST_REGTEST=1
 

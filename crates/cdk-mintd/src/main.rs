@@ -342,15 +342,28 @@ async fn main() -> anyhow::Result<()> {
                     .setup(&mut ln_routers, &settings, unit.clone())
                     .await?;
 
+                let processor = Arc::new(processor);
+
                 mint_builder = mint_builder
                     .add_ln_backend(
                         unit.clone(),
                         PaymentMethod::Bolt11,
                         mint_melt_limits,
                         None,
-                        Arc::new(processor),
+                        processor.clone(),
                     )
                     .await?;
+
+                mint_builder = mint_builder
+                    .add_ln_backend(
+                        unit.clone(),
+                        PaymentMethod::Bolt12,
+                        mint_melt_limits,
+                        None,
+                        processor.clone(),
+                    )
+                    .await?;
+
                 if let Some(input_fee) = settings.info.input_fee_ppk {
                     mint_builder = mint_builder.set_unit_fee(&unit, input_fee)?;
                 }
@@ -581,6 +594,8 @@ async fn main() -> anyhow::Result<()> {
     mint.check_pending_melt_quotes().await.unwrap();
 
     let bolt12 = mint.ln.keys().any(|k| k.method == PaymentMethod::Bolt12);
+
+    tracing::info!("Bolt12 is supported: {}", bolt12);
 
     let listen_addr = settings.info.listen_host;
     let listen_port = settings.info.listen_port;

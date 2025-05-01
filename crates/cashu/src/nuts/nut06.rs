@@ -448,6 +448,22 @@ impl Nuts {
             ..self
         }
     }
+
+    /// Nut23 settings
+    pub fn nut23(self, nut23_settings: nut23::Settings) -> Self {
+        Self {
+            nut23: Some(nut23_settings),
+            ..self
+        }
+    }
+
+    /// Nut05 settings
+    pub fn nut24(self, nut24_settings: nut05::Settings) -> Self {
+        Self {
+            nut24: Some(nut24_settings),
+            ..self
+        }
+    }
 }
 
 /// Check state Settings

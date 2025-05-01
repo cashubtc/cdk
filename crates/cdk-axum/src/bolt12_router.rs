@@ -38,7 +38,7 @@ pub async fn get_mint_bolt12_quote(
             .mint
             .verify_auth(
                 auth.into(),
-                &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
+                &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt12),
             )
             .await
             .map_err(into_response)?;

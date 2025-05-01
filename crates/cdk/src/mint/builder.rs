@@ -23,7 +23,7 @@ use crate::cdk_payment::{self, MintPayment};
 use crate::mint::Mint;
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
-    MppMethodSettings, NUT05Settings, NUT23Settings, PaymentMethod,
+    MppMethodSettings, PaymentMethod,
 };
 use crate::types::PaymentProcessorKey;
 
@@ -225,25 +225,17 @@ impl MintBuilder {
                     description: settings.invoice_description,
                 };
 
-                let nut23 = self
-                    .mint_info
-                    .nuts
-                    .nut23
-                    .get_or_insert_with(NUT23Settings::default);
+                // Configure NUT23 settings
+                let mut nut23 = self.mint_info.nuts.nut23.unwrap_or_default();
                 nut23.methods.push(mint_method_settings);
                 nut23.disabled = false;
+                self.mint_info.nuts.nut23 = Some(nut23);
 
-                self.mint_info.nuts.nut23 = Some(nut23.clone());
-
-                let nut24 = self
-                    .mint_info
-                    .nuts
-                    .nut24
-                    .get_or_insert_with(NUT05Settings::default);
-
+                // Configure NUT24 settings (assuming this is for melt methods)
+                let mut nut24 = self.mint_info.nuts.nut24.unwrap_or_default();
                 nut24.methods.push(melt_method_settings);
                 nut24.disabled = false;
-                self.mint_info.nuts.nut24 = Some(nut24.clone());
+                self.mint_info.nuts.nut24 = Some(nut24);
             }
             PaymentMethod::Custom(_) => {
                 tracing::info!("Adding payment method for custom unit. Not adding to nuts.");
