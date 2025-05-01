@@ -7,7 +7,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use anyhow::Result;
 use bip39::Mnemonic;
 use cdk::cdk_database::MintDatabase;
 use cdk::mint::{MintBuilder, MintMeltLimits};
@@ -19,8 +18,8 @@ use cdk_sqlite::mint::memory;
 pub const MINT_URL: &str = "http://127.0.0.1:8088";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_correct_keyset() -> Result<()> {
-    let mnemonic = Mnemonic::generate(12)?;
+async fn test_correct_keyset() {
+    let mnemonic = Mnemonic::generate(12).unwrap();
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
         percent_fee_reserve: 1.0,
@@ -41,41 +40,31 @@ async fn test_correct_keyset() -> Result<()> {
             MintMeltLimits::new(1, 5_000),
             Arc::new(fake_wallet),
         )
-        .await?;
+        .await
+        .unwrap();
 
     mint_builder = mint_builder
         .with_name("regtest mint".to_string())
         .with_description("regtest mint".to_string())
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
-    let mint = mint_builder.build().await?;
+    let mint = mint_builder.build().await.unwrap();
 
     localstore
         .set_mint_info(mint_builder.mint_info.clone())
-        .await?;
+        .await
+        .unwrap();
     let quote_ttl = QuoteTTL::new(10000, 10000);
-    localstore.set_quote_ttl(quote_ttl).await?;
+    localstore.set_quote_ttl(quote_ttl).await.unwrap();
 
-    mint.rotate_next_keyset(CurrencyUnit::Sat, 32, 0).await?;
-    mint.rotate_next_keyset(CurrencyUnit::Sat, 32, 0).await?;
+    mint.rotate_next_keyset(CurrencyUnit::Sat, 32, 0)
+        .await
+        .unwrap();
+    mint.rotate_next_keyset(CurrencyUnit::Sat, 32, 0)
+        .await
+        .unwrap();
 
-    let active = mint.localstore.get_active_keysets().await?;
-
-    let active = active
-        .get(&CurrencyUnit::Sat)
-        .expect("There is a keyset for unit");
-
-    let keyset_info = mint
-        .localstore
-        .get_keyset_info(active)
-        .await?
-        .expect("There is keyset");
-
-    assert!(keyset_info.derivation_path_index == Some(2));
-
-    let mint = mint_builder.build().await?;
-
-    let active = mint.localstore.get_active_keysets().await?;
+    let active = mint.localstore.get_active_keysets().await.unwrap();
 
     let active = active
         .get(&CurrencyUnit::Sat)
@@ -84,9 +73,26 @@ async fn test_correct_keyset() -> Result<()> {
     let keyset_info = mint
         .localstore
         .get_keyset_info(active)
-        .await?
+        .await
+        .unwrap()
         .expect("There is keyset");
 
     assert!(keyset_info.derivation_path_index == Some(2));
-    Ok(())
+
+    let mint = mint_builder.build().await.unwrap();
+
+    let active = mint.localstore.get_active_keysets().await.unwrap();
+
+    let active = active
+        .get(&CurrencyUnit::Sat)
+        .expect("There is a keyset for unit");
+
+    let keyset_info = mint
+        .localstore
+        .get_keyset_info(active)
+        .await
+        .unwrap()
+        .expect("There is keyset");
+
+    assert!(keyset_info.derivation_path_index == Some(2));
 }
