@@ -63,9 +63,6 @@ pub struct MintQuote {
     /// Amount paid to the mint for the quote
     #[serde(default)]
     pub amount_paid: Amount,
-    /// Single use
-    #[serde(default)]
-    pub single_use: bool,
 }
 
 impl MintQuote {
@@ -80,7 +77,6 @@ impl MintQuote {
         request: String,
         expiry: u64,
         secret_key: Option<SecretKey>,
-        single_use: bool,
     ) -> Self {
         Self {
             id,
@@ -94,7 +90,6 @@ impl MintQuote {
             secret_key,
             amount_minted: Amount::ZERO,
             amount_paid: Amount::ZERO,
-            single_use,
         }
     }
 

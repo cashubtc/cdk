@@ -86,7 +86,6 @@ impl Wallet {
             quote_res.request,
             quote_res.expiry.unwrap_or(0),
             Some(secret_key),
-            true,
         );
 
         self.localstore.add_mint_quote(quote.clone()).await?;

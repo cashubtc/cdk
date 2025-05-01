@@ -35,10 +35,6 @@ pub struct MintQuoteBolt12Request {
     pub unit: CurrencyUnit,
     /// Memo to create the invoice with
     pub description: Option<String>,
-    /// Single use
-    pub single_use: bool,
-    /// Expiry
-    pub expiry: Option<u64>,
     /// Pubkey
     pub pubkey: PublicKey,
 }
@@ -60,8 +56,6 @@ pub struct MintQuoteBolt12Response<Q> {
     pub expiry: Option<u64>,
     /// Pubkey
     pub pubkey: PublicKey,
-    /// Single use
-    pub single_use: bool,
     /// Amount that has been paid
     pub amount_paid: Amount,
     /// Amount that has been issued
@@ -79,7 +73,6 @@ impl<Q: ToString> MintQuoteBolt12Response<Q> {
             unit: self.unit.clone(),
             expiry: self.expiry,
             pubkey: self.pubkey,
-            single_use: self.single_use,
             amount_paid: self.amount_paid,
             amount_issued: self.amount_issued,
         }
@@ -92,7 +85,6 @@ impl From<MintQuoteBolt12Response<Uuid>> for MintQuoteBolt12Response<String> {
         Self {
             quote: value.quote.to_string(),
             request: value.request,
-            single_use: value.single_use,
             expiry: value.expiry,
             amount_paid: value.amount_paid,
             amount_issued: value.amount_issued,

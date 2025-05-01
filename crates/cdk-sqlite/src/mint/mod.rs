@@ -443,19 +443,8 @@ impl MintQuotesDatabase for MintSqliteDatabase {
         let res = sqlx::query(
             r#"
 INSERT INTO mint_quote
-(id, amount, unit, request, expiry, request_lookup_id, pubkey, created_time, pending, payment_method, single_use)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
-    amount = excluded.amount,
-    unit = excluded.unit,
-    request = excluded.request,
-    expiry = excluded.expiry,
-    request_lookup_id = excluded.request_lookup_id,
-    pubkey = excluded.pubkey,
-    created_time = excluded.created_time,
-    pending = excluded.pending,
-    payment_method = excluded.payment_method,
-    single_use = excluded.single_use;
+(id, amount, unit, request, expiry, request_lookup_id, pubkey, created_time, pending, payment_method)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         "#,
         )
         .bind(quote.id.to_string())
@@ -468,7 +457,6 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(quote.created_time as i64)
         .bind(quote.pending())
         .bind(quote.payment_method.to_string())
-        .bind(quote.single_use)
         .execute(&mut *transaction)
         .await;
 
@@ -2061,7 +2049,6 @@ fn sqlite_row_to_mint_quote(
     let row_method: Option<String> = row.try_get("payment_method").map_err(Error::from)?;
     let row_amount_paid: Option<i64> = row.try_get("amount_paid").map_err(Error::from)?;
     let row_amount_minted: Option<i64> = row.try_get("amount_minted").map_err(Error::from)?;
-    let row_single_use: Option<bool> = row.try_get("single_use").map_err(Error::from)?;
 
     let pending: bool = row.try_get("pending").map_err(Error::from)?;
 
@@ -2110,7 +2097,6 @@ fn sqlite_row_to_mint_quote(
         pubkey,
         amount_paid.into(),
         amount_minted.into(),
-        row_single_use.unwrap_or(true),
         payment_ids,
         payment_method.unwrap_or_default(),
         pending,

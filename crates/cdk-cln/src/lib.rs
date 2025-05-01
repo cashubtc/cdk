@@ -504,7 +504,6 @@ impl MintPayment for Cln {
                     description,
                     amount,
                     unix_expiry,
-                    single_use,
                 } = *bolt12_options;
                 let mut cln_client = self.cln_client.lock().await;
 
@@ -531,7 +530,7 @@ impl MintPayment for Cln {
                         description: Some(description.unwrap_or("".to_string())),
                         issuer: Some(issuer.to_string()),
                         label: Some(label.to_string()),
-                        single_use: Some(single_use),
+                        single_use: None,
                         quantity_max: None,
                         recurrence: None,
                         recurrence_base: None,

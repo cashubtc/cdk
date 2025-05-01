@@ -142,7 +142,6 @@ impl MintPayment for PaymentProcessorClient {
                             description: bolt12_options.description,
                             amount: bolt12_options.amount.map(|a| a.into()),
                             unix_expiry: bolt12_options.unix_expiry,
-                            single_use: bolt12_options.single_use,
                         },
                     )),
                 }

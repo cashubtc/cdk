@@ -119,8 +119,6 @@ pub struct Bolt12IncomingPaymentOptions {
     pub amount: Option<Amount>,
     /// Optional expiry time as Unix timestamp in seconds
     pub unix_expiry: Option<u64>,
-    /// Whether the offer should be single-use
-    pub single_use: bool,
 }
 
 /// Options for creating an incoming payment request

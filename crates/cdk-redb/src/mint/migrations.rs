@@ -376,7 +376,6 @@ impl From<V5MintQuote> for MintQuote {
             quote.pubkey,
             amount_paid,
             amount_issued,
-            true,
             payment_ids,
             cdk_common::PaymentMethod::Bolt11,
             pending,

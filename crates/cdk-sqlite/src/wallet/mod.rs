@@ -362,8 +362,8 @@ WHERE id=?
         sqlx::query(
             r#"
 INSERT INTO mint_quote
-(id, mint_url, payment_method, amount, unit, request, state, expiry, amount_paid, amount_minted, single_use, secret_key)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+(id, mint_url, payment_method, amount, unit, request, state, expiry, amount_paid, amount_minted, secret_key)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     mint_url = excluded.mint_url,
     payment_method = excluded.payment_method,
@@ -374,7 +374,6 @@ ON CONFLICT(id) DO UPDATE SET
     expiry = excluded.expiry,
     amount_paid = excluded.amount_paid,
     amount_minted = excluded.amount_minted,
-    single_use = excluded.single_use,
     secret_key = excluded.secret_key
 ;
         "#,
@@ -389,7 +388,6 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(quote.expiry as i64)
         .bind(u64::from(quote.amount_paid) as i64)
         .bind(u64::from(quote.amount_minted) as i64)
-        .bind(quote.single_use)
         .bind(quote.secret_key.map(|p| p.to_string()))
         .execute(&self.pool)
         .await
@@ -985,7 +983,6 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
     let row_method: String = row.try_get("payment_method").map_err(Error::from)?;
     let row_amount_paid: i64 = row.try_get("amount_paid").map_err(Error::from)?;
     let row_amount_minted: i64 = row.try_get("amount_minted").map_err(Error::from)?;
-    let single_use: bool = row.try_get("single_use").map_err(Error::from)?;
 
     let state = MintQuoteState::from_str(&row_state)?;
 
@@ -1009,7 +1006,6 @@ fn sqlite_row_to_mint_quote(row: &SqliteRow) -> Result<MintQuote, Error> {
         payment_method,
         amount_minted: amount_minted.into(),
         amount_paid: amount_paid.into(),
-        single_use,
     })
 }
 

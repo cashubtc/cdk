@@ -94,52 +94,6 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_regtest_bolt12_attempt_double_pay_single() -> Result<()> {
-    let wallet = Wallet::new(
-        &get_mint_url_from_env(),
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
-
-    let mint_amount = Amount::from(100);
-
-    // Create a single-use BOLT12 quote
-    let mint_quote = wallet
-        .mint_bolt12_quote(Some(mint_amount), None, true, None)
-        .await?;
-
-    assert_eq!(mint_quote.amount, Some(mint_amount));
-
-    // Pay the quote
-    let cln_one_dir = get_cln_dir("one");
-    let cln_client = ClnClient::new(cln_one_dir.clone(), None).await?;
-    cln_client
-        .pay_bolt12_offer(None, mint_quote.request.clone())
-        .await?;
-
-    // Wait for payment to be processed
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
-
-    // First mint should succeed
-    let proofs = wallet
-        .mint_bolt12(&mint_quote.id, None, SplitTarget::default(), None)
-        .await
-        .unwrap();
-
-    assert_eq!(proofs.total_amount().unwrap(), mint_amount);
-
-    // Try to pay the same offer again - this should fail for single-use offers
-    let payment_result = cln_client.pay_bolt12_offer(None, mint_quote.request).await;
-
-    // The payment should fail because it's a single-use offer
-    assert!(payment_result.is_err());
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_regtest_bolt12_melt() -> Result<()> {
     let wallet = Wallet::new(
         &get_mint_url_from_env(),

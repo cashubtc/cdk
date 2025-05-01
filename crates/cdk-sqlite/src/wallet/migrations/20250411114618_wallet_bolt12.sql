@@ -2,7 +2,6 @@
 ALTER TABLE mint_quote ADD COLUMN amount_paid INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE mint_quote ADD COLUMN amount_minted INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE mint_quote ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'BOLT11';
-ALTER TABLE mint_quote ADD COLUMN single_use BOOLEAN NOT NULL DEFAULT TRUE;
 
 -- Remove NOT NULL constraint from amount column
 PRAGMA foreign_keys=off;
@@ -17,7 +16,6 @@ CREATE TABLE mint_quote_new (
     expiry INTEGER NOT NULL,
     amount_paid INTEGER NOT NULL DEFAULT 0,
     amount_minted INTEGER NOT NULL DEFAULT 0,
-    single_use BOOLEAN NOT NULL DEFAULT TRUE,
     secret_key TEXT
 );
 
@@ -33,7 +31,6 @@ INSERT INTO mint_quote_new (
     expiry, 
     amount_paid,
     amount_minted,
-    single_use,
     secret_key
 ) 
 SELECT 
@@ -47,7 +44,6 @@ SELECT
     expiry, 
     0, -- Default value for amount_paid
     0, -- Default value for amount_minted
-    TRUE, -- Default value for single_use
     secret_key
 FROM mint_quote;
 

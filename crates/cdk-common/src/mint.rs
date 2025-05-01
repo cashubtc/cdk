@@ -49,9 +49,6 @@ pub struct MintQuote {
     /// Amount issued
     #[serde(default)]
     amount_issued: Amount,
-    /// Single use
-    #[serde(default)]
-    pub single_use: bool,
     /// Payment of payment(s) that filled quote
     #[serde(default)]
     pub payment_ids: Vec<String>,
@@ -73,7 +70,6 @@ impl MintQuote {
         pubkey: Option<PublicKey>,
         amount_paid: Amount,
         amount_issued: Amount,
-        single_use: bool,
         payment_ids: Vec<String>,
         payment_method: PaymentMethod,
         pending: bool,
@@ -94,7 +90,6 @@ impl MintQuote {
             created_time,
             amount_paid,
             amount_issued,
-            single_use,
             payment_ids,
             payment_method,
             pending,
@@ -446,7 +441,6 @@ impl TryFrom<crate::mint::MintQuote> for MintQuoteBolt12Response<Uuid> {
             expiry: Some(mint_quote.expiry),
             amount_paid: mint_quote.amount_paid,
             amount_issued: mint_quote.amount_issued,
-            single_use: mint_quote.single_use,
             pubkey: mint_quote.pubkey.ok_or(crate::Error::PubkeyRequired)?,
             amount: mint_quote.amount,
             unit: mint_quote.unit,

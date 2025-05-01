@@ -52,8 +52,6 @@ impl Wallet {
             amount,
             unit: self.unit.clone(),
             description,
-            single_use,
-            expiry,
             pubkey: secret_key.public_key(),
         };
 
@@ -68,7 +66,6 @@ impl Wallet {
             quote_res.request,
             quote_res.expiry.unwrap_or(0),
             Some(secret_key),
-            single_use,
         );
 
         self.localstore.add_mint_quote(quote.clone()).await?;
@@ -185,18 +182,14 @@ impl Wallet {
         )?;
 
         // Remove filled quote from store
-        if quote_info.single_use {
-            self.localstore.remove_mint_quote(&quote_info.id).await?;
-        } else {
-            let mut quote_info = self
-                .localstore
-                .get_mint_quote(quote_id)
-                .await?
-                .ok_or(Error::UnpaidQuote)?;
-            quote_info.amount_minted += proofs.total_amount()?;
+        let mut quote_info = self
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnpaidQuote)?;
+        quote_info.amount_minted += proofs.total_amount()?;
 
-            self.localstore.add_mint_quote(quote_info).await?;
-        }
+        self.localstore.add_mint_quote(quote_info.clone()).await?;
 
         if spending_conditions.is_none() {
             // Update counter for keyset

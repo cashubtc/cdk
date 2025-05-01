@@ -4,7 +4,6 @@
 ALTER TABLE mint_quote ADD COLUMN amount_paid INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE mint_quote ADD COLUMN amount_minted INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE mint_quote ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'bolt11';
-ALTER TABLE mint_quote ADD COLUMN single_use BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE mint_quote ADD COLUMN pending BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE mint_quote DROP COLUMN issued_time;
 ALTER TABLE mint_quote DROP COLUMN paid_time;
@@ -36,11 +35,10 @@ CREATE TABLE mint_quote_temp (
     amount_paid INTEGER NOT NULL DEFAULT 0,
     amount_minted INTEGER NOT NULL DEFAULT 0,
     payment_method TEXT NOT NULL DEFAULT 'bolt11',
-    single_use BOOLEAN NOT NULL DEFAULT TRUE,
     pending BOOLEAN NOT NULL DEFAULT FALSE
 );
 
-INSERT INTO mint_quote_temp (id, amount, unit, request, expiry, request_lookup_id, pubkey, created_time, amount_paid, amount_minted, payment_method, single_use, pending) SELECT id, amount, unit, request, expiry, request_lookup_id, pubkey, created_time, amount_paid, amount_minted, payment_method, single_use, pending FROM mint_quote;
+INSERT INTO mint_quote_temp (id, amount, unit, request, expiry, request_lookup_id, pubkey, created_time, amount_paid, amount_minted, payment_method, pending) SELECT id, amount, unit, request, expiry, request_lookup_id, pubkey, created_time, amount_paid, amount_minted, payment_method, pending FROM mint_quote;
 DROP TABLE mint_quote;
 ALTER TABLE mint_quote_temp RENAME TO mint_quote;
 

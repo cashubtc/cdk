@@ -115,7 +115,6 @@ impl Mint {
         amount: Option<Amount>,
         unit: &CurrencyUnit,
         payment_method: &PaymentMethod,
-        expiry: Option<u64>,
     ) -> Result<(), Error> {
         let mint_info = self.localstore.get_mint_info().await?;
 
@@ -142,12 +141,6 @@ impl Mint {
                 let settings = nut23
                     .get_settings(unit, payment_method)
                     .ok_or(Error::UnsupportedUnit)?;
-
-                if let (Some(expiry), Some(max_expiry)) = (expiry, settings.max_expiry) {
-                    if expiry > max_expiry {
-                        return Err(Error::InvalidExpiry);
-                    }
-                }
 
                 (nut23.disabled, settings.min_amount, settings.max_amount)
             }
@@ -198,7 +191,6 @@ impl Mint {
         let amount;
         let pubkey;
         let payment_method;
-        let single_use;
 
         let create_invoice_response = match mint_quote_request {
             MintQuoteRequest::Bolt11(bolt11_request) => {
@@ -206,13 +198,11 @@ impl Mint {
                 amount = Some(bolt11_request.amount);
                 pubkey = bolt11_request.pubkey;
                 payment_method = PaymentMethod::Bolt11;
-                single_use = true;
 
                 self.check_mint_request_acceptable(
                     Some(bolt11_request.amount),
                     &unit,
                     &payment_method,
-                    None,
                 )
                 .await?;
 
@@ -252,12 +242,8 @@ impl Mint {
                 amount = bolt12_request.amount;
                 pubkey = Some(bolt12_request.pubkey);
                 payment_method = PaymentMethod::Bolt12;
-                single_use = bolt12_request.single_use;
 
-                println!("{}", single_use);
-
-                let expiry = bolt12_request.expiry;
-                self.check_mint_request_acceptable(amount, &unit, &payment_method, expiry)
+                self.check_mint_request_acceptable(amount, &unit, &payment_method)
                     .await?;
 
                 let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
@@ -265,16 +251,13 @@ impl Mint {
                 let description = bolt12_request.description;
 
                 let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
-                let quote_expiry = match expiry {
-                    Some(expiry) => expiry,
-                    None => unix_time() + mint_ttl,
-                };
+
+                let expiry = unix_time() + mint_ttl;
 
                 let bolt12_options = Bolt12IncomingPaymentOptions {
                     description,
                     amount,
-                    unix_expiry: Some(quote_expiry),
-                    single_use,
+                    unix_expiry: Some(expiry),
                 };
 
                 let incoming_options = IncomingPaymentOptions::Bolt12(Box::new(bolt12_options));
@@ -298,7 +281,6 @@ impl Mint {
             pubkey,
             Amount::ZERO,
             Amount::ZERO,
-            single_use,
             vec![],
             payment_method.clone(),
             false,

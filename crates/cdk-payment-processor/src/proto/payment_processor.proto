@@ -28,7 +28,6 @@ message Bolt12IncomingPaymentOptions {
   optional string description = 1;
   optional uint64 amount = 2;
   optional uint64 unix_expiry = 3;
-  bool single_use = 4;
 }
 
 enum PaymentMethodType {
