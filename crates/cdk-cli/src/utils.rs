@@ -18,8 +18,8 @@ pub fn get_user_input(prompt: &str) -> Result<String> {
 }
 
 /// Helper function to get a number from user input with a prompt
-pub fn get_number_input<T>(prompt: &str) -> Result<T> 
-where 
+pub fn get_number_input<T>(prompt: &str) -> Result<T>
+where
     T: FromStr,
     T::Err: std::error::Error + Send + Sync + 'static,
 {
@@ -52,13 +52,13 @@ pub async fn get_wallet_by_index(
     unit: CurrencyUnit,
 ) -> Result<cdk::wallet::Wallet> {
     validate_mint_number(mint_number, mint_amounts.len())?;
-    
+
     let wallet_key = WalletKey::new(mint_amounts[mint_number].0.clone(), unit);
     let wallet = multi_mint_wallet
         .get_wallet(&wallet_key)
         .await
         .ok_or_else(|| anyhow::anyhow!("Wallet not found"))?;
-    
+
     Ok(wallet.clone())
 }
 
