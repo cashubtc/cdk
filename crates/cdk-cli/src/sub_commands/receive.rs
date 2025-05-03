@@ -14,6 +14,7 @@ use nostr_sdk::nips::nip04;
 use nostr_sdk::{Filter, Keys, Kind, Timestamp};
 
 use crate::nostr_storage;
+use crate::utils::get_or_create_wallet;
 
 #[derive(Args)]
 pub struct ReceiveSubCommand {
@@ -137,17 +138,10 @@ async fn receive_token(
     let token: Token = Token::from_str(token_str)?;
 
     let mint_url = token.mint_url()?;
+    let unit = token.unit().unwrap_or_default();
 
-    let wallet_key = WalletKey::new(mint_url.clone(), token.unit().unwrap_or_default());
-
-    if multi_mint_wallet.get_wallet(&wallet_key).await.is_none() {
-        multi_mint_wallet
-            .create_and_add_wallet(
-                &mint_url.to_string(),
-                token.unit().unwrap_or_default(),
-                None,
-            )
-            .await?;
+    if multi_mint_wallet.get_wallet(&WalletKey::new(mint_url.clone(), unit.clone())).await.is_none() {
+        get_or_create_wallet(multi_mint_wallet, &mint_url, unit).await?;
     }
 
     let amount = multi_mint_wallet

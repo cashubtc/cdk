@@ -1,4 +1,3 @@
-use std::io::{self, Write};
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
@@ -11,6 +10,7 @@ use clap::Args;
 use tokio::task::JoinSet;
 
 use crate::sub_commands::balance::mint_balances;
+use crate::utils::{get_number_input, get_user_input, get_wallet_by_index, validate_mint_number};
 
 #[derive(Args)]
 pub struct MeltSubCommand {
@@ -20,15 +20,6 @@ pub struct MeltSubCommand {
     /// Mpp
     #[arg(short, long)]
     mpp: bool,
-}
-
-/// Helper function to get user input with a prompt
-fn get_user_input(prompt: &str) -> Result<String> {
-    println!("{}", prompt);
-    let mut user_input = String::new();
-    io::stdout().flush()?;
-    io::stdin().read_line(&mut user_input)?;
-    Ok(user_input.trim().to_string())
 }
 
 pub async fn pay(
@@ -49,13 +40,10 @@ pub async fn pay(
             }
 
             let mint_number: usize = mint_number.parse()?;
-            if mint_number.gt(&(mints_amounts.len() - 1)) {
-                bail!("Invalid mint number");
-            }
+            validate_mint_number(mint_number, mints_amounts.len())?;
 
             mints.push(mint_number);
-            let melt_amount: u64 =
-                get_user_input("Enter amount to mint from this mint.")?.parse()?;
+            let melt_amount: u64 = get_number_input("Enter amount to mint from this mint.")?;
             mint_amounts.push(melt_amount);
         }
 
@@ -120,18 +108,11 @@ pub async fn pay(
 
         bail!("Could not complete all melts");
     } else {
-        let mint_number: usize = get_user_input("Enter mint number to melt from")?.parse()?;
+        let mint_number: usize = get_number_input("Enter mint number to melt from")?;
 
-        if mint_number.gt(&(mints_amounts.len() - 1)) {
-            bail!("Invalid mint number");
-        }
-
-        let wallet = mints_amounts[mint_number].0.clone();
-
-        let wallet = multi_mint_wallet
-            .get_wallet(&WalletKey::new(wallet, unit))
-            .await
-            .expect("Known wallet");
+        let wallet =
+            get_wallet_by_index(multi_mint_wallet, &mints_amounts, mint_number, unit.clone())
+                .await?;
 
         let bolt11 = Bolt11Invoice::from_str(&get_user_input("Enter bolt11 invoice request")?)?;
 
@@ -150,7 +131,7 @@ pub async fn pay(
                 }
             );
 
-            let user_amount = get_user_input(&prompt)?.parse::<u64>()? * MSAT_IN_SAT;
+            let user_amount = get_number_input::<u64>(&prompt)? * MSAT_IN_SAT;
 
             if user_amount > available_funds {
                 bail!("Not enough funds");

@@ -20,6 +20,7 @@ use url::Url;
 mod nostr_storage;
 mod sub_commands;
 mod token_storage;
+mod utils;
 
 const DEFAULT_WORK_DIR: &str = ".cdk-cli";
 
