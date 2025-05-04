@@ -33,9 +33,10 @@ pub async fn pay(
     let mut mint_amounts = vec![];
     if sub_command_args.mpp {
         loop {
-            let mint_number: String = get_user_input("Enter mint number to melt from")?;
+            let mint_number: String =
+                get_user_input("Enter mint number to melt from and -1 when done.")?;
 
-            if mint_number == "-1" {
+            if mint_number == "-1" || mint_number.is_empty() {
                 break;
             }
 
@@ -43,7 +44,8 @@ pub async fn pay(
             validate_mint_number(mint_number, mints_amounts.len())?;
 
             mints.push(mint_number);
-            let melt_amount: u64 = get_number_input("Enter amount to mint from this mint.")?;
+            let melt_amount: u64 =
+                get_number_input("Enter amount to mint from this mint in sats.")?;
             mint_amounts.push(melt_amount);
         }
 
@@ -58,7 +60,7 @@ pub async fn pay(
                 .get_wallet(&WalletKey::new(wallet, unit.clone()))
                 .await
                 .expect("Known wallet");
-            let options = MeltOptions::new_mpp(amount);
+            let options = MeltOptions::new_mpp(amount * 1000);
 
             let bolt11_clone = bolt11.clone();
 
@@ -78,7 +80,11 @@ pub async fn pay(
                 tracing::error!("Could not get quote for {}: {:?}", wallet.mint_url, quote);
                 bail!("Could not get melt quote for {}", wallet.mint_url);
             } else {
-                println!("{:?}", quote.as_ref().expect("checked"));
+                let quote = quote.as_ref().unwrap();
+                println!(
+                    "Melt quote {} for mint {} of amount {} with fee {}.",
+                    quote.id, wallet.mint_url, quote.amount, quote.fee_reserve
+                );
             }
         }
 
@@ -95,18 +101,26 @@ pub async fn pay(
 
         let melts = melts.join_all().await;
 
+        let mut error = false;
+
         for (wallet, melt) in melts {
             match melt {
                 Ok(melt) => {
-                    println!("Melt for {} complete {:?}", wallet.mint_url, melt);
+                    println!(
+                        "Melt for {} paid {} with fee of {} ",
+                        wallet.mint_url, melt.amount, melt.fee_paid
+                    );
                 }
                 Err(err) => {
                     println!("Melt for {} failed with {}", wallet.mint_url, err);
+                    error = true;
                 }
             }
         }
 
-        bail!("Could not complete all melts");
+        if error {
+            bail!("Could not complete all melts");
+        }
     } else {
         let mint_number: usize = get_number_input("Enter mint number to melt from")?;
 
@@ -120,7 +134,7 @@ pub async fn pay(
             <cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * MSAT_IN_SAT;
 
         // Determine payment amount and options
-        let options = if sub_command_args.mpp || bolt11.amount_milli_satoshis().is_none() {
+        let options = if bolt11.amount_milli_satoshis().is_none() {
             // Get user input for amount
             let prompt = format!(
                 "Enter the amount you would like to pay in sats for a {} payment.",
@@ -137,11 +151,7 @@ pub async fn pay(
                 bail!("Not enough funds");
             }
 
-            Some(if sub_command_args.mpp {
-                MeltOptions::new_mpp(user_amount)
-            } else {
-                MeltOptions::new_amountless(user_amount)
-            })
+            Some(MeltOptions::new_amountless(user_amount))
         } else {
             // Check if invoice amount exceeds available funds
             let invoice_amount = bolt11.amount_milli_satoshis().unwrap();
