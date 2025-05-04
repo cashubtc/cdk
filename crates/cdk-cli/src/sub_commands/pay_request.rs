@@ -67,14 +67,17 @@ pub async fn pay_request(
 
     let matching_wallet = matching_wallets.first().unwrap();
 
-    // We prefer nostr transport if it is available to hide ip.
-    let transport = payment_request
+    let transports = payment_request
         .transports
+        .clone()
+        .ok_or(anyhow!("Cannot pay request without transport"))?;
+
+    // We prefer nostr transport if it is available to hide ip.
+    let transport = transports
         .iter()
         .find(|t| t._type == TransportType::Nostr)
         .or_else(|| {
-            payment_request
-                .transports
+            transports
                 .iter()
                 .find(|t| t._type == TransportType::HttpPost)
         })

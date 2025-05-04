@@ -3,15 +3,18 @@
 //! <https://github.com/cashubtc/nuts/blob/main/18.md>
 
 use std::fmt;
+use std::ops::Not;
 use std::str::FromStr;
 
 use bitcoin::base64::engine::{general_purpose, GeneralPurpose};
 use bitcoin::base64::{alphabet, Engine};
+use serde::ser::{SerializeTuple, Serializer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::{CurrencyUnit, Proofs};
+use super::{CurrencyUnit, Nut10Secret, Proofs, SpendingConditions};
 use crate::mint_url::MintUrl;
+use crate::nuts::nut10::Kind;
 use crate::Amount;
 
 const PAYMENT_REQUEST_PREFIX: &str = "creqA";
@@ -146,6 +149,91 @@ impl AsRef<String> for Transport {
     }
 }
 
+/// Secret Data without nonce for payment requests
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SecretDataRequest {
+    /// Expresses the spending condition specific to each kind
+    pub data: String,
+    /// Additional data committed to and can be used for feature extensions
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<Vec<String>>>,
+}
+
+/// Nut10Secret without nonce for payment requests
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize)]
+pub struct Nut10SecretRequest {
+    /// Kind of the spending condition
+    pub kind: Kind,
+    /// Secret Data without nonce
+    pub secret_data: SecretDataRequest,
+}
+
+impl Nut10SecretRequest {
+    /// Create a new Nut10SecretRequest
+    pub fn new<S, V>(kind: Kind, data: S, tags: Option<V>) -> Self
+    where
+        S: Into<String>,
+        V: Into<Vec<Vec<String>>>,
+    {
+        let secret_data = SecretDataRequest {
+            data: data.into(),
+            tags: tags.map(|v| v.into()),
+        };
+
+        Self { kind, secret_data }
+    }
+}
+
+impl From<Nut10Secret> for Nut10SecretRequest {
+    fn from(secret: Nut10Secret) -> Self {
+        let secret_data = SecretDataRequest {
+            data: secret.secret_data.data,
+            tags: secret.secret_data.tags,
+        };
+
+        Self {
+            kind: secret.kind,
+            secret_data,
+        }
+    }
+}
+
+impl From<Nut10SecretRequest> for Nut10Secret {
+    fn from(value: Nut10SecretRequest) -> Self {
+        Self::new(value.kind, value.secret_data.data, value.secret_data.tags)
+    }
+}
+
+impl From<SpendingConditions> for Nut10SecretRequest {
+    fn from(conditions: SpendingConditions) -> Self {
+        match conditions {
+            SpendingConditions::P2PKConditions { data, conditions } => {
+                Self::new(Kind::P2PK, data.to_hex(), conditions)
+            }
+            SpendingConditions::HTLCConditions { data, conditions } => {
+                Self::new(Kind::HTLC, data.to_string(), conditions)
+            }
+        }
+    }
+}
+
+impl Serialize for Nut10SecretRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Create a tuple representing the struct fields
+        let secret_tuple = (&self.kind, &self.secret_data);
+
+        // Serialize the tuple as a JSON array
+        let mut s = serializer.serialize_tuple(2)?;
+
+        s.serialize_element(&secret_tuple.0)?;
+        s.serialize_element(&secret_tuple.1)?;
+        s.end()
+    }
+}
+
 /// Payment Request
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentRequest {
@@ -169,7 +257,10 @@ pub struct PaymentRequest {
     pub description: Option<String>,
     /// Transport
     #[serde(rename = "t")]
-    pub transports: Vec<Transport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transports: Option<Vec<Transport>>,
+    /// Nut10
+    pub nut10: Option<Nut10SecretRequest>,
 }
 
 impl PaymentRequest {
@@ -189,6 +280,7 @@ pub struct PaymentRequestBuilder {
     mints: Option<Vec<MintUrl>>,
     description: Option<String>,
     transports: Vec<Transport>,
+    nut10: Option<Nut10SecretRequest>,
 }
 
 impl PaymentRequestBuilder {
@@ -252,8 +344,16 @@ impl PaymentRequestBuilder {
         self
     }
 
+    /// Set Nut10 secret
+    pub fn nut10(mut self, nut10: Nut10SecretRequest) -> Self {
+        self.nut10 = Some(nut10);
+        self
+    }
+
     /// Build the PaymentRequest
     pub fn build(self) -> PaymentRequest {
+        let transports = self.transports.is_empty().not().then_some(self.transports);
+
         PaymentRequest {
             payment_id: self.payment_id,
             amount: self.amount,
@@ -261,7 +361,8 @@ impl PaymentRequestBuilder {
             single_use: self.single_use,
             mints: self.mints,
             description: self.description,
-            transports: self.transports,
+            transports,
+            nut10: self.nut10,
         }
     }
 }
@@ -334,7 +435,8 @@ mod tests {
         );
         assert_eq!(req.unit.unwrap(), CurrencyUnit::Sat);
 
-        let transport = req.transports.first().unwrap();
+        let transport = req.transports.unwrap();
+        let transport = transport.first().unwrap();
 
         let expected_transport = Transport {_type: TransportType::Nostr, target: "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5".to_string(), tags: Some(vec![vec!["n".to_string(), "17".to_string()]])};
 
@@ -354,7 +456,8 @@ mod tests {
                 .parse()
                 .expect("valid mint url")]),
             description: None,
-            transports: vec![transport.clone()],
+            transports: Some(vec![transport.clone()]),
+            nut10: None,
         };
 
         let request_str = request.to_string();
@@ -370,7 +473,8 @@ mod tests {
         );
         assert_eq!(req.unit.unwrap(), CurrencyUnit::Sat);
 
-        let t = req.transports.first().unwrap();
+        let t = req.transports.unwrap();
+        let t = t.first().unwrap();
         assert_eq!(&transport, t);
     }
 
@@ -400,7 +504,8 @@ mod tests {
         assert_eq!(request.unit.clone().unwrap(), CurrencyUnit::Sat);
         assert_eq!(request.mints.clone().unwrap(), vec![mint_url]);
 
-        let t = request.transports.first().unwrap();
+        let t = request.transports.clone().unwrap();
+        let t = t.first().unwrap();
         assert_eq!(&transport, t);
 
         // Test serialization and deserialization
@@ -433,5 +538,54 @@ mod tests {
         // Test error case - missing required fields
         let result = TransportBuilder::default().build();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_nut10_secret_request() {
+        use crate::nuts::nut10::Kind;
+
+        // Create a Nut10SecretRequest
+        let secret_request = Nut10SecretRequest::new(
+            Kind::P2PK,
+            "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198",
+            Some(vec![vec!["key".to_string(), "value".to_string()]]),
+        );
+
+        // Convert to a full Nut10Secret
+        let full_secret: Nut10Secret = secret_request.clone().into();
+
+        // Check conversion
+        assert_eq!(full_secret.kind, Kind::P2PK);
+        assert_eq!(
+            full_secret.secret_data.data,
+            "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198"
+        );
+        assert_eq!(
+            full_secret.secret_data.tags,
+            Some(vec![vec!["key".to_string(), "value".to_string()]])
+        );
+
+        // Convert back to Nut10SecretRequest
+        let converted_back = Nut10SecretRequest::from(full_secret);
+
+        // Check round-trip conversion
+        assert_eq!(converted_back.kind, secret_request.kind);
+        assert_eq!(
+            converted_back.secret_data.data,
+            secret_request.secret_data.data
+        );
+        assert_eq!(
+            converted_back.secret_data.tags,
+            secret_request.secret_data.tags
+        );
+
+        // Test in PaymentRequest builder
+        let payment_request = PaymentRequest::builder()
+            .payment_id("test123")
+            .amount(Amount::from(100))
+            .nut10(secret_request.clone())
+            .build();
+
+        assert_eq!(payment_request.nut10, Some(secret_request));
     }
 }
