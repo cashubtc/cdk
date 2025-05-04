@@ -47,7 +47,8 @@ pub async fn create_request(
         single_use: Some(true),
         mints: Some(mints),
         description: sub_command_args.description.clone(),
-        transports: vec![nostr_transport],
+        transports: Some(vec![nostr_transport]),
+        nut10: None,
     };
 
     println!("{req}");
