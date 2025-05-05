@@ -313,7 +313,7 @@ impl Mint {
     }
 
     /// Wait for any invoice to be paid
-    /// For each backend starts a task that waits for any invoice to be paid
+    /// Starts a task for each unique payment processor (not one per key) that waits for any invoice to be paid
     /// Once invoice is paid mint quote status is updated
     #[instrument(skip_all)]
     pub async fn wait_for_paid_invoices(&self, shutdown: Arc<Notify>) -> Result<(), Error> {
@@ -321,48 +321,63 @@ impl Mint {
 
         let mut join_set = JoinSet::new();
 
+        // Group keys by processor identity - using reference equality
+        let mut processor_groups: Vec<(
+            Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+            Vec<PaymentProcessorKey>,
+        )> = Vec::new();
+
+        // First, gather all unique payment processors
         for (key, ln) in self.ln.iter() {
+            // Check if we already have this processor
+            let found = processor_groups.iter_mut().find(|(proc_ref, _)| {
+                // Compare Arc pointer equality using ptr_eq
+                Arc::ptr_eq(proc_ref, ln)
+            });
+
+            if let Some((_, keys)) = found {
+                // We found this processor, add the key to its group
+                keys.push(key.clone());
+            } else {
+                // New processor, create a new group
+                processor_groups.push((Arc::clone(ln), vec![key.clone()]));
+            }
+        }
+
+        // Now spawn a task for each unique processor
+        for (ln, keys) in processor_groups {
             if !ln.is_wait_invoice_active() {
-                tracing::info!("Wait payment for {:?} inactive starting.", key);
+                tracing::info!("Wait payment for keys {:?} inactive starting. Using single processor instance.", keys);
                 let mint = Arc::clone(&mint_arc);
-                let ln = Arc::clone(ln);
+                let ln = Arc::clone(&ln);
                 let shutdown = Arc::clone(&shutdown);
-                let key = key.clone();
                 join_set.spawn(async move {
-            loop {
-
-                // HACK: Think is is a hack
-                // if ln.is_wait_invoice_active() {
-                //     tracing::warn!("Wait invoice is active for: {:?}", key);
-                //     break;
-                // }
-
-                tracing::info!("Restarting wait for: {:?}", key);
-                tokio::select! {
-                    _ = shutdown.notified() => {
-                        tracing::info!("Shutdown signal received, stopping task for {:?}", key);
-                        ln.cancel_wait_invoice();
-                        break;
-                    }
-                    result = ln.wait_any_incoming_payment() => {
-                        match result {
-                            Ok(mut stream) => {
-                                while let Some(wait_payment_response) = stream.next().await {
-                                    if let Err(err) = mint.pay_mint_quote_for_request_id(wait_payment_response).await {
-                                        tracing::warn!("{:?}", err);
+                    loop {
+                        tracing::info!("Starting wait for keys: {:?}", keys);
+                        tokio::select! {
+                            _ = shutdown.notified() => {
+                                tracing::info!("Shutdown signal received, stopping task for keys {:?}", keys);
+                                ln.cancel_wait_invoice();
+                                break;
+                            }
+                            result = ln.wait_any_incoming_payment() => {
+                                match result {
+                                    Ok(mut stream) => {
+                                        while let Some(wait_payment_response) = stream.next().await {
+                                            if let Err(err) = mint.pay_mint_quote_for_request_id(wait_payment_response).await {
+                                                tracing::warn!("{:?}", err);
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!("Could not get incoming payment stream for keys {:?}: {}", keys, err);
+                                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                                     }
                                 }
                             }
-                            Err(err) => {
-                                tracing::warn!("Could not get incoming payment stream for {:?}: {}",key, err);
-
-                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                            }
                         }
                     }
-                    }
-            }
-        });
+                });
             }
         }
 
