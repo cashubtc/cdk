@@ -5,11 +5,12 @@ use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
-use cdk::wallet::types::WalletKey;
 use cdk::wallet::{MultiMintWallet, WalletSubscription};
 use cdk::Amount;
 use clap::Args;
 use serde::{Deserialize, Serialize};
+
+use crate::utils::get_or_create_wallet;
 
 #[derive(Args, Serialize, Deserialize)]
 pub struct MintSubCommand {
@@ -36,18 +37,7 @@ pub async fn mint(
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
     let description: Option<String> = sub_command_args.description.clone();
 
-    let wallet = match multi_mint_wallet
-        .get_wallet(&WalletKey::new(mint_url.clone(), unit.clone()))
-        .await
-    {
-        Some(wallet) => wallet.clone(),
-        None => {
-            tracing::debug!("Wallet does not exist creating..");
-            multi_mint_wallet
-                .create_and_add_wallet(&mint_url.to_string(), unit, None)
-                .await?
-        }
-    };
+    let wallet = get_or_create_wallet(multi_mint_wallet, &mint_url, unit).await?;
 
     let quote_id = match &sub_command_args.quote_id {
         None => {
