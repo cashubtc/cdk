@@ -1,15 +1,14 @@
-use std::io;
-use std::io::Write;
 use std::str::FromStr;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use cdk::nuts::{Conditions, CurrencyUnit, PublicKey, SpendingConditions};
-use cdk::wallet::types::{SendKind, WalletKey};
+use cdk::wallet::types::SendKind;
 use cdk::wallet::{MultiMintWallet, SendMemo, SendOptions};
 use cdk::Amount;
 use clap::Args;
 
 use crate::sub_commands::balance::mint_balances;
+use crate::utils::{check_sufficient_funds, get_number_input, get_wallet_by_index};
 
 #[derive(Args)]
 pub struct SendSubCommand {
@@ -55,30 +54,13 @@ pub async fn send(
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
     let mints_amounts = mint_balances(multi_mint_wallet, &unit).await?;
 
-    println!("Enter mint number to create token");
+    let mint_number: usize = get_number_input("Enter mint number to create token")?;
 
-    let mut user_input = String::new();
-    let stdin = io::stdin();
-    io::stdout().flush().unwrap();
-    stdin.read_line(&mut user_input)?;
+    let wallet = get_wallet_by_index(multi_mint_wallet, &mints_amounts, mint_number, unit).await?;
 
-    let mint_number: usize = user_input.trim().parse()?;
+    let token_amount = Amount::from(get_number_input::<u64>("Enter value of token in sats")?);
 
-    if mint_number.gt(&(mints_amounts.len() - 1)) {
-        bail!("Invalid mint number");
-    }
-
-    println!("Enter value of token in sats");
-
-    let mut user_input = String::new();
-    let stdin = io::stdin();
-    io::stdout().flush().unwrap();
-    stdin.read_line(&mut user_input)?;
-    let token_amount = Amount::from(user_input.trim().parse::<u64>()?);
-
-    if token_amount.gt(&mints_amounts[mint_number].1) {
-        bail!("Not enough funds");
-    }
+    check_sufficient_funds(mints_amounts[mint_number].1, token_amount)?;
 
     let conditions = match &sub_command_args.preimage {
         Some(preimage) => {
@@ -155,12 +137,6 @@ pub async fn send(
             }
         },
     };
-
-    let wallet = mints_amounts[mint_number].0.clone();
-    let wallet = multi_mint_wallet
-        .get_wallet(&WalletKey::new(wallet, unit))
-        .await
-        .expect("Known wallet");
 
     let send_kind = match (sub_command_args.offline, sub_command_args.tolerance) {
         (true, Some(amount)) => SendKind::OfflineTolerance(Amount::from(amount)),

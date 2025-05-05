@@ -19,7 +19,11 @@ pub async fn mint_balances(
 
     let mut wallets_vec = Vec::with_capacity(wallets.len());
 
-    for (i, (mint_url, amount)) in wallets.iter().enumerate() {
+    for (i, (mint_url, amount)) in wallets
+        .iter()
+        .filter(|(_, a)| a > &&Amount::ZERO)
+        .enumerate()
+    {
         let mint_url = mint_url.clone();
         println!("{i}: {mint_url} {amount} {unit}");
         wallets_vec.push((mint_url, *amount))
