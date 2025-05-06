@@ -861,13 +861,10 @@ impl Mint {
 
         let invoice = payment_quote
             .options
-            .ok_or_else(|| {
-                tracing::error!("Payment backend did not return invoice");
-                Error::InvoiceMissing
-            })
             .map(|options| match options {
                 PaymentQuoteOptions::Bolt12 { invoice } => invoice,
-            })?;
+            })
+            .flatten();
 
         let payment_request = MeltPaymentRequest::Bolt12 {
             offer: Box::new(offer),

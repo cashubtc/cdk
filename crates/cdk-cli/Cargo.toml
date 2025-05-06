@@ -36,4 +36,5 @@ nostr-sdk = { version = "0.35.0", default-features = false, features = [
 reqwest.workspace = true
 url.workspace = true
 serde_with.workspace = true
+lightning.workspace = true
 
