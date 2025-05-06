@@ -52,6 +52,10 @@ pub struct Lnd {
 }
 
 impl Lnd {
+
+    /// Maximum number of attempts at a partial payment
+    pub const MAX_ROUTE_RETRIES: usize = 50;
+
     /// Create new [`Lnd`]
     pub async fn new(
         address: String,
@@ -282,51 +286,47 @@ impl MintPayment for Lnd {
                 let payer_addr = invoice.payment_secret().0.to_vec();
                 let payment_hash = invoice.payment_hash();
 
-                // Create a request for the routes
-                let route_req = fedimint_tonic_lnd::lnrpc::QueryRoutesRequest {
-                    pub_key: hex::encode(pub_key.serialize()),
-                    amt_msat: u64::from(partial_amount_msat) as i64,
-                    fee_limit: max_fee.map(|f| {
-                        let limit = Limit::Fixed(u64::from(f) as i64);
-                        FeeLimit { limit: Some(limit) }
-                    }),
-                    ..Default::default()
-                };
+                for attempt in 0..Self::MAX_ROUTE_RETRIES {
+                    // Create a request for the routes
+                    let route_req = fedimint_tonic_lnd::lnrpc::QueryRoutesRequest {
+                        pub_key: hex::encode(pub_key.serialize()),
+                        amt_msat: u64::from(partial_amount_msat) as i64,
+                        fee_limit: max_fee.map(|f| {
+                            let limit = Limit::Fixed(u64::from(f) as i64);
+                            FeeLimit { limit: Some(limit) }
+                        }),
+                        use_mission_control: true,
+                        ..Default::default()
+                    };
 
-                // Query the routes
-                let routes_response: fedimint_tonic_lnd::lnrpc::QueryRoutesResponse = self
-                    .client
-                    .lock()
-                    .await
-                    .lightning()
-                    .query_routes(route_req)
-                    .await
-                    .map_err(Error::LndError)?
-                    .into_inner();
+                    // Query the routes
+                    let mut routes_response: fedimint_tonic_lnd::lnrpc::QueryRoutesResponse = self
+                        .client
+                        .lock()
+                        .await
+                        .lightning()
+                        .query_routes(route_req)
+                        .await
+                        .map_err(Error::LndError)?
+                        .into_inner();
 
-                let mut payment_response: HtlcAttempt = HtlcAttempt {
-                    ..Default::default()
-                };
-
-                // For each route:
-                // update its MPP record,
-                // attempt it and check the result
-                for mut route in routes_response.routes.into_iter() {
-                    let last_hop: &mut Hop = route.hops.last_mut().ok_or(Error::MissingLastHop)?;
+                    // update its MPP record,
+                    // attempt it and check the result
+                    let last_hop: &mut Hop = routes_response.routes[0].hops.last_mut().ok_or(Error::MissingLastHop)?;
                     let mpp_record = MppRecord {
                         payment_addr: payer_addr.clone(),
                         total_amt_msat: amount_msat as i64,
                     };
                     last_hop.mpp_record = Some(mpp_record);
-                    tracing::debug!("sendToRouteV2 needle");
-                    payment_response = self
+
+                    let payment_response = self
                         .client
                         .lock()
                         .await
                         .router()
                         .send_to_route_v2(fedimint_tonic_lnd::routerrpc::SendToRouteRequest {
                             payment_hash: payment_hash.to_byte_array().to_vec(),
-                            route: Some(route),
+                            route: Some(routes_response.routes[0].clone()),
                             ..Default::default()
                         })
                         .await
@@ -335,38 +335,42 @@ impl MintPayment for Lnd {
 
                     if let Some(failure) = payment_response.failure {
                         if failure.code == 15 {
-                            // Try a different route
+                            tracing::debug!("Attempt number {}: route has failed. Re-querying...", attempt+1);
                             continue;
                         }
-                    } else {
-                        break;
                     }
+
+                    // Get status and maybe the preimage
+                    let (status, payment_preimage) = match payment_response.status {
+                        0 => (MeltQuoteState::Pending, None),
+                        1 => (
+                            MeltQuoteState::Paid,
+                            Some(hex::encode(payment_response.preimage)),
+                        ),
+                        2 => (MeltQuoteState::Unpaid, None),
+                        _ => (MeltQuoteState::Unknown, None),
+                    };
+
+                    // Get the actual amount paid in sats
+                    let mut total_amt: u64 = 0;
+                    if let Some(route) = payment_response.route {
+                        total_amt = (route.total_amt_msat / 1000) as u64;
+                    }
+
+                    return Ok(MakePaymentResponse {
+                        payment_lookup_id: hex::encode(payment_hash),
+                        payment_proof: payment_preimage,
+                        status,
+                        total_spent: total_amt.into(),
+                        unit: CurrencyUnit::Sat,
+                    });
+
                 }
 
-                // Get status and maybe the preimage
-                let (status, payment_preimage) = match payment_response.status {
-                    0 => (MeltQuoteState::Pending, None),
-                    1 => (
-                        MeltQuoteState::Paid,
-                        Some(hex::encode(payment_response.preimage)),
-                    ),
-                    2 => (MeltQuoteState::Unpaid, None),
-                    _ => (MeltQuoteState::Unknown, None),
-                };
-
-                // Get the actual amount paid in sats
-                let mut total_amt: u64 = 0;
-                if let Some(route) = payment_response.route {
-                    total_amt = (route.total_amt_msat / 1000) as u64;
-                }
-
-                Ok(MakePaymentResponse {
-                    payment_lookup_id: hex::encode(payment_hash),
-                    payment_proof: payment_preimage,
-                    status,
-                    total_spent: total_amt.into(),
-                    unit: CurrencyUnit::Sat,
-                })
+                // "We have exhausted all tactical options" -- STEM, Upgrade (2018)
+                // The payment was not possible within 50 retries.
+                tracing::error!("Limit of retries reached, payment couldn't succeed.");
+                Err(Error::PaymentFailed.into())
             }
             None => {
                 let pay_req = fedimint_tonic_lnd::lnrpc::SendRequest {
