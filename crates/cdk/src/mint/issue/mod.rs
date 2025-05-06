@@ -426,6 +426,11 @@ impl Mint {
         {
             self.pay_mint_quote(&mint_quote, wait_payment_response)
                 .await?;
+        } else {
+            tracing::warn!(
+                "Could not get request for request lookup id {:?}.",
+                wait_payment_response.payment_identifier
+            );
         }
         Ok(())
     }

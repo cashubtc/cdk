@@ -364,6 +364,7 @@ impl Mint {
                                 match result {
                                     Ok(mut stream) => {
                                         while let Some(wait_payment_response) = stream.next().await {
+                                            tracing::debug!("Got payment notification for");
                                             if let Err(err) = mint.pay_mint_quote_for_request_id(wait_payment_response).await {
                                                 tracing::warn!("{:?}", err);
                                             }

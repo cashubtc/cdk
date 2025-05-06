@@ -302,7 +302,7 @@ impl MintPayment for PaymentProcessorClient {
 
         let cancel_token = self.cancel_incoming_payment_listener.clone();
         let cancel_fut = cancel_token.cancelled_owned();
-        let active_flag = self.wait_incoming_payment_stream_is_active.clone();
+        // let active_flag = self.wait_incoming_payment_stream_is_active.clone();
 
         let transformed_stream = stream
             .take_until(cancel_fut)
@@ -335,8 +335,7 @@ impl MintPayment for PaymentProcessorClient {
                 }
             })
             .inspect(move |_| {
-                active_flag.store(false, Ordering::SeqCst);
-                tracing::info!("Payment stream inactive");
+                tracing::debug!("Got event stream");
             });
 
         Ok(Box::pin(transformed_stream))

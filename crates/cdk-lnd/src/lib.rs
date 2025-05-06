@@ -138,28 +138,39 @@ impl MintPayment for Lnd {
     async fn wait_any_incoming_payment(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
+        tracing::info!("LND: Starting wait_any_incoming_payment with address: {}", self.address);
+        
         let mut client =
             fedimint_tonic_lnd::connect(self.address.clone(), &self.cert_file, &self.macaroon_file)
                 .await
-                .map_err(|_| Error::Connection)?;
+                .map_err(|err| {
+                    tracing::error!("LND: Connection error in wait_any_incoming_payment: {}", err);
+                    Error::Connection
+                })?;
+        tracing::debug!("LND: Connected to LND node successfully");
 
         let stream_req = fedimint_tonic_lnd::lnrpc::InvoiceSubscription {
             add_index: 0,
             settle_index: 0,
         };
+        tracing::debug!("LND: Created invoice subscription request with add_index: {}, settle_index: {}", 
+                      stream_req.add_index, stream_req.settle_index);
 
+        tracing::debug!("LND: Attempting to subscribe to invoices...");
         let stream = client
             .lightning()
             .subscribe_invoices(stream_req)
             .await
-            .map_err(|_err| {
-                tracing::error!("Could not subscribe to invoice");
+            .map_err(|err| {
+                tracing::error!("LND: Could not subscribe to invoices: {}", err);
                 Error::Connection
             })?
             .into_inner();
+        tracing::info!("LND: Successfully subscribed to invoice stream");
 
         let cancel_token = self.wait_invoice_cancel_token.clone();
 
+        tracing::debug!("LND: Creating stream processing pipeline");
         Ok(futures::stream::unfold(
             (
                 stream,
@@ -168,53 +179,64 @@ impl MintPayment for Lnd {
             ),
             |(mut stream, cancel_token, is_active)| async move {
                 is_active.store(true, Ordering::SeqCst);
+                tracing::debug!("LND: Stream is now active, waiting for invoice events");
 
                 tokio::select! {
                     _ = cancel_token.cancelled() => {
-                    // Stream is cancelled
-                    is_active.store(false, Ordering::SeqCst);
-                    tracing::info!("Waiting for lnd invoice ending");
-                    None
-
+                        // Stream is cancelled
+                        is_active.store(false, Ordering::SeqCst);
+                        tracing::info!("LND: Invoice stream cancelled");
+                        None
                     }
                     msg = stream.message() => {
+                        tracing::debug!("LND: Received message from invoice stream");
+                        
+                        match msg {
+                            Ok(Some(msg)) => {
+                                tracing::debug!("LND: Invoice message - state: {:?}, memo: {}, amt_paid_msat: {}", 
+                                              msg.state(), msg.memo, msg.amt_paid_msat);
 
-                match msg {
-                    Ok(Some(msg)) => {
-
-        if msg.state() == InvoiceState::Settled {
-            match msg.r_hash.clone().try_into() {
-                Ok(hash) => {
-                    let wait_response = WaitPaymentResponse {
-                        payment_identifier: PaymentIdentifier::PaymentHash(hash),
-                        payment_amount: Amount::from(msg.amt_paid_msat as u64),
-                        unit: CurrencyUnit::Msat,
-                        payment_id: hex::encode(msg.r_hash),
-                    };
-                    Some((wait_response, (stream, cancel_token, is_active)))
-                },
-                Err(err) => {
-                    tracing::error!("Failed to convert r_hash to payment hash: {:?}", err);
-                    None
-                }
-            }
-        } else {
-            None
-        }
-                    }
-                    Ok(None) => {
-                    is_active.store(false, Ordering::SeqCst);
-                    tracing::info!("LND invoice stream ended.");
-                        None
-                    }, // End of stream
-                    Err(err) => {
-                    is_active.store(false, Ordering::SeqCst);
-                    tracing::warn!("Encountered error in LND invoice stream. Stream ending");
-                    tracing::error!("{:?}", err);
-                    None
-
-                    },   // Handle errors gracefully, ends the stream on error
-                }
+                                if msg.state() == InvoiceState::Settled {
+                                    tracing::info!("LND: Received settled invoice with memo: '{}', amount: {} msat", 
+                                                 msg.memo, msg.amt_paid_msat);
+                                    
+                                    match msg.r_hash.clone().try_into() {
+                                        Ok(hash) => {
+                                            let hash_hex = hex::encode(&hash);
+                                            tracing::info!("LND: Processing payment with hash: {}", hash_hex);
+                                            
+                                            let wait_response = WaitPaymentResponse {
+                                                payment_identifier: PaymentIdentifier::PaymentHash(hash),
+                                                payment_amount: Amount::from(msg.amt_paid_msat as u64),
+                                                unit: CurrencyUnit::Msat,
+                                                payment_id: hex::encode(msg.r_hash),
+                                            };
+                                            tracing::info!("LND: Created WaitPaymentResponse with amount {} msat", 
+                                                         msg.amt_paid_msat);
+                                            Some((wait_response, (stream, cancel_token, is_active)))
+                                        },
+                                        Err(err) => {
+                                            tracing::error!("LND: Failed to convert r_hash to payment hash: {:?}", err);
+                                            tracing::debug!("LND: Continuing to wait for next invoice");
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    tracing::debug!("LND: Ignoring non-settled invoice with state: {:?}", msg.state());
+                                    None
+                                }
+                            }
+                            Ok(None) => {
+                                is_active.store(false, Ordering::SeqCst);
+                                tracing::info!("LND: Invoice stream ended (received None)");
+                                None
+                            }, // End of stream
+                            Err(err) => {
+                                is_active.store(false, Ordering::SeqCst);
+                                tracing::error!("LND: Error in invoice stream: {:?}", err);
+                                None
+                            },   // Handle errors gracefully, ends the stream on error
+                        }
                     }
                 }
             },

@@ -412,8 +412,6 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
 
     type WaitIncomingPaymentStream = ResponseStream;
 
-    // Clippy thinks select is not stable but it compiles fine on MSRV (1.63.0)
-    #[allow(clippy::incompatible_msrv)]
     #[instrument(skip_all)]
     async fn wait_incoming_payment(
         &self,
@@ -436,13 +434,15 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     match result {
                         Ok(mut stream) => {
                             while let Some(response) = stream.next().await {
+                                tracing::debug!("Received payment notification on stream");
                                 match tx.send(Result::<_, Status>::Ok(WaitIncomingPaymentResponse{
                                     payment_identifier: Some(cdk_payment_id_to_proto(&response.payment_identifier)),
                                     payment_amount: response.payment_amount.into(),
                                     unit: response.unit.to_string(),
                                     payment_id: response.payment_id
                                 } )).await {
-                    Ok(_) => {
+                    Ok(h) => {
+                        tracing::info!("{:?}",h);
                         // item (server response) was queued to be send to client
                     }
                     Err(item) => {
