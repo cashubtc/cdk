@@ -107,9 +107,27 @@ impl Mint {
                         pending_quote.id
                     );
 
-                    self.localstore
-                        .update_melt_quote_state(&pending_quote.id, pay_invoice_response.status)
-                        .await?;
+                    let melt_quote_state = match pay_invoice_response.status {
+                        MeltQuoteState::Unpaid => MeltQuoteState::Unpaid,
+                        MeltQuoteState::Paid => MeltQuoteState::Paid,
+                        MeltQuoteState::Pending => MeltQuoteState::Pending,
+                        MeltQuoteState::Failed => MeltQuoteState::Unpaid,
+                        MeltQuoteState::Unknown => MeltQuoteState::Unpaid,
+                    };
+
+                    if let Err(err) = self
+                        .localstore
+                        .update_melt_quote_state(&pending_quote.id, melt_quote_state)
+                        .await
+                    {
+                        tracing::error!(
+                            "Could not update quote {} to state {}, current state {}, {}",
+                            pending_quote.id,
+                            melt_quote_state,
+                            pending_quote.state,
+                            err
+                        );
+                    };
                 }
             };
         }
