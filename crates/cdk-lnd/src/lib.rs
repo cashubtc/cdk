@@ -28,7 +28,7 @@ use cdk::{mint, Bolt11Invoice};
 use error::Error;
 use fedimint_tonic_lnd::lnrpc::fee_limit::Limit;
 use fedimint_tonic_lnd::lnrpc::payment::PaymentStatus;
-use fedimint_tonic_lnd::lnrpc::{FeeLimit, Hop, HtlcAttempt, MppRecord};
+use fedimint_tonic_lnd::lnrpc::{FeeLimit, Hop, MppRecord};
 use fedimint_tonic_lnd::tonic::Code;
 use fedimint_tonic_lnd::Client;
 use futures::{Stream, StreamExt};
