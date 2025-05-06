@@ -250,13 +250,10 @@ impl Mint {
         };
 
         let partial_amount = match invoice_amount_msats > quote_msats {
-            true => {
-                let partial_msats = invoice_amount_msats - quote_msats;
-                Some(
-                    to_unit(partial_msats, &CurrencyUnit::Msat, &melt_quote.unit)
-                        .map_err(|_| Error::UnsupportedUnit)?,
-                )
-            }
+            true => Some(
+                to_unit(quote_msats, &CurrencyUnit::Msat, &melt_quote.unit)
+                    .map_err(|_| Error::UnsupportedUnit)?,
+            ),
             false => None,
         };
 
@@ -273,9 +270,11 @@ impl Mint {
 
         if amount_to_pay + melt_quote.fee_reserve > inputs_amount_quote_unit {
             tracing::debug!(
-                "Not enough inputs provided: {} msats needed {} msats",
+                "Not enough inputs provided: {} {} needed {} {}",
                 inputs_amount_quote_unit,
-                amount_to_pay
+                melt_quote.unit,
+                amount_to_pay,
+                melt_quote.unit
             );
 
             return Err(Error::TransactionUnbalanced(
