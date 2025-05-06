@@ -52,7 +52,6 @@ pub struct Lnd {
 }
 
 impl Lnd {
-
     /// Maximum number of attempts at a partial payment
     pub const MAX_ROUTE_RETRIES: usize = 50;
 
@@ -312,7 +311,10 @@ impl MintPayment for Lnd {
 
                     // update its MPP record,
                     // attempt it and check the result
-                    let last_hop: &mut Hop = routes_response.routes[0].hops.last_mut().ok_or(Error::MissingLastHop)?;
+                    let last_hop: &mut Hop = routes_response.routes[0]
+                        .hops
+                        .last_mut()
+                        .ok_or(Error::MissingLastHop)?;
                     let mpp_record = MppRecord {
                         payment_addr: payer_addr.clone(),
                         total_amt_msat: amount_msat as i64,
@@ -335,7 +337,10 @@ impl MintPayment for Lnd {
 
                     if let Some(failure) = payment_response.failure {
                         if failure.code == 15 {
-                            tracing::debug!("Attempt number {}: route has failed. Re-querying...", attempt+1);
+                            tracing::debug!(
+                                "Attempt number {}: route has failed. Re-querying...",
+                                attempt + 1
+                            );
                             continue;
                         }
                     }
@@ -364,7 +369,6 @@ impl MintPayment for Lnd {
                         total_spent: total_amt.into(),
                         unit: CurrencyUnit::Sat,
                     });
-
                 }
 
                 // "We have exhausted all tactical options" -- STEM, Upgrade (2018)
