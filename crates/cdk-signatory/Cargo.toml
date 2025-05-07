@@ -16,9 +16,16 @@ cdk-common = { workspace = true, default-features=false, features = [
     "mint", "auth",
 ] }
 tracing.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
+
+# main.rs dependencies
+cdk-sqlite = { workspace = true }
+cdk-redb = { workspace = true }
+clap = { workspace = true }
+bip39.workspace = true
+home.workspace = true
 
 [build-dependencies]
 tonic-build = { workspace = true, features = ["prost"], optional = true }
