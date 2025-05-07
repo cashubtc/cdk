@@ -19,6 +19,8 @@ pub enum PaymentType {
     Bolt11,
     /// BOLT12 offer
     Bolt12,
+    /// Bip353
+    Bip353,
 }
 
 #[derive(Args)]
@@ -235,6 +237,7 @@ pub async fn pay(
                     println!("Payment preimage: {}", preimage);
                 }
             }
+            PaymentType::Bip353 => {}
         }
     }
 
