@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use std::collections::HashMap;
 
 /// Parse a human-readable Bitcoin address
 pub(crate) fn parse_address(address: &str) -> Result<(String, String)> {
@@ -59,10 +60,8 @@ pub async fn resolve(&self, user: &str, domain: &str) -> Result<PaymentInstructi
 
     // BIP-353 requires exactly one Bitcoin URI
     match bitcoin_uris.len() {
-        0 => Err(Bip353Error::InvalidRecord("No Bitcoin URI found".into())),
+        0 => bail!("No Bitcoin URI found"),
         1 => PaymentInstruction::from_uri(&bitcoin_uris[0]),
-        _ => Err(Bip353Error::InvalidRecord(
-            "Multiple Bitcoin URIs found".into(),
-        )),
+        _ => bail!("Multiple Bitcoin URIs found"),
     }
 }
