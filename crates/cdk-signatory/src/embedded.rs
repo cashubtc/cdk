@@ -92,6 +92,10 @@ impl Service {
 
 #[async_trait::async_trait]
 impl Signatory for Service {
+    fn name(&self) -> String {
+        "Embedded".to_owned()
+    }
+
     async fn blind_sign(
         &self,
         blinded_messages: Vec<BlindedMessage>,

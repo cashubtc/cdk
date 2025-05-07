@@ -1,12 +1,23 @@
+use std::collections::HashMap;
 use std::fs;
+use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
+use anyhow::{bail, Result};
 use bip39::rand::{thread_rng, Rng};
 use bip39::Mnemonic;
-use cdk_sqlite::WalletSqliteDatabase;
+use cashu::CurrencyUnit;
+use cdk_common::database::{MintAuthDatabase, MintKeysDatabase};
+#[cfg(feature = "redb")]
+use cdk_redb::MintRedbDatabase;
+use cdk_signatory::{db_signatory, grpc_server};
+use cdk_sqlite::mint::MintSqliteAuthDatabase;
+use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use tracing::Level;
+use tracing_subscriber::EnvFilter;
 
 const DEFAULT_WORK_DIR: &str = ".cdk-signatory";
 
@@ -29,15 +40,36 @@ struct Cli {
     /// Logging level
     #[arg(short, long, default_value = "error")]
     log_level: Level,
-    /// NWS Proxy
-    #[arg(short, long)]
-    proxy: Option<Url>,
+    #[arg(long, default_value = "127.0.0.1")]
+    listen_addr: String,
+    #[arg(long, default_value = "15060")]
+    listen_port: u32,
+    #[arg(long, short)]
+    certs: Option<String>,
+    #[arg(long, short, default_value = "sat,0,32")]
+    units: Vec<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Cli = Cli::parse();
     let default_filter = args.log_level;
+    let supported_units = args
+        .units
+        .into_iter()
+        .map(|unit| {
+            let mut parts = unit.split(",").collect::<Vec<_>>();
+            parts.reverse();
+            let unit: CurrencyUnit = parts.pop().unwrap_or_default().parse()?;
+            let fee = parts
+                .pop()
+                .map(|x| x.parse())
+                .transpose()?
+                .unwrap_or_default();
+            let max_order = parts.pop().map(|x| x.parse()).transpose()?.unwrap_or(32);
+            Ok::<(_, (_, _)), anyhow::Error>((unit, (fee, max_order)))
+        })
+        .collect::<Result<HashMap<_, _>, _>>()?;
 
     let sqlx_filter = "sqlx=warn,hyper_util=warn,reqwest=warn";
 
@@ -54,37 +86,52 @@ async fn main() -> Result<()> {
         }
     };
 
+    let certs = Some(
+        args.certs
+            .map(|x| x.into())
+            .unwrap_or_else(|| work_dir.clone()),
+    );
+
     fs::create_dir_all(&work_dir)?;
 
-    let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
-        match args.engine.as_str() {
-            "sqlite" => {
-                let sql_path = work_dir.join("cdk-cli.sqlite");
-                #[cfg(not(feature = "sqlcipher"))]
-                let sql = WalletSqliteDatabase::new(&sql_path).await?;
-                #[cfg(feature = "sqlcipher")]
-                let sql = {
-                    match args.password {
-                        Some(pass) => WalletSqliteDatabase::new(&sql_path, pass).await?,
-                        None => bail!("Missing database password"),
-                    }
-                };
+    let (localstore, auth_localstore): (
+        Arc<dyn MintKeysDatabase<Err = cdk_common::database::Error> + Send + Sync>,
+        Arc<dyn MintAuthDatabase<Err = cdk_common::database::Error> + Send + Sync>,
+    ) = match args.engine.as_str() {
+        "sqlite" => {
+            let sql_path = work_dir.join("cdk-cli.sqlite");
+            #[cfg(not(feature = "sqlcipher"))]
+            let db = (
+                MintSqliteDatabase::new(&sql_path).await?,
+                MintSqliteAuthDatabase::new(&sql_path).await?,
+            );
+            #[cfg(feature = "sqlcipher")]
+            let db = {
+                match args.password {
+                    Some(pass) => (
+                        MintSqliteDatabase::new(&sql_path, pass).await?,
+                        MintSqliteAuthDatabase::new(&sql_path).await?,
+                    ),
+                    None => bail!("Missing database password"),
+                }
+            };
 
-                Arc::new(sql)
+            (Arc::new(db.0), Arc::new(db.1))
+        }
+        "redb" => {
+            #[cfg(feature = "redb")]
+            {
+                let redb_path = work_dir.join("cdk-cli.redb");
+                let db = Arc::new(MintRedbDatabase::new(&redb_path)?);
+                (db.clone(), db)
             }
-            "redb" => {
-                #[cfg(feature = "redb")]
-                {
-                    let redb_path = work_dir.join("cdk-cli.redb");
-                    Arc::new(WalletRedbDatabase::new(&redb_path)?)
-                }
-                #[cfg(not(feature = "redb"))]
-                {
-                    bail!("redb feature not enabled");
-                }
+            #[cfg(not(feature = "redb"))]
+            {
+                bail!("redb feature not enabled");
             }
-            _ => bail!("Unknown DB engine"),
-        };
+        }
+        _ => bail!("Unknown DB engine"),
+    };
 
     let seed_path = work_dir.join("seed");
 
@@ -107,38 +154,18 @@ async fn main() -> Result<()> {
     };
     let seed = mnemonic.to_seed_normalized("");
 
-    let mut wallets: Vec<Wallet> = Vec::new();
+    let signatory = db_signatory::DbSignatory::new(
+        localstore,
+        Some(auth_localstore),
+        &seed,
+        supported_units,
+        Default::default(),
+    )
+    .await?;
 
-    let mints = localstore.get_mints().await?;
+    let socket_addr = SocketAddr::from_str(&format!("{}:{}", args.listen_addr, args.listen_port))?;
 
-    for (mint_url, _) in mints {
-        let mut builder = WalletBuilder::new()
-            .mint_url(mint_url.clone())
-            .unit(cdk::nuts::CurrencyUnit::Sat)
-            .localstore(localstore.clone())
-            .seed(&mnemonic.to_seed_normalized(""));
+    grpc_server(signatory, socket_addr, certs).await?;
 
-        if let Some(proxy_url) = args.proxy.as_ref() {
-            let http_client = HttpClient::with_proxy(mint_url, proxy_url.clone(), None, true)?;
-            builder = builder.client(http_client);
-        }
-
-        let wallet = builder.build()?;
-
-        let wallet_clone = wallet.clone();
-
-        tokio::spawn(async move {
-            if let Err(err) = wallet_clone.get_mint_info().await {
-                tracing::error!(
-                    "Could not get mint quote for {}, {}",
-                    wallet_clone.mint_url,
-                    err
-                );
-            }
-        });
-
-        wallets.push(wallet);
-    }
-
-    let multi_mint_wallet = MultiMintWallet::new(localstore, Arc::new(seed), wallets);
+    Ok(())
 }
