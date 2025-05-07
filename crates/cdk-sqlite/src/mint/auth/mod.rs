@@ -138,7 +138,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         .bind(keyset.unit.to_string())
         .bind(keyset.active)
         .bind(keyset.valid_from as i64)
-        .bind(keyset.valid_to.map(|v| v as i64))
+        .bind(keyset.final_expiry.map(|v| v as i64))
         .bind(keyset.derivation_path.to_string())
         .bind(keyset.max_order)
         .bind(keyset.derivation_path_index)
