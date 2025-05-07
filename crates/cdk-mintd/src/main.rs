@@ -362,13 +362,31 @@ async fn main() -> anyhow::Result<()> {
         mint_builder = mint_builder.with_tos_url(tos_url.to_string());
     }
 
-    let mnemonic = Mnemonic::from_str(&settings.info.mnemonic)?;
-
     mint_builder = mint_builder
         .with_name(settings.mint_info.name)
         .with_version(mint_version)
-        .with_description(settings.mint_info.description)
-        .with_seed(mnemonic.to_seed_normalized("").to_vec());
+        .with_description(settings.mint_info.description);
+
+    mint_builder = if let Some(signatory_url) = settings.info.signatory_url {
+        tracing::info!(
+            "Connecting to remote signatory to {} with certs {:?}",
+            signatory_url,
+            settings.info.signatory_certs
+        );
+        mint_builder.with_signatory(Arc::new(
+            cdk_signatory::SignatoryRpcClient::new(signatory_url, settings.info.signatory_certs)
+                .await?,
+        ))
+    } else if let Some(mnemonic) = settings
+        .info
+        .mnemonic
+        .map(|s| Mnemonic::from_str(&s))
+        .transpose()?
+    {
+        mint_builder.with_seed(mnemonic.to_seed_normalized("").to_vec())
+    } else {
+        bail!("No seed nor remote signatory set");
+    };
 
     let cached_endpoints = vec![
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::MintBolt11),

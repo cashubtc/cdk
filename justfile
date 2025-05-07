@@ -63,6 +63,7 @@ test-all db="memory":
     #!/usr/bin/env bash
     just test {{db}}
     ./misc/itests.sh "{{db}}"
+    ./misc/fake_itests.sh "{{db}}" external_signatory
     ./misc/fake_itests.sh "{{db}}"
     
 test-nutshell:
@@ -119,6 +120,7 @@ itest db:
   
 fake-mint-itest db:
   #!/usr/bin/env bash
+  ./misc/fake_itests.sh "{{db}}" external_signatory
   ./misc/fake_itests.sh "{{db}}"
 
   

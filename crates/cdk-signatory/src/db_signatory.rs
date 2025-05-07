@@ -178,6 +178,10 @@ impl DbSignatory {
 
 #[async_trait::async_trait]
 impl Signatory for DbSignatory {
+    fn name(&self) -> String {
+        format!("Signatory {}", env!("CARGO_PKG_VERSION"))
+    }
+
     async fn blind_sign(
         &self,
         blinded_messages: Vec<BlindedMessage>,

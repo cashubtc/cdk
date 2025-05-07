@@ -12,7 +12,9 @@ pub struct Info {
     pub url: String,
     pub listen_host: String,
     pub listen_port: u16,
-    pub mnemonic: String,
+    pub mnemonic: Option<String>,
+    pub signatory_url: Option<String>,
+    pub signatory_certs: Option<String>,
     pub input_fee_ppk: Option<u64>,
 
     pub http_cache: cache::Config,
@@ -377,7 +379,7 @@ mod tests {
             url: "http://example.com".to_string(),
             listen_host: "127.0.0.1".to_string(),
             listen_port: 8080,
-            mnemonic: "test secret mnemonic phrase".to_string(),
+            mnemonic: Some("test secret mnemonic phrase".to_string()),
             input_fee_ppk: Some(100),
             ..Default::default()
         };
@@ -404,7 +406,7 @@ mod tests {
             url: "http://example.com".to_string(),
             listen_host: "127.0.0.1".to_string(),
             listen_port: 8080,
-            mnemonic: "".to_string(), // Empty mnemonic
+            mnemonic: Some("".to_string()), // Empty mnemonic
             enable_swagger_ui: Some(false),
             ..Default::default()
         };
@@ -423,7 +425,7 @@ mod tests {
             url: "http://example.com".to_string(),
             listen_host: "127.0.0.1".to_string(),
             listen_port: 8080,
-            mnemonic: "特殊字符 !@#$%^&*()".to_string(), // Special characters
+            mnemonic: Some("特殊字符 !@#$%^&*()".to_string()), // Special characters
             ..Default::default()
         };
 

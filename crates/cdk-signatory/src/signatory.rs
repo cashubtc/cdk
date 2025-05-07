@@ -121,6 +121,8 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
 #[async_trait::async_trait]
 /// Signatory trait
 pub trait Signatory {
+    fn name(&self) -> String;
+
     /// Blind sign a message.
     ///
     /// The message can be for a coin or an auth token.

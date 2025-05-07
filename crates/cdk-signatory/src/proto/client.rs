@@ -1,5 +1,8 @@
+use std::path::Path;
+
 use cdk_common::error::Error;
 use cdk_common::{BlindSignature, BlindedMessage, Proof};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
 use super::{blind_sign_response, boolean_response, key_rotation_response, keys_response};
 use crate::proto::signatory_client::SignatoryClient;
@@ -8,19 +11,68 @@ use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, Signatory
 /// A client for the Signatory service.
 pub struct SignatoryRpcClient {
     client: SignatoryClient<tonic::transport::Channel>,
+    url: String,
+}
+
+#[derive(thiserror::Error, Debug)]
+/// Client Signatory Error
+pub enum ClientError {
+    /// Transport error
+    #[error(transparent)]
+    Transport(#[from] tonic::transport::Error),
+
+    /// IO-related errors
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    /// Signatory Error
+    #[error(transparent)]
+    Signatory(#[from] cdk_common::error::Error),
+
+    /// Invalid URL
+    #[error("Invalid URL")]
+    InvalidUrl,
 }
 
 impl SignatoryRpcClient {
     /// Create a new RemoteSigner from a tonic transport channel.
-    pub async fn new(url: String) -> Result<Self, tonic::transport::Error> {
+    pub async fn new<A: AsRef<Path>>(url: String, tls_dir: Option<A>) -> Result<Self, ClientError> {
+        let channel = if let Some(tls_dir) = tls_dir {
+            let tls_dir = tls_dir.as_ref();
+            let server_root_ca_cert = std::fs::read_to_string(tls_dir.join("ca.pem")).unwrap();
+            let server_root_ca_cert = Certificate::from_pem(server_root_ca_cert);
+            let client_cert = std::fs::read_to_string(tls_dir.join("client.pem"))?;
+            let client_key = std::fs::read_to_string(tls_dir.join("client.key"))?;
+            let client_identity = Identity::from_pem(client_cert, client_key);
+            let tls = ClientTlsConfig::new()
+                .ca_certificate(server_root_ca_cert)
+                .identity(client_identity);
+
+            Channel::from_shared(url.clone())
+                .map_err(|_| ClientError::InvalidUrl)?
+                .tls_config(tls)?
+                .connect()
+                .await?
+        } else {
+            Channel::from_shared(url.clone())
+                .map_err(|_| ClientError::InvalidUrl)?
+                .connect()
+                .await?
+        };
+
         Ok(Self {
-            client: SignatoryClient::connect(url).await?,
+            client: SignatoryClient::new(channel),
+            url,
         })
     }
 }
 
 #[async_trait::async_trait]
 impl Signatory for SignatoryRpcClient {
+    fn name(&self) -> String {
+        format!("Rpc Signatory {}", self.url)
+    }
+
     async fn blind_sign(&self, request: Vec<BlindedMessage>) -> Result<Vec<BlindSignature>, Error> {
         let req = super::BlindedMessages {
             blinded_messages: request

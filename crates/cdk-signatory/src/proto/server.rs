@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
+use std::path::Path;
 
-use tonic::transport::{Error, Server};
+use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
 
 use super::{boolean_response, key_rotation_response, keys_response, BooleanResponse};
@@ -112,13 +113,89 @@ where
     }
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    /// Transport error
+    #[error(transparent)]
+    Transport(#[from] tonic::transport::Error),
+    /// Io error
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
 /// Runs the signatory server
-pub async fn grpc_server<T>(signatory: T, addr: SocketAddr) -> Result<(), Error>
+pub async fn grpc_server<T, I: AsRef<Path>>(
+    signatory: T,
+    addr: SocketAddr,
+    tls_dir: Option<I>,
+) -> Result<(), Error>
 where
     T: Signatory + Send + Sync + 'static,
 {
-    tracing::info!("grpc_server listening on {}", addr);
-    Server::builder()
+    tracing::info!("Starting RPC server {}", addr);
+
+    let mut server = match tls_dir {
+        Some(tls_dir) => {
+            tracing::info!("TLS configuration found, starting secure server");
+            let tls_dir = tls_dir.as_ref();
+            let server_pem_path = tls_dir.join("server.pem");
+            let server_key_path = tls_dir.join("server.key");
+            let ca_pem_path = tls_dir.join("ca.pem");
+
+            if !server_pem_path.exists() {
+                tracing::error!(
+                    "Server certificate file does not exist: {}",
+                    server_pem_path.display()
+                );
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "Server certificate file not found: {}",
+                        server_pem_path.display()
+                    ),
+                )));
+            }
+
+            if !server_key_path.exists() {
+                tracing::error!(
+                    "Server key file does not exist: {}",
+                    server_key_path.display()
+                );
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Server key file not found: {}", server_key_path.display()),
+                )));
+            }
+
+            if !ca_pem_path.exists() {
+                tracing::error!(
+                    "CA certificate file does not exist: {}",
+                    ca_pem_path.display()
+                );
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("CA certificate file not found: {}", ca_pem_path.display()),
+                )));
+            }
+
+            let cert = std::fs::read_to_string(&server_pem_path)?;
+            let key = std::fs::read_to_string(&server_key_path)?;
+            let client_ca_cert = std::fs::read_to_string(&ca_pem_path)?;
+            let client_ca_cert = Certificate::from_pem(client_ca_cert);
+            let server_identity = Identity::from_pem(cert, key);
+            let tls_config = ServerTlsConfig::new()
+                .identity(server_identity)
+                .client_ca_root(client_ca_cert);
+
+            Server::builder().tls_config(tls_config)?
+        }
+        None => {
+            tracing::warn!("No valid TLS configuration found, starting insecure server");
+            Server::builder()
+        }
+    };
+
+    server
         .add_service(signatory_server::SignatoryServer::new(CdkSignatoryServer {
             inner: signatory,
         }))
