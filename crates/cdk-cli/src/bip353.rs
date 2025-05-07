@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use anyhow::{bail, Result};
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
@@ -10,27 +11,34 @@ pub struct Bip353Address {
     pub domain: String,
 }
 
-/// Parse a human-readable Bitcoin address
-pub(crate) fn parse_address(address: &str) -> Result<(String, String)> {
-    let addr = address.trim();
+impl FromStr for Bip353Address {
+    type Err = anyhow::Error;
 
-    // Remove Bitcoin prefix if present
-    let addr = addr.strip_prefix("₿").unwrap_or(addr);
+    /// Parse a human-readable Bitcoin address
+    fn from_str(address: &str) -> Result<Self, Self::Err> {
+        let addr = address.trim();
 
-    // Split by @
-    let parts: Vec<&str> = addr.split('@').collect();
-    if parts.len() != 2 {
-        bail!("Address is not formated correctlly")
+        // Remove Bitcoin prefix if present
+        let addr = addr.strip_prefix("₿").unwrap_or(addr);
+
+        // Split by @
+        let parts: Vec<&str> = addr.split('@').collect();
+        if parts.len() != 2 {
+            bail!("Address is not formatted correctly")
+        }
+
+        let user = parts[0].trim();
+        let domain = parts[1].trim();
+
+        if user.is_empty() || domain.is_empty() {
+            bail!("User name and domain must not be empty")
+        }
+
+        Ok(Self {
+            user: user.to_string(),
+            domain: domain.to_string(),
+        })
     }
-
-    let user = parts[0].trim();
-    let domain = parts[1].trim();
-
-    if user.is_empty() || domain.is_empty() {
-        bail!("User name and domain must not be empty")
-    }
-
-    Ok((user.to_string(), domain.to_string()))
 }
 
 /// Payment instruction type
@@ -87,9 +95,9 @@ impl PaymentInstruction {
 }
 
 /// Resolve a human-readable Bitcoin address
-pub async fn resolve(user: &str, domain: &str) -> Result<PaymentInstruction> {
+pub async fn resolve(address: &Bip353Address) -> Result<PaymentInstruction> {
     // Construct DNS name
-    let dns_name = format!("{}.user._bitcoin-payment.{}", user, domain);
+    let dns_name = format!("{}.user._bitcoin-payment.{}", address.user, address.domain);
 
     // Create a new resolver with DNSSEC validation
     let mut opts = ResolverOpts::default();
