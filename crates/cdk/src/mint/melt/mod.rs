@@ -341,7 +341,10 @@ impl Mint {
                     to_unit(amount, &currency, &CurrencyUnit::Msat)
                         .map_err(|_err| Error::UnsupportedUnit)?
                 }
-                None => return Err(Error::InvoiceAmountUndefined),
+                None => melt_quote
+                    .options
+                    .ok_or(Error::InvoiceAmountUndefined)?
+                    .amount_msat(),
             },
         };
 
@@ -859,11 +862,9 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
-        let invoice = payment_quote
-            .options
-            .and_then(|options| match options {
-                PaymentQuoteOptions::Bolt12 { invoice } => invoice,
-            });
+        let invoice = payment_quote.options.and_then(|options| match options {
+            PaymentQuoteOptions::Bolt12 { invoice } => invoice,
+        });
 
         let payment_request = MeltPaymentRequest::Bolt12 {
             offer: Box::new(offer),
