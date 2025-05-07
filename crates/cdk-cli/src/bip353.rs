@@ -11,6 +11,47 @@ pub struct Bip353Address {
     pub domain: String,
 }
 
+impl Bip353Address {
+    /// Resolve a human-readable Bitcoin address
+    pub async fn resolve(self) -> Result<PaymentInstruction> {
+        // Construct DNS name
+        let dns_name = format!("{}.user._bitcoin-payment.{}", self.user, self.domain);
+
+        // Create a new resolver with DNSSEC validation
+        let mut opts = ResolverOpts::default();
+        opts.validate = true; // Enable DNSSEC validation
+
+        let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), opts);
+
+        // Query TXT records - with opts.validate=true, this will fail if DNSSEC validation fails
+        let response = resolver.txt_lookup(&dns_name).await?;
+
+        // Extract and concatenate TXT record strings
+        let mut bitcoin_uris = Vec::new();
+
+        for txt in response.iter() {
+            let txt_data: Vec<String> = txt
+                .txt_data()
+                .iter()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                .collect();
+
+            let concatenated = txt_data.join("");
+
+            if concatenated.to_lowercase().starts_with("bitcoin:") {
+                bitcoin_uris.push(concatenated);
+            }
+        }
+
+        // BIP-353 requires exactly one Bitcoin URI
+        match bitcoin_uris.len() {
+            0 => bail!("No Bitcoin URI found"),
+            1 => PaymentInstruction::from_uri(&bitcoin_uris[0]),
+            _ => bail!("Multiple Bitcoin URIs found"),
+        }
+    }
+}
+
 impl FromStr for Bip353Address {
     type Err = anyhow::Error;
 
@@ -51,7 +92,6 @@ pub enum PaymentType {
 /// BIP-353 payment instruction
 #[derive(Debug, Clone)]
 pub struct PaymentInstruction {
-    pub uri: String,
     pub parameters: HashMap<PaymentType, String>,
 }
 
@@ -87,50 +127,6 @@ impl PaymentInstruction {
             }
         }
 
-        Ok(PaymentInstruction {
-            uri: uri.to_string(),
-            parameters,
-        })
-    }
-}
-
-impl Bip353Address {
-    /// Resolve a human-readable Bitcoin address
-    pub async fn resolve(self) -> Result<PaymentInstruction> {
-        // Construct DNS name
-        let dns_name = format!("{}.user._bitcoin-payment.{}", self.user, self.domain);
-
-        // Create a new resolver with DNSSEC validation
-        let mut opts = ResolverOpts::default();
-        opts.validate = true; // Enable DNSSEC validation
-
-        let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), opts);
-
-        // Query TXT records - with opts.validate=true, this will fail if DNSSEC validation fails
-        let response = resolver.txt_lookup(&dns_name).await?;
-
-        // Extract and concatenate TXT record strings
-        let mut bitcoin_uris = Vec::new();
-
-        for txt in response.iter() {
-            let txt_data: Vec<String> = txt
-                .txt_data()
-                .iter()
-                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                .collect();
-
-            let concatenated = txt_data.join("");
-
-            if concatenated.to_lowercase().starts_with("bitcoin:") {
-                bitcoin_uris.push(concatenated);
-            }
-        }
-
-        // BIP-353 requires exactly one Bitcoin URI
-        match bitcoin_uris.len() {
-            0 => bail!("No Bitcoin URI found"),
-            1 => PaymentInstruction::from_uri(&bitcoin_uris[0]),
-            _ => bail!("Multiple Bitcoin URIs found"),
-        }
+        Ok(PaymentInstruction { parameters })
     }
 }

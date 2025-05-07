@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use cdk::amount::{amount_for_offer, MSAT_IN_SAT};
 use cdk::nuts::{CurrencyUnit, MeltOptions};
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
@@ -10,6 +10,7 @@ use clap::{Args, ValueEnum};
 use lightning::offers::offer::Offer;
 use tokio::task::JoinSet;
 
+use crate::bip353::Bip353Address;
 use crate::sub_commands::balance::mint_balances;
 use crate::utils::{get_number_input, get_user_input, get_wallet_by_index, validate_mint_number};
 
@@ -237,7 +238,43 @@ pub async fn pay(
                     println!("Payment preimage: {}", preimage);
                 }
             }
-            PaymentType::Bip353 => {}
+            PaymentType::Bip353 => {
+                let bip353_addr = get_user_input("Enter Bip353 address.")?;
+                let bip353_addr = Bip353Address::from_str(&bip353_addr)?;
+
+                let payment_instructions = bip353_addr.resolve().await?;
+
+                let offer = payment_instructions
+                    .parameters
+                    .get(&crate::bip353::PaymentType::LightningOffer)
+                    .ok_or(anyhow!("Offer not defined"))?;
+
+                let prompt =
+                    "Enter the amount you would like to pay in sats for this amountless offer:";
+                let user_amount = get_number_input::<u64>(prompt)? * MSAT_IN_SAT;
+
+                if user_amount > available_funds {
+                    bail!("Not enough funds");
+                }
+
+                let options = Some(MeltOptions::new_amountless(user_amount));
+
+                // Get melt quote for BOLT12
+                let quote = wallet.melt_bolt12_quote(offer.to_string(), options).await?;
+                println!("Quote ID: {}", quote.id);
+                println!("Amount: {}", quote.amount);
+                println!("Fee Reserve: {}", quote.fee_reserve);
+                println!("State: {}", quote.state);
+                println!("Expiry: {}", quote.expiry);
+
+                // Execute the payment
+                let melt = wallet.melt(&quote.id).await?;
+                println!("Paid offer: {}", melt.state);
+
+                if let Some(preimage) = melt.preimage {
+                    println!("Payment preimage: {}", preimage);
+                }
+            }
         }
     }
 
