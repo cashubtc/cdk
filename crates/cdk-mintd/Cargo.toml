@@ -18,7 +18,7 @@ cln = ["dep:cdk-cln"]
 lnd = ["dep:cdk-lnd"]
 lnbits = ["dep:cdk-lnbits"]
 fakewallet = ["dep:cdk-fake-wallet"]
-grpc-processor = ["dep:cdk-payment-processor"]
+grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
 sqlcipher = ["cdk-sqlite/sqlcipher"]
 # MSRV is not committed to with redb enabled
 redb = ["dep:cdk-redb"]
@@ -45,6 +45,7 @@ cdk-lnbits = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }
 cdk-fake-wallet = { workspace = true, optional = true }
 cdk-axum.workspace = true
+cdk-signatory.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
 cdk-payment-processor = { workspace = true, optional = true }
 config = { version = "0.15.11", features = ["toml"] }
@@ -63,3 +64,8 @@ home.workspace = true
 url.workspace = true
 utoipa = { workspace = true, optional = true }
 utoipa-swagger-ui = { version = "9.0.0", features = ["axum"], optional = true }
+
+[build-dependencies]
+# Dep of utopia 2.5.0 breaks so keeping here for now
+zip = "=2.4.2"
+time = "=0.3.39"

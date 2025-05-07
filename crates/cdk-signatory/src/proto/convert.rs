@@ -326,6 +326,11 @@ impl From<cashu::CurrencyUnit> for CurrencyUnit {
                     CurrencyUnitType::Eur.into(),
                 )),
             },
+            cashu::CurrencyUnit::Auth => CurrencyUnit {
+                currency_unit: Some(currency_unit::CurrencyUnit::Unit(
+                    CurrencyUnitType::Auth.into(),
+                )),
+            },
             cashu::CurrencyUnit::Custom(name) => CurrencyUnit {
                 currency_unit: Some(currency_unit::CurrencyUnit::CustomUnit(name)),
             },

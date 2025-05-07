@@ -5,7 +5,9 @@ edition = "2021"
 description = "CDK signatory default implementation"
 
 [features]
-default = []
+default = ["grpc"]
+sqlcipher = ["cdk-sqlite/sqlcipher"]
+redb = ["dep:cdk-redb"]
 grpc = ["dep:tonic", "tokio/full", "dep:prost", "dep:tonic-build"]
 
 [dependencies]
@@ -15,17 +17,20 @@ bitcoin.workspace = true
 cdk-common = { workspace = true, default-features=false, features = [
     "mint", "auth",
 ] }
-tracing.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 
 # main.rs dependencies
-cdk-sqlite = { workspace = true }
-cdk-redb = { workspace = true }
+anyhow.workspace = true
+cdk-sqlite = { workspace = true, features = ["mint", "auth"] }
+cdk-redb = { workspace = true, features = ["mint", "auth"], optional = true }
 clap = { workspace = true }
 bip39.workspace = true
 home.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+tracing-subscriber.workspace = true
 
 [build-dependencies]
 tonic-build = { workspace = true, features = ["prost"], optional = true }

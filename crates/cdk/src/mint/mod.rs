@@ -154,6 +154,23 @@ impl Mint {
             open_id_discovery.map(|openid_discovery| OidcClient::new(openid_discovery.clone()));
 
         let keysets = signatory.keysets().await?;
+        if !keysets
+            .keysets
+            .iter()
+            .any(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
+        {
+            return Err(Error::NoActiveKeyset);
+        }
+
+        tracing::info!(
+            "Using Signatory {} with {} active keys",
+            signatory.name(),
+            keysets
+                .keysets
+                .iter()
+                .filter(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
+                .count()
+        );
 
         Ok(Self {
             signatory,
