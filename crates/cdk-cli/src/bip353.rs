@@ -4,6 +4,12 @@ use anyhow::{bail, Result};
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Bip353Address {
+    pub user: String,
+    pub domain: String,
+}
+
 /// Parse a human-readable Bitcoin address
 pub(crate) fn parse_address(address: &str) -> Result<(String, String)> {
     let addr = address.trim();
@@ -28,21 +34,17 @@ pub(crate) fn parse_address(address: &str) -> Result<(String, String)> {
 }
 
 /// Payment instruction type
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PaymentType {
     OnChain,
-    Lightning,
     LightningOffer,
-    Unknown,
 }
 
 /// BIP-353 payment instruction
 #[derive(Debug, Clone)]
 pub struct PaymentInstruction {
     pub uri: String,
-    pub payment_type: PaymentType,
-    pub is_reusable: bool,
-    pub parameters: HashMap<String, String>,
+    pub parameters: HashMap<PaymentType, String>,
 }
 
 impl PaymentInstruction {
@@ -53,8 +55,6 @@ impl PaymentInstruction {
         }
 
         let mut parameters = HashMap::new();
-        let mut payment_type = PaymentType::Unknown;
-        let mut is_reusable = true;
 
         // Parse URI parameters
         if let Some(query_start) = uri.find('?') {
@@ -63,28 +63,24 @@ impl PaymentInstruction {
                 if let Some(eq_pos) = pair.find('=') {
                     let key = pair[..eq_pos].to_string();
                     let value = pair[eq_pos + 1..].to_string();
-                    parameters.insert(key, value);
+                    let payment_type;
+                    // Determine payment type
+                    if key.contains("lno") {
+                        payment_type = PaymentType::LightningOffer;
+                    } else if !uri[8..].contains('?') && uri.len() > 8 {
+                        // Simple on-chain address
+                        payment_type = PaymentType::OnChain;
+                    } else {
+                        continue;
+                    }
+
+                    parameters.insert(payment_type, value);
                 }
             }
         }
 
-        // Determine payment type
-        if parameters.contains_key("lightning") {
-            payment_type = PaymentType::Lightning;
-            is_reusable = false;
-        } else if parameters.contains_key("lno") {
-            payment_type = PaymentType::LightningOffer;
-            is_reusable = true;
-        } else if !uri[8..].contains('?') && uri.len() > 8 {
-            // Simple on-chain address
-            payment_type = PaymentType::OnChain;
-            is_reusable = true;
-        }
-
         Ok(PaymentInstruction {
             uri: uri.to_string(),
-            payment_type,
-            is_reusable,
             parameters,
         })
     }
