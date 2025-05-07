@@ -138,13 +138,19 @@ impl MintPayment for Lnd {
     async fn wait_any_incoming_payment(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
-        tracing::info!("LND: Starting wait_any_incoming_payment with address: {}", self.address);
-        
+        tracing::info!(
+            "LND: Starting wait_any_incoming_payment with address: {}",
+            self.address
+        );
+
         let mut client =
             fedimint_tonic_lnd::connect(self.address.clone(), &self.cert_file, &self.macaroon_file)
                 .await
                 .map_err(|err| {
-                    tracing::error!("LND: Connection error in wait_any_incoming_payment: {}", err);
+                    tracing::error!(
+                        "LND: Connection error in wait_any_incoming_payment: {}",
+                        err
+                    );
                     Error::Connection
                 })?;
         tracing::debug!("LND: Connected to LND node successfully");
@@ -153,8 +159,11 @@ impl MintPayment for Lnd {
             add_index: 0,
             settle_index: 0,
         };
-        tracing::debug!("LND: Created invoice subscription request with add_index: {}, settle_index: {}", 
-                      stream_req.add_index, stream_req.settle_index);
+        tracing::debug!(
+            "LND: Created invoice subscription request with add_index: {}, settle_index: {}",
+            stream_req.add_index,
+            stream_req.settle_index
+        );
 
         tracing::debug!("LND: Attempting to subscribe to invoices...");
         let stream = client
@@ -189,25 +198,20 @@ impl MintPayment for Lnd {
                         None
                     }
                     msg = stream.message() => {
-                        tracing::debug!("LND: Received message from invoice stream");
-                        
+                        tracing::debug!("LND: Received message from invoice stream");                        
                         match msg {
                             Ok(Some(msg)) => {
                                 tracing::debug!("LND: Invoice message - state: {:?}, memo: {}, amt_paid_msat: {}", 
                                               msg.state(), msg.memo, msg.amt_paid_msat);
-
                                 if msg.state() == InvoiceState::Settled {
                                     tracing::info!("LND: Received settled invoice with memo: '{}', amount: {} msat", 
                                                  msg.memo, msg.amt_paid_msat);
-                                    
                                     match msg.r_hash.clone().try_into() {
                                         Ok(hash) => {
-                                            let hash_hex = hex::encode(&hash);
+                                            let hash_hex = hex::encode(hash);
                                             tracing::info!("LND: Processing payment with hash: {}", hash_hex);
-                                            
                                             let wait_response = WaitPaymentResponse {
-                                                payment_identifier: PaymentIdentifier::PaymentHash(hash),
-                                                payment_amount: Amount::from(msg.amt_paid_msat as u64),
+                                                payment_identifier: PaymentIdentifier::PaymentHash(hash), payment_amount: Amount::from(msg.amt_paid_msat as u64),
                                                 unit: CurrencyUnit::Msat,
                                                 payment_id: hex::encode(msg.r_hash),
                                             };

@@ -101,13 +101,15 @@ impl MintPayment for Cln {
     async fn wait_any_incoming_payment(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
-        tracing::info!("CLN: Starting wait_any_incoming_payment with socket: {:?}", self.rpc_socket);
-        
-        let last_pay_index = self.get_last_pay_index().await?
-            .map(|idx| {
-                tracing::info!("CLN: Found last payment index: {}", idx);
-                idx
-            });
+        tracing::info!(
+            "CLN: Starting wait_any_incoming_payment with socket: {:?}",
+            self.rpc_socket
+        );
+
+        let last_pay_index = self.get_last_pay_index().await?.map(|idx| {
+            tracing::info!("CLN: Found last payment index: {}", idx);
+            idx
+        });
 
         tracing::debug!("CLN: Connecting to CLN node...");
         let cln_client = match cln_rpc::ClnRpc::new(&self.rpc_socket).await {
@@ -201,7 +203,6 @@ impl MintPayment for Cln {
                                     continue;
                                 }
                             };
-                            
                             let amount_sats = amount_msats.msat() / 1000;
 
                             let payment_hash = Hash::from_bytes_ref(payment_hash.as_ref());
@@ -810,10 +811,10 @@ async fn fetch_invoice_by_payment_hash(
     payment_hash: &Hash,
 ) -> Result<Option<ListinvoicesInvoices>, Error> {
     tracing::debug!("Fetching invoice by payment hash: {}", payment_hash);
-    
+
     let payment_hash_str = payment_hash.to_string();
     tracing::debug!("Payment hash string: {}", payment_hash_str);
-    
+
     let request = ListinvoicesRequest {
         payment_hash: Some(payment_hash_str),
         index: None,
@@ -824,18 +825,25 @@ async fn fetch_invoice_by_payment_hash(
         start: None,
     };
     tracing::debug!("Created ListinvoicesRequest");
-    
+
     match cln_client.call_typed(&request).await {
         Ok(invoice_response) => {
             let invoice_count = invoice_response.invoices.len();
-            tracing::debug!("Received {} invoices for payment hash {}", invoice_count, payment_hash);
-            
+            tracing::debug!(
+                "Received {} invoices for payment hash {}",
+                invoice_count,
+                payment_hash
+            );
+
             if invoice_count > 0 {
                 let first_invoice = invoice_response.invoices.first().cloned();
                 if let Some(invoice) = &first_invoice {
                     tracing::debug!("Found invoice with payment hash {}", payment_hash);
-                    tracing::debug!("Invoice details - local_offer_id: {:?}, status: {:?}", 
-                                  invoice.local_offer_id, invoice.status);
+                    tracing::debug!(
+                        "Invoice details - local_offer_id: {:?}, status: {:?}",
+                        invoice.local_offer_id,
+                        invoice.status
+                    );
                 } else {
                     tracing::warn!("No invoice found with payment hash {}", payment_hash);
                 }
@@ -844,9 +852,13 @@ async fn fetch_invoice_by_payment_hash(
                 tracing::warn!("No invoices returned for payment hash {}", payment_hash);
                 Ok(None)
             }
-        },
+        }
         Err(e) => {
-            tracing::error!("Error fetching invoice by payment hash {}: {}", payment_hash, e);
+            tracing::error!(
+                "Error fetching invoice by payment hash {}: {}",
+                payment_hash,
+                e
+            );
             Err(Error::from(e))
         }
     }

@@ -861,10 +861,9 @@ impl Mint {
 
         let invoice = payment_quote
             .options
-            .map(|options| match options {
+            .and_then(|options| match options {
                 PaymentQuoteOptions::Bolt12 { invoice } => invoice,
-            })
-            .flatten();
+            });
 
         let payment_request = MeltPaymentRequest::Bolt12 {
             offer: Box::new(offer),
