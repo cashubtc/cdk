@@ -32,7 +32,6 @@ use fedimint_tonic_lnd::lnrpc::{FeeLimit, Hop, MppRecord};
 use fedimint_tonic_lnd::tonic::Code;
 use fedimint_tonic_lnd::Client;
 use futures::{Stream, StreamExt};
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
@@ -44,7 +43,7 @@ pub struct Lnd {
     address: String,
     cert_file: PathBuf,
     macaroon_file: PathBuf,
-    client: Arc<Mutex<Client>>,
+    client: Client,
     fee_reserve: FeeReserve,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
@@ -99,7 +98,7 @@ impl Lnd {
             address,
             cert_file,
             macaroon_file,
-            client: Arc::new(Mutex::new(client)),
+            client,
             fee_reserve,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
@@ -274,6 +273,8 @@ impl MintPayment for Lnd {
                 .into(),
         };
 
+        let mut client = self.client.clone();
+
         // Detect partial payments
         match partial_amount {
             Some(part_amt) => {
@@ -299,15 +300,13 @@ impl MintPayment for Lnd {
                     };
 
                     // Query the routes
-                    let mut routes_response: fedimint_tonic_lnd::lnrpc::QueryRoutesResponse = self
-                        .client
-                        .lock()
-                        .await
-                        .lightning()
-                        .query_routes(route_req)
-                        .await
-                        .map_err(Error::LndError)?
-                        .into_inner();
+                    let mut routes_response: fedimint_tonic_lnd::lnrpc::QueryRoutesResponse =
+                        client
+                            .lightning()
+                            .query_routes(route_req)
+                            .await
+                            .map_err(Error::LndError)?
+                            .into_inner();
 
                     // update its MPP record,
                     // attempt it and check the result
@@ -321,10 +320,7 @@ impl MintPayment for Lnd {
                     };
                     last_hop.mpp_record = Some(mpp_record);
 
-                    let payment_response = self
-                        .client
-                        .lock()
-                        .await
+                    let payment_response = client
                         .router()
                         .send_to_route_v2(fedimint_tonic_lnd::routerrpc::SendToRouteRequest {
                             payment_hash: payment_hash.to_byte_array().to_vec(),
@@ -388,10 +384,7 @@ impl MintPayment for Lnd {
                     ..Default::default()
                 };
 
-                let payment_response = self
-                    .client
-                    .lock()
-                    .await
+                let payment_response = client
                     .lightning()
                     .send_payment_sync(fedimint_tonic_lnd::tonic::Request::new(pay_req))
                     .await
@@ -441,10 +434,9 @@ impl MintPayment for Lnd {
             ..Default::default()
         };
 
-        let invoice = self
-            .client
-            .lock()
-            .await
+        let mut client = self.client.clone();
+
+        let invoice = client
             .lightning()
             .add_invoice(fedimint_tonic_lnd::tonic::Request::new(invoice_request))
             .await
@@ -470,10 +462,9 @@ impl MintPayment for Lnd {
             ..Default::default()
         };
 
-        let invoice = self
-            .client
-            .lock()
-            .await
+        let mut client = self.client.clone();
+
+        let invoice = client
             .lightning()
             .lookup_invoice(fedimint_tonic_lnd::tonic::Request::new(invoice_request))
             .await
@@ -503,13 +494,9 @@ impl MintPayment for Lnd {
             no_inflight_updates: true,
         };
 
-        let payment_response = self
-            .client
-            .lock()
-            .await
-            .router()
-            .track_payment_v2(track_request)
-            .await;
+        let mut client = self.client.clone();
+
+        let payment_response = client.router().track_payment_v2(track_request).await;
 
         let mut payment_stream = match payment_response {
             Ok(stream) => stream.into_inner(),
