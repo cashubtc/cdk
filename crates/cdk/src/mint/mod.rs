@@ -526,9 +526,11 @@ impl Mint {
         };
 
         // Mint quote has already been settled, proofs should not be burned or held.
-        if mint_quote.state() == MintQuoteState::Issued
-            || mint_quote.state() == MintQuoteState::Paid
+        if mint_quote.payment_method == PaymentMethod::Bolt11
+            && (mint_quote.state() == MintQuoteState::Issued
+                || mint_quote.state() == MintQuoteState::Paid)
         {
+            tracing::error!("Mint quote already paid");
             return Err(Error::RequestAlreadyPaid);
         }
 
