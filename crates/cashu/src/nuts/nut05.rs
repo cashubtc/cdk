@@ -378,7 +378,6 @@ impl TryFrom<MeltBolt11Request<String>> for MeltBolt11Request<Uuid> {
     }
 }
 
-// Basic implementation without trait bounds
 impl<Q> MeltBolt11Request<Q> {
     /// Get inputs (proofs)
     pub fn inputs(&self) -> &Proofs {

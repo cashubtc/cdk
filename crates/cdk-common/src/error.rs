@@ -37,6 +37,9 @@ pub enum Error {
     /// Invalid payment request
     #[error("Invalid payment request")]
     InvalidPaymentRequest,
+    /// Invalid payment method
+    #[error("Invalid payment method")]
+    InvalidPaymentMethod,
     /// Bolt11 invoice does not have amount
     #[error("Invoice Amount undefined")]
     InvoiceAmountUndefined,
@@ -46,6 +49,9 @@ pub enum Error {
     /// Amount overflow
     #[error("Amount Overflow")]
     AmountOverflow,
+    /// Amount undefined
+    #[error("Amount undefined")]
+    AmountUndefined,
     /// Witness missing or invalid
     #[error("Signature missing or invalid")]
     SignatureMissingOrInvalid,
@@ -91,6 +97,15 @@ pub enum Error {
     /// Multi-Part Payment not supported for unit and method
     #[error("Amountless invoices are not supported for unit `{0}` and method `{1}`")]
     AmountlessInvoiceNotSupported(CurrencyUnit, PaymentMethod),
+    /// Invoice not created
+    #[error("Invoice not created")]
+    InvoiceMissing,
+    /// Duplicate Payment id
+    #[error("Payment id seen for mint")]
+    DuplicatePaymentId,
+    /// Expiry invalid
+    #[error("Invalid expiry")]
+    InvalidExpiry,
 
     // Mint Errors
     /// Minting is disabled
@@ -120,6 +135,9 @@ pub enum Error {
     /// Payment state is unknown
     #[error("Payment state is unknown")]
     UnknownPaymentState,
+    /// Quote in final state
+    #[error("Quote in final state")]
+    QuoteInFinalState,
     /// Melting is disabled
     #[error("Minting is disabled")]
     MeltingDisabled,
@@ -162,6 +180,12 @@ pub enum Error {
     /// Oidc config not set
     #[error("Oidc client not set")]
     OidcNotSet,
+    /// Unsupported payment method
+    #[error("Unsupported payment method")]
+    UnsupportedPaymentMethod,
+    /// Pubkey required
+    #[error("Pubkey required")]
+    PubkeyRequired,
 
     // Wallet Errors
     /// P2PK spending conditions not met
@@ -240,9 +264,12 @@ pub enum Error {
     /// Parse int error
     #[error(transparent)]
     ParseInt(#[from] std::num::ParseIntError),
-    /// Parse 9rl Error
+    /// Parse url error
     #[error(transparent)]
     UrlParseError(#[from] url::ParseError),
+    /// Parse offer error
+    #[error("Invalid offer")]
+    Bolt12parse,
     /// Utf8 parse error
     #[error(transparent)]
     Utf8ParseError(#[from] std::string::FromUtf8Error),
@@ -309,12 +336,18 @@ pub enum Error {
     /// NUT20 Error
     #[error(transparent)]
     NUT20(#[from] crate::nuts::nut20::Error),
-    /// NUTXX Error
+    /// NUT21 Error
     #[error(transparent)]
     NUT21(#[from] crate::nuts::nut21::Error),
-    /// NUTXX1 Error
+    /// NUT22 Error
     #[error(transparent)]
     NUT22(#[from] crate::nuts::nut22::Error),
+    /// NUT23 Error
+    #[error(transparent)]
+    NUT23(#[from] crate::nuts::nut23::Error),
+    /// NUT24 Error
+    #[error(transparent)]
+    NUT24(#[from] crate::nuts::nut24::Error),
     /// Database Error
     #[error(transparent)]
     Database(crate::database::Error),

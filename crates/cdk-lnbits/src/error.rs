@@ -14,6 +14,9 @@ pub enum Error {
     /// Amount overflow
     #[error("Amount overflow")]
     AmountOverflow,
+    /// Invalid payment hash
+    #[error("Invalid payment hash")]
+    InvalidPaymentHash,
     /// Anyhow error
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),
