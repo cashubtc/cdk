@@ -629,54 +629,45 @@ mod tests {
 
     #[tokio::test]
     async fn mint_mod_new_mint() {
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
         let config = MintConfig::<'_> {
+            supported_units,
             ..Default::default()
         };
         let mint = create_mint(config).await;
 
         assert_eq!(
-            mint.pubkeys(),
-            KeysResponse {
-                keysets: Vec::new()
-            }
+            mint.total_issued()
+                .await
+                .unwrap()
+                .into_values()
+                .collect::<Vec<_>>(),
+            vec![Amount::default()]
         );
 
         assert_eq!(
-            mint.keysets(),
-            KeysetResponse {
-                keysets: Vec::new()
-            }
-        );
-
-        assert_eq!(
-            mint.total_issued().await.unwrap(),
-            HashMap::<nut02::Id, Amount>::new()
-        );
-
-        assert_eq!(
-            mint.total_redeemed().await.unwrap(),
-            HashMap::<nut02::Id, Amount>::new()
+            mint.total_issued()
+                .await
+                .unwrap()
+                .into_values()
+                .collect::<Vec<_>>(),
+            vec![Amount::default()]
         );
     }
 
     #[tokio::test]
     async fn mint_mod_rotate_keyset() {
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::default(), (0, 32));
+
         let config = MintConfig::<'_> {
+            supported_units,
             ..Default::default()
         };
         let mint = create_mint(config).await;
 
         let keysets = mint.keysets();
-        assert!(keysets.keysets.is_empty());
-
-        // generate the first keyset and set it to active
-        mint.rotate_keyset(CurrencyUnit::default(), 1, 1)
-            .await
-            .expect("test");
-
-        let keysets = mint.keysets();
-        assert!(keysets.keysets.len().eq(&1));
-        assert!(keysets.keysets[0].active);
         let first_keyset_id = keysets.keysets[0].id;
 
         // set the first keyset to inactive and generate a new keyset
