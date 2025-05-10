@@ -39,7 +39,7 @@ impl SignatoryRpcClient {
     pub async fn new<A: AsRef<Path>>(url: String, tls_dir: Option<A>) -> Result<Self, ClientError> {
         let channel = if let Some(tls_dir) = tls_dir {
             let tls_dir = tls_dir.as_ref();
-            let server_root_ca_cert = std::fs::read_to_string(tls_dir.join("ca.pem")).unwrap();
+            let server_root_ca_cert = std::fs::read_to_string(tls_dir.join("ca.pem"))?;
             let server_root_ca_cert = Certificate::from_pem(server_root_ca_cert);
             let client_cert = std::fs::read_to_string(tls_dir.join("client.pem"))?;
             let client_key = std::fs::read_to_string(tls_dir.join("client.key"))?;
