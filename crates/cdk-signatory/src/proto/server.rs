@@ -47,7 +47,6 @@ where
             Err(err) => proto::blind_sign_response::Result::Error(err.into()),
         };
 
-        //.map_err(|e| Status::from_error(Box::new(e)))?;
         Ok(Response::new(proto::BlindSignResponse {
             result: Some(result),
         }))
