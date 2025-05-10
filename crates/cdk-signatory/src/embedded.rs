@@ -55,6 +55,7 @@ impl Service {
         }
     }
 
+    #[tracing::instrument(skip_all)]
     async fn runner(
         mut receiver: mpsc::Receiver<Request>,
         handler: Arc<dyn Signatory + Send + Sync>,
