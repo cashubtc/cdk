@@ -10,9 +10,7 @@ use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase};
-use cdk_common::nuts::{
-    self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind, MintKeySet, Proof,
-};
+use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind, MintKeySet};
 use cdk_common::secret;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
@@ -375,7 +373,7 @@ impl Mint {
 
     /// Verify [`Proof`] meets conditions and is signed
     #[instrument(skip_all)]
-    pub async fn verify_proofs(&self, proofs: &[Proof]) -> Result<(), Error> {
+    pub async fn verify_proofs(&self, proofs: &Proofs) -> Result<(), Error> {
         proofs
             .iter()
             .map(|proof| {
