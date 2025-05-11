@@ -20,6 +20,7 @@ use url::Url;
 mod nostr_storage;
 mod sub_commands;
 mod token_storage;
+mod utils;
 
 const DEFAULT_WORK_DIR: &str = ".cdk-cli";
 
@@ -183,7 +184,17 @@ async fn main() -> Result<()> {
 
         let wallet = builder.build()?;
 
-        wallet.get_mint_info().await?;
+        let wallet_clone = wallet.clone();
+
+        tokio::spawn(async move {
+            if let Err(err) = wallet_clone.get_mint_info().await {
+                tracing::error!(
+                    "Could not get mint quote for {}, {}",
+                    wallet_clone.mint_url,
+                    err
+                );
+            }
+        });
 
         wallets.push(wallet);
     }
