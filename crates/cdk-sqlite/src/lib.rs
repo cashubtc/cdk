@@ -4,6 +4,8 @@
 #![warn(rustdoc::bare_urls)]
 
 mod common;
+mod macros;
+mod stmt;
 
 #[cfg(feature = "mint")]
 pub mod mint;

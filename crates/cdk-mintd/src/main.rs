@@ -407,8 +407,6 @@ async fn main() -> anyhow::Result<()> {
                     let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
                     let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
 
-                    sqlite_db.migrate().await;
-
                     Arc::new(sqlite_db)
                 }
                 #[cfg(feature = "redb")]

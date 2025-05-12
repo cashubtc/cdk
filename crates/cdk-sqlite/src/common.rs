@@ -1,46 +1,34 @@
-use std::str::FromStr;
-use std::time::Duration;
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{Error, Pool, Sqlite};
-
-#[inline(always)]
-pub async fn create_sqlite_pool(
+/// Create a configured rusqlite connection to a SQLite database.
+/// For SQLCipher support, enable the "sqlcipher" feature and pass a password.
+pub fn create_sqlite_pool(
     path: &str,
     #[cfg(feature = "sqlcipher")] password: String,
-) -> Result<Pool<Sqlite>, Error> {
-    let db_options = SqliteConnectOptions::from_str(path)?
-        .busy_timeout(Duration::from_secs(10))
-        .read_only(false)
-        .pragma("busy_timeout", "5000")
-        .pragma("journal_mode", "wal")
-        .pragma("synchronous", "normal")
-        .pragma("temp_store", "memory")
-        .pragma("mmap_size", "30000000000")
-        .shared_cache(true)
-        .create_if_missing(true);
-
-    #[cfg(feature = "sqlcipher")]
-    let db_options = db_options.pragma("key", password);
-
-    let is_memory = path.contains(":memory:");
-
-    let options = SqlitePoolOptions::new()
-        .min_connections(1)
-        .max_connections(1);
-
-    let pool = if is_memory {
-        // Make sure that the connection is not closed after the first query, or any query, as long
-        // as the pool is not dropped
-        options
-            .idle_timeout(None)
-            .max_lifetime(None)
-            .test_before_acquire(false)
+) -> Result<Pool<SqliteConnectionManager>, r2d2::Error> {
+    let (manager, is_memory) = if path.contains(":memory:") {
+        (SqliteConnectionManager::memory(), true)
     } else {
-        options
-    }
-    .connect_with(db_options)
-    .await?;
+        (SqliteConnectionManager::file(path), false)
+    };
 
-    Ok(pool)
+    let manager = manager.with_init(|conn| {
+        // Apply pragmas
+        conn.pragma_update(None, "busy_timeout", 5000)?;
+        conn.pragma_update(None, "journal_mode", "wal")?;
+        conn.pragma_update(None, "synchronous", "normal")?;
+        conn.pragma_update(None, "temp_store", "memory")?;
+        conn.pragma_update(None, "mmap_size", 30000000000i64)?;
+        conn.pragma_update(None, "cache", "shared")?;
+
+        #[cfg(feature = "sqlcipher")]
+        conn.pragma_update(None, "key", &password)?;
+
+        Ok(())
+    });
+
+    r2d2::Pool::builder()
+        .max_size(if is_memory { 1 } else { 20 })
+        .build(manager)
 }
