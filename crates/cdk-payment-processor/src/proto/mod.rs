@@ -83,16 +83,16 @@ impl From<cdk_common::payment::PaymentQuoteResponse> for PaymentQuoteResponse {
     }
 }
 
-impl From<cdk_common::nut05::MeltOptions> for MeltOptions {
-    fn from(value: cdk_common::nut05::MeltOptions) -> Self {
+impl From<cdk_common::nut23::MeltOptions> for MeltOptions {
+    fn from(value: cdk_common::nut23::MeltOptions) -> Self {
         Self {
             options: Some(value.into()),
         }
     }
 }
 
-impl From<cdk_common::nut05::MeltOptions> for Options {
-    fn from(value: cdk_common::nut05::MeltOptions) -> Self {
+impl From<cdk_common::nut23::MeltOptions> for Options {
+    fn from(value: cdk_common::nut23::MeltOptions) -> Self {
         match value {
             cdk_common::MeltOptions::Mpp { mpp } => Self::Mpp(Mpp {
                 amount: mpp.amount.into(),
@@ -104,7 +104,7 @@ impl From<cdk_common::nut05::MeltOptions> for Options {
     }
 }
 
-impl From<MeltOptions> for cdk_common::nut05::MeltOptions {
+impl From<MeltOptions> for cdk_common::nut23::MeltOptions {
     fn from(value: MeltOptions) -> Self {
         let options = value.options.expect("option defined");
         match options {
@@ -152,8 +152,8 @@ impl From<cdk_common::nut05::QuoteState> for QuoteState {
     }
 }
 
-impl From<cdk_common::nut04::QuoteState> for QuoteState {
-    fn from(value: cdk_common::nut04::QuoteState) -> Self {
+impl From<cdk_common::nut23::QuoteState> for QuoteState {
+    fn from(value: cdk_common::nut23::QuoteState) -> Self {
         match value {
             cdk_common::MintQuoteState::Unpaid => Self::Unpaid,
             cdk_common::MintQuoteState::Paid => Self::Paid,

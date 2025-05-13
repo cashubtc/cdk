@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use cdk_common::{AuthToken, MintInfo};
 
 use super::Error;
-use crate::nuts::{Id, KeySet, KeysetResponse, MintAuthRequest, MintBolt11Response};
+use crate::nuts::{Id, KeySet, KeysetResponse, MintAuthRequest, MintResponse};
 
 /// Interface that connects a wallet to a mint. Typically represents an HttpClient.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -23,8 +23,5 @@ pub trait AuthMintConnector: Debug {
     /// Get Blind Auth keysets
     async fn get_mint_blind_auth_keysets(&self) -> Result<KeysetResponse, Error>;
     /// Post mint blind auth
-    async fn post_mint_blind_auth(
-        &self,
-        request: MintAuthRequest,
-    ) -> Result<MintBolt11Response, Error>;
+    async fn post_mint_blind_auth(&self, request: MintAuthRequest) -> Result<MintResponse, Error>;
 }

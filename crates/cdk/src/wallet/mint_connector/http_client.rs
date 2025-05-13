@@ -20,9 +20,9 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
-    MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
-    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest,
-    RestoreResponse, SwapRequest, SwapResponse,
+    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
+    SwapRequest, SwapResponse,
 };
 #[cfg(feature = "auth")]
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
@@ -263,10 +263,7 @@ impl MintConnector for HttpClient {
 
     /// Mint Tokens [NUT-04]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_mint(
-        &self,
-        request: MintBolt11Request<String>,
-    ) -> Result<MintBolt11Response, Error> {
+    async fn post_mint(&self, request: MintRequest<String>) -> Result<MintResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "mint", "bolt11"])?;
         #[cfg(feature = "auth")]
         let auth_token = self
@@ -322,7 +319,7 @@ impl MintConnector for HttpClient {
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_melt(
         &self,
-        request: MeltBolt11Request<String>,
+        request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let url = self.mint_url.join_paths(&["v1", "melt", "bolt11"])?;
         #[cfg(feature = "auth")]
@@ -469,10 +466,7 @@ impl AuthMintConnector for AuthHttpClient {
 
     /// Mint Tokens [NUT-22]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_mint_blind_auth(
-        &self,
-        request: MintAuthRequest,
-    ) -> Result<MintBolt11Response, Error> {
+    async fn post_mint_blind_auth(&self, request: MintAuthRequest) -> Result<MintResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "auth", "blind", "mint"])?;
         self.core
             .http_post(url, Some(self.cat.read().await.clone()), &request)

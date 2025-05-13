@@ -18,9 +18,8 @@ use cdk_common::secret::Secret;
 use cdk_common::state::check_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
-    Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltBolt11Request,
-    MeltQuoteState, MintInfo, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey,
-    State,
+    Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltQuoteState, MeltRequest,
+    MintInfo, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
 };
 use error::Error;
 use lightning_invoice::Bolt11Invoice;
@@ -946,7 +945,7 @@ WHERE id=?
 
     async fn add_melt_request(
         &self,
-        melt_request: MeltBolt11Request<Uuid>,
+        melt_request: MeltRequest<Uuid>,
         ln_key: PaymentProcessorKey,
     ) -> Result<(), Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
@@ -990,7 +989,7 @@ ON CONFLICT(id) DO UPDATE SET
     async fn get_melt_request(
         &self,
         quote_id: &Uuid,
-    ) -> Result<Option<(MeltBolt11Request<Uuid>, PaymentProcessorKey)>, Self::Err> {
+    ) -> Result<Option<(MeltRequest<Uuid>, PaymentProcessorKey)>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         let rec = sqlx::query(
@@ -1818,14 +1817,14 @@ fn sqlite_row_to_blind_signature(row: SqliteRow) -> Result<BlindSignature, Error
 
 fn sqlite_row_to_melt_request(
     row: SqliteRow,
-) -> Result<(MeltBolt11Request<Uuid>, PaymentProcessorKey), Error> {
+) -> Result<(MeltRequest<Uuid>, PaymentProcessorKey), Error> {
     let quote_id: Hyphenated = row.try_get("id").map_err(Error::from)?;
     let row_inputs: String = row.try_get("inputs").map_err(Error::from)?;
     let row_outputs: Option<String> = row.try_get("outputs").map_err(Error::from)?;
     let row_method: String = row.try_get("method").map_err(Error::from)?;
     let row_unit: String = row.try_get("unit").map_err(Error::from)?;
 
-    let melt_request = MeltBolt11Request::new(
+    let melt_request = MeltRequest::new(
         quote_id.into_uuid(),
         serde_json::from_str(&row_inputs)?,
         row_outputs.and_then(|o| serde_json::from_str(&o).ok()),
