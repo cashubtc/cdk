@@ -2,10 +2,11 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/08.md>
 
-use super::nut05::{MeltBolt11Request, MeltQuoteBolt11Response};
+use super::nut05::MeltRequest;
+use super::nut23::MeltQuoteBolt11Response;
 use crate::Amount;
 
-impl<Q> MeltBolt11Request<Q> {
+impl<Q> MeltRequest<Q> {
     /// Total output [`Amount`]
     pub fn output_amount(&self) -> Option<Amount> {
         self.outputs()

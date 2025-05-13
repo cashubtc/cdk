@@ -1,7 +1,7 @@
 use tracing::instrument;
 
 use crate::mint::nut22::MintAuthRequest;
-use crate::mint::{AuthToken, MintBolt11Response};
+use crate::mint::{AuthToken, MintResponse};
 use crate::{Amount, Error, Mint};
 
 impl Mint {
@@ -11,7 +11,7 @@ impl Mint {
         &self,
         auth_token: AuthToken,
         mint_auth_request: MintAuthRequest,
-    ) -> Result<MintBolt11Response, Error> {
+    ) -> Result<MintResponse, Error> {
         let cat = if let AuthToken::ClearAuth(cat) = auth_token {
             cat
         } else {
@@ -47,7 +47,7 @@ impl Mint {
             blind_signatures.push(blind_signature);
         }
 
-        Ok(MintBolt11Response {
+        Ok(MintResponse {
             signatures: blind_signatures,
         })
     }

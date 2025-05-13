@@ -4,7 +4,7 @@ use tonic::transport::Channel;
 use tonic::Request;
 
 use crate::cdk_mint_client::CdkMintClient;
-use crate::UpdateNut05Request;
+use crate::{MeltMethodOptions, UpdateNut05Request};
 
 /// Command to update NUT-05 (melt process) settings for the mint
 ///
@@ -30,6 +30,9 @@ pub struct UpdateNut05Command {
     /// Whether this melt method is disabled (true) or enabled (false)
     #[arg(long)]
     disabled: Option<bool>,
+    /// Whether amountless bolt11 invoices are allowed
+    #[arg(long)]
+    amountless: Option<bool>,
 }
 
 /// Executes the update_nut05 command against the mint server
@@ -43,13 +46,19 @@ pub async fn update_nut05(
     client: &mut CdkMintClient<Channel>,
     sub_command_args: &UpdateNut05Command,
 ) -> Result<()> {
+    // Create options if amountless is set
+    let options = sub_command_args
+        .amountless
+        .map(|amountless| MeltMethodOptions { amountless });
+
     let _response = client
         .update_nut05(Request::new(UpdateNut05Request {
             method: sub_command_args.method.clone(),
             unit: sub_command_args.unit.clone(),
             disabled: sub_command_args.disabled,
-            min: sub_command_args.min_amount,
-            max: sub_command_args.max_amount,
+            min_amount: sub_command_args.min_amount,
+            max_amount: sub_command_args.max_amount,
+            options,
         }))
         .await?;
 
