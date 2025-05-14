@@ -15,16 +15,16 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
-use cdk::cdk_payment::{
+use cdk_common::amount::{to_unit, Amount, MSAT_IN_SAT};
+use cdk_common::bitcoin::hashes::Hash;
+use cdk_common::common::FeeReserve;
+use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
+use cdk_common::payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
     PaymentQuoteResponse,
 };
-use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
-use cdk::secp256k1::hashes::Hash;
-use cdk::types::FeeReserve;
-use cdk::util::hex;
-use cdk::{mint, Bolt11Invoice};
+use cdk_common::util::hex;
+use cdk_common::{mint, Bolt11Invoice};
 use error::Error;
 use fedimint_tonic_lnd::lnrpc::fee_limit::Limit;
 use fedimint_tonic_lnd::lnrpc::payment::PaymentStatus;
@@ -115,7 +115,7 @@ impl Lnd {
 
 #[async_trait]
 impl MintPayment for Lnd {
-    type Err = cdk_payment::Error;
+    type Err = payment::Error;
 
     #[instrument(skip_all)]
     async fn get_settings(&self) -> Result<serde_json::Value, Self::Err> {
@@ -524,7 +524,7 @@ impl MintPayment for Lnd {
                         unit: self.settings.unit.clone(),
                     });
                 } else {
-                    return Err(cdk_payment::Error::UnknownPaymentState);
+                    return Err(payment::Error::UnknownPaymentState);
                 }
             }
         };
