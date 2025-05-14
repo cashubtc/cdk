@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use anyhow::{anyhow, Result};
 use cdk::nuts::nut18::TransportType;
-use cdk::nuts::{PaymentRequest, PaymentRequestPayload};
+use cdk::nuts::{PaymentRequest, PaymentRequestPayload, Token};
 use cdk::wallet::{MultiMintWallet, SendOptions};
 use clap::Args;
 use nostr_sdk::nips::nip19::Nip19Profile;
@@ -80,8 +80,7 @@ pub async fn pay_request(
             transports
                 .iter()
                 .find(|t| t._type == TransportType::HttpPost)
-        })
-        .ok_or(anyhow!("No supported transport method found"))?;
+        });
 
     let prepared_send = matching_wallet
         .prepare_send(
@@ -94,81 +93,92 @@ pub async fn pay_request(
         .await?;
     let proofs = matching_wallet.send(prepared_send, None).await?.proofs();
 
-    let payload = PaymentRequestPayload {
-        id: payment_request.payment_id.clone(),
-        memo: None,
-        mint: matching_wallet.mint_url.clone(),
-        unit: matching_wallet.unit.clone(),
-        proofs,
-    };
+    if let Some(transport) = transport {
+        let payload = PaymentRequestPayload {
+            id: payment_request.payment_id.clone(),
+            memo: None,
+            mint: matching_wallet.mint_url.clone(),
+            unit: matching_wallet.unit.clone(),
+            proofs,
+        };
 
-    match transport._type {
-        TransportType::Nostr => {
-            let keys = Keys::generate();
-            let client = NostrClient::new(keys);
-            let nprofile = Nip19Profile::from_bech32(&transport.target)?;
+        match transport._type {
+            TransportType::Nostr => {
+                let keys = Keys::generate();
+                let client = NostrClient::new(keys);
+                let nprofile = Nip19Profile::from_bech32(&transport.target)?;
 
-            println!("{:?}", nprofile.relays);
+                println!("{:?}", nprofile.relays);
 
-            let rumor = EventBuilder::new(
-                nostr_sdk::Kind::from_u16(14),
-                serde_json::to_string(&payload)?,
-                [],
-            );
+                let rumor = EventBuilder::new(
+                    nostr_sdk::Kind::from_u16(14),
+                    serde_json::to_string(&payload)?,
+                    [],
+                );
 
-            let relays = nprofile.relays;
+                let relays = nprofile.relays;
 
-            for relay in relays.iter() {
-                client.add_write_relay(relay).await?;
-            }
+                for relay in relays.iter() {
+                    client.add_write_relay(relay).await?;
+                }
 
-            client.connect().await;
+                client.connect().await;
 
-            let gift_wrap = client
-                .gift_wrap_to(relays, &nprofile.public_key, rumor, None)
-                .await?;
+                let gift_wrap = client
+                    .gift_wrap_to(relays, &nprofile.public_key, rumor, None)
+                    .await?;
 
-            println!(
-                "Published event {} succufully to {}",
-                gift_wrap.val,
-                gift_wrap
-                    .success
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-
-            if !gift_wrap.failed.is_empty() {
                 println!(
-                    "Could not publish to {:?}",
+                    "Published event {} succufully to {}",
+                    gift_wrap.val,
                     gift_wrap
-                        .failed
-                        .keys()
-                        .map(|relay| relay.to_string())
+                        .success
+                        .iter()
+                        .map(|s| s.to_string())
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
+
+                if !gift_wrap.failed.is_empty() {
+                    println!(
+                        "Could not publish to {:?}",
+                        gift_wrap
+                            .failed
+                            .keys()
+                            .map(|relay| relay.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+            }
+
+            TransportType::HttpPost => {
+                let client = Client::new();
+
+                let res = client
+                    .post(transport.target.clone())
+                    .json(&payload)
+                    .send()
+                    .await?;
+
+                let status = res.status();
+                if status.is_success() {
+                    println!("Successfully posted payment");
+                } else {
+                    println!("{res:?}");
+                    println!("Error posting payment");
+                }
             }
         }
-
-        TransportType::HttpPost => {
-            let client = Client::new();
-
-            let res = client
-                .post(transport.target.clone())
-                .json(&payload)
-                .send()
-                .await?;
-
-            let status = res.status();
-            if status.is_success() {
-                println!("Successfully posted payment");
-            } else {
-                println!("{res:?}");
-                println!("Error posting payment");
-            }
-        }
+    } else {
+        // If no transport is available, print the token
+        let token = Token::new(
+            matching_wallet.mint_url.clone(),
+            proofs,
+            None,
+            matching_wallet.unit.clone(),
+        );
+        println!("Token: {}", token.to_string());
     }
 
     Ok(())
