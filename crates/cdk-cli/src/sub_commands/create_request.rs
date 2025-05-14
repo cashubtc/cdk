@@ -23,7 +23,7 @@ pub struct CreateRequestSubCommand {
     description: Option<String>,
     /// P2PK: Public key(s) for which the token can be spent with valid signature(s)
     /// Can be specified multiple times for multiple pubkeys
-    #[arg(long)]
+    #[arg(long, action = clap::ArgAction::Append)]
     pubkey: Option<Vec<String>>,
     /// Number of required signatures (for multiple pubkeys)
     /// Defaults to 1 if not specified
@@ -47,7 +47,7 @@ pub struct CreateRequestSubCommand {
     /// Nostr relays to use (only used when transport=nostr)
     /// Can be specified multiple times for multiple relays
     /// If not provided, defaults to standard relays
-    #[arg(long)]
+    #[arg(long, action = clap::ArgAction::Append)]
     nostr_relay: Option<Vec<String>>,
 }
 
