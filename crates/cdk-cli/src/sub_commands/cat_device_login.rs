@@ -129,9 +129,7 @@ async fn get_device_code_token(mint_info: &MintInfo, client_id: &str) -> (String
     println!("And enter code: {user_code}\n");
 
     if verification_uri_complete != verification_uri {
-        println!(
-            "Or visit this URL directly: {verification_uri_complete}\n"
-        );
+        println!("Or visit this URL directly: {verification_uri_complete}\n");
     }
 
     // Poll for the token

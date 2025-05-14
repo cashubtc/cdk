@@ -166,9 +166,7 @@ pub fn setup_tracing() {
     let sqlx_filter = "sqlx=warn";
     let hyper_filter = "hyper=warn";
 
-    let env_filter = EnvFilter::new(format!(
-        "{default_filter},{sqlx_filter},{hyper_filter}"
-    ));
+    let env_filter = EnvFilter::new(format!("{default_filter},{sqlx_filter},{hyper_filter}"));
 
     // Ok if successful, Err if already initialized
     // Allows us to setup tracing at the start of several parallel tests
