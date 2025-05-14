@@ -70,8 +70,7 @@ impl Lnd {
         // Validate cert_file exists and is not empty
         if !cert_file.exists() || cert_file.metadata().map(|m| m.len() == 0).unwrap_or(true) {
             return Err(Error::InvalidConfig(format!(
-                "LND certificate file not found or empty: {:?}",
-                cert_file
+                "LND certificate file not found or empty: {cert_file:?}"
             )));
         }
 
@@ -83,8 +82,7 @@ impl Lnd {
                 .unwrap_or(true)
         {
             return Err(Error::InvalidConfig(format!(
-                "LND macaroon file not found or empty: {:?}",
-                macaroon_file
+                "LND macaroon file not found or empty: {macaroon_file:?}"
             )));
         }
 

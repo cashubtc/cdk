@@ -162,7 +162,7 @@ pub async fn pay_request(
             if status.is_success() {
                 println!("Successfully posted payment");
             } else {
-                println!("{:?}", res);
+                println!("{res:?}");
                 println!("Error posting payment");
             }
         }

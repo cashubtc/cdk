@@ -82,8 +82,7 @@ async fn main() -> anyhow::Result<()> {
     let tower_http = "tower_http=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{},{},{},{},{}",
-        default_filter, sqlx_filter, hyper_filter, h2_filter, tower_http
+        "{default_filter},{sqlx_filter},{hyper_filter},{h2_filter},{tower_http}"
     ));
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
@@ -633,7 +632,7 @@ async fn main() -> anyhow::Result<()> {
         mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
     }
 
-    let socket_addr = SocketAddr::from_str(&format!("{}:{}", listen_addr, listen_port))?;
+    let socket_addr = SocketAddr::from_str(&format!("{listen_addr}:{listen_port}"))?;
 
     let listener = tokio::net::TcpListener::bind(socket_addr).await?;
 

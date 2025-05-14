@@ -36,7 +36,7 @@ pub fn get_mint_addr() -> String {
 }
 
 pub fn get_mint_port(which: &str) -> u16 {
-    let dir = env::var(format!("CDK_ITESTS_MINT_PORT_{}", which)).expect("Mint port not set");
+    let dir = env::var(format!("CDK_ITESTS_MINT_PORT_{which}")).expect("Mint port not set");
     dir.parse().unwrap()
 }
 
@@ -244,7 +244,7 @@ pub async fn start_regtest_end(sender: Sender<()>, notify: Arc<Notify>) -> anyho
     tracing::info!("Started lnd node");
 
     let lnd_client = LndClient::new(
-        format!("https://{}", LND_RPC_ADDR),
+        format!("https://{LND_RPC_ADDR}"),
         get_lnd_cert_file_path(&lnd_dir),
         get_lnd_macaroon_path(&lnd_dir),
     )
@@ -261,7 +261,7 @@ pub async fn start_regtest_end(sender: Sender<()>, notify: Arc<Notify>) -> anyho
     tracing::info!("Started second lnd node");
 
     let lnd_two_client = LndClient::new(
-        format!("https://{}", LND_TWO_RPC_ADDR),
+        format!("https://{LND_TWO_RPC_ADDR}"),
         get_lnd_cert_file_path(&lnd_two_dir),
         get_lnd_macaroon_path(&lnd_two_dir),
     )

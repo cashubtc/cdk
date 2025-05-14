@@ -60,7 +60,7 @@ pub async fn cat_device_login(
     if let Err(e) =
         token_storage::save_tokens(work_dir, &mint_url, &access_token, &refresh_token).await
     {
-        println!("Warning: Failed to save tokens to file: {}", e);
+        println!("Warning: Failed to save tokens to file: {e}");
     } else {
         println!("Tokens saved to work directory");
     }
@@ -68,8 +68,8 @@ pub async fn cat_device_login(
     // Print a cute ASCII cat
     println!("\nAuthentication successful! 🎉\n");
     println!("\nYour tokens:");
-    println!("access_token: {}", access_token);
-    println!("refresh_token: {}", refresh_token);
+    println!("access_token: {access_token}");
+    println!("refresh_token: {refresh_token}");
 
     Ok(())
 }
@@ -125,14 +125,11 @@ async fn get_device_code_token(mint_info: &MintInfo, client_id: &str) -> (String
 
     let interval = device_code_data["interval"].as_u64().unwrap_or(5);
 
-    println!("\nTo login, visit: {}", verification_uri);
-    println!("And enter code: {}\n", user_code);
+    println!("\nTo login, visit: {verification_uri}");
+    println!("And enter code: {user_code}\n");
 
     if verification_uri_complete != verification_uri {
-        println!(
-            "Or visit this URL directly: {}\n",
-            verification_uri_complete
-        );
+        println!("Or visit this URL directly: {verification_uri_complete}\n");
     }
 
     // Poll for the token
@@ -187,7 +184,7 @@ async fn get_device_code_token(mint_info: &MintInfo, client_id: &str) -> (String
                 continue;
             } else {
                 // For other errors, exit with an error message
-                panic!("Authentication failed: {}", error);
+                panic!("Authentication failed: {error}");
             }
         }
     }

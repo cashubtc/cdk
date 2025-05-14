@@ -115,7 +115,7 @@ pub async fn receive(
                         total_amount += amount;
                     }
                     Err(err) => {
-                        println!("{}", err);
+                        println!("{err}");
                     }
                 }
             }
@@ -124,7 +124,7 @@ pub async fn receive(
         }
     };
 
-    println!("Received: {}", amount);
+    println!("Received: {amount}");
 
     Ok(())
 }

@@ -12,7 +12,7 @@ pub async fn store_nostr_last_checked(
     last_checked: u32,
 ) -> Result<()> {
     let key_hex = hex::encode(verifying_key.to_bytes());
-    let file_path = work_dir.join(format!("nostr_last_checked_{}", key_hex));
+    let file_path = work_dir.join(format!("nostr_last_checked_{key_hex}"));
 
     fs::write(file_path, last_checked.to_string())?;
 
@@ -25,7 +25,7 @@ pub async fn get_nostr_last_checked(
     verifying_key: &PublicKey,
 ) -> Result<Option<u32>> {
     let key_hex = hex::encode(verifying_key.to_bytes());
-    let file_path = work_dir.join(format!("nostr_last_checked_{}", key_hex));
+    let file_path = work_dir.join(format!("nostr_last_checked_{key_hex}"));
 
     match fs::read_to_string(file_path) {
         Ok(content) => {

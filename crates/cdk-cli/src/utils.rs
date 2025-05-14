@@ -10,7 +10,7 @@ use cdk::Amount;
 
 /// Helper function to get user input with a prompt
 pub fn get_user_input(prompt: &str) -> Result<String> {
-    println!("{}", prompt);
+    println!("{prompt}");
     let mut user_input = String::new();
     io::stdout().flush()?;
     io::stdin().read_line(&mut user_input)?;

@@ -169,7 +169,7 @@ pub async fn send(
             println!("{}", token.to_v3_string());
         }
         false => {
-            println!("{}", token);
+            println!("{token}");
         }
     }
 

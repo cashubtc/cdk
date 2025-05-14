@@ -407,8 +407,7 @@ impl From<Error> for ErrorResponse {
                 ErrorResponse {
                     code: ErrorCode::TransactionUnbalanced,
                     error: Some(format!(
-                        "Inputs: {}, Outputs: {}, expected_fee: {}",
-                        inputs_total, outputs_total, fee_expected,
+                        "Inputs: {inputs_total}, Outputs: {outputs_total}, expected_fee: {fee_expected}",
                     )),
                     detail: Some("Transaction inputs should equal outputs less fee".to_string()),
                 }

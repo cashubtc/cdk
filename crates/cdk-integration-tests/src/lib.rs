@@ -60,7 +60,7 @@ pub async fn attempt_to_swap_pending(wallet: &Wallet) -> Result<()> {
         Err(err) => match err {
             cdk::error::Error::TokenPending => (),
             _ => {
-                println!("{:?}", err);
+                println!("{err:?}");
                 bail!("Wrong error")
             }
         },
@@ -154,13 +154,9 @@ pub async fn init_lnd_client() -> LndClient {
     let lnd_dir = get_lnd_dir("one");
     let cert_file = lnd_dir.join("tls.cert");
     let macaroon_file = lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon");
-    LndClient::new(
-        format!("https://{}", LND_RPC_ADDR),
-        cert_file,
-        macaroon_file,
-    )
-    .await
-    .unwrap()
+    LndClient::new(format!("https://{LND_RPC_ADDR}"), cert_file, macaroon_file)
+        .await
+        .unwrap()
 }
 
 /// Pays a Bolt11Invoice if it's on the regtest network, otherwise returns Ok

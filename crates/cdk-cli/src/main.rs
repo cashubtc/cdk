@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
 
     let sqlx_filter = "sqlx=warn,hyper_util=warn,reqwest=warn";
 
-    let env_filter = EnvFilter::new(format!("{},{}", default_filter, sqlx_filter));
+    let env_filter = EnvFilter::new(format!("{default_filter},{sqlx_filter}"));
 
     // Parse input
     tracing_subscriber::fmt().with_env_filter(env_filter).init();

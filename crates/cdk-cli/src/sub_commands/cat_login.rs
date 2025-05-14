@@ -67,15 +67,15 @@ pub async fn cat_login(
     if let Err(e) =
         token_storage::save_tokens(work_dir, &mint_url, &access_token, &refresh_token).await
     {
-        println!("Warning: Failed to save tokens to file: {}", e);
+        println!("Warning: Failed to save tokens to file: {e}");
     } else {
         println!("Tokens saved to work directory");
     }
 
     println!("\nAuthentication successful! 🎉\n");
     println!("\nYour tokens:");
-    println!("access_token: {}", access_token);
-    println!("refresh_token: {}", refresh_token);
+    println!("access_token: {access_token}");
+    println!("refresh_token: {refresh_token}");
 
     Ok(())
 }

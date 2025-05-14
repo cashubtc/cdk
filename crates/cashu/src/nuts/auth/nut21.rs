@@ -169,7 +169,7 @@ impl std::fmt::Display for RoutePath {
         };
         // Remove the quotes from the JSON string
         let path = json_str.trim_matches('"');
-        write!(f, "{}", path)
+        write!(f, "{path}")
     }
 }
 
