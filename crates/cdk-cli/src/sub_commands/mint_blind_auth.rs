@@ -97,7 +97,7 @@ pub async fn mint_blind_auth(
                         )
                         .await
                         {
-                            println!("Warning: Failed to save refreshed tokens: {}", e);
+                            println!("Warning: Failed to save refreshed tokens: {e}");
                         }
 
                         // Try setting the new access token

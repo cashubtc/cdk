@@ -45,7 +45,7 @@ impl fmt::Display for TransportType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use serde::ser::Error;
         let t = serde_json::to_string(self).map_err(|e| fmt::Error::custom(e.to_string()))?;
-        write!(f, "{}", t)
+        write!(f, "{t}")
     }
 }
 
@@ -278,7 +278,7 @@ impl fmt::Display for PaymentRequest {
         let mut data = Vec::new();
         ciborium::into_writer(self, &mut data).map_err(|e| fmt::Error::custom(e.to_string()))?;
         let encoded = general_purpose::URL_SAFE.encode(data);
-        write!(f, "{}{}", PAYMENT_REQUEST_PREFIX, encoded)
+        write!(f, "{PAYMENT_REQUEST_PREFIX}{encoded}")
     }
 }
 

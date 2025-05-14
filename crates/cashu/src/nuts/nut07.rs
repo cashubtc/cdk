@@ -49,7 +49,7 @@ impl fmt::Display for State {
             Self::PendingSpent => "PENDING_SPENT",
         };
 
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
