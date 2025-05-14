@@ -13,15 +13,15 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use axum::Router;
-use cdk::amount::{to_unit, Amount, MSAT_IN_SAT};
-use cdk::cdk_payment::{
+use cdk_common::amount::{to_unit, Amount, MSAT_IN_SAT};
+use cdk_common::common::FeeReserve;
+use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
+use cdk_common::payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
     PaymentQuoteResponse,
 };
-use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
-use cdk::types::FeeReserve;
-use cdk::util::unix_time;
-use cdk::{mint, Bolt11Invoice};
+use cdk_common::util::unix_time;
+use cdk_common::{mint, Bolt11Invoice};
 use error::Error;
 use futures::stream::StreamExt;
 use futures::Stream;
@@ -77,7 +77,7 @@ impl LNbits {
 
 #[async_trait]
 impl MintPayment for LNbits {
-    type Err = cdk_payment::Error;
+    type Err = payment::Error;
 
     async fn get_settings(&self) -> Result<Value, Self::Err> {
         Ok(serde_json::to_value(&self.settings)?)
@@ -166,7 +166,7 @@ impl MintPayment for LNbits {
         let amount_msat = match options {
             Some(amount) => {
                 if matches!(amount, MeltOptions::Mpp { mpp: _ }) {
-                    return Err(cdk_payment::Error::UnsupportedPaymentOption);
+                    return Err(payment::Error::UnsupportedPaymentOption);
                 }
                 amount.amount_msat()
             }

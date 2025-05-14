@@ -13,7 +13,7 @@ readme = "README.md"
 [dependencies]
 async-trait.workspace = true
 anyhow.workspace = true
-cdk = { workspace = true, features = ["mint"] }
+cdk-common = { workspace = true, features = ["mint"] }
 fedimint-tonic-lnd = "0.2.0"
 futures.workspace = true
 tokio.workspace = true
