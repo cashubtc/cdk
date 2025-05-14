@@ -12,15 +12,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk::amount::{to_unit, Amount};
-use cdk::cdk_payment::{
+use cdk_common::amount::{to_unit, Amount};
+use cdk_common::common::FeeReserve;
+use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
+use cdk_common::payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
     PaymentQuoteResponse,
 };
-use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
-use cdk::types::FeeReserve;
-use cdk::util::{hex, unix_time};
-use cdk::{mint, Bolt11Invoice};
+use cdk_common::util::{hex, unix_time};
+use cdk_common::{mint, Bolt11Invoice};
 use cln_rpc::model::requests::{
     InvoiceRequest, ListinvoicesRequest, ListpaysRequest, PayRequest, WaitanyinvoiceRequest,
 };
@@ -65,7 +65,7 @@ impl Cln {
 
 #[async_trait]
 impl MintPayment for Cln {
-    type Err = cdk_payment::Error;
+    type Err = payment::Error;
 
     async fn get_settings(&self) -> Result<Value, Self::Err> {
         Ok(serde_json::to_value(Bolt11Settings {
