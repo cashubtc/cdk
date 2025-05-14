@@ -575,7 +575,7 @@ impl fmt::Display for TagKind {
             Self::Locktime => write!(f, "locktime"),
             Self::Refund => write!(f, "refund"),
             Self::Pubkeys => write!(f, "pubkeys"),
-            Self::Custom(kind) => write!(f, "{}", kind),
+            Self::Custom(kind) => write!(f, "{kind}"),
         }
     }
 }

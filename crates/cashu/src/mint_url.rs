@@ -54,9 +54,9 @@ impl MintUrl {
             .skip(1)
             .collect::<Vec<&str>>()
             .join("/");
-        let mut formatted_url = format!("{}://{}", protocol, host);
+        let mut formatted_url = format!("{protocol}://{host}");
         if !path.is_empty() {
-            formatted_url.push_str(&format!("/{}/", path));
+            formatted_url.push_str(&format!("/{path}/"));
         }
         Ok(formatted_url)
     }

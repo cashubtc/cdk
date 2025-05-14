@@ -167,8 +167,7 @@ pub fn setup_tracing() {
     let hyper_filter = "hyper=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{},{},{}",
-        default_filter, sqlx_filter, hyper_filter
+        "{default_filter},{sqlx_filter},{hyper_filter}"
     ));
 
     // Ok if successful, Err if already initialized

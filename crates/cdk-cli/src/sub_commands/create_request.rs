@@ -50,7 +50,7 @@ pub async fn create_request(
         transports: vec![nostr_transport],
     };
 
-    println!("{}", req);
+    println!("{req}");
 
     let client = NostrClient::new(keys);
 
@@ -86,7 +86,7 @@ pub async fn create_request(
                     .receive(&token.to_string(), ReceiveOptions::default())
                     .await?;
 
-                println!("Received {}", amount);
+                println!("Received {amount}");
                 exit = true;
             }
             Ok(exit) // Set to true to exit from the loop

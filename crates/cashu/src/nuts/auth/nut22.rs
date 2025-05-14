@@ -231,7 +231,7 @@ impl fmt::Display for BlindAuthToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let json_string = serde_json::to_string(&self.auth_proof).map_err(|_| fmt::Error)?;
         let encoded = general_purpose::URL_SAFE.encode(json_string);
-        write!(f, "authA{}", encoded)
+        write!(f, "authA{encoded}")
     }
 }
 

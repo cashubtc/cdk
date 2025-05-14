@@ -46,8 +46,7 @@ async fn main() -> anyhow::Result<()> {
     let rustls_filter = "rustls=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{},{},{},{},{}",
-        default_filter, sqlx_filter, hyper_filter, h2_filter, rustls_filter
+        "{default_filter},{sqlx_filter},{hyper_filter},{h2_filter},{rustls_filter}"
     ));
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
