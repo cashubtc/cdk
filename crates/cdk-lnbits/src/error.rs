@@ -19,7 +19,7 @@ pub enum Error {
     Anyhow(#[from] anyhow::Error),
 }
 
-impl From<Error> for cdk::cdk_payment::Error {
+impl From<Error> for cdk_common::payment::Error {
     fn from(e: Error) -> Self {
         Self::Lightning(Box::new(e))
     }
