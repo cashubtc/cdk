@@ -178,7 +178,7 @@ pub async fn pay_request(
             None,
             matching_wallet.unit.clone(),
         );
-        println!("Token: {}", token.to_string());
+        println!("Token: {token}");
     }
 
     Ok(())
