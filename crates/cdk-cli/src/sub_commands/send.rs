@@ -65,7 +65,6 @@ pub async fn send(
 
     check_sufficient_funds(mints_amounts[mint_number].1, token_amount)?;
 
-
     let conditions = match (&sub_command_args.preimage, &sub_command_args.hash) {
         (Some(_), Some(_)) => {
             // This case shouldn't be reached due to Clap's conflicts_with attribute
@@ -140,10 +139,7 @@ pub async fn send(
             )
             .unwrap();
 
-            Some(SpendingConditions::new_htlc_hash(
-                hash,
-                Some(conditions),
-            )?)
+            Some(SpendingConditions::new_htlc_hash(hash, Some(conditions))?)
         }
         (None, None) => match sub_command_args.pubkey.is_empty() {
             true => None,

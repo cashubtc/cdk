@@ -315,7 +315,7 @@ impl SpendingConditions {
     /// New HTLC [SpendingConditions] from a hash directly instead of preimage
     pub fn new_htlc_hash(hash: &str, conditions: Option<Conditions>) -> Result<Self, Error> {
         let hash = Sha256Hash::from_str(hash).map_err(|_| Error::InvalidHash)?;
-        
+
         Ok(Self::HTLCConditions {
             data: hash,
             conditions,
