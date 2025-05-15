@@ -198,6 +198,7 @@ impl GCSFilter {
 mod tests {
     use super::*;
     use rand::prelude::*;
+    use base64::{engine::general_purpose, Engine as _};
 
     #[test]
     fn test_gcs_filter() {
@@ -254,4 +255,35 @@ mod tests {
             "Non-existent item was incorrectly found in the GCS filter"
         );
     }
+
+    #[test]
+    fn test_known_gcs_filter() {
+        let items = vec![
+            hex::decode("c2735796c1d45c68e7f03d3ea3bfcf5d6f10e6eb480e57fc3dccaf8ce66990dfc5").unwrap(),
+            hex::decode("3c7ac2a233f8d5439be8cf3109d314e7da476e1ca762dc05f64ca3d5acac2da1fa").unwrap(),
+            hex::decode("73e199a811db202ef7fbb1699b0e4859d15735c8f7f838fd9e50b37dc47c0ff4b9").unwrap(),
+            hex::decode("02f171db2b577f6d586580651da4951c2e1506454bb9b76077d7a9fdb8606cf2f6").unwrap(),
+            hex::decode("106954852453d217ad91e3b14c37bcb6adf62b038cc6a6a281f63edf78de2c7819").unwrap(),
+            hex::decode("621e006de8d41b14491933e695985a730179003846b739224316af578fc49c1ee8").unwrap(),
+            hex::decode("59b759ecda3c4d9027b9fe549fe6ae33b1bf573b9e9c2d0cdf17d20ea38794f1b7").unwrap(),
+            hex::decode("cfcc8745503e9efb67e48b0bee006f6433dec534130707ac23ed4eae911d60eec2").unwrap(),
+            hex::decode("f1d57d98f80e528af885e6174f7cd0ef39c31f8436c66b8f27c848a3497c9a7dfb").unwrap(),
+            hex::decode("5a21aa11ccd643042f3fe3f0fcc02ccfb51c72419c5eab64a3565aa8499aa64cdf").unwrap(),
+        ];
+
+        // Expected output in base64
+        let target_filter = "5Ud5NvCtCqXvPaQZe9e6VWmfgAgUdgvVh/A=";
+
+        // Create a GCS filter with default parameters (p=19, m=784931)
+        let p = 19;
+        let m = 784931;
+        let key = vec![0u8; 16];
+        
+        let gcs_filter = GCSFilter::create(&items, p, m, &key).unwrap();
+        
+        // Convert to base64 and compare with target
+        let encoded = general_purpose::STANDARD.encode(&gcs_filter);
+        assert_eq!(encoded, target_filter, "Generated filter doesn't match expected value");
+    }
+
 }
