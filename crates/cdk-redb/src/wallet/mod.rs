@@ -13,7 +13,8 @@ use cdk_common::mint_url::MintUrl;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
 use cdk_common::{
-    database, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
+    database, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions,
+    State,
 };
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tracing::instrument;
@@ -493,15 +494,19 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
-    async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err> {
+    async fn add_keys(&self, keyset: KeySet) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        keyset.verify_id()?;
 
         {
             let mut table = write_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
             table
                 .insert(
-                    Id::from(&keys).to_string().as_str(),
-                    serde_json::to_string(&keys).map_err(Error::from)?.as_str(),
+                    keyset.id.to_string().as_str(),
+                    serde_json::to_string(&keyset.keys)
+                        .map_err(Error::from)?
+                        .as_str(),
                 )
                 .map_err(Error::from)?;
         }
