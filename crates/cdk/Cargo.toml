@@ -45,6 +45,10 @@ jsonwebtoken = { workspace = true, optional = true }
 # -Z minimal-versions
 sync_wrapper = "0.1.2"
 bech32 = "0.9.1"
+bitvec = "1.0.1"
+hex = "0.4.3"
+base64 = "0.22.1"
+murmur3 = "0.5.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = [
@@ -99,4 +103,8 @@ reqwest = { workspace = true }
 
 [[bench]]
 name = "dhke_benchmarks"
+harness = false
+
+[[bench]]
+name = "gcs_benchmarks"
 harness = false
