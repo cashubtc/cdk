@@ -1,11 +1,11 @@
 //! Calculate Golomb-Coded Set filter
 
-use bitvec::prelude::*;
-use siphasher::sip::SipHasher24;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-use std::hash::Hasher;
+
+use bitvec::prelude::*;
+use siphasher::sip::SipHasher24;
 
 type Result<T> = std::result::Result<T, GCSError>;
 
@@ -33,9 +33,8 @@ impl Error for GCSError {}
 
 /// Hashes an item to a range using SipHash.
 fn hash_to_range(item: &[u8], f: u64, key: &[u8]) -> u64 {
-    let mut hasher = SipHasher24::new_with_key(&parse_key(key));
-    hasher.write(item);
-    let hash = hasher.finish();
+    let hasher = SipHasher24::new_with_key(&parse_key(key));
+    let hash = hasher.hash(item);
     ((f as u128 * hash as u128) >> 64) as u64
 }
 
@@ -51,7 +50,7 @@ fn parse_key(key: &[u8]) -> [u8; 16] {
 /// Creates a hashed set of items using a key and a multiplier.
 fn create_hashed_set(items: &[Vec<u8>], key: &[u8], m: u32) -> Vec<u64> {
     let n = items.len() as u64;
-    let f = n * m as u64;
+    let f = n * (m as u64);
 
     items.iter().map(|e| hash_to_range(e, f, key)).collect()
 }
@@ -196,9 +195,11 @@ impl GCSFilter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use base64::engine::general_purpose;
+    use base64::Engine as _;
     use rand::prelude::*;
-    use base64::{engine::general_purpose, Engine as _};
+
+    use super::*;
 
     #[test]
     fn test_gcs_filter() {
@@ -259,16 +260,26 @@ mod tests {
     #[test]
     fn test_known_gcs_filter() {
         let items = vec![
-            hex::decode("c2735796c1d45c68e7f03d3ea3bfcf5d6f10e6eb480e57fc3dccaf8ce66990dfc5").unwrap(),
-            hex::decode("3c7ac2a233f8d5439be8cf3109d314e7da476e1ca762dc05f64ca3d5acac2da1fa").unwrap(),
-            hex::decode("73e199a811db202ef7fbb1699b0e4859d15735c8f7f838fd9e50b37dc47c0ff4b9").unwrap(),
-            hex::decode("02f171db2b577f6d586580651da4951c2e1506454bb9b76077d7a9fdb8606cf2f6").unwrap(),
-            hex::decode("106954852453d217ad91e3b14c37bcb6adf62b038cc6a6a281f63edf78de2c7819").unwrap(),
-            hex::decode("621e006de8d41b14491933e695985a730179003846b739224316af578fc49c1ee8").unwrap(),
-            hex::decode("59b759ecda3c4d9027b9fe549fe6ae33b1bf573b9e9c2d0cdf17d20ea38794f1b7").unwrap(),
-            hex::decode("cfcc8745503e9efb67e48b0bee006f6433dec534130707ac23ed4eae911d60eec2").unwrap(),
-            hex::decode("f1d57d98f80e528af885e6174f7cd0ef39c31f8436c66b8f27c848a3497c9a7dfb").unwrap(),
-            hex::decode("5a21aa11ccd643042f3fe3f0fcc02ccfb51c72419c5eab64a3565aa8499aa64cdf").unwrap(),
+            hex::decode("c2735796c1d45c68e7f03d3ea3bfcf5d6f10e6eb480e57fc3dccaf8ce66990dfc5")
+                .unwrap(),
+            hex::decode("3c7ac2a233f8d5439be8cf3109d314e7da476e1ca762dc05f64ca3d5acac2da1fa")
+                .unwrap(),
+            hex::decode("73e199a811db202ef7fbb1699b0e4859d15735c8f7f838fd9e50b37dc47c0ff4b9")
+                .unwrap(),
+            hex::decode("02f171db2b577f6d586580651da4951c2e1506454bb9b76077d7a9fdb8606cf2f6")
+                .unwrap(),
+            hex::decode("106954852453d217ad91e3b14c37bcb6adf62b038cc6a6a281f63edf78de2c7819")
+                .unwrap(),
+            hex::decode("621e006de8d41b14491933e695985a730179003846b739224316af578fc49c1ee8")
+                .unwrap(),
+            hex::decode("59b759ecda3c4d9027b9fe549fe6ae33b1bf573b9e9c2d0cdf17d20ea38794f1b7")
+                .unwrap(),
+            hex::decode("cfcc8745503e9efb67e48b0bee006f6433dec534130707ac23ed4eae911d60eec2")
+                .unwrap(),
+            hex::decode("f1d57d98f80e528af885e6174f7cd0ef39c31f8436c66b8f27c848a3497c9a7dfb")
+                .unwrap(),
+            hex::decode("5a21aa11ccd643042f3fe3f0fcc02ccfb51c72419c5eab64a3565aa8499aa64cdf")
+                .unwrap(),
         ];
 
         // Expected output in base64
@@ -278,12 +289,23 @@ mod tests {
         let p = 19;
         let m = 784931;
         let key = vec![0u8; 16];
-        
+
         let gcs_filter = GCSFilter::create(&items, p, m, &key).unwrap();
-        
+
         // Convert to base64 and compare with target
         let encoded = general_purpose::STANDARD.encode(&gcs_filter);
-        assert_eq!(encoded, target_filter, "Generated filter doesn't match expected value");
+        assert_eq!(
+            encoded, target_filter,
+            "Generated filter doesn't match expected value"
+        );
     }
 
+    #[test]
+    fn test_sip_hash_output() {
+        let test_item: [u8; 4]  = [0u8; 4];
+        let key = vec![0u8; 16];
+        let test_range: u64 = 784931 * 1000;
+        let hashed = hash_to_range(&test_item, test_range, &key);
+        assert_eq!(hashed, 467851390u64);
+    }
 }
