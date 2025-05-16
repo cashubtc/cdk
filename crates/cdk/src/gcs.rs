@@ -5,7 +5,6 @@ use std::error::Error;
 use std::fmt;
 
 use bitvec::prelude::*;
-use murmur3::murmur3_x64_128;
 
 type Result<T> = std::result::Result<T, GCSError>;
 
@@ -33,10 +32,9 @@ impl Error for GCSError {}
 
 /// Hashes an item to a range using SipHash.
 fn hash_to_range(item: &[u8], f: u64) -> u64 {
-    let mut hasher = murmur3_x64_128::MurmurHasher128::default();
-    murmur3_x64_128::hash128_with_seed(item, 0, &mut hasher);
-    let hash = hasher.finish();
-    ((f as u128 * (hash & 0xFFFFFFFFFFFFFFFF) as u128) >> 64) as u64
+    let mut item = item;
+    let hash = murmur3::murmur3_x64_128(&mut item, 0).expect("Can hash bytes vector");
+    ((f as u128 * (hash & 0xFFFFFFFFFFFFFFFF)) >> 64) as u64
 }
 
 /// Creates a hashed set of items using a key and a multiplier.
@@ -151,7 +149,7 @@ impl GCSFilter {
         }
 
         // Map targets to the same range as the set hashes
-        let target_hashes: HashMap<u64, (Vec<u8>, bool)> = targets.iter()
+        let mut target_hashes: HashMap<u64, (Vec<u8>, bool)> = targets.iter()
             .map(|target| (hash_to_range(target, f), (target.clone(), false)))
             .collect();
 
@@ -207,9 +205,8 @@ mod tests {
         // Create a GCS filter with default parameters
         let p = 19;
         let m = 784931;
-        let key = vec![0u8; 16];
 
-        let gcs_filter = GCSFilter::create(&items, p, m, &key).unwrap();
+        let gcs_filter = GCSFilter::create(&items, p, m).unwrap();
 
         println!(
             "num_items = {}, item_size = {}, filter_size = {}",
@@ -219,7 +216,7 @@ mod tests {
         );
 
         // Test set membership
-        let results = GCSFilter::match_many(&gcs_filter, &items, num_items, p, m, &key).unwrap();
+        let results = GCSFilter::match_many(&gcs_filter, &items, num_items, p, m).unwrap();
 
         // Assert all items are found in the filter
         for item in &items {
@@ -236,7 +233,6 @@ mod tests {
             num_items,
             p,
             m,
-            &key,
         )
         .unwrap();
 
@@ -272,14 +268,13 @@ mod tests {
         ];
 
         // Expected output in base64
-        let target_filter = "5Ud5NvCtCqXvPaQZe9e6VWmfgAgUdgvVh/A=";
+        let target_filter = "z4fUCDVqdnxWR7Y9+YdT5o0IC9GxiSA2BGyg";
 
         // Create a GCS filter with default parameters (p=19, m=784931)
         let p = 19;
         let m = 784931;
-        let key = vec![0u8; 16];
 
-        let gcs_filter = GCSFilter::create(&items, p, m, &key).unwrap();
+        let gcs_filter = GCSFilter::create(&items, p, m).unwrap();
 
         // Convert to base64 and compare with target
         let encoded = general_purpose::STANDARD.encode(&gcs_filter);
@@ -290,11 +285,10 @@ mod tests {
     }
 
     #[test]
-    fn test_sip_hash_output() {
+    fn test_hash_to_range() {
         let test_item: [u8; 4]  = [0u8; 4];
-        let key = vec![0u8; 16];
         let test_range: u64 = 784931 * 1000;
-        let hashed = hash_to_range(&test_item, test_range, &key);
-        assert_eq!(hashed, 467851390u64);
+        let hashed = hash_to_range(&test_item, test_range);
+        assert_eq!(hashed, 636618232u64);
     }
 }
