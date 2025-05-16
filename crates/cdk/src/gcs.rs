@@ -5,7 +5,7 @@ use std::error::Error;
 use std::fmt;
 
 use bitvec::prelude::*;
-use siphasher::sip::SipHasher24;
+use murmur3::murmur3_x64_128;
 
 type Result<T> = std::result::Result<T, GCSError>;
 
@@ -32,27 +32,19 @@ impl fmt::Display for GCSError {
 impl Error for GCSError {}
 
 /// Hashes an item to a range using SipHash.
-fn hash_to_range(item: &[u8], f: u64, key: &[u8]) -> u64 {
-    let hasher = SipHasher24::new_with_key(&parse_key(key));
-    let hash = hasher.hash(item);
-    ((f as u128 * hash as u128) >> 64) as u64
-}
-
-/// Parses key to a form usable by SipHasher
-fn parse_key(key: &[u8]) -> [u8; 16] {
-    let mut result = [0u8; 16];
-    for (i, &byte) in key.iter().take(16).enumerate() {
-        result[i] = byte;
-    }
-    result
+fn hash_to_range(item: &[u8], f: u64) -> u64 {
+    let mut hasher = murmur3_x64_128::MurmurHasher128::default();
+    murmur3_x64_128::hash128_with_seed(item, 0, &mut hasher);
+    let hash = hasher.finish();
+    ((f as u128 * (hash & 0xFFFFFFFFFFFFFFFF) as u128) >> 64) as u64
 }
 
 /// Creates a hashed set of items using a key and a multiplier.
-fn create_hashed_set(items: &[Vec<u8>], key: &[u8], m: u32) -> Vec<u64> {
+fn create_hashed_set(items: &[Vec<u8>], m: u32) -> Vec<u64> {
     let n = items.len() as u64;
     let f = n * (m as u64);
 
-    items.iter().map(|e| hash_to_range(e, f, key)).collect()
+    items.iter().map(|e| hash_to_range(e, f)).collect()
 }
 
 /// Golomb-encodes `x` into `stream` with remainder of `P` bits
@@ -102,7 +94,7 @@ pub struct GCSFilter;
 
 impl GCSFilter {
     /// Turns a list of entries into a Golomb-Coded Set of hashes.
-    pub fn create(items: &[Vec<u8>], p: u32, m: u32, key: &[u8]) -> Result<Vec<u8>> {
+    pub fn create(items: &[Vec<u8>], p: u32, m: u32) -> Result<Vec<u8>> {
         if (m as u64).checked_ilog2().unwrap_or(0) > 31 {
             return Err(GCSError::new("m parameter must be smaller than 2^32"));
         }
@@ -112,7 +104,7 @@ impl GCSFilter {
             ));
         }
 
-        let mut set_items = create_hashed_set(items, key, m);
+        let mut set_items = create_hashed_set(items, m);
 
         // Sort the items
         set_items.sort_unstable();
@@ -137,7 +129,6 @@ impl GCSFilter {
         n: usize,
         p: u32,
         m: u32,
-        key: &[u8],
     ) -> Result<HashMap<Vec<u8>, bool>> {
         if (m as u64).checked_ilog2().unwrap_or(0) > 31 {
             return Err(GCSError::new("m parameter must be smaller than 2^32"));
@@ -160,11 +151,9 @@ impl GCSFilter {
         }
 
         // Map targets to the same range as the set hashes
-        let mut target_hashes: HashMap<u64, (Vec<u8>, bool)> = HashMap::new();
-        for target in targets {
-            let hash = hash_to_range(target, f, key);
-            target_hashes.insert(hash, (target.clone(), false));
-        }
+        let target_hashes: HashMap<u64, (Vec<u8>, bool)> = targets.iter()
+            .map(|target| (hash_to_range(target, f), (target.clone(), false)))
+            .collect();
 
         let input_stream = BitVec::<u8, Msb0>::from_vec(compressed_set.to_vec());
 
