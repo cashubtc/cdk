@@ -104,3 +104,7 @@ reqwest = { workspace = true }
 [[bench]]
 name = "dhke_benchmarks"
 harness = false
+
+[[bench]]
+name = "gcs_benchmarks"
+harness = false
