@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use cdk_common::ensure_cdk;
+use cdk_common::nut04::MintMethodOptions;
 use cdk_common::wallet::{Transaction, TransactionDirection};
 use tracing::instrument;
 
@@ -9,8 +9,8 @@ use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
-    nut12, MintBolt11Request, MintQuoteBolt11Request, MintQuoteBolt11Response, PreMintSecrets,
-    Proofs, SecretKey, SpendingConditions, State,
+    nut12, MintQuoteBolt11Request, MintQuoteBolt11Response, MintRequest, PreMintSecrets, Proofs,
+    SecretKey, SpendingConditions, State,
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
@@ -64,7 +64,10 @@ impl Wallet {
                 .get_settings(&unit, &crate::nuts::PaymentMethod::Bolt11)
                 .ok_or(Error::UnsupportedUnit)?;
 
-            ensure_cdk!(settings.description, Error::InvoiceDescriptionUnsupported);
+            match settings.options {
+                Some(MintMethodOptions::Bolt11 { description }) if description => (),
+                _ => return Err(Error::InvoiceDescriptionUnsupported),
+            }
         }
 
         let secret_key = SecretKey::generate();
@@ -224,7 +227,7 @@ impl Wallet {
             )?,
         };
 
-        let mut request = MintBolt11Request {
+        let mut request = MintRequest {
             quote: quote_id.to_string(),
             outputs: premint_secrets.blinded_messages(),
             signature: None,

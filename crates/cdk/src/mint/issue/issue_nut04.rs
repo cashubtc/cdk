@@ -3,8 +3,8 @@ use tracing::instrument;
 use uuid::Uuid;
 
 use crate::mint::{
-    CurrencyUnit, MintBolt11Request, MintBolt11Response, MintQuote, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintQuoteState, NotificationPayload, PublicKey, Verification,
+    CurrencyUnit, MintQuote, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState,
+    MintRequest, MintResponse, NotificationPayload, PublicKey, Verification,
 };
 use crate::nuts::PaymentMethod;
 use crate::util::unix_time;
@@ -236,8 +236,8 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn process_mint_request(
         &self,
-        mint_request: MintBolt11Request<Uuid>,
-    ) -> Result<MintBolt11Response, Error> {
+        mint_request: MintRequest<Uuid>,
+    ) -> Result<MintResponse, Error> {
         let mint_quote = self
             .localstore
             .get_mint_quote(&mint_request.quote)
@@ -332,7 +332,7 @@ impl Mint {
         self.pubsub_manager
             .mint_quote_bolt11_status(mint_quote, MintQuoteState::Issued);
 
-        Ok(MintBolt11Response {
+        Ok(MintResponse {
             signatures: blind_signatures,
         })
     }

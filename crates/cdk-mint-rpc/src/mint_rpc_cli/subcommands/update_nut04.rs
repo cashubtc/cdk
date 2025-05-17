@@ -4,7 +4,7 @@ use tonic::transport::Channel;
 use tonic::Request;
 
 use crate::cdk_mint_client::CdkMintClient;
-use crate::UpdateNut04Request;
+use crate::{MintMethodOptions, UpdateNut04Request};
 
 /// Command to update NUT-04 (mint process) settings for the mint
 ///
@@ -46,14 +46,19 @@ pub async fn update_nut04(
     client: &mut CdkMintClient<Channel>,
     sub_command_args: &UpdateNut04Command,
 ) -> Result<()> {
+    // Create options if description is set
+    let options = sub_command_args
+        .description
+        .map(|description| MintMethodOptions { description });
+
     let _response = client
         .update_nut04(Request::new(UpdateNut04Request {
             method: sub_command_args.method.clone(),
             unit: sub_command_args.unit.clone(),
             disabled: sub_command_args.disabled,
-            min: sub_command_args.min_amount,
-            max: sub_command_args.max_amount,
-            description: sub_command_args.description,
+            min_amount: sub_command_args.min_amount,
+            max_amount: sub_command_args.max_amount,
+            options,
         }))
         .await?;
 

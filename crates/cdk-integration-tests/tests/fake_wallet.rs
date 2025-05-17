@@ -5,8 +5,8 @@ use cashu::Amount;
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
-    CurrencyUnit, MeltBolt11Request, MeltQuoteState, MintBolt11Request, PreMintSecrets, Proofs,
-    SecretKey, State, SwapRequest,
+    CurrencyUnit, MeltQuoteState, MeltRequest, MintRequest, PreMintSecrets, Proofs, SecretKey,
+    State, SwapRequest,
 };
 use cdk::wallet::types::TransactionDirection;
 use cdk::wallet::{HttpClient, MintConnector, Wallet};
@@ -388,7 +388,7 @@ async fn test_fake_melt_change_in_quote() {
 
     let client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
-    let melt_request = MeltBolt11Request::new(
+    let melt_request = MeltRequest::new(
         melt_quote.id.clone(),
         proofs.clone(),
         Some(premint_secrets.blinded_messages()),
@@ -494,7 +494,7 @@ async fn test_fake_mint_without_witness() {
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
 
-    let request = MintBolt11Request {
+    let request = MintRequest {
         quote: mint_quote.id,
         outputs: premint_secrets.blinded_messages(),
         signature: None,
@@ -534,7 +534,7 @@ async fn test_fake_mint_with_wrong_witness() {
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
 
-    let mut request = MintBolt11Request {
+    let mut request = MintRequest {
         quote: mint_quote.id,
         outputs: premint_secrets.blinded_messages(),
         signature: None,
@@ -585,7 +585,7 @@ async fn test_fake_mint_inflated() {
         .unwrap()
         .expect("there is a quote");
 
-    let mut mint_request = MintBolt11Request {
+    let mut mint_request = MintRequest {
         quote: mint_quote.id,
         outputs: pre_mint.blinded_messages(),
         signature: None,
@@ -662,7 +662,7 @@ async fn test_fake_mint_multiple_units() {
 
     sat_outputs.append(&mut usd_outputs);
 
-    let mut mint_request = MintBolt11Request {
+    let mut mint_request = MintRequest {
         quote: mint_quote.id,
         outputs: sat_outputs,
         signature: None,
@@ -859,7 +859,7 @@ async fn test_fake_mint_multiple_unit_melt() {
         let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
         let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
-        let melt_request = MeltBolt11Request::new(melt_quote.id, inputs, None);
+        let melt_request = MeltRequest::new(melt_quote.id, inputs, None);
 
         let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
         let response = http_client.post_melt(melt_request.clone()).await;
@@ -901,7 +901,7 @@ async fn test_fake_mint_multiple_unit_melt() {
         usd_outputs.append(&mut sat_outputs);
         let quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
-        let melt_request = MeltBolt11Request::new(quote.id, inputs, Some(usd_outputs));
+        let melt_request = MeltRequest::new(quote.id, inputs, Some(usd_outputs));
 
         let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
@@ -1148,7 +1148,7 @@ async fn test_fake_mint_melt_spend_after_fail() {
     let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
-    let melt_request = MeltBolt11Request::new(melt_quote.id, proofs, None);
+    let melt_request = MeltRequest::new(melt_quote.id, proofs, None);
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client.post_melt(melt_request.clone()).await;
@@ -1274,7 +1274,7 @@ async fn test_fake_mint_duplicate_proofs_melt() {
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
-    let melt_request = MeltBolt11Request::new(melt_quote.id, inputs, None);
+    let melt_request = MeltRequest::new(melt_quote.id, inputs, None);
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
     let response = http_client.post_melt(melt_request.clone()).await;

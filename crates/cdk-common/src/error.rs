@@ -309,12 +309,15 @@ pub enum Error {
     /// NUT20 Error
     #[error(transparent)]
     NUT20(#[from] crate::nuts::nut20::Error),
-    /// NUTXX Error
+    /// NUT21 Error
     #[error(transparent)]
     NUT21(#[from] crate::nuts::nut21::Error),
-    /// NUTXX1 Error
+    /// NUT22 Error
     #[error(transparent)]
     NUT22(#[from] crate::nuts::nut22::Error),
+    /// NUT23 Error
+    #[error(transparent)]
+    NUT23(#[from] crate::nuts::nut23::Error),
     /// Database Error
     #[error(transparent)]
     Database(crate::database::Error),

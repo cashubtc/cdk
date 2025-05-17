@@ -2,14 +2,15 @@ use std::str::FromStr;
 
 use anyhow::bail;
 use cdk_common::nut00::ProofsMethods;
+use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::MeltOptions;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 use uuid::Uuid;
 
 use super::{
-    CurrencyUnit, MeltBolt11Request, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    Mint, PaymentMethod, PublicKey, State,
+    CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, Mint,
+    PaymentMethod, PublicKey, State,
 };
 use crate::amount::to_unit;
 use crate::cdk_payment::{MakePaymentResponse, MintPayment};
@@ -62,7 +63,10 @@ impl Mint {
                 amount
             }
             Some(MeltOptions::Amountless { amountless: _ }) => {
-                if !settings.amountless {
+                if !matches!(
+                    settings.options,
+                    Some(MeltMethodOptions::Bolt11 { amountless: true })
+                ) {
                     return Err(Error::AmountlessInvoiceNotSupported(unit, method));
                 }
 
@@ -235,7 +239,7 @@ impl Mint {
     pub async fn check_melt_expected_ln_fees(
         &self,
         melt_quote: &MeltQuote,
-        melt_request: &MeltBolt11Request<Uuid>,
+        melt_request: &MeltRequest<Uuid>,
     ) -> Result<Option<Amount>, Error> {
         let invoice = Bolt11Invoice::from_str(&melt_quote.request)?;
 
@@ -291,7 +295,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn verify_melt_request(
         &self,
-        melt_request: &MeltBolt11Request<Uuid>,
+        melt_request: &MeltRequest<Uuid>,
     ) -> Result<MeltQuote, Error> {
         let state = self
             .localstore
@@ -377,10 +381,7 @@ impl Mint {
     /// made The proofs should be returned to an unspent state and the
     /// quote should be unpaid
     #[instrument(skip_all)]
-    pub async fn process_unpaid_melt(
-        &self,
-        melt_request: &MeltBolt11Request<Uuid>,
-    ) -> Result<(), Error> {
+    pub async fn process_unpaid_melt(&self, melt_request: &MeltRequest<Uuid>) -> Result<(), Error> {
         let input_ys = melt_request.inputs().ys()?;
 
         self.localstore
@@ -408,7 +409,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn melt_bolt11(
         &self,
-        melt_request: &MeltBolt11Request<Uuid>,
+        melt_request: &MeltRequest<Uuid>,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
         use std::sync::Arc;
         async fn check_payment_state(
@@ -619,7 +620,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn process_melt_request(
         &self,
-        melt_request: &MeltBolt11Request<Uuid>,
+        melt_request: &MeltRequest<Uuid>,
         payment_preimage: Option<String>,
         total_spent: Amount,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
