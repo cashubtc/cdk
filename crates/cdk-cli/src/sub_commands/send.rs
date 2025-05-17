@@ -16,8 +16,11 @@ pub struct SendSubCommand {
     #[arg(short, long)]
     memo: Option<String>,
     /// Preimage
-    #[arg(long)]
+    #[arg(long, conflicts_with = "hash")]
     preimage: Option<String>,
+    /// Hash for HTLC (alternative to preimage)
+    #[arg(long, conflicts_with = "preimage")]
+    hash: Option<String>,
     /// Required number of signatures
     #[arg(long)]
     required_sigs: Option<u64>,
@@ -62,8 +65,12 @@ pub async fn send(
 
     check_sufficient_funds(mints_amounts[mint_number].1, token_amount)?;
 
-    let conditions = match &sub_command_args.preimage {
-        Some(preimage) => {
+    let conditions = match (&sub_command_args.preimage, &sub_command_args.hash) {
+        (Some(_), Some(_)) => {
+            // This case shouldn't be reached due to Clap's conflicts_with attribute
+            unreachable!("Both preimage and hash were provided despite conflicts_with attribute")
+        }
+        (Some(preimage), None) => {
             let pubkeys = match sub_command_args.pubkey.is_empty() {
                 true => None,
                 false => Some(
@@ -100,7 +107,41 @@ pub async fn send(
                 Some(conditions),
             )?)
         }
-        None => match sub_command_args.pubkey.is_empty() {
+        (None, Some(hash)) => {
+            let pubkeys = match sub_command_args.pubkey.is_empty() {
+                true => None,
+                false => Some(
+                    sub_command_args
+                        .pubkey
+                        .iter()
+                        .map(|p| PublicKey::from_str(p).unwrap())
+                        .collect(),
+                ),
+            };
+
+            let refund_keys = match sub_command_args.refund_keys.is_empty() {
+                true => None,
+                false => Some(
+                    sub_command_args
+                        .refund_keys
+                        .iter()
+                        .map(|p| PublicKey::from_str(p).unwrap())
+                        .collect(),
+                ),
+            };
+
+            let conditions = Conditions::new(
+                sub_command_args.locktime,
+                pubkeys,
+                refund_keys,
+                sub_command_args.required_sigs,
+                None,
+            )
+            .unwrap();
+
+            Some(SpendingConditions::new_htlc_hash(hash, Some(conditions))?)
+        }
+        (None, None) => match sub_command_args.pubkey.is_empty() {
             true => None,
             false => {
                 let pubkeys: Vec<PublicKey> = sub_command_args
