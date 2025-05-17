@@ -72,7 +72,7 @@ pub async fn create_request(
             // Use custom relays if provided, otherwise use defaults
             let relays = if let Some(custom_relays) = &sub_command_args.nostr_relay {
                 if !custom_relays.is_empty() {
-                    println!("Using custom Nostr relays: {:?}", custom_relays);
+                    println!("Using custom Nostr relays: {custom_relays:?}");
                     custom_relays.clone()
                 } else {
                     // Empty vector provided, fall back to defaults
@@ -120,10 +120,7 @@ pub async fn create_request(
         }
         "none" => (None, None),
         _ => {
-            println!(
-                "Warning: Unknown transport type '{}', defaulting to none",
-                transport_type
-            );
+            println!("Warning: Unknown transport type '{transport_type}', defaulting to none");
             (None, None)
         }
     };
@@ -142,7 +139,7 @@ pub async fn create_request(
             match PublicKey::from_str(pubkey_str) {
                 Ok(pubkey) => parsed_pubkeys.push(pubkey),
                 Err(err) => {
-                    println!("Error parsing pubkey {}: {}", pubkey_str, err);
+                    println!("Error parsing pubkey {pubkey_str}: {err}");
                     // Continue with other pubkeys
                 }
             }
@@ -176,7 +173,7 @@ pub async fn create_request(
                         })
                     }
                     Err(err) => {
-                        println!("Error parsing hash: {}", err);
+                        println!("Error parsing hash: {err}");
                         // Fallback to just P2PK with multiple pubkeys
                         bail!("Error parsing hash");
                     }
@@ -218,7 +215,7 @@ pub async fn create_request(
                 conditions: None,
             }),
             Err(err) => {
-                println!("Error parsing hash: {}", err);
+                println!("Error parsing hash: {err}");
                 None
             }
         }
