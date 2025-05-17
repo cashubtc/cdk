@@ -7,6 +7,7 @@ use anyhow::anyhow;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::error::Error;
+use cdk_common::nut23::MintBolt12MethodSettings;
 use cdk_common::payment::Bolt11Settings;
 use cdk_common::{nut21, nut22};
 
@@ -160,6 +161,7 @@ impl MintBuilder {
         unit: CurrencyUnit,
         method: PaymentMethod,
         limits: MintMeltLimits,
+        max_expiry: Option<u64>,
         ln_backend: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
     ) -> Result<Self, Error> {
         let ln_key = PaymentProcessorKey {
@@ -189,27 +191,55 @@ impl MintBuilder {
             self.mint_info.nuts.nut15 = mpp;
         }
 
-        if method == PaymentMethod::Bolt11 {
-            let mint_method_settings = MintMethodSettings {
-                method: method.clone(),
-                unit: unit.clone(),
-                min_amount: Some(limits.mint_min),
-                max_amount: Some(limits.mint_max),
-                description: settings.invoice_description,
-            };
+        let melt_method_settings = MeltMethodSettings {
+            method: method.clone(),
+            unit: unit.clone(),
+            min_amount: Some(limits.melt_min),
+            max_amount: Some(limits.melt_max),
+            amountless: settings.amountless,
+        };
 
-            self.mint_info.nuts.nut04.methods.push(mint_method_settings);
-            self.mint_info.nuts.nut04.disabled = false;
+        match method {
+            PaymentMethod::Bolt11 => {
+                let mint_method_settings = MintMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    min_amount: Some(limits.mint_min),
+                    max_amount: Some(limits.mint_max),
+                    description: settings.invoice_description,
+                };
 
-            let melt_method_settings = MeltMethodSettings {
-                method,
-                unit,
-                min_amount: Some(limits.melt_min),
-                max_amount: Some(limits.melt_max),
-                amountless: settings.amountless,
-            };
-            self.mint_info.nuts.nut05.methods.push(melt_method_settings);
-            self.mint_info.nuts.nut05.disabled = false;
+                self.mint_info.nuts.nut04.methods.push(mint_method_settings);
+                self.mint_info.nuts.nut04.disabled = false;
+
+                self.mint_info.nuts.nut05.methods.push(melt_method_settings);
+                self.mint_info.nuts.nut05.disabled = false;
+            }
+            PaymentMethod::Bolt12 => {
+                let mint_method_settings = MintBolt12MethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    min_amount: Some(limits.mint_min),
+                    max_amount: Some(limits.mint_max),
+                    max_expiry,
+                    description: settings.invoice_description,
+                };
+
+                // Configure NUT23 settings
+                let mut nut23 = self.mint_info.nuts.nut23.unwrap_or_default();
+                nut23.methods.push(mint_method_settings);
+                nut23.disabled = false;
+                self.mint_info.nuts.nut23 = Some(nut23);
+
+                // Configure NUT24 settings (assuming this is for melt methods)
+                let mut nut24 = self.mint_info.nuts.nut24.unwrap_or_default();
+                nut24.methods.push(melt_method_settings);
+                nut24.disabled = false;
+                self.mint_info.nuts.nut24 = Some(nut24);
+            }
+            PaymentMethod::Custom(_) => {
+                tracing::info!("Adding payment method for custom unit. Not adding to nuts.");
+            }
         }
 
         ln.insert(ln_key.clone(), ln_backend);

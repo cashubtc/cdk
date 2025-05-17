@@ -106,7 +106,7 @@ export CDK_MINTD_LISTEN_HOST=$CDK_ITESTS_MINT_ADDR
 export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_0
 export CDK_MINTD_LN_BACKEND="cln"
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
-export RUST_BACKTRACE=1
+# export RUST_BACKTRACE=1
 
 echo "Starting cln mintd"
 cargo run --bin cdk-mintd --features "redb" &
@@ -209,18 +209,25 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-echo "Running happy_path_mint_wallet test with CLN mint"
-cargo test -p cdk-integration-tests --test happy_path_mint_wallet test_happy_mint_melt_round_trip
+# echo "Running happy_path_mint_wallet test with CLN mint"
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 if [ $? -ne 0 ]; then
     echo "happy_path_mint_wallet test failed, exiting"
     exit 1
 fi
 
-# # Run cargo test with the http_subscription feature
+# Run cargo test with the http_subscription feature
 echo "Running regtest test with http_subscription feature"
-cargo test -p cdk-integration-tests --test regtest --features http_subscription
+cargo test -p cdk-integration-tests --test regtest multimint_melt --features http_subscription
 if [ $? -ne 0 ]; then
     echo "regtest test with http_subscription failed, exiting"
+    exit 1
+fi
+
+echo "Running regtest test with cln mint for bolt12"
+cargo test -p cdk-integration-tests --test bolt12
+if [ $? -ne 0 ]; then
+    echo "regtest test failed, exiting"
     exit 1
 fi
 

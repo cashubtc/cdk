@@ -5,7 +5,6 @@ use cdk_common::wallet::{Transaction, TransactionDirection};
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
-use super::MeltQuote;
 use crate::amount::to_unit;
 use crate::dhke::construct_proofs;
 use crate::nuts::{
@@ -14,6 +13,7 @@ use crate::nuts::{
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
+use crate::wallet::MeltQuote;
 use crate::{ensure_cdk, Error, Wallet};
 
 impl Wallet {
@@ -49,33 +49,35 @@ impl Wallet {
     ) -> Result<MeltQuote, Error> {
         let invoice = Bolt11Invoice::from_str(&request)?;
 
-        let amount_msat = options
-            .map(|opt| opt.amount_msat().into())
-            .or_else(|| invoice.amount_milli_satoshis())
-            .ok_or(Error::InvoiceAmountUndefined)?;
-
-        let amount_quote_unit = to_unit(amount_msat, &CurrencyUnit::Msat, &self.unit).unwrap();
-
         let quote_request = MeltQuoteBolt11Request {
-            request: Bolt11Invoice::from_str(&request)?,
+            request: invoice.clone(),
             unit: self.unit.clone(),
             options,
         };
 
         let quote_res = self.client.post_melt_quote(quote_request).await.unwrap();
 
-        if quote_res.amount != amount_quote_unit {
-            tracing::warn!(
-                "Mint returned incorrect quote amount. Expected {}, got {}",
-                amount_quote_unit,
-                quote_res.amount
-            );
-            return Err(Error::IncorrectQuoteAmount);
+        if self.unit == CurrencyUnit::Sat || self.unit == CurrencyUnit::Msat {
+            let amount_msat = options
+                .map(|opt| opt.amount_msat().into())
+                .or_else(|| invoice.amount_milli_satoshis())
+                .ok_or(Error::InvoiceAmountUndefined)?;
+
+            let amount_quote_unit = to_unit(amount_msat, &CurrencyUnit::Msat, &self.unit).unwrap();
+
+            if quote_res.amount != amount_quote_unit {
+                tracing::warn!(
+                    "Mint returned incorrect quote amount. Expected {}, got {}",
+                    amount_quote_unit,
+                    quote_res.amount
+                );
+                return Err(Error::IncorrectQuoteAmount);
+            }
         }
 
         let quote = MeltQuote {
             id: quote_res.quote,
-            amount: amount_quote_unit,
+            amount: quote_res.amount,
             request,
             unit: self.unit.clone(),
             fee_reserve: quote_res.fee_reserve,
