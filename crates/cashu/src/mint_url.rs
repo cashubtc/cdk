@@ -77,7 +77,7 @@ impl MintUrl {
             .join("/");
         let mut formatted_url = format!("{protocol}://{host}");
         if !path.is_empty() {
-            formatted_url.push_str(&format!("/{}", path));
+            formatted_url.push_str(&format!("/{path}"));
         }
         Ok(formatted_url)
     }
@@ -91,9 +91,9 @@ impl MintUrl {
 
         // Check if the path has a trailing slash to avoid double slashes
         let normalized_path = if base_path.ends_with('/') {
-            format!("{}{}", base_path, path)
+            format!("{base_path}{path}")
         } else {
-            format!("{}/{}", base_path, path)
+            format!("{base_path}/{path}")
         };
 
         // Create a new URL with the combined path
