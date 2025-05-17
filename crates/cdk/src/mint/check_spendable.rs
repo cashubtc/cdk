@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use futures::future::try_join_all;
 use tracing::instrument;
 
 use super::{CheckStateRequest, CheckStateResponse, Mint, ProofState, PublicKey, State};
@@ -33,6 +34,7 @@ impl Mint {
 
         Ok(())
     }
+
     /// Check state
     #[instrument(skip_all)]
     pub async fn check_state(
@@ -40,25 +42,33 @@ impl Mint {
         check_state: &CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
         let states = self.localstore.get_proofs_states(&check_state.ys).await?;
+        assert_eq!(check_state.ys.len(), states.len());
 
-        let states = states
-            .iter()
-            .zip(&check_state.ys)
-            .map(|(state, y)| {
-                let state = match state {
-                    Some(state) => *state,
-                    None => State::Unspent,
-                };
+        let proof_states_futures =
+            check_state
+                .ys
+                .iter()
+                .zip(states.iter())
+                .map(|(y, state)| async move {
+                    let witness: Result<Option<cdk_common::Witness>, Error> = if state.is_some() {
+                        let proofs = self.localstore.get_proofs_by_ys(&[*y]).await?;
+                        Ok(proofs.first().cloned().flatten().and_then(|p| p.witness))
+                    } else {
+                        Ok(None)
+                    };
 
-                ProofState {
-                    y: *y,
-                    state,
-                    witness: None,
-                }
-            })
-            .collect();
+                    witness.map(|w| ProofState {
+                        y: *y,
+                        state: state.unwrap_or(State::Unspent),
+                        witness: w,
+                    })
+                });
 
-        Ok(CheckStateResponse { states })
+        let proof_states = try_join_all(proof_states_futures).await?;
+
+        Ok(CheckStateResponse {
+            states: proof_states,
+        })
     }
 
     /// Check Tokens are not spent or pending
