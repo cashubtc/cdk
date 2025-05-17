@@ -8,6 +8,7 @@ use std::str::FromStr;
 
 use bitcoin::base64::engine::{general_purpose, GeneralPurpose};
 use bitcoin::base64::{alphabet, Engine};
+use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use serde::ser::{SerializeTuple, Serializer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -160,7 +161,7 @@ pub struct SecretDataRequest {
 }
 
 /// Nut10Secret without nonce for payment requests
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Nut10SecretRequest {
     /// Kind of the spending condition
     pub kind: Kind,
@@ -231,6 +232,48 @@ impl Serialize for Nut10SecretRequest {
         s.serialize_element(&secret_tuple.0)?;
         s.serialize_element(&secret_tuple.1)?;
         s.end()
+    }
+}
+
+// Custom visitor for deserializing Secret
+struct SecretVisitor;
+
+impl<'de> Visitor<'de> for SecretVisitor {
+    type Value = Nut10SecretRequest;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a tuple with two elements: [Kind, SecretData]")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        // Deserialize the kind (first element)
+        let kind = seq
+            .next_element()?
+            .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+
+        // Deserialize the secret_data (second element)
+        let secret_data = seq
+            .next_element()?
+            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+
+        // Make sure there are no additional elements
+        if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+            return Err(de::Error::invalid_length(3, &self));
+        }
+
+        Ok(Nut10SecretRequest { kind, secret_data })
+    }
+}
+
+impl<'de> Deserialize<'de> for Nut10SecretRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(SecretVisitor)
     }
 }
 
@@ -418,6 +461,8 @@ pub struct PaymentRequestPayload {
 mod tests {
     use std::str::FromStr;
 
+    use lightning_invoice::Bolt11Invoice;
+
     use super::*;
 
     const PAYMENT_REQUEST: &str = "creqApWF0gaNhdGVub3N0cmFheKlucHJvZmlsZTFxeTI4d3VtbjhnaGo3dW45ZDNzaGp0bnl2OWtoMnVld2Q5aHN6OW1od2RlbjV0ZTB3ZmprY2N0ZTljdXJ4dmVuOWVlaHFjdHJ2NWhzenJ0aHdkZW41dGUwZGVoaHh0bnZkYWtxcWd5ZGFxeTdjdXJrNDM5eWtwdGt5c3Y3dWRoZGh1NjhzdWNtMjk1YWtxZWZkZWhrZjBkNDk1Y3d1bmw1YWeBgmFuYjE3YWloYjdhOTAxNzZhYQphdWNzYXRhbYF4Imh0dHBzOi8vbm9mZWVzLnRlc3RudXQuY2FzaHUuc3BhY2U=";
@@ -587,5 +632,92 @@ mod tests {
             .build();
 
         assert_eq!(payment_request.nut10, Some(secret_request));
+    }
+
+    #[test]
+    fn test_nut10_secret_request_multiple_mints() {
+        let mint_urls = [
+            "https://8333.space:3338",
+            "https://mint.minibits.cash/Bitcoin",
+            "https://antifiat.cash",
+            "https://mint.macadamia.cash",
+        ]
+        .iter()
+        .map(|m| MintUrl::from_str(m).unwrap())
+        .collect();
+
+        let payment_request = PaymentRequestBuilder::default()
+            .unit(CurrencyUnit::Sat)
+            .amount(10)
+            .mints(mint_urls)
+            .build();
+
+        let payment_request_str = payment_request.to_string();
+
+        let r = PaymentRequest::from_str(&payment_request_str).unwrap();
+
+        assert_eq!(payment_request, r);
+    }
+
+    #[test]
+    fn test_nut10_secret_request_htlc() {
+        let bolt11 = "lnbc100n1p5z3a63pp56854ytysg7e5z9fl3w5mgvrlqjfcytnjv8ff5hm5qt6gl6alxesqdqqcqzzsxqyz5vqsp5p0x0dlhn27s63j4emxnk26p7f94u0lyarnfp5yqmac9gzy4ngdss9qxpqysgqne3v0hnzt2lp0hc69xpzckk0cdcar7glvjhq60lsrfe8gejdm8c564prrnsft6ctxxyrewp4jtezrq3gxxqnfjj0f9tw2qs9y0lslmqpfu7et9";
+
+        let bolt11 = Bolt11Invoice::from_str(bolt11).unwrap();
+
+        let nut10 = SpendingConditions::HTLCConditions {
+            data: bolt11.payment_hash().clone(),
+            conditions: None,
+        };
+
+        let payment_request = PaymentRequestBuilder::default()
+            .unit(CurrencyUnit::Sat)
+            .amount(10)
+            .nut10(nut10.into())
+            .build();
+
+        let payment_request_str = payment_request.to_string();
+
+        let r = PaymentRequest::from_str(&payment_request_str).unwrap();
+
+        assert_eq!(payment_request, r);
+    }
+
+    #[test]
+    fn test_nut10_secret_request_p2pk() {
+        // Use a public key for P2PK condition
+        let pubkey_hex = "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198";
+
+        // Create P2PK spending conditions
+        let nut10 = SpendingConditions::P2PKConditions {
+            data: crate::nuts::PublicKey::from_str(pubkey_hex).unwrap(),
+            conditions: None,
+        };
+
+        // Build payment request with P2PK condition
+        let payment_request = PaymentRequestBuilder::default()
+            .unit(CurrencyUnit::Sat)
+            .amount(10)
+            .payment_id("test-p2pk-id")
+            .description("P2PK locked payment")
+            .nut10(nut10.into())
+            .build();
+
+        // Convert to string representation
+        let payment_request_str = payment_request.to_string();
+
+        // Parse back from string
+        let decoded_request = PaymentRequest::from_str(&payment_request_str).unwrap();
+
+        // Verify round-trip serialization
+        assert_eq!(payment_request, decoded_request);
+
+        // Verify the P2PK data was preserved correctly
+        if let Some(nut10_secret) = decoded_request.nut10 {
+            assert_eq!(nut10_secret.kind, Kind::P2PK);
+            assert_eq!(nut10_secret.secret_data.data, pubkey_hex);
+        } else {
+            panic!("NUT10 secret data missing in decoded payment request");
+        }
     }
 }
