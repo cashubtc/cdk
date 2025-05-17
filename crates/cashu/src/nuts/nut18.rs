@@ -65,18 +65,6 @@ impl FromStr for TransportType {
     }
 }
 
-impl FromStr for Transport {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let decode_config = general_purpose::GeneralPurposeConfig::new()
-            .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
-        let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
-
-        Ok(ciborium::from_reader(&decoded[..])?)
-    }
-}
-
 /// Transport
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Transport {
@@ -95,6 +83,18 @@ impl Transport {
     /// Create a new TransportBuilder
     pub fn builder() -> TransportBuilder {
         TransportBuilder::default()
+    }
+}
+
+impl FromStr for Transport {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let decode_config = general_purpose::GeneralPurposeConfig::new()
+            .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
+        let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
+
+        Ok(ciborium::from_reader(&decoded[..])?)
     }
 }
 
@@ -313,6 +313,38 @@ impl PaymentRequest {
     }
 }
 
+impl AsRef<Option<String>> for PaymentRequest {
+    fn as_ref(&self) -> &Option<String> {
+        &self.payment_id
+    }
+}
+
+impl fmt::Display for PaymentRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use serde::ser::Error;
+        let mut data = Vec::new();
+        ciborium::into_writer(self, &mut data).map_err(|e| fmt::Error::custom(e.to_string()))?;
+        let encoded = general_purpose::URL_SAFE.encode(data);
+        write!(f, "{PAYMENT_REQUEST_PREFIX}{encoded}")
+    }
+}
+
+impl FromStr for PaymentRequest {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s
+            .strip_prefix(PAYMENT_REQUEST_PREFIX)
+            .ok_or(Error::InvalidPrefix)?;
+
+        let decode_config = general_purpose::GeneralPurposeConfig::new()
+            .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
+        let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
+
+        Ok(ciborium::from_reader(&decoded[..])?)
+    }
+}
+
 /// Builder for PaymentRequest
 #[derive(Debug, Default, Clone)]
 pub struct PaymentRequestBuilder {
@@ -407,38 +439,6 @@ impl PaymentRequestBuilder {
             transports,
             nut10: self.nut10,
         }
-    }
-}
-
-impl AsRef<Option<String>> for PaymentRequest {
-    fn as_ref(&self) -> &Option<String> {
-        &self.payment_id
-    }
-}
-
-impl fmt::Display for PaymentRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use serde::ser::Error;
-        let mut data = Vec::new();
-        ciborium::into_writer(self, &mut data).map_err(|e| fmt::Error::custom(e.to_string()))?;
-        let encoded = general_purpose::URL_SAFE.encode(data);
-        write!(f, "{PAYMENT_REQUEST_PREFIX}{encoded}")
-    }
-}
-
-impl FromStr for PaymentRequest {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s
-            .strip_prefix(PAYMENT_REQUEST_PREFIX)
-            .ok_or(Error::InvalidPrefix)?;
-
-        let decode_config = general_purpose::GeneralPurposeConfig::new()
-            .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
-        let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
-
-        Ok(ciborium::from_reader(&decoded[..])?)
     }
 }
 
