@@ -4,6 +4,38 @@
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
+## [0.9.2](https://github.com/cashubtc/cdk/releases/tag/v0.9.2)
+### Added
+- HTLC from hash support [PR](https://github.com/cashubtc/cdk/pull/753) ([thesimplekid]).
+- Optional transport and NUT-10 secret on payment request [PR](https://github.com/cashubtc/cdk/pull/744) ([thesimplekid]).
+- Multi-part payments support in cdk-cli [PR](https://github.com/cashubtc/cdk/pull/743) ([thesimplekid]).
+
+### Changed
+- Refactored Lightning module to use common types [PR](https://github.com/cashubtc/cdk/pull/751) ([thesimplekid]).
+- Updated LND to support mission control and improved requery behavior [PR](https://github.com/cashubtc/cdk/pull/746) ([lollerfirst]).
+
+### Fixed
+- NUT-18 payment request encoding/decoding [PR](https://github.com/cashubtc/cdk/pull/758) ([thesimplekid]).
+- Mint URL trailing slash handling [PR](https://github.com/cashubtc/cdk/pull/757) ([thesimplekid]).
+- Get spendable to return witness [PR](https://github.com/cashubtc/cdk/pull/756) ([thesimplekid]).
+- Melt start up check [PR](https://github.com/cashubtc/cdk/pull/745) ([thesimplekid]).
+- Race conditions with proof state updates ([crodas]).
+
+## [0.9.1](https://github.com/cashubtc/cdk/releases/tag/v0.9.1)
+### Fixed
+- Remove URLs in gRPC management interface ([thesimplekid]).
+- Only count signatures from unique pubkeys ([thesimplekid]).
+- Race conditions with proof state updates ([crodas]).
+- Debug print of Info struct ([thesimplekid]).
+- Correct mnemonic hashing in Debug implementation ([thesimplekid]).
+
+### Changed
+- Updated lnbits-rs to 0.5.0 ([Darrell]).
+- Update stable Rust to 1.86.0 ([thesimplekid]).
+- Added CORS headers in responses [PR](https://github.com/cashubtc/cdk/pull/719) ([lollerfirst]).
+- Mint should not enforce expiry ([thesimplekid]).
+- Ensure unique proofs when calculating token value ([thesimplekid]).
+
 ## [0.9.0](https://github.com/cashubtc/cdk/releases/tag/v0.9.0)
 ### Added
 - Amountless invoices [NUT](https://github.com/cashubtc/nuts/pull/173) [PR](https://github.com/cashubtc/cdk/pull/497) ([thesimplekid]).
@@ -320,3 +352,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [daywalker90]: https://github.com/daywalker90
 [nodlAndHodl]: https://github.com/nodlAndHodl
 [benthecarman]: https://github.com/benthecarman
+[Darrell]: https://github.com/Darrellbor
