@@ -4,7 +4,6 @@ use cdk_common::error::Error;
 use cdk_common::{BlindSignature, BlindedMessage, Proof};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
-use super::{blind_sign_response, boolean_response, key_rotation_response, keys_response};
 use crate::proto::signatory_client::SignatoryClient;
 use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
 
@@ -67,6 +66,27 @@ impl SignatoryRpcClient {
     }
 }
 
+macro_rules! handle_error {
+    ($x:expr, $y:ident, scalar) => {{
+        let mut obj = $x.into_inner();
+        if let Some(err) = obj.error.take() {
+            return Err(err.into());
+        }
+
+        obj.$y
+    }};
+    ($x:expr, $y:ident) => {{
+        let mut obj = $x.into_inner();
+        if let Some(err) = obj.error.take() {
+            return Err(err.into());
+        }
+
+        obj.$y
+            .take()
+            .ok_or(Error::Custom("Internal error".to_owned()))?
+    }};
+}
+
 #[async_trait::async_trait]
 impl Signatory for SignatoryRpcClient {
     fn name(&self) -> String {
@@ -79,6 +99,8 @@ impl Signatory for SignatoryRpcClient {
                 .into_iter()
                 .map(|blind_message| blind_message.into())
                 .collect(),
+            operation: super::Operation::Unspecified.into(),
+            correlation_id: "".to_owned(),
         };
 
         self.client
@@ -86,18 +108,11 @@ impl Signatory for SignatoryRpcClient {
             .blind_sign(req)
             .await
             .map(|response| {
-                match response
-                    .into_inner()
-                    .result
-                    .ok_or(Error::Custom("Internal error".to_owned()))?
-                {
-                    blind_sign_response::Result::Sigs(sigs) => sigs
-                        .blind_signatures
-                        .into_iter()
-                        .map(|blinded_signature| blinded_signature.try_into())
-                        .collect(),
-                    blind_sign_response::Result::Error(err) => Err(err.into()),
-                }
+                handle_error!(response, sigs)
+                    .blind_signatures
+                    .into_iter()
+                    .map(|blinded_signature| blinded_signature.try_into())
+                    .collect()
             })
             .map_err(|e| Error::Custom(e.to_string()))?
     }
@@ -109,19 +124,10 @@ impl Signatory for SignatoryRpcClient {
             .verify_proofs(req)
             .await
             .map(|response| {
-                match response
-                    .into_inner()
-                    .result
-                    .ok_or(Error::Custom("Internal error".to_owned()))?
-                {
-                    boolean_response::Result::Success(bool) => {
-                        if bool {
-                            Ok(())
-                        } else {
-                            Err(Error::SignatureMissingOrInvalid)
-                        }
-                    }
-                    boolean_response::Result::Error(err) => Err(err.into()),
+                if handle_error!(response, success, scalar) {
+                    Ok(())
+                } else {
+                    Err(Error::SignatureMissingOrInvalid)
                 }
             })
             .map_err(|e| Error::Custom(e.to_string()))?
@@ -132,16 +138,7 @@ impl Signatory for SignatoryRpcClient {
             .clone()
             .keysets(super::EmptyRequest {})
             .await
-            .map(|response| {
-                match response
-                    .into_inner()
-                    .result
-                    .ok_or(Error::Custom("Internal error".to_owned()))?
-                {
-                    keys_response::Result::Keysets(keyset) => keyset.try_into(),
-                    keys_response::Result::Error(err) => Err(err.into()),
-                }
-            })
+            .map(|response| handle_error!(response, keysets).try_into())
             .map_err(|e| Error::Custom(e.to_string()))?
     }
 
@@ -151,16 +148,7 @@ impl Signatory for SignatoryRpcClient {
             .clone()
             .rotate_keyset(req)
             .await
-            .map(|response| {
-                match response
-                    .into_inner()
-                    .result
-                    .ok_or(Error::Custom("Internal error".to_owned()))?
-                {
-                    key_rotation_response::Result::Keyset(keyset) => keyset.try_into(),
-                    key_rotation_response::Result::Error(err) => Err(err.into()),
-                }
-            })
+            .map(|response| handle_error!(response, keyset).try_into())
             .map_err(|e| Error::Custom(e.to_string()))?
     }
 }

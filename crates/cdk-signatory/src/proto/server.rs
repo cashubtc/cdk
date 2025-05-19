@@ -4,7 +4,6 @@ use std::path::Path;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
 
-use super::{boolean_response, key_rotation_response, keys_response, BooleanResponse};
 use crate::proto::{self, signatory_server};
 use crate::signatory::Signatory;
 
@@ -36,20 +35,22 @@ where
             )
             .await
         {
-            Ok(blind_signatures) => {
-                proto::blind_sign_response::Result::Sigs(proto::BlindSignatures {
+            Ok(blind_signatures) => proto::BlindSignResponse {
+                sigs: Some(proto::BlindSignatures {
                     blind_signatures: blind_signatures
                         .into_iter()
                         .map(|blind_sign| blind_sign.into())
                         .collect(),
-                })
-            }
-            Err(err) => proto::blind_sign_response::Result::Error(err.into()),
+                }),
+                ..Default::default()
+            },
+            Err(err) => proto::BlindSignResponse {
+                error: Some(err.into()),
+                ..Default::default()
+            },
         };
 
-        Ok(Response::new(proto::BlindSignResponse {
-            result: Some(result),
-        }))
+        Ok(Response::new(result))
     }
 
     async fn verify_proofs(
@@ -68,15 +69,22 @@ where
             )
             .await
         {
-            Ok(()) => boolean_response::Result::Success(true),
+            Ok(()) => proto::BooleanResponse {
+                success: true,
+                ..Default::default()
+            },
 
-            Err(cdk_common::Error::DHKE(_)) => boolean_response::Result::Success(false),
-            Err(err) => boolean_response::Result::Error(err.into()),
+            Err(cdk_common::Error::DHKE(_)) => proto::BooleanResponse {
+                success: false,
+                ..Default::default()
+            },
+            Err(err) => proto::BooleanResponse {
+                error: Some(err.into()),
+                ..Default::default()
+            },
         };
 
-        Ok(Response::new(BooleanResponse {
-            result: Some(result),
-        }))
+        Ok(Response::new(result))
     }
 
     async fn keysets(
@@ -84,13 +92,17 @@ where
         _request: Request<proto::EmptyRequest>,
     ) -> Result<Response<proto::KeysResponse>, Status> {
         let result = match self.inner.keysets().await {
-            Ok(result) => keys_response::Result::Keysets(result.into()),
-            Err(err) => keys_response::Result::Error(err.into()),
+            Ok(result) => proto::KeysResponse {
+                keysets: Some(result.into()),
+                ..Default::default()
+            },
+            Err(err) => proto::KeysResponse {
+                error: Some(err.into()),
+                ..Default::default()
+            },
         };
 
-        Ok(Response::new(proto::KeysResponse {
-            result: Some(result),
-        }))
+        Ok(Response::new(result))
     }
 
     async fn rotate_keyset(
@@ -102,13 +114,17 @@ where
             .rotate_keyset(request.into_inner().try_into()?)
             .await
         {
-            Ok(result) => key_rotation_response::Result::Keyset(result.into()),
-            Err(err) => key_rotation_response::Result::Error(err.into()),
+            Ok(result) => proto::KeyRotationResponse {
+                keyset: Some(result.into()),
+                ..Default::default()
+            },
+            Err(err) => proto::KeyRotationResponse {
+                error: Some(err.into()),
+                ..Default::default()
+            },
         };
 
-        Ok(Response::new(proto::KeyRotationResponse {
-            result: Some(mint_keyset_info),
-        }))
+        Ok(Response::new(mint_keyset_info))
     }
 }
 

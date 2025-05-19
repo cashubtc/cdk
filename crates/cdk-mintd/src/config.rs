@@ -30,8 +30,12 @@ impl std::fmt::Debug for Info {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Use a fallback approach that won't panic
         let mnemonic_display = {
-            let hash = sha256::Hash::hash(self.mnemonic.clone().into_bytes().as_ref());
-            format!("<hashed: {hash}>")
+            if let Some(mnemonic) = self.mnemonic.as_ref() {
+                let hash = sha256::Hash::hash(mnemonic.as_bytes());
+                format!("<hashed: {hash}>")
+            } else {
+                format!("<url: {}>", self.signatory_url.clone().unwrap_or_default())
+            }
         };
 
         f.debug_struct("Info")

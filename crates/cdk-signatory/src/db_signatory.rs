@@ -22,6 +22,7 @@ use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, Signatory
 pub struct DbSignatory {
     keysets: RwLock<HashMap<Id, (MintKeySetInfo, MintKeySet)>>,
     active_keysets: RwLock<HashMap<CurrencyUnit, Id>>,
+    /// TODO: Merge localstore with auth_localstore (use the same db). It makes sense in CDK but not here.
     localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
     auth_localstore:
         Option<Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>>,
