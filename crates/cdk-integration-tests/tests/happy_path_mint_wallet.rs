@@ -16,7 +16,7 @@ use std::time::Duration;
 use std::{char, env};
 
 use bip39::Mnemonic;
-use cashu::{MeltBolt11Request, PreMintSecrets};
+use cashu::{MeltRequest, PreMintSecrets};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, State};
@@ -358,7 +358,7 @@ async fn test_fake_melt_change_in_quote() {
 
     let client = HttpClient::new(get_mint_url_from_env().parse().unwrap(), None);
 
-    let melt_request = MeltBolt11Request::new(
+    let melt_request = MeltRequest::new(
         melt_quote.id.clone(),
         proofs.clone(),
         Some(premint_secrets.blinded_messages()),

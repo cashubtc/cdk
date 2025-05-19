@@ -7,6 +7,8 @@ use anyhow::anyhow;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::error::Error;
+use cdk_common::nut04::MintMethodOptions;
+use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::Bolt11Settings;
 use cdk_common::{nut21, nut22};
 
@@ -195,7 +197,9 @@ impl MintBuilder {
                 unit: unit.clone(),
                 min_amount: Some(limits.mint_min),
                 max_amount: Some(limits.mint_max),
-                description: settings.invoice_description,
+                options: Some(MintMethodOptions::Bolt11 {
+                    description: settings.invoice_description,
+                }),
             };
 
             self.mint_info.nuts.nut04.methods.push(mint_method_settings);
@@ -206,7 +210,9 @@ impl MintBuilder {
                 unit,
                 min_amount: Some(limits.melt_min),
                 max_amount: Some(limits.melt_max),
-                amountless: settings.amountless,
+                options: Some(MeltMethodOptions::Bolt11 {
+                    amountless: settings.amountless,
+                }),
             };
             self.mint_info.nuts.nut05.methods.push(melt_method_settings);
             self.mint_info.nuts.nut05.disabled = false;

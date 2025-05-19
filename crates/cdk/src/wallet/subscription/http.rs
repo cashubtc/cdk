@@ -7,7 +7,7 @@ use tokio::time;
 
 use super::WsSubscriptionBody;
 use crate::nuts::nut17::Kind;
-use crate::nuts::{nut01, nut04, nut05, nut07, CheckStateRequest, NotificationPayload};
+use crate::nuts::{nut01, nut05, nut07, nut23, CheckStateRequest, NotificationPayload};
 use crate::pub_sub::SubId;
 use crate::wallet::MintConnector;
 use crate::Wallet;
@@ -21,7 +21,7 @@ enum UrlType {
 
 #[derive(Debug, Eq, PartialEq)]
 enum AnyState {
-    MintQuoteState(nut04::QuoteState),
+    MintQuoteState(nut23::QuoteState),
     MeltQuoteState(nut05::QuoteState),
     PublicKey(nut07::State),
     Empty,
