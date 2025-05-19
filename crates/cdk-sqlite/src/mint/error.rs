@@ -26,6 +26,9 @@ pub enum Error {
     /// NUT07 Error
     #[error(transparent)]
     CDKNUT07(#[from] cdk_common::nuts::nut07::Error),
+    /// NUT23 Error
+    #[error(transparent)]
+    CDKNUT23(#[from] cdk_common::nuts::nut23::Error),
     /// Secret Error
     #[error(transparent)]
     CDKSECRET(#[from] cdk_common::secret::Error),

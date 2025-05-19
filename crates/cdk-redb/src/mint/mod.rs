@@ -18,8 +18,8 @@ use cdk_common::nut00::ProofsMethods;
 use cdk_common::state::check_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
-    BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintInfo, MintQuoteState,
-    Proof, Proofs, PublicKey, State,
+    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MeltRequest, MintInfo, MintQuoteState, Proof,
+    Proofs, PublicKey, State,
 };
 use migrations::{migrate_01_to_02, migrate_04_to_05};
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
@@ -543,7 +543,7 @@ impl MintQuotesDatabase for MintRedbDatabase {
     /// Add melt request
     async fn add_melt_request(
         &self,
-        melt_request: MeltBolt11Request<Uuid>,
+        melt_request: MeltRequest<Uuid>,
         ln_key: PaymentProcessorKey,
     ) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
@@ -565,7 +565,7 @@ impl MintQuotesDatabase for MintRedbDatabase {
     async fn get_melt_request(
         &self,
         quote_id: &Uuid,
-    ) -> Result<Option<(MeltBolt11Request<Uuid>, PaymentProcessorKey)>, Self::Err> {
+    ) -> Result<Option<(MeltRequest<Uuid>, PaymentProcessorKey)>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
 

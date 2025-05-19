@@ -6,7 +6,7 @@ use bip39::Mnemonic;
 use cashu::ProofsMethods;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::{
-    CurrencyUnit, MeltOptions, MeltQuoteState, MintBolt11Request, MintQuoteState, Mpp,
+    CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, MintRequest, Mpp,
     NotificationPayload, PreMintSecrets,
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
@@ -313,7 +313,7 @@ async fn test_cached_mint() {
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
 
-    let mut request = MintBolt11Request {
+    let mut request = MintRequest {
         quote: quote.id,
         outputs: premint_secrets.blinded_messages(),
         signature: None,

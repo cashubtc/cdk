@@ -9,7 +9,7 @@ use super::MeltQuote;
 use crate::amount::to_unit;
 use crate::dhke::construct_proofs;
 use crate::nuts::{
-    CurrencyUnit, MeltBolt11Request, MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    CurrencyUnit, MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest,
     PreMintSecrets, Proofs, ProofsMethods, State,
 };
 use crate::types::{Melted, ProofInfo};
@@ -152,7 +152,7 @@ impl Wallet {
             proofs_total - quote_info.amount,
         )?;
 
-        let request = MeltBolt11Request::new(
+        let request = MeltRequest::new(
             quote_id.to_string(),
             proofs.clone(),
             Some(premint_secrets.blinded_messages()),

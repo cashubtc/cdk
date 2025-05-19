@@ -9,7 +9,7 @@ use axum::{Json, Router};
 #[cfg(feature = "swagger")]
 use cdk::error::ErrorResponse;
 use cdk::nuts::{
-    AuthToken, BlindAuthToken, KeysResponse, KeysetResponse, MintAuthRequest, MintBolt11Response,
+    AuthToken, BlindAuthToken, KeysResponse, KeysetResponse, MintAuthRequest, MintResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -144,7 +144,7 @@ pub async fn get_blind_auth_keys(
     path = "/blind/mint",
     request_body(content = MintAuthRequest, description = "Request params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = MintBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MintResponse, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
@@ -152,7 +152,7 @@ pub async fn post_mint_auth(
     auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MintAuthRequest>,
-) -> Result<Json<MintBolt11Response>, Response> {
+) -> Result<Json<MintResponse>, Response> {
     let auth_token = match auth {
         AuthHeader::Clear(cat) => {
             if cat.is_empty() {

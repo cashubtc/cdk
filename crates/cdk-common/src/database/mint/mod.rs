@@ -10,8 +10,8 @@ use super::Error;
 use crate::common::{PaymentProcessorKey, QuoteTTL};
 use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
 use crate::nuts::{
-    BlindSignature, CurrencyUnit, Id, MeltBolt11Request, MeltQuoteState, MintQuoteState, Proof,
-    Proofs, PublicKey, State,
+    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MeltRequest, MintQuoteState, Proof, Proofs,
+    PublicKey, State,
 };
 
 #[cfg(feature = "auth")]
@@ -96,14 +96,14 @@ pub trait QuotesDatabase {
     /// Add melt request
     async fn add_melt_request(
         &self,
-        melt_request: MeltBolt11Request<Uuid>,
+        melt_request: MeltRequest<Uuid>,
         ln_key: PaymentProcessorKey,
     ) -> Result<(), Self::Err>;
     /// Get melt request
     async fn get_melt_request(
         &self,
         quote_id: &Uuid,
-    ) -> Result<Option<(MeltBolt11Request<Uuid>, PaymentProcessorKey)>, Self::Err>;
+    ) -> Result<Option<(MeltRequest<Uuid>, PaymentProcessorKey)>, Self::Err>;
 }
 
 /// Mint Proof Database trait

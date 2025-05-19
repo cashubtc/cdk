@@ -3,16 +3,17 @@
 //! <https://github.com/cashubtc/nuts/blob/main/04.md>
 
 use std::fmt;
+#[cfg(feature = "mint")]
 use std::str::FromStr;
 
-use serde::de::DeserializeOwned;
+use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, Visitor};
+use serde::ser::{SerializeStruct, Serializer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 #[cfg(feature = "mint")]
 use uuid::Uuid;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
-use super::{MintQuoteState, PublicKey};
 use crate::Amount;
 
 /// NUT04 Error
@@ -26,124 +27,11 @@ pub enum Error {
     AmountOverflow,
 }
 
-/// Mint quote request [NUT-04]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct MintQuoteBolt11Request {
-    /// Amount
-    pub amount: Amount,
-    /// Unit wallet would like to pay with
-    pub unit: CurrencyUnit,
-    /// Memo to create the invoice with
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// NUT-19 Pubkey
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pubkey: Option<PublicKey>,
-}
-
-/// Possible states of a quote
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "UPPERCASE")]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = MintQuoteState))]
-pub enum QuoteState {
-    /// Quote has not been paid
-    #[default]
-    Unpaid,
-    /// Quote has been paid and wallet can mint
-    Paid,
-    /// Minting is in progress
-    /// **Note:** This state is to be used internally but is not part of the
-    /// nut.
-    Pending,
-    /// ecash issued for quote
-    Issued,
-}
-
-impl fmt::Display for QuoteState {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::Unpaid => write!(f, "UNPAID"),
-            Self::Paid => write!(f, "PAID"),
-            Self::Pending => write!(f, "PENDING"),
-            Self::Issued => write!(f, "ISSUED"),
-        }
-    }
-}
-
-impl FromStr for QuoteState {
-    type Err = Error;
-
-    fn from_str(state: &str) -> Result<Self, Self::Err> {
-        match state {
-            "PENDING" => Ok(Self::Pending),
-            "PAID" => Ok(Self::Paid),
-            "UNPAID" => Ok(Self::Unpaid),
-            "ISSUED" => Ok(Self::Issued),
-            _ => Err(Error::UnknownState),
-        }
-    }
-}
-
-/// Mint quote response [NUT-04]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-#[serde(bound = "Q: Serialize + DeserializeOwned")]
-pub struct MintQuoteBolt11Response<Q> {
-    /// Quote Id
-    pub quote: Q,
-    /// Payment request to fulfil
-    pub request: String,
-    /// Amount
-    // REVIEW: This is now required in the spec, we should remove the option once all mints update
-    pub amount: Option<Amount>,
-    /// Unit
-    // REVIEW: This is now required in the spec, we should remove the option once all mints update
-    pub unit: Option<CurrencyUnit>,
-    /// Quote State
-    pub state: MintQuoteState,
-    /// Unix timestamp until the quote is valid
-    pub expiry: Option<u64>,
-    /// NUT-19 Pubkey
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pubkey: Option<PublicKey>,
-}
-
-impl<Q: ToString> MintQuoteBolt11Response<Q> {
-    /// Convert the MintQuote with a quote type Q to a String
-    pub fn to_string_id(&self) -> MintQuoteBolt11Response<String> {
-        MintQuoteBolt11Response {
-            quote: self.quote.to_string(),
-            request: self.request.clone(),
-            state: self.state,
-            expiry: self.expiry,
-            pubkey: self.pubkey,
-            amount: self.amount,
-            unit: self.unit.clone(),
-        }
-    }
-}
-
-#[cfg(feature = "mint")]
-impl From<MintQuoteBolt11Response<Uuid>> for MintQuoteBolt11Response<String> {
-    fn from(value: MintQuoteBolt11Response<Uuid>) -> Self {
-        Self {
-            quote: value.quote.to_string(),
-            request: value.request,
-            state: value.state,
-            expiry: value.expiry,
-            pubkey: value.pubkey,
-            amount: value.amount,
-            unit: value.unit.clone(),
-        }
-    }
-}
-
 /// Mint request [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
-pub struct MintBolt11Request<Q> {
+pub struct MintRequest<Q> {
     /// Quote id
     #[cfg_attr(feature = "swagger", schema(max_length = 1_000))]
     pub quote: Q,
@@ -156,10 +44,10 @@ pub struct MintBolt11Request<Q> {
 }
 
 #[cfg(feature = "mint")]
-impl TryFrom<MintBolt11Request<String>> for MintBolt11Request<Uuid> {
+impl TryFrom<MintRequest<String>> for MintRequest<Uuid> {
     type Error = uuid::Error;
 
-    fn try_from(value: MintBolt11Request<String>) -> Result<Self, Self::Error> {
+    fn try_from(value: MintRequest<String>) -> Result<Self, Self::Error> {
         Ok(Self {
             quote: Uuid::from_str(&value.quote)?,
             outputs: value.outputs,
@@ -168,7 +56,7 @@ impl TryFrom<MintBolt11Request<String>> for MintBolt11Request<Uuid> {
     }
 }
 
-impl<Q> MintBolt11Request<Q> {
+impl<Q> MintRequest<Q> {
     /// Total [`Amount`] of outputs
     pub fn total_amount(&self) -> Result<Amount, Error> {
         Amount::try_sum(
@@ -183,13 +71,13 @@ impl<Q> MintBolt11Request<Q> {
 /// Mint response [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct MintBolt11Response {
+pub struct MintResponse {
     /// Blinded Signatures
     pub signatures: Vec<BlindSignature>,
 }
 
 /// Mint Method Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintMethodSettings {
     /// Payment Method e.g. bolt11
@@ -197,14 +85,168 @@ pub struct MintMethodSettings {
     /// Currency Unit e.g. sat
     pub unit: CurrencyUnit,
     /// Min Amount
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_amount: Option<Amount>,
     /// Max Amount
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_amount: Option<Amount>,
-    /// Quote Description
-    #[serde(default)]
-    pub description: bool,
+    /// Options
+    pub options: Option<MintMethodOptions>,
+}
+
+impl Serialize for MintMethodSettings {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut num_fields = 3; // method and unit are always present
+        if self.min_amount.is_some() {
+            num_fields += 1;
+        }
+        if self.max_amount.is_some() {
+            num_fields += 1;
+        }
+
+        let mut description_in_top_level = false;
+        if let Some(MintMethodOptions::Bolt11 { description }) = &self.options {
+            if *description {
+                num_fields += 1;
+                description_in_top_level = true;
+            }
+        }
+
+        let mut state = serializer.serialize_struct("MintMethodSettings", num_fields)?;
+
+        state.serialize_field("method", &self.method)?;
+        state.serialize_field("unit", &self.unit)?;
+
+        if let Some(min_amount) = &self.min_amount {
+            state.serialize_field("min_amount", min_amount)?;
+        }
+
+        if let Some(max_amount) = &self.max_amount {
+            state.serialize_field("max_amount", max_amount)?;
+        }
+
+        // If there's a description flag in Bolt11 options, add it at the top level
+        if description_in_top_level {
+            state.serialize_field("description", &true)?;
+        }
+
+        state.end()
+    }
+}
+
+struct MintMethodSettingsVisitor;
+
+impl<'de> Visitor<'de> for MintMethodSettingsVisitor {
+    type Value = MintMethodSettings;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a MintMethodSettings structure")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let mut method: Option<PaymentMethod> = None;
+        let mut unit: Option<CurrencyUnit> = None;
+        let mut min_amount: Option<Amount> = None;
+        let mut max_amount: Option<Amount> = None;
+        let mut description: Option<bool> = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "method" => {
+                    if method.is_some() {
+                        return Err(de::Error::duplicate_field("method"));
+                    }
+                    method = Some(map.next_value()?);
+                }
+                "unit" => {
+                    if unit.is_some() {
+                        return Err(de::Error::duplicate_field("unit"));
+                    }
+                    unit = Some(map.next_value()?);
+                }
+                "min_amount" => {
+                    if min_amount.is_some() {
+                        return Err(de::Error::duplicate_field("min_amount"));
+                    }
+                    min_amount = Some(map.next_value()?);
+                }
+                "max_amount" => {
+                    if max_amount.is_some() {
+                        return Err(de::Error::duplicate_field("max_amount"));
+                    }
+                    max_amount = Some(map.next_value()?);
+                }
+                "description" => {
+                    if description.is_some() {
+                        return Err(de::Error::duplicate_field("description"));
+                    }
+                    description = Some(map.next_value()?);
+                }
+                "options" => {
+                    // If there are explicit options, they take precedence, except the description
+                    // field which we will handle specially
+                    let options: Option<MintMethodOptions> = map.next_value()?;
+
+                    if let Some(MintMethodOptions::Bolt11 {
+                        description: desc_from_options,
+                    }) = options
+                    {
+                        // If we already found a top-level description, use that instead
+                        if description.is_none() {
+                            description = Some(desc_from_options);
+                        }
+                    }
+                }
+                _ => {
+                    // Skip unknown fields
+                    let _: serde::de::IgnoredAny = map.next_value()?;
+                }
+            }
+        }
+
+        let method = method.ok_or_else(|| de::Error::missing_field("method"))?;
+        let unit = unit.ok_or_else(|| de::Error::missing_field("unit"))?;
+
+        // Create options based on the method and the description flag
+        let options = if method == PaymentMethod::Bolt11 {
+            description.map(|description| MintMethodOptions::Bolt11 { description })
+        } else {
+            None
+        };
+
+        Ok(MintMethodSettings {
+            method,
+            unit,
+            min_amount,
+            max_amount,
+            options,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for MintMethodSettings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(MintMethodSettingsVisitor)
+    }
+}
+
+/// Mint Method settings options
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+#[serde(untagged)]
+pub enum MintMethodOptions {
+    /// Bolt11 Options
+    Bolt11 {
+        /// Mint supports setting bolt11 description
+        description: bool,
+    },
 }
 
 /// Mint Settings
@@ -248,5 +290,75 @@ impl Settings {
             .iter()
             .position(|settings| &settings.method == method && &settings.unit == unit)
             .map(|index| self.methods.remove(index))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{from_str, json, to_string};
+
+    use super::*;
+
+    #[test]
+    fn test_mint_method_settings_top_level_description() {
+        // Create JSON with top-level description
+        let json_str = r#"{
+            "method": "bolt11",
+            "unit": "sat",
+            "min_amount": 0,
+            "max_amount": 10000,
+            "description": true
+        }"#;
+
+        // Deserialize it
+        let settings: MintMethodSettings = from_str(json_str).unwrap();
+
+        // Check that description was correctly moved to options
+        assert_eq!(settings.method, PaymentMethod::Bolt11);
+        assert_eq!(settings.unit, CurrencyUnit::Sat);
+        assert_eq!(settings.min_amount, Some(Amount::from(0)));
+        assert_eq!(settings.max_amount, Some(Amount::from(10000)));
+
+        match settings.options {
+            Some(MintMethodOptions::Bolt11 { description }) => {
+                assert_eq!(description, true);
+            }
+            _ => panic!("Expected Bolt11 options with description = true"),
+        }
+
+        // Serialize it back
+        let serialized = to_string(&settings).unwrap();
+        let parsed: serde_json::Value = from_str(&serialized).unwrap();
+
+        // Verify the description is at the top level
+        assert_eq!(parsed["description"], json!(true));
+    }
+
+    #[test]
+    fn test_both_description_locations() {
+        // Create JSON with description in both places (top level and in options)
+        let json_str = r#"{
+            "method": "bolt11",
+            "unit": "sat",
+            "min_amount": 0,
+            "max_amount": 10000,
+            "description": true,
+            "options": {
+                "description": false
+            }
+        }"#;
+
+        // Deserialize it - top level should take precedence
+        let settings: MintMethodSettings = from_str(json_str).unwrap();
+
+        match settings.options {
+            Some(MintMethodOptions::Bolt11 { description }) => {
+                assert_eq!(
+                    description, true,
+                    "Top-level description should take precedence"
+                );
+            }
+            _ => panic!("Expected Bolt11 options with description = true"),
+        }
     }
 }

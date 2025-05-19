@@ -13,8 +13,8 @@ use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
 use cashu::mint_url::MintUrl;
 use cashu::{
-    CurrencyUnit, Id, MeltBolt11Request, NotificationPayload, PreMintSecrets, ProofState,
-    SecretKey, SpendingConditions, State, SwapRequest,
+    CurrencyUnit, Id, MeltRequest, NotificationPayload, PreMintSecrets, ProofState, SecretKey,
+    SpendingConditions, State, SwapRequest,
 };
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
@@ -855,7 +855,7 @@ async fn test_concurrent_double_spend_melt() {
     let mint_clone2 = mint_bob.clone();
     let mint_clone3 = mint_bob.clone();
 
-    let melt_request = MeltBolt11Request::new(quote_id.parse().unwrap(), proofs.clone(), None);
+    let melt_request = MeltRequest::new(quote_id.parse().unwrap(), proofs.clone(), None);
     let melt_request2 = melt_request.clone();
     let melt_request3 = melt_request.clone();
 

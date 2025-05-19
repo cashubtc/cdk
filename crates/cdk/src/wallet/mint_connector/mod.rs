@@ -6,9 +6,9 @@ use async_trait::async_trait;
 
 use super::Error;
 use crate::nuts::{
-    CheckStateRequest, CheckStateResponse, Id, KeySet, KeysetResponse, MeltBolt11Request,
-    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response,
-    MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest, RestoreResponse,
+    CheckStateRequest, CheckStateResponse, Id, KeySet, KeysetResponse, MeltQuoteBolt11Request,
+    MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
     SwapRequest, SwapResponse,
 };
 #[cfg(feature = "auth")]
@@ -41,10 +41,7 @@ pub trait MintConnector: Debug {
         quote_id: &str,
     ) -> Result<MintQuoteBolt11Response<String>, Error>;
     /// Mint Tokens [NUT-04]
-    async fn post_mint(
-        &self,
-        request: MintBolt11Request<String>,
-    ) -> Result<MintBolt11Response, Error>;
+    async fn post_mint(&self, request: MintRequest<String>) -> Result<MintResponse, Error>;
     /// Melt Quote [NUT-05]
     async fn post_melt_quote(
         &self,
@@ -59,7 +56,7 @@ pub trait MintConnector: Debug {
     /// [Nut-08] Lightning fee return if outputs defined
     async fn post_melt(
         &self,
-        request: MeltBolt11Request<String>,
+        request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
     /// Split Token [NUT-06]
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error>;

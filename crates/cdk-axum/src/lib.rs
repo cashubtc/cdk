@@ -33,13 +33,8 @@ mod swagger_imports {
     pub use cdk::nuts::nut01::{Keys, KeysResponse, PublicKey, SecretKey};
     pub use cdk::nuts::nut02::{KeySet, KeySetInfo, KeysetResponse};
     pub use cdk::nuts::nut03::{SwapRequest, SwapResponse};
-    pub use cdk::nuts::nut04::{
-        MintBolt11Request, MintBolt11Response, MintMethodSettings, MintQuoteBolt11Request,
-        MintQuoteBolt11Response,
-    };
-    pub use cdk::nuts::nut05::{
-        MeltBolt11Request, MeltMethodSettings, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
-    };
+    pub use cdk::nuts::nut04::{MintMethodSettings, MintRequest, MintResponse};
+    pub use cdk::nuts::nut05::{MeltMethodSettings, MeltRequest};
     pub use cdk::nuts::nut06::{ContactInfo, MintInfo, MintVersion, Nuts, SupportedSettings};
     pub use cdk::nuts::nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
     pub use cdk::nuts::nut09::{RestoreRequest, RestoreResponse};
@@ -47,6 +42,10 @@ mod swagger_imports {
     pub use cdk::nuts::nut12::{BlindSignatureDleq, ProofDleq};
     pub use cdk::nuts::nut14::HTLCWitness;
     pub use cdk::nuts::nut15::{Mpp, MppMethodSettings};
+    pub use cdk::nuts::nut23::{
+        MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintQuoteBolt11Request,
+        MintQuoteBolt11Response,
+    };
     pub use cdk::nuts::{nut04, nut05, nut15, MeltQuoteState, MintQuoteState};
 }
 
@@ -80,13 +79,13 @@ pub struct MintState {
         KeysetResponse,
         KeySet,
         KeySetInfo,
-        MeltBolt11Request<String>,
+        MeltRequest<String>,
         MeltQuoteBolt11Request,
         MeltQuoteBolt11Response<String>,
         MeltQuoteState,
         MeltMethodSettings,
-        MintBolt11Request<String>,
-        MintBolt11Response,
+        MintRequest<String>,
+        MintResponse,
         MintInfo,
         MintQuoteBolt11Request,
         MintQuoteBolt11Response<String>,

@@ -8,9 +8,9 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
-    AuthProof, AuthToken, BlindAuthToken, CheckStateRequest, CurrencyUnit, MeltBolt11Request,
-    MeltQuoteBolt11Request, MeltQuoteState, MintBolt11Request, MintQuoteBolt11Request,
-    RestoreRequest, State, SwapRequest,
+    AuthProof, AuthToken, BlindAuthToken, CheckStateRequest, CurrencyUnit, MeltQuoteBolt11Request,
+    MeltQuoteState, MeltRequest, MintQuoteBolt11Request, MintRequest, RestoreRequest, State,
+    SwapRequest,
 };
 use cdk::wallet::{AuthHttpClient, AuthMintConnector, HttpClient, MintConnector, WalletBuilder};
 use cdk::{Error, OidcClient};
@@ -109,7 +109,7 @@ async fn test_mint_without_auth() {
     }
 
     {
-        let request = MintBolt11Request {
+        let request = MintRequest {
             quote: "123e4567-e89b-12d3-a456-426614174000".to_string(),
             outputs: vec![],
             signature: None,
@@ -207,7 +207,7 @@ async fn test_melt_without_auth() {
 
     // Test melt
     {
-        let request = MeltBolt11Request::new(
+        let request = MeltRequest::new(
             "123e4567-e89b-12d3-a456-426614174000".to_string(),
             vec![],
             None,

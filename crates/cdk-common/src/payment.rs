@@ -52,6 +52,9 @@ pub enum Error {
     /// NUT05 Error
     #[error(transparent)]
     NUT05(#[from] crate::nuts::nut05::Error),
+    /// NUT23 Error
+    #[error(transparent)]
+    NUT23(#[from] crate::nuts::nut23::Error),
     /// Custom
     #[error("`{0}`")]
     Custom(String),
