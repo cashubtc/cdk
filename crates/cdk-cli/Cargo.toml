@@ -18,6 +18,7 @@ redb = ["dep:cdk-redb"]
 [dependencies]
 anyhow.workspace = true
 bip39.workspace = true
+bitcoin.workspace = true
 cdk = { workspace = true, default-features = false, features = ["wallet", "auth"]}
 cdk-redb = { workspace = true, features = ["wallet"], optional = true }
 cdk-sqlite = { workspace = true, features = ["wallet"] }
@@ -28,7 +29,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 home.workspace = true
-nostr-sdk = { version = "0.35.0", default-features = false, features = [
+nostr-sdk = { version = "0.41.0", default-features = false, features = [
     "nip04",
     "nip44",
     "nip59"
