@@ -25,6 +25,7 @@ impl From<crate::signatory::SignatoryKeysets> for SignatoryKeysets {
 }
 
 impl TryInto<crate::signatory::SignatoryKeysets> for SignatoryKeysets {
+    /// TODO: Make sure that all type Error here are cdk_common::Error
     type Error = cdk_common::Error;
 
     fn try_into(self) -> Result<crate::signatory::SignatoryKeysets, Self::Error> {
@@ -90,7 +91,7 @@ impl From<cdk_common::Error> for Error {
             cdk_common::Error::DuplicateOutputs => ErrorCode::DuplicateInputsProvided,
             cdk_common::Error::UnknownKeySet => ErrorCode::KeysetNotKnown,
             cdk_common::Error::InactiveKeyset => ErrorCode::KeysetInactive,
-            _ => ErrorCode::Unknown,
+            _ => ErrorCode::Unspecified,
         };
 
         Error {
@@ -103,8 +104,13 @@ impl From<cdk_common::Error> for Error {
 impl From<Error> for cdk_common::Error {
     fn from(val: Error) -> Self {
         match val.code.try_into().expect("valid code") {
+            ErrorCode::AmountOutsideLimit => {
+                cdk_common::Error::AmountError(cdk_common::amount::Error::AmountOverflow)
+            }
             ErrorCode::DuplicateInputsProvided => cdk_common::Error::DuplicateInputs,
-            ErrorCode::Unknown => cdk_common::Error::Custom(val.detail),
+            ErrorCode::KeysetNotKnown => cdk_common::Error::UnknownKeySet,
+            ErrorCode::KeysetInactive => cdk_common::Error::InactiveKeyset,
+            ErrorCode::Unspecified => cdk_common::Error::Custom(val.detail),
             _ => todo!(),
         }
     }
@@ -144,6 +150,8 @@ impl From<Vec<cdk_common::Proof>> for Proofs {
     fn from(value: Vec<cdk_common::Proof>) -> Self {
         Proofs {
             proof: value.into_iter().map(|x| x.into()).collect(),
+            operation: Operation::Unspecified.into(),
+            correlation_id: "".to_owned(),
         }
     }
 }
@@ -353,6 +361,9 @@ impl TryInto<cashu::CurrencyUnit> for CurrencyUnit {
                 CurrencyUnitType::Usd => Ok(cashu::CurrencyUnit::Usd),
                 CurrencyUnitType::Eur => Ok(cashu::CurrencyUnit::Eur),
                 CurrencyUnitType::Auth => Ok(cashu::CurrencyUnit::Auth),
+                CurrencyUnitType::Unspecified => {
+                    Err(Status::invalid_argument("Current unit is not specified"))
+                }
             },
             Some(currency_unit::CurrencyUnit::CustomUnit(name)) => {
                 Ok(cashu::CurrencyUnit::Custom(name))

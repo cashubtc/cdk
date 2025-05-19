@@ -1,11 +1,11 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod cli {
     use std::collections::HashMap;
-    use std::fs;
     use std::net::SocketAddr;
     use std::path::PathBuf;
     use std::str::FromStr;
     use std::sync::Arc;
+    use std::{env, fs};
 
     use anyhow::{bail, Result};
     use bip39::rand::{thread_rng, Rng};
@@ -22,6 +22,7 @@ mod cli {
     use tracing_subscriber::EnvFilter;
 
     const DEFAULT_WORK_DIR: &str = ".cdk-signatory";
+    const ENV_MNEMONIC: &str = "CDK_MINTD_MNEMONIC";
 
     /// Simple CLI application to interact with cashu
     #[derive(Parser)]
@@ -48,6 +49,7 @@ mod cli {
         listen_port: u32,
         #[arg(long, short)]
         certs: Option<String>,
+        /// Supported units with the format of name,fee and max_order
         #[arg(long, short, default_value = "sat,0,32")]
         units: Vec<String>,
     }
@@ -74,7 +76,7 @@ mod cli {
 
         let sqlx_filter = "sqlx=warn,hyper_util=warn,reqwest=warn";
 
-        let env_filter = EnvFilter::new(format!("{},{}", default_filter, sqlx_filter));
+        let env_filter = EnvFilter::new(format!("{default_filter},{sqlx_filter}"));
 
         // Parse input
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
@@ -136,21 +138,25 @@ mod cli {
 
         let seed_path = work_dir.join("seed");
 
-        let mnemonic = match fs::metadata(seed_path.clone()) {
-            Ok(_) => {
-                let contents = fs::read_to_string(seed_path.clone())?;
-                Mnemonic::from_str(&contents)?
-            }
-            Err(_e) => {
-                let mut rng = thread_rng();
-                let random_bytes: [u8; 32] = rng.gen();
+        let mnemonic = if let Ok(mnemonic) = env::var(ENV_MNEMONIC) {
+            Mnemonic::from_str(&mnemonic)?
+        } else {
+            match fs::metadata(seed_path.clone()) {
+                Ok(_) => {
+                    let contents = fs::read_to_string(seed_path.clone())?;
+                    Mnemonic::from_str(&contents)?
+                }
+                Err(_e) => {
+                    let mut rng = thread_rng();
+                    let random_bytes: [u8; 32] = rng.gen();
 
-                let mnemonic = Mnemonic::from_entropy(&random_bytes)?;
-                tracing::info!("Creating new seed");
+                    let mnemonic = Mnemonic::from_entropy(&random_bytes)?;
+                    tracing::info!("Creating new seed");
 
-                fs::write(seed_path, mnemonic.to_string())?;
+                    fs::write(seed_path, mnemonic.to_string())?;
 
-                mnemonic
+                    mnemonic
+                }
             }
         };
         let seed = mnemonic.to_seed_normalized("");
