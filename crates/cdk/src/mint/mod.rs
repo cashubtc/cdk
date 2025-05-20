@@ -362,10 +362,10 @@ impl Mint {
     #[tracing::instrument(skip_all)]
     pub async fn blind_sign(
         &self,
-        blinded_message: &BlindedMessage,
+        blinded_message: BlindedMessage,
     ) -> Result<BlindSignature, Error> {
         self.signatory
-            .blind_sign(vec![blinded_message.to_owned()])
+            .blind_sign(vec![blinded_message])
             .await?
             .pop()
             .ok_or(Error::Internal)
@@ -373,7 +373,7 @@ impl Mint {
 
     /// Verify [`Proof`] meets conditions and is signed
     #[tracing::instrument(skip_all)]
-    pub async fn verify_proofs(&self, proofs: &Proofs) -> Result<(), Error> {
+    pub async fn verify_proofs(&self, proofs: Proofs) -> Result<(), Error> {
         proofs
             .iter()
             .map(|proof| {
@@ -400,7 +400,7 @@ impl Mint {
             })
             .collect::<Result<Vec<()>, Error>>()?;
 
-        self.signatory.verify_proofs(proofs.to_owned()).await
+        self.signatory.verify_proofs(proofs).await
     }
 
     /// Verify melt request is valid

@@ -6,11 +6,11 @@
 //! There is an in memory implementation, when the keys are stored in memory, in the same process,
 //! but it is isolated from the rest of the application, and they communicate through a channel with
 //! the defined API.
-use cashu::{
-    BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet, Proof, PublicKey,
-};
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
+use cdk_common::{
+    BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet, Proof, PublicKey,
+};
 
 #[derive(Debug)]
 /// Type alias to make the keyset info API more useful, queryable by unit and Id

@@ -2,8 +2,7 @@
 //! run the Signatory in another thread, isolated form the main CDK, communicating through messages
 use std::sync::Arc;
 
-use cashu::{BlindSignature, BlindedMessage, Proof};
-use cdk_common::Error;
+use cdk_common::{BlindSignature, BlindedMessage, Error, Proof};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 

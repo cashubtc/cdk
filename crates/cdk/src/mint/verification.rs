@@ -203,7 +203,7 @@ impl Mint {
         let unit = self.verify_inputs_keyset(inputs).await?;
         let amount = inputs.total_amount()?;
 
-        self.verify_proofs(inputs).await?;
+        self.verify_proofs(inputs.clone()).await?;
 
         Ok(Verification {
             amount,

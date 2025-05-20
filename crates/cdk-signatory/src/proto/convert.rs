@@ -1,10 +1,9 @@
 //! Type conversions between Rust types and the generated protobuf types.
 use std::collections::BTreeMap;
 
-use cashu::secret::Secret;
-use cashu::util::hex;
-use cashu::{Amount, PublicKey};
-use cdk_common::{HTLCWitness, P2PKWitness};
+use cdk_common::secret::Secret;
+use cdk_common::util::hex;
+use cdk_common::{Amount, HTLCWitness, P2PKWitness, PublicKey};
 use tonic::Status;
 
 use super::*;
@@ -311,35 +310,35 @@ impl TryInto<()> for EmptyRequest {
     }
 }
 
-impl From<cashu::CurrencyUnit> for CurrencyUnit {
-    fn from(value: cashu::CurrencyUnit) -> Self {
+impl From<cdk_common::CurrencyUnit> for CurrencyUnit {
+    fn from(value: cdk_common::CurrencyUnit) -> Self {
         match value {
-            cashu::CurrencyUnit::Sat => CurrencyUnit {
+            cdk_common::CurrencyUnit::Sat => CurrencyUnit {
                 currency_unit: Some(currency_unit::CurrencyUnit::Unit(
                     CurrencyUnitType::Sat.into(),
                 )),
             },
-            cashu::CurrencyUnit::Msat => CurrencyUnit {
+            cdk_common::CurrencyUnit::Msat => CurrencyUnit {
                 currency_unit: Some(currency_unit::CurrencyUnit::Unit(
                     CurrencyUnitType::Msat.into(),
                 )),
             },
-            cashu::CurrencyUnit::Usd => CurrencyUnit {
+            cdk_common::CurrencyUnit::Usd => CurrencyUnit {
                 currency_unit: Some(currency_unit::CurrencyUnit::Unit(
                     CurrencyUnitType::Usd.into(),
                 )),
             },
-            cashu::CurrencyUnit::Eur => CurrencyUnit {
+            cdk_common::CurrencyUnit::Eur => CurrencyUnit {
                 currency_unit: Some(currency_unit::CurrencyUnit::Unit(
                     CurrencyUnitType::Eur.into(),
                 )),
             },
-            cashu::CurrencyUnit::Auth => CurrencyUnit {
+            cdk_common::CurrencyUnit::Auth => CurrencyUnit {
                 currency_unit: Some(currency_unit::CurrencyUnit::Unit(
                     CurrencyUnitType::Auth.into(),
                 )),
             },
-            cashu::CurrencyUnit::Custom(name) => CurrencyUnit {
+            cdk_common::CurrencyUnit::Custom(name) => CurrencyUnit {
                 currency_unit: Some(currency_unit::CurrencyUnit::CustomUnit(name)),
             },
             _ => unreachable!(),
@@ -347,36 +346,36 @@ impl From<cashu::CurrencyUnit> for CurrencyUnit {
     }
 }
 
-impl TryInto<cashu::CurrencyUnit> for CurrencyUnit {
+impl TryInto<cdk_common::CurrencyUnit> for CurrencyUnit {
     type Error = Status;
 
-    fn try_into(self) -> Result<cashu::CurrencyUnit, Self::Error> {
+    fn try_into(self) -> Result<cdk_common::CurrencyUnit, Self::Error> {
         match self.currency_unit {
             Some(currency_unit::CurrencyUnit::Unit(u)) => match u
                 .try_into()
                 .map_err(|_| Status::invalid_argument("Invalid currency unit"))?
             {
-                CurrencyUnitType::Sat => Ok(cashu::CurrencyUnit::Sat),
-                CurrencyUnitType::Msat => Ok(cashu::CurrencyUnit::Msat),
-                CurrencyUnitType::Usd => Ok(cashu::CurrencyUnit::Usd),
-                CurrencyUnitType::Eur => Ok(cashu::CurrencyUnit::Eur),
-                CurrencyUnitType::Auth => Ok(cashu::CurrencyUnit::Auth),
+                CurrencyUnitType::Sat => Ok(cdk_common::CurrencyUnit::Sat),
+                CurrencyUnitType::Msat => Ok(cdk_common::CurrencyUnit::Msat),
+                CurrencyUnitType::Usd => Ok(cdk_common::CurrencyUnit::Usd),
+                CurrencyUnitType::Eur => Ok(cdk_common::CurrencyUnit::Eur),
+                CurrencyUnitType::Auth => Ok(cdk_common::CurrencyUnit::Auth),
                 CurrencyUnitType::Unspecified => {
                     Err(Status::invalid_argument("Current unit is not specified"))
                 }
             },
             Some(currency_unit::CurrencyUnit::CustomUnit(name)) => {
-                Ok(cashu::CurrencyUnit::Custom(name))
+                Ok(cdk_common::CurrencyUnit::Custom(name))
             }
             None => Err(Status::invalid_argument("Currency unit not set")),
         }
     }
 }
 
-impl TryInto<cashu::KeySet> for KeySet {
+impl TryInto<cdk_common::KeySet> for KeySet {
     type Error = cdk_common::error::Error;
-    fn try_into(self) -> Result<cashu::KeySet, Self::Error> {
-        Ok(cashu::KeySet {
+    fn try_into(self) -> Result<cdk_common::KeySet, Self::Error> {
+        Ok(cdk_common::KeySet {
             id: self
                 .id
                 .parse()
@@ -386,13 +385,13 @@ impl TryInto<cashu::KeySet> for KeySet {
                 .ok_or(cdk_common::error::Error::Custom(INTERNAL_ERROR.to_owned()))?
                 .try_into()
                 .map_err(|_| cdk_common::Error::Custom("Invalid unit encoding".to_owned()))?,
-            keys: cashu::Keys::new(
+            keys: cdk_common::Keys::new(
                 self.keys
                     .ok_or(cdk_common::error::Error::Custom(INTERNAL_ERROR.to_owned()))?
                     .keys
                     .into_iter()
                     .map(|(k, v)| cdk_common::PublicKey::from_slice(&v).map(|pk| (k.into(), pk)))
-                    .collect::<Result<BTreeMap<cashu::Amount, cdk_common::PublicKey>, _>>()?,
+                    .collect::<Result<BTreeMap<cdk_common::Amount, cdk_common::PublicKey>, _>>()?,
             ),
         })
     }

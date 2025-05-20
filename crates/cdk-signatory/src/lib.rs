@@ -19,3 +19,6 @@ mod common;
 pub mod db_signatory;
 pub mod embedded;
 pub mod signatory;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cli;

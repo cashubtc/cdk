@@ -12,7 +12,6 @@ grpc = ["dep:tonic", "tokio/full", "dep:prost", "dep:tonic-build"]
 
 [dependencies]
 async-trait.workspace = true
-cashu.workspace = true
 bitcoin.workspace = true
 cdk-common = { workspace = true, default-features=false, features = [
     "mint", "auth",
