@@ -14,7 +14,7 @@ readme = "README.md"
 async-trait.workspace = true
 bitcoin.workspace = true
 cdk-common = { workspace = true, features = ["mint"] }
-cln-rpc = "0.3.0"
+cln-rpc = "0.4.0"
 futures.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

@@ -86,7 +86,7 @@ impl HttpCacheStorage for HttpCacheRedis {
         };
 
         let _: Result<(), _> = conn
-            .set_ex(db_key, value, self.cache_ttl.as_secs() as usize)
+            .set_ex(db_key, value, self.cache_ttl.as_secs())
             .await
             .map_err(|err| {
                 tracing::error!("Failed to set value in redis: {:?}", err);

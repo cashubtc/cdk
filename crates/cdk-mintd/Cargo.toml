@@ -47,7 +47,7 @@ cdk-fake-wallet = { workspace = true, optional = true }
 cdk-axum.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
 cdk-payment-processor = { workspace = true, optional = true }
-config = { version = "0.13.3", features = ["toml"] }
+config = { version = "0.15.11", features = ["toml"] }
 clap.workspace = true
 bitcoin.workspace = true
 tokio = { workspace = true, default-features = false, features = ["signal"] }
@@ -63,9 +63,3 @@ home.workspace = true
 url.workspace = true
 utoipa = { workspace = true, optional = true }
 utoipa-swagger-ui = { version = "9.0.0", features = ["axum"], optional = true }
-
-[build-dependencies]
-# Dep of utopia 2.5.0 breaks so keeping here for now
-zip = "=2.4.2"
-time = "=0.3.39"
-

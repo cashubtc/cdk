@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::str::FromStr;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use cdk::nuts::{SecretKey, Token};
@@ -171,7 +172,7 @@ async fn nostr_receive(
 
     let x_only_pubkey = verifying_key.x_only_public_key();
 
-    let nostr_pubkey = nostr_sdk::PublicKey::from_hex(x_only_pubkey.to_string())?;
+    let nostr_pubkey = nostr_sdk::PublicKey::from_hex(&x_only_pubkey.to_string())?;
 
     let since = since.map(|s| Timestamp::from(s as u64));
 
@@ -190,13 +191,7 @@ async fn nostr_receive(
     client.connect().await;
 
     let events = client
-        .get_events_of(
-            vec![filter],
-            nostr_sdk::EventSource::Relays {
-                timeout: None,
-                specific_relays: Some(relays),
-            },
-        )
+        .fetch_events_from(relays, filter, Duration::from_secs(30))
         .await?;
 
     let mut tokens: HashSet<String> = HashSet::new();
