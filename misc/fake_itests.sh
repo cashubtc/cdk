@@ -68,7 +68,7 @@ if [ "$2" = "external_signatory" ]; then
     export CDK_MINTD_SIGNATORY_URL="https://127.0.0.1:15060"
     export CDK_MINTD_SIGNATORY_CERTS="$CDK_ITESTS_DIR"
     bash -x `dirname $0`/../crates/cdk-signatory/generate_certs.sh $CDK_ITESTS_DIR
-    cargo run --bin cdk-signatory -- -w $CDK_ITESTS_DIR -u "sat" -u "usd"  &
+    cargo run --bin signatory -- -w $CDK_ITESTS_DIR -u "sat" -u "usd"  &
     export CDK_SIGNATORY_PID=$!
     sleep 5
 fi
