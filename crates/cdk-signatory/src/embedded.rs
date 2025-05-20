@@ -45,6 +45,8 @@ impl Drop for Service {
 }
 
 impl Service {
+    /// Takes a signatory and spawns it into a Tokio task, isolating its implementation with the
+    /// main thread, communicating with it through messages
     pub fn new(handler: Arc<dyn Signatory + Send + Sync>) -> Self {
         let (tx, rx) = mpsc::channel(10_000);
         let runner = Some(tokio::spawn(Self::runner(rx, handler)));

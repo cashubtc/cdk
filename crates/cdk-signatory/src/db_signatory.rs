@@ -1,3 +1,6 @@
+//! Main Signatory implementation
+//!
+//! It is named db_signatory because it uses a database to maintain state.
 use std::collections::HashMap;
 use std::sync::Arc;
 
