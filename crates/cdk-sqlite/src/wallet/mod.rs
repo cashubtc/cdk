@@ -246,11 +246,10 @@ FROM mint
         for table in &tables {
             let query = format!(
                 r#"
-            UPDATE {}
+            UPDATE {table}
             SET mint_url = ?
             WHERE mint_url = ?;
-            "#,
-                table
+            "#
             );
 
             sqlx::query(&query)

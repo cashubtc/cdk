@@ -485,7 +485,7 @@ impl Mint {
     pub async fn handle_internal_melt_mint(
         &self,
         melt_quote: &MeltQuote,
-        melt_request: &MeltBolt11Request<Uuid>,
+        melt_request: &MeltRequest<Uuid>,
     ) -> Result<Option<Amount>, Error> {
         let mint_quote = match self
             .localstore
@@ -772,7 +772,7 @@ mod tests {
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
-        melt_requests: Vec<(MeltBolt11Request<Uuid>, PaymentProcessorKey)>,
+        melt_requests: Vec<(MeltRequest<Uuid>, PaymentProcessorKey)>,
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Mint {

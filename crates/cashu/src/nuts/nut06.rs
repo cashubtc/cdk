@@ -470,6 +470,7 @@ impl ContactInfo {
 mod tests {
 
     use super::*;
+    use crate::nut04::MintMethodOptions;
 
     #[test]
     fn test_des_mint_into() {
@@ -552,7 +553,9 @@ mod tests {
         "unit": "sat",
         "min_amount": 0,
         "max_amount": 10000,
-        "description": true
+        "options": {
+            "description": true
+            }
         }
       ],
       "disabled": false
@@ -598,7 +601,9 @@ mod tests {
                 "unit": "sat",
                 "min_amount": 0,
                 "max_amount": 10000,
-                "description": true
+                "options": {
+                     "description": true
+                 }
                 }
             ],
             "disabled": false
@@ -623,6 +628,16 @@ mod tests {
         "tos_url": "https://cashu.mint/tos"
 }"#;
         let mint_info: MintInfo = serde_json::from_str(mint_info_str).unwrap();
+
+        let t = mint_info
+            .nuts
+            .nut04
+            .get_settings(&crate::CurrencyUnit::Sat, &crate::PaymentMethod::Bolt11)
+            .unwrap();
+
+        let t = t.options.unwrap();
+
+        matches!(t, MintMethodOptions::Bolt11 { description: true });
 
         assert_eq!(info, mint_info);
     }

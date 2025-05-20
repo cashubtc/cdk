@@ -312,6 +312,16 @@ impl SpendingConditions {
         })
     }
 
+    /// New HTLC [SpendingConditions] from a hash directly instead of preimage
+    pub fn new_htlc_hash(hash: &str, conditions: Option<Conditions>) -> Result<Self, Error> {
+        let hash = Sha256Hash::from_str(hash).map_err(|_| Error::InvalidHash)?;
+
+        Ok(Self::HTLCConditions {
+            data: hash,
+            conditions,
+        })
+    }
+
     /// New P2PK [SpendingConditions]
     pub fn new_p2pk(pubkey: PublicKey, conditions: Option<Conditions>) -> Self {
         Self::P2PKConditions {
@@ -575,7 +585,7 @@ impl fmt::Display for TagKind {
             Self::Locktime => write!(f, "locktime"),
             Self::Refund => write!(f, "refund"),
             Self::Pubkeys => write!(f, "pubkeys"),
-            Self::Custom(kind) => write!(f, "{}", kind),
+            Self::Custom(kind) => write!(f, "{kind}"),
         }
     }
 }

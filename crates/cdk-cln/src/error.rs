@@ -25,10 +25,10 @@ pub enum Error {
     ClnRpc(#[from] cln_rpc::RpcError),
     /// Amount Error
     #[error(transparent)]
-    Amount(#[from] cdk::amount::Error),
+    Amount(#[from] cdk_common::amount::Error),
 }
 
-impl From<Error> for cdk::cdk_payment::Error {
+impl From<Error> for cdk_common::payment::Error {
     fn from(e: Error) -> Self {
         Self::Lightning(Box::new(e))
     }

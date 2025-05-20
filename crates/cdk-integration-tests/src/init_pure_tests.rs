@@ -14,9 +14,9 @@ use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
-    MeltBolt11Request, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request,
-    MintBolt11Response, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, PaymentMethod,
-    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
@@ -91,10 +91,7 @@ impl MintConnector for DirectMintConnection {
             .map(Into::into)
     }
 
-    async fn post_mint(
-        &self,
-        request: MintBolt11Request<String>,
-    ) -> Result<MintBolt11Response, Error> {
+    async fn post_mint(&self, request: MintRequest<String>) -> Result<MintResponse, Error> {
         let request_uuid = request.try_into().unwrap();
         self.mint.process_mint_request(request_uuid).await
     }
@@ -122,7 +119,7 @@ impl MintConnector for DirectMintConnection {
 
     async fn post_melt(
         &self,
-        request: MeltBolt11Request<String>,
+        request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let request_uuid = request.try_into().unwrap();
         self.mint.melt_bolt11(&request_uuid).await.map(Into::into)
@@ -166,10 +163,7 @@ pub fn setup_tracing() {
     let sqlx_filter = "sqlx=warn";
     let hyper_filter = "hyper=warn";
 
-    let env_filter = EnvFilter::new(format!(
-        "{},{},{}",
-        default_filter, sqlx_filter, hyper_filter
-    ));
+    let env_filter = EnvFilter::new(format!("{default_filter},{sqlx_filter},{hyper_filter}"));
 
     // Ok if successful, Err if already initialized
     // Allows us to setup tracing at the start of several parallel tests

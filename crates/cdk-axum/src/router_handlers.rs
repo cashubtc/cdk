@@ -7,9 +7,9 @@ use cdk::error::ErrorResponse;
 #[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
-    CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MeltBolt11Request,
-    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintBolt11Request, MintBolt11Response,
-    MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response, RestoreRequest, RestoreResponse,
+    CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse,
+    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
     SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
@@ -60,14 +60,10 @@ macro_rules! post_cache_wrapper {
 }
 
 post_cache_wrapper!(post_swap, SwapRequest, SwapResponse);
-post_cache_wrapper!(
-    post_mint_bolt11,
-    MintBolt11Request<Uuid>,
-    MintBolt11Response
-);
+post_cache_wrapper!(post_mint_bolt11, MintRequest<Uuid>, MintResponse);
 post_cache_wrapper!(
     post_melt_bolt11,
-    MeltBolt11Request<Uuid>,
+    MeltRequest<Uuid>,
     MeltQuoteBolt11Response<Uuid>
 );
 
@@ -246,9 +242,9 @@ pub(crate) async fn ws_handler(
     post,
     context_path = "/v1",
     path = "/mint/bolt11",
-    request_body(content = MintBolt11Request<String>, description = "Request params", content_type = "application/json"),
+    request_body(content = MintRequest<String>, description = "Request params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = MintBolt11Response, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MintResponse, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
@@ -256,8 +252,8 @@ pub(crate) async fn ws_handler(
 pub(crate) async fn post_mint_bolt11(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
-    Json(payload): Json<MintBolt11Request<Uuid>>,
-) -> Result<Json<MintBolt11Response>, Response> {
+    Json(payload): Json<MintRequest<Uuid>>,
+) -> Result<Json<MintResponse>, Response> {
     #[cfg(feature = "auth")]
     {
         state
@@ -369,7 +365,7 @@ pub(crate) async fn get_check_melt_bolt11_quote(
     post,
     context_path = "/v1",
     path = "/melt/bolt11",
-    request_body(content = MeltBolt11Request<String>, description = "Melt params", content_type = "application/json"),
+    request_body(content = MeltRequest<String>, description = "Melt params", content_type = "application/json"),
     responses(
         (status = 200, description = "Successful response", body = MeltQuoteBolt11Response<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
@@ -382,7 +378,7 @@ pub(crate) async fn get_check_melt_bolt11_quote(
 pub(crate) async fn post_melt_bolt11(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
-    Json(payload): Json<MeltBolt11Request<Uuid>>,
+    Json(payload): Json<MeltRequest<Uuid>>,
 ) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
     #[cfg(feature = "auth")]
     {

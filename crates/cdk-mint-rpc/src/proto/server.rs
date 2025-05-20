@@ -465,22 +465,29 @@ impl CdkMint for MintRPCServer {
 
         let mut methods = nut04_settings.methods.clone();
 
+        // Create options from the request
+        let options = if let Some(options) = request_inner.options {
+            Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 {
+                description: options.description,
+            })
+        } else if let Some(current_settings) = current_nut04_settings.as_ref() {
+            current_settings.options.clone()
+        } else {
+            None
+        };
+
         let updated_method_settings = MintMethodSettings {
             method: payment_method,
             unit,
             min_amount: request_inner
-                .min
+                .min_amount
                 .map(Amount::from)
                 .or_else(|| current_nut04_settings.as_ref().and_then(|s| s.min_amount)),
             max_amount: request_inner
-                .max
+                .max_amount
                 .map(Amount::from)
                 .or_else(|| current_nut04_settings.as_ref().and_then(|s| s.max_amount)),
-            description: request_inner.description.unwrap_or(
-                current_nut04_settings
-                    .map(|c| c.description)
-                    .unwrap_or_default(),
-            ),
+            options,
         };
 
         methods.push(updated_method_settings);
@@ -529,21 +536,29 @@ impl CdkMint for MintRPCServer {
 
         let mut methods = nut05_settings.methods;
 
+        // Create options from the request
+        let options = if let Some(options) = request_inner.options {
+            Some(cdk::nuts::nut05::MeltMethodOptions::Bolt11 {
+                amountless: options.amountless,
+            })
+        } else if let Some(current_settings) = current_nut05_settings.as_ref() {
+            current_settings.options.clone()
+        } else {
+            None
+        };
+
         let updated_method_settings = MeltMethodSettings {
             method: payment_method,
             unit,
             min_amount: request_inner
-                .min
+                .min_amount
                 .map(Amount::from)
                 .or_else(|| current_nut05_settings.as_ref().and_then(|s| s.min_amount)),
             max_amount: request_inner
-                .max
+                .max_amount
                 .map(Amount::from)
                 .or_else(|| current_nut05_settings.as_ref().and_then(|s| s.max_amount)),
-            amountless: current_nut05_settings
-                .as_ref()
-                .map(|s| s.amountless)
-                .unwrap_or_default(),
+            options,
         };
 
         methods.push(updated_method_settings);

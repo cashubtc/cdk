@@ -33,7 +33,7 @@ impl fmt::Display for Token {
             Self::TokenV4(token) => token.to_string(),
         };
 
-        write!(f, "{}", token)
+        write!(f, "{token}")
     }
 }
 
@@ -309,7 +309,7 @@ impl fmt::Display for TokenV3 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let json_string = serde_json::to_string(self).map_err(|_| fmt::Error)?;
         let encoded = general_purpose::URL_SAFE.encode(json_string);
-        write!(f, "cashuA{}", encoded)
+        write!(f, "cashuA{encoded}")
     }
 }
 
@@ -420,7 +420,7 @@ impl fmt::Display for TokenV4 {
         let mut data = Vec::new();
         ciborium::into_writer(self, &mut data).map_err(|e| fmt::Error::custom(e.to_string()))?;
         let encoded = general_purpose::URL_SAFE.encode(data);
-        write!(f, "cashuB{}", encoded)
+        write!(f, "cashuB{encoded}")
     }
 }
 

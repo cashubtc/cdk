@@ -654,7 +654,7 @@ impl fmt::Display for PaymentMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PaymentMethod::Bolt11 => write!(f, "bolt11"),
-            PaymentMethod::Custom(p) => write!(f, "{}", p),
+            PaymentMethod::Custom(p) => write!(f, "{p}"),
         }
     }
 }

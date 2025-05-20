@@ -309,12 +309,15 @@ pub enum Error {
     /// NUT20 Error
     #[error(transparent)]
     NUT20(#[from] crate::nuts::nut20::Error),
-    /// NUTXX Error
+    /// NUT21 Error
     #[error(transparent)]
     NUT21(#[from] crate::nuts::nut21::Error),
-    /// NUTXX1 Error
+    /// NUT22 Error
     #[error(transparent)]
     NUT22(#[from] crate::nuts::nut22::Error),
+    /// NUT23 Error
+    #[error(transparent)]
+    NUT23(#[from] crate::nuts::nut23::Error),
     /// Database Error
     #[error(transparent)]
     Database(crate::database::Error),
@@ -407,8 +410,7 @@ impl From<Error> for ErrorResponse {
                 ErrorResponse {
                     code: ErrorCode::TransactionUnbalanced,
                     error: Some(format!(
-                        "Inputs: {}, Outputs: {}, expected_fee: {}",
-                        inputs_total, outputs_total, fee_expected,
+                        "Inputs: {inputs_total}, Outputs: {outputs_total}, expected_fee: {fee_expected}",
                     )),
                     detail: Some("Transaction inputs should equal outputs less fee".to_string()),
                 }

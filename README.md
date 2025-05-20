@@ -125,5 +125,5 @@ Please see the [development guide](DEVELOPMENT.md).
 [18]: https://github.com/cashubtc/nuts/blob/main/18.md
 [19]: https://github.com/cashubtc/nuts/blob/main/19.md
 [20]: https://github.com/cashubtc/nuts/blob/main/20.md
-[20]: https://github.com/cashubtc/nuts/blob/main/21.md
-[20]: https://github.com/cashubtc/nuts/blob/main/22.md
+[21]: https://github.com/cashubtc/nuts/blob/main/21.md
+[22]: https://github.com/cashubtc/nuts/blob/main/22.md

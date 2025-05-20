@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::nut01::PublicKey;
+use super::Witness;
 
 /// NUT07 Error
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -49,7 +50,7 @@ impl fmt::Display for State {
             Self::PendingSpent => "PENDING_SPENT",
         };
 
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -89,7 +90,7 @@ pub struct ProofState {
     /// State of proof
     pub state: State,
     /// Witness data if it is supplied
-    pub witness: Option<String>,
+    pub witness: Option<Witness>,
 }
 
 impl From<(PublicKey, State)> for ProofState {

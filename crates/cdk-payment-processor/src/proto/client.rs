@@ -34,7 +34,7 @@ pub struct PaymentProcessorClient {
 impl PaymentProcessorClient {
     /// Payment Processor
     pub async fn new(addr: &str, port: u16, tls_dir: Option<PathBuf>) -> anyhow::Result<Self> {
-        let addr = format!("{}:{}", addr, port);
+        let addr = format!("{addr}:{port}");
         let channel = if let Some(tls_dir) = tls_dir {
             // TLS directory exists, configure TLS
 

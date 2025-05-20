@@ -9,14 +9,14 @@
 //! whether to use real Lightning Network payments (regtest mode) or simulated payments.
 
 use core::panic;
+use std::env;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{char, env};
 
 use bip39::Mnemonic;
-use cashu::{MeltBolt11Request, PreMintSecrets};
+use cashu::{MeltRequest, PreMintSecrets};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, State};
@@ -134,17 +134,18 @@ async fn test_happy_mint_melt_round_trip() {
         .await
         .unwrap();
 
-    assert_eq!(
-        reader
-            .next()
-            .await
-            .unwrap()
-            .unwrap()
-            .to_text()
-            .unwrap()
-            .replace(char::is_whitespace, ""),
-        r#"{"jsonrpc":"2.0","result":{"status":"OK","subId":"test-sub"},"id":2}"#
-    );
+    // Parse both JSON strings to objects and compare them instead of comparing strings directly
+    let binding = reader.next().await.unwrap().unwrap();
+    let response_str = binding.to_text().unwrap();
+
+    let response_json: serde_json::Value =
+        serde_json::from_str(response_str).expect("Valid JSON response");
+    let expected_json: serde_json::Value = serde_json::from_str(
+        r#"{"jsonrpc":"2.0","result":{"status":"OK","subId":"test-sub"},"id":2}"#,
+    )
+    .expect("Valid JSON expected");
+
+    assert_eq!(response_json, expected_json);
 
     let melt_response = wallet.melt(&melt.id).await.unwrap();
     assert!(melt_response.preimage.is_some());
@@ -358,7 +359,7 @@ async fn test_fake_melt_change_in_quote() {
 
     let client = HttpClient::new(get_mint_url_from_env().parse().unwrap(), None);
 
-    let melt_request = MeltBolt11Request::new(
+    let melt_request = MeltRequest::new(
         melt_quote.id.clone(),
         proofs.clone(),
         Some(premint_secrets.blinded_messages()),

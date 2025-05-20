@@ -29,7 +29,7 @@ impl std::fmt::Debug for Info {
         // Use a fallback approach that won't panic
         let mnemonic_display = {
             let hash = sha256::Hash::hash(self.mnemonic.clone().into_bytes().as_ref());
-            format!("<hashed: {}>", hash)
+            format!("<hashed: {hash}>")
         };
 
         f.debug_struct("Info")
@@ -76,7 +76,7 @@ impl std::str::FromStr for LnBackend {
             "lnd" => Ok(LnBackend::Lnd),
             #[cfg(feature = "grpc-processor")]
             "grpcprocessor" => Ok(LnBackend::GrpcProcessor),
-            _ => Err(format!("Unknown Lightning backend: {}", s)),
+            _ => Err(format!("Unknown Lightning backend: {s}")),
         }
     }
 }
@@ -195,7 +195,7 @@ impl std::str::FromStr for DatabaseEngine {
             "sqlite" => Ok(DatabaseEngine::Sqlite),
             #[cfg(feature = "redb")]
             "redb" => Ok(DatabaseEngine::Redb),
-            _ => Err(format!("Unknown database engine: {}", s)),
+            _ => Err(format!("Unknown database engine: {s}")),
         }
     }
 }
