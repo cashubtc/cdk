@@ -15,12 +15,11 @@ use cdk_common::database::MintKeysDatabase;
 use cdk_common::CurrencyUnit;
 #[cfg(feature = "redb")]
 use cdk_redb::MintRedbDatabase;
+use cdk_signatory::{db_signatory, grpc_server};
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
-
-use crate::{db_signatory, grpc_server};
 
 const DEFAULT_WORK_DIR: &str = ".cdk-signatory";
 const ENV_MNEMONIC: &str = "CDK_MINTD_MNEMONIC";
@@ -56,7 +55,7 @@ struct Cli {
 }
 
 /// Main function for the signatory standalone binary
-pub async fn main() -> Result<()> {
+pub async fn cli_main() -> Result<()> {
     let args: Cli = Cli::parse();
     let default_filter = args.log_level;
     let supported_units = args
@@ -119,8 +118,7 @@ pub async fn main() -> Result<()> {
                 #[cfg(feature = "redb")]
                 {
                     let redb_path = work_dir.join("cdk-cli.redb");
-                    let db = Arc::new(MintRedbDatabase::new(&redb_path)?);
-                    db
+                    Arc::new(MintRedbDatabase::new(&redb_path)?)
                 }
                 #[cfg(not(feature = "redb"))]
                 {
