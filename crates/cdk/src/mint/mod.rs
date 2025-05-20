@@ -611,7 +611,6 @@ mod tests {
         let signatory = Arc::new(
             cdk_signatory::db_signatory::DbSignatory::new(
                 localstore.clone(),
-                None,
                 config.seed,
                 config.supported_units,
                 HashMap::new(),

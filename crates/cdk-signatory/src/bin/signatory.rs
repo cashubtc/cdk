@@ -1,3 +1,6 @@
+#[cfg(not(target_arch = "wasm32"))]
+mod cli;
+
 fn main() {
     #[cfg(target_arch = "wasm32")]
     println!("Not supported in wasm32");
@@ -6,7 +9,7 @@ fn main() {
         use tokio::runtime::Runtime;
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
-            cdk_signatory::cli::main().await.unwrap();
+            cli::cli_main().await.unwrap();
         });
     }
 }
