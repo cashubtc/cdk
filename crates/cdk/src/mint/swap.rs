@@ -32,7 +32,7 @@ impl Mint {
         let mut promises = Vec::with_capacity(swap_request.outputs().len());
 
         for blinded_message in swap_request.outputs() {
-            let blinded_signature = self.blind_sign(blinded_message).await?;
+            let blinded_signature = self.blind_sign(blinded_message.clone()).await?;
             promises.push(blinded_signature);
         }
 

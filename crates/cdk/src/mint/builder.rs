@@ -344,15 +344,8 @@ impl MintBuilder {
             signatory.clone()
         } else {
             let seed = self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?;
-            #[cfg(feature = "auth")]
-            let auth_localstore = self.auth_localstore.clone();
-
-            #[cfg(not(feature = "auth"))]
-            let auth_localstore = None;
-
             let in_memory_signatory = cdk_signatory::db_signatory::DbSignatory::new(
                 self.keystore.clone().ok_or(anyhow!("keystore not set"))?,
-                auth_localstore,
                 seed,
                 self.supported_units.clone(),
                 HashMap::new(),

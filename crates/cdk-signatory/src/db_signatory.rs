@@ -6,11 +6,10 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
-use cashu::PublicKey;
 use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
-use cdk_common::{database, Error};
+use cdk_common::{database, Error, PublicKey};
 use tokio::sync::RwLock;
 use tracing::instrument;
 
@@ -26,10 +25,7 @@ use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, Signatory
 pub struct DbSignatory {
     keysets: RwLock<HashMap<Id, (MintKeySetInfo, MintKeySet)>>,
     active_keysets: RwLock<HashMap<CurrencyUnit, Id>>,
-    /// TODO: Merge localstore with auth_localstore (use the same db). It makes sense in CDK but not here.
     localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
-    auth_localstore:
-        Option<Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>>,
     secp_ctx: Secp256k1<secp256k1::All>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     xpriv: Xpriv,
@@ -40,11 +36,8 @@ impl DbSignatory {
     /// Creates a new MemorySignatory instance
     pub async fn new(
         localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
-        auth_localstore: Option<
-            Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>,
-        >,
         seed: &[u8],
-        supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+        mut supported_units: HashMap<CurrencyUnit, (u64, u8)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
@@ -59,29 +52,7 @@ impl DbSignatory {
         )
         .await?;
 
-        if let Some(auth_localstore) = auth_localstore.as_ref() {
-            tracing::info!("Auth enabled creating auth keysets");
-            let derivation_path = match custom_paths.get(&CurrencyUnit::Auth) {
-                Some(path) => path.clone(),
-                None => derivation_path_from_unit(CurrencyUnit::Auth, 0)
-                    .ok_or(Error::UnsupportedUnit)?,
-            };
-
-            let (keyset, keyset_info) = create_new_keyset(
-                &secp_ctx,
-                xpriv,
-                derivation_path,
-                Some(0),
-                CurrencyUnit::Auth,
-                1,
-                0,
-            );
-
-            let id = keyset_info.id;
-            auth_localstore.add_keyset_info(keyset_info).await?;
-            auth_localstore.set_active_keyset(id).await?;
-            active_keysets.insert(id, keyset);
-        }
+        supported_units.entry(CurrencyUnit::Auth).or_insert((0, 1));
 
         // Create new keysets for supported units that aren't covered by the current keysets
         for (unit, (fee, max_order)) in supported_units {
@@ -113,7 +84,6 @@ impl DbSignatory {
         let keys = Self {
             keysets: Default::default(),
             active_keysets: Default::default(),
-            auth_localstore,
             localstore,
             custom_paths,
             xpub: xpriv.to_keypair(&secp_ctx).public_key().into(),
@@ -148,23 +118,6 @@ impl DbSignatory {
                 active_keysets.insert(info.unit.clone(), id);
             }
             keysets.insert(id, (info, keyset));
-        }
-
-        if let Some(auth_db) = self.auth_localstore.clone() {
-            let active_auth_keyset = auth_db.get_active_keyset_id().await?;
-            for mut info in auth_db.get_keyset_infos().await? {
-                let id = info.id;
-                let keyset = self.generate_keyset(&info);
-                if info.unit != CurrencyUnit::Auth {
-                    continue;
-                }
-                info.active = active_auth_keyset == Some(info.id);
-                tracing::info!("Loading auth key from {} {:?}", id, info);
-                if info.active {
-                    active_keysets.insert(info.unit.clone(), id);
-                }
-                keysets.insert(id, (info, keyset));
-            }
         }
 
         Ok(())
@@ -300,8 +253,7 @@ mod test {
 
     use bitcoin::key::Secp256k1;
     use bitcoin::Network;
-    use cashu::{Amount, PublicKey};
-    use cdk_common::MintKeySet;
+    use cdk_common::{Amount, MintKeySet, PublicKey};
 
     use super::*;
 
