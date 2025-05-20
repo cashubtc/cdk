@@ -9,6 +9,7 @@ use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
 use cdk_common::{database, Error};
 use tokio::sync::RwLock;
+use tracing::instrument;
 
 use crate::common::{create_new_keyset, derivation_path_from_unit, init_keysets};
 use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
@@ -183,6 +184,7 @@ impl Signatory for DbSignatory {
         format!("Signatory {}", env!("CARGO_PKG_VERSION"))
     }
 
+    #[instrument(skip_all)]
     async fn blind_sign(
         &self,
         blinded_messages: Vec<BlindedMessage>,
@@ -220,6 +222,7 @@ impl Signatory for DbSignatory {
             .collect::<Result<Vec<_>, _>>()
     }
 
+    #[tracing::instrument(skip_all)]
     async fn verify_proofs(&self, proofs: Vec<Proof>) -> Result<(), Error> {
         let keysets = self.keysets.read().await;
 
@@ -231,6 +234,7 @@ impl Signatory for DbSignatory {
         })
     }
 
+    #[tracing::instrument(skip_all)]
     async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
         Ok(SignatoryKeysets {
             pubkey: self.xpub,

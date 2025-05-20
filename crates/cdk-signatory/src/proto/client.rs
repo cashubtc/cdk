@@ -93,6 +93,7 @@ impl Signatory for SignatoryRpcClient {
         format!("Rpc Signatory {}", self.url)
     }
 
+    #[tracing::instrument(skip_all)]
     async fn blind_sign(&self, request: Vec<BlindedMessage>) -> Result<Vec<BlindSignature>, Error> {
         let req = super::BlindedMessages {
             blinded_messages: request
@@ -117,6 +118,7 @@ impl Signatory for SignatoryRpcClient {
             .map_err(|e| Error::Custom(e.to_string()))?
     }
 
+    #[tracing::instrument(skip_all)]
     async fn verify_proofs(&self, proofs: Vec<Proof>) -> Result<(), Error> {
         let req: super::Proofs = proofs.into();
         self.client
@@ -133,6 +135,7 @@ impl Signatory for SignatoryRpcClient {
             .map_err(|e| Error::Custom(e.to_string()))?
     }
 
+    #[tracing::instrument(skip_all)]
     async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
         self.client
             .clone()
@@ -142,6 +145,7 @@ impl Signatory for SignatoryRpcClient {
             .map_err(|e| Error::Custom(e.to_string()))?
     }
 
+    #[tracing::instrument(skip(self))]
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
         let req: super::RotationRequest = args.into();
         self.client
