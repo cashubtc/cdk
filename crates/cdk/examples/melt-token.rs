@@ -19,7 +19,7 @@ async fn main() -> Result<(), Error> {
     let localstore = memory::empty().await?;
 
     // Generate a random seed for the wallet
-    let seed = rand::thread_rng().gen::<[u8; 32]>();
+    let seed = rand::rng().random::<[u8; 32]>();
 
     // Define the mint URL and currency unit
     let mint_url = "https://fake.thesimplekid.dev";
@@ -61,8 +61,7 @@ async fn main() -> Result<(), Error> {
             .unwrap(),
     )
     .unwrap();
-    let mut random_bytes = [1u8; 32];
-    rand::thread_rng().fill(&mut random_bytes);
+    let random_bytes = rand::rng().random::<[u8; 32]>();
     let payment_hash = sha256::Hash::from_slice(&random_bytes).unwrap();
     let payment_secret = PaymentSecret([42u8; 32]);
     let invoice_to_be_paid = InvoiceBuilder::new(Currency::Bitcoin)

@@ -113,9 +113,8 @@ pub async fn pay_request(
                 let rumor = EventBuilder::new(
                     nostr_sdk::Kind::from_u16(14),
                     serde_json::to_string(&payload)?,
-                    [],
-                );
-
+                )
+                .build(nprofile.public_key);
                 let relays = nprofile.relays;
 
                 for relay in relays.iter() {

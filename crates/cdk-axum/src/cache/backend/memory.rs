@@ -36,7 +36,7 @@ impl HttpCacheStorage for InMemoryHttpCache {
     }
 
     async fn get(&self, key: &HttpCacheKey) -> Option<Vec<u8>> {
-        self.0.get(key)
+        self.0.get(key).await
     }
 
     async fn set(&self, key: HttpCacheKey, value: Vec<u8>) {

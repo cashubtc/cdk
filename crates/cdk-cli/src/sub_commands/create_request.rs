@@ -259,7 +259,7 @@ pub async fn create_request(
         }
 
         client.connect().await;
-        client.subscribe(vec![filter], None).await?;
+        client.subscribe(filter, None).await?;
 
         // Handle subscription notifications with `handle_notifications` method
         client
