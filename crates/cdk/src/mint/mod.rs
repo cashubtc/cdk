@@ -359,7 +359,7 @@ impl Mint {
     }
 
     /// Blind Sign
-    #[instrument(skip_all)]
+    #[tracing::instrument(skip_all)]
     pub async fn blind_sign(
         &self,
         blinded_message: &BlindedMessage,
@@ -372,7 +372,7 @@ impl Mint {
     }
 
     /// Verify [`Proof`] meets conditions and is signed
-    #[instrument(skip_all)]
+    #[tracing::instrument(skip_all)]
     pub async fn verify_proofs(&self, proofs: &Proofs) -> Result<(), Error> {
         proofs
             .iter()

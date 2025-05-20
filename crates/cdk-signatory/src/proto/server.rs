@@ -19,6 +19,7 @@ impl<T> signatory_server::Signatory for CdkSignatoryServer<T>
 where
     T: Signatory + Send + Sync + 'static,
 {
+    #[tracing::instrument(skip_all)]
     async fn blind_sign(
         &self,
         request: Request<proto::BlindedMessages>,
@@ -53,6 +54,7 @@ where
         Ok(Response::new(result))
     }
 
+    #[tracing::instrument(skip_all)]
     async fn verify_proofs(
         &self,
         request: Request<proto::Proofs>,

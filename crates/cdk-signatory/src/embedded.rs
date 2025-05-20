@@ -97,6 +97,7 @@ impl Signatory for Service {
         "Embedded".to_owned()
     }
 
+    #[tracing::instrument(skip_all)]
     async fn blind_sign(
         &self,
         blinded_messages: Vec<BlindedMessage>,
@@ -110,6 +111,7 @@ impl Signatory for Service {
         rx.await.map_err(|e| Error::RecvError(e.to_string()))?
     }
 
+    #[tracing::instrument(skip_all)]
     async fn verify_proofs(&self, proofs: Vec<Proof>) -> Result<(), Error> {
         let (tx, rx) = oneshot::channel();
         self.pipeline
@@ -120,6 +122,7 @@ impl Signatory for Service {
         rx.await.map_err(|e| Error::RecvError(e.to_string()))?
     }
 
+    #[tracing::instrument(skip_all)]
     async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
         let (tx, rx) = oneshot::channel();
         self.pipeline
@@ -130,6 +133,7 @@ impl Signatory for Service {
         rx.await.map_err(|e| Error::RecvError(e.to_string()))?
     }
 
+    #[tracing::instrument(skip(self))]
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
         let (tx, rx) = oneshot::channel();
         self.pipeline
