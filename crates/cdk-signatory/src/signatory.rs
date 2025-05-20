@@ -63,10 +63,15 @@ pub struct SignatoryKeysets {
 /// This struct is used to represent a keyset and its info, pretty much all the information but the
 /// private key, that will never leave the signatory
 pub struct SignatoryKeySet {
+    /// The keyset Id
     pub id: Id,
+    /// The Currency Unit
     pub unit: CurrencyUnit,
+    /// Whether to set it as active or not
     pub active: bool,
+    /// The list of public keys
     pub keys: Keys,
+    /// Information about the fee per public key
     pub input_fee_ppk: u64,
 }
 
@@ -123,6 +128,8 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
 #[async_trait::async_trait]
 /// Signatory trait
 pub trait Signatory {
+    /// The Signatory implementation name. This may be exposed, so being as discreet as possible is
+    /// advised.
     fn name(&self) -> String;
 
     /// Blind sign a message.

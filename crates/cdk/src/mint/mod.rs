@@ -53,8 +53,8 @@ pub use verification::Verification;
 pub struct Mint {
     /// Signatory backend.
     ///
-    /// It is mainly implemented in the cdk-signatory crate, and it can be embedded in the mint or
-    /// it can be a gRPC client to a remote signatory server.
+    /// It is implemented in the cdk-signatory crate, and it can be embedded in the mint or it can
+    /// be a gRPC client to a remote signatory server.
     pub signatory: Arc<dyn Signatory + Send + Sync>,
     /// Mint Storage backend
     pub localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
