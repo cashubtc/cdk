@@ -9,7 +9,7 @@ use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::{self, MintDatabase, WalletDatabase};
+use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
@@ -56,18 +56,15 @@ impl Debug for DirectMintConnection {
 #[async_trait]
 impl MintConnector for DirectMintConnection {
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
-        self.mint.pubkeys().await.map(|pks| pks.keysets)
+        Ok(self.mint.pubkeys().keysets)
     }
 
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
-        self.mint
-            .keyset(&keyset_id)
-            .await
-            .and_then(|res| res.ok_or(Error::UnknownKeySet))
+        self.mint.keyset(&keyset_id).ok_or(Error::UnknownKeySet)
     }
 
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
-        self.mint.keysets().await
+        Ok(self.mint.keysets())
     }
 
     async fn post_mint_quote(
@@ -173,40 +170,42 @@ pub fn setup_tracing() {
 }
 
 pub async fn create_and_start_test_mint() -> Result<Mint> {
-    let mut mint_builder = MintBuilder::new();
-
     // Read environment variable to determine database type
     let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
 
-    let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
-        match db_type.to_lowercase().as_str() {
-            "sqlite" => {
-                // Create a temporary directory for SQLite database
-                let temp_dir = create_temp_dir("cdk-test-sqlite-mint")?;
-                let path = temp_dir.join("mint.db").to_str().unwrap().to_string();
-                let database = cdk_sqlite::MintSqliteDatabase::new(&path)
+    let mut mint_builder = match db_type.to_lowercase().as_str() {
+        "sqlite" => {
+            // Create a temporary directory for SQLite database
+            let temp_dir = create_temp_dir("cdk-test-sqlite-mint")?;
+            let path = temp_dir.join("mint.db").to_str().unwrap().to_string();
+            let database = Arc::new(
+                cdk_sqlite::MintSqliteDatabase::new(&path)
                     .await
-                    .expect("Could not create sqlite db");
-                Arc::new(database)
-            }
-            "redb" => {
-                // Create a temporary directory for ReDB database
-                let temp_dir = create_temp_dir("cdk-test-redb-mint")?;
-                let path = temp_dir.join("mint.redb");
-                let database = cdk_redb::MintRedbDatabase::new(&path)
-                    .expect("Could not create redb mint database");
-                Arc::new(database)
-            }
-            "memory" => {
-                let database = cdk_sqlite::mint::memory::empty().await?;
-                Arc::new(database)
-            }
-            _ => {
-                bail!("Db type not set")
-            }
-        };
-
-    mint_builder = mint_builder.with_localstore(localstore.clone());
+                    .expect("Could not create sqlite db"),
+            );
+            MintBuilder::new()
+                .with_localstore(database.clone())
+                .with_keystore(database)
+        }
+        "redb" => {
+            // Create a temporary directory for ReDB database
+            let temp_dir = create_temp_dir("cdk-test-redb-mint")?;
+            let path = temp_dir.join("mint.redb");
+            let database = Arc::new(
+                cdk_redb::MintRedbDatabase::new(&path)
+                    .expect("Could not create redb mint database"),
+            );
+            MintBuilder::new()
+                .with_localstore(database.clone())
+                .with_keystore(database)
+        }
+        "memory" => MintBuilder::new()
+            .with_localstore(Arc::new(cdk_sqlite::mint::memory::empty().await?))
+            .with_keystore(Arc::new(cdk_sqlite::mint::memory::empty().await?)),
+        _ => {
+            bail!("Db type not set")
+        }
+    };
 
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
@@ -236,6 +235,12 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         .with_description("pure test mint".to_string())
         .with_urls(vec!["https://aaa".to_string()])
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
+
+    let localstore = mint_builder
+        .localstore
+        .as_ref()
+        .map(|x| x.clone())
+        .expect("localstore");
 
     localstore
         .set_mint_info(mint_builder.mint_info.clone())

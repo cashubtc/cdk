@@ -5,12 +5,13 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::database::{self, MintDatabase};
+use cdk_common::database::{self, MintDatabase, MintKeysDatabase};
 use cdk_common::error::Error;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::Bolt11Settings;
 use cdk_common::{nut21, nut22};
+use cdk_signatory::signatory::Signatory;
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
@@ -34,7 +35,9 @@ pub struct MintBuilder {
     /// Mint Info
     pub mint_info: MintInfo,
     /// Mint Storage backend
-    localstore: Option<Arc<dyn MintDatabase<database::Error> + Send + Sync>>,
+    pub localstore: Option<Arc<dyn MintDatabase<database::Error> + Send + Sync>>,
+    /// Database for the Signatory
+    keystore: Option<Arc<dyn MintKeysDatabase<Err = database::Error> + Send + Sync>>,
     /// Mint Storage backend
     #[cfg(feature = "auth")]
     auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>>,
@@ -47,6 +50,7 @@ pub struct MintBuilder {
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     // protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
     openid_discovery: Option<String>,
+    signatory: Option<Arc<dyn Signatory + Sync + Send + 'static>>,
 }
 
 impl MintBuilder {
@@ -69,12 +73,33 @@ impl MintBuilder {
         builder
     }
 
+    /// Set signatory service
+    pub fn with_signatory(mut self, signatory: Arc<dyn Signatory + Sync + Send + 'static>) -> Self {
+        self.signatory = Some(signatory);
+        self
+    }
+
+    /// Set seed
+    pub fn with_seed(mut self, seed: Vec<u8>) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+
     /// Set localstore
     pub fn with_localstore(
         mut self,
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
     ) -> MintBuilder {
         self.localstore = Some(localstore);
+        self
+    }
+
+    /// Set keystore database
+    pub fn with_keystore(
+        mut self,
+        keystore: Arc<dyn MintKeysDatabase<Err = database::Error> + Send + Sync>,
+    ) -> MintBuilder {
+        self.keystore = Some(keystore);
         self
     }
 
@@ -88,15 +113,9 @@ impl MintBuilder {
         self
     }
 
-    /// Set Openid discovery url    
+    /// Set Openid discovery url
     pub fn with_openid_discovery(mut self, openid_discovery: String) -> Self {
         self.openid_discovery = Some(openid_discovery);
-        self
-    }
-
-    /// Set seed
-    pub fn with_seed(mut self, seed: Vec<u8>) -> Self {
-        self.seed = Some(seed);
         self
     }
 
@@ -319,8 +338,24 @@ impl MintBuilder {
             .localstore
             .clone()
             .ok_or(anyhow!("Localstore not set"))?;
-        let seed = self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?;
         let ln = self.ln.clone().ok_or(anyhow!("Ln backends not set"))?;
+
+        let signatory = if let Some(signatory) = self.signatory.as_ref() {
+            signatory.clone()
+        } else {
+            let seed = self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?;
+            let in_memory_signatory = cdk_signatory::db_signatory::DbSignatory::new(
+                self.keystore.clone().ok_or(anyhow!("keystore not set"))?,
+                seed,
+                self.supported_units.clone(),
+                HashMap::new(),
+            )
+            .await?;
+
+            Arc::new(cdk_signatory::embedded::Service::new(Arc::new(
+                in_memory_signatory,
+            )))
+        };
 
         #[cfg(feature = "auth")]
         if let Some(openid_discovery) = &self.openid_discovery {
@@ -330,12 +365,10 @@ impl MintBuilder {
                 .ok_or(anyhow!("Auth localstore not set"))?;
 
             return Ok(Mint::new_with_auth(
-                seed,
+                signatory,
                 localstore,
                 auth_localstore,
                 ln,
-                self.supported_units.clone(),
-                self.custom_paths.clone(),
                 openid_discovery.clone(),
             )
             .await?);
@@ -348,14 +381,7 @@ impl MintBuilder {
             ));
         }
 
-        Ok(Mint::new(
-            seed,
-            localstore,
-            ln,
-            self.supported_units.clone(),
-            self.custom_paths.clone(),
-        )
-        .await?)
+        Ok(Mint::new(signatory, localstore, ln).await?)
     }
 }
 
