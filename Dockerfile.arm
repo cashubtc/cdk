@@ -1,5 +1,5 @@
 # Use the official NixOS image as the base image
-FROM nixos/nix:latest AS builder
+FROM nixos/nix:latest-arm64 AS builder
 
 # Set the working directory
 WORKDIR /usr/src/app
