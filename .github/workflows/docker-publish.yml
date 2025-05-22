@@ -39,6 +39,7 @@ jobs:
             type=ref,event=pr
             type=sha
             ${{ github.event.inputs.tag != '' && github.event.inputs.tag || '' }}
+
       - name: Build and push Docker image ARM64
         uses: docker/build-push-action@v5
         with:
@@ -50,6 +51,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
