@@ -34,6 +34,8 @@
         lib = pkgs.lib;
         stdenv = pkgs.stdenv;
         isDarwin = stdenv.isDarwin;
+        isAarch64 = stdenv.isAarch64;
+        
         libsDarwin = with pkgs; lib.optionals isDarwin [
           # Additional darwin specific inputs can be set here
           darwin.apple_sdk.frameworks.Security
@@ -45,7 +47,11 @@
           inherit system overlays;
         };
 
-
+        # ARM-specific hardening disables
+        hardeningDisables = lib.optionals isAarch64 [ 
+          "fortify" 
+          "stackprotector" 
+        ];
 
         # Toolchains
         # latest stable
@@ -90,8 +96,6 @@
         WASMInputs = with pkgs; [
         ];
 
-
-
         craneLib = crane.mkLib pkgs;
         src = craneLib.cleanCargoSource ./.;
 
@@ -99,6 +103,12 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
+          
+          # ARM-specific fixes
+          hardeningDisable = hardeningDisables;
+          
+          # Disable seccomp on ARM
+          __impureHostDeps = lib.optionals isAarch64 [ "/proc/sys/kernel/seccomp" ];
 
           buildInputs = [
             # Add additional build inputs here
@@ -113,8 +123,12 @@
           # MY_CUSTOM_VAR = "some value";
           PROTOC = "${pkgs.protobuf}/bin/protoc";
           PROTOC_INCLUDE = "${pkgs.protobuf}/include";
+          
+          # ARM-specific environment variables
+        } // lib.optionalAttrs isAarch64 {
+          NIX_DONT_SET_RPATH = "1";
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = "${pkgs.stdenv.cc}/bin/${pkgs.stdenv.cc.targetPrefix}cc";
         };
-
 
         craneLibLLvmTools = craneLib.overrideToolchain
           (fenix.packages.${system}.complete.withComponents [
@@ -158,7 +172,6 @@
           src = fileSetForCrate ./crates/cdk-mintd;
         });
 
-
         nativeBuildInputs = with pkgs; [
           #Add additional build inputs here
         ] ++ lib.optionals isDarwin [
@@ -200,7 +213,6 @@
             };
         };
 
-
         packages = {
           inherit cdk-mintd;
           default = cdk-mintd;
@@ -221,6 +233,12 @@
             # pre-commit-checks
             _shellHook = (self.checks.${system}.pre-commit-check.shellHook or "");
 
+            # ARM-specific shell configuration
+            armShellConfig = lib.optionalAttrs isAarch64 {
+              NIX_HARDENING_ENABLE = "";
+              NIXPKGS_ALLOW_UNFREE = "1";
+            };
+
             # devShells
             msrv = pkgs.mkShell ({
               shellHook = "
@@ -229,7 +247,6 @@
               cargo update -p async-compression --precise 0.4.3
               cargo update -p zstd-sys --precise 2.0.8+zstd.1.5.5
               cargo update -p flate2 --precise 1.0.35
-
 
               cargo update -p home --precise 0.5.5
               cargo update -p zerofrom --precise 0.1.5
@@ -243,14 +260,15 @@
               ";
               buildInputs = buildInputs ++ WASMInputs ++ [ msrv_toolchain ];
               inherit nativeBuildInputs;
-            } // envVars);
+              hardeningDisable = hardeningDisables;
+            } // envVars // armShellConfig);
 
             stable = pkgs.mkShell ({
               shellHook = ''${_shellHook}'';
               buildInputs = buildInputs ++ WASMInputs ++ [ stable_toolchain ];
               inherit nativeBuildInputs;
-            } // envVars);
-
+              hardeningDisable = hardeningDisables;
+            } // envVars // armShellConfig);
 
             nightly = pkgs.mkShell ({
               shellHook = ''
@@ -263,7 +281,8 @@
               '';
               buildInputs = buildInputs ++ [ nightly_toolchain ];
               inherit nativeBuildInputs;
-            } // envVars);
+              hardeningDisable = hardeningDisables;
+            } // envVars // armShellConfig);
 
             # Shell with Docker for integration tests
             integration = pkgs.mkShell ({
@@ -283,7 +302,8 @@
                 pkgs.docker-client
               ];
               inherit nativeBuildInputs;
-            } // envVars);
+              hardeningDisable = hardeningDisables;
+            } // envVars // armShellConfig);
 
           in
           {
