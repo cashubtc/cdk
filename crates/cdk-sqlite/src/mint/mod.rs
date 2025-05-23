@@ -6,10 +6,10 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
+use cdk_common::common::{GCSFilter, PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::{
-    self, MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
-    MintSignaturesDatabase,
+    self, MintDatabase, MintFiltersDatabase, MintKeysDatabase, MintProofsDatabase,
+    MintQuotesDatabase, MintSignaturesDatabase,
 };
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
@@ -42,6 +42,189 @@ pub use auth::MintSqliteAuthDatabase;
 #[derive(Debug, Clone)]
 pub struct MintSqliteDatabase {
     pool: Pool<Sqlite>,
+}
+
+#[async_trait]
+impl MintFiltersDatabase for MintSqliteDatabase {
+    type Err = database::Error;
+
+    async fn store_spent_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let res = sqlx::query(
+            r#"
+INSERT INTO spent_filters (keyset_id, content, num_items, inv_false_positive_rate, remainder_bitlength, time)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(keyset_id) DO UPDATE SET
+    content = excluded.content,
+    num_items = excluded.num_items,
+    inv_false_positive_rate = excluded.inv_false_positive_rate,
+    remainder_bitlength = excluded.remainder_bitlength,
+    time = excluded.time;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .bind(filter.content)
+        .bind(filter.num_items as i64)
+        .bind(filter.m as i64)
+        .bind(filter.p as i64)
+        .bind(unix_time() as i64)
+        .execute(&mut *transaction)
+        .await;
+
+        match res {
+            Ok(_) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(())
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not store spent filter");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                Err(Error::from(err).into())
+            }
+        }
+    }
+
+    async fn get_spent_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT content, num_items, inv_false_positive_rate, remainder_bitlength
+FROM spent_filters
+WHERE keyset_id=?;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await;
+
+        match rec {
+            Ok(row) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(Some(GCSFilter {
+                    content: row.try_get("content").map_err(Error::from)?,
+                    num_items: row.try_get("num_items").map_err(Error::from)?,
+                    m: row
+                        .try_get("inv_false_positive_rate")
+                        .map_err(Error::from)?,
+                    p: row.try_get("remainder_bitlength").map_err(Error::from)?,
+                    time: row.try_get("time").map_err(Error::from)?,
+                }))
+            }
+            Err(sqlx::Error::RowNotFound) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(None)
+            }
+            Err(err) => {
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                Err(Error::SQLX(err).into())
+            }
+        }
+    }
+
+    async fn update_spent_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
+        self.store_spent_filter(keyset_id, filter).await
+    }
+
+    async fn store_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let res = sqlx::query(
+            r#"
+INSERT INTO issued_filters (keyset_id, content, num_items, inv_false_positive_rate, remainder_bitlength, time)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(keyset_id) DO UPDATE SET
+    content = excluded.content,
+    num_items = excluded.num_items,
+    inv_false_positive_rate = excluded.inv_false_positive_rate,
+    remainder_bitlength = excluded.remainder_bitlength,
+    time = excluded.time;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .bind(filter.content)
+        .bind(filter.num_items as i64)
+        .bind(filter.m as i64)
+        .bind(filter.p as i64)
+        .bind(unix_time() as i64)
+        .execute(&mut *transaction)
+        .await;
+
+        match res {
+            Ok(_) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(())
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not store issued filter");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                Err(Error::from(err).into())
+            }
+        }
+    }
+
+    async fn get_issued_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT content, num_items, inv_false_positive_rate, remainder_bitlength
+FROM issued_filters
+WHERE keyset_id=?;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await;
+
+        match rec {
+            Ok(row) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(Some(GCSFilter {
+                    content: row.try_get("content").map_err(Error::from)?,
+                    num_items: row.try_get("num_items").map_err(Error::from)?,
+                    m: row
+                        .try_get("inv_false_positive_rate")
+                        .map_err(Error::from)?,
+                    p: row.try_get("remainder_bitlength").map_err(Error::from)?,
+                    time: row.try_get("time").map_err(Error::from)?,
+                }))
+            }
+            Err(sqlx::Error::RowNotFound) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(None)
+            }
+            Err(err) => {
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                Err(Error::SQLX(err).into())
+            }
+        }
+    }
+
+    async fn update_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
+        self.store_issued_filter(keyset_id, filter).await
+    }
 }
 
 impl MintSqliteDatabase {
