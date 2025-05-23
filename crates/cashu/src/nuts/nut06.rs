@@ -446,7 +446,7 @@ impl Nuts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct SupportedSettings {
-    supported: bool,
+    pub supported: bool,
 }
 
 /// Contact Info
