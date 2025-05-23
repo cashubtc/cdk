@@ -7,10 +7,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
+use cdk_common::common::{GCSFilter, PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::{
-    self, MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
-    MintSignaturesDatabase,
+    self, MintDatabase, MintFiltersDatabase, MintKeysDatabase, MintProofsDatabase,
+    MintQuotesDatabase, MintSignaturesDatabase,
 };
 use cdk_common::dhke::hash_to_curve;
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
@@ -57,6 +57,9 @@ const QUOTE_SIGNATURES_TABLE: MultimapTableDefinition<[u8; 16], [u8; 33]> =
 
 const MELT_REQUESTS: TableDefinition<[u8; 16], (&str, &str)> =
     TableDefinition::new("melt_requests");
+
+const SPENT_FILTERS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("spent_filters");
+const ISSUED_FILTERS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("issued_filters");
 
 const DATABASE_VERSION: u32 = 5;
 
@@ -172,6 +175,103 @@ impl MintRedbDatabase {
 
         let db = Database::create(path)?;
         Ok(Self { db: Arc::new(db) })
+    }
+}
+
+#[async_trait]
+impl MintFiltersDatabase for MintRedbDatabase {
+    type Err = database::Error;
+
+    async fn store_spent_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn
+                .open_table(SPENT_FILTERS_TABLE)
+                .map_err(Error::from)?;
+            table
+                .insert(
+                    keyset_id.to_string().as_str(),
+                    serde_json::to_string(&filter)?.as_str(),
+                )
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    async fn get_spent_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(SPENT_FILTERS_TABLE)
+            .map_err(Error::from)?;
+
+        match table
+            .get(keyset_id.to_string().as_str())
+            .map_err(Error::from)?
+        {
+            Some(filter) => Ok(Some(
+                serde_json::from_str(filter.value()).map_err(Error::from)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    async fn update_spent_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
+        self.store_spent_filter(keyset_id, filter).await
+    }
+
+    async fn store_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn
+                .open_table(ISSUED_FILTERS_TABLE)
+                .map_err(Error::from)?;
+            table
+                .insert(
+                    keyset_id.to_string().as_str(),
+                    serde_json::to_string(&filter)?.as_str(),
+                )
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    async fn update_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
+        self.store_issued_filter(keyset_id, filter).await
+    }
+
+    async fn get_issued_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(ISSUED_FILTERS_TABLE)
+            .map_err(Error::from)?;
+
+        match table
+            .get(keyset_id.to_string().as_str())
+            .map_err(Error::from)?
+        {
+            Some(filter) => Ok(Some(
+                serde_json::from_str(filter.value()).map_err(Error::from)?,
+            )),
+            None => Ok(None),
+        }
     }
 }
 

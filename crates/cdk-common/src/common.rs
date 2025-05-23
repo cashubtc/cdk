@@ -178,6 +178,21 @@ impl QuoteTTL {
     }
 }
 
+/// GCS Filter content and parameters
+#[derive(Serialize, Deserialize)]
+pub struct GCSFilter {
+    /// Compressed bytes of the filter
+    pub content: Vec<u8>,
+    /// Number of items in the filter
+    pub num_items: u32,
+    /// Inverse False Positive Rate
+    pub m: u32,
+    /// Bit-length of the remainder for Golomb-coding
+    pub p: u32,
+    /// Unix epoch timestamp of when the filter was generated
+    pub time: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;

@@ -7,7 +7,7 @@ use cashu::MintInfo;
 use uuid::Uuid;
 
 use super::Error;
-use crate::common::{PaymentProcessorKey, QuoteTTL};
+use crate::common::{GCSFilter, PaymentProcessorKey, QuoteTTL};
 use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
 use crate::nuts::{
     BlindSignature, CurrencyUnit, Id, MeltQuoteState, MeltRequest, MintQuoteState, Proof, Proofs,
@@ -42,6 +42,38 @@ pub trait KeysDatabase {
     /// Get [`MintKeySetInfo`]s
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 }
+
+/// Filters Database trait
+#[async_trait]
+pub trait FiltersDatabase {
+    /// Filters Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Store a spent filter identified by keyset_id
+    async fn store_spent_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err>;
+
+    /// Get a spent filter by keyset_id
+    async fn get_spent_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err>;
+
+    /// Update a spent filter identified by keyset_id
+    async fn update_spent_filter(&self, keyset_id: &Id, filter: GCSFilter)
+        -> Result<(), Self::Err>;
+
+    /// Store an issued filter identified by keyset_id
+    async fn store_issued_filter(&self, keyset_id: &Id, filter: GCSFilter)
+        -> Result<(), Self::Err>;
+
+    /// Update an issued filter identified by keyset_id
+    async fn update_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err>;
+
+    /// Get an issued filter by keyset_id
+    async fn get_issued_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err>;
+}
+
 /// Mint Quote Database trait
 #[async_trait]
 pub trait QuotesDatabase {
@@ -176,6 +208,7 @@ pub trait Database<Error>:
     + QuotesDatabase<Err = Error>
     + ProofsDatabase<Err = Error>
     + SignaturesDatabase<Err = Error>
+    + FiltersDatabase<Err = Error>
 {
     /// Set [`MintInfo`]
     async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error>;
