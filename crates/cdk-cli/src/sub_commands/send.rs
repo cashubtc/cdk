@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use cdk::nuts::{Conditions, CurrencyUnit, PublicKey, SpendingConditions};
 use cdk::wallet::types::SendKind;
 use cdk::wallet::{MultiMintWallet, SendMemo, SendOptions};
@@ -8,7 +8,9 @@ use cdk::Amount;
 use clap::Args;
 
 use crate::sub_commands::balance::mint_balances;
-use crate::utils::{check_sufficient_funds, get_number_input, get_wallet_by_index};
+use crate::utils::{
+    check_sufficient_funds, get_number_input, get_wallet_by_index, get_wallet_by_mint_url,
+};
 
 #[derive(Args)]
 pub struct SendSubCommand {
@@ -45,6 +47,9 @@ pub struct SendSubCommand {
     /// Amount willing to overpay to avoid a swap
     #[arg(short, long)]
     tolerance: Option<u64>,
+    /// Mint URL to use for sending
+    #[arg(long)]
+    mint_url: Option<String>,
     /// Currency unit e.g. sat
     #[arg(default_value = "sat")]
     unit: String,
@@ -57,13 +62,27 @@ pub async fn send(
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
     let mints_amounts = mint_balances(multi_mint_wallet, &unit).await?;
 
-    let mint_number: usize = get_number_input("Enter mint number to create token")?;
-
-    let wallet = get_wallet_by_index(multi_mint_wallet, &mints_amounts, mint_number, unit).await?;
+    // Get wallet either by mint URL or by index
+    let wallet = if let Some(mint_url) = &sub_command_args.mint_url {
+        // Use the provided mint URL
+        get_wallet_by_mint_url(multi_mint_wallet, mint_url, unit).await?
+    } else {
+        // Fallback to the index-based selection
+        let mint_number: usize = get_number_input("Enter mint number to create token")?;
+        get_wallet_by_index(multi_mint_wallet, &mints_amounts, mint_number, unit).await?
+    };
 
     let token_amount = Amount::from(get_number_input::<u64>("Enter value of token in sats")?);
 
-    check_sufficient_funds(mints_amounts[mint_number].1, token_amount)?;
+    // Find the mint amount for the selected wallet to check if we have sufficient funds
+    let mint_url = &wallet.mint_url;
+    let mint_amount = mints_amounts
+        .iter()
+        .find(|(url, _)| url == mint_url)
+        .map(|(_, amount)| *amount)
+        .ok_or_else(|| anyhow!("Could not find balance for mint: {}", mint_url))?;
+
+    check_sufficient_funds(mint_amount, token_amount)?;
 
     let conditions = match (&sub_command_args.preimage, &sub_command_args.hash) {
         (Some(_), Some(_)) => {

@@ -10,7 +10,10 @@ use clap::Args;
 use tokio::task::JoinSet;
 
 use crate::sub_commands::balance::mint_balances;
-use crate::utils::{get_number_input, get_user_input, get_wallet_by_index, validate_mint_number};
+use crate::utils::{
+    get_number_input, get_user_input, get_wallet_by_index, get_wallet_by_mint_url,
+    validate_mint_number,
+};
 
 #[derive(Args)]
 pub struct MeltSubCommand {
@@ -18,8 +21,11 @@ pub struct MeltSubCommand {
     #[arg(default_value = "sat")]
     unit: String,
     /// Mpp
-    #[arg(short, long)]
+    #[arg(short, long, conflicts_with = "mint_url")]
     mpp: bool,
+    /// Mint URL to use for melting
+    #[arg(long, conflicts_with = "mpp")]
+    mint_url: Option<String>,
 }
 
 pub async fn pay(
@@ -32,6 +38,31 @@ pub async fn pay(
     let mut mints = vec![];
     let mut mint_amounts = vec![];
     if sub_command_args.mpp {
+        // MPP functionality expects multiple mints, so mint_url flag doesn't fully apply here,
+        // but we can offer to use the specified mint as the first one if provided
+        if let Some(mint_url) = &sub_command_args.mint_url {
+            println!("Using mint URL {mint_url} as the first mint for MPP payment.");
+
+            // Check if the mint exists
+            if let Ok(_wallet) =
+                get_wallet_by_mint_url(multi_mint_wallet, mint_url, unit.clone()).await
+            {
+                // Find the index of this mint in the mints_amounts list
+                if let Some(mint_index) = mints_amounts
+                    .iter()
+                    .position(|(url, _)| url.to_string() == *mint_url)
+                {
+                    mints.push(mint_index);
+                    let melt_amount: u64 =
+                        get_number_input("Enter amount to mint from this mint in sats.")?;
+                    mint_amounts.push(melt_amount);
+                } else {
+                    println!("Warning: Mint URL exists but no balance found. Continuing with manual selection.");
+                }
+            } else {
+                println!("Warning: Could not find wallet for the specified mint URL. Continuing with manual selection.");
+            }
+        }
         loop {
             let mint_number: String =
                 get_user_input("Enter mint number to melt from and -1 when done.")?;
@@ -122,16 +153,28 @@ pub async fn pay(
             bail!("Could not complete all melts");
         }
     } else {
-        let mint_number: usize = get_number_input("Enter mint number to melt from")?;
-
-        let wallet =
+        // Get wallet either by mint URL or by index
+        let wallet = if let Some(mint_url) = &sub_command_args.mint_url {
+            // Use the provided mint URL
+            get_wallet_by_mint_url(multi_mint_wallet, mint_url, unit.clone()).await?
+        } else {
+            // Fallback to the index-based selection
+            let mint_number: usize = get_number_input("Enter mint number to melt from")?;
             get_wallet_by_index(multi_mint_wallet, &mints_amounts, mint_number, unit.clone())
-                .await?;
+                .await?
+        };
+
+        // Find the mint amount for the selected wallet to check available funds
+        let mint_url = &wallet.mint_url;
+        let mint_amount = mints_amounts
+            .iter()
+            .find(|(url, _)| url == mint_url)
+            .map(|(_, amount)| *amount)
+            .ok_or_else(|| anyhow::anyhow!("Could not find balance for mint: {}", mint_url))?;
+
+        let available_funds = <cdk::Amount as Into<u64>>::into(mint_amount) * MSAT_IN_SAT;
 
         let bolt11 = Bolt11Invoice::from_str(&get_user_input("Enter bolt11 invoice request")?)?;
-
-        let available_funds =
-            <cdk::Amount as Into<u64>>::into(mints_amounts[mint_number].1) * MSAT_IN_SAT;
 
         // Determine payment amount and options
         let options = if bolt11.amount_milli_satoshis().is_none() {
