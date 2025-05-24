@@ -44,6 +44,23 @@ pub fn check_sufficient_funds(available: Amount, required: Amount) -> Result<()>
     Ok(())
 }
 
+/// Helper function to get a wallet from the multi-mint wallet by mint URL
+pub async fn get_wallet_by_mint_url(
+    multi_mint_wallet: &MultiMintWallet,
+    mint_url_str: &str,
+    unit: CurrencyUnit,
+) -> Result<cdk::wallet::Wallet> {
+    let mint_url = MintUrl::from_str(mint_url_str)?;
+
+    let wallet_key = WalletKey::new(mint_url.clone(), unit);
+    let wallet = multi_mint_wallet
+        .get_wallet(&wallet_key)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Wallet not found for mint URL: {}", mint_url_str))?;
+
+    Ok(wallet.clone())
+}
+
 /// Helper function to get a wallet from the multi-mint wallet
 pub async fn get_wallet_by_index(
     multi_mint_wallet: &MultiMintWallet,
