@@ -373,7 +373,7 @@ impl Mint {
 
     /// Recomputes the GCS filters for the Mint's keysets.
     // TODO: Mechanism to only recompute GCS filter when necessary (when new entries in a keyset)
-    pub async fn gcs_filters_background_task(&self, shutdown: Arc<Notify>) -> () {
+    pub async fn gcs_filters_background_task(&self, shutdown: Arc<Notify>) {
         tokio::select! {
             _ = shutdown.notified() => {
                 tracing::info!("Shutdown signal received, stopping GCS recompute task");
@@ -383,7 +383,7 @@ impl Mint {
                 loop {
                     let lock_guard = self.keysets.read().await;
                     for (id, _) in (*lock_guard).iter() {
-                        let spent_filter = self.localstore.get_spent_filter(&id).await;
+                        let spent_filter = self.localstore.get_spent_filter(id).await;
 
                         if let Err(e) = spent_filter {
                             tracing::warn!("Failed to get filter for keyset {:?}: {:?}", id, e);
