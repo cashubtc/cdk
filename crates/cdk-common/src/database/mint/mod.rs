@@ -58,20 +58,6 @@ pub trait FiltersDatabase {
     /// Update a spent filter identified by keyset_id
     async fn update_spent_filter(&self, keyset_id: &Id, filter: GCSFilter)
         -> Result<(), Self::Err>;
-
-    /// Store an issued filter identified by keyset_id
-    async fn store_issued_filter(&self, keyset_id: &Id, filter: GCSFilter)
-        -> Result<(), Self::Err>;
-
-    /// Update an issued filter identified by keyset_id
-    async fn update_issued_filter(
-        &self,
-        keyset_id: &Id,
-        filter: GCSFilter,
-    ) -> Result<(), Self::Err>;
-
-    /// Get an issued filter by keyset_id
-    async fn get_issued_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err>;
 }
 
 /// Mint Quote Database trait
