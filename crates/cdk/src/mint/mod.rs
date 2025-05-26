@@ -444,7 +444,8 @@ impl Mint {
                         }
                     }
 
-                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    // TODO: Replace hard-coded value with config
+                    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                 }
             } => {}
         }
