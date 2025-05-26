@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
 #[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
+use cdk::nuts::nut24::GetFilterResponse;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
@@ -547,6 +548,30 @@ pub(crate) async fn post_restore(
     })?;
 
     Ok(Json(restore_response))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    get,
+    context_path = "/v1",
+    path = "/filters/spent/{keyset_id}",
+    params(
+        ("keyset_id" = String, description = "The filter's keyset ID"),
+    ),
+    responses(
+        (status = 200, description = "Successful response", body = GetFilterResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+#[instrument(skip_all)]
+pub(crate) async fn get_spent_filter(
+    State(state): State<MintState>,
+    Path(keyset_id): Path<Id>,
+) -> Result<Json<GetFilterResponse>, Response> {
+    let response = state.mint.get_spent_filter(keyset_id).await.map_err(|err| {
+        tracing::error!("Could not get spent filter for keyset {}: {}", keyset_id, err);
+        into_response(err)
+    })?;
+    Ok(Json(response))
 }
 
 #[instrument(skip_all)]

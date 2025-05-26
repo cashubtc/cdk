@@ -3,12 +3,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use base64::{engine::general_purpose, Engine};
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::nut24::GetFilterResponse;
 use futures::StreamExt;
 #[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
@@ -689,6 +691,22 @@ impl Mint {
         }
 
         Ok(total_redeemed)
+    }
+
+    /// Get spent GCS filter for a specific keyset
+    pub async fn get_spent_filter(&self, keyset_id: Id) -> Result<GetFilterResponse, Error> {
+        match self.localstore.get_spent_filter(&keyset_id).await? {
+            Some(gcs_filter) => {
+                Ok(GetFilterResponse {
+                    n: gcs_filter.num_items,
+                    p: gcs_filter.p,
+                    m: gcs_filter.m,
+                    content: general_purpose::STANDARD.encode(gcs_filter.content),
+                    timestamp: gcs_filter.time, 
+                })
+            },
+            None => Err(Error::NoSuchFilter(keyset_id.to_string()))
+        }
     }
 }
 
