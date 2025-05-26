@@ -577,10 +577,15 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let shutdown = Arc::new(Notify::new());
-    let mint_clone = Arc::clone(&mint);
     tokio::spawn({
         let shutdown = Arc::clone(&shutdown);
+        let mint_clone = Arc::clone(&mint);
         async move { mint_clone.wait_for_paid_invoices(shutdown).await }
+    });
+    tokio::spawn({
+        let shutdown = Arc::clone(&shutdown);
+        let mint_clone = Arc::clone(&mint);
+        async move { mint_clone.gcs_filters_background_task(shutdown).await }
     });
 
     #[cfg(feature = "management-rpc")]

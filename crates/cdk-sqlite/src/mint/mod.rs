@@ -92,7 +92,7 @@ ON CONFLICT(keyset_id) DO UPDATE SET
 
         let rec = sqlx::query(
             r#"
-SELECT content, num_items, inv_false_positive_rate, remainder_bitlength
+SELECT *
 FROM spent_filters
 WHERE keyset_id=?;
         "#,

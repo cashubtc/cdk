@@ -22,6 +22,7 @@ use crate::cdk_payment::{self, MintPayment};
 use crate::dhke::{sign_message, verify_message};
 use crate::error::Error;
 use crate::fees::calculate_fee;
+use crate::gcs::GCSFilter;
 use crate::nuts::*;
 use crate::util::unix_time;
 #[cfg(feature = "auth")]
@@ -365,6 +366,88 @@ impl Mint {
         }
 
         Ok(())
+    }
+
+    /// Recomputes the GCS filters for the Mint's keysets.
+    // TODO: Mechanism to only recompute GCS filter when necessary (when new entries in a keyset)
+    pub async fn gcs_filters_background_task(&self, shutdown: Arc<Notify>) -> () {
+        tokio::select! {
+            _ = shutdown.notified() => {
+                tracing::info!("Shutdown signal received, stopping GCS recompute task");
+
+            }
+            _ = async {
+                loop {
+                    let lock_guard = self.keysets.read().await;
+                    for (id, _) in (*lock_guard).iter() {
+                        let spent_filter = self.localstore.get_spent_filter(&id).await;
+
+                        if let Err(e) = spent_filter {
+                            tracing::warn!("Failed to get filter for keyset {:?}: {:?}", id, e);
+                            continue;
+                        }
+
+                        let proofs = self.localstore.get_proofs_by_keyset_id(id).await;
+                        match proofs {
+                            Err(e) => {
+                                tracing::warn!("Failed to get ecash notes for keyset {:?}: {:?}", id, e);
+                                continue;
+                            },
+                            Ok((proofs, states)) => {
+                                let spent_proofs: Vec<Vec<u8>> = proofs
+                                    .iter()
+                                    .zip(states.iter())
+                                    .filter_map(|(proof, state)| {
+                                        if let Some(state) = state {
+                                            if *state == State::Spent {
+                                                Some(proof.y().unwrap().serialize().to_vec()) // Include the proof if the state is Spent
+                                            } else {
+                                                None // Exclude otherwise
+                                            }
+                                        } else {
+                                            None // Exclude if state is None
+                                        }
+                                    })
+                                    .collect();
+
+                                // TODO: Replace hardcoded values with settings
+                                let p = 19;
+                                let m = 784931;
+
+                                match GCSFilter::create(&spent_proofs, p, m) {
+                                    Err(e) => {
+                                        tracing::warn!("Failed to compute filter for keyset {:?}: {:?}", id, e);
+                                    },
+                                    Ok(compressed_set) => {
+                                        let gcs_filter = cdk_common::common::GCSFilter {
+                                            num_items: compressed_set.len() as u32,
+                                            content: compressed_set,
+                                            m,
+                                            p,
+                                            time: unix_time() as i64,
+                                        };
+                                        if spent_filter.unwrap().is_some() {
+                                            let res = self.localstore.update_spent_filter(id, gcs_filter).await;
+                                            if let Err(e) = res {
+                                                tracing::warn!("Failed to update filter for keyset {:?}: {:?}", id, e);
+                                            }
+                                        } else {
+                                            let res = self.localstore.store_spent_filter(id, gcs_filter).await;
+                                            if let Err(e) = res {
+                                                tracing::warn!("Failed to store filter for keyset {:?}: {:?}", id, e);
+                                            }
+                                        }
+                                        tracing::debug!("Successfully recomputed GCS filter for keyset {:?}", id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                }
+            } => {}
+        }
     }
 
     /// Fee required for proof set
