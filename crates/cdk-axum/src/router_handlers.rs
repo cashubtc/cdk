@@ -567,10 +567,18 @@ pub(crate) async fn get_spent_filter(
     State(state): State<MintState>,
     Path(keyset_id): Path<Id>,
 ) -> Result<Json<GetFilterResponse>, Response> {
-    let response = state.mint.get_spent_filter(keyset_id).await.map_err(|err| {
-        tracing::error!("Could not get spent filter for keyset {}: {}", keyset_id, err);
-        into_response(err)
-    })?;
+    let response = state
+        .mint
+        .get_spent_filter(keyset_id)
+        .await
+        .map_err(|err| {
+            tracing::error!(
+                "Could not get spent filter for keyset {}: {}",
+                keyset_id,
+                err
+            );
+            into_response(err)
+        })?;
     Ok(Json(response))
 }
 
