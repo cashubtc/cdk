@@ -1,10 +1,18 @@
 name: Publish Docker Image ARM
 
-on: [push]
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and publish'
+        required: true
+        default: 'latest'
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: asmogo/cdk-mintd
+  IMAGE_NAME: thesimplekid/cdk-mintd
 
 jobs:
   build-and-push:
