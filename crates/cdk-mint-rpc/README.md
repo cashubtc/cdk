@@ -43,20 +43,8 @@ cdk-mint-cli info
 cdk-mint-cli keysets list
 ```
 
-### Library
 
-```rust
-use cdk_mint_rpc::MintRpcServer;
 
-// Initialize the RPC server
-let server = MintRpcServer::new(
-    mint,           // Your configured CDK mint
-    "127.0.0.1:50051",  // Listen address
-).await?;
-
-// Start the server
-server.serve().await?;
-```
 
 ## License
 
