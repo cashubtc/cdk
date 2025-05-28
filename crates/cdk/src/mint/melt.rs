@@ -701,7 +701,7 @@ impl Mint {
                 for (amount, blinded_message) in amounts.iter().zip(&mut outputs) {
                     blinded_message.amount = *amount;
 
-                    let blinded_signature = self.blind_sign(blinded_message).await?;
+                    let blinded_signature = self.blind_sign(blinded_message.clone()).await?;
                     change_sigs.push(blinded_signature)
                 }
 

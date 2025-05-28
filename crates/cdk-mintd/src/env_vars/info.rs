@@ -22,8 +22,16 @@ impl Info {
             }
         }
 
+        if let Ok(signatory_url) = env::var(ENV_SIGNATORY_URL) {
+            self.signatory_url = Some(signatory_url);
+        }
+
+        if let Ok(signatory_certs) = env::var(ENV_SIGNATORY_CERTS) {
+            self.signatory_certs = Some(signatory_certs);
+        }
+
         if let Ok(mnemonic) = env::var(ENV_MNEMONIC) {
-            self.mnemonic = mnemonic;
+            self.mnemonic = Some(mnemonic);
         }
 
         if let Ok(cache_seconds_str) = env::var(ENV_CACHE_SECONDS) {

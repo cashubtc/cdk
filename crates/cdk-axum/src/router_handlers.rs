@@ -82,12 +82,7 @@ post_cache_wrapper!(
 pub(crate) async fn get_keys(
     State(state): State<MintState>,
 ) -> Result<Json<KeysResponse>, Response> {
-    let pubkeys = state.mint.pubkeys().await.map_err(|err| {
-        tracing::error!("Could not get keys: {}", err);
-        into_response(err)
-    })?;
-
-    Ok(Json(pubkeys))
+    Ok(Json(state.mint.pubkeys()))
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -110,7 +105,7 @@ pub(crate) async fn get_keyset_pubkeys(
     State(state): State<MintState>,
     Path(keyset_id): Path<Id>,
 ) -> Result<Json<KeysResponse>, Response> {
-    let pubkeys = state.mint.keyset_pubkeys(&keyset_id).await.map_err(|err| {
+    let pubkeys = state.mint.keyset_pubkeys(&keyset_id).map_err(|err| {
         tracing::error!("Could not get keyset pubkeys: {}", err);
         into_response(err)
     })?;
@@ -134,12 +129,7 @@ pub(crate) async fn get_keyset_pubkeys(
 pub(crate) async fn get_keysets(
     State(state): State<MintState>,
 ) -> Result<Json<KeysetResponse>, Response> {
-    let keysets = state.mint.keysets().await.map_err(|err| {
-        tracing::error!("Could not get keysets: {}", err);
-        into_response(err)
-    })?;
-
-    Ok(Json(keysets))
+    Ok(Json(state.mint.keysets()))
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(

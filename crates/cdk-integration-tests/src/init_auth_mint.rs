@@ -4,23 +4,25 @@ use std::sync::Arc;
 use anyhow::Result;
 use bip39::Mnemonic;
 use cashu::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
-use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase};
+use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase, MintKeysDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::types::FeeReserve;
 use cdk::wallet::AuthWallet;
 use cdk_fake_wallet::FakeWallet;
 
-pub async fn start_fake_mint_with_auth<D, A>(
+pub async fn start_fake_mint_with_auth<D, A, K>(
     _addr: &str,
     _port: u16,
     openid_discovery: String,
     database: D,
     auth_database: A,
+    key_store: K,
 ) -> Result<()>
 where
     D: MintDatabase<cdk_database::Error> + Send + Sync + 'static,
     A: MintAuthDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
+    K: MintKeysDatabase<Err = cdk_database::Error> + Send + Sync + 'static,
 {
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
@@ -31,7 +33,9 @@ where
 
     let mut mint_builder = MintBuilder::new();
 
-    mint_builder = mint_builder.with_localstore(Arc::new(database));
+    mint_builder = mint_builder
+        .with_localstore(Arc::new(database))
+        .with_keystore(Arc::new(key_store));
 
     mint_builder = mint_builder
         .add_ln_backend(

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
-use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase};
+use cdk::cdk_database::{self, MintAuthDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 // Feature-gated imports
 #[cfg(any(
@@ -107,8 +107,6 @@ async fn main() -> anyhow::Result<()> {
         None => work_dir.join("config.toml"),
     };
 
-    let mut mint_builder = MintBuilder::new();
-
     let mut settings = if config_file_arg.exists() {
         config::Settings::new(Some(config_file_arg))
     } else {
@@ -120,25 +118,28 @@ async fn main() -> anyhow::Result<()> {
     // ENV VARS will take **priority** over those in the config
     let settings = settings.from_env()?;
 
-    let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
-        match settings.database.engine {
-            DatabaseEngine::Sqlite => {
-                let sql_db_path = work_dir.join("cdk-mintd.sqlite");
-                #[cfg(not(feature = "sqlcipher"))]
-                let sqlite_db = MintSqliteDatabase::new(&sql_db_path).await?;
-                #[cfg(feature = "sqlcipher")]
-                let sqlite_db = MintSqliteDatabase::new(&sql_db_path, args.password).await?;
+    let mut mint_builder = match settings.database.engine {
+        DatabaseEngine::Sqlite => {
+            let sql_db_path = work_dir.join("cdk-mintd.sqlite");
+            #[cfg(not(feature = "sqlcipher"))]
+            let sqlite_db = MintSqliteDatabase::new(&sql_db_path).await?;
+            #[cfg(feature = "sqlcipher")]
+            let sqlite_db = MintSqliteDatabase::new(&sql_db_path, args.password).await?;
 
-                Arc::new(sqlite_db)
-            }
-            #[cfg(feature = "redb")]
-            DatabaseEngine::Redb => {
-                let redb_path = work_dir.join("cdk-mintd.redb");
-                Arc::new(MintRedbDatabase::new(&redb_path)?)
-            }
-        };
-
-    mint_builder = mint_builder.with_localstore(localstore);
+            let db = Arc::new(sqlite_db);
+            MintBuilder::new()
+                .with_localstore(db.clone())
+                .with_keystore(db)
+        }
+        #[cfg(feature = "redb")]
+        DatabaseEngine::Redb => {
+            let redb_path = work_dir.join("cdk-mintd.redb");
+            let db = Arc::new(MintRedbDatabase::new(&redb_path)?);
+            MintBuilder::new()
+                .with_localstore(db.clone())
+                .with_keystore(db)
+        }
+    };
 
     let mut contact_info: Option<Vec<ContactInfo>> = None;
 
@@ -361,13 +362,31 @@ async fn main() -> anyhow::Result<()> {
         mint_builder = mint_builder.with_tos_url(tos_url.to_string());
     }
 
-    let mnemonic = Mnemonic::from_str(&settings.info.mnemonic)?;
-
     mint_builder = mint_builder
         .with_name(settings.mint_info.name)
         .with_version(mint_version)
-        .with_description(settings.mint_info.description)
-        .with_seed(mnemonic.to_seed_normalized("").to_vec());
+        .with_description(settings.mint_info.description);
+
+    mint_builder = if let Some(signatory_url) = settings.info.signatory_url {
+        tracing::info!(
+            "Connecting to remote signatory to {} with certs {:?}",
+            signatory_url,
+            settings.info.signatory_certs
+        );
+        mint_builder.with_signatory(Arc::new(
+            cdk_signatory::SignatoryRpcClient::new(signatory_url, settings.info.signatory_certs)
+                .await?,
+        ))
+    } else if let Some(mnemonic) = settings
+        .info
+        .mnemonic
+        .map(|s| Mnemonic::from_str(&s))
+        .transpose()?
+    {
+        mint_builder.with_seed(mnemonic.to_seed_normalized("").to_vec())
+    } else {
+        bail!("No seed nor remote signatory set");
+    };
 
     let cached_endpoints = vec![
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::MintBolt11),

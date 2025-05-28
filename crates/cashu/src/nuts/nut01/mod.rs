@@ -91,6 +91,14 @@ impl<'de> Deserialize<'de> for Keys {
     }
 }
 
+impl Deref for Keys {
+    type Target = BTreeMap<Amount, PublicKey>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl From<MintKeys> for Keys {
     fn from(keys: MintKeys) -> Self {
         Self(

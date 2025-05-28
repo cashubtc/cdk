@@ -12,7 +12,7 @@ use super::*;
 use crate::mint::MintKeySetInfo;
 
 #[inline]
-async fn setup_keyset<E: Debug, DB: Database<E>>(db: &DB) -> Id {
+async fn setup_keyset<E: Debug, DB: Database<E> + KeysDatabase<Err = E>>(db: &DB) -> Id {
     let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
     let keyset_info = MintKeySetInfo {
         id: keyset_id,
@@ -30,7 +30,7 @@ async fn setup_keyset<E: Debug, DB: Database<E>>(db: &DB) -> Id {
 }
 
 /// State transition test
-pub async fn state_transition<E: Debug, DB: Database<E>>(db: DB) {
+pub async fn state_transition<E: Debug, DB: Database<E> + KeysDatabase<Err = E>>(db: DB) {
     let keyset_id = setup_keyset(&db).await;
 
     let proofs = vec![
