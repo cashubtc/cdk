@@ -32,7 +32,7 @@ use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path}
 ))]
 use cdk::nuts::CurrencyUnit;
 use cdk::nuts::{
-    AuthRequired, ContactInfo, MintVersion, PaymentMethod, ProtectedEndpoint, RoutePath,
+    AuthRequired, ContactInfo, Method, MintVersion, PaymentMethod, ProtectedEndpoint, RoutePath,
 };
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
@@ -421,7 +421,7 @@ async fn main() -> anyhow::Result<()> {
         mint_builder = mint_builder.with_auth_localstore(auth_localstore.clone());
 
         let mint_blind_auth_endpoint =
-            ProtectedEndpoint::new(cdk::nuts::Method::Post, RoutePath::MintBlindAuth);
+            ProtectedEndpoint::new(Method::Post, RoutePath::MintBlindAuth);
 
         mint_builder = mint_builder.set_clear_auth_settings(
             auth_settings.openid_discovery,
@@ -437,11 +437,11 @@ async fn main() -> anyhow::Result<()> {
 
         {
             let mint_quote_protected_endpoint = ProtectedEndpoint::new(
-                cdk::nuts::Method::Post,
-                cdk::nuts::RoutePath::MintQuoteBolt11,
+                Method::Post,
+                RoutePath::MintQuoteBolt11,
             );
             let mint_protected_endpoint =
-                ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::MintBolt11);
+                ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11);
             if auth_settings.enabled_mint {
                 protected_endpoints.insert(mint_quote_protected_endpoint, AuthRequired::Blind);
 
@@ -457,11 +457,11 @@ async fn main() -> anyhow::Result<()> {
 
         {
             let melt_quote_protected_endpoint = ProtectedEndpoint::new(
-                cdk::nuts::Method::Post,
-                cdk::nuts::RoutePath::MeltQuoteBolt11,
+                Method::Post,
+                RoutePath::MeltQuoteBolt11,
             );
             let melt_protected_endpoint =
-                ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::MeltBolt11);
+                ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11);
 
             if auth_settings.enabled_melt {
                 protected_endpoints.insert(melt_quote_protected_endpoint, AuthRequired::Blind);
@@ -477,7 +477,7 @@ async fn main() -> anyhow::Result<()> {
 
         {
             let swap_protected_endpoint =
-                ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::Swap);
+                ProtectedEndpoint::new(Method::Post, RoutePath::Swap);
 
             if auth_settings.enabled_swap {
                 protected_endpoints.insert(swap_protected_endpoint, AuthRequired::Blind);
@@ -489,8 +489,8 @@ async fn main() -> anyhow::Result<()> {
 
         {
             let check_mint_protected_endpoint = ProtectedEndpoint::new(
-                cdk::nuts::Method::Get,
-                cdk::nuts::RoutePath::MintQuoteBolt11,
+                Method::Get,
+                RoutePath::MintQuoteBolt11,
             );
 
             if auth_settings.enabled_check_mint_quote {
@@ -503,8 +503,8 @@ async fn main() -> anyhow::Result<()> {
 
         {
             let check_melt_protected_endpoint = ProtectedEndpoint::new(
-                cdk::nuts::Method::Get,
-                cdk::nuts::RoutePath::MeltQuoteBolt11,
+                Method::Get,
+                RoutePath::MeltQuoteBolt11,
             );
 
             if auth_settings.enabled_check_melt_quote {
@@ -517,7 +517,7 @@ async fn main() -> anyhow::Result<()> {
 
         {
             let restore_protected_endpoint =
-                ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::Restore);
+                ProtectedEndpoint::new(Method::Post, RoutePath::Restore);
 
             if auth_settings.enabled_restore {
                 protected_endpoints.insert(restore_protected_endpoint, AuthRequired::Blind);
@@ -529,7 +529,7 @@ async fn main() -> anyhow::Result<()> {
 
         {
             let state_protected_endpoint =
-                ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::Checkstate);
+                ProtectedEndpoint::new(Method::Post, RoutePath::Checkstate);
 
             if auth_settings.enabled_check_proof_state {
                 protected_endpoints.insert(state_protected_endpoint, AuthRequired::Blind);
