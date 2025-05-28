@@ -9,13 +9,8 @@ COPY flake.nix ./flake.nix
 COPY Cargo.toml ./Cargo.toml
 COPY crates ./crates
 
-# Create a nix config file to disable syscall filtering
-RUN echo 'filter-syscalls = false' > /etc/nix/nix.conf && \
-    echo 'experimental-features = nix-command flakes' >> /etc/nix/nix.conf && \
-    echo 'extra-platforms = aarch64-linux' >> /etc/nix/nix.conf
-
 # Start the Nix daemon and develop the environment
-RUN nix develop --extra-experimental-features nix-command --extra-experimental-features flakes --command cargo build --release --bin cdk-mintd --features redis
+RUN nix develop --extra-platforms aarch64-linux --extra-experimental-features nix-command --extra-experimental-features flakes --command cargo build --release --bin cdk-mintd --features redis
 
 # Create a runtime stage
 FROM debian:bookworm-slim
