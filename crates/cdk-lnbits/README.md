@@ -17,19 +17,6 @@ Add this to your `Cargo.toml`:
 cdk-lnbits = "*"
 ```
 
-## Example
-
-```rust
-use cdk_lnbits::LnbitsLightning;
-
-// Initialize LNBits client
-let lnbits = LnbitsLightning::new(
-    "https://legend.lnbits.com",  // LNBits instance URL
-    "your-admin-key",            // Admin key
-    None,                        // Optional invoice read key
-).await?;
-```
-
 ## License
 
 This project is licensed under the [MIT License](../../LICENSE).

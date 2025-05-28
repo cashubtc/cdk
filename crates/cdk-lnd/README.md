@@ -17,18 +17,6 @@ Add this to your `Cargo.toml`:
 cdk-lnd = "*"
 ```
 
-## Example
-
-```rust
-use cdk_lnd::LndLightning;
-
-// Initialize LND client
-let lnd = LndLightning::new(
-    "https://localhost:8080",    // LND REST API endpoint
-    "path/to/tls.cert",         // TLS cert path
-    "path/to/macaroon",         // Macaroon path
-).await?;
-```
 
 ## Minimum Supported Rust Version (MSRV)
 

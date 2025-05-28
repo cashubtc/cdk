@@ -27,14 +27,6 @@ Add this to your `Cargo.toml`:
 cdk-sqlite = "*"
 ```
 
-## Example
-
-```rust
-use cdk_sqlite::wallet::Store;
-
-// Create a new SQLite store
-let store = Store::new("wallet.db").await?;
-```
 
 ## Minimum Supported Rust Version (MSRV)
 

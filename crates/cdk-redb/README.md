@@ -25,17 +25,6 @@ Add this to your `Cargo.toml`:
 cdk-redb = "*"
 ```
 
-## Example
-
-```rust
-use cdk_redb::Store;
-
-// Create a new Redb store
-let store = Store::new("wallet.redb")?;
-
-// Use the store with a CDK wallet or mint
-let wallet = Wallet::new(mint_url, unit, store, &seed, None)?;
-```
 
 ## License
 

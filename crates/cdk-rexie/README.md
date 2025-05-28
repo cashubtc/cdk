@@ -25,17 +25,6 @@ Add this to your `Cargo.toml`:
 cdk-rexie = "*"
 ```
 
-## Example
-
-```rust
-use cdk_rexie::Store;
-
-// Create a new Rexie store
-let store = Store::new("my-wallet").await?;
-
-// Use the store with a CDK wallet
-let wallet = Wallet::new(mint_url, unit, store, &seed, None)?;
-```
 
 ## WASM Support
 
