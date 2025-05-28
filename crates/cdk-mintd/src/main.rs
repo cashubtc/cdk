@@ -181,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
         melt_max: settings.ln.max_melt,
     };
 
-    tracing::debug!("Ln backendd: {:?}", settings.ln.ln_backend);
+    tracing::debug!("Ln backend: {:?}", settings.ln.ln_backend);
 
     match settings.ln.ln_backend {
         #[cfg(feature = "cln")]
@@ -329,7 +329,7 @@ async fn main() -> anyhow::Result<()> {
         }
         LnBackend::None => {
             tracing::error!(
-                "Pyament backend was not set or feature disabled. {:?}",
+                "Payment backend was not set or feature disabled. {:?}",
                 settings.ln.ln_backend
             );
             bail!("Ln backend must be")
