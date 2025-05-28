@@ -28,4 +28,29 @@ impl Wallet {
 
         Ok(transaction)
     }
+
+    /// Revert a transaction
+    pub async fn revert_transaction(&self, id: TransactionId) -> Result<bool, Error> {
+        let tx = self
+            .localstore
+            .get_transaction(id)
+            .await?
+            .ok_or(Error::TransactionNotFound)?;
+
+        if tx.direction != TransactionDirection::Outgoing {
+            return Err(Error::InvalidTransactionDirection);
+        }
+
+        let pending_spent_proofs = self
+            .get_pending_spent_proofs()
+            .await?
+            .into_iter()
+            .filter(|p| match p.y() {
+                Ok(y) => tx.ys.contains(&y),
+                Err(_) => false,
+            })
+            .collect::<Vec<_>>();
+
+        Ok(self.reclaim_unspent(pending_spent_proofs).await.is_ok())
+    }
 }
