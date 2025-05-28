@@ -13,7 +13,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
-        uses: DeterminateSystems/flakehub-cache-action@v9
+        uses: DeterminateSystems/flakehub-cache-action@v1
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Test Nutshell
@@ -34,7 +34,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
-        uses: DeterminateSystems/flakehub-cache-action@v9
+        uses: DeterminateSystems/flakehub-cache-action@v1
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Test Nutshell Wallet
