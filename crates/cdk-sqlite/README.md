@@ -1,11 +1,14 @@
+# CDK SQLite
 
-# Cashu Development Kit SQLite Storage Backend
+[![crates.io](https://img.shields.io/crates/v/cdk-sqlite.svg)](https://crates.io/crates/cdk-sqlite)
+[![Documentation](https://docs.rs/cdk-sqlite/badge.svg)](https://docs.rs/cdk-sqlite)
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/cashubtc/cdk/blob/main/LICENSE)
 
-**ALPHA** This library is in early development, the api will change and should be used with caution.
+**ALPHA** This library is in early development, the API will change and should be used with caution.
 
-cdk-sqlite is the sqlite storage backend for cdk.
+SQLite storage backend implementation for the Cashu Development Kit (CDK).
 
-## Crate Feature Flags
+## Features
 
 The following crate feature flags are available:
 
@@ -15,14 +18,27 @@ The following crate feature flags are available:
 | `mint`      |   Yes   | Enable cashu mint wallet features  |
 | `sqlcipher` |   No    | Enable encrypted database          |
 
-## Implemented [NUTs](https://github.com/cashubtc/nuts/):
+## Installation
 
-See <https://github.com/cashubtc/cdk/blob/main/README.md>
+Add this to your `Cargo.toml`:
 
+```toml
+[dependencies]
+cdk-sqlite = "*"
+```
+
+## Example
+
+```rust
+use cdk_sqlite::wallet::Store;
+
+// Create a new SQLite store
+let store = Store::new("wallet.db").await?;
+```
 
 ## Minimum Supported Rust Version (MSRV)
 
-The `cdk` library should always compile with any combination of features on Rust **1.63.0**.
+This crate supports Rust version **1.63.0** or higher.
 
 To build and test with the MSRV you will need to pin the below dependency versions:
 
@@ -36,4 +52,4 @@ cargo update -p reqwest --precise 0.12.4
 
 ## License
 
-This project is distributed under the MIT software license - see the [LICENSE](../../LICENSE) file for details.
+This project is licensed under the [MIT License](../../LICENSE).
