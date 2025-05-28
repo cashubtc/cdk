@@ -66,7 +66,7 @@ impl Mint {
         let output_keyset_ids: HashSet<Id> = outputs.iter().map(|p| p.keyset_id).collect();
 
         for id in &output_keyset_ids {
-            match self.localstore.get_keyset_info(id).await? {
+            match self.get_keyset_info(id) {
                 Some(keyset) => {
                     if !keyset.active {
                         tracing::debug!(
@@ -114,7 +114,7 @@ impl Mint {
         let inputs_keyset_ids: HashSet<Id> = inputs.iter().map(|p| p.keyset_id).collect();
 
         for id in &inputs_keyset_ids {
-            match self.localstore.get_keyset_info(id).await? {
+            match self.get_keyset_info(id) {
                 Some(keyset) => {
                     keyset_units.insert(keyset.unit);
                 }
@@ -203,9 +203,7 @@ impl Mint {
         let unit = self.verify_inputs_keyset(inputs).await?;
         let amount = inputs.total_amount()?;
 
-        for proof in inputs {
-            self.verify_proof(proof).await?;
-        }
+        self.verify_proofs(inputs.clone()).await?;
 
         Ok(Verification {
             amount,

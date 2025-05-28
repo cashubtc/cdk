@@ -7,13 +7,15 @@ cleanup() {
     echo "Killing the cdk mintd"
     kill -2 $CDK_MINTD_PID
     wait $CDK_MINTD_PID
+    kill -9 $CDK_SIGNATORY_PID
+    wait $CDK_SIGNATORY_PID
 
     echo "Mint binary terminated"
-    
+
     # Remove the temporary directory
     rm -rf "$CDK_ITESTS_DIR"
     echo "Temp directory removed: $CDK_ITESTS_DIR"
-    
+
     # Unset all environment variables
     unset CDK_ITESTS_DIR
     unset CDK_ITESTS_MINT_ADDR
@@ -49,7 +51,7 @@ fi
 echo "Temp directory created: $CDK_ITESTS_DIR"
 export CDK_MINTD_DATABASE="$1"
 
-cargo build -p cdk-integration-tests 
+cargo build -p cdk-integration-tests
 
 
 export CDK_MINTD_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT"
@@ -62,6 +64,14 @@ export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt lugg
 export CDK_MINTD_FAKE_WALLET_FEE_PERCENT="0"
 export CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN="1"
 
+if [ "$2" = "external_signatory" ]; then
+    export CDK_MINTD_SIGNATORY_URL="https://127.0.0.1:15060"
+    export CDK_MINTD_SIGNATORY_CERTS="$CDK_ITESTS_DIR"
+    bash -x `dirname $0`/../crates/cdk-signatory/generate_certs.sh $CDK_ITESTS_DIR
+    cargo run --bin signatory -- -w $CDK_ITESTS_DIR -u "sat" -u "usd"  &
+    export CDK_SIGNATORY_PID=$!
+    sleep 5
+fi
 
 echo "Starting fake mintd"
 cargo run --bin cdk-mintd --features "redb" &
@@ -74,7 +84,7 @@ START_TIME=$(date +%s)
 while true; do
     # Get the current time
     CURRENT_TIME=$(date +%s)
-    
+
     # Calculate the elapsed time
     ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
 

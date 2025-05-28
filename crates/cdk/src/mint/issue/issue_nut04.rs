@@ -309,7 +309,7 @@ impl Mint {
         let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());
 
         for blinded_message in mint_request.outputs.iter() {
-            let blind_signature = self.blind_sign(blinded_message).await?;
+            let blind_signature = self.blind_sign(blinded_message.clone()).await?;
             blind_signatures.push(blind_signature);
         }
 
