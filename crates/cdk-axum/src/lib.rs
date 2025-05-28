@@ -208,7 +208,8 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/melt/bolt11", post(cache_post_melt_bolt11))
         .route("/checkstate", post(post_check))
         .route("/info", get(get_mint_info))
-        .route("/restore", post(post_restore));
+        .route("/restore", post(post_restore))
+        .route("/filters/spent/{keyset_id}", get(get_spent_filter));
 
     let mint_router = Router::new()
         .nest("/v1", v1_router)

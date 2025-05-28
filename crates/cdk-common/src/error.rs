@@ -162,6 +162,9 @@ pub enum Error {
     /// Oidc config not set
     #[error("Oidc client not set")]
     OidcNotSet,
+    /// No filter for keyset
+    #[error("No filter for keyset `{0}`")]
+    NoSuchFilter(String),
 
     // Wallet Errors
     /// P2PK spending conditions not met
