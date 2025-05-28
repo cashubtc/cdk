@@ -251,7 +251,7 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v11
+        uses: DeterminateSystems/nix-installer-action@v17
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Test
