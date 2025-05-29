@@ -234,6 +234,9 @@ pub enum Error {
     /// Invalid transaction id
     #[error("Invalid transaction id")]
     InvalidTransactionId,
+    /// Transaction not found
+    #[error("Transaction not found")]
+    TransactionNotFound,
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),
