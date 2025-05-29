@@ -1,13 +1,18 @@
+//! This module contains the generated gRPC server code for the Signatory service.
 use std::net::SocketAddr;
 use std::path::Path;
 
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_stream::Stream;
 use tonic::metadata::MetadataMap;
+use tonic::transport::server::Connected;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
 
 use crate::proto::{self, signatory_server};
 use crate::signatory::Signatory;
 
+/// The server implementation for the Signatory service.
 pub struct CdkSignatoryServer<S, T>
 where
     S: Signatory + Send + Sync + 'static,
@@ -174,6 +179,22 @@ where
     }
 }
 
+#[async_trait::async_trait]
+pub trait SignatoryLoader<S>: Send + Sync {
+    async fn load_signatory(&self, metadata: &MetadataMap) -> Result<&S, cdk_common::Error>;
+}
+
+#[async_trait::async_trait]
+impl<T> SignatoryLoader<T> for T
+where
+    T: Signatory + Send + Sync + 'static,
+{
+    async fn load_signatory(&self, _metadata: &MetadataMap) -> Result<&T, cdk_common::Error> {
+        Ok(self)
+    }
+}
+
+/// Error type for the gRPC server
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     /// Transport error
@@ -185,7 +206,7 @@ pub enum Error {
 }
 
 /// Runs the signatory server
-pub async fn grpc_server<S, T, I: AsRef<Path>>(
+pub async fn start_grpc_server<S, T, I: AsRef<Path>>(
     signatory_loader: T,
     addr: SocketAddr,
     tls_dir: Option<I>,
@@ -262,6 +283,46 @@ where
             CdkSignatoryServer::new(signatory_loader),
         ))
         .serve(addr)
+        .await?;
+    Ok(())
+}
+
+/// Starts the gRPC signatory server with an incoming stream of connections.
+pub async fn start_grpc_server_with_incoming<T, I, IO, IE>(
+    signatory: T,
+    incoming: I,
+) -> Result<(), Error>
+where
+    T: Signatory + Send + Sync + 'static,
+    I: Stream<Item = Result<IO, IE>>,
+    IO: AsyncRead + AsyncWrite + Connected + Unpin + Send + 'static,
+    IE: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    Server::builder()
+        .add_service(signatory_server::SignatoryServer::new(CdkSignatoryServer {
+            inner: signatory,
+        }))
+        .serve_with_incoming(incoming)
+        .await?;
+    Ok(())
+}
+
+/// Starts the gRPC signatory server with an incoming stream of connections.
+pub async fn start_grpc_server_with_incoming<T, I, IO, IE>(
+    signatory: T,
+    incoming: I,
+) -> Result<(), Error>
+where
+    T: Signatory + Send + Sync + 'static,
+    I: Stream<Item = Result<IO, IE>>,
+    IO: AsyncRead + AsyncWrite + Connected + Unpin + Send + 'static,
+    IE: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    Server::builder()
+        .add_service(signatory_server::SignatoryServer::new(CdkSignatoryServer {
+            inner: signatory,
+        }))
+        .serve_with_incoming(incoming)
         .await?;
     Ok(())
 }
