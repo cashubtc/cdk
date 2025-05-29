@@ -179,21 +179,6 @@ where
     }
 }
 
-#[async_trait::async_trait]
-pub trait SignatoryLoader<S>: Send + Sync {
-    async fn load_signatory(&self, metadata: &MetadataMap) -> Result<&S, cdk_common::Error>;
-}
-
-#[async_trait::async_trait]
-impl<T> SignatoryLoader<T> for T
-where
-    T: Signatory + Send + Sync + 'static,
-{
-    async fn load_signatory(&self, _metadata: &MetadataMap) -> Result<&T, cdk_common::Error> {
-        Ok(self)
-    }
-}
-
 /// Error type for the gRPC server
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -288,40 +273,21 @@ where
 }
 
 /// Starts the gRPC signatory server with an incoming stream of connections.
-pub async fn start_grpc_server_with_incoming<T, I, IO, IE>(
-    signatory: T,
+pub async fn start_grpc_server_with_incoming<S, T, I, IO, IE>(
+    signatory_loader: T,
     incoming: I,
 ) -> Result<(), Error>
 where
-    T: Signatory + Send + Sync + 'static,
+    S: Signatory + Send + Sync + 'static,
+    T: SignatoryLoader<S> + 'static,
     I: Stream<Item = Result<IO, IE>>,
     IO: AsyncRead + AsyncWrite + Connected + Unpin + Send + 'static,
     IE: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     Server::builder()
-        .add_service(signatory_server::SignatoryServer::new(CdkSignatoryServer {
-            inner: signatory,
-        }))
-        .serve_with_incoming(incoming)
-        .await?;
-    Ok(())
-}
-
-/// Starts the gRPC signatory server with an incoming stream of connections.
-pub async fn start_grpc_server_with_incoming<T, I, IO, IE>(
-    signatory: T,
-    incoming: I,
-) -> Result<(), Error>
-where
-    T: Signatory + Send + Sync + 'static,
-    I: Stream<Item = Result<IO, IE>>,
-    IO: AsyncRead + AsyncWrite + Connected + Unpin + Send + 'static,
-    IE: Into<Box<dyn std::error::Error + Send + Sync>>,
-{
-    Server::builder()
-        .add_service(signatory_server::SignatoryServer::new(CdkSignatoryServer {
-            inner: signatory,
-        }))
+        .add_service(signatory_server::SignatoryServer::new(
+            CdkSignatoryServer::new(signatory_loader),
+        ))
         .serve_with_incoming(incoming)
         .await?;
     Ok(())
