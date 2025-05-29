@@ -4,20 +4,11 @@
 [![Documentation](https://docs.rs/cdk-common/badge.svg)](https://docs.rs/cdk-common)
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/cashubtc/cdk/blob/main/LICENSE)
 
-Common types, traits, and utilities for the Cashu Development Kit (CDK).
+**ALPHA** This library is in early development, the API will change and should be used with caution.
 
-## Overview
+Common types and utilities shared across the Cashu Development Kit (CDK) crates.
 
-The `cdk-common` crate provides shared functionality used across the CDK crates. It contains core data structures, error types, and utility functions that are essential for implementing Cashu wallets and mints.
-
-## Features
-
-- **Core Data Types**: Implementations of fundamental Cashu types like `MintUrl`, `ProofInfo`, and `Melted`
-- **Error Handling**: Comprehensive error types for Cashu operations
-- **Database Abstractions**: Traits for database operations used by wallets and mints
-- **NUT Implementations**: Common functionality for Cashu NUTs (Notation, Usage, and Terminology)
-
-## Usage
+## Installation
 
 Add this to your `Cargo.toml`:
 
@@ -26,16 +17,15 @@ Add this to your `Cargo.toml`:
 cdk-common = "*"
 ```
 
-## Components
+## Features
 
-The crate includes several key modules:
+This crate provides common functionality used across CDK crates including:
 
-- **common**: Core data structures used throughout the CDK
-- **database**: Traits for database operations
-- **error**: Error types and handling
-- **mint_url**: Implementation of the MintUrl type
-- **nuts**: Common functionality for Cashu NUTs
+- Common data types and structures
+- Shared traits and interfaces
+- Utility functions
+- Error types
 
 ## License
 
-This project is licensed under the [MIT License](https://github.com/cashubtc/cdk/blob/main/LICENSE).
+This project is licensed under the [MIT License](../../LICENSE).
