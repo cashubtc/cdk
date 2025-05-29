@@ -16,6 +16,7 @@ use cdk_common::CurrencyUnit;
 #[cfg(feature = "redb")]
 use cdk_redb::MintRedbDatabase;
 use cdk_signatory::{db_signatory, start_grpc_server};
+#[cfg(feature = "sqlite")]
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use tracing::Level;
@@ -101,18 +102,25 @@ pub async fn cli_main() -> Result<()> {
     let localstore: Arc<dyn MintKeysDatabase<Err = cdk_common::database::Error> + Send + Sync> =
         match args.engine.as_str() {
             "sqlite" => {
-                let sql_path = work_dir.join("cdk-cli.sqlite");
-                #[cfg(not(feature = "sqlcipher"))]
-                let db = MintSqliteDatabase::new(&sql_path).await?;
-                #[cfg(feature = "sqlcipher")]
-                let db = {
-                    match args.password {
-                        Some(pass) => MintSqliteDatabase::new(&sql_path, pass).await?,
-                        None => bail!("Missing database password"),
-                    }
-                };
+                #[cfg(feature = "sqlite")]
+                {
+                    let sql_path = work_dir.join("cdk-cli.sqlite");
+                    #[cfg(not(feature = "sqlcipher"))]
+                    let db = MintSqliteDatabase::new(&sql_path).await?;
+                    #[cfg(feature = "sqlcipher")]
+                    let db = {
+                        match args.password {
+                            Some(pass) => MintSqliteDatabase::new(&sql_path, pass).await?,
+                            None => bail!("Missing database password"),
+                        }
+                    };
 
-                Arc::new(db)
+                    Arc::new(db)
+                }
+                #[cfg(not(feature = "sqlite"))]
+                {
+                    bail!("sqlite feature not enabled");
+                }
             }
             "redb" => {
                 #[cfg(feature = "redb")]
