@@ -15,7 +15,7 @@ use cdk_common::database::MintKeysDatabase;
 use cdk_common::CurrencyUnit;
 #[cfg(feature = "redb")]
 use cdk_redb::MintRedbDatabase;
-use cdk_signatory::{db_signatory, grpc_server};
+use cdk_signatory::{db_signatory, start_grpc_server};
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
@@ -167,7 +167,7 @@ pub async fn cli_main() -> Result<()> {
 
     let socket_addr = SocketAddr::from_str(&format!("{}:{}", args.listen_addr, args.listen_port))?;
 
-    grpc_server(signatory, socket_addr, certs).await?;
+    start_grpc_server(signatory, socket_addr, certs).await?;
 
     Ok(())
 }
