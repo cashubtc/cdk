@@ -74,7 +74,7 @@ impl Mint {
                             {
                                 tracing::error!(
                                     "Could not process melt request for pending quote: {}",
-                                    melt_request.quote()
+                                    melt_request.quote_id()
                                 );
                                 tracing::error!("{}", err);
                             }
@@ -94,7 +94,7 @@ impl Mint {
                         MeltQuoteState::Pending => {
                             tracing::warn!(
                                 "LN payment pending, proofs are stuck as pending for quote: {}",
-                                melt_request.quote()
+                                melt_request.quote_id()
                             );
                             // Quote is still pending we do not want to do anything
                             // continue to check next quote

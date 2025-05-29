@@ -6,7 +6,6 @@
 
 use std::cmp::max;
 use std::pin::Pin;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -15,13 +14,14 @@ use async_trait::async_trait;
 use axum::Router;
 use cdk_common::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk_common::common::FeeReserve;
-use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
+use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+    self, Bolt11Settings, CreateIncomingPaymentResponse, IncomingPaymentOptions,
+    MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
+    PaymentQuoteResponse, WaitPaymentResponse,
 };
-use cdk_common::util::unix_time;
-use cdk_common::{mint, Bolt11Invoice};
+use cdk_common::util::{hex, unix_time};
+use cdk_common::{ensure_cdk, Bolt11Invoice};
 use error::Error;
 use futures::stream::StreamExt;
 use futures::Stream;
@@ -93,7 +93,7 @@ impl MintPayment for LNbits {
 
     async fn wait_any_incoming_payment(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
         let receiver = self
             .receiver
             .lock()
@@ -125,13 +125,36 @@ impl MintPayment for LNbits {
                     msg_option = receiver.recv() => {
                     match msg_option {
                         Some(msg) => {
-                            let check = lnbits_api.is_invoice_paid(&msg).await;
+                            let check = lnbits_api.get_payment_info(&msg).await;
 
                             match check {
-                                Ok(state) => {
-                                    if state {
-                                        Some((msg, (receiver, lnbits_api, cancel_token, is_active)))
+                                Ok(payment) => {
+                                    if payment.paid {
+                                        match hex::decode(msg.clone()) {
+                                            Ok(decoded) => {
+                                                match decoded.try_into() {
+                                                    Ok(hash) => {
+                                                        let response = WaitPaymentResponse {
+                                                            payment_identifier: PaymentIdentifier::PaymentHash(hash),
+                                                            payment_amount: Amount::from(payment.details.amount as u64),
+                                                            unit: CurrencyUnit::Sat,
+                                                            payment_id: msg.clone()
+                                                        };
+                                                        Some((response, (receiver, lnbits_api, cancel_token, is_active)))
+                                                    },
+                                                    Err(e) => {
+                                                        tracing::error!("Failed to convert payment hash bytes to array: {:?}", e);
+                                                        None
+                                                    }
+                                                }
+                                            },
+                                            Err(e) => {
+                                                tracing::error!("Failed to decode payment hash hex string: {}", e);
+                                                None
+                                            }
+                                        }
                                     } else {
+                                        tracing::warn!("Received payment notification but could not check payment for {}", msg);
                                         None
                                     }
                                 }
@@ -153,149 +176,183 @@ impl MintPayment for LNbits {
 
     async fn get_payment_quote(
         &self,
-        request: &str,
         unit: &CurrencyUnit,
-        options: Option<MeltOptions>,
+        options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         if unit != &CurrencyUnit::Sat {
             return Err(Self::Err::Anyhow(anyhow!("Unsupported unit")));
         }
 
-        let bolt11 = Bolt11Invoice::from_str(request)?;
+        match options {
+            OutgoingPaymentOptions::Bolt11(bolt11_options) => {
+                let amount_msat = match bolt11_options.melt_options {
+                    Some(amount) => {
+                        if matches!(amount, MeltOptions::Mpp { mpp: _ }) {
+                            return Err(payment::Error::UnsupportedPaymentOption);
+                        }
+                        amount.amount_msat()
+                    }
+                    None => bolt11_options
+                        .bolt11
+                        .amount_milli_satoshis()
+                        .ok_or(Error::UnknownInvoiceAmount)?
+                        .into(),
+                };
 
-        let amount_msat = match options {
-            Some(amount) => {
-                if matches!(amount, MeltOptions::Mpp { mpp: _ }) {
-                    return Err(payment::Error::UnsupportedPaymentOption);
-                }
-                amount.amount_msat()
+                let amount = amount_msat / MSAT_IN_SAT.into();
+
+                let relative_fee_reserve =
+                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+
+                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
+
+                let fee = max(relative_fee_reserve, absolute_fee_reserve);
+
+                Ok(PaymentQuoteResponse {
+                    request_lookup_id: PaymentIdentifier::PaymentHash(
+                        *bolt11_options.bolt11.payment_hash().as_ref(),
+                    ),
+                    amount,
+                    fee: fee.into(),
+                    state: MeltQuoteState::Unpaid,
+                    options: None,
+                })
             }
-            None => bolt11
-                .amount_milli_satoshis()
-                .ok_or(Error::UnknownInvoiceAmount)?
-                .into(),
-        };
-
-        let amount = amount_msat / MSAT_IN_SAT.into();
-
-        let relative_fee_reserve =
-            (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
-
-        let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-
-        let fee = max(relative_fee_reserve, absolute_fee_reserve);
-
-        Ok(PaymentQuoteResponse {
-            request_lookup_id: bolt11.payment_hash().to_string(),
-            amount,
-            fee: fee.into(),
-            state: MeltQuoteState::Unpaid,
-        })
+            OutgoingPaymentOptions::Bolt12(_bolt12_options) => {
+                Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
+            }
+        }
     }
 
     async fn make_payment(
         &self,
-        melt_quote: mint::MeltQuote,
-        _partial_msats: Option<Amount>,
-        _max_fee_msats: Option<Amount>,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let pay_response = self
-            .lnbits_api
-            .pay_invoice(&melt_quote.request, None)
-            .await
-            .map_err(|err| {
-                tracing::error!("Could not pay invoice");
-                tracing::error!("{}", err.to_string());
-                Self::Err::Anyhow(anyhow!("Could not pay invoice"))
-            })?;
-
-        let invoice_info = self
-            .lnbits_api
-            .find_invoice(&pay_response.payment_hash)
-            .await
-            .map_err(|err| {
-                tracing::error!("Could not find invoice");
-                tracing::error!("{}", err.to_string());
-                Self::Err::Anyhow(anyhow!("Could not find invoice"))
-            })?;
-
-        let status = match invoice_info.pending {
-            true => MeltQuoteState::Unpaid,
-            false => MeltQuoteState::Paid,
-        };
-
-        let total_spent = Amount::from(
-            (invoice_info
-                .amount
-                .checked_add(invoice_info.fee)
-                .ok_or(Error::AmountOverflow)?)
-            .unsigned_abs(),
+        ensure_cdk!(
+            matches!(unit, CurrencyUnit::Sat),
+            payment::Error::UnsupportedUnit
         );
 
-        Ok(MakePaymentResponse {
-            payment_lookup_id: pay_response.payment_hash,
-            payment_proof: Some(invoice_info.payment_hash),
-            status,
-            total_spent,
-            unit: CurrencyUnit::Sat,
-        })
+        match options {
+            OutgoingPaymentOptions::Bolt11(bolt11_options) => {
+                let pay_response = self
+                    .lnbits_api
+                    .pay_invoice(&bolt11_options.bolt11.to_string(), None)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!("Could not pay invoice");
+                        tracing::error!("{}", err.to_string());
+                        Self::Err::Anyhow(anyhow!("Could not pay invoice"))
+                    })?;
+
+                let invoice_info = self
+                    .lnbits_api
+                    .find_invoice(&pay_response.payment_hash)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!("Could not find invoice");
+                        tracing::error!("{}", err.to_string());
+                        Self::Err::Anyhow(anyhow!("Could not find invoice"))
+                    })?;
+
+                let status = match invoice_info.pending {
+                    true => MeltQuoteState::Unpaid,
+                    false => MeltQuoteState::Paid,
+                };
+
+                let total_spent = Amount::from(
+                    (invoice_info
+                        .amount
+                        .checked_add(invoice_info.fee)
+                        .ok_or(Error::AmountOverflow)?)
+                    .unsigned_abs(),
+                );
+
+                Ok(MakePaymentResponse {
+                    payment_lookup_id: PaymentIdentifier::PaymentHash(
+                        hex::decode(pay_response.payment_hash)
+                            .map_err(|_| Error::InvalidPaymentHash)?
+                            .try_into()
+                            .map_err(|_| Error::InvalidPaymentHash)?,
+                    ),
+                    payment_proof: Some(invoice_info.payment_hash),
+                    status,
+                    total_spent,
+                    unit: CurrencyUnit::Sat,
+                })
+            }
+            OutgoingPaymentOptions::Bolt12(_) => {
+                Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
+            }
+        }
     }
 
     async fn create_incoming_payment_request(
         &self,
-        amount: Amount,
         unit: &CurrencyUnit,
-        description: String,
-        unix_expiry: Option<u64>,
+        options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         if unit != &CurrencyUnit::Sat {
             return Err(Self::Err::Anyhow(anyhow!("Unsupported unit")));
         }
 
-        let time_now = unix_time();
+        match options {
+            IncomingPaymentOptions::Bolt11(bolt11_options) => {
+                let description = bolt11_options.description.unwrap_or_default();
+                let amount = bolt11_options.amount;
+                let unix_expiry = bolt11_options.unix_expiry;
 
-        let expiry = unix_expiry.map(|t| t - time_now);
+                let time_now = unix_time();
+                let expiry = unix_expiry.map(|t| t - time_now);
 
-        let invoice_request = CreateInvoiceRequest {
-            amount: to_unit(amount, unit, &CurrencyUnit::Sat)?.into(),
-            memo: Some(description),
-            unit: unit.to_string(),
-            expiry,
-            webhook: Some(self.webhook_url.clone()),
-            internal: None,
-            out: false,
-        };
+                let invoice_request = CreateInvoiceRequest {
+                    amount: to_unit(amount, unit, &CurrencyUnit::Sat)?.into(),
+                    memo: Some(description),
+                    unit: unit.to_string(),
+                    expiry,
+                    webhook: Some(self.webhook_url.clone()),
+                    internal: None,
+                    out: false,
+                };
 
-        let create_invoice_response = self
-            .lnbits_api
-            .create_invoice(&invoice_request)
-            .await
-            .map_err(|err| {
-                tracing::error!("Could not create invoice");
-                tracing::error!("{}", err.to_string());
-                Self::Err::Anyhow(anyhow!("Could not create invoice"))
-            })?;
+                let create_invoice_response = self
+                    .lnbits_api
+                    .create_invoice(&invoice_request)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!("Could not create invoice");
+                        tracing::error!("{}", err.to_string());
+                        Self::Err::Anyhow(anyhow!("Could not create invoice"))
+                    })?;
 
-        let request: Bolt11Invoice = create_invoice_response
-            .bolt11()
-            .ok_or_else(|| Self::Err::Anyhow(anyhow!("Missing bolt11 invoice")))?
-            .parse()?;
-        let expiry = request.expires_at().map(|t| t.as_secs());
+                let request: Bolt11Invoice = create_invoice_response
+                    .bolt11()
+                    .ok_or_else(|| Self::Err::Anyhow(anyhow!("Missing bolt11 invoice")))?
+                    .parse()?;
+                let expiry = request.expires_at().map(|t| t.as_secs());
 
-        Ok(CreateIncomingPaymentResponse {
-            request_lookup_id: create_invoice_response.payment_hash,
-            request: request.to_string(),
-            expiry,
-        })
+                Ok(CreateIncomingPaymentResponse {
+                    request_lookup_id: PaymentIdentifier::PaymentHash(
+                        *request.payment_hash().as_ref(),
+                    ),
+                    request: request.to_string(),
+                    expiry,
+                })
+            }
+            IncomingPaymentOptions::Bolt12(_) => {
+                Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
+            }
+        }
     }
 
     async fn check_incoming_payment_status(
         &self,
-        payment_hash: &str,
-    ) -> Result<MintQuoteState, Self::Err> {
-        let paid = self
+        payment_hash: &PaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+        let payment = self
             .lnbits_api
-            .is_invoice_paid(payment_hash)
+            .get_payment_info(&payment_hash.to_string())
             .await
             .map_err(|err| {
                 tracing::error!("Could not check invoice status");
@@ -303,21 +360,21 @@ impl MintPayment for LNbits {
                 Self::Err::Anyhow(anyhow!("Could not check invoice status"))
             })?;
 
-        let state = match paid {
-            true => MintQuoteState::Paid,
-            false => MintQuoteState::Unpaid,
-        };
-
-        Ok(state)
+        Ok(vec![WaitPaymentResponse {
+            payment_identifier: payment_hash.clone(),
+            payment_amount: Amount::from(payment.details.amount as u64),
+            unit: CurrencyUnit::Sat,
+            payment_id: payment.details.payment_hash,
+        }])
     }
 
     async fn check_outgoing_payment(
         &self,
-        payment_hash: &str,
+        payment_hash: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err> {
         let payment = self
             .lnbits_api
-            .get_payment_info(payment_hash)
+            .get_payment_info(&payment_hash.to_string())
             .await
             .map_err(|err| {
                 tracing::error!("Could not check invoice status");
@@ -326,7 +383,7 @@ impl MintPayment for LNbits {
             })?;
 
         let pay_response = MakePaymentResponse {
-            payment_lookup_id: payment.details.payment_hash,
+            payment_lookup_id: payment_hash.clone(),
             payment_proof: Some(payment.preimage),
             status: lnbits_to_melt_status(&payment.details.status, payment.details.pending),
             total_spent: Amount::from(

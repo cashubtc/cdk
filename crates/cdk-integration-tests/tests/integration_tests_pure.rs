@@ -830,11 +830,11 @@ async fn test_concurrent_double_spend_melt() {
     let melt_request3 = melt_request.clone();
 
     // Spawn 3 concurrent tasks to process the melt requests
-    let task1 = tokio::spawn(async move { mint_clone1.melt_bolt11(&melt_request).await });
+    let task1 = tokio::spawn(async move { mint_clone1.melt(&melt_request.into()).await });
 
-    let task2 = tokio::spawn(async move { mint_clone2.melt_bolt11(&melt_request2).await });
+    let task2 = tokio::spawn(async move { mint_clone2.melt(&melt_request2.into()).await });
 
-    let task3 = tokio::spawn(async move { mint_clone3.melt_bolt11(&melt_request3).await });
+    let task3 = tokio::spawn(async move { mint_clone3.melt(&melt_request3.into()).await });
 
     // Wait for all tasks to complete
     let results = tokio::try_join!(task1, task2, task3).expect("Tasks failed to complete");
