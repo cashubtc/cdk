@@ -164,8 +164,10 @@ where
     }
 }
 
+/// Trait for loading a signatory instance from gRPC metadata
 #[async_trait::async_trait]
 pub trait SignatoryLoader<S>: Send + Sync {
+    /// Loads the signatory instance based on the provided metadata.
     async fn load_signatory(&self, metadata: &MetadataMap) -> Result<&S, cdk_common::Error>;
 }
 
