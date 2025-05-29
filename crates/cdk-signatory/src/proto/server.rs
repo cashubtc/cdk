@@ -38,7 +38,7 @@ where
         self.loader
             .load_signatory(metadata)
             .await
-            .map_err(|err| Status::internal(err.to_string()))
+            .map_err(|_| Status::internal("Failed to load signatory"))
     }
 }
 
@@ -168,7 +168,7 @@ where
 #[async_trait::async_trait]
 pub trait SignatoryLoader<S>: Send + Sync {
     /// Loads the signatory instance based on the provided metadata.
-    async fn load_signatory(&self, metadata: &MetadataMap) -> Result<&S, cdk_common::Error>;
+    async fn load_signatory(&self, metadata: &MetadataMap) -> Result<&S, ()>;
 }
 
 #[async_trait::async_trait]
@@ -176,7 +176,7 @@ impl<T> SignatoryLoader<T> for T
 where
     T: Signatory + Send + Sync + 'static,
 {
-    async fn load_signatory(&self, _metadata: &MetadataMap) -> Result<&T, cdk_common::Error> {
+    async fn load_signatory(&self, _metadata: &MetadataMap) -> Result<&T, ()> {
         Ok(self)
     }
 }
