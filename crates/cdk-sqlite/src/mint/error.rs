@@ -63,7 +63,7 @@ pub enum Error {
     #[error("Invalid keyset ID")]
     InvalidKeysetId,
     /// Quote already pending
-    #[error("Quote is alreadu pending")]
+    #[error("Quote is already pending")]
     QuotePending,
     /// Parse invoice error
     #[error(transparent)]
