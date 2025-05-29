@@ -1,42 +1,42 @@
+# CDK Mintd
 
-# cdk-mintd
+[![crates.io](https://img.shields.io/crates/v/cdk-mintd.svg)](https://crates.io/crates/cdk-mintd)
+[![Documentation](https://docs.rs/cdk-mintd/badge.svg)](https://docs.rs/cdk-mintd)
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/cashubtc/cdk/blob/main/LICENSE)
 
-## Building from source
+**ALPHA** This library is in early development, the API will change and should be used with caution.
 
-```sh
-  nix develop
+Cashu mint daemon implementation for the Cashu Development Kit (CDK). This binary provides a complete Cashu mint server implementation.
+
+## Installation
+
+From crates.io:
+```bash
+cargo install cdk-mintd
 ```
 
-#### Build
-
-```sh
-  cargo b --bin cdk-mintd -r
+From source:
+```bash
+cargo install --path .
 ```
 
 ## Configuration
 
-### Copy example config to cdk-mintd working directory.
+The mint can be configured through environment variables or a configuration file. See the documentation for available options.
 
-```sh
-  cp ./example.config.toml ~/.cdk-mintd/config.toml
+## Usage
+
+```bash
+# Start the mint with default configuration
+cdk-mintd
+
+# Start with custom config file
+cdk-mintd --config /path/to/config.toml
+
+# Show help
+cdk-mintd --help
 ```
 
-### Edit config file
+## License
 
-```sh
-  vi ~/.cdk-mintd/config.toml
-```
-
-## Running with Docker 
-
-### Build the Docker image
-
-```sh
-  docker build -t cdk-mintd .
-```
-
-### Run the Docker container with the configuration file mapped
-
-```sh
-  docker run -v ~/.cdk-mintd/config.toml:/root/.cdk-mintd/config.toml cdk-mintd
-```
+This project is licensed under the [MIT License](../../LICENSE).

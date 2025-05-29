@@ -35,22 +35,6 @@ The project is split up into several crates in the `crates/` directory:
 
 For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVELOPMENT.md)
 
-### Code Style Guidelines
-
-- **Large Enum Variants**: When an enum variant contains a large type (>100 bytes), box it using `Box<T>` to reduce the overall enum size. This improves memory efficiency, especially for error types.
-
-  ```rust
-  // Instead of this:
-  enum Error {
-      SomeLargeError(LargeType),  // LargeType is >100 bytes
-  }
-  
-  // Do this:
-  enum Error {
-      SomeLargeError(Box<LargeType>),
-  }
-  ```
-
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
 ### Mandatory
@@ -86,10 +70,6 @@ For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVE
 | [21][21] | Clear Authentication | :heavy_check_mark: |
 | [22][22] | Blind Authentication  | :heavy_check_mark: |
 
-
-## Bindings
-
-Experimental JS bindings can be found in the [bindings repository](https://github.com/thesimplekid/cdk-js).
 
 ## License
 
