@@ -1,6 +1,7 @@
 //! This module contains the generated gRPC server code for the Signatory service.
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_stream::Stream;
@@ -34,7 +35,7 @@ where
         }
     }
 
-    async fn load_signatory(&self, metadata: &MetadataMap) -> Result<&S, Status> {
+    async fn load_signatory(&self, metadata: &MetadataMap) -> Result<Arc<S>, Status> {
         self.loader
             .load_signatory(metadata)
             .await
@@ -168,16 +169,16 @@ where
 #[async_trait::async_trait]
 pub trait SignatoryLoader<S>: Send + Sync {
     /// Loads the signatory instance based on the provided metadata.
-    async fn load_signatory(&self, metadata: &MetadataMap) -> Result<&S, ()>;
+    async fn load_signatory(&self, metadata: &MetadataMap) -> Result<Arc<S>, ()>;
 }
 
 #[async_trait::async_trait]
-impl<T> SignatoryLoader<T> for T
+impl<T> SignatoryLoader<T> for Arc<T>
 where
     T: Signatory + Send + Sync + 'static,
 {
-    async fn load_signatory(&self, _metadata: &MetadataMap) -> Result<&T, ()> {
-        Ok(self)
+    async fn load_signatory(&self, _metadata: &MetadataMap) -> Result<Arc<T>, ()> {
+        Ok(self.clone())
     }
 }
 
