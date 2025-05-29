@@ -1,23 +1,31 @@
+# CDK Redb
 
-# Cashu Development Kit Redb Storage Backend
+[![crates.io](https://img.shields.io/crates/v/cdk-redb.svg)](https://crates.io/crates/cdk-redb)
+[![Documentation](https://docs.rs/cdk-redb/badge.svg)](https://docs.rs/cdk-redb)
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/cashubtc/cdk/blob/main/LICENSE)
 
-**ALPHA** This library is in early development, the api will change and should be used with caution.
+**ALPHA** This library is in early development, the API will change and should be used with caution.
 
-cdk-redb is the [redb](https://docs.rs/redb/latest/redb/) storage backend for cdk.
+[Redb](https://github.com/cberner/redb) storage backend implementation for the Cashu Development Kit (CDK).
 
-## Crate Feature Flags
+## Features
 
-The following crate feature flags are available:
+This crate provides a Redb-based storage implementation for:
+- Wallet storage
+- Mint storage
+- Proof tracking
+- Transaction history
 
-| Feature     | Default | Description                        |
-|-------------|:-------:|------------------------------------|
-| `wallet`    |   Yes   | Enable cashu wallet features       |
-| `mint`      |   Yes   | Enable cashu mint wallet features  |
+## Installation
 
-## Implemented [NUTs](https://github.com/cashubtc/nuts/):
+Add this to your `Cargo.toml`:
 
-See <https://github.com/cashubtc/cdk/blob/main/README.md>
+```toml
+[dependencies]
+cdk-redb = "*"
+```
+
 
 ## License
 
-This project is distributed under the MIT software license - see the [LICENSE](../../LICENSE) file for details
+This project is licensed under the [MIT License](../../LICENSE).
