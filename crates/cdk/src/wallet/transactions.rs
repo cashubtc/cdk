@@ -30,7 +30,7 @@ impl Wallet {
     }
 
     /// Revert a transaction
-    pub async fn revert_transaction(&self, id: TransactionId) -> Result<bool, Error> {
+    pub async fn revert_transaction(&self, id: TransactionId) -> Result<(), Error> {
         let tx = self
             .localstore
             .get_transaction(id)
@@ -51,6 +51,7 @@ impl Wallet {
             })
             .collect::<Vec<_>>();
 
-        Ok(self.reclaim_unspent(pending_spent_proofs).await.is_ok())
+        self.reclaim_unspent(pending_spent_proofs).await?;
+        Ok(())
     }
 }
