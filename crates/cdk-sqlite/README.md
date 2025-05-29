@@ -30,7 +30,7 @@ cdk-sqlite = "*"
 
 ## Minimum Supported Rust Version (MSRV)
 
-This crate supports Rust version **1.63.0** or higher.
+This crate supports Rust version **1.75.0** or higher.
 
 To build and test with the MSRV you will need to pin the below dependency versions:
 
