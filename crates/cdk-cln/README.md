@@ -17,18 +17,4 @@ Add this to your `Cargo.toml`:
 cdk-cln = "*"
 ```
 
-## Example
-
-```rust
-use cdk_cln::ClnLightning;
-
-// Initialize CLN client
-let cln = ClnLightning::new(
-    "unix://path/to/lightning-rpc",  // Socket path
-    None,                           // Optional network
-).await?;
-```
-
-## License
-
 This project is licensed under the [MIT License](../../LICENSE).

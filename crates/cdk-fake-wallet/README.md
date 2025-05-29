@@ -17,18 +17,6 @@ Add this to your `Cargo.toml`:
 cdk-fake-wallet = "*"
 ```
 
-## Example
-
-```rust
-use cdk_fake_wallet::FakeWallet;
-
-// Create a new fake wallet instance
-let wallet = FakeWallet::new();
-
-// The wallet will automatically "pay" any invoice
-let paid = wallet.pay_invoice("lnbc...").await?;
-```
-
 ## Warning
 
 This is for testing purposes only. Do not use in production environments.

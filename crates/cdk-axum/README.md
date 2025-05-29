@@ -17,22 +17,6 @@ Add this to your `Cargo.toml`:
 cdk-axum = "*"
 ```
 
-## Example
-
-```rust
-use cdk_axum::MintServer;
-
-// Initialize the mint server
-let mint_server = MintServer::new(
-    mint,           // Your configured CDK mint
-    Some(keysets), // Optional keysets configuration
-    options,       // Server options
-).await?;
-
-// Start the server
-mint_server.serve().await?;
-```
-
 ## License
 
 This project is licensed under the [MIT License](../../LICENSE).
