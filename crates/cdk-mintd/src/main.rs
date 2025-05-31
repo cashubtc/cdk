@@ -210,7 +210,7 @@ async fn setup_database(
         DatabaseEngine::Sqlite => Ok(setup_sqlite_database(work_dir).await?),
         #[cfg(feature = "redb")]
         DatabaseEngine::Redb => {
-            Ok(setup_redb_database(work_dir).await?);
+            Ok(setup_redb_database(work_dir).await?)
         }
     }
 }
