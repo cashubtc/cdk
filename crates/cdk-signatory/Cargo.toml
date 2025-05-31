@@ -5,7 +5,8 @@ edition = "2021"
 description = "CDK signatory default implementation"
 
 [features]
-default = ["grpc"]
+default = ["grpc", "sqlite"]
+sqlite = ["cdk-sqlite"]
 sqlcipher = ["cdk-sqlite/sqlcipher"]
 redb = ["dep:cdk-redb"]
 grpc = ["dep:tonic", "tokio/full", "dep:prost", "dep:tonic-build"]
@@ -13,8 +14,9 @@ grpc = ["dep:tonic", "tokio/full", "dep:prost", "dep:tonic-build"]
 [dependencies]
 async-trait.workspace = true
 bitcoin.workspace = true
-cdk-common = { workspace = true, default-features=false, features = [
-    "mint", "auth",
+cdk-common = { workspace = true, default-features = false, features = [
+    "mint",
+    "auth",
 ] }
 tonic = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
@@ -23,7 +25,7 @@ tracing.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # main.rs dependencies
 anyhow.workspace = true
-cdk-sqlite = { workspace = true, features = ["mint", "auth"] }
+cdk-sqlite = { workspace = true, features = ["mint", "auth"], optional = true }
 cdk-redb = { workspace = true, features = ["mint", "auth"], optional = true }
 clap = { workspace = true }
 bip39.workspace = true
@@ -31,6 +33,7 @@ home.workspace = true
 thiserror.workspace = true
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["full"] }
+tokio-stream.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
