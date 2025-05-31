@@ -2,6 +2,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
+// std
 use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
@@ -9,14 +10,32 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
+// external crates
 use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
+use clap::Parser;
+use tokio::sync::Notify;
+use tower::ServiceBuilder;
+use tower_http::compression::CompressionLayer;
+use tower_http::decompression::RequestDecompressionLayer;
+use tower_http::trace::TraceLayer;
+use tracing_subscriber::EnvFilter;
+#[cfg(feature = "swagger")]
+use utoipa::OpenApi;
+
+// internal crate modules
 use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase};
-use cdk::mint::{MintBuilder, MintMeltLimits};
-// Feature-gated imports
 use cdk::cdk_payment;
 use cdk::cdk_payment::MintPayment;
+use cdk::mint::{MintBuilder, MintMeltLimits};
+#[cfg(any(
+    feature = "cln",
+    feature = "lnbits",
+    feature = "lnd",
+    feature = "fakewallet"
+))]
+use cdk::nuts::CurrencyUnit;
 #[cfg(any(
     feature = "cln",
     feature = "lnbits",
@@ -26,13 +45,6 @@ use cdk::cdk_payment::MintPayment;
 ))]
 use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
-#[cfg(any(
-    feature = "cln",
-    feature = "lnbits",
-    feature = "lnd",
-    feature = "fakewallet"
-))]
-use cdk::nuts::CurrencyUnit;
 use cdk::nuts::{
     AuthRequired, ContactInfo, Method, MintVersion, PaymentMethod, ProtectedEndpoint, RoutePath,
 };
@@ -50,15 +62,6 @@ use cdk_redb::mint::MintRedbAuthDatabase;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
-use clap::Parser;
-use tokio::sync::Notify;
-use tower::ServiceBuilder;
-use tower_http::compression::CompressionLayer;
-use tower_http::decompression::RequestDecompressionLayer;
-use tower_http::trace::TraceLayer;
-use tracing_subscriber::EnvFilter;
-#[cfg(feature = "swagger")]
-use utoipa::OpenApi;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 
