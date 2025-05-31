@@ -167,7 +167,7 @@ pub async fn cli_main() -> Result<()> {
 
     let socket_addr = SocketAddr::from_str(&format!("{}:{}", args.listen_addr, args.listen_port))?;
 
-    start_grpc_server(signatory, socket_addr, certs).await?;
+    start_grpc_server(Arc::new(signatory), socket_addr, certs).await?;
 
     Ok(())
 }
