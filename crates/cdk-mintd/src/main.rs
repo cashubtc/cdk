@@ -86,11 +86,11 @@ compile_error!(
 /// 4. Constructs a `Mint` instance from the configured `MintBuilder`.
 /// 5. Checks and resolves the status of any pending mint and melt quotes.
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let (work_dir, settings, db) = initial_setup().await?;
+async fn main() -> Result<()> {
+    let (work_dir, settings, db, keys_db) = initial_setup().await?;
     let mint_builder = MintBuilder::new()
         .with_localstore(db.clone())
-        .with_keystore(db.clone() as Arc<dyn MintKeysDatabase<Err=cdk_database::Error> + Send + Sync>);
+        .with_keystore(keys_db.clone());
 
     let (mint_builder, ln_routers) = configure_mint_builder(&settings, mint_builder).await?;
 
@@ -121,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
         &work_dir,
         mint_builder_info,
     )
-        .await?;
+    .await?;
 
     // Wait for shutdown signal
     shutdown.notified().await;
@@ -143,7 +143,8 @@ async fn main() -> anyhow::Result<()> {
 async fn initial_setup() -> Result<(
     PathBuf,
     config::Settings,
-    Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>
+    Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
+    Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
 )> {
     setup_tracing();
     let args = CLIArgs::parse();
@@ -151,7 +152,7 @@ async fn initial_setup() -> Result<(
 
     let settings = load_settings(&work_dir, args.config)?;
     let db = setup_database(&settings, &work_dir).await?;
-    Ok((work_dir, settings, db.clone()))
+    Ok((work_dir, settings, db.clone(), db.clone()))
 }
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
@@ -340,7 +341,7 @@ async fn configure_lightning_backend(
                 mint_melt_limits,
                 Arc::new(cln),
             )
-                .await?;
+            .await?;
         }
         #[cfg(feature = "lnbits")]
         LnBackend::LNbits => {
@@ -356,7 +357,7 @@ async fn configure_lightning_backend(
                 mint_melt_limits,
                 Arc::new(lnbits),
             )
-                .await?;
+            .await?;
         }
         #[cfg(feature = "lnd")]
         LnBackend::Lnd => {
@@ -372,7 +373,7 @@ async fn configure_lightning_backend(
                 mint_melt_limits,
                 Arc::new(lnd),
             )
-                .await?;
+            .await?;
         }
         #[cfg(feature = "fakewallet")]
         LnBackend::FakeWallet => {
@@ -391,7 +392,7 @@ async fn configure_lightning_backend(
                     mint_melt_limits,
                     Arc::new(fake),
                 )
-                    .await?;
+                .await?;
             }
         }
         #[cfg(feature = "grpc-processor")]
@@ -420,7 +421,7 @@ async fn configure_lightning_backend(
                     mint_melt_limits,
                     Arc::new(processor),
                 )
-                    .await?;
+                .await?;
             }
         }
         LnBackend::None => {
@@ -441,7 +442,7 @@ async fn configure_backend_for_unit(
     mut mint_builder: MintBuilder,
     unit: CurrencyUnit,
     mint_melt_limits: MintMeltLimits,
-    backend: Arc<dyn MintPayment<Err=cdk_payment::Error> + Send + Sync>,
+    backend: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
 ) -> Result<MintBuilder> {
     mint_builder = mint_builder
         .add_ln_backend(
@@ -479,7 +480,7 @@ async fn configure_signing_method(
                 signatory_url,
                 settings.info.signatory_certs.clone(),
             )
-                .await?,
+            .await?,
         )))
     } else if let Some(mnemonic) = settings
         .info
@@ -512,7 +513,7 @@ async fn setup_authentication(
 ) -> Result<MintBuilder> {
     if let Some(auth_settings) = settings.auth.clone() {
         tracing::info!("Auth settings are defined. {:?}", auth_settings);
-        let auth_localstore: Arc<dyn MintAuthDatabase<Err=cdk_database::Error> + Send + Sync> =
+        let auth_localstore: Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync> =
             match settings.database.engine {
                 DatabaseEngine::Sqlite => {
                     let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
@@ -703,7 +704,7 @@ async fn start_services(
     let rpc_enabled = false;
 
     #[cfg(feature = "management-rpc")]
-    let mut rpc_server_option: Option<cdk_mint_rpc::MintRPCServer> = None;
+    let mut rpc_server_option: Option<MintRPCServer> = None;
     #[cfg(not(feature = "management-rpc"))]
     let rpc_server_option: Option<cdk_mint_rpc::MintRPCServer> = None;
 
