@@ -449,7 +449,7 @@ async fn configure_lightning_backend(
 async fn configure_backend_for_unit(
     settings: &config::Settings,
     mut mint_builder: MintBuilder,
-    unit: CurrencyUnit,
+    unit: cdk::nuts::CurrencyUnit,
     mint_melt_limits: MintMeltLimits,
     backend: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
 ) -> Result<MintBuilder> {
@@ -669,7 +669,7 @@ async fn start_services(
     ln_routers: Vec<Router>,
     work_dir: &Path,
     mint_builder_info: cdk::nuts::MintInfo,
-) -> Result<(Arc<Notify>, Option<MintRPCServer>)> {
+) -> Result<(Arc<Notify>, Option<cdk_mint_rpc::MintRPCServer>)> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
     let cache: HttpCache = settings.info.http_cache.clone().into();
