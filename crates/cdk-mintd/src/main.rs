@@ -14,16 +14,6 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
-use clap::Parser;
-use tokio::sync::Notify;
-use tower::ServiceBuilder;
-use tower_http::compression::CompressionLayer;
-use tower_http::decompression::RequestDecompressionLayer;
-use tower_http::trace::TraceLayer;
-use tracing_subscriber::EnvFilter;
-#[cfg(feature = "swagger")]
-use utoipa::OpenApi;
-
 // internal crate modules
 use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase, MintKeysDatabase};
 use cdk::cdk_payment;
@@ -62,6 +52,15 @@ use cdk_redb::mint::MintRedbAuthDatabase;
 use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
+use clap::Parser;
+use tokio::sync::Notify;
+use tower::ServiceBuilder;
+use tower_http::compression::CompressionLayer;
+use tower_http::decompression::RequestDecompressionLayer;
+use tower_http::trace::TraceLayer;
+use tracing_subscriber::EnvFilter;
+#[cfg(feature = "swagger")]
+use utoipa::OpenApi;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 
