@@ -62,7 +62,7 @@ reserve_fee_min = 4
 # reserve_fee_min=4
 
 # [lnd]
-# address = ""
+# address = "https://domain:port"
 # macaroon_file = ""
 # cert_file = ""
 # fee_percent=0.04
