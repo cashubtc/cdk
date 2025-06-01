@@ -181,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
         melt_max: settings.ln.max_melt,
     };
 
-    tracing::debug!("Ln backendd: {:?}", settings.ln.ln_backend);
+    tracing::debug!("Ln backend: {:?}", settings.ln.ln_backend);
 
     match settings.ln.ln_backend {
         #[cfg(feature = "cln")]
