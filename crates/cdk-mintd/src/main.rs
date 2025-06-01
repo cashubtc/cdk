@@ -87,10 +87,10 @@ compile_error!(
 /// 5. Checks and resolves the status of any pending mint and melt quotes.
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (work_dir, settings, db, keys_db) = initial_setup().await?;
+    let (work_dir, settings, db) = initial_setup().await?;
     let mint_builder = MintBuilder::new()
         .with_localstore(db.clone())
-        .with_keystore(keys_db.clone());
+        .with_keystore(db.clone());
 
     let (mint_builder, ln_routers) = configure_mint_builder(&settings, mint_builder).await?;
 
@@ -137,14 +137,19 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+trait MintCombinedDatabase: MintDatabase<cdk_database::Error> + MintKeysDatabase<Err = cdk_database::Error> {}
+
+// Implement the combined trait
+impl<T> MintCombinedDatabase for T where
+    T: MintDatabase<cdk_database::Error> + MintKeysDatabase<Err = cdk_database::Error> {}
+
 /// Performs the initial setup for the application, including configuring tracing,
 /// parsing CLI arguments, setting up the working directory, loading settings,
 /// and initializing the database connection.
 async fn initial_setup() -> Result<(
     PathBuf,
     config::Settings,
-    Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
-    Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
+    Arc<dyn MintCombinedDatabase + Send + Sync>,
 )> {
     setup_tracing();
     let args = CLIArgs::parse();
@@ -152,7 +157,7 @@ async fn initial_setup() -> Result<(
 
     let settings = load_settings(&work_dir, args.config)?;
     let db = setup_database(&settings, &work_dir).await?;
-    Ok((work_dir, settings, db.clone(), db))
+    Ok((work_dir, settings, db.clone()))
 }
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
@@ -206,7 +211,7 @@ fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<config
 async fn setup_database(
     settings: &config::Settings,
     work_dir: &PathBuf,
-) -> Result<Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>> {
+) -> Result<Arc<dyn MintCombinedDatabase + Send + Sync>> {
     match settings.database.engine {
         DatabaseEngine::Sqlite => Ok(setup_sqlite_database(work_dir).await?),
         #[cfg(feature = "redb")]
@@ -217,14 +222,14 @@ async fn setup_database(
 #[cfg(feature = "redb")]
 async fn setup_redb_database(
     work_dir: &PathBuf,
-) -> Result<Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>> {
+) -> Result<Arc<dyn MintCombinedDatabase + Send + Sync>> {
     let redb_path = work_dir.join("cdk-mintd.redb");
     Ok(Arc::new(MintRedbDatabase::new(&redb_path)?))
 }
 
 async fn setup_sqlite_database(
     work_dir: &Path,
-) -> Result<Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>> {
+) -> Result<Arc<dyn MintCombinedDatabase + Send + Sync>> {
     let sql_db_path = work_dir.join("cdk-mintd.sqlite");
     #[cfg(not(feature = "sqlcipher"))]
     let db = MintSqliteDatabase::new(&sql_db_path).await?;
