@@ -137,11 +137,16 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-trait MintCombinedDatabase: MintDatabase<cdk_database::Error> + MintKeysDatabase<Err = cdk_database::Error> {}
+trait MintCombinedDatabase:
+    MintDatabase<cdk_database::Error> + MintKeysDatabase<Err = cdk_database::Error>
+{
+}
 
 // Implement the combined trait
 impl<T> MintCombinedDatabase for T where
-    T: MintDatabase<cdk_database::Error> + MintKeysDatabase<Err = cdk_database::Error> {}
+    T: MintDatabase<cdk_database::Error> + MintKeysDatabase<Err = cdk_database::Error>
+{
+}
 
 /// Performs the initial setup for the application, including configuring tracing,
 /// parsing CLI arguments, setting up the working directory, loading settings,
