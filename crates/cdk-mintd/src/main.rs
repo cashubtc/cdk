@@ -152,7 +152,7 @@ async fn initial_setup() -> Result<(
 
     let settings = load_settings(&work_dir, args.config)?;
     let db = setup_database(&settings, &work_dir).await?;
-    Ok((work_dir, settings, db.clone(), db.clone()))
+    Ok((work_dir, settings, db.clone(), db))
 }
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
