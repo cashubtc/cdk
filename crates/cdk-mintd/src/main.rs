@@ -25,7 +25,7 @@ use tracing_subscriber::EnvFilter;
 use utoipa::OpenApi;
 
 // internal crate modules
-use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase};
+use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase, MintKeysDatabase};
 use cdk::cdk_payment;
 use cdk::cdk_payment::MintPayment;
 use cdk::mint::{MintBuilder, MintMeltLimits};
@@ -84,13 +84,13 @@ compile_error!(
 /// 2. Configures a `MintBuilder` instance with the local store and keystore based on the database.
 /// 3. Applies additional custom configurations and authentication setup for the `MintBuilder`.
 /// 4. Constructs a `Mint` instance from the configured `MintBuilder`.
-/// 5. Checks and resolves the status of any pending mint and melt quotes to maintain consistency.
+/// 5. Checks and resolves the status of any pending mint and melt quotes.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (work_dir, settings, db) = initial_setup().await?;
+    let (work_dir, settings, db, key_db) = initial_setup().await?;
     let mint_builder = MintBuilder::new()
-        .with_localstore(db.clone())
-        .with_keystore(db.clone());
+        .with_localstore(db)
+        .with_keystore(key_db);
 
     let (mint_builder, ln_routers) = configure_mint_builder(&settings, mint_builder).await?;
 
@@ -144,6 +144,7 @@ async fn initial_setup() -> Result<(
     PathBuf,
     config::Settings,
     Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
+    Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
 )> {
     setup_tracing();
     let args = CLIArgs::parse();
@@ -151,7 +152,7 @@ async fn initial_setup() -> Result<(
 
     let settings = load_settings(&work_dir, args.config)?;
     let db = setup_database(&settings, &work_dir).await?;
-    Ok((work_dir, settings, db))
+    Ok((work_dir, settings, db.clone(), db.clone()))
 }
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
