@@ -33,18 +33,18 @@ use cdk::mint::{MintBuilder, MintMeltLimits};
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
-    feature = "fakewallet"
-))]
-use cdk::nuts::CurrencyUnit;
-#[cfg(any(
-    feature = "cln",
-    feature = "lnbits",
-    feature = "lnd",
     feature = "fakewallet",
     feature = "grpc-processor"
 ))]
 use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
+#[cfg(any(
+    feature = "cln",
+    feature = "lnbits",
+    feature = "lnd",
+    feature = "fakewallet"
+))]
+use cdk::nuts::CurrencyUnit;
 use cdk::nuts::{
     AuthRequired, ContactInfo, Method, MintVersion, PaymentMethod, ProtectedEndpoint, RoutePath,
 };
@@ -90,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
     let (work_dir, settings, db) = initial_setup().await?;
     let mint_builder = MintBuilder::new()
         .with_localstore(db.clone())
-        .with_keystore(db);
+        .with_keystore(db.clone());
 
     let (mint_builder, ln_routers) = configure_mint_builder(&settings, mint_builder).await?;
 
@@ -209,9 +209,7 @@ async fn setup_database(
     match settings.database.engine {
         DatabaseEngine::Sqlite => Ok(setup_sqlite_database(work_dir).await?),
         #[cfg(feature = "redb")]
-        DatabaseEngine::Redb => {
-            Ok(setup_redb_database(work_dir).await?)
-        }
+        DatabaseEngine::Redb => Ok(setup_redb_database(work_dir).await?),
     }
 }
 
