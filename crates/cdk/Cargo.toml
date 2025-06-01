@@ -46,6 +46,11 @@ hex = "0.4.3"
 base64 = "0.22.1"
 murmur3 = "0.5.2"
 
+# -Z minimal-versions
+sync_wrapper = "0.1.2"
+bech32 = "0.9.1"
+arc-swap = "1.7.1"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = [
     "rt-multi-thread",
@@ -54,6 +59,7 @@ tokio = { workspace = true, features = [
     "sync",
 ] }
 getrandom = { version = "0.2" }
+cdk-signatory = { workspace = true, features = ["grpc"] }
 tokio-tungstenite = { workspace = true, features = [
     "rustls",
     "rustls-tls-native-roots",
@@ -62,6 +68,7 @@ tokio-tungstenite = { workspace = true, features = [
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+cdk-signatory = { workspace = true, default-features = false }
 getrandom = { version = "0.2", features = ["js"] }
 
 [[example]]

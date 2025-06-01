@@ -7,7 +7,7 @@ mnemonic = ""
 # enable_swagger_ui = false
 
 [mint_management_rpc]
-# enabled = false
+enabled = false
 # address = "127.0.0.1"
 # port = 8086
 
@@ -43,7 +43,7 @@ tti = 60
 
 [ln]
 # Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits'
-ln_backend = "cln"
+ln_backend = "fakewallet"
 # min_mint=1
 # max_mint=500000
 # min_melt=1
@@ -62,7 +62,7 @@ reserve_fee_min = 4
 # reserve_fee_min=4
 
 # [lnd]
-# address = ""
+# address = "https://domain:port"
 # macaroon_file = ""
 # cert_file = ""
 # fee_percent=0.04

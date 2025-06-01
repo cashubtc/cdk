@@ -92,6 +92,14 @@ pub enum Error {
     #[error("Amountless invoices are not supported for unit `{0}` and method `{1}`")]
     AmountlessInvoiceNotSupported(CurrencyUnit, PaymentMethod),
 
+    /// Internal Error - Send error
+    #[error("Internal send error: {0}")]
+    SendError(String),
+
+    /// Internal Error - Recv error
+    #[error("Internal receive error: {0}")]
+    RecvError(String),
+
     // Mint Errors
     /// Minting is disabled
     #[error("Minting is disabled")]
@@ -229,6 +237,9 @@ pub enum Error {
     /// Invalid transaction id
     #[error("Invalid transaction id")]
     InvalidTransactionId,
+    /// Transaction not found
+    #[error("Transaction not found")]
+    TransactionNotFound,
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),

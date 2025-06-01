@@ -688,7 +688,7 @@ impl CdkMint for MintRPCServer {
 
         let keyset_info = self
             .mint
-            .rotate_next_keyset(
+            .rotate_keyset(
                 unit,
                 request.max_order.map(|a| a as u8).unwrap_or(32),
                 request.input_fee_ppk.unwrap_or(0),

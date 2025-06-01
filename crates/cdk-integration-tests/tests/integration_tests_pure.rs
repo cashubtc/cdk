@@ -8,6 +8,7 @@ use std::assert_eq;
 use std::collections::{HashMap, HashSet};
 use std::hash::RandomState;
 use std::str::FromStr;
+use std::time::Duration;
 
 use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
@@ -24,6 +25,7 @@ use cdk::wallet::{ReceiveOptions, SendMemo, SendOptions};
 use cdk::Amount;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
+use tokio::time::sleep;
 
 /// Tests the token swap and send functionality:
 /// 1. Alice gets funded with 64 sats
@@ -235,15 +237,7 @@ async fn test_mint_double_spend() {
         .await
         .expect("Could not get proofs");
 
-    let keys = mint_bob
-        .pubkeys()
-        .await
-        .unwrap()
-        .keysets
-        .first()
-        .unwrap()
-        .clone()
-        .keys;
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
     let preswap = PreMintSecrets::random(
@@ -300,15 +294,7 @@ async fn test_attempt_to_swap_by_overflowing() {
 
     let amount = 2_u64.pow(63);
 
-    let keys = mint_bob
-        .pubkeys()
-        .await
-        .unwrap()
-        .keysets
-        .first()
-        .unwrap()
-        .clone()
-        .keys;
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
     let pre_mint_amount =
@@ -429,15 +415,7 @@ pub async fn test_p2pk_swap() {
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_swap.blinded_messages());
 
-    let keys = mint_bob
-        .pubkeys()
-        .await
-        .unwrap()
-        .keysets
-        .first()
-        .cloned()
-        .unwrap()
-        .keys;
+    let keys = mint_bob.pubkeys().keysets.first().cloned().unwrap().keys;
 
     let post_swap = mint_bob.process_swap_request(swap_request).await.unwrap();
 
@@ -496,6 +474,8 @@ pub async fn test_p2pk_swap() {
 
     assert!(attempt_swap.is_ok());
 
+    sleep(Duration::from_secs(1)).await;
+
     let mut msgs = HashMap::new();
     while let Ok((sub_id, msg)) = listener.try_recv() {
         assert_eq!(sub_id, "test".into());
@@ -509,10 +489,16 @@ pub async fn test_p2pk_swap() {
         }
     }
 
-    for keys in public_keys_to_listen {
-        let statuses = msgs.remove(&keys).expect("some events");
+    for (i, key) in public_keys_to_listen.into_iter().enumerate() {
+        let statuses = msgs.remove(&key).expect("some events");
         // Every input pk receives two state updates, as there are only two state transitions
-        assert_eq!(statuses, vec![State::Pending, State::Spent]);
+        assert_eq!(
+            statuses,
+            vec![State::Pending, State::Spent],
+            "failed to test key {:?} (pos {})",
+            key,
+            i,
+        );
     }
 
     assert!(listener.try_recv().is_err(), "no other event is happening");
@@ -527,7 +513,7 @@ async fn test_swap_overpay_underpay_fee() {
         .expect("Failed to create test mint");
 
     mint_bob
-        .rotate_keyset(CurrencyUnit::Sat, 1, 32, 1, &HashMap::new())
+        .rotate_keyset(CurrencyUnit::Sat, 32, 1)
         .await
         .unwrap();
 
@@ -545,15 +531,7 @@ async fn test_swap_overpay_underpay_fee() {
         .await
         .expect("Could not get proofs");
 
-    let keys = mint_bob
-        .pubkeys()
-        .await
-        .unwrap()
-        .keysets
-        .first()
-        .unwrap()
-        .clone()
-        .keys;
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
     let preswap = PreMintSecrets::random(keyset_id, 9998.into(), &SplitTarget::default()).unwrap();
@@ -597,7 +575,7 @@ async fn test_mint_enforce_fee() {
         .expect("Failed to create test mint");
 
     mint_bob
-        .rotate_keyset(CurrencyUnit::Sat, 1, 32, 1, &HashMap::new())
+        .rotate_keyset(CurrencyUnit::Sat, 32, 1)
         .await
         .unwrap();
 
@@ -619,15 +597,7 @@ async fn test_mint_enforce_fee() {
         .await
         .expect("Could not get proofs");
 
-    let keys = mint_bob
-        .pubkeys()
-        .await
-        .unwrap()
-        .keysets
-        .first()
-        .unwrap()
-        .clone()
-        .keys;
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
     let keyset_id = Id::from(&keys);
 
     let five_proofs: Vec<_> = proofs.drain(..5).collect();
@@ -689,7 +659,7 @@ async fn test_mint_change_with_fee_melt() {
         .expect("Failed to create test mint");
 
     mint_bob
-        .rotate_keyset(CurrencyUnit::Sat, 1, 32, 1, &HashMap::new())
+        .rotate_keyset(CurrencyUnit::Sat, 32, 1)
         .await
         .unwrap();
 
@@ -914,14 +884,6 @@ async fn test_concurrent_double_spend_melt() {
 }
 
 async fn get_keyset_id(mint: &Mint) -> Id {
-    let keys = mint
-        .pubkeys()
-        .await
-        .unwrap()
-        .keysets
-        .first()
-        .unwrap()
-        .clone()
-        .keys;
+    let keys = mint.pubkeys().keysets.first().unwrap().clone().keys;
     Id::from(&keys)
 }
