@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Response to a GET filter request
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct GetFilterResponse {
     /// Number of items in the filter
     pub n: u32,
