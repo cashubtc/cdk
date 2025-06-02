@@ -601,11 +601,18 @@ async fn main() -> anyhow::Result<()> {
         let mint_clone = Arc::clone(&mint);
         async move { mint_clone.wait_for_paid_invoices(shutdown).await }
     });
-    tokio::spawn({
-        let shutdown = Arc::clone(&shutdown);
-        let mint_clone = Arc::clone(&mint);
-        async move { mint_clone.gcs_filters_background_task(shutdown).await }
-    });
+    if settings.gcs_settings.enabled {
+        tokio::spawn({
+            let shutdown = Arc::clone(&shutdown);
+            let mint_clone = Arc::clone(&mint);
+            async move { mint_clone.gcs_filters_background_task(
+                shutdown,
+                settings.gcs_settings.inverse_false_positive_rate,
+                settings.gcs_settings.remainder_bitlegth,
+                settings.gcs_settings.wake_up_delay
+            ).await }
+        });
+    }
 
     #[cfg(feature = "management-rpc")]
     let mut rpc_enabled = false;

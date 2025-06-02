@@ -307,7 +307,7 @@ impl Mint {
 
     /// Recomputes the GCS filters for the Mint's keysets.
     // TODO: Mechanism to only recompute GCS filter when necessary (when new entries in a keyset)
-    pub async fn gcs_filters_background_task(&self, shutdown: Arc<Notify>) {
+    pub async fn gcs_filters_background_task(&self, shutdown: Arc<Notify>, m: u32, p: u32, wakeup_delay: u64) {
         tokio::select! {
             _ = shutdown.notified() => {
                 tracing::info!("Shutdown signal received, stopping GCS recompute task");
@@ -347,10 +347,6 @@ impl Mint {
                                     })
                                     .collect();
 
-                                // TODO: Replace hardcoded values with settings
-                                let p = 19;
-                                let m = 784931;
-
                                 match GCSFilter::create(&spent_proofs, p, m) {
                                     Err(e) => {
                                         tracing::warn!("Failed to compute filter for keyset {:?}: {:?}", &keyset.id, e);
@@ -381,8 +377,7 @@ impl Mint {
                         }
                     }
 
-                    // TODO: Replace hard-coded value with config
-                    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(wakeup_delay)).await;
                 }
             } => {}
         }
