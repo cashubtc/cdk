@@ -241,6 +241,7 @@ pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
     pub ln: Ln,
+    pub gcs_settings: GcsFilterSettings,
     #[cfg(feature = "cln")]
     pub cln: Option<Cln>,
     #[cfg(feature = "lnbits")]
@@ -300,6 +301,17 @@ pub struct GcsFilterSettings {
     pub wake_up_delay: u64,
     /// Enable recompute task
     pub enabled: bool,
+}
+
+impl Default for GcsFilterSettings {
+    fn default() -> Self {
+        GcsFilterSettings {
+            inverse_false_positive_rate: 784931,
+            remainder_bitlegth: 19,
+            wake_up_delay: 3600,
+            enabled: true,
+        }
+    }
 }
 
 impl Settings {
