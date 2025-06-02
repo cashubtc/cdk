@@ -127,7 +127,9 @@ async fn main() -> Result<()> {
     #[cfg(feature = "management-rpc")]
     {
         if let Some(rpc_server) = rpc_server_option {
-            rpc_server.stop().await?;
+            if let Some(server) = rpc_server.downcast_ref::<cdk_mint_rpc::MintRPCServer>() {
+                server.stop().await?;
+            }
         }
     }
 
