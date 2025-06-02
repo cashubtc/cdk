@@ -186,6 +186,7 @@ mod tests {
     use base64::engine::general_purpose;
     use base64::Engine as _;
     use rand::prelude::*;
+    use cashu::util::hex;
 
     use super::*;
 

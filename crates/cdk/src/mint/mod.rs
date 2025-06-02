@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use base64::engine::general_purpose;
-use base64::Engine;
+use bitcoin::base64::engine::general_purpose;
+use bitcoin::base64::Engine;
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
@@ -365,7 +365,7 @@ impl Mint {
                                             p,
                                             time: unix_time() as i64,
                                         };
-                                        if spent_filter.unwrap().is_some() {
+                                        if spent_filter.expect("a spent filter is expected at this point").is_some() {
                                             let res = self.localstore.update_spent_filter(&keyset.id, gcs_filter).await;
                                             if let Err(e) = res {
                                                 tracing::warn!("Failed to update filter for keyset {:?}: {:?}", &keyset.id, e);
