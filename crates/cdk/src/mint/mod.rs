@@ -315,19 +315,19 @@ impl Mint {
             }
             _ = async {
                 loop {
-                    let lock_guard = self.keysets.read().await;
-                    for (id, _) in (*lock_guard).iter() {
-                        let spent_filter = self.localstore.get_spent_filter(id).await;
+                    let keysets = self.keysets.load();
+                    for keyset in (*keysets).iter() {
+                        let spent_filter = self.localstore.get_spent_filter(&keyset.id).await;
 
                         if let Err(e) = spent_filter {
-                            tracing::warn!("Failed to get filter for keyset {:?}: {:?}", id, e);
+                            tracing::warn!("Failed to get filter for keyset {:?}: {:?}", &keyset.id, e);
                             continue;
                         }
 
-                        let proofs = self.localstore.get_proofs_by_keyset_id(id).await;
+                        let proofs = self.localstore.get_proofs_by_keyset_id(&keyset.id).await;
                         match proofs {
                             Err(e) => {
-                                tracing::warn!("Failed to get ecash notes for keyset {:?}: {:?}", id, e);
+                                tracing::warn!("Failed to get ecash notes for keyset {:?}: {:?}", &keyset.id, e);
                                 continue;
                             },
                             Ok((proofs, states)) => {
@@ -353,7 +353,7 @@ impl Mint {
 
                                 match GCSFilter::create(&spent_proofs, p, m) {
                                     Err(e) => {
-                                        tracing::warn!("Failed to compute filter for keyset {:?}: {:?}", id, e);
+                                        tracing::warn!("Failed to compute filter for keyset {:?}: {:?}", &keyset.id, e);
                                     },
                                     Ok(compressed_set) => {
                                         let gcs_filter = cdk_common::common::GCSFilter {
@@ -364,17 +364,17 @@ impl Mint {
                                             time: unix_time() as i64,
                                         };
                                         if spent_filter.unwrap().is_some() {
-                                            let res = self.localstore.update_spent_filter(id, gcs_filter).await;
+                                            let res = self.localstore.update_spent_filter(&keyset.id, gcs_filter).await;
                                             if let Err(e) = res {
-                                                tracing::warn!("Failed to update filter for keyset {:?}: {:?}", id, e);
+                                                tracing::warn!("Failed to update filter for keyset {:?}: {:?}", &keyset.id, e);
                                             }
                                         } else {
                                             let res = self.localstore.store_spent_filter(id, gcs_filter).await;
                                             if let Err(e) = res {
-                                                tracing::warn!("Failed to store filter for keyset {:?}: {:?}", id, e);
+                                                tracing::warn!("Failed to store filter for keyset {:?}: {:?}", &keyset.id, e);
                                             }
                                         }
-                                        tracing::debug!("Successfully recomputed GCS filter for keyset {:?}", id);
+                                        tracing::debug!("Successfully recomputed GCS filter for keyset {:?}", &keyset.id);
                                     }
                                 }
                             }
