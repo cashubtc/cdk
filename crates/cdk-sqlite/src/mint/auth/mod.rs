@@ -29,6 +29,12 @@ refinery::embed_migrations!("./src/mint/auth/migrations");
 impl MintSqliteAuthDatabase {
     /// Create new [`MintSqliteAuthDatabase`]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        #[cfg(feature = "sqlcipher")]
+        let pool = create_sqlite_pool(
+            path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
+            "".to_owned(),
+        )?;
+        #[cfg(not(feature = "sqlcipher"))]
         let pool = create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?)?;
         let mut conn = pool.get()?;
 

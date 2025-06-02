@@ -59,7 +59,7 @@ impl WalletSqliteDatabase {
             pool: create_sqlite_pool(
                 path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
                 password,
-            ),
+            )?,
         };
         db.migrate()?;
         Ok(db)
