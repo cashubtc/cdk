@@ -67,7 +67,7 @@ impl Proof {
     pub fn verify_htlc(&self) -> Result<(), Error> {
         let secret: Secret = self.secret.clone().try_into()?;
         let conditions: Option<Conditions> =
-            secret.secret_data.tags.and_then(|c| c.try_into().ok());
+            secret.secret_data().tags().and_then(|c| c.clone().try_into().ok());
 
         let htlc_witness = match &self.witness {
             Some(Witness::HTLCWitness(witness)) => witness,
@@ -118,12 +118,12 @@ impl Proof {
             }
         }
 
-        if secret.kind.ne(&super::Kind::HTLC) {
+        if secret.kind().ne(&super::Kind::HTLC) {
             return Err(Error::IncorrectSecretKind);
         }
 
         let hash_lock =
-            Sha256Hash::from_str(&secret.secret_data.data).map_err(|_| Error::InvalidHash)?;
+            Sha256Hash::from_str(&secret.secret_data().data()).map_err(|_| Error::InvalidHash)?;
 
         let preimage_hash = Sha256Hash::hash(htlc_witness.preimage.as_bytes());
 

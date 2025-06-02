@@ -128,7 +128,7 @@ impl Proof {
     pub fn verify_p2pk(&self) -> Result<(), Error> {
         let secret: Nut10Secret = self.secret.clone().try_into()?;
         let spending_conditions: Conditions =
-            secret.secret_data.tags.unwrap_or_default().try_into()?;
+            secret.secret_data().tags().cloned().unwrap_or_default().try_into()?;
         let msg: &[u8] = self.secret.as_bytes();
 
         let mut verified_pubkeys = HashSet::new();
@@ -142,8 +142,8 @@ impl Proof {
 
         let mut pubkeys = spending_conditions.pubkeys.clone().unwrap_or_default();
 
-        if secret.kind.eq(&Kind::P2PK) {
-            pubkeys.push(PublicKey::from_str(&secret.secret_data.data)?);
+        if secret.kind().eq(&Kind::P2PK) {
+            pubkeys.push(PublicKey::from_str(secret.secret_data().data())?);
         }
 
         for signature in witness_signatures.iter() {
@@ -394,15 +394,15 @@ impl TryFrom<&Secret> for SpendingConditions {
 impl TryFrom<Nut10Secret> for SpendingConditions {
     type Error = Error;
     fn try_from(secret: Nut10Secret) -> Result<SpendingConditions, Error> {
-        match secret.kind {
+        match secret.kind() {
             Kind::P2PK => Ok(SpendingConditions::P2PKConditions {
-                data: PublicKey::from_str(&secret.secret_data.data)?,
-                conditions: secret.secret_data.tags.and_then(|t| t.try_into().ok()),
+                data: PublicKey::from_str(&secret.secret_data().data())?,
+                conditions: secret.secret_data().tags().and_then(|t| t.clone().try_into().ok()),
             }),
             Kind::HTLC => Ok(Self::HTLCConditions {
-                data: Sha256Hash::from_str(&secret.secret_data.data)
+                data: Sha256Hash::from_str(&secret.secret_data().data())
                     .map_err(|_| Error::InvalidHash)?,
-                conditions: secret.secret_data.tags.and_then(|t| t.try_into().ok()),
+                conditions: secret.secret_data().tags().and_then(|t| t.clone().try_into().ok()),
             }),
         }
     }
@@ -650,14 +650,14 @@ pub fn enforce_sig_flag(proofs: Proofs) -> EnforceSigFlag {
     let mut sigs_required = 1;
     for proof in proofs {
         if let Ok(secret) = Nut10Secret::try_from(proof.secret) {
-            if secret.kind.eq(&Kind::P2PK) {
-                if let Ok(verifying_key) = PublicKey::from_str(&secret.secret_data.data) {
+            if secret.kind().eq(&Kind::P2PK) {
+                if let Ok(verifying_key) = PublicKey::from_str(&secret.secret_data().data()) {
                     pubkeys.insert(verifying_key);
                 }
             }
 
-            if let Some(tags) = secret.secret_data.tags {
-                if let Ok(conditions) = Conditions::try_from(tags) {
+            if let Some(tags) = secret.secret_data().tags() {
+                if let Ok(conditions) = Conditions::try_from(tags.clone()) {
                     if conditions.sig_flag.eq(&SigFlag::SigAll) {
                         sig_flag = SigFlag::SigAll;
                     }
