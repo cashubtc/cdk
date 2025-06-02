@@ -13,7 +13,8 @@ mod proto;
 
 #[cfg(feature = "grpc")]
 pub use proto::{
-    client::SignatoryRpcClient, server::start_grpc_server, server::start_grpc_server_with_incoming,
+    client::SignatoryRpcClient,
+    server::{start_grpc_server, start_grpc_server_with_incoming, SignatoryLoader},
 };
 
 mod common;
