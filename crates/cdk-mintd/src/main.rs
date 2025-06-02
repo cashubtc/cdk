@@ -15,7 +15,7 @@ use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
 // internal crate modules
-use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase, MintKeysDatabase};
+use cdk::cdk_database::{self, MintDatabase, MintKeysDatabase};
 use cdk::cdk_payment;
 use cdk::cdk_payment::MintPayment;
 use cdk::mint::{MintBuilder, MintMeltLimits};
@@ -40,8 +40,6 @@ use cdk::nuts::{
 };
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
-#[cfg(feature = "management-rpc")]
-use cdk_mint_rpc::MintRPCServer;
 use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 use cdk_mintd::env_vars::ENV_WORK_DIR;
@@ -92,7 +90,7 @@ async fn main() -> Result<()> {
         .with_keystore(db.clone());
 
     let (mint_builder, ln_routers) = configure_mint_builder(&settings, mint_builder).await?;
-
+    #[cfg( feature = "auth")]
     let mint_builder = setup_authentication(&settings, &work_dir, mint_builder).await?;
     let mint_builder_info = mint_builder.mint_info.clone();
 
@@ -515,6 +513,8 @@ fn configure_cache(settings: &config::Settings, mint_builder: MintBuilder) -> Mi
     let cache: HttpCache = settings.info.http_cache.clone().into();
     mint_builder.add_cache(Some(cache.ttl.as_secs()), cached_endpoints)
 }
+
+#[cfg( feature = "auth")]
 async fn setup_authentication(
     settings: &config::Settings,
     work_dir: &Path,
@@ -522,7 +522,7 @@ async fn setup_authentication(
 ) -> Result<MintBuilder> {
     if let Some(auth_settings) = settings.auth.clone() {
         tracing::info!("Auth settings are defined. {:?}", auth_settings);
-        let auth_localstore: Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync> =
+        let auth_localstore: Arc<dyn cdk_database::MintAuthDatabase<Err = cdk_database::Error> + Send + Sync> =
             match settings.database.engine {
                 DatabaseEngine::Sqlite => {
                     let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
@@ -669,7 +669,7 @@ async fn start_services(
     ln_routers: Vec<Router>,
     work_dir: &Path,
     mint_builder_info: cdk::nuts::MintInfo,
-) -> Result<(Arc<Notify>, Option<cdk_mint_rpc::MintRPCServer>)> {
+) -> Result<(Arc<Notify>, Option<Box<dyn std::any::Any + Send + Sync>>)> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
     let cache: HttpCache = settings.info.http_cache.clone().into();
@@ -712,10 +712,7 @@ async fn start_services(
     #[cfg(not(feature = "management-rpc"))]
     let rpc_enabled = false;
 
-    #[cfg(feature = "management-rpc")]
-    let mut rpc_server_option: Option<MintRPCServer> = None;
-    #[cfg(not(feature = "management-rpc"))]
-    let rpc_server_option: Option<cdk_mint_rpc::MintRPCServer> = None;
+    let mut rpc_server_option: Option<Box<dyn std::any::Any + Send + Sync>> = None;
 
     #[cfg(feature = "management-rpc")]
     {
@@ -723,7 +720,7 @@ async fn start_services(
             if rpc_settings.enabled {
                 let addr = rpc_settings.address.unwrap_or("127.0.0.1".to_string());
                 let port = rpc_settings.port.unwrap_or(8086);
-                let mut mint_rpc = MintRPCServer::new(&addr, port, mint.clone())?;
+                let mut mint_rpc = cdk_mint_rpc::MintRPCServer::new(&addr, port, mint.clone())?;
 
                 let tls_dir = rpc_settings.tls_dir_path.unwrap_or(work_dir.join("tls"));
 
@@ -734,7 +731,7 @@ async fn start_services(
 
                 mint_rpc.start(Some(tls_dir)).await?;
 
-                rpc_server_option = Some(mint_rpc);
+                rpc_server_option = Some(Box::new(mint_rpc));
 
                 rpc_enabled = true;
             }
