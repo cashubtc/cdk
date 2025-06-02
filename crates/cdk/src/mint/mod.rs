@@ -307,7 +307,13 @@ impl Mint {
 
     /// Recomputes the GCS filters for the Mint's keysets.
     // TODO: Mechanism to only recompute GCS filter when necessary (when new entries in a keyset)
-    pub async fn gcs_filters_background_task(&self, shutdown: Arc<Notify>, m: u32, p: u32, wakeup_delay: u64) {
+    pub async fn gcs_filters_background_task(
+        &self,
+        shutdown: Arc<Notify>,
+        m: u32,
+        p: u32,
+        wakeup_delay: u64,
+    ) {
         tokio::select! {
             _ = shutdown.notified() => {
                 tracing::info!("Shutdown signal received, stopping GCS recompute task");

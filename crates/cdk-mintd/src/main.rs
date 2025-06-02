@@ -605,12 +605,16 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn({
             let shutdown = Arc::clone(&shutdown);
             let mint_clone = Arc::clone(&mint);
-            async move { mint_clone.gcs_filters_background_task(
-                shutdown,
-                settings.gcs_settings.inverse_false_positive_rate,
-                settings.gcs_settings.remainder_bitlegth,
-                settings.gcs_settings.wake_up_delay
-            ).await }
+            async move {
+                mint_clone
+                    .gcs_filters_background_task(
+                        shutdown,
+                        settings.gcs_settings.inverse_false_positive_rate,
+                        settings.gcs_settings.remainder_bitlegth,
+                        settings.gcs_settings.wake_up_delay,
+                    )
+                    .await
+            }
         });
     }
 
