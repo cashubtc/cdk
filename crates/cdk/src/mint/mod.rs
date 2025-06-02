@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use base64::engine::general_purpose;
 use base64::Engine;
-use arc_swap::ArcSwap;
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
