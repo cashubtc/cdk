@@ -369,7 +369,7 @@ impl Mint {
                                                 tracing::warn!("Failed to update filter for keyset {:?}: {:?}", &keyset.id, e);
                                             }
                                         } else {
-                                            let res = self.localstore.store_spent_filter(id, gcs_filter).await;
+                                            let res = self.localstore.store_spent_filter(&keyset.id, gcs_filter).await;
                                             if let Err(e) = res {
                                                 tracing::warn!("Failed to store filter for keyset {:?}: {:?}", &keyset.id, e);
                                             }

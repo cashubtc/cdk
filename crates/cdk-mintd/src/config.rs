@@ -289,6 +289,19 @@ pub struct MintManagementRpc {
     pub tls_dir_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GcsFilterSettings {
+    /// Inverse of False Positive Rate
+    pub inverse_false_positive_rate: u32,
+    /// Bit-length for the remainder in Golomb-Rice encoding
+    pub remainder_bitlegth: u32,
+    /// Delay in seconds between successive wake-ups of the background task
+    /// that recomputes the filters
+    pub wake_up_delay: u64,
+    /// Enable recompute task
+    pub enabled: bool,
+}
+
 impl Settings {
     #[must_use]
     pub fn new<P>(config_file_name: Option<P>) -> Self
