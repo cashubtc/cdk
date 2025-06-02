@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
         .with_keystore(db.clone());
 
     let (mint_builder, ln_routers) = configure_mint_builder(&settings, mint_builder).await?;
-    #[cfg( feature = "auth")]
+    #[cfg(feature = "auth")]
     let mint_builder = setup_authentication(&settings, &work_dir, mint_builder).await?;
     let mint_builder_info = mint_builder.mint_info.clone();
 
@@ -514,7 +514,7 @@ fn configure_cache(settings: &config::Settings, mint_builder: MintBuilder) -> Mi
     mint_builder.add_cache(Some(cache.ttl.as_secs()), cached_endpoints)
 }
 
-#[cfg( feature = "auth")]
+#[cfg(feature = "auth")]
 async fn setup_authentication(
     settings: &config::Settings,
     work_dir: &Path,
@@ -522,22 +522,23 @@ async fn setup_authentication(
 ) -> Result<MintBuilder> {
     if let Some(auth_settings) = settings.auth.clone() {
         tracing::info!("Auth settings are defined. {:?}", auth_settings);
-        let auth_localstore: Arc<dyn cdk_database::MintAuthDatabase<Err = cdk_database::Error> + Send + Sync> =
-            match settings.database.engine {
-                DatabaseEngine::Sqlite => {
-                    let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
-                    let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
+        let auth_localstore: Arc<
+            dyn cdk_database::MintAuthDatabase<Err = cdk_database::Error> + Send + Sync,
+        > = match settings.database.engine {
+            DatabaseEngine::Sqlite => {
+                let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
+                let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
 
-                    sqlite_db.migrate().await;
+                sqlite_db.migrate().await;
 
-                    Arc::new(sqlite_db)
-                }
-                #[cfg(feature = "redb")]
-                DatabaseEngine::Redb => {
-                    let redb_path = work_dir.join("cdk-mintd-auth.redb");
-                    Arc::new(MintRedbAuthDatabase::new(&redb_path)?)
-                }
-            };
+                Arc::new(sqlite_db)
+            }
+            #[cfg(feature = "redb")]
+            DatabaseEngine::Redb => {
+                let redb_path = work_dir.join("cdk-mintd-auth.redb");
+                Arc::new(MintRedbAuthDatabase::new(&redb_path)?)
+            }
+        };
 
         mint_builder = mint_builder.with_auth_localstore(auth_localstore.clone());
 
