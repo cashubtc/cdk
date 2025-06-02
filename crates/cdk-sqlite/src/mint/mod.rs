@@ -75,13 +75,13 @@ impl MintSqliteDatabase {
             path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
             password,
         )?;
-        let mut conn = async_rusqlite.get()?;
+        let mut conn = pool.get()?;
 
         migration::migrations::runner().run(&mut *conn)?;
         drop(conn);
 
         Ok(Self {
-            pool: async_rusqlite::AsyncRusqlite::new(async_rusqlite),
+            pool: async_rusqlite::AsyncRusqlite::new(pool),
         })
     }
 

@@ -30,8 +30,8 @@ pub enum Error {
     #[error("Internal communication error")]
     Communication,
 
-    /// Invalid resposne from the database thread
-    #[error("Internal communication error")]
+    /// Invalid response from the database thread
+    #[error("Unexpected database response")]
     InvalidDbResponse,
 
     /// Invalid db type

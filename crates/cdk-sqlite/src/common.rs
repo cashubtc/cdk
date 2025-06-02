@@ -13,7 +13,7 @@ pub fn create_sqlite_pool(
         (SqliteConnectionManager::file(path), false)
     };
 
-    let manager = manager.with_init(|conn| {
+    let manager = manager.with_init(move |conn| {
         // Apply pragmas
         conn.pragma_update(None, "busy_timeout", 5000)?;
         conn.pragma_update(None, "journal_mode", "wal")?;
@@ -23,7 +23,7 @@ pub fn create_sqlite_pool(
         conn.pragma_update(None, "cache", "shared")?;
 
         #[cfg(feature = "sqlcipher")]
-        conn.pragma_update(None, "key", &password)?;
+        conn.pragma_update(None, "key", password.clone())?;
 
         Ok(())
     });
