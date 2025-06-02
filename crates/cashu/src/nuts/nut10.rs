@@ -3,7 +3,6 @@
 //! <https://github.com/cashubtc/nuts/blob/main/10.md>
 
 use std::fmt;
-use std::ops::Deref;
 use std::str::FromStr;
 
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
@@ -44,22 +43,18 @@ pub struct SecretData {
 }
 
 impl SecretData {
-    /// Get the nonce
     pub fn nonce(&self) -> &str {
         &self.nonce
     }
 
-    /// Get the data
     pub fn data(&self) -> &str {
         &self.data
     }
 
-    /// Get the tags
     pub fn tags(&self) -> Option<&Vec<Vec<String>>> {
         self.tags.as_ref()
     }
 }
-
 
 /// NUT10 Secret
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -98,15 +93,6 @@ impl Secret {
         &self.secret_data
     }
 }
-
-impl Deref for Secret {
-    type Target = SecretData;
-
-    fn deref(&self) -> &Self::Target {
-        &self.secret_data
-    }
-}
-
 
 impl Serialize for Secret {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

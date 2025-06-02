@@ -127,8 +127,12 @@ impl Proof {
     /// Verify P2PK signature on [Proof]
     pub fn verify_p2pk(&self) -> Result<(), Error> {
         let secret: Nut10Secret = self.secret.clone().try_into()?;
-        let spending_conditions: Conditions =
-            secret.secret_data().tags().cloned().unwrap_or_default().try_into()?;
+        let spending_conditions: Conditions = secret
+            .secret_data()
+            .tags()
+            .cloned()
+            .unwrap_or_default()
+            .try_into()?;
         let msg: &[u8] = self.secret.as_bytes();
 
         let mut verified_pubkeys = HashSet::new();
@@ -397,12 +401,18 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
         match secret.kind() {
             Kind::P2PK => Ok(SpendingConditions::P2PKConditions {
                 data: PublicKey::from_str(&secret.secret_data().data())?,
-                conditions: secret.secret_data().tags().and_then(|t| t.clone().try_into().ok()),
+                conditions: secret
+                    .secret_data()
+                    .tags()
+                    .and_then(|t| t.clone().try_into().ok()),
             }),
             Kind::HTLC => Ok(Self::HTLCConditions {
                 data: Sha256Hash::from_str(&secret.secret_data().data())
                     .map_err(|_| Error::InvalidHash)?,
-                conditions: secret.secret_data().tags().and_then(|t| t.clone().try_into().ok()),
+                conditions: secret
+                    .secret_data()
+                    .tags()
+                    .and_then(|t| t.clone().try_into().ok()),
             }),
         }
     }

@@ -80,8 +80,12 @@ impl Wallet {
                     proof.secret.clone(),
                 )
             {
-                let conditions: Result<Conditions, _> =
-                    secret.secret_data().tags().cloned().unwrap_or_default().try_into();
+                let conditions: Result<Conditions, _> = secret
+                    .secret_data()
+                    .tags()
+                    .cloned()
+                    .unwrap_or_default()
+                    .try_into();
                 if let Ok(conditions) = conditions {
                     let mut pubkeys = conditions.pubkeys.unwrap_or_default();
 

@@ -66,8 +66,10 @@ impl Proof {
     /// Verify HTLC
     pub fn verify_htlc(&self) -> Result<(), Error> {
         let secret: Secret = self.secret.clone().try_into()?;
-        let conditions: Option<Conditions> =
-            secret.secret_data().tags().and_then(|c| c.clone().try_into().ok());
+        let conditions: Option<Conditions> = secret
+            .secret_data()
+            .tags()
+            .and_then(|c| c.clone().try_into().ok());
 
         let htlc_witness = match &self.witness {
             Some(Witness::HTLCWitness(witness)) => witness,
