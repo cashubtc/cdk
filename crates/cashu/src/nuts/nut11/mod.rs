@@ -661,7 +661,7 @@ pub fn enforce_sig_flag(proofs: Proofs) -> EnforceSigFlag {
     for proof in proofs {
         if let Ok(secret) = Nut10Secret::try_from(proof.secret) {
             if secret.kind().eq(&Kind::P2PK) {
-                if let Ok(verifying_key) = PublicKey::from_str(&secret.secret_data().data()) {
+                if let Ok(verifying_key) = PublicKey::from_str(secret.secret_data().data()) {
                     pubkeys.insert(verifying_key);
                 }
             }
