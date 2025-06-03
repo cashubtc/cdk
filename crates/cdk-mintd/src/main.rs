@@ -113,7 +113,17 @@ async fn main() -> Result<()> {
     // Pending melt quotes where the payment has **failed** inputs are reset to unspent
     mint.check_pending_melt_quotes().await?;
 
+    #[cfg(feature = "management-rpc")]
     let (shutdown, rpc_server_option) = start_services(
+        mint.clone(),
+        &settings,
+        ln_routers,
+        &work_dir,
+        mint_builder_info,
+    )
+    .await?;
+    #[cfg(not(feature = "management-rpc"))]
+    let (shutdown, _rpc_server_option) = start_services(
         mint.clone(),
         &settings,
         ln_routers,
@@ -717,8 +727,11 @@ async fn start_services(
     #[cfg(not(feature = "management-rpc"))]
     let rpc_enabled = false;
 
-    // Always use the same type for rpc_server_option
+    // Initialize rpc_server_option based on feature flag
+    #[cfg(feature = "management-rpc")]
     let mut rpc_server_option: Option<Box<dyn std::any::Any + Send + Sync>> = None;
+    #[cfg(not(feature = "management-rpc"))]
+    let rpc_server_option: Option<Box<dyn std::any::Any + Send + Sync>> = None;
 
     #[cfg(feature = "management-rpc")]
     {
