@@ -86,10 +86,11 @@ compile_error!(
 /// 5. Checks and resolves the status of any pending mint and melt quotes.
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (work_dir, settings, db) = initial_setup().await?;
+    let (work_dir, settings, localstore, keystore) = initial_setup().await?;
+    
     let mint_builder = MintBuilder::new()
-        .with_localstore(db.clone())
-        .with_keystore(db.clone());
+        .with_localstore(localstore)
+        .with_keystore(keystore);
 
     let (mint_builder, ln_routers) = configure_mint_builder(&settings, mint_builder).await?;
     #[cfg(feature = "auth")]
@@ -148,16 +149,6 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-trait MintCombinedDatabase:
-    MintDatabase<cdk_database::Error> + MintKeysDatabase<Err = cdk_database::Error>
-{
-}
-
-// Implement the combined trait
-impl<T> MintCombinedDatabase for T where
-    T: MintDatabase<cdk_database::Error> + MintKeysDatabase<Err = cdk_database::Error>
-{
-}
 
 /// Performs the initial setup for the application, including configuring tracing,
 /// parsing CLI arguments, setting up the working directory, loading settings,
@@ -165,15 +156,16 @@ impl<T> MintCombinedDatabase for T where
 async fn initial_setup() -> Result<(
     PathBuf,
     config::Settings,
-    Arc<dyn MintCombinedDatabase + Send + Sync>,
+    Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
+    Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
 )> {
     setup_tracing();
     let args = CLIArgs::parse();
     let work_dir = get_work_directory(&args).await?;
 
     let settings = load_settings(&work_dir, args.config)?;
-    let db = setup_database(&settings, &work_dir).await?;
-    Ok((work_dir, settings, db.clone()))
+    let (localstore, keystore) = setup_database(&settings, &work_dir).await?;
+    Ok((work_dir, settings, localstore, keystore))
 }
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
@@ -227,33 +219,50 @@ fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<config
 async fn setup_database(
     settings: &config::Settings,
     work_dir: &Path,
-) -> Result<Arc<dyn MintCombinedDatabase + Send + Sync>> {
+) -> Result<(
+    Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
+    Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
+)> {
     match settings.database.engine {
-        DatabaseEngine::Sqlite => Ok(setup_sqlite_database(work_dir).await?),
+        DatabaseEngine::Sqlite => {
+            #[cfg(feature = "sqlcipher")]
+            let password = CLIArgs::parse().password;
+            #[cfg(not(feature = "sqlcipher"))]
+            let password = String::new();
+            let db = setup_sqlite_database(work_dir, password).await?;
+            let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
+            let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
+            Ok((localstore, keystore))
+        },
         #[cfg(feature = "redb")]
-        DatabaseEngine::Redb => Ok(setup_redb_database(work_dir).await?),
+        DatabaseEngine::Redb => {
+            let db = setup_redb_database(work_dir).await?;
+            let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
+            let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
+            Ok((localstore, keystore))
+        },
     }
 }
 
 #[cfg(feature = "redb")]
 async fn setup_redb_database(
     work_dir: &Path,
-) -> Result<Arc<dyn MintCombinedDatabase + Send + Sync>> {
+) -> Result<Arc<MintRedbDatabase>> {
     let redb_path = work_dir.join("cdk-mintd.redb");
     Ok(Arc::new(MintRedbDatabase::new(&redb_path)?))
 }
 
 async fn setup_sqlite_database(
     work_dir: &Path,
-) -> Result<Arc<dyn MintCombinedDatabase + Send + Sync>> {
+    _password: String,
+) -> Result<Arc<MintSqliteDatabase>> {
     let sql_db_path = work_dir.join("cdk-mintd.sqlite");
     #[cfg(not(feature = "sqlcipher"))]
     let db = MintSqliteDatabase::new(&sql_db_path).await?;
     #[cfg(feature = "sqlcipher")]
     let db = {
         // Get password from command line arguments for sqlcipher
-        let args = CLIArgs::parse();
-        MintSqliteDatabase::new(&sql_db_path, args.password).await?
+        MintSqliteDatabase::new(&sql_db_path, _password).await?
     };
     Ok(Arc::new(db))
 }
