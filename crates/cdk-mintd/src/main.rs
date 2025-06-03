@@ -715,11 +715,8 @@ async fn start_services(
     #[cfg(not(feature = "management-rpc"))]
     let rpc_enabled = false;
 
-    #[cfg(feature = "management-rpc")]
-    let rpc_server_option: Option<cdk_mint_rpc::MintRPCServer> = None;
-
-    #[cfg(not(feature = "management-rpc"))]
-    let rpc_server_option: Option<Box<dyn std::any::Any + Send + Sync>> = None;
+    // Always use the same type for rpc_server_option
+    let mut rpc_server_option: Option<Box<dyn std::any::Any + Send + Sync>> = None;
 
     #[cfg(feature = "management-rpc")]
     {
@@ -738,6 +735,7 @@ async fn start_services(
 
                 mint_rpc.start(Some(tls_dir)).await?;
 
+                // Properly box MintRPCServer
                 rpc_server_option = Some(Box::new(mint_rpc));
 
                 rpc_enabled = true;
