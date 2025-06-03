@@ -12,9 +12,6 @@ pub enum Error {
     /// Pool error
     #[error(transparent)]
     Pool(#[from] r2d2::Error),
-    /// Migration
-    #[error(transparent)]
-    Migration(#[from] refinery::Error),
     /// Invalid UUID
     #[error("Invalid UUID: {0}")]
     InvalidUuid(String),

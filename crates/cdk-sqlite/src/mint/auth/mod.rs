@@ -14,7 +14,7 @@ use tracing::instrument;
 use super::async_rusqlite::AsyncRusqlite;
 use super::{sqlite_row_to_blind_signature, sqlite_row_to_keyset_info};
 use crate::column_as_string;
-use crate::common::create_sqlite_pool;
+use crate::common::{create_sqlite_pool, migrate};
 use crate::mint::async_rusqlite::query;
 use crate::mint::Error;
 
@@ -24,7 +24,8 @@ pub struct MintSqliteAuthDatabase {
     pool: AsyncRusqlite,
 }
 
-refinery::embed_migrations!("./src/mint/auth/migrations");
+#[rustfmt::skip]
+mod migrations;
 
 impl MintSqliteAuthDatabase {
     /// Create new [`MintSqliteAuthDatabase`]
@@ -36,10 +37,7 @@ impl MintSqliteAuthDatabase {
         )?;
         #[cfg(not(feature = "sqlcipher"))]
         let pool = create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?)?;
-        let mut conn = pool.get()?;
-
-        migrations::runner().run(&mut *conn)?;
-        drop(conn);
+        migrate(pool.get()?, migrations::MIGRATIONS)?;
 
         Ok(Self {
             pool: AsyncRusqlite::new(pool),
