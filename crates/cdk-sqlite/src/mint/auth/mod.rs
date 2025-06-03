@@ -168,7 +168,7 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
     }
 
     async fn add_proof(&self, proof: AuthProof) -> Result<(), Self::Err> {
-        query(
+        if let Err(err) = query(
             r#"
             INSERT INTO proof
             (y, keyset_id, secret, c, state)
@@ -182,7 +182,10 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
         .bind(":c", proof.c.to_bytes().to_vec())
         .bind(":state", "UNSPENT".to_string())
         .execute(&self.pool)
-        .await?;
+        .await
+        {
+            tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
+        }
         Ok(())
     }
 

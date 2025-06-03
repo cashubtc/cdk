@@ -964,7 +964,9 @@ impl MintProofsDatabase for MintSqliteDatabase {
         .await?
         .into_iter()
         .map(sqlite_row_to_proof_with_state)
-        .collect::<Result<(Vec<_>, Vec<_>), _>>()?)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .unzip())
     }
 
     async fn update_proofs_states(
