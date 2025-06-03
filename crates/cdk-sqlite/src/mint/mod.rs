@@ -26,7 +26,7 @@ use error::Error;
 use lightning_invoice::Bolt11Invoice;
 use uuid::Uuid;
 
-use crate::common::create_sqlite_pool;
+use crate::common::{create_sqlite_pool, migrate};
 use crate::stmt::Column;
 use crate::{
     column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
@@ -39,6 +39,9 @@ mod auth;
 pub mod error;
 pub mod memory;
 
+#[rustfmt::skip]
+mod migrations;
+
 #[cfg(feature = "auth")]
 pub use auth::MintSqliteAuthDatabase;
 
@@ -48,20 +51,12 @@ pub struct MintSqliteDatabase {
     pool: async_rusqlite::AsyncRusqlite,
 }
 
-#[allow(missing_docs)]
-mod migration {
-    refinery::embed_migrations!("./src/mint/migrations");
-}
-
 impl MintSqliteDatabase {
     /// Create new [`MintSqliteDatabase`]
     #[cfg(not(feature = "sqlcipher"))]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let pool = create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?)?;
-        let mut conn = pool.get()?;
-
-        migration::migrations::runner().run(&mut *conn)?;
-        drop(conn);
+        migrate(pool.get()?, migrations::MIGRATIONS)?;
 
         Ok(Self {
             pool: async_rusqlite::AsyncRusqlite::new(pool),
@@ -75,10 +70,7 @@ impl MintSqliteDatabase {
             path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
             password,
         )?;
-        let mut conn = pool.get()?;
-
-        migration::migrations::runner().run(&mut *conn)?;
-        drop(conn);
+        migrate(pool.get()?, migrations::MIGRATIONS)?;
 
         Ok(Self {
             pool: async_rusqlite::AsyncRusqlite::new(pool),

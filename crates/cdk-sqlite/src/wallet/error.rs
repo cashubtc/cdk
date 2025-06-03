@@ -24,9 +24,6 @@ pub enum Error {
     #[error("Error converting {0} to {1}")]
     InvalidConversion(String, String),
 
-    /// Migration
-    #[error(transparent)]
-    Migration(#[from] refinery::Error),
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),

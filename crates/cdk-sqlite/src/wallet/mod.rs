@@ -20,7 +20,7 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use tracing::instrument;
 
-use crate::common::create_sqlite_pool;
+use crate::common::{create_sqlite_pool, migrate};
 use crate::stmt::{Column, Statement};
 use crate::{
     column_as_binary, column_as_nullable_binary, column_as_nullable_number,
@@ -30,15 +30,13 @@ use crate::{
 pub mod error;
 pub mod memory;
 
+#[rustfmt::skip]
+mod migrations;
+
 /// Wallet SQLite Database
 #[derive(Debug, Clone)]
 pub struct WalletSqliteDatabase {
     pool: Pool<SqliteConnectionManager>,
-}
-
-#[allow(missing_docs)]
-mod migration {
-    refinery::embed_migrations!("./src/wallet/migrations");
 }
 
 impl WalletSqliteDatabase {
@@ -67,8 +65,7 @@ impl WalletSqliteDatabase {
 
     /// Migrate [`WalletSqliteDatabase`]
     fn migrate(&self) -> Result<(), Error> {
-        let mut conn = self.pool.get()?;
-        migration::migrations::runner().run(&mut *conn)?;
+        migrate(self.pool.get()?, migrations::MIGRATIONS)?;
         Ok(())
     }
 }
@@ -1107,8 +1104,6 @@ mod tests {
         let db = WalletSqliteDatabase::new(path, "password".to_string())
             .await
             .unwrap();
-
-        db.migrate().await.unwrap();
 
         let mint_info = MintInfo::new().description("test");
         let mint_url = MintUrl::from_str("https://mint.xyz").unwrap();
