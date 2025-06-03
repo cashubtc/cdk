@@ -3,7 +3,6 @@
 #![warn(rustdoc::bare_urls)]
 
 // std
-use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -35,9 +34,9 @@ use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path}
     feature = "fakewallet"
 ))]
 use cdk::nuts::CurrencyUnit;
-use cdk::nuts::{
-    AuthRequired, ContactInfo, Method, MintVersion, PaymentMethod, ProtectedEndpoint, RoutePath,
-};
+#[cfg(feature = "auth")]
+use cdk::nuts::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
+use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
 use cdk_mintd::cli::CLIArgs;
@@ -48,7 +47,6 @@ use cdk_mintd::setup::LnBackendSetup;
 use cdk_redb::mint::MintRedbAuthDatabase;
 #[cfg(feature = "redb")]
 use cdk_redb::MintRedbDatabase;
-use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use tokio::sync::Notify;
@@ -111,7 +109,7 @@ async fn main() -> Result<()> {
     // Pending melt quotes where the payment has **failed** inputs are reset to unspent
     mint.check_pending_melt_quotes().await?;
 
-    let (shutdown, rpc_server_option) = start_services(
+    let (shutdown, _rpc_server_option) = start_services(
         mint.clone(),
         &settings,
         ln_routers,
@@ -214,7 +212,7 @@ fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<config
 
 async fn setup_database(
     settings: &config::Settings,
-    work_dir: &PathBuf,
+    work_dir: &Path,
 ) -> Result<Arc<dyn MintCombinedDatabase + Send + Sync>> {
     match settings.database.engine {
         DatabaseEngine::Sqlite => Ok(setup_sqlite_database(work_dir).await?),
@@ -225,7 +223,7 @@ async fn setup_database(
 
 #[cfg(feature = "redb")]
 async fn setup_redb_database(
-    work_dir: &PathBuf,
+    work_dir: &Path,
 ) -> Result<Arc<dyn MintCombinedDatabase + Send + Sync>> {
     let redb_path = work_dir.join("cdk-mintd.redb");
     Ok(Arc::new(MintRedbDatabase::new(&redb_path)?))
@@ -670,7 +668,7 @@ async fn start_services(
     mint: Arc<cdk::mint::Mint>,
     settings: &config::Settings,
     ln_routers: Vec<Router>,
-    work_dir: &Path,
+    _work_dir: &Path,
     mint_builder_info: cdk::nuts::MintInfo,
 ) -> Result<(Arc<Notify>, Option<Box<dyn std::any::Any + Send + Sync>>)> {
     let listen_addr = settings.info.listen_host.clone();
@@ -716,7 +714,7 @@ async fn start_services(
     let rpc_enabled = false;
 
     // Always use the same type for rpc_server_option
-    let mut rpc_server_option: Option<Box<dyn std::any::Any + Send + Sync>> = None;
+    let rpc_server_option: Option<Box<dyn std::any::Any + Send + Sync>> = None;
 
     #[cfg(feature = "management-rpc")]
     {
@@ -726,7 +724,7 @@ async fn start_services(
                 let port = rpc_settings.port.unwrap_or(8086);
                 let mut mint_rpc = cdk_mint_rpc::MintRPCServer::new(&addr, port, mint.clone())?;
 
-                let tls_dir = rpc_settings.tls_dir_path.unwrap_or(work_dir.join("tls"));
+                let tls_dir = rpc_settings.tls_dir_path.unwrap_or(_work_dir.join("tls"));
 
                 if !tls_dir.exists() {
                     tracing::error!("TLS directory does not exist: {}", tls_dir.display());
