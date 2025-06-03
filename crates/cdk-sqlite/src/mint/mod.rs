@@ -896,8 +896,6 @@ impl MintProofsDatabase for MintSqliteDatabase {
         .await?
         .into_iter()
         .map(|mut row| {
-            row.pop().ok_or(Error::InvalidDbResponse)?;
-
             Ok((
                 column_as_string!(
                     row.pop().ok_or(Error::InvalidDbPath)?,
