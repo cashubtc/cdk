@@ -1,5 +1,5 @@
-/// Unpacks a row<Column>, and consumes it, parsing into individual variables, checking the
-/// Vec<Column> is big enough
+/// Unpacks a vector of Column, and consumes it, parsing into individual variables, checking the
+/// vector is big enough.
 #[macro_export]
 macro_rules! unpack_into {
     (let ($($var:ident),+) = $array:expr) => {
