@@ -3,6 +3,8 @@
 #![warn(rustdoc::bare_urls)]
 
 // std
+#[cfg(feature = "auth")]
+use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -47,6 +49,8 @@ use cdk_mintd::setup::LnBackendSetup;
 use cdk_redb::mint::MintRedbAuthDatabase;
 #[cfg(feature = "redb")]
 use cdk_redb::MintRedbDatabase;
+#[cfg(feature = "auth")]
+use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use tokio::sync::Notify;
@@ -109,7 +113,7 @@ async fn main() -> Result<()> {
     // Pending melt quotes where the payment has **failed** inputs are reset to unspent
     mint.check_pending_melt_quotes().await?;
 
-    let (shutdown, _rpc_server_option) = start_services(
+    let (shutdown, rpc_server_option) = start_services(
         mint.clone(),
         &settings,
         ln_routers,
@@ -714,7 +718,7 @@ async fn start_services(
     let rpc_enabled = false;
 
     // Always use the same type for rpc_server_option
-    let rpc_server_option: Option<Box<dyn std::any::Any + Send + Sync>> = None;
+    let mut rpc_server_option: Option<Box<dyn std::any::Any + Send + Sync>> = None;
 
     #[cfg(feature = "management-rpc")]
     {
@@ -758,7 +762,7 @@ async fn start_services(
         mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
     }
 
-    let socket_addr = SocketAddr::from_str(&format!("{}:{}", listen_addr, listen_port))?;
+    let socket_addr = SocketAddr::from_str(&format!("{listen_addr}:{listen_port}"))?;
 
     let listener = tokio::net::TcpListener::bind(socket_addr).await?;
 
