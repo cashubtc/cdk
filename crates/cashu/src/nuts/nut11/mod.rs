@@ -400,14 +400,14 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
     fn try_from(secret: Nut10Secret) -> Result<SpendingConditions, Error> {
         match secret.kind() {
             Kind::P2PK => Ok(SpendingConditions::P2PKConditions {
-                data: PublicKey::from_str(&secret.secret_data().data())?,
+                data: PublicKey::from_str(secret.secret_data().data())?,
                 conditions: secret
                     .secret_data()
                     .tags()
                     .and_then(|t| t.clone().try_into().ok()),
             }),
             Kind::HTLC => Ok(Self::HTLCConditions {
-                data: Sha256Hash::from_str(&secret.secret_data().data())
+                data: Sha256Hash::from_str(secret.secret_data().data())
                     .map_err(|_| Error::InvalidHash)?,
                 conditions: secret
                     .secret_data()

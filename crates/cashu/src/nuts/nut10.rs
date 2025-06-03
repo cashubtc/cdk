@@ -43,14 +43,17 @@ pub struct SecretData {
 }
 
 impl SecretData {
+    /// Get the nonce
     pub fn nonce(&self) -> &str {
         &self.nonce
     }
 
+    /// Get the data
     pub fn data(&self) -> &str {
         &self.data
     }
 
+    /// Get the tags
     pub fn tags(&self) -> Option<&Vec<Vec<String>>> {
         self.tags.as_ref()
     }

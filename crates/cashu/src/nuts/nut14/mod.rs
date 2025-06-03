@@ -125,7 +125,7 @@ impl Proof {
         }
 
         let hash_lock =
-            Sha256Hash::from_str(&secret.secret_data().data()).map_err(|_| Error::InvalidHash)?;
+            Sha256Hash::from_str(secret.secret_data().data()).map_err(|_| Error::InvalidHash)?;
 
         let preimage_hash = Sha256Hash::hash(htlc_witness.preimage.as_bytes());
 
