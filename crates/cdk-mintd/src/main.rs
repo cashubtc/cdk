@@ -715,7 +715,11 @@ async fn start_services(
     #[cfg(not(feature = "management-rpc"))]
     let rpc_enabled = false;
 
-    let mut rpc_server_option: Option<Box<dyn std::any::Any + Send + Sync>> = None;
+    #[cfg(feature = "management-rpc")]
+    let rpc_server_option: Option<cdk_mint_rpc::MintRPCServer> = None;
+
+    #[cfg(not(feature = "management-rpc"))]
+    let rpc_server_option: Option<Box<dyn std::any::Any + Send + Sync>> = None;
 
     #[cfg(feature = "management-rpc")]
     {
