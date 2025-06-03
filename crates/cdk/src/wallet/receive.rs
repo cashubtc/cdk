@@ -91,7 +91,7 @@ impl Wallet {
 
                     match secret.kind() {
                         Kind::P2PK => {
-                            let data_key = PublicKey::from_str(&secret.secret_data().data())?;
+                            let data_key = PublicKey::from_str(secret.secret_data().data())?;
 
                             pubkeys.push(data_key);
                         }
