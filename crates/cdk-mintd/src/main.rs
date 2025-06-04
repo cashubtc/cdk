@@ -87,7 +87,7 @@ compile_error!(
 #[tokio::main]
 async fn main() -> Result<()> {
     let (work_dir, settings, localstore, keystore) = initial_setup().await?;
-    
+
     let mint_builder = MintBuilder::new()
         .with_localstore(localstore)
         .with_keystore(keystore);
@@ -148,7 +148,6 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
-
 
 /// Performs the initial setup for the application, including configuring tracing,
 /// parsing CLI arguments, setting up the working directory, loading settings,
@@ -233,21 +232,19 @@ async fn setup_database(
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
             Ok((localstore, keystore))
-        },
+        }
         #[cfg(feature = "redb")]
         DatabaseEngine::Redb => {
             let db = setup_redb_database(work_dir).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
             Ok((localstore, keystore))
-        },
+        }
     }
 }
 
 #[cfg(feature = "redb")]
-async fn setup_redb_database(
-    work_dir: &Path,
-) -> Result<Arc<MintRedbDatabase>> {
+async fn setup_redb_database(work_dir: &Path) -> Result<Arc<MintRedbDatabase>> {
     let redb_path = work_dir.join("cdk-mintd.redb");
     Ok(Arc::new(MintRedbDatabase::new(&redb_path)?))
 }
