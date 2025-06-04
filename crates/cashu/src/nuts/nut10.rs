@@ -43,6 +43,21 @@ pub struct SecretData {
 }
 
 impl SecretData {
+    /// Create new [`SecretData`]
+    pub fn new<S, V>(data: S, tags: Option<V>) -> Self
+    where
+        S: Into<String>,
+        V: Into<Vec<Vec<String>>>,
+    {
+        let nonce = crate::secret::Secret::generate().to_string();
+
+        Self {
+            nonce,
+            data: data.into(),
+            tags: tags.map(|v| v.into()),
+        }
+    }
+
     /// Get the nonce
     pub fn nonce(&self) -> &str {
         &self.nonce
@@ -75,14 +90,7 @@ impl Secret {
         S: Into<String>,
         V: Into<Vec<Vec<String>>>,
     {
-        let nonce = crate::secret::Secret::generate().to_string();
-
-        let secret_data = SecretData {
-            nonce,
-            data: data.into(),
-            tags: tags.map(|v| v.into()),
-        };
-
+        let secret_data = SecretData::new(data, tags);
         Self { kind, secret_data }
     }
 
