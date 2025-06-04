@@ -419,11 +419,6 @@ impl Wallet {
                     .filter(|p| response.outputs.contains(&p.blinded_message))
                     .collect();
 
-                let premint_secrets: Vec<_> = premint_secrets
-                    .iter()
-                    .filter(|p| response.outputs.contains(&p.blinded_message))
-                    .collect();
-
                 // the response outputs and premint secrets should be the same after filtering
                 // blinded messages the mint did not have signatures for
                 assert_eq!(response.outputs.len(), premint_secrets.len());
