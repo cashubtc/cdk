@@ -240,6 +240,9 @@
               # For wasm32-unknown-unknown target
               cargo update -p triomphe --precise 0.1.11
 
+              # Downgrade base64ct to avoid edition2024 error
+              cargo update -p base64ct --precise 1.7.3
+
               ";
               buildInputs = buildInputs ++ WASMInputs ++ [ msrv_toolchain ];
               inherit nativeBuildInputs;
@@ -278,7 +281,7 @@
                 echo "Docker is available at $(which docker)"
                 echo "Docker version: $(docker --version)"
               '';
-              buildInputs = buildInputs ++ [ 
+              buildInputs = buildInputs ++ [
                 stable_toolchain
                 pkgs.docker-client
               ];
