@@ -69,6 +69,7 @@ For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVE
 | [20][20] | Signature on Mint Quote  | :heavy_check_mark: |
 | [21][21] | Clear Authentication | :heavy_check_mark: |
 | [22][22] | Blind Authentication  | :heavy_check_mark: |
+| [23][23] | Payment Method: BOLT11 | :heavy_check_mark: |
 
 
 ## License
@@ -107,3 +108,4 @@ Please see the [development guide](DEVELOPMENT.md).
 [20]: https://github.com/cashubtc/nuts/blob/main/20.md
 [21]: https://github.com/cashubtc/nuts/blob/main/21.md
 [22]: https://github.com/cashubtc/nuts/blob/main/22.md
+[23]: https://github.com/cashubtc/nuts/blob/main/23.md
