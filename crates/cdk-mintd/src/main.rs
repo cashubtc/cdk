@@ -182,6 +182,7 @@ fn setup_tracing() {
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 }
 
+/// Retrieves the work directory based on command-line arguments, environment variables, or system defaults.
 async fn get_work_directory(args: &CLIArgs) -> Result<PathBuf> {
     let work_dir = if let Some(work_dir) = &args.work_dir {
         tracing::info!("Using work dir from cmd arg");
@@ -196,6 +197,7 @@ async fn get_work_directory(args: &CLIArgs) -> Result<PathBuf> {
     Ok(work_dir)
 }
 
+/// Loads the application settings based on a configuration file and environment variables.
 fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<config::Settings> {
     // get config file name from args
     let config_file_arg = match config_path {
