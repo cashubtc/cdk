@@ -114,8 +114,7 @@ async fn main() -> Result<()> {
     // Pending melt quotes where the payment has **failed** inputs are reset to unspent
     mint.check_pending_melt_quotes().await?;
 
-    #[cfg(feature = "management-rpc")]
-    let (shutdown, rpc_server_option) = start_services(
+    start_services(
         mint.clone(),
         &settings,
         ln_routers,
@@ -123,28 +122,6 @@ async fn main() -> Result<()> {
         mint_builder_info,
     )
     .await?;
-    #[cfg(not(feature = "management-rpc"))]
-    let (shutdown, _rpc_server_option) = start_services(
-        mint.clone(),
-        &settings,
-        ln_routers,
-        &work_dir,
-        mint_builder_info,
-    )
-    .await?;
-
-    // Wait for shutdown signal
-    shutdown.notified().await;
-
-    // Stop RPC server if it was started
-    #[cfg(feature = "management-rpc")]
-    {
-        if let Some(rpc_server) = rpc_server_option {
-            if let Some(server) = rpc_server.downcast_ref::<cdk_mint_rpc::MintRPCServer>() {
-                server.stop().await?;
-            }
-        }
-    }
 
     Ok(())
 }
@@ -696,7 +673,7 @@ async fn start_services(
     ln_routers: Vec<Router>,
     _work_dir: &Path,
     mint_builder_info: cdk::nuts::MintInfo,
-) -> Result<(Arc<Notify>, Option<Box<dyn std::any::Any + Send + Sync>>)> {
+) -> Result<()> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
     let cache: HttpCache = settings.info.http_cache.clone().into();
@@ -739,11 +716,8 @@ async fn start_services(
     #[cfg(not(feature = "management-rpc"))]
     let rpc_enabled = false;
 
-    // Initialize rpc_server_option based on feature flag
     #[cfg(feature = "management-rpc")]
-    let mut rpc_server_option: Option<Box<dyn std::any::Any + Send + Sync>> = None;
-    #[cfg(not(feature = "management-rpc"))]
-    let rpc_server_option: Option<Box<dyn std::any::Any + Send + Sync>> = None;
+    let mut rpc_server: Option<cdk_mint_rpc::MintRPCServer> = None;
 
     #[cfg(feature = "management-rpc")]
     {
@@ -762,8 +736,7 @@ async fn start_services(
 
                 mint_rpc.start(Some(tls_dir)).await?;
 
-                // Properly box MintRPCServer
-                rpc_server_option = Some(Box::new(mint_rpc));
+                rpc_server = Some(mint_rpc);
 
                 rpc_enabled = true;
             }
@@ -793,17 +766,31 @@ async fn start_services(
 
     tracing::debug!("listening on {}", listener.local_addr().unwrap());
 
-    let axum_server = axum::serve(listener, mint_service).with_graceful_shutdown(shutdown_signal());
+    // Wait for axum server to complete
+    let axum_result = axum::serve(listener, mint_service).with_graceful_shutdown(shutdown_signal());
 
-    tokio::spawn(async move {
-        if let Err(err) = axum_server.await {
-            tracing::error!("Axum server error: {}", err);
-        } else {
-            tracing::info!("Axum server stopped gracefully.");
+    match axum_result.await {
+        Ok(_) => {
+            tracing::info!("Axum server stopped with okay status");
         }
-    });
+        Err(err) => {
+            tracing::warn!("Axum server stopped with error");
+            tracing::error!("{}", err);
+            bail!("Axum exited with error")
+        }
+    }
 
-    Ok((shutdown, rpc_server_option))
+    // Notify all waiting tasks to shutdown
+    shutdown.notify_waiters();
+
+    #[cfg(feature = "management-rpc")]
+    {
+        if let Some(rpc_server) = rpc_server {
+            rpc_server.stop().await?;
+        }
+    }
+
+    Ok(())
 }
 
 async fn shutdown_signal() {
