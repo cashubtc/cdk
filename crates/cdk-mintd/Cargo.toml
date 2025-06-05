@@ -21,7 +21,6 @@ fakewallet = ["dep:cdk-fake-wallet"]
 grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
 sqlcipher = ["cdk-sqlite/sqlcipher"]
 # MSRV is not committed to with redb enabled
-redb = ["dep:cdk-redb"]
 swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
 redis = ["cdk-axum/redis"]
 auth = ["cdk/auth", "cdk-sqlite/auth"]
@@ -33,10 +32,6 @@ axum.workspace = true
 cdk = { workspace = true, features = [
     "mint",
 ] }
-cdk-redb = { workspace = true, features = [
-    "mint",
-    "auth"
-], optional = true }
 cdk-sqlite = { workspace = true, features = [
     "mint",
 ] }
