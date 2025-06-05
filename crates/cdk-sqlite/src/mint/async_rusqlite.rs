@@ -225,6 +225,7 @@ fn rusqlite_worker_manager(
                 };
 
                 let _ = send_sql_to_thread.send((conn, sql, reply_to));
+                continue;
             }
             DbRequest::Begin(reply_to) => {
                 let (sender, mut receiver) = mpsc::channel(SQL_QUEUE_SIZE);
