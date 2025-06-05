@@ -12,7 +12,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: thesimplekid/cdk-mintd
+  IMAGE_NAME: cashubtc/mintd
 
 jobs:
   build-and-push:
