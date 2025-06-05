@@ -1,32 +1,42 @@
 use rusqlite::{self, CachedStatement};
 
 use crate::common::SqliteConnectionManager;
-use crate::pool::WrappedResource;
+use crate::pool::PooledResource;
 
+/// The Value coming from SQLite
 pub type Value = rusqlite::types::Value;
 
 /// The Column type
-pub type Column = rusqlite::types::Value;
+pub type Column = Value;
 
-/// Expected Sql response
+/// Expected response type for a given SQL statement
 #[derive(Debug, Clone, Copy, Default)]
 pub enum ExpectedSqlResponse {
+    /// A single row
     SingleRow,
+    /// All the rows that matches a query
     #[default]
     ManyRows,
+    /// How many rows were affected by the query
     AffectedRows,
+    /// Return the first column of the first row
     Pluck,
 }
 
 /// Sql message
 #[derive(Default, Debug)]
 pub struct Statement {
+    /// The SQL statement
     pub sql: String,
+    /// The list of arguments for the placeholders. It only supports named arguments for simplicity
+    /// sake
     pub args: Vec<(String, Value)>,
+    /// The expected response type
     pub expected_response: ExpectedSqlResponse,
 }
 
 impl Statement {
+    /// Creates a new statement
     pub fn new<T: ToString>(sql: T) -> Self {
         Self {
             sql: sql.to_string(),
@@ -34,6 +44,7 @@ impl Statement {
         }
     }
 
+    /// Binds a given placeholder to a value.
     #[inline]
     pub fn bind<C: ToString, V: Into<Value>>(mut self, name: C, value: V) -> Self {
         self.args.push((name.to_string(), value.into()));
@@ -87,7 +98,7 @@ impl Statement {
 
     fn get_stmt(
         self,
-        conn: &WrappedResource<SqliteConnectionManager>,
+        conn: &PooledResource<SqliteConnectionManager>,
     ) -> rusqlite::Result<CachedStatement<'_>> {
         let mut stmt = conn.prepare_cached(&self.sql)?;
         for (name, value) in self.args {
@@ -101,11 +112,11 @@ impl Statement {
 
         Ok(stmt)
     }
-    ///
+
     /// Executes a query and returns the affected rows
     pub fn plunk(
         self,
-        conn: &WrappedResource<SqliteConnectionManager>,
+        conn: &PooledResource<SqliteConnectionManager>,
     ) -> rusqlite::Result<Option<Value>> {
         let mut stmt = self.get_stmt(conn)?;
         let mut rows = stmt.raw_query();
@@ -115,7 +126,7 @@ impl Statement {
     /// Executes a query and returns the affected rows
     pub fn execute(
         self,
-        conn: &WrappedResource<SqliteConnectionManager>,
+        conn: &PooledResource<SqliteConnectionManager>,
     ) -> rusqlite::Result<usize> {
         self.get_stmt(conn)?.raw_execute()
     }
@@ -123,7 +134,7 @@ impl Statement {
     /// Runs the query and returns the first row or None
     pub fn fetch_one(
         self,
-        conn: &WrappedResource<SqliteConnectionManager>,
+        conn: &PooledResource<SqliteConnectionManager>,
     ) -> rusqlite::Result<Option<Vec<Column>>> {
         let mut stmt = self.get_stmt(conn)?;
         let columns = stmt.column_count();
@@ -140,7 +151,7 @@ impl Statement {
     /// Runs the query and returns the first row or None
     pub fn fetch_all(
         self,
-        conn: &WrappedResource<SqliteConnectionManager>,
+        conn: &PooledResource<SqliteConnectionManager>,
     ) -> rusqlite::Result<Vec<Vec<Column>>> {
         let mut stmt = self.get_stmt(conn)?;
         let columns = stmt.column_count();

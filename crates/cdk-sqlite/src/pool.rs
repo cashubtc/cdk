@@ -6,24 +6,33 @@ use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
+/// Pool error
 #[derive(thiserror::Error, Debug)]
 pub enum Error<E> {
     /// Mutex Poison Error
     #[error("Internal: PoisonError")]
-    PoisonError,
+    Poison,
+
+    /// Timeout error
+    #[error("Timed out waiting for a resource")]
+    Timeout,
 
     /// Internal database error
     #[error(transparent)]
-    ResourceError(#[from] E),
+    Resource(#[from] E),
 }
 
 /// Trait to manage resources
 pub trait ResourceManager: Debug {
+    /// The resource to be pooled
     type Resource: Debug;
 
+    /// The configuration that is needed in order to create the resource
     type Config: Debug;
 
+    /// The error the resource may return when creating a new instance
     type Error: Debug;
 
     /// Creates a new resource with a given config
@@ -43,10 +52,12 @@ where
     queue: Mutex<Vec<RM::Resource>>,
     in_use: AtomicUsize,
     max_size: usize,
+    default_timeout: Duration,
     waiter: Condvar,
 }
 
-pub struct WrappedResource<RM>
+/// The pooled resource
+pub struct PooledResource<RM>
 where
     RM: ResourceManager,
 {
@@ -54,7 +65,7 @@ where
     pool: Arc<Pool<RM>>,
 }
 
-impl<RM> Drop for WrappedResource<RM>
+impl<RM> Drop for PooledResource<RM>
 where
     RM: ResourceManager,
 {
@@ -70,7 +81,7 @@ where
     }
 }
 
-impl<RM> Deref for WrappedResource<RM>
+impl<RM> Deref for PooledResource<RM>
 where
     RM: ResourceManager,
 {
@@ -81,7 +92,7 @@ where
     }
 }
 
-impl<RM> DerefMut for WrappedResource<RM>
+impl<RM> DerefMut for PooledResource<RM>
 where
     RM: ResourceManager,
 {
@@ -95,25 +106,40 @@ where
     RM: ResourceManager,
 {
     /// Creates a new pool
-    pub fn new(config: RM::Config, max_size: usize) -> Arc<Self> {
+    pub fn new(config: RM::Config, max_size: usize, default_timeout: Duration) -> Arc<Self> {
         Arc::new(Self {
             config,
             queue: Default::default(),
             in_use: Default::default(),
             waiter: Default::default(),
+            default_timeout,
             max_size,
         })
     }
 
-    pub fn get(self: &Arc<Self>) -> Result<WrappedResource<RM>, Error<RM::Error>> {
-        let mut resources = self.queue.lock().map_err(|_| Error::PoisonError)?;
+    /// Similar to get_timeout but uses the default timeout value.
+    #[inline(always)]
+    pub fn get(self: &Arc<Self>) -> Result<PooledResource<RM>, Error<RM::Error>> {
+        self.get_timeout(self.default_timeout)
+    }
+
+    /// Get a new resource or fail after timeout is reached.
+    ///
+    /// This function will return a free resource or create a new one if there is still room for it;
+    /// otherwise, it will wait for a resource to be released for reuse.
+    #[inline(always)]
+    pub fn get_timeout(
+        self: &Arc<Self>,
+        timeout: Duration,
+    ) -> Result<PooledResource<RM>, Error<RM::Error>> {
+        let mut resources = self.queue.lock().map_err(|_| Error::Poison)?;
 
         loop {
             if let Some(resource) = resources.pop() {
                 drop(resources);
                 self.in_use.fetch_add(1, Ordering::AcqRel);
 
-                return Ok(WrappedResource {
+                return Ok(PooledResource {
                     resource: Some(resource),
                     pool: self.clone(),
                 });
@@ -123,7 +149,7 @@ where
                 drop(resources);
                 self.in_use.fetch_add(1, Ordering::AcqRel);
 
-                return Ok(WrappedResource {
+                return Ok(PooledResource {
                     resource: Some(RM::new_resource(&self.config)?),
                     pool: self.clone(),
                 });
@@ -131,8 +157,15 @@ where
 
             resources = self
                 .waiter
-                .wait(resources)
-                .map_err(|_| Error::PoisonError)?;
+                .wait_timeout(resources, timeout)
+                .map_err(|_| Error::Poison)
+                .and_then(|(lock, timeout_result)| {
+                    if timeout_result.timed_out() {
+                        Err(Error::Timeout)
+                    } else {
+                        Ok(lock)
+                    }
+                })?;
         }
     }
 }
