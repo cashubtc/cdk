@@ -343,14 +343,14 @@ mod tests {
         let full_secret: crate::nuts::Nut10Secret = secret_request.clone().into();
 
         // Check conversion
-        assert_eq!(full_secret.kind, Kind::P2PK);
+        assert_eq!(full_secret.kind(), Kind::P2PK);
         assert_eq!(
-            full_secret.secret_data.data,
+            full_secret.secret_data().data(),
             "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198"
         );
         assert_eq!(
-            full_secret.secret_data.tags,
-            Some(vec![vec!["key".to_string(), "value".to_string()]])
+            full_secret.secret_data().tags().clone(),
+            Some(vec![vec!["key".to_string(), "value".to_string()]]).as_ref()
         );
 
         // Convert back to Nut10SecretRequest
