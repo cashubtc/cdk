@@ -7,10 +7,10 @@ use thiserror::Error;
 pub enum Error {
     /// SQLX Error
     #[error(transparent)]
-    Sqlite(#[from] r2d2_sqlite::rusqlite::Error),
+    Sqlite(#[from] rusqlite::Error),
     /// Pool error
     #[error(transparent)]
-    Pool(#[from] r2d2::Error),
+    Pool(#[from] crate::pool::Error<rusqlite::Error>),
 
     /// Missing columns
     #[error("Not enough elements: expected {0}, got {1}")]

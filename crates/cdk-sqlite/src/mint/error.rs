@@ -7,11 +7,11 @@ use thiserror::Error;
 pub enum Error {
     /// SQLX Error
     #[error(transparent)]
-    Sqlite(#[from] r2d2_sqlite::rusqlite::Error),
+    Sqlite(#[from] rusqlite::Error),
 
     /// Pool error
     #[error(transparent)]
-    Pool(#[from] r2d2::Error),
+    Pool(#[from] crate::pool::Error<rusqlite::Error>),
     /// Invalid UUID
     #[error("Invalid UUID: {0}")]
     InvalidUuid(String),
