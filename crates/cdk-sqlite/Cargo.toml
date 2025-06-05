@@ -22,7 +22,7 @@ sqlcipher = ["rusqlite/bundled-sqlcipher"]
 async-trait.workspace = true
 cdk-common = { workspace = true, features = ["test"] }
 bitcoin.workspace = true
-rusqlite = { version = "0.27", features = ["bundled"]}
+rusqlite = { version = "0.31", features = ["bundled"]}
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
