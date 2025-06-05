@@ -46,12 +46,20 @@ pub struct Statement(InnerStatement);
 
 impl Statement {
     /// Bind a variable
-    pub fn bind<C: ToString, V: Into<Value>>(self, name: C, value: V) -> Self {
+    pub fn bind<C, V>(self, name: C, value: V) -> Self
+    where
+        C: ToString,
+        V: Into<Value>,
+    {
         Self(self.0.bind(name, value))
     }
 
     /// Bind vec
-    pub fn bind_vec<C: ToString, V: Into<Value>>(self, name: C, value: Vec<V>) -> Self {
+    pub fn bind_vec<C, V>(self, name: C, value: Vec<V>) -> Self
+    where
+        C: ToString,
+        V: Into<Value>,
+    {
         Self(self.0.bind_vec(name, value))
     }
 
@@ -374,7 +382,10 @@ pub trait DatabaseExecutor {
 }
 
 #[inline(always)]
-pub fn query<T: ToString>(sql: T) -> Statement {
+pub fn query<T>(sql: T) -> Statement
+where
+    T: ToString,
+{
     Statement(crate::stmt::Statement::new(sql))
 }
 
