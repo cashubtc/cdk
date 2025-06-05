@@ -78,7 +78,7 @@ impl Secret {
             serde_json::from_str(&self.0);
 
         if let Ok(secret) = secret {
-            if secret.kind.eq(&Kind::P2PK) {
+            if secret.kind().eq(&Kind::P2PK) {
                 return true;
             }
         }

@@ -80,19 +80,23 @@ impl Wallet {
                     proof.secret.clone(),
                 )
             {
-                let conditions: Result<Conditions, _> =
-                    secret.secret_data.tags.unwrap_or_default().try_into();
+                let conditions: Result<Conditions, _> = secret
+                    .secret_data()
+                    .tags()
+                    .cloned()
+                    .unwrap_or_default()
+                    .try_into();
                 if let Ok(conditions) = conditions {
                     let mut pubkeys = conditions.pubkeys.unwrap_or_default();
 
-                    match secret.kind {
+                    match secret.kind() {
                         Kind::P2PK => {
-                            let data_key = PublicKey::from_str(&secret.secret_data.data)?;
+                            let data_key = PublicKey::from_str(secret.secret_data().data())?;
 
                             pubkeys.push(data_key);
                         }
                         Kind::HTLC => {
-                            let hashed_preimage = &secret.secret_data.data;
+                            let hashed_preimage = secret.secret_data().data();
                             let preimage = hashed_to_preimage
                                 .get(hashed_preimage)
                                 .ok_or(Error::PreimageNotProvided)?;

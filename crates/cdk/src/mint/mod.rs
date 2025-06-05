@@ -387,7 +387,7 @@ impl Mint {
                     // only supported secret kinds are used as there is no way for the mint to
                     // enforce only signing supported secrets as they are blinded at
                     // that point.
-                    match secret.kind {
+                    match secret.kind() {
                         Kind::P2PK => {
                             proof.verify_p2pk()?;
                         }

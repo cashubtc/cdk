@@ -34,21 +34,53 @@ pub enum Kind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SecretData {
     /// Unique random string
-    pub nonce: String,
+    nonce: String,
     /// Expresses the spending condition specific to each kind
-    pub data: String,
+    data: String,
     /// Additional data committed to and can be used for feature extensions
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<Vec<String>>>,
+    tags: Option<Vec<Vec<String>>>,
+}
+
+impl SecretData {
+    /// Create new [`SecretData`]
+    pub fn new<S, V>(data: S, tags: Option<V>) -> Self
+    where
+        S: Into<String>,
+        V: Into<Vec<Vec<String>>>,
+    {
+        let nonce = crate::secret::Secret::generate().to_string();
+
+        Self {
+            nonce,
+            data: data.into(),
+            tags: tags.map(|v| v.into()),
+        }
+    }
+
+    /// Get the nonce
+    pub fn nonce(&self) -> &str {
+        &self.nonce
+    }
+
+    /// Get the data
+    pub fn data(&self) -> &str {
+        &self.data
+    }
+
+    /// Get the tags
+    pub fn tags(&self) -> Option<&Vec<Vec<String>>> {
+        self.tags.as_ref()
+    }
 }
 
 /// NUT10 Secret
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Secret {
     ///  Kind of the spending condition
-    pub kind: Kind,
+    kind: Kind,
     /// Secret Data
-    pub secret_data: SecretData,
+    secret_data: SecretData,
 }
 
 impl Secret {
@@ -58,15 +90,18 @@ impl Secret {
         S: Into<String>,
         V: Into<Vec<Vec<String>>>,
     {
-        let nonce = crate::secret::Secret::generate().to_string();
-
-        let secret_data = SecretData {
-            nonce,
-            data: data.into(),
-            tags: tags.map(|v| v.into()),
-        };
-
+        let secret_data = SecretData::new(data, tags);
         Self { kind, secret_data }
+    }
+
+    /// Get the kind
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
+    /// Get the secret data
+    pub fn secret_data(&self) -> &SecretData {
+        &self.secret_data
     }
 }
 

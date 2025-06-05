@@ -47,12 +47,12 @@ impl Nut10SecretRequest {
 impl From<Nut10Secret> for Nut10SecretRequest {
     fn from(secret: Nut10Secret) -> Self {
         let secret_data = SecretDataRequest {
-            data: secret.secret_data.data,
-            tags: secret.secret_data.tags,
+            data: secret.secret_data().data().to_string(),
+            tags: secret.secret_data().tags().cloned(),
         };
 
         Self {
-            kind: secret.kind,
+            kind: secret.kind(),
             secret_data,
         }
     }
