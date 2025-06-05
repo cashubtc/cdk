@@ -705,23 +705,16 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
         .transpose()?
         .ok_or(Error::QuoteNotFound)?;
 
-        let update_query = if state == MeltQuoteState::Paid {
-            r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time WHERE id = :id"#
-        } else {
-            r#"UPDATE melt_quote SET state = :state WHERE id = :id"#
-        };
-
-        let current_time = unix_time();
-
         let rec = if state == MeltQuoteState::Paid {
-            query(update_query)
+            let current_time = unix_time();
+            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time WHERE id = :id"#)
                 .bind(":state", state.to_string())
                 .bind(":paid_time", current_time as i64)
                 .bind(":id", quote_id.as_hyphenated().to_string())
                 .execute(&transaction)
                 .await
         } else {
-            query(update_query)
+            query(r#"UPDATE melt_quote SET state = :state WHERE id = :id"#)
                 .bind(":state", state.to_string())
                 .bind(":id", quote_id.as_hyphenated().to_string())
                 .execute(&transaction)
