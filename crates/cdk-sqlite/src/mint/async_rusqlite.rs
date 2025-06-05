@@ -138,8 +138,19 @@ fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, E
     })
 }
 
+/// # Rusqlite main worker
+///
+/// This function takes ownership of a pool of connections to SQLite, executes SQL statements, and
+/// returns the results or number of affected rows to the caller. All communications are done
+/// through channels. This function is synchronous, but a thread pool exists to execute queries, and
+/// SQLite will coordinate data access. Transactions are executed in the main and it takes ownership
+/// of the main thread until it is finalized
+///
+/// This is meant to be called in their thread, as it will not exit the loop until the communication
+/// channel is closed.
 fn rusqlite_worker(
     mut receiver: mpsc::Receiver<DbRequest>,
+
     pool: Arc<Pool<SqliteConnectionManager>>,
 ) {
     while let Some(request) = receiver.blocking_recv() {
@@ -240,8 +251,10 @@ fn rusqlite_worker(
 
 #[async_trait::async_trait]
 pub trait DatabaseExecutor {
+    /// Returns the connection to the database thread (or the on-going transaction)
     fn get_queue_sender(&self) -> mpsc::Sender<DbRequest>;
 
+    /// Executes a query and returns the affected rows
     async fn execute(&self, mut statement: InnerStatement) -> Result<usize, Error> {
         let (sender, receiver) = oneshot::channel();
         statement.expected_response = ExpectedSqlResponse::AffectedRows;
@@ -257,6 +270,7 @@ pub trait DatabaseExecutor {
         }
     }
 
+    /// Runs the query and returns the first row or None
     async fn fetch_one(&self, mut statement: InnerStatement) -> Result<Option<Vec<Column>>, Error> {
         let (sender, receiver) = oneshot::channel();
         statement.expected_response = ExpectedSqlResponse::SingleRow;
@@ -272,6 +286,7 @@ pub trait DatabaseExecutor {
         }
     }
 
+    /// Runs the query and returns the first row or None
     async fn fetch_all(&self, mut statement: InnerStatement) -> Result<Vec<Vec<Column>>, Error> {
         let (sender, receiver) = oneshot::channel();
         statement.expected_response = ExpectedSqlResponse::ManyRows;
