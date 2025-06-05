@@ -239,11 +239,11 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
     async fn add_blind_signatures(
         &self,
         blinded_messages: &[PublicKey],
-        blinded_signatures: &[BlindSignature],
+        blind_signatures: &[BlindSignature],
     ) -> Result<(), Self::Err> {
         let transaction = self.pool.begin().await?;
 
-        for (message, signature) in blinded_messages.iter().zip(blinded_signatures) {
+        for (message, signature) in blinded_messages.iter().zip(blind_signatures) {
             query(
                 r#"
                     INSERT
