@@ -226,23 +226,12 @@
               shellHook = "
               ${_shellHook}
               cargo update
-              cargo update -p async-compression --precise 0.4.3
-              cargo update -p zstd-sys --precise 2.0.8+zstd.1.5.5
-              cargo update -p flate2 --precise 1.0.35
-
-
-              cargo update -p home --precise 0.5.5
+              # cargo update -p async-compression --precise 0.4.3
+              cargo update -p home --precise 0.5.9
               cargo update -p zerofrom --precise 0.1.5
               cargo update -p half --precise 2.4.1
-
-              cargo update -p url --precise 2.5.2
-
-              # For wasm32-unknown-unknown target
-              cargo update -p triomphe --precise 0.1.11
-
-              # Downgrade base64ct to avoid edition2024 error
               cargo update -p base64ct --precise 1.7.3
-
+              cargo update -p url --precise 2.5.2
               ";
               buildInputs = buildInputs ++ WASMInputs ++ [ msrv_toolchain ];
               inherit nativeBuildInputs;
@@ -281,7 +270,7 @@
                 echo "Docker is available at $(which docker)"
                 echo "Docker version: $(docker --version)"
               '';
-              buildInputs = buildInputs ++ [
+              buildInputs = buildInputs ++ [ 
                 stable_toolchain
                 pkgs.docker-client
               ];
