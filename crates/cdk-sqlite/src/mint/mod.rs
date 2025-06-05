@@ -1,6 +1,7 @@
 //! SQLite Mint
 
 use std::collections::HashMap;
+use std::ops::DerefMut;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -55,8 +56,8 @@ impl MintSqliteDatabase {
     /// Create new [`MintSqliteDatabase`]
     #[cfg(not(feature = "sqlcipher"))]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let pool = create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?)?;
-        migrate(pool.get()?, migrations::MIGRATIONS)?;
+        let pool = create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?);
+        migrate(pool.get()?.deref_mut(), migrations::MIGRATIONS)?;
 
         Ok(Self {
             pool: async_rusqlite::AsyncRusqlite::new(pool),
@@ -69,8 +70,8 @@ impl MintSqliteDatabase {
         let pool = create_sqlite_pool(
             path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
             password,
-        )?;
-        migrate(pool.get()?, migrations::MIGRATIONS)?;
+        );
+        migrate(pool.get()?.deref_mut(), migrations::MIGRATIONS)?;
 
         Ok(Self {
             pool: async_rusqlite::AsyncRusqlite::new(pool),

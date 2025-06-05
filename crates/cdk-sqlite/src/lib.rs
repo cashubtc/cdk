@@ -5,6 +5,7 @@
 
 mod common;
 mod macros;
+mod pool;
 mod stmt;
 
 #[cfg(feature = "mint")]

@@ -1,6 +1,7 @@
 //! SQLite Mint Auth
 
 use std::collections::HashMap;
+use std::ops::DerefMut;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -34,10 +35,10 @@ impl MintSqliteAuthDatabase {
         let pool = create_sqlite_pool(
             path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
             "".to_owned(),
-        )?;
+        );
         #[cfg(not(feature = "sqlcipher"))]
-        let pool = create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?)?;
-        migrate(pool.get()?, migrations::MIGRATIONS)?;
+        let pool = create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?);
+        migrate(pool.get()?.deref_mut(), migrations::MIGRATIONS)?;
 
         Ok(Self {
             pool: AsyncRusqlite::new(pool),

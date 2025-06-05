@@ -1,8 +1,10 @@
 //! SQLite Wallet Database
 
 use std::collections::HashMap;
+use std::ops::DerefMut;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::common::ProofInfo;
@@ -16,11 +18,10 @@ use cdk_common::{
     SecretKey, SpendingConditions, State,
 };
 use error::Error;
-use r2d2::Pool;
-use r2d2_sqlite::SqliteConnectionManager;
 use tracing::instrument;
 
-use crate::common::{create_sqlite_pool, migrate};
+use crate::common::{create_sqlite_pool, migrate, SqliteConnectionManager};
+use crate::pool::Pool;
 use crate::stmt::{Column, Statement};
 use crate::{
     column_as_binary, column_as_nullable_binary, column_as_nullable_number,
@@ -36,7 +37,7 @@ mod migrations;
 /// Wallet SQLite Database
 #[derive(Debug, Clone)]
 pub struct WalletSqliteDatabase {
-    pool: Pool<SqliteConnectionManager>,
+    pool: Arc<Pool<SqliteConnectionManager>>,
 }
 
 impl WalletSqliteDatabase {
@@ -44,7 +45,7 @@ impl WalletSqliteDatabase {
     #[cfg(not(feature = "sqlcipher"))]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let db = Self {
-            pool: create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?)?,
+            pool: create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?),
         };
         db.migrate()?;
         Ok(db)
@@ -57,7 +58,7 @@ impl WalletSqliteDatabase {
             pool: create_sqlite_pool(
                 path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
                 password,
-            )?,
+            ),
         };
         db.migrate()?;
         Ok(db)
@@ -65,7 +66,7 @@ impl WalletSqliteDatabase {
 
     /// Migrate [`WalletSqliteDatabase`]
     fn migrate(&self) -> Result<(), Error> {
-        migrate(self.pool.get()?, migrations::MIGRATIONS)?;
+        migrate(self.pool.get()?.deref_mut(), migrations::MIGRATIONS)?;
         Ok(())
     }
 }

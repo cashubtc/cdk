@@ -1,13 +1,15 @@
 use std::marker::PhantomData;
+use std::sync::Arc;
 //use std::sync::atomic::AtomicUsize;
 //use std::sync::Arc;
 use std::thread::spawn;
 
-use r2d2_sqlite::rusqlite::Connection;
-use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::Connection;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::common::SqliteConnectionManager;
 use crate::mint::Error;
+use crate::pool::Pool;
 use crate::stmt::{Column, ExpectedSqlResponse, Statement as InnerStatement, Value};
 
 const BUFFER_REQUEST_SIZE: usize = 10_000;
@@ -137,7 +139,7 @@ fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, E
 
 fn rusqlite_worker(
     mut receiver: mpsc::Receiver<DbRequest>,
-    pool: r2d2::Pool<SqliteConnectionManager>,
+    pool: Arc<Pool<SqliteConnectionManager>>,
 ) {
     while let Some(request) = receiver.blocking_recv() {
         match request {
@@ -306,7 +308,7 @@ pub fn query<T: ToString>(sql: T) -> Statement {
 }
 
 impl AsyncRusqlite {
-    pub fn new(pool: r2d2::Pool<SqliteConnectionManager>) -> Self {
+    pub fn new(pool: Arc<Pool<SqliteConnectionManager>>) -> Self {
         let (sender, receiver) = mpsc::channel(BUFFER_REQUEST_SIZE);
         spawn(move || {
             rusqlite_worker(receiver, pool);

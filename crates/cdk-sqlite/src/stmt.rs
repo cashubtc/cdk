@@ -1,11 +1,12 @@
-use r2d2::PooledConnection;
-use r2d2_sqlite::rusqlite::{self, CachedStatement};
-use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::{self, CachedStatement};
 
-pub type Value = r2d2_sqlite::rusqlite::types::Value;
+use crate::common::SqliteConnectionManager;
+use crate::pool::WrappedResource;
+
+pub type Value = rusqlite::types::Value;
 
 /// The Column type
-pub type Column = r2d2_sqlite::rusqlite::types::Value;
+pub type Column = rusqlite::types::Value;
 
 /// Expected Sql response
 #[derive(Debug, Clone, Copy, Default)]
@@ -86,7 +87,7 @@ impl Statement {
 
     fn get_stmt(
         self,
-        conn: &PooledConnection<SqliteConnectionManager>,
+        conn: &WrappedResource<SqliteConnectionManager>,
     ) -> rusqlite::Result<CachedStatement<'_>> {
         let mut stmt = conn.prepare_cached(&self.sql)?;
         for (name, value) in self.args {
@@ -104,7 +105,7 @@ impl Statement {
     /// Executes a query and returns the affected rows
     pub fn plunk(
         self,
-        conn: &PooledConnection<SqliteConnectionManager>,
+        conn: &WrappedResource<SqliteConnectionManager>,
     ) -> rusqlite::Result<Option<Value>> {
         let mut stmt = self.get_stmt(conn)?;
         let mut rows = stmt.raw_query();
@@ -114,7 +115,7 @@ impl Statement {
     /// Executes a query and returns the affected rows
     pub fn execute(
         self,
-        conn: &PooledConnection<SqliteConnectionManager>,
+        conn: &WrappedResource<SqliteConnectionManager>,
     ) -> rusqlite::Result<usize> {
         self.get_stmt(conn)?.raw_execute()
     }
@@ -122,7 +123,7 @@ impl Statement {
     /// Runs the query and returns the first row or None
     pub fn fetch_one(
         self,
-        conn: &PooledConnection<SqliteConnectionManager>,
+        conn: &WrappedResource<SqliteConnectionManager>,
     ) -> rusqlite::Result<Option<Vec<Column>>> {
         let mut stmt = self.get_stmt(conn)?;
         let columns = stmt.column_count();
@@ -139,7 +140,7 @@ impl Statement {
     /// Runs the query and returns the first row or None
     pub fn fetch_all(
         self,
-        conn: &PooledConnection<SqliteConnectionManager>,
+        conn: &WrappedResource<SqliteConnectionManager>,
     ) -> rusqlite::Result<Vec<Vec<Column>>> {
         let mut stmt = self.get_stmt(conn)?;
         let columns = stmt.column_count();
