@@ -13,8 +13,6 @@ use bip39::rand::{thread_rng, Rng};
 use bip39::Mnemonic;
 use cdk_common::database::MintKeysDatabase;
 use cdk_common::CurrencyUnit;
-#[cfg(feature = "redb")]
-use cdk_redb::MintRedbDatabase;
 use cdk_signatory::{db_signatory, start_grpc_server};
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::MintSqliteDatabase;
@@ -120,17 +118,6 @@ pub async fn cli_main() -> Result<()> {
                 #[cfg(not(feature = "sqlite"))]
                 {
                     bail!("sqlite feature not enabled");
-                }
-            }
-            "redb" => {
-                #[cfg(feature = "redb")]
-                {
-                    let redb_path = work_dir.join("cdk-cli.redb");
-                    Arc::new(MintRedbDatabase::new(&redb_path)?)
-                }
-                #[cfg(not(feature = "redb"))]
-                {
-                    bail!("redb feature not enabled");
                 }
             }
             _ => bail!("Unknown DB engine"),

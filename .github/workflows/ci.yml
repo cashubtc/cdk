@@ -123,8 +123,7 @@ jobs:
             --bin cdk-cli --features "sqlcipher redb",
             --bin cdk-mintd,
             --bin cdk-mintd --features redis,
-            --bin cdk-mintd --features redb,
-            --bin cdk-mintd --features "redis swagger redb",
+            --bin cdk-mintd --features "redis swagger",
             --bin cdk-mintd --features sqlcipher,
             --bin cdk-mintd --no-default-features --features lnd,
             --bin cdk-mintd --no-default-features --features cln,
@@ -167,7 +166,6 @@ jobs:
           ]
         database: 
           [
-            REDB,
             SQLITE,
           ]
     steps:
@@ -193,7 +191,6 @@ jobs:
           ]
         database: 
           [
-          REDB,
           SQLITE,
           ]
     steps:
@@ -358,7 +355,6 @@ jobs:
       matrix:
         database: 
           [
-          REDB,
           SQLITE,
           ]
     steps:

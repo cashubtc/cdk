@@ -42,10 +42,6 @@ use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
-#[cfg(feature = "redb")]
-use cdk_redb::mint::MintRedbAuthDatabase;
-#[cfg(feature = "redb")]
-use cdk_redb::MintRedbDatabase;
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
@@ -127,14 +123,6 @@ async fn main() -> anyhow::Result<()> {
             let sqlite_db = MintSqliteDatabase::new(&sql_db_path, args.password.clone()).await?;
 
             let db = Arc::new(sqlite_db);
-            MintBuilder::new()
-                .with_localstore(db.clone())
-                .with_keystore(db)
-        }
-        #[cfg(feature = "redb")]
-        DatabaseEngine::Redb => {
-            let redb_path = work_dir.join("cdk-mintd.redb");
-            let db = Arc::new(MintRedbDatabase::new(&redb_path)?);
             MintBuilder::new()
                 .with_localstore(db.clone())
                 .with_keystore(db)
@@ -412,11 +400,6 @@ async fn main() -> anyhow::Result<()> {
                         MintSqliteAuthDatabase::new(&sql_db_path, args.password).await?;
 
                     Arc::new(sqlite_db)
-                }
-                #[cfg(feature = "redb")]
-                DatabaseEngine::Redb => {
-                    let redb_path = work_dir.join("cdk-mintd-auth.redb");
-                    Arc::new(MintRedbAuthDatabase::new(&redb_path)?)
                 }
             };
 
