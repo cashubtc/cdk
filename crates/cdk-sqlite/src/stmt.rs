@@ -37,7 +37,10 @@ pub struct Statement {
 
 impl Statement {
     /// Creates a new statement
-    pub fn new<T: ToString>(sql: T) -> Self {
+    pub fn new<T>(sql: T) -> Self
+    where
+        T: ToString,
+    {
         Self {
             sql: sql.to_string(),
             ..Default::default()
@@ -46,7 +49,11 @@ impl Statement {
 
     /// Binds a given placeholder to a value.
     #[inline]
-    pub fn bind<C: ToString, V: Into<Value>>(mut self, name: C, value: V) -> Self {
+    pub fn bind<C, V>(mut self, name: C, value: V) -> Self
+    where
+        C: ToString,
+        V: Into<Value>,
+    {
         self.args.push((name.to_string(), value.into()));
         self
     }
@@ -56,7 +63,11 @@ impl Statement {
     /// This will rewrite the function from `:foo` (where value is vec![1, 2, 3]) to `:foo0, :foo1,
     /// :foo2` and binds each value from the value vector accordingly.
     #[inline]
-    pub fn bind_vec<C: ToString, V: Into<Value>>(mut self, name: C, value: Vec<V>) -> Self {
+    pub fn bind_vec<C, V>(mut self, name: C, value: Vec<V>) -> Self
+    where
+        C: ToString,
+        V: Into<Value>,
+    {
         let mut new_sql = String::with_capacity(self.sql.len());
         let target = name.to_string();
         let mut i = 0;
