@@ -10,6 +10,7 @@ use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind, MintKeySet};
 use cdk_common::secret;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
@@ -46,6 +47,7 @@ mod verification;
 
 pub use builder::{MintBuilder, MintMeltLimits};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
+pub use issue::{MintQuoteRequest, MintQuoteResponse};
 pub use verification::Verification;
 
 /// Cashu Mint
@@ -244,7 +246,7 @@ impl Mint {
     }
 
     /// Wait for any invoice to be paid
-    /// For each backend starts a task that waits for any invoice to be paid
+    /// Starts a task for each unique payment processor (not one per key) that waits for any invoice to be paid
     /// Once invoice is paid mint quote status is updated
     #[instrument(skip_all)]
     pub async fn wait_for_paid_invoices(&self, shutdown: Arc<Notify>) -> Result<(), Error> {
@@ -252,41 +254,64 @@ impl Mint {
 
         let mut join_set = JoinSet::new();
 
+        // Group keys by processor identity - using reference equality
+        let mut processor_groups: Vec<(
+            Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+            Vec<PaymentProcessorKey>,
+        )> = Vec::new();
+
+        // First, gather all unique payment processors
         for (key, ln) in self.ln.iter() {
+            // Check if we already have this processor
+            let found = processor_groups.iter_mut().find(|(proc_ref, _)| {
+                // Compare Arc pointer equality using ptr_eq
+                Arc::ptr_eq(proc_ref, ln)
+            });
+
+            if let Some((_, keys)) = found {
+                // We found this processor, add the key to its group
+                keys.push(key.clone());
+            } else {
+                // New processor, create a new group
+                processor_groups.push((Arc::clone(ln), vec![key.clone()]));
+            }
+        }
+
+        // Now spawn a task for each unique processor
+        for (ln, keys) in processor_groups {
             if !ln.is_wait_invoice_active() {
-                tracing::info!("Wait payment for {:?} inactive starting.", key);
+                tracing::info!("Wait payment for keys {:?} inactive starting. Using single processor instance.", keys);
                 let mint = Arc::clone(&mint_arc);
-                let ln = Arc::clone(ln);
+                let ln = Arc::clone(&ln);
                 let shutdown = Arc::clone(&shutdown);
-                let key = key.clone();
                 join_set.spawn(async move {
-            loop {
-                tracing::info!("Restarting wait for: {:?}", key);
-                tokio::select! {
-                    _ = shutdown.notified() => {
-                        tracing::info!("Shutdown signal received, stopping task for {:?}", key);
-                        ln.cancel_wait_invoice();
-                        break;
-                    }
-                    result = ln.wait_any_incoming_payment() => {
-                        match result {
-                            Ok(mut stream) => {
-                                while let Some(request_lookup_id) = stream.next().await {
-                                    if let Err(err) = mint.pay_mint_quote_for_request_id(&request_lookup_id).await {
-                                        tracing::warn!("{:?}", err);
+                    loop {
+                        tracing::info!("Starting wait for keys: {:?}", keys);
+                        tokio::select! {
+                            _ = shutdown.notified() => {
+                                tracing::info!("Shutdown signal received, stopping task for keys {:?}", keys);
+                                ln.cancel_wait_invoice();
+                                break;
+                            }
+                            result = ln.wait_any_incoming_payment() => {
+                                match result {
+                                    Ok(mut stream) => {
+                                        while let Some(wait_payment_response) = stream.next().await {
+                                            tracing::debug!("Got payment notification for");
+                                            if let Err(err) = mint.pay_mint_quote_for_request_id(wait_payment_response).await {
+                                                tracing::warn!("{:?}", err);
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!("Could not get incoming payment stream for keys {:?}: {}", keys, err);
+                                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                                     }
                                 }
                             }
-                            Err(err) => {
-                                tracing::warn!("Could not get incoming payment stream for {:?}: {}",key, err);
-
-                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                            }
                         }
                     }
-                    }
-            }
-        });
+                });
             }
         }
 
@@ -413,11 +438,12 @@ impl Mint {
         melt_quote: &MeltQuote,
         melt_request: &MeltRequest<Uuid>,
     ) -> Result<Option<Amount>, Error> {
-        let mint_quote = match self
-            .localstore
-            .get_mint_quote_by_request(&melt_quote.request)
-            .await
-        {
+        let request = match &melt_quote.request {
+            MeltPaymentRequest::Bolt11 { bolt11 } => bolt11.to_string(),
+            MeltPaymentRequest::Bolt12 { offer, invoice: _ } => offer.to_string(),
+        };
+
+        let mint_quote = match self.localstore.get_mint_quote_by_request(&request).await {
             Ok(Some(mint_quote)) => mint_quote,
             // Not an internal melt -> mint
             Ok(None) => return Ok(None),
@@ -428,33 +454,40 @@ impl Mint {
         };
 
         // Mint quote has already been settled, proofs should not be burned or held.
-        if mint_quote.state == MintQuoteState::Issued || mint_quote.state == MintQuoteState::Paid {
+        if mint_quote.payment_method == PaymentMethod::Bolt11
+            && (mint_quote.state() == MintQuoteState::Issued
+                || mint_quote.state() == MintQuoteState::Paid)
+        {
+            tracing::error!("Mint quote already paid");
             return Err(Error::RequestAlreadyPaid);
         }
 
-        let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
+        let inputs_amount_quote_unit = melt_request.inputs_amount().map_err(|_| {
             tracing::error!("Proof inputs in melt quote overflowed");
             Error::AmountOverflow
         })?;
 
-        let mut mint_quote = mint_quote;
-
-        if mint_quote.amount > inputs_amount_quote_unit {
-            tracing::debug!(
-                "Not enough inuts provided: {} needed {}",
-                inputs_amount_quote_unit,
-                mint_quote.amount
-            );
-            return Err(Error::InsufficientFunds);
+        if let Some(amount) = mint_quote.amount {
+            if amount > inputs_amount_quote_unit {
+                tracing::debug!(
+                    "Not enough inuts provided: {} needed {}",
+                    inputs_amount_quote_unit,
+                    amount
+                );
+                return Err(Error::InsufficientFunds);
+            }
         }
 
-        mint_quote.state = MintQuoteState::Paid;
+        // REVIEW: We increment the mint quote here but there are error cases after this where this should be reverted.
+        self.localstore
+            .increment_mint_quote_amount_paid(
+                &mint_quote.id,
+                melt_quote.amount,
+                format!("{}:{}", mint_quote.id, melt_quote.id),
+            )
+            .await?;
 
-        let amount = melt_quote.amount;
-
-        self.update_mint_quote(mint_quote).await?;
-
-        Ok(Some(amount))
+        Ok(Some(melt_quote.amount))
     }
 
     /// Restore
@@ -576,6 +609,7 @@ mod tests {
 
     use cdk_common::common::PaymentProcessorKey;
     use cdk_sqlite::mint::memory::new_with_state;
+    use secp256k1::Secp256k1;
     use uuid::Uuid;
 
     use super::*;

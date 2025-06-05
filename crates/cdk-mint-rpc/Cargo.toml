@@ -33,6 +33,7 @@ serde.workspace = true
 thiserror.workspace = true
 prost.workspace = true
 home.workspace = true
+uuid.workspace = true
 
 
 [build-dependencies]

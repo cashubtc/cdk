@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "mint")]
 use uuid::Uuid;
 
+use super::MintQuoteBolt12Response;
 #[cfg(feature = "mint")]
 use super::PublicKey;
 use crate::nuts::{
@@ -69,6 +70,21 @@ impl SupportedMethods {
             commands,
         }
     }
+
+    /// Create [`SupportedMethods`] for Bolt12 with all supported commands
+    pub fn default_bolt12(unit: CurrencyUnit) -> Self {
+        let commands = vec![
+            WsCommand::Bolt12MintQuote,
+            WsCommand::Bolt12MeltQuote,
+            WsCommand::ProofState,
+        ];
+
+        Self {
+            method: PaymentMethod::Bolt12,
+            unit,
+            commands,
+        }
+    }
 }
 
 /// WebSocket commands supported by the Cashu mint
@@ -76,12 +92,18 @@ impl SupportedMethods {
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum WsCommand {
-    /// Command to request a Lightning invoice for minting tokens
+    /// Websocket support for Bolt11 Mint Quote
     #[serde(rename = "bolt11_mint_quote")]
     Bolt11MintQuote,
-    /// Command to request a Lightning payment for melting tokens
+    /// Websocket support for Bolt11 Melt Quote
     #[serde(rename = "bolt11_melt_quote")]
     Bolt11MeltQuote,
+    /// Websocket support for Bolt12 Mint Quote
+    #[serde(rename = "bolt12_mint_quote")]
+    Bolt12MintQuote,
+    /// Websocket support for Bolt12 Melt Quote
+    #[serde(rename = "bolt12_melt_quote")]
+    Bolt12MeltQuote,
     /// Command to check the state of a proof
     #[serde(rename = "proof_state")]
     ProofState,
@@ -98,6 +120,8 @@ pub enum NotificationPayload<T> {
     MeltQuoteBolt11Response(MeltQuoteBolt11Response<T>),
     /// Mint Quote Bolt11 Response
     MintQuoteBolt11Response(MintQuoteBolt11Response<T>),
+    /// Mint Quote Bolt12 Response
+    MintQuoteBolt12Response(MintQuoteBolt12Response<T>),
 }
 
 impl<T> From<ProofState> for NotificationPayload<T> {
@@ -118,6 +142,12 @@ impl<T> From<MintQuoteBolt11Response<T>> for NotificationPayload<T> {
     }
 }
 
+impl<T> From<MintQuoteBolt12Response<T>> for NotificationPayload<T> {
+    fn from(mint_quote: MintQuoteBolt12Response<T>) -> NotificationPayload<T> {
+        NotificationPayload::MintQuoteBolt12Response(mint_quote)
+    }
+}
+
 #[cfg(feature = "mint")]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 /// A parsed notification
@@ -128,6 +158,8 @@ pub enum Notification {
     MeltQuoteBolt11(Uuid),
     /// MintQuote id is an Uuid
     MintQuoteBolt11(Uuid),
+    /// MintQuote id is an Uuid
+    MintQuoteBolt12(Uuid),
 }
 
 /// Kind
