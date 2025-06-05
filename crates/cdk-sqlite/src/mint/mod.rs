@@ -1008,14 +1008,14 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
     async fn add_blind_signatures(
         &self,
         blinded_messages: &[PublicKey],
-        blinded_signatures: &[BlindSignature],
+        blind_signatures: &[BlindSignature],
         quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err> {
         let transaction = self.pool.begin().await?;
 
         let current_time = unix_time();
 
-        for (message, signature) in blinded_messages.iter().zip(blinded_signatures) {
+        for (message, signature) in blinded_messages.iter().zip(blind_signatures) {
             query(
                 r#"
                     INSERT INTO blind_signature
