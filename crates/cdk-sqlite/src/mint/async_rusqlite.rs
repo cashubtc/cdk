@@ -88,6 +88,7 @@ impl Statement {
     }
 }
 
+/// Process a query
 #[inline(always)]
 fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, Error> {
     let mut stmt = conn.prepare_cached(&sql.sql)?;

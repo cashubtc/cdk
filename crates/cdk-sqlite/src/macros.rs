@@ -1,3 +1,5 @@
+//! Collection of macros to generate code to digest data from SQLite
+
 /// Unpacks a vector of Column, and consumes it, parsing into individual variables, checking the
 /// vector is big enough.
 #[macro_export]
