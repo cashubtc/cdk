@@ -13,7 +13,6 @@ license.workspace = true
 default = ["grpc", "sqlite"]
 sqlite = ["cdk-sqlite"]
 sqlcipher = ["cdk-sqlite/sqlcipher"]
-redb = ["dep:cdk-redb"]
 grpc = ["dep:tonic", "tokio/full", "dep:prost", "dep:tonic-build"]
 
 [dependencies]
@@ -31,7 +30,6 @@ tracing.workspace = true
 # main.rs dependencies
 anyhow.workspace = true
 cdk-sqlite = { workspace = true, features = ["mint", "auth"], optional = true }
-cdk-redb = { workspace = true, features = ["mint", "auth"], optional = true }
 clap = { workspace = true }
 bip39.workspace = true
 home.workspace = true

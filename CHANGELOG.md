@@ -16,6 +16,8 @@
 - Docker build workflow for arm64 images [PR](https://github.com/cashubtc/cdk/pull/770) ([asmo]).
 
 ### Changed
+- cdk-redb: Removed mint storage functionality to be wallet-only ([thesimplekid]).
+- Updated Nix flake to 25.05 and removed Nix cache [PR](https://github.com/cashubtc/cdk/pull/769) ([thesimplekid]).
 - Updated dependencies [PR](https://github.com/cashubtc/cdk/pull/761) ([thesimplekid]).
 - Refactored NUT-04 and NUT-05 [PR](https://github.com/cashubtc/cdk/pull/749) ([thesimplekid]).
 - Updated Nix flake to 25.05 and removed Nix cache [PR](https://github.com/cashubtc/cdk/pull/769) ([thesimplekid]).

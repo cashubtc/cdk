@@ -6,13 +6,12 @@
 
 **ALPHA** This library is in early development, the API will change and should be used with caution.
 
-[Redb](https://github.com/cberner/redb) storage backend implementation for the Cashu Development Kit (CDK).
+[Redb](https://github.com/cberner/redb) storage backend implementation for the Cashu Development Kit (CDK) wallet.
 
 ## Features
 
-This crate provides a Redb-based storage implementation for:
+This crate provides a Redb-based storage implementation for wallet functionality, including:
 - Wallet storage
-- Mint storage
 - Proof tracking
 - Transaction history
 
@@ -24,7 +23,6 @@ Add this to your `Cargo.toml`:
 [dependencies]
 cdk-redb = "*"
 ```
-
 
 ## License
 
