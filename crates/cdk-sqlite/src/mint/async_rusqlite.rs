@@ -210,6 +210,8 @@ fn rusqlite_worker_manager(
     let send_sql_to_thread =
         rusqlite_spawn_worker_threads(inflight_requests.clone(), WORKING_THREAD_POOL_SIZE);
 
+    let mut tx_id: usize = 0;
+
     while let Some(request) = receiver.blocking_recv() {
         inflight_requests.fetch_add(1, Ordering::Relaxed);
         match request {
@@ -254,6 +256,8 @@ fn rusqlite_worker_manager(
                 // should send a `rollback`.
                 let _ = reply_to.send(DbResponse::Transaction(sender));
 
+                tx_id += 1;
+
                 // We intentionally handle the transaction hijacking the main loop, there is
                 // no point is queueing more operations for SQLite, since transaction have
                 // exclusive access. In other database implementation this block of code
@@ -265,13 +269,14 @@ fn rusqlite_worker_manager(
                         // If the receiver loop is broken (i.e no more `senders` are active) and no
                         // `Commit` statement has been sent, this will trigger a `Rollback`
                         // automatically
-                        tracing::info!("Transaction rollback on drop");
+                        tracing::info!("Tx {}: Transaction rollback on drop", tx_id);
                         let _ = tx.rollback();
                         break;
                     };
 
                     match request {
                         DbRequest::Commit(reply_to) => {
+                            tracing::info!("Tx {}: Commit", tx_id);
                             let _ = reply_to.send(match tx.commit() {
                                 Ok(()) => DbResponse::Ok,
                                 Err(err) => DbResponse::Error(err.into()),
@@ -279,6 +284,7 @@ fn rusqlite_worker_manager(
                             break;
                         }
                         DbRequest::Rollback(reply_to) => {
+                            tracing::info!("Tx {}: Rollback", tx_id);
                             let _ = reply_to.send(match tx.rollback() {
                                 Ok(()) => DbResponse::Ok,
                                 Err(err) => DbResponse::Error(err.into()),
@@ -289,6 +295,7 @@ fn rusqlite_worker_manager(
                             let _ = reply_to.send(DbResponse::Unexpected);
                         }
                         DbRequest::Sql(sql, reply_to) => {
+                            tracing::info!("Tx {}: SQL {}", tx_id, sql.sql);
                             let _ = match process_query(&tx, sql) {
                                 Ok(ok) => reply_to.send(ok),
                                 Err(err) => reply_to.send(DbResponse::Error(err)),
