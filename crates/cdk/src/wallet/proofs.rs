@@ -176,6 +176,63 @@ impl Wallet {
         Ok(balance)
     }
 
+    /// Select exact proofs
+    ///
+    /// This function is similar to `select_proofs` but it the selected proofs will not exceed the
+    /// requested Amount, it will include a Proof and the exacto amount needed form that Proof to
+    /// perform a swap.
+    ///
+    /// The intent is to perform a swap with info, or include the Proof as part of the return if the
+    /// swap is not needed or if the swap failed.
+    pub fn select_exact_proofs(
+        amount: Amount,
+        proofs: Proofs,
+        active_keyset_ids: &Vec<Id>,
+        keyset_fees: &HashMap<Id, u64>,
+        include_fees: bool,
+    ) -> Result<(Proofs, Option<(Proof, Amount)>), Error> {
+        let mut input_proofs =
+            Self::select_proofs(amount, proofs, active_keyset_ids, keyset_fees, include_fees)?;
+        let mut exchange = None;
+
+        // How much amounts do we have selected in our proof sets?
+        let total_for_proofs = input_proofs.total_amount().unwrap_or_default();
+
+        if total_for_proofs > amount {
+            // If the selected proofs' total amount is more than the needed amount with fees,
+            // consider swapping if it makes sense to avoid locking large tokens. Instead, make the
+            // exact amount of tokens for the melting, even if that means paying more fees.
+            //
+            // If the fees would make it more expensive than it is already, it makes no sense, so
+            // skip it.
+            //
+            // The first step is to sort the proofs, select the one with the biggest amount, and
+            // perform a swap requesting the exact amount (covering the swap fees).
+            input_proofs.sort_by(|a, b| a.amount.cmp(&b.amount));
+
+            if let Some(proof_to_exchange) = input_proofs.pop() {
+                let fee_ppk = keyset_fees
+                    .get(&proof_to_exchange.keyset_id)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into();
+
+                if let Some(exact_amount_to_melt) = total_for_proofs
+                    .checked_sub(proof_to_exchange.amount)
+                    .and_then(|a| a.checked_add(fee_ppk))
+                    .and_then(|b| amount.checked_sub(b))
+                {
+                    exchange = Some((proof_to_exchange, exact_amount_to_melt));
+                } else {
+                    // failed for some reason
+                    input_proofs.push(proof_to_exchange);
+                }
+            }
+        }
+
+        Ok((input_proofs, exchange))
+    }
+
     /// Select proofs
     #[instrument(skip_all)]
     pub fn select_proofs(
