@@ -1,9 +1,13 @@
 //! NUT-16: Animated QR Codes
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/16.md>
+//!
+//! See [bc_ur](https://docs.rs/bc-ur) for more details on the UR format.
+//! Use [MultipartEncoder] to encode a `Token` into a UR format, and [MultipartDecoder] to decode it back.
 
 use super::Token;
 pub use bc_ur::{Error, MultipartDecoder, MultipartEncoder, URCodable, URDecodable, UREncodable};
+pub use dcbor::Error as CborError;
 use dcbor::{
     CBORTagged, CBORTaggedDecodable, CBORTaggedEncodable, Result as CBORResult, Tag, CBOR,
 };
