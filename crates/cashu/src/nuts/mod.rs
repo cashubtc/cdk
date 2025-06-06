@@ -19,6 +19,8 @@ pub mod nut12;
 pub mod nut13;
 pub mod nut14;
 pub mod nut15;
+#[cfg(feature = "wallet")]
+pub mod nut16;
 pub mod nut17;
 pub mod nut18;
 pub mod nut19;
