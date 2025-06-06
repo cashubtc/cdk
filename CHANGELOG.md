@@ -12,6 +12,7 @@
 - Export NUT-06 supported settings field [PR](https://github.com/cashubtc/cdk/pull/764) ([davidcaseria]).
 
 ### Changed
+- cdk-redb: Removed mint storage functionality to be wallet-only ([thesimplekid]).
 - Updated Nix flake to 25.05 and removed Nix cache [PR](https://github.com/cashubtc/cdk/pull/769) ([thesimplekid]).
 - Updated dependencies [PR](https://github.com/cashubtc/cdk/pull/761) ([thesimplekid]).
 - Refactored NUT-04 and NUT-05 [PR](https://github.com/cashubtc/cdk/pull/749) ([thesimplekid]).
