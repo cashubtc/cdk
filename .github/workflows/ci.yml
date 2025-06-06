@@ -43,105 +43,12 @@ jobs:
           '
       - name: typos
         run: nix develop -i -L .#nightly --command typos
-  
-  examples:
-    name: "Run examples"
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: [pre-commit-checks, clippy]
-    strategy:
-      matrix:
-        build-args:
-          [
-            mint-token,
-            melt-token,
-            p2pk,
-            proof-selection,
-            wallet
-          ]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-      - name: Run example
-        run: nix develop -i -L .#stable --command cargo r --example ${{ matrix.build-args }}
 
   clippy:
     name: "Stable build, clippy and test"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: pre-commit-checks
-    strategy:
-      matrix:
-        build-args:
-          [
-            -p cashu,
-            -p cashu --no-default-features,
-            -p cashu --no-default-features --features wallet,
-            -p cashu --no-default-features --features mint,
-            -p cashu --no-default-features --features "mint swagger",
-            -p cashu --no-default-features --features auth,
-            -p cashu --no-default-features --features "mint auth",
-            -p cashu --no-default-features --features "wallet auth",
-            -p cdk-common,
-            -p cdk-common --no-default-features,
-            -p cdk-common --no-default-features --features wallet,
-            -p cdk-common --no-default-features --features mint,
-            -p cdk-common --no-default-features --features "mint swagger",
-            -p cdk-common --no-default-features --features "auth",
-            -p cdk-common --no-default-features --features "mint auth",
-            -p cdk-common --no-default-features --features "wallet auth",
-            -p cdk,
-            -p cdk --no-default-features,
-            -p cdk --no-default-features --features wallet,
-            -p cdk --no-default-features --features mint,
-            -p cdk --no-default-features --features "mint swagger",
-            -p cdk --no-default-features --features auth,
-            -p cdk --features auth,
-            -p cdk --no-default-features --features "auth mint",
-            -p cdk --no-default-features --features "auth wallet",
-            -p cdk-redb,
-            -p cdk-sqlite,
-            -p cdk-sqlite --features sqlcipher,
-            -p cdk-axum --no-default-features,
-            -p cdk-axum --no-default-features --features swagger,
-            -p cdk-axum --no-default-features --features redis,
-            -p cdk-axum --no-default-features --features "redis swagger",
-            -p cdk-axum --no-default-features --features "auth redis",
-            -p cdk-axum,
-            -p cdk-cln,
-            -p cdk-lnd,
-            -p cdk-lnbits,
-            -p cdk-fake-wallet,
-            -p cdk-payment-processor,
-            --bin cdk-cli,
-            --bin cdk-cli --features sqlcipher,
-            --bin cdk-cli --features redb,
-            --bin cdk-cli --features "sqlcipher redb",
-            --bin cdk-mintd,
-            --bin cdk-mintd --features redis,
-            --bin cdk-mintd --features redb,
-            --bin cdk-mintd --features "redis swagger redb",
-            --bin cdk-mintd --features sqlcipher,
-            --bin cdk-mintd --no-default-features --features lnd,
-            --bin cdk-mintd --no-default-features --features cln,
-            --bin cdk-mintd --no-default-features --features lnbits,
-            --bin cdk-mintd --no-default-features --features fakewallet,
-            --bin cdk-mintd --no-default-features --features grpc-processor,
-            --bin cdk-mintd --no-default-features --features "management-rpc lnd",
-            --bin cdk-mintd --no-default-features --features "management-rpc cln",
-            --bin cdk-mintd --no-default-features --features "management-rpc lnbits",
-            --bin cdk-mintd --no-default-features --features "management-rpc grpc-processor",
-            --bin cdk-mintd --no-default-features --features "swagger lnd",
-            --bin cdk-mintd --no-default-features --features "swagger cln",
-            --bin cdk-mintd --no-default-features --features "swagger lnbits",
-            --bin cdk-mintd --no-default-features --features "auth lnd",
-            --bin cdk-mintd --no-default-features --features "auth cln",
-            --bin cdk-mint-cli,
-          ]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -149,10 +56,8 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-      - name: Clippy
-        run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
-      - name: Test
-        run: nix develop -i -L .#stable --command cargo test ${{ matrix.build-args }}
+      - name: Run test matrix
+        run: nix develop -i -L .#stable --command ./misc/test_matrix.sh
 
   regtest-itest:
     name: "Integration regtest tests"
@@ -257,97 +162,6 @@ jobs:
       - name: Test
         run: nix develop -i -L .#stable --command just itest-payment-processor ${{matrix.ln}}
 
-  msrv-build:
-    name: "MSRV build"
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: [pre-commit-checks, clippy, pure-itest]
-    strategy:
-      matrix:
-        build-args:
-          [
-            -p cashu --no-default-features --features "wallet mint",
-            -p cdk-common --no-default-features --features "wallet mint",
-            -p cdk,
-            -p cdk --no-default-features --features "mint auth",
-            -p cdk --no-default-features --features "wallet auth",
-            -p cdk --no-default-features --features "http_subscription",
-            -p cdk-axum,
-            -p cdk-axum --no-default-features --features redis,
-            -p cdk-lnbits,
-            -p cdk-fake-wallet,
-            -p cdk-cln,
-            -p cdk-lnd,
-            -p cdk-mint-rpc,
-            -p cdk-sqlite,
-            -p cdk-mintd,
-            -p cdk-payment-processor --no-default-features,
-          ]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: nix develop -i -L .#msrv --command cargo build ${{ matrix.build-args }}
-
-  
-  check-wasm:
-    name: Check WASM
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: [pre-commit-checks, clippy, pure-itest]
-    strategy:
-      matrix:
-        rust:
-          - stable
-        target:
-          - wasm32-unknown-unknown
-        build-args:
-          [
-            -p cdk,
-            -p cdk --no-default-features,
-            -p cdk --no-default-features --features wallet,
-          ]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-      - name: Build cdk and binding
-        run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
-
-        
-  check-wasm-msrv:
-    name: Check WASM
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: [pre-commit-checks, clippy, msrv-build]
-    strategy:
-      matrix:
-        rust:
-          - msrv
-        target:
-          - wasm32-unknown-unknown
-        build-args:
-          [
-            -p cdk,
-            -p cdk --no-default-features,
-            -p cdk --no-default-features --features wallet,
-          ]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-      - name: Build cdk wasm
-        run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
 
   fake-mint-auth-itest:
     name: "Integration fake mint auth tests"
@@ -381,27 +195,11 @@ jobs:
       - name: Stop and clean up Docker Compose
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml down
-          
-  doc-tests:
-    name: "Documentation Tests"
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-      - name: Run doc tests
-        run: nix develop -i -L .#stable --command cargo test --doc
-        
+
   strict-docs:
     name: "Strict Documentation Check"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: doc-tests
     steps:
       - name: checkout
         uses: actions/checkout@v4
