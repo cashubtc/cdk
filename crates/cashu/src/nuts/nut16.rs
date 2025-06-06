@@ -2,11 +2,11 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/16.md>
 
-use bc_ur::prelude::*;
-
 use super::Token;
-
-pub use bc_ur::{MultipartDecoder, MultipartEncoder};
+pub use bc_ur::{MultipartDecoder, MultipartEncoder, URCodable, URDecodable, UREncodable};
+use dcbor::{
+    CBORTagged, CBORTaggedDecodable, CBORTaggedEncodable, Result as CBORResult, Tag, CBOR,
+};
 
 impl CBORTaggedEncodable for Token {
     fn untagged_cbor(&self) -> CBOR {
