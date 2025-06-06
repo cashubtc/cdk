@@ -24,9 +24,9 @@ impl Wallet {
     /// use std::sync::Arc;
     ///
     /// use cdk::amount::Amount;
-    /// use cdk_sqlite::wallet::memory;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::Wallet;
+    /// use cdk_sqlite::wallet::memory;
     /// use rand::random;
     ///
     /// #[tokio::main]
@@ -148,10 +148,10 @@ impl Wallet {
     ///
     /// use anyhow::Result;
     /// use cdk::amount::{Amount, SplitTarget};
-    /// use cdk_sqlite::wallet::memory;
     /// use cdk::nuts::nut00::ProofsMethods;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::Wallet;
+    /// use cdk_sqlite::wallet::memory;
     /// use rand::random;
     ///
     /// #[tokio::main]

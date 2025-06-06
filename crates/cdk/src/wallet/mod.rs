@@ -134,13 +134,12 @@ impl Wallet {
     /// Create new [`Wallet`] using the builder pattern
     /// # Synopsis
     /// ```rust
-    /// use std::sync::Arc;
-    /// use bitcoin::Network;
     /// use bitcoin::bip32::Xpriv;
+    /// use std::sync::Arc;
     ///
-    /// use cdk_sqlite::wallet::memory;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::{Wallet, WalletBuilder};
+    /// use cdk_sqlite::wallet::memory;
     /// use rand::random;
     ///
     /// async fn test() -> anyhow::Result<()> {
@@ -150,11 +149,11 @@ impl Wallet {
     ///
     ///     let localstore = memory::empty().await?;
     ///     let wallet = WalletBuilder::new()
-    ///        .mint_url(mint_url.parse().unwrap())
-    ///        .unit(unit)
-    ///        .localstore(Arc::new(localstore))
-    ///        .seed(&seed)
-    ///        .build();
+    ///         .mint_url(mint_url.parse().unwrap())
+    ///         .unit(unit)
+    ///         .localstore(Arc::new(localstore))
+    ///         .seed(&seed)
+    ///         .build();
     ///     Ok(())
     /// }
     /// ```
