@@ -4,7 +4,7 @@
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
-## [Unreleased]
+## [0.10.0](https://github.com/cashubtc/cdk/releases/tag/v0.10.0)
 ### Added
 - SignatoryManager service [PR](https://github.com/cashubtc/cdk/pull/509) ([crodas]).
 - Mint URL flag option [PR](https://github.com/cashubtc/cdk/pull/765) ([thesimplekid]).
@@ -16,7 +16,7 @@
 - Refactored NUT-04 and NUT-05 [PR](https://github.com/cashubtc/cdk/pull/749) ([thesimplekid]).
 - Updated Nix flake to 25.05 and removed Nix cache [PR](https://github.com/cashubtc/cdk/pull/769) ([thesimplekid]).
 
-## [0.9.3]
+## [0.9.3](https://github.com/cashubtc/cdk/releases/tag/v0.9.3)
 ### Changed
 - Melt will perform swap before attempting to melt if exact amount is not available [PR](https://github.com/cashubtc/cdk/pull/793) ([crodas]).
 
