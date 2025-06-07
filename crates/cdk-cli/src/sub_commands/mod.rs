@@ -3,7 +3,6 @@ pub mod burn;
 pub mod cat_device_login;
 pub mod cat_login;
 pub mod check_pending;
-pub mod check_spent;
 pub mod create_request;
 pub mod decode_request;
 pub mod decode_token;
