@@ -183,6 +183,7 @@ release m="":
     "-p cdk-lnbits"
     "-p cdk-fake-wallet"
     "-p cdk-payment-processor"
+    "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
   )
@@ -210,6 +211,7 @@ check-docs:
     "-p cdk-lnbits"
     "-p cdk-fake-wallet"
     "-p cdk-mint-rpc"
+    "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
   )
