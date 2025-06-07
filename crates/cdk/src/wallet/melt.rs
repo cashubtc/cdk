@@ -323,7 +323,7 @@ impl Wallet {
         )?;
 
         if let Some((proof, exact_amount)) = exchange.take() {
-            if let Ok(Some(new_proofs)) = self
+            let new_proofs = self
                 .swap(
                     Some(exact_amount),
                     SplitTarget::None,
@@ -331,13 +331,13 @@ impl Wallet {
                     None,
                     false,
                 )
-                .await
-            {
-                input_proofs.extend_from_slice(&new_proofs);
-            } else {
-                // swap failed, add it back to the original set of profos
-                input_proofs.push(proof);
-            }
+                .await?
+                .ok_or_else(|| {
+                    tracing::error!("Received empty proofs");
+                    Error::Internal
+                })?;
+
+            input_proofs.extend_from_slice(&new_proofs);
         }
 
         self.melt_proofs(quote_id, input_proofs).await

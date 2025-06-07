@@ -570,6 +570,20 @@ mod tests {
     }
 
     #[test]
+    fn test_select_proof_change() {
+        let proofs = vec![proof(64), proof(4), proof(32)];
+        let (selected_proofs, exchange) =
+            Wallet::select_exact_proofs(97.into(), proofs, &vec![id()], &HashMap::new(), false)
+                .unwrap();
+        assert!(exchange.is_some());
+        let (proof_to_exchange, amount) = exchange.unwrap();
+
+        assert_eq!(selected_proofs.len(), 2);
+        assert_eq!(proof_to_exchange.amount, 64.into());
+        assert_eq!(amount, 61.into());
+    }
+
+    #[test]
     fn test_select_proofs_huge_proofs() {
         let proofs = (0..32)
             .flat_map(|i| (0..5).map(|_| proof(1 << i)).collect::<Vec<_>>())
