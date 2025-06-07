@@ -2,7 +2,7 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/15.md>
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{CurrencyUnit, PaymentMethod};
 use crate::Amount;
@@ -27,9 +27,66 @@ pub struct MppMethodSettings {
 }
 
 /// Mpp Settings
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = nut15::Settings))]
 pub struct Settings {
     /// Method settings
     pub methods: Vec<MppMethodSettings>,
+}
+
+// Custom deserialization to handle both array and object formats
+impl<'de> Deserialize<'de> for Settings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum SettingsFormat {
+            Array(Vec<MppMethodSettings>),
+            Object { methods: Vec<MppMethodSettings> },
+        }
+
+        let format = SettingsFormat::deserialize(deserializer)?;
+        match format {
+            SettingsFormat::Array(methods) => Ok(Settings { methods }),
+            SettingsFormat::Object { methods } => Ok(Settings { methods }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PaymentMethod;
+
+    #[test]
+    fn test_nut15_settings_deserialization() {
+        // Test array format
+        let array_json = r#"[{"method":"bolt11","unit":"sat"}]"#;
+        let settings: Settings = serde_json::from_str(array_json).unwrap();
+        assert_eq!(settings.methods.len(), 1);
+        assert_eq!(settings.methods[0].method, PaymentMethod::Bolt11);
+        assert_eq!(settings.methods[0].unit, CurrencyUnit::Sat);
+
+        // Test object format
+        let object_json = r#"{"methods":[{"method":"bolt11","unit":"sat"}]}"#;
+        let settings: Settings = serde_json::from_str(object_json).unwrap();
+        assert_eq!(settings.methods.len(), 1);
+        assert_eq!(settings.methods[0].method, PaymentMethod::Bolt11);
+        assert_eq!(settings.methods[0].unit, CurrencyUnit::Sat);
+    }
+
+    #[test]
+    fn test_nut15_settings_serialization() {
+        let settings = Settings {
+            methods: vec![MppMethodSettings {
+                method: PaymentMethod::Bolt11,
+                unit: CurrencyUnit::Sat,
+            }],
+        };
+
+        let json = serde_json::to_string(&settings).unwrap();
+        assert_eq!(json, r#"{"methods":[{"method":"bolt11","unit":"sat"}]}"#);
+    }
 }
