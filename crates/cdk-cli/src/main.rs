@@ -67,6 +67,8 @@ enum Commands {
     Send(sub_commands::send::SendSubCommand),
     /// Check if wallet balance is spendable
     CheckSpendable,
+    /// Reclaim pending proofs that are no longer pending
+    CheckPending,
     /// View mint info
     MintInfo(sub_commands::mint_info::MintInfoSubcommand),
     /// Mint proofs via bolt11
@@ -217,6 +219,9 @@ async fn main() -> Result<()> {
         }
         Commands::CheckSpendable => {
             sub_commands::check_spent::check_spent(&multi_mint_wallet).await
+        }
+        Commands::CheckPending => {
+            sub_commands::check_pending::check_pending(&multi_mint_wallet).await
         }
         Commands::MintInfo(sub_command_args) => {
             sub_commands::mint_info::mint_info(args.proxy, sub_command_args).await
