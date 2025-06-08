@@ -10,45 +10,13 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-MAX_PARALLEL_JOBS=${MAX_PARALLEL_JOBS:-$(( $(nproc) * 10 ))}
 TEST_SUBSET=${TEST_SUBSET:-"all"}  # Can be set to "small" for testing
-TEMP_DIR=$(mktemp -d)
-RESULTS_FILE="$TEMP_DIR/results"
-LOCK_FILE="$TEMP_DIR/lock"
 
-# Counters
-TOTAL_TESTS=0
-PASSED_TESTS=0
-FAILED_TESTS=0
-
-# Arrays to store test configurations and results
+# Array to store test configurations
 declare -a TEST_CONFIGS
-declare -a FAILED_TEST_DETAILS
 
-# Cleanup function
-cleanup() {
-    rm -rf "$TEMP_DIR"
-}
-trap cleanup EXIT
-
-echo -e "${YELLOW}Starting complete CDK test matrix (parallel execution)...${NC}"
-echo -e "${BLUE}Running with $MAX_PARALLEL_JOBS parallel jobs${NC}"
+echo -e "${YELLOW}Starting complete CDK test matrix...${NC}"
 echo ""
-
-# Function to update results
-update_counters() {
-    local status="$1"
-    local test_name="$2"
-    local command="$3"
-    local pid=$$
-
-    if [ "$status" = "PASSED" ]; then
-        echo "PASSED" >> "$RESULTS_FILE.$pid"
-    else
-        echo "FAILED" >> "$RESULTS_FILE.$pid"
-        echo "$test_name: $command" >> "$RESULTS_FILE.$pid.failed" 2>/dev/null || true
-    fi
-}
 
 # Function to run a single test
 run_test() {
@@ -72,17 +40,19 @@ run_test() {
             ;;
     esac
 
+    echo -e "${BLUE}Starting: $test_name${NC}"
+    
     if $cmd 2>/dev/null; then
         echo -e "✅ ${GREEN}PASSED${NC}: $test_name"
-        update_counters "PASSED" "$test_name" "$cmd"
     else
         echo -e "❌ ${RED}FAILED${NC}: $test_name"
         echo -e "${RED}Command: $cmd${NC}"
-        update_counters "FAILED" "$test_name" "$cmd"
         # Show actual error for debugging
         echo -e "${RED}Error details:${NC}"
         $cmd || true
         echo ""
+        echo -e "${RED}Test '$test_name' failed. Exiting.${NC}"
+        exit 1
     fi
 }
 
@@ -92,11 +62,8 @@ add_test() {
     local args="$2"
     local type="${3:-clippy}"
     TEST_CONFIGS+=("$name|$args|$type")
-    TOTAL_TESTS=$((TOTAL_TESTS + 1))
 }
 
-
-# All build configurations from CI workflow
 echo -e "${BLUE}Adding all CI build configurations...${NC}"
 
 if [ "$TEST_SUBSET" = "small" ]; then
@@ -111,7 +78,7 @@ else
     echo -e "${BLUE}Running full test matrix...${NC}"
 
     # Examples (these run but don't need clippy/test)
-    add_test "example: mint-token" "--example mint-token" "check"
+    add_test "example: mint-tokenx" "--example mint-token" "check"
     add_test "example: melt-token" "--example melt-token" "check"
     add_test "example: p2pk" "--example p2pk" "check"
     add_test "example: proof-selection" "--example proof-selection" "check"
@@ -169,7 +136,7 @@ else
     add_test "cdk-cli (redb)" "--bin cdk-cli --features redb" "clippy"
     add_test "cdk-cli (sqlcipher + redb)" '--bin cdk-cli --features sqlcipher --features redb' "clippy"
 
-    # cdk-mintd binary tests (missing from current script)
+    # cdk-mintd binary tests
     add_test "cdk-mintd (default)" "--bin cdk-mintd" "clippy"
     add_test "cdk-mintd (redis)" "--bin cdk-mintd --features redis" "clippy"
     add_test "cdk-mintd (redb)" "--bin cdk-mintd --features redb" "clippy"
@@ -192,81 +159,19 @@ else
     add_test "cdk-mint-cli" "--bin cdk-mint-cli" "clippy"
     add_test "cdk-mint-rpc" "-p cdk-mint-rpc" "clippy"
     add_test "doc tests" "--doc" "test"
-
 fi
 
-echo -e "${BLUE}Total test configurations: $TOTAL_TESTS${NC}"
+echo -e "${BLUE}Total test configurations: ${#TEST_CONFIGS[@]}${NC}"
 echo ""
 
-# Run tests in parallel
-echo -e "${YELLOW}Running tests in parallel...${NC}"
+# Run tests sequentially
+echo -e "${YELLOW}Running tests sequentially...${NC}"
 
-# Function to run tests in parallel batches
-run_parallel_tests() {
-    local pids=()
-    local batch_count=0
-    
-    for config in "${TEST_CONFIGS[@]}"; do
-        IFS='|' read -r name args type <<< "$config"
-        
-        # Start test in background
-        {
-            echo -e "${BLUE}Starting: $name${NC}"
-            run_test "$name" "$args" "$type"
-        } &
-        
-        pids+=($!)
-        batch_count=$((batch_count + 1))
-        
-        # When we reach batch size, wait for completion
-        if [ ${#pids[@]} -eq $MAX_PARALLEL_JOBS ]; then
-            for pid in "${pids[@]}"; do
-                wait $pid
-            done
-            pids=()
-        fi
-    done
-    
-    # Wait for any remaining background jobs
-    for pid in "${pids[@]}"; do
-        wait $pid
-    done
-}
+# Execute all tests one by one
+for config in "${TEST_CONFIGS[@]}"; do
+    IFS='|' read -r name args type <<< "$config"
+    run_test "$name" "$args" "$type"
+done
 
-# Execute all tests
-run_parallel_tests
-
-# Count results
-if [ -f "$RESULTS_FILE" ]; then
-    PASSED_TESTS=$(grep -c "PASSED" "$RESULTS_FILE" 2>/dev/null || echo 0)
-    FAILED_TESTS=$(grep -c "FAILED" "$RESULTS_FILE" 2>/dev/null || echo 0)
-fi
-
-# Read failed test details
-if [ -f "$RESULTS_FILE.failed" ]; then
-    mapfile -t FAILED_TEST_DETAILS < "$RESULTS_FILE.failed" || true
-fi
-
-# Print summary
 echo ""
-echo -e "${YELLOW}========================================${NC}"
-echo -e "${YELLOW}TEST SUMMARY${NC}"
-echo -e "${YELLOW}========================================${NC}"
-echo -e "Total tests: $TOTAL_TESTS"
-echo -e "${GREEN}Passed: $PASSED_TESTS${NC}"
-echo -e "${RED}Failed: $FAILED_TESTS${NC}"
-
-if [ $FAILED_TESTS -gt 0 ]; then
-    echo ""
-    echo -e "${RED}FAILED TESTS:${NC}"
-    for detail in "${FAILED_TEST_DETAILS[@]}"; do
-        echo -e "${RED}  - $detail${NC}"
-    done
-    echo ""
-    echo -e "${RED}Some tests failed. Please check the errors above.${NC}"
-    exit 1
-else
-    echo ""
-    echo -e "${GREEN}🎉 All tests passed!${NC}"
-    exit 0
-fi
+echo -e "${GREEN}🎉 All tests passed!${NC}"
