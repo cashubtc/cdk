@@ -105,12 +105,19 @@ impl Statement {
 #[inline(always)]
 fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, Error> {
     let start = Instant::now();
+    let mut args = sql.args;
     let mut stmt = conn.prepare_cached(&sql.sql)?;
-    for (name, value) in sql.args {
-        let index = stmt
-            .parameter_index(&name)
-            .map_err(|_| Error::MissingParameter(name.clone()))?
-            .ok_or(Error::MissingParameter(name))?;
+    let total_parameters = stmt.parameter_count();
+
+    for index in 1..=total_parameters {
+        let value = if let Some(value) = stmt.parameter_name(index).map(|name| {
+            args.remove(name)
+                .ok_or(Error::MissingParameter(name.to_owned()))
+        }) {
+            value?
+        } else {
+            continue;
+        };
 
         stmt.raw_bind_parameter(index, value)?;
     }
