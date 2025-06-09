@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rusqlite::{self, CachedStatement};
 
 use crate::common::SqliteConnectionManager;
@@ -30,7 +32,7 @@ pub struct Statement {
     pub sql: String,
     /// The list of arguments for the placeholders. It only supports named arguments for simplicity
     /// sake
-    pub args: Vec<(String, Value)>,
+    pub args: HashMap<String, Value>,
     /// The expected response type
     pub expected_response: ExpectedSqlResponse,
 }
@@ -54,7 +56,7 @@ impl Statement {
         C: ToString,
         V: Into<Value>,
     {
-        self.args.push((name.to_string(), value.into()));
+        self.args.insert(name.to_string(), value.into());
         self
     }
 
@@ -77,7 +79,7 @@ impl Statement {
             .enumerate()
             .map(|(key, value)| {
                 let key = format!("{target}{key}");
-                self.args.push((key.clone(), value.into()));
+                self.args.insert(key.clone(), value.into());
                 key
             })
             .collect::<Vec<_>>()
