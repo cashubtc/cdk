@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::thread::spawn;
+use std::time::Instant;
 
 use rusqlite::Connection;
 use tokio::sync::{mpsc, oneshot};
@@ -11,7 +12,11 @@ use crate::mint::Error;
 use crate::pool::{Pool, PooledResource};
 use crate::stmt::{Column, ExpectedSqlResponse, Statement as InnerStatement, Value};
 
+/// The number of queued SQL statements before it start failing
 const SQL_QUEUE_SIZE: usize = 10_000;
+/// How many ms is considered a slow query, and it'd be logged for further debugging
+const SLOW_QUERY_THRESHOLD_MS: u128 = 20;
+/// How many SQLite parallel connections can be used to read things in parallel
 const WORKING_THREAD_POOL_SIZE: usize = 5;
 
 #[derive(Debug, Clone)]
@@ -99,6 +104,7 @@ impl Statement {
 /// Process a query
 #[inline(always)]
 fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, Error> {
+    let start = Instant::now();
     let mut stmt = conn.prepare_cached(&sql.sql)?;
     for (name, value) in sql.args {
         let index = stmt
@@ -111,7 +117,7 @@ fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, E
 
     let columns = stmt.column_count();
 
-    Ok(match sql.expected_response {
+    let to_return = match sql.expected_response {
         ExpectedSqlResponse::AffectedRows => DbResponse::AffectedRows(stmt.raw_execute()?),
         ExpectedSqlResponse::ManyRows => {
             let mut rows = stmt.raw_query();
@@ -143,7 +149,15 @@ fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, E
                 .transpose()?;
             DbResponse::Row(row)
         }
-    })
+    };
+
+    let duration = start.elapsed();
+
+    if duration.as_millis() > SLOW_QUERY_THRESHOLD_MS {
+        tracing::error!("[SLOW QUERY] Took {} ms: {}", duration.as_millis(), sql.sql);
+    }
+
+    Ok(to_return)
 }
 
 /// Spawns N number of threads to execute SQL statements
