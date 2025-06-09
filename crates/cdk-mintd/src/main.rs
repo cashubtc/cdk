@@ -364,7 +364,7 @@ async fn main() -> anyhow::Result<()> {
 
     mint_builder = mint_builder
         .with_name(settings.mint_info.name)
-        .with_version(mint_version)
+        .with_version(mint_version.clone())
         .with_description(settings.mint_info.description);
 
     mint_builder = if let Some(signatory_url) = settings.info.signatory_url {
@@ -643,6 +643,11 @@ async fn main() -> anyhow::Result<()> {
             if mint.localstore.get_quote_ttl().await.is_err() {
                 mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
             }
+
+            let mut stored_mint_info = mint.mint_info().await?;
+            stored_mint_info.version = Some(mint_version);
+            mint.set_mint_info(stored_mint_info).await?;
+
             tracing::info!("Mint info already set, not using config file settings.");
         }
     } else {
