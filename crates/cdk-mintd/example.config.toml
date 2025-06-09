@@ -58,8 +58,8 @@ reserve_fee_min = 4
 # admin_api_key = ""
 # invoice_api_key = ""
 # lnbits_api = ""
-# fee_percent=0.04
-# reserve_fee_min=4
+# To be set true to support pre v1 lnbits api
+# retro_api=false
 
 # [lnd]
 # address = "https://domain:port"
