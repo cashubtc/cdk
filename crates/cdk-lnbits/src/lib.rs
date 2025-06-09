@@ -219,9 +219,9 @@ impl MintPayment for LNbits {
                 Self::Err::Anyhow(anyhow!("Could not find invoice"))
             })?;
 
-        let status = match invoice_info.pending {
-            true => MeltQuoteState::Unpaid,
-            false => MeltQuoteState::Paid,
+        let status = match invoice_info.preimage {
+            None => MeltQuoteState::Unpaid,
+            Some(_) => MeltQuoteState::Paid,
         };
 
         let total_spent = Amount::from(
@@ -327,8 +327,8 @@ impl MintPayment for LNbits {
 
         let pay_response = MakePaymentResponse {
             payment_lookup_id: payment.details.payment_hash,
-            payment_proof: Some(payment.preimage),
-            status: lnbits_to_melt_status(&payment.details.status, payment.details.pending),
+            payment_proof: payment.preimage,
+            status: lnbits_to_melt_status(&payment.details.status),
             total_spent: Amount::from(
                 payment.details.amount.unsigned_abs()
                     + payment.details.fee.unsigned_abs() / MSAT_IN_SAT,
@@ -340,12 +340,12 @@ impl MintPayment for LNbits {
     }
 }
 
-fn lnbits_to_melt_status(status: &str, pending: bool) -> MeltQuoteState {
-    match (status, pending) {
-        ("success", false) => MeltQuoteState::Paid,
-        ("failed", false) => MeltQuoteState::Unpaid,
-        (_, false) => MeltQuoteState::Unknown,
-        (_, true) => MeltQuoteState::Pending,
+fn lnbits_to_melt_status(status: &str) -> MeltQuoteState {
+    match status {
+        "success" => MeltQuoteState::Paid,
+        "failed" => MeltQuoteState::Unpaid,
+        "pending" => MeltQuoteState::Pending,
+        _ => MeltQuoteState::Unknown,
     }
 }
 
