@@ -26,9 +26,9 @@ use crate::nuts::{
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
-use crate::Amount;
 #[cfg(feature = "auth")]
 use crate::OidcClient;
+use crate::Amount;
 
 #[cfg(feature = "auth")]
 mod auth;
