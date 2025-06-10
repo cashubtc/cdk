@@ -1,7 +1,7 @@
 //! Publish–subscribe pattern.
 //!
 //! This is a generic implementation for
-//! [NUT-17(<https://github.com/cashubtc/nuts/blob/main/17.md>) with a type
+//! [NUT-17](<https://github.com/cashubtc/nuts/blob/main/17.md>) with a type
 //! agnostic Publish-subscribe manager.
 //!
 //! The manager has a method for subscribers to subscribe to events with a
