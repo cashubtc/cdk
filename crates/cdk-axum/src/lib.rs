@@ -209,7 +209,7 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/checkstate", post(post_check))
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore))
-        .route("/filters/spent/{keyset_id}", get(get_spent_filter));
+        .route("/filter/spent/{keyset_id}", get(get_spent_filter));
 
     let mint_router = Router::new()
         .nest("/v1", v1_router)

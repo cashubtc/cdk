@@ -183,8 +183,8 @@ impl GCSFilter {
 
 #[cfg(test)]
 mod tests {
-    use base64::engine::general_purpose;
-    use base64::Engine as _;
+    use bitcoin::base64::engine::general_purpose;
+    use bitcoin::base64::Engine as _;
     use cashu::util::hex;
     use rand::prelude::*;
 

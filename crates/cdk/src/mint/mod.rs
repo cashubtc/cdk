@@ -359,7 +359,7 @@ impl Mint {
                                     },
                                     Ok(compressed_set) => {
                                         let gcs_filter = cdk_common::common::GCSFilter {
-                                            num_items: compressed_set.len() as u32,
+                                            num_items: spent_proofs.len(),
                                             content: compressed_set,
                                             m,
                                             p,
