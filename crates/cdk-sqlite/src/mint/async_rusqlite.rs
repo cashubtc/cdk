@@ -195,7 +195,7 @@ fn rusqlite_spawn_worker_threads(
         let rx = receiver.clone();
         let inflight_requests = inflight_requests.clone();
         spawn(move || loop {
-            while let Ok((conn, sql, reply_to)) = rx.lock().unwrap().recv() {
+            while let Ok((conn, sql, reply_to)) = rx.lock().expect("failed to acquire").recv() {
                 tracing::info!("Execute query: {}", sql.sql);
                 let result = process_query(&conn, sql);
                 let _ = match result {

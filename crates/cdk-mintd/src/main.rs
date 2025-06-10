@@ -124,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
             #[cfg(not(feature = "sqlcipher"))]
             let sqlite_db = MintSqliteDatabase::new(&sql_db_path).await?;
             #[cfg(feature = "sqlcipher")]
-            let sqlite_db = MintSqliteDatabase::new(&sql_db_path, args.password).await?;
+            let sqlite_db = MintSqliteDatabase::new(&sql_db_path, args.password.clone()).await?;
 
             let db = Arc::new(sqlite_db);
             MintBuilder::new()
@@ -405,7 +405,11 @@ async fn main() -> anyhow::Result<()> {
             match settings.database.engine {
                 DatabaseEngine::Sqlite => {
                     let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
+                    #[cfg(not(feature = "sqlcipher"))]
                     let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
+                    #[cfg(feature = "sqlcipher")]
+                    let sqlite_db =
+                        MintSqliteAuthDatabase::new(&sql_db_path, args.password).await?;
 
                     Arc::new(sqlite_db)
                 }

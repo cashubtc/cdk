@@ -30,14 +30,23 @@ mod migrations;
 
 impl MintSqliteAuthDatabase {
     /// Create new [`MintSqliteAuthDatabase`]
+    #[cfg(not(feature = "sqlcipher"))]
     pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        #[cfg(feature = "sqlcipher")]
+        let pool = create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?);
+        migrate(pool.get()?.deref_mut(), migrations::MIGRATIONS)?;
+
+        Ok(Self {
+            pool: AsyncRusqlite::new(pool),
+        })
+    }
+
+    /// Create new [`MintSqliteAuthDatabase`]
+    #[cfg(feature = "sqlcipher")]
+    pub async fn new<P: AsRef<Path>>(path: P, password: String) -> Result<Self, Error> {
         let pool = create_sqlite_pool(
             path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
-            "".to_owned(),
+            password,
         );
-        #[cfg(not(feature = "sqlcipher"))]
-        let pool = create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?);
         migrate(pool.get()?.deref_mut(), migrations::MIGRATIONS)?;
 
         Ok(Self {
