@@ -1,4 +1,4 @@
-name: Publish Docker Image
+name: Publish Docker Image AMD64
 
 on:
   release:
@@ -48,13 +48,37 @@ jobs:
             type=sha
             ${{ github.event.inputs.tag != '' && github.event.inputs.tag || '' }}
 
+      # Build and push AMD64 image with architecture suffix
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta.outputs.tags }}-amd64
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Create and push multi-arch manifest if both images exist
+      - name: Create and push multi-arch manifest
+        run: |
+          # For each tag in the metadata output
+          echo "${{ steps.meta.outputs.tags }}" | while read -r tag; do
+            # Check if ARM64 image exists
+            if docker manifest inspect $tag-arm64 >/dev/null 2>&1; then
+              # Create manifest
+              docker manifest create $tag \
+                $tag-amd64 \
+                $tag-arm64
+
+              # Annotate the manifest with architecture specific information
+              docker manifest annotate $tag $tag-amd64 --arch amd64
+              docker manifest annotate $tag $tag-arm64 --arch arm64
+
+              # Push the manifest
+              docker manifest push $tag
+            else
+              echo "ARM64 image not found for $tag, skipping manifest creation"
+            fi
+          done
