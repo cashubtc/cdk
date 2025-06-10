@@ -161,7 +161,7 @@ fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, E
     let duration = start.elapsed();
 
     if duration.as_millis() > SLOW_QUERY_THRESHOLD_MS {
-        tracing::error!("[SLOW QUERY] Took {} ms: {}", duration.as_millis(), sql.sql);
+        tracing::warn!("[SLOW QUERY] Took {} ms: {}", duration.as_millis(), sql.sql);
     }
 
     Ok(to_return)
