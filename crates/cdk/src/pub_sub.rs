@@ -29,6 +29,7 @@ pub const DEFAULT_REMOVE_SIZE: usize = 10_000;
 /// Default channel size for subscription buffering
 pub const DEFAULT_CHANNEL_SIZE: usize = 10;
 
+#[derive(Debug)]
 /// Subscription manager
 ///
 /// This object keep track of all subscription listener and it is also
@@ -111,6 +112,11 @@ where
                 let _ = sender.try_send((key.into(), event.clone()));
             }
         }
+    }
+
+    /// Returns the on_subscription_struct
+    pub fn on_new_subscription(&self) -> &Option<F> {
+        &self.on_new_subscription
     }
 
     /// Broadcasts an event to all listeners

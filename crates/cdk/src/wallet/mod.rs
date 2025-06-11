@@ -7,6 +7,7 @@ use std::sync::Arc;
 use bitcoin::bip32::Xpriv;
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::subscription::Params;
+use events::EventManager;
 use getrandom::getrandom;
 use subscription::{ActiveSubscription, SubscriptionManager};
 #[cfg(feature = "auth")]
@@ -26,14 +27,15 @@ use crate::nuts::{
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
+use crate::Amount;
 #[cfg(feature = "auth")]
 use crate::OidcClient;
-use crate::Amount;
 
 #[cfg(feature = "auth")]
 mod auth;
 mod balance;
 mod builder;
+mod events;
 mod issue;
 mod keysets;
 mod melt;
@@ -81,6 +83,7 @@ pub struct Wallet {
     xpriv: Xpriv,
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
+    event_manager: Arc<EventManager>,
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

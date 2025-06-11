@@ -139,6 +139,8 @@ impl Wallet {
             .update_proofs_state(ys, State::Pending)
             .await?;
 
+        self.notify_update_balance();
+
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
         let count = self

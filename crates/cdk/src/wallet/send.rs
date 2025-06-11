@@ -161,6 +161,7 @@ impl Wallet {
         if let Some(max_proofs) = opts.max_proofs {
             exact_proofs &= proofs.len() <= max_proofs;
         }
+        self.notify_update_balance();
 
         // Split proofs to swap and send
         let mut proofs_to_swap = Proofs::new();
@@ -273,6 +274,8 @@ impl Wallet {
             .update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
             .await?;
 
+        self.notify_update_balance();
+
         // Include token memo
         let send_memo = send.options.memo.or(memo);
         let memo = send_memo.and_then(|m| if m.include_memo { Some(m.memo) } else { None });
@@ -319,6 +322,8 @@ impl Wallet {
         self.localstore
             .update_proofs_state(send.proofs().ys()?, State::Unspent)
             .await?;
+
+        self.notify_update_balance();
 
         Ok(())
     }
