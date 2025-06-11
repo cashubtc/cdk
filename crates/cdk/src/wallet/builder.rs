@@ -10,6 +10,7 @@ use cdk_common::AuthToken;
 #[cfg(feature = "auth")]
 use tokio::sync::RwLock;
 
+use super::events::EventStore;
 use crate::cdk_database::WalletDatabase;
 use crate::error::Error;
 use crate::mint_url::MintUrl;
@@ -156,6 +157,7 @@ impl WalletBuilder {
             xpriv,
             client: client.clone(),
             subscription: SubscriptionManager::new(client),
+            event_manager: Arc::new(EventStore::default().into()),
         })
     }
 }

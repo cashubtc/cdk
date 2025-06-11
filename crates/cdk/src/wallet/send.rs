@@ -156,6 +156,8 @@ impl Wallet {
             .update_proofs_state(proofs.ys()?, State::Reserved)
             .await?;
 
+        self.notify_update_balance();
+
         // Check if proofs are exact send amount
         let proofs_exact_amount = proofs.total_amount()? == amount + send_fee;
 
@@ -273,6 +275,8 @@ impl Wallet {
             .update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
             .await?;
 
+        self.notify_update_balance();
+
         // Include token memo
         let send_memo = send.options.memo.or(memo);
         let memo = send_memo.and_then(|m| if m.include_memo { Some(m.memo) } else { None });
@@ -319,6 +323,8 @@ impl Wallet {
         self.localstore
             .update_proofs_state(send.proofs().ys()?, State::Unspent)
             .await?;
+
+        self.notify_update_balance();
 
         Ok(())
     }
