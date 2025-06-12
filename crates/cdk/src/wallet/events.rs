@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 use cdk_common::mint_url::MintUrl;
@@ -7,8 +8,12 @@ use cdk_common::pub_sub::{OnNewSubscription, SubId};
 use cdk_common::{Amount, CurrencyUnit, State};
 use tokio::sync::RwLock;
 
-use super::{ProofsMethods, Wallet};
-use crate::pub_sub::{self, ActiveSubscription};
+#[cfg(not(target_arch = "wasm32"))]
+use super::ProofsMethods;
+use super::Wallet;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::pub_sub;
+use crate::pub_sub::ActiveSubscription;
 
 /// The internal event is `()` because the events() will accept no filter, all events all sent to
 /// all subscriber with no option to filter.
@@ -70,6 +75,7 @@ impl OnNewSubscription for EventStore {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// The event manager is an alias manager
 pub type EventManager = pub_sub::Manager<Event, EventStore>;
 
@@ -95,6 +101,7 @@ impl Wallet {
     /// Internal function to trigger an event. This function is private and must be called from
     /// within itself.
     #[inline(always)]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn trigger_events(event_manager: Arc<EventManager>, events: Vec<Event>) {
         let events = if let Some(event_store) = event_manager.on_new_subscription() {
             let mut last_events = event_store.last_events.write().await;
@@ -122,6 +129,11 @@ impl Wallet {
     }
 
     /// Notify all balances, because it is likely it has changed
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn notify_update_balance(&self) {}
+
+    /// Notify all balances, because it is likely it has changed
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn notify_update_balance(&self) {
         let db = self.localstore.clone();
         let event_manager = self.event_manager.clone();
@@ -192,9 +204,17 @@ impl Wallet {
     }
 
     /// Subscribe to wallet events
-    pub async fn events(&self) -> ActiveSubscription<Event, EventFilter> {
-        self.event_manager
+    #[cfg(target_arch = "wasm32")]
+    pub async fn events(&self) -> Result<ActiveSubscription<Event, EventFilter>, super::Error> {
+        Err(super::Error::NotSupported)
+    }
+
+    /// Subscribe to wallet events
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn events(&self) -> Result<ActiveSubscription<Event, EventFilter>, super::Error> {
+        Ok(self
+            .event_manager
             .subscribe(SubscribeToAllEvents::default())
-            .await
+            .await)
     }
 }
