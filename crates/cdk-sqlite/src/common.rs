@@ -38,6 +38,7 @@ impl ResourceManager for SqliteConnectionManager {
 
         conn.execute_batch(
             r#"
+            pragma busy_timeout = 10000;
             pragma journal_mode = WAL;
             pragma synchronous = normal;
             pragma temp_store = memory;
