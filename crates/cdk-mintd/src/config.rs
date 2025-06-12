@@ -118,6 +118,7 @@ pub struct LNbits {
     pub lnbits_api: String,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
+    pub retro_api: bool,
 }
 
 #[cfg(feature = "cln")]
