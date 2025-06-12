@@ -10,6 +10,7 @@ use cdk_common::AuthToken;
 #[cfg(feature = "auth")]
 use tokio::sync::RwLock;
 
+#[cfg(not(target_arch = "wasm32"))]
 use super::events::EventStore;
 use crate::cdk_database::WalletDatabase;
 use crate::error::Error;
@@ -157,6 +158,7 @@ impl WalletBuilder {
             xpriv,
             client: client.clone(),
             subscription: SubscriptionManager::new(client),
+            #[cfg(not(target_arch = "wasm32"))]
             event_manager: Arc::new(EventStore::default().into()),
         })
     }
