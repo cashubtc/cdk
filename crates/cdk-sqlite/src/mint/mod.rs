@@ -1532,13 +1532,22 @@ mod tests {
 
         {
             let _ = remove_file(&file);
+            #[cfg(not(feature = "sqlcipher"))]
             let legacy = create_sqlite_pool(&file);
+            #[cfg(feature = "sqlcipher")]
+            let legacy = create_sqlite_pool(&file, "test".to_owned());
             let y = legacy.get().expect("pool");
             y.execute_batch(include_str!("../../tests/legacy-sqlx.sql"))
                 .expect("create former db failed");
         }
 
-        assert!(MintSqliteDatabase::new(&file).await.is_ok());
+        #[cfg(not(feature = "sqlcipher"))]
+        let conn = MintSqliteDatabase::new(&file).await;
+
+        #[cfg(feature = "sqlcipher")]
+        let conn = MintSqliteDatabase::new(&file, "test".to_owned()).await;
+
+        assert!(conn.is_ok(), "Failed with {:?}", conn.unwrap_err());
 
         let _ = remove_file(&file);
     }

@@ -107,7 +107,7 @@ pub fn migrate(conn: &mut Connection, migrations: &[(&str, &str)]) -> Result<(),
             r#"
         INSERT INTO migrations
         SELECT
-            concat(version, '_', REPLACE(description, ' ', '_'), '.sql'),
+            version || '_' ||  REPLACE(description, ' ', '_') || '.sql',
             execution_time
         FROM _sqlx_migrations;
         DROP TABLE _sqlx_migrations;
