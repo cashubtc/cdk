@@ -97,6 +97,24 @@ pub fn migrate(conn: &mut Connection, migrations: &[(&str, &str)]) -> Result<(),
         [],
     )?;
 
+    if tx.query_row(
+        r#"select count(*) from sqlite_master where name = '_sqlx_migrations'"#,
+        [],
+        |row| row.get::<_, i32>(0),
+    )? == 1
+    {
+        tx.execute_batch(
+            r#"
+        INSERT INTO migrations
+        SELECT
+            concat(version, '_', REPLACE(description, ' ', '_'), '.sql'),
+            execution_time
+        FROM _sqlx_migrations;
+        DROP TABLE _sqlx_migrations;
+        "#,
+        )?;
+    }
+
     // Apply each migration if it hasn’t been applied yet
     for (name, sql) in migrations {
         let already_applied: bool = tx.query_row(

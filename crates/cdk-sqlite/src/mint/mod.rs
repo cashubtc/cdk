@@ -1374,6 +1374,8 @@ fn sqlite_row_to_melt_request(
 
 #[cfg(test)]
 mod tests {
+    use std::fs::remove_file;
+
     use cdk_common::mint::MintKeySetInfo;
     use cdk_common::{mint_db_test, Amount};
 
@@ -1520,4 +1522,24 @@ mod tests {
     }
 
     mint_db_test!(provide_db);
+
+    #[tokio::test]
+    async fn open_legacy_and_migrate() {
+        let file = format!(
+            "{}/db.sqlite",
+            std::env::temp_dir().to_str().unwrap_or_default()
+        );
+
+        {
+            let _ = remove_file(&file);
+            let legacy = create_sqlite_pool(&file);
+            let y = legacy.get().expect("pool");
+            y.execute_batch(include_str!("../../tests/legacy-sqlx.sql"))
+                .expect("create former db failed");
+        }
+
+        assert!(MintSqliteDatabase::new(&file).await.is_ok());
+
+        let _ = remove_file(&file);
+    }
 }
