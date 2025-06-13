@@ -56,8 +56,16 @@ struct WorkerPool {
 }
 
 macro_rules! handle_rpc_request {
-    ($request:expr, $sender:expr, $cln_rpc:expr, $worker_id:expr, $socket_path:expr) => {
+    ($request:expr, $sender:expr, $cln_rpc:expr, $worker_id:expr, $socket_path:expr, $request_type:expr) => {
+        let start = std::time::Instant::now();
         let response = $cln_rpc.call_typed(&$request).await;
+        let duration = start.elapsed();
+        tracing::info!(
+            "Worker {}: {} call_typed took {}ms",
+            $worker_id,
+            $request_type,
+            duration.as_millis()
+        );
         if response.is_err() {
             Self::handle_rpc_error($worker_id, &$socket_path, &mut $cln_rpc).await;
         }
@@ -115,13 +123,14 @@ impl WorkerPool {
                     };
                     match request {
                         Some(request) => match request {
-                            Request::Pay(request, sender) => {
+                            Request::Pay(cln_request, sender) => {
                                 handle_rpc_request!(
-                                    request,
+                                    cln_request,
                                     sender,
                                     cln_rpc,
                                     worker_id,
-                                    socket_path
+                                    socket_path,
+                                    "Pay"
                                 );
                             }
                             Request::Invoice(request, sender) => {
@@ -130,7 +139,8 @@ impl WorkerPool {
                                     sender,
                                     cln_rpc,
                                     worker_id,
-                                    socket_path
+                                    socket_path,
+                                    "Invoice"
                                 );
                             }
                             Request::ListInvoices(request, sender) => {
@@ -139,7 +149,8 @@ impl WorkerPool {
                                     sender,
                                     cln_rpc,
                                     worker_id,
-                                    socket_path
+                                    socket_path,
+                                    "ListInvoices"
                                 );
                             }
                             Request::ListPays(request, sender) => {
@@ -148,7 +159,8 @@ impl WorkerPool {
                                     sender,
                                     cln_rpc,
                                     worker_id,
-                                    socket_path
+                                    socket_path,
+                                    "ListPays"
                                 );
                             }
                         },
@@ -165,6 +177,7 @@ impl WorkerPool {
     }
 
     fn shutdown(&self) {
+        tracing::info!("Shutting down cln woker pool");
         for worker in self.workers.iter() {
             worker.abort();
         }
@@ -173,6 +186,7 @@ impl WorkerPool {
 
 impl Drop for WorkerPool {
     fn drop(&mut self) {
+        tracing::info!("Dropping cln woker pool");
         for worker in self.workers.iter() {
             worker.abort();
         }
