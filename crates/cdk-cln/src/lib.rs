@@ -29,20 +29,22 @@ use cln_rpc::model::responses::{
     WaitanyinvoiceStatus,
 };
 use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny};
+use connection::ClnConnection;
 use error::Error;
 use futures::{Stream, StreamExt};
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+mod connection;
 pub mod error;
 
 /// CLN mint backend
 #[derive(Clone)]
 pub struct Cln {
     rpc_socket: PathBuf,
-    cln_client: Arc<Mutex<cln_rpc::ClnRpc>>,
+    cln_connection: Arc<ClnConnection>,
     fee_reserve: FeeReserve,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
@@ -51,11 +53,9 @@ pub struct Cln {
 impl Cln {
     /// Create new [`Cln`]
     pub async fn new(rpc_socket: PathBuf, fee_reserve: FeeReserve) -> Result<Self, Error> {
-        let cln_client = cln_rpc::ClnRpc::new(&rpc_socket).await?;
-
         Ok(Self {
-            rpc_socket,
-            cln_client: Arc::new(Mutex::new(cln_client)),
+            rpc_socket: rpc_socket.clone(),
+            cln_connection: Arc::new(ClnConnection::new(rpc_socket)),
             fee_reserve,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
@@ -243,37 +243,45 @@ impl MintPayment for Cln {
             })
             .flatten();
 
-        let mut cln_client = self.cln_client.lock().await;
-        let cln_response = cln_client
-            .call_typed(&PayRequest {
-                bolt11: melt_quote.request.to_string(),
-                amount_msat,
-                label: None,
-                riskfactor: None,
-                maxfeepercent: None,
-                retry_for: None,
-                maxdelay: None,
-                exemptfee: None,
-                localinvreqid: None,
-                exclude: None,
-                maxfee: max_fee
-                    .map(|a| {
-                        let msat = to_unit(a, &melt_quote.unit, &CurrencyUnit::Msat)?;
-                        Ok::<CLN_Amount, Self::Err>(CLN_Amount::from_msat(msat.into()))
-                    })
-                    .transpose()?,
-                description: None,
-                partial_msat: partial_amount
-                    .map(|a| {
-                        let msat = to_unit(a, &melt_quote.unit, &CurrencyUnit::Msat)?;
+        let (tx, rx) = oneshot::channel();
 
-                        Ok::<cln_rpc::primitives::Amount, Self::Err>(CLN_Amount::from_msat(
-                            msat.into(),
-                        ))
-                    })
-                    .transpose()?,
-            })
-            .await;
+        self.cln_connection
+            .pipeline
+            .send(connection::Request::Pay(
+                PayRequest {
+                    bolt11: melt_quote.request.to_string(),
+                    amount_msat,
+                    label: None,
+                    riskfactor: None,
+                    maxfeepercent: None,
+                    retry_for: None,
+                    maxdelay: None,
+                    exemptfee: None,
+                    localinvreqid: None,
+                    exclude: None,
+                    maxfee: max_fee
+                        .map(|a| {
+                            let msat = to_unit(a, &melt_quote.unit, &CurrencyUnit::Msat)?;
+                            Ok::<CLN_Amount, Self::Err>(CLN_Amount::from_msat(msat.into()))
+                        })
+                        .transpose()?,
+                    description: None,
+                    partial_msat: partial_amount
+                        .map(|a| {
+                            let msat = to_unit(a, &melt_quote.unit, &CurrencyUnit::Msat)?;
+
+                            Ok::<cln_rpc::primitives::Amount, Self::Err>(CLN_Amount::from_msat(
+                                msat.into(),
+                            ))
+                        })
+                        .transpose()?,
+                },
+                tx,
+            ))
+            .await
+            .map_err(Error::from)?;
+
+        let cln_response = rx.await.unwrap();
 
         let response = match cln_response {
             Ok(pay_response) => {
@@ -313,27 +321,33 @@ impl MintPayment for Cln {
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         let time_now = unix_time();
 
-        let mut cln_client = self.cln_client.lock().await;
-
         let label = Uuid::new_v4().to_string();
 
         let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
         let amount_msat = AmountOrAny::Amount(CLN_Amount::from_msat(amount.into()));
 
-        let invoice_response = cln_client
-            .call_typed(&InvoiceRequest {
-                amount_msat,
-                description,
-                label: label.clone(),
-                expiry: unix_expiry.map(|t| t - time_now),
-                fallbacks: None,
-                preimage: None,
-                cltv: None,
-                deschashonly: None,
-                exposeprivatechannels: None,
-            })
+        let (tx, rx) = oneshot::channel();
+
+        self.cln_connection
+            .pipeline
+            .send(connection::Request::Invoice(
+                InvoiceRequest {
+                    amount_msat,
+                    description,
+                    label: label.clone(),
+                    expiry: unix_expiry.map(|t| t - time_now),
+                    fallbacks: None,
+                    preimage: None,
+                    cltv: None,
+                    deschashonly: None,
+                    exposeprivatechannels: None,
+                },
+                tx,
+            ))
             .await
             .map_err(Error::from)?;
+
+        let invoice_response = rx.await.map_err(Error::from)?.map_err(Error::from)?;
 
         let request = Bolt11Invoice::from_str(&invoice_response.bolt11)?;
         let expiry = request.expires_at().map(|t| t.as_secs());
@@ -350,22 +364,27 @@ impl MintPayment for Cln {
         &self,
         payment_hash: &str,
     ) -> Result<MintQuoteState, Self::Err> {
-        let mut cln_client = self.cln_client.lock().await;
-
-        let listinvoices_response = cln_client
-            .call_typed(&ListinvoicesRequest {
-                payment_hash: Some(payment_hash.to_string()),
-                label: None,
-                invstring: None,
-                offer_id: None,
-                index: None,
-                limit: None,
-                start: None,
-            })
+        let (tx, rx) = oneshot::channel();
+        self.cln_connection
+            .pipeline
+            .send(connection::Request::ListInvoices(
+                ListinvoicesRequest {
+                    payment_hash: Some(payment_hash.to_string()),
+                    label: None,
+                    invstring: None,
+                    offer_id: None,
+                    index: None,
+                    limit: None,
+                    start: None,
+                },
+                tx,
+            ))
             .await
             .map_err(Error::from)?;
 
-        let status = match listinvoices_response.invoices.first() {
+        let cln_response = rx.await.map_err(Error::from)?.map_err(Error::from)?;
+
+        let status = match cln_response.invoices.first() {
             Some(invoice_response) => cln_invoice_status_to_mint_state(invoice_response.status),
             None => {
                 tracing::info!(
@@ -383,21 +402,27 @@ impl MintPayment for Cln {
         &self,
         payment_hash: &str,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let mut cln_client = self.cln_client.lock().await;
+        let (tx, rx) = oneshot::channel();
 
-        let listpays_response = cln_client
-            .call_typed(&ListpaysRequest {
-                payment_hash: Some(payment_hash.parse().map_err(|_| Error::InvalidHash)?),
-                bolt11: None,
-                status: None,
-                start: None,
-                index: None,
-                limit: None,
-            })
+        self.cln_connection
+            .pipeline
+            .send(connection::Request::ListPays(
+                ListpaysRequest {
+                    payment_hash: Some(payment_hash.parse().map_err(|_| Error::InvalidHash)?),
+                    bolt11: None,
+                    status: None,
+                    start: None,
+                    index: None,
+                    limit: None,
+                },
+                tx,
+            ))
             .await
             .map_err(Error::from)?;
 
-        match listpays_response.pays.first() {
+        let cln_response = rx.await.map_err(Error::from)?.map_err(Error::from)?;
+
+        match cln_response.pays.first() {
             Some(pays_response) => {
                 let status = cln_pays_status_to_mint_state(pays_response.status);
 
@@ -425,21 +450,26 @@ impl MintPayment for Cln {
 impl Cln {
     /// Get last pay index for cln
     async fn get_last_pay_index(&self) -> Result<Option<u64>, Error> {
-        let mut cln_client = self.cln_client.lock().await;
-        let listinvoices_response = cln_client
-            .call_typed(&ListinvoicesRequest {
-                index: None,
-                invstring: None,
-                label: None,
-                limit: None,
-                offer_id: None,
-                payment_hash: None,
-                start: None,
-            })
-            .await
-            .map_err(Error::from)?;
+        let (tx, rx) = oneshot::channel();
+        self.cln_connection
+            .pipeline
+            .send(connection::Request::ListInvoices(
+                ListinvoicesRequest {
+                    payment_hash: None,
+                    label: None,
+                    invstring: None,
+                    offer_id: None,
+                    index: None,
+                    limit: None,
+                    start: None,
+                },
+                tx,
+            ))
+            .await?;
 
-        match listinvoices_response.invoices.last() {
+        let cln_response = rx.await??;
+
+        match cln_response.invoices.last() {
             Some(last_invoice) => Ok(last_invoice.pay_index),
             None => Ok(None),
         }
