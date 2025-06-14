@@ -7,7 +7,42 @@ use thiserror::Error;
 pub enum Error {
     /// SQLX Error
     #[error(transparent)]
-    SQLX(#[from] sqlx::Error),
+    Sqlite(#[from] rusqlite::Error),
+
+    /// Pool error
+    #[error(transparent)]
+    Pool(#[from] crate::pool::Error<rusqlite::Error>),
+    /// Invalid UUID
+    #[error("Invalid UUID: {0}")]
+    InvalidUuid(String),
+    /// QuoteNotFound
+    #[error("Quote not found")]
+    QuoteNotFound,
+
+    /// Missing named parameter
+    #[error("Missing named parameter {0}")]
+    MissingParameter(String),
+
+    /// Communication error with the database
+    #[error("Internal communication error")]
+    Communication,
+
+    /// Invalid response from the database thread
+    #[error("Unexpected database response")]
+    InvalidDbResponse,
+
+    /// Invalid db type
+    #[error("Invalid type from db, expected {0} got {1}")]
+    InvalidType(String, String),
+
+    /// Missing columns
+    #[error("Not enough elements: expected {0}, got {1}")]
+    MissingColumn(usize, usize),
+
+    /// Invalid data conversion in column
+    #[error("Error converting {0} to {1}")]
+    InvalidConversion(String, String),
+
     /// NUT00 Error
     #[error(transparent)]
     CDKNUT00(#[from] cdk_common::nuts::nut00::Error),

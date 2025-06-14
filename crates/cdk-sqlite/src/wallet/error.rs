@@ -7,7 +7,23 @@ use thiserror::Error;
 pub enum Error {
     /// SQLX Error
     #[error(transparent)]
-    SQLX(#[from] sqlx::Error),
+    Sqlite(#[from] rusqlite::Error),
+    /// Pool error
+    #[error(transparent)]
+    Pool(#[from] crate::pool::Error<rusqlite::Error>),
+
+    /// Missing columns
+    #[error("Not enough elements: expected {0}, got {1}")]
+    MissingColumn(usize, usize),
+
+    /// Invalid db type
+    #[error("Invalid type from db, expected {0} got {1}")]
+    InvalidType(String, String),
+
+    /// Invalid data conversion in column
+    #[error("Error converting {0} to {1}")]
+    InvalidConversion(String, String),
+
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
