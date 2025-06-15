@@ -23,12 +23,13 @@ mod token_storage;
 mod utils;
 
 const DEFAULT_WORK_DIR: &str = ".cdk-cli";
+const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 
 /// Simple CLI application to interact with cashu
 #[derive(Parser)]
-#[command(name = "cashu-tool")]
+#[command(name = "cdk-cli")]
 #[command(author = "thesimplekid <tsk@thesimplekid.com>")]
-#[command(version = "0.1.0")]
+#[command(version = CARGO_PKG_VERSION.unwrap_or("Unknown"))]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Database engine to use (sqlite/redb)
