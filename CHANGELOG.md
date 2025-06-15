@@ -4,6 +4,11 @@
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
+## [0.10.1](https://github.com/cashubtc/cdk/releases/tag/v0.10.1)
+### Fix
+- Set mint version when mint rpc is enabled [PR](https://github.com/cashubtc/cdk/pull/803) ([thesimplekid]).
+- `cdk-signatory` is optional for wallet [PR](https://github.com/cashubtc/cdk/pull/815) ([thesimplekid]).
+
 ## [0.10.0](https://github.com/cashubtc/cdk/releases/tag/v0.10.0)
 ### Added
 - SignatoryManager service [PR](https://github.com/cashubtc/cdk/pull/509) ([crodas]).

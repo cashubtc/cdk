@@ -33,7 +33,7 @@ rust-version = "1.75.0"
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-version = "0.10.0"
+version = "0.10.1"
 readme = "README.md"
 
 [workspace.dependencies]
