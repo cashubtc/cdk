@@ -538,9 +538,7 @@ impl Mint {
 mod tests {
     use std::str::FromStr;
 
-    use cdk_common::common::PaymentProcessorKey;
     use cdk_sqlite::mint::memory::new_with_state;
-    use uuid::Uuid;
 
     use super::*;
 
@@ -555,7 +553,6 @@ mod tests {
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
-        melt_requests: Vec<(MeltRequest<Uuid>, PaymentProcessorKey)>,
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Mint {
@@ -567,7 +564,6 @@ mod tests {
                 config.melt_quotes,
                 config.pending_proofs,
                 config.spent_proofs,
-                config.melt_requests,
                 config.mint_info,
             )
             .await
