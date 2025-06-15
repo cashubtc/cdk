@@ -279,35 +279,15 @@ impl MintQuotesDatabase for MintSqliteDatabase {
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
         query(
             r#"
-INSERT INTO mint_quote (
-    id, amount, unit, request, state, expiry, request_lookup_id,
-    pubkey, created_time, paid_time, issued_time
-)
-VALUES (
-    :id, :amount, :unit, :request, :state, :expiry, :request_lookup_id,
-    :pubkey, :created_time, :paid_time, :issued_time
-)
-ON CONFLICT(id) DO UPDATE SET
-    amount = excluded.amount,
-    unit = excluded.unit,
-    request = excluded.request,
-    state = excluded.state,
-    expiry = excluded.expiry,
-    request_lookup_id = excluded.request_lookup_id,
-    created_time = excluded.created_time,
-    paid_time = excluded.paid_time,
-    issued_time = excluded.issued_time
-ON CONFLICT(request_lookup_id) DO UPDATE SET
-    amount = excluded.amount,
-    unit = excluded.unit,
-    request = excluded.request,
-    state = excluded.state,
-    expiry = excluded.expiry,
-    id = excluded.id,
-    created_time = excluded.created_time,
-    paid_time = excluded.paid_time,
-    issued_time = excluded.issued_time
-        "#,
+                INSERT OR REPLACE INTO mint_quote (
+                    id, amount, unit, request, state, expiry, request_lookup_id,
+                    pubkey, created_time, paid_time, issued_time
+                )
+                VALUES (
+                    :id, :amount, :unit, :request, :state, :expiry, :request_lookup_id,
+                    :pubkey, :created_time, :paid_time, :issued_time
+                )
+            "#,
         )
         .bind(":id", quote.id.to_string())
         .bind(":amount", u64::from(quote.amount) as i64)
