@@ -754,35 +754,6 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
         Ok(())
     }
 
-    async fn add_melt_request(
-        &self,
-        melt_request: MeltRequest<Uuid>,
-        ln_key: PaymentProcessorKey,
-    ) -> Result<(), Self::Err> {
-        query(
-            r#"
-                INSERT INTO melt_request
-                (id, inputs, outputs, method, unit)
-                VALUES
-                (:id, :inputs, :outputs, :method, :unit)
-                ON CONFLICT(id) DO UPDATE SET
-                    inputs = excluded.inputs,
-                    outputs = excluded.outputs,
-                    method = excluded.method,
-                    unit = excluded.unit
-        "#,
-        )
-        .bind(":id", melt_request.quote().to_string())
-        .bind(":inputs", serde_json::to_string(&melt_request.inputs())?)
-        .bind(":outputs", serde_json::to_string(&melt_request.outputs())?)
-        .bind(":method", ln_key.method.to_string())
-        .bind(":unit", ln_key.unit.to_string())
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
     async fn get_melt_request(
         &self,
         quote_id: &Uuid,

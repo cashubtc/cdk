@@ -541,27 +541,6 @@ impl MintQuotesDatabase for MintRedbDatabase {
         Ok(())
     }
 
-    /// Add melt request
-    async fn add_melt_request(
-        &self,
-        melt_request: MeltRequest<Uuid>,
-        ln_key: PaymentProcessorKey,
-    ) -> Result<(), Self::Err> {
-        let write_txn = self.db.begin_write().map_err(Error::from)?;
-        let mut table = write_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
-
-        table
-            .insert(
-                melt_request.quote().as_bytes(),
-                (
-                    serde_json::to_string(&melt_request)?.as_str(),
-                    serde_json::to_string(&ln_key)?.as_str(),
-                ),
-            )
-            .map_err(Error::from)?;
-
-        Ok(())
-    }
     /// Get melt request
     async fn get_melt_request(
         &self,

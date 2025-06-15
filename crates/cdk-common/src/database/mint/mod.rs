@@ -96,12 +96,6 @@ pub trait QuotesDatabase {
     /// Remove [`mint::MeltQuote`]
     async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err>;
 
-    /// Add melt request
-    async fn add_melt_request(
-        &self,
-        melt_request: MeltRequest<Uuid>,
-        ln_key: PaymentProcessorKey,
-    ) -> Result<(), Self::Err>;
     /// Get melt request
     async fn get_melt_request(
         &self,
