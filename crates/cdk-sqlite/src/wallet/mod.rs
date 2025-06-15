@@ -239,7 +239,6 @@ ON CONFLICT(mint_url) DO UPDATE SET
                     mint_url
                 FROM
                     mint
-                WHERE mint_url = :mint_url
                 "#,
         )
         .fetch_all(&self.pool.get().map_err(Error::Pool)?)
