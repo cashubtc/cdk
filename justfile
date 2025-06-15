@@ -174,6 +174,7 @@ release m="":
     "-p cdk-common"
     "-p cdk-sqlite"
     "-p cdk-redb"
+    "-p cdk-signatory"
     "-p cdk"
     "-p cdk-rexie"
     "-p cdk-axum"
@@ -183,7 +184,6 @@ release m="":
     "-p cdk-lnbits"
     "-p cdk-fake-wallet"
     "-p cdk-payment-processor"
-    "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
   )
