@@ -4,7 +4,7 @@ use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::thread::spawn;
 use std::time::Instant;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::common::SqliteConnectionManager;
@@ -262,7 +262,7 @@ fn rusqlite_worker_manager(
                     }
                 };
 
-                let tx = match conn.transaction() {
+                let tx = match conn.transaction_with_behavior(TransactionBehavior::Immediate) {
                     Ok(tx) => tx,
                     Err(err) => {
                         tracing::error!("Failed to begin a transaction: {:?}", err);
