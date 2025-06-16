@@ -232,6 +232,10 @@
               cargo update -p half --precise 2.4.1
               cargo update -p base64ct --precise 1.7.3
               cargo update -p url --precise 2.5.2
+              cargo update -p pest_derive --precise 2.8.0
+              cargo update -p pest_generator --precise 2.8.0
+              cargo update -p pest_meta --precise 2.8.0
+              cargo update -p pest --precise 2.8.0
               ";
               buildInputs = buildInputs ++ WASMInputs ++ [ msrv_toolchain ];
               inherit nativeBuildInputs;
