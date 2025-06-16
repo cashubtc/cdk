@@ -297,7 +297,7 @@ impl Mint {
         &self,
         melt_request: &MeltRequest<Uuid>,
     ) -> Result<MeltQuote, Error> {
-        let state = self
+        let (state, quote) = self
             .localstore
             .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending)
             .await?;
@@ -308,12 +308,6 @@ impl Mint {
             MeltQuoteState::Paid => Err(Error::PaidQuote),
             MeltQuoteState::Unknown => Err(Error::UnknownPaymentState),
         }?;
-
-        let quote = self
-            .localstore
-            .get_melt_quote(melt_request.quote())
-            .await?
-            .ok_or(Error::UnknownQuote)?;
 
         self.pubsub_manager
             .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
@@ -347,9 +341,19 @@ impl Mint {
             ));
         }
 
-        self.localstore
+        if let Some(err) = self
+            .localstore
             .add_proofs(melt_request.inputs().clone(), None)
-            .await?;
+            .await
+            .err()
+        {
+            match err {
+                cdk_common::database::Error::Duplicate => {
+                    // the proofs already exits, it will be errored by `check_ys_spendable`
+                }
+                err => return Err(Error::Database(err)),
+            }
+        }
 
         self.check_ys_spendable(&input_ys, State::Pending).await?;
         for proof in melt_request.inputs() {

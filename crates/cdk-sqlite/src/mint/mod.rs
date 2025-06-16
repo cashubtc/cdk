@@ -674,10 +674,10 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
         &self,
         quote_id: &Uuid,
         state: MeltQuoteState,
-    ) -> Result<MeltQuoteState, Self::Err> {
+    ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err> {
         let transaction = self.pool.begin().await?;
 
-        let quote = query(
+        let mut quote = query(
             r#"
             SELECT
                 id,
@@ -732,7 +732,10 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
             }
         };
 
-        Ok(quote.state)
+        let old_state = quote.state;
+        quote.state = state;
+
+        Ok((old_state, quote))
     }
 
     async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
@@ -816,7 +819,7 @@ impl MintProofsDatabase for MintSqliteDatabase {
         for proof in proofs {
             query(
                 r#"
-                INSERT OR IGNORE INTO proof
+                INSERT INTO proof
                 (y, amount, keyset_id, secret, c, witness, state, quote_id, created_time)
                 VALUES
                 (:y, :amount, :keyset_id, :secret, :c, :witness, :state, :quote_id, :created_time)
@@ -852,10 +855,11 @@ impl MintProofsDatabase for MintSqliteDatabase {
 
         let total_deleted = query(
             r#"
-            DELETE FROM proof WHERE y IN (:ys) AND state != 'SPENT'
+            DELETE FROM proof WHERE y IN (:ys) AND state NOT IN (:exclude_state)
             "#,
         )
         .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+        .bind_vec(":exclude_state", vec![State::Spent.to_string()])
         .execute(&transaction)
         .await?;
 
@@ -974,7 +978,11 @@ impl MintProofsDatabase for MintSqliteDatabase {
 
         if current_states.len() != ys.len() {
             transaction.rollback().await?;
-            tracing::warn!("Attempted to update state of non-existent proof");
+            tracing::warn!(
+                "Attempted to update state of non-existent proof {} {}",
+                current_states.len(),
+                ys.len()
+            );
             return Err(database::Error::ProofNotFound);
         }
 
