@@ -470,12 +470,13 @@ impl MintQuotesDatabase for MintRedbDatabase {
         &self,
         quote_id: &Uuid,
         state: MeltQuoteState,
-    ) -> Result<MeltQuoteState, Self::Err> {
+    ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         let current_state;
+        let mut melt_quote: mint::MeltQuote;
+
         {
-            let mut melt_quote: mint::MeltQuote;
             let mut table = write_txn
                 .open_table(MELT_QUOTES_TABLE)
                 .map_err(Error::from)?;
@@ -506,7 +507,7 @@ impl MintQuotesDatabase for MintRedbDatabase {
         }
         write_txn.commit().map_err(Error::from)?;
 
-        Ok(current_state)
+        Ok((current_state, melt_quote))
     }
 
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err> {

@@ -24,9 +24,19 @@ impl Mint {
 
         // After swap request is fully validated, add the new proofs to DB
         let input_ys = swap_request.inputs().ys()?;
-        self.localstore
+        if let Some(err) = self
+            .localstore
             .add_proofs(swap_request.inputs().clone(), None)
-            .await?;
+            .await
+            .err()
+        {
+            match err {
+                cdk_common::database::Error::Duplicate => {
+                    // the proofs already exits, it will be errored by `check_ys_spendable`
+                }
+                err => return Err(Error::Database(err)),
+            }
+        }
         self.check_ys_spendable(&input_ys, State::Pending).await?;
 
         let mut promises = Vec::with_capacity(swap_request.outputs().len());

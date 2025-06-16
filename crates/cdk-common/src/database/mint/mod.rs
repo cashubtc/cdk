@@ -88,7 +88,7 @@ pub trait QuotesDatabase {
         &self,
         quote_id: &Uuid,
         state: MeltQuoteState,
-    ) -> Result<MeltQuoteState, Self::Err>;
+    ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err>;
     /// Get all [`mint::MeltQuote`]s
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
     /// Remove [`mint::MeltQuote`]

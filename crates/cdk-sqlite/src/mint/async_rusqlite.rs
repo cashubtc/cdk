@@ -4,7 +4,7 @@ use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::thread::spawn;
 use std::time::Instant;
 
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{ffi, Connection, ErrorCode, TransactionBehavior};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::common::SqliteConnectionManager;
@@ -202,6 +202,26 @@ fn rusqlite_spawn_worker_threads(
                     Ok(ok) => reply_to.send(ok),
                     Err(err) => {
                         tracing::error!("Failed query with error {:?}", err);
+                        let err = if let Error::Sqlite(rusqlite::Error::SqliteFailure(
+                            ffi::Error {
+                                code,
+                                extended_code,
+                            },
+                            _,
+                        )) = &err
+                        {
+                            if *code == ErrorCode::ConstraintViolation
+                                && (*extended_code == ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                                    || *extended_code == ffi::SQLITE_CONSTRAINT_UNIQUE)
+                            {
+                                Error::Duplicate
+                            } else {
+                                err
+                            }
+                        } else {
+                            err
+                        };
+
                         reply_to.send(DbResponse::Error(err))
                     }
                 };
@@ -331,6 +351,27 @@ fn rusqlite_worker_manager(
                                         tx_id,
                                         err
                                     );
+                                    let err = if let Error::Sqlite(
+                                        rusqlite::Error::SqliteFailure(
+                                            ffi::Error {
+                                                code,
+                                                extended_code,
+                                            },
+                                            _,
+                                        ),
+                                    ) = &err
+                                    {
+                                        if *code == ErrorCode::ConstraintViolation
+                                            && (*extended_code == ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                                                || *extended_code == ffi::SQLITE_CONSTRAINT_UNIQUE)
+                                        {
+                                            Error::Duplicate
+                                        } else {
+                                            err
+                                        }
+                                    } else {
+                                        err
+                                    };
                                     reply_to.send(DbResponse::Error(err))
                                 }
                             };
