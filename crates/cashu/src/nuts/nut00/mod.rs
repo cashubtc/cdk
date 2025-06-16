@@ -287,6 +287,18 @@ pub enum Witness {
     HTLCWitness(HTLCWitness),
 }
 
+impl From<P2PKWitness> for Witness {
+    fn from(witness: P2PKWitness) -> Self {
+        Self::P2PKWitness(witness)
+    }
+}
+
+impl From<HTLCWitness> for Witness {
+    fn from(witness: HTLCWitness) -> Self {
+        Self::HTLCWitness(witness)
+    }
+}
+
 impl Witness {
     /// Add signatures to [`Witness`]
     pub fn add_signatures(&mut self, signatues: Vec<String>) {

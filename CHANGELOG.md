@@ -4,6 +4,29 @@
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
+[Unreleased]
+### Fixed
+- Mintd version updated when grpc is enabled [PR](https://github.com/cashubtc/cdk/pull/803) ([thesimplekid]).
+
+## [0.10.0](https://github.com/cashubtc/cdk/releases/tag/v0.10.0)
+### Added
+- SignatoryManager service [PR](https://github.com/cashubtc/cdk/pull/509) ([crodas]).
+- Mint URL flag option [PR](https://github.com/cashubtc/cdk/pull/765) ([thesimplekid]).
+- Export NUT-06 supported settings field [PR](https://github.com/cashubtc/cdk/pull/764) ([davidcaseria]).
+- Docker build workflow for arm64 images [PR](https://github.com/cashubtc/cdk/pull/770) ([asmo]).
+
+### Changed
+- Updated dependencies [PR](https://github.com/cashubtc/cdk/pull/761) ([thesimplekid]).
+- Refactored NUT-04 and NUT-05 [PR](https://github.com/cashubtc/cdk/pull/749) ([thesimplekid]).
+- Updated Nix flake to 25.05 and removed Nix cache [PR](https://github.com/cashubtc/cdk/pull/769) ([thesimplekid]).
+
+## [0.9.3](https://github.com/cashubtc/cdk/releases/tag/v0.9.3)
+### Changed
+- Melt will perform swap before attempting to melt if exact amount is not available [PR](https://github.com/cashubtc/cdk/pull/793) ([crodas]).
+
+### Fixed
+- Handle old nut15 format to keep compatibility with older nutshell version [PR](https://github.com/cashubtc/cdk/pull/794) ([thesimplekid]).
+
 ## [0.9.2](https://github.com/cashubtc/cdk/releases/tag/v0.9.2)
 ### Added
 - HTLC from hash support [PR](https://github.com/cashubtc/cdk/pull/753) ([thesimplekid]).
@@ -353,3 +376,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [nodlAndHodl]: https://github.com/nodlAndHodl
 [benthecarman]: https://github.com/benthecarman
 [Darrell]: https://github.com/Darrellbor
+[asmo]: https://github.com/asmogo

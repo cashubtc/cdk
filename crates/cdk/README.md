@@ -112,7 +112,7 @@ See more examples in the [examples](./examples) folder.
 
 ## Minimum Supported Rust Version (MSRV)
 
-The `cdk` library should always compile with any combination of features on Rust **1.63.0**.
+The `cdk` library should always compile with any combination of features on Rust **1.75.0**.
 
 To build and test with the MSRV you will need to pin the below dependency versions:
 

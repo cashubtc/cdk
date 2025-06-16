@@ -6,13 +6,12 @@ jobs:
   nutshell-integration-tests:
     name: Nutshell Mint Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: checkout
         uses: actions/checkout@v4
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v11
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v6
+        uses: DeterminateSystems/nix-installer-action@v17
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Test Nutshell
@@ -24,15 +23,14 @@ jobs:
   nutshell-wallet-integration-tests:
     name: Nutshell Wallet Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: checkout
         uses: actions/checkout@v4
       - name: Pull Nutshell Docker image
         run: docker pull cashubtc/nutshell:latest
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v11
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v6
+        uses: DeterminateSystems/nix-installer-action@v17
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Test Nutshell Wallet

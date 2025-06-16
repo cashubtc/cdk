@@ -57,12 +57,13 @@ test-pure db="memory": build
   fi
 
   # Run pure integration tests
-  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure
+  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1
 
 test-all db="memory":
     #!/usr/bin/env bash
     just test {{db}}
     ./misc/itests.sh "{{db}}"
+    ./misc/fake_itests.sh "{{db}}" external_signatory
     ./misc/fake_itests.sh "{{db}}"
     
 test-nutshell:
@@ -119,6 +120,7 @@ itest db:
   
 fake-mint-itest db:
   #!/usr/bin/env bash
+  ./misc/fake_itests.sh "{{db}}" external_signatory
   ./misc/fake_itests.sh "{{db}}"
 
   
@@ -172,6 +174,7 @@ release m="":
     "-p cdk-common"
     "-p cdk-sqlite"
     "-p cdk-redb"
+    "-p cdk-signatory"
     "-p cdk"
     "-p cdk-rexie"
     "-p cdk-axum"
@@ -208,6 +211,7 @@ check-docs:
     "-p cdk-lnbits"
     "-p cdk-fake-wallet"
     "-p cdk-mint-rpc"
+    "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
   )

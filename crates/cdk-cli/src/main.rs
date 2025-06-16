@@ -23,12 +23,13 @@ mod token_storage;
 mod utils;
 
 const DEFAULT_WORK_DIR: &str = ".cdk-cli";
+const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 
 /// Simple CLI application to interact with cashu
 #[derive(Parser)]
-#[command(name = "cashu-tool")]
+#[command(name = "cdk-cli")]
 #[command(author = "thesimplekid <tsk@thesimplekid.com>")]
-#[command(version = "0.1.0")]
+#[command(version = CARGO_PKG_VERSION.unwrap_or("Unknown"))]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Database engine to use (sqlite/redb)
@@ -65,8 +66,8 @@ enum Commands {
     Receive(sub_commands::receive::ReceiveSubCommand),
     /// Send
     Send(sub_commands::send::SendSubCommand),
-    /// Check if wallet balance is spendable
-    CheckSpendable,
+    /// Reclaim pending proofs that are no longer pending
+    CheckPending,
     /// View mint info
     MintInfo(sub_commands::mint_info::MintInfoSubcommand),
     /// Mint proofs via bolt11
@@ -215,8 +216,8 @@ async fn main() -> Result<()> {
         Commands::Send(sub_command_args) => {
             sub_commands::send::send(&multi_mint_wallet, sub_command_args).await
         }
-        Commands::CheckSpendable => {
-            sub_commands::check_spent::check_spent(&multi_mint_wallet).await
+        Commands::CheckPending => {
+            sub_commands::check_pending::check_pending(&multi_mint_wallet).await
         }
         Commands::MintInfo(sub_command_args) => {
             sub_commands::mint_info::mint_info(args.proxy, sub_command_args).await

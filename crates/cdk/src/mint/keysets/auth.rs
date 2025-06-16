@@ -1,66 +1,50 @@
 //! Auth keyset functions
 
+use cdk_common::{CurrencyUnit, KeySetInfo};
 use tracing::instrument;
 
-use crate::mint::{CurrencyUnit, Id, KeySetInfo, KeysResponse, KeysetResponse};
+use crate::mint::{KeysResponse, KeysetResponse};
 use crate::{Error, Mint};
 
 impl Mint {
     /// Retrieve the auth public keys of the active keyset for distribution to wallet
     /// clients
     #[instrument(skip_all)]
-    pub async fn auth_pubkeys(&self) -> Result<KeysResponse, Error> {
-        let active_keyset_id = self
-            .auth_localstore
-            .as_ref()
-            .ok_or(Error::AuthLocalstoreUndefined)?
-            .get_active_keyset_id()
-            .await?
-            .ok_or(Error::AmountKey)?;
-
-        self.ensure_blind_auth_keyset_loaded(&active_keyset_id)
-            .await?;
-
-        let keysets = self.keysets.read().await;
+    pub fn auth_pubkeys(&self) -> Result<KeysResponse, Error> {
+        let key = self
+            .keysets
+            .load()
+            .iter()
+            .find(|key| key.unit == CurrencyUnit::Auth)
+            .ok_or(Error::NoActiveKeyset)?
+            .clone();
 
         Ok(KeysResponse {
-            keysets: vec![keysets
-                .get(&active_keyset_id)
-                .ok_or(Error::KeysetUnknown(active_keyset_id))?
-                .clone()
-                .into()],
+            keysets: vec![key.into()],
         })
     }
 
     /// Return a list of auth keysets
     #[instrument(skip_all)]
-    pub async fn auth_keysets(&self) -> Result<KeysetResponse, Error> {
-        let keysets = self
-            .auth_localstore
-            .clone()
-            .ok_or(Error::AuthLocalstoreUndefined)?
-            .get_keyset_infos()
-            .await?;
-        let active_keysets: Id = self
-            .auth_localstore
-            .as_ref()
-            .ok_or(Error::AuthLocalstoreUndefined)?
-            .get_active_keyset_id()
-            .await?
-            .ok_or(Error::NoActiveKeyset)?;
-
-        let keysets = keysets
-            .into_iter()
-            .filter(|k| k.unit == CurrencyUnit::Auth)
-            .map(|k| KeySetInfo {
-                id: k.id,
-                unit: k.unit,
-                active: active_keysets == k.id,
-                input_fee_ppk: k.input_fee_ppk,
-                final_expiry: k.final_expiry,
-            })
-            .collect();
-
-        Ok(KeysetResponse { keysets })
+    pub fn auth_keysets(&self) -> KeysetResponse {
+        KeysetResponse {
+            keysets: self
+                .keysets
+                .load()
+                .iter()
+                .filter_map(|key| {
+                    if key.unit == CurrencyUnit::Auth {
+                        Some(KeySetInfo {
+                            id: key.id,
+                            unit: key.unit.clone(),
+                            active: key.active,
+                            input_fee_ppk: key.input_fee_ppk,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        }
     }
 }
