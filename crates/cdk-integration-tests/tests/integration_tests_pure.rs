@@ -599,12 +599,7 @@ async fn test_mint_enforce_fee() {
         .await
         .expect("Could not get proofs");
 
-    let keys = mint_bob
-        .pubkeys()
-        .keysets
-        .first()
-        .unwrap()
-        .clone();
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
     let keyset_id = keys.id;
 
     let five_proofs: Vec<_> = proofs.drain(..5).collect();

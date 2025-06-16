@@ -74,7 +74,7 @@ pub struct SignatoryKeySet {
     /// Information about the fee per public key
     pub input_fee_ppk: u64,
     /// Final expiry of the keyset (unix timestamp in the future)
-    pub final_expiry: Option<u64>
+    pub final_expiry: Option<u64>,
 }
 
 impl From<&SignatoryKeySet> for KeySet {

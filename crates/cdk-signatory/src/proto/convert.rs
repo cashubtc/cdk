@@ -377,8 +377,7 @@ impl TryInto<cdk_common::CurrencyUnit> for CurrencyUnit {
 impl TryInto<cdk_common::KeySet> for KeySet {
     type Error = cdk_common::error::Error;
     fn try_into(self) -> Result<cdk_common::KeySet, Self::Error> {
-        Ok(
-            cdk_common::KeySet {
+        Ok(cdk_common::KeySet {
             id: self
                 .id
                 .parse()
@@ -396,7 +395,7 @@ impl TryInto<cdk_common::KeySet> for KeySet {
                     .map(|(k, v)| cdk_common::PublicKey::from_slice(&v).map(|pk| (k.into(), pk)))
                     .collect::<Result<BTreeMap<cdk_common::Amount, cdk_common::PublicKey>, _>>()?,
             ),
-            final_expiry: self.final_expiry
+            final_expiry: self.final_expiry,
         })
     }
 }

@@ -14,7 +14,8 @@ use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
 use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
 use cdk_common::{
-    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, Proof, ProofDleq, PublicKey, SecretKey, SpendingConditions, State
+    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, Proof, ProofDleq,
+    PublicKey, SecretKey, SpendingConditions, State,
 };
 use error::Error;
 use tracing::instrument;
@@ -544,7 +545,10 @@ ON CONFLICT(id) DO UPDATE SET
         "#,
         )
         .bind(":id", keyset.id.to_string())
-        .bind(":keys", serde_json::to_string(&keyset.keys).map_err(Error::from)?)
+        .bind(
+            ":keys",
+            serde_json::to_string(&keyset.keys).map_err(Error::from)?,
+        )
         .execute(&self.pool.get().map_err(Error::Pool)?)
         .map_err(Error::Sqlite)?;
 

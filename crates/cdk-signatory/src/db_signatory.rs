@@ -241,7 +241,7 @@ impl Signatory for DbSignatory {
             args.max_order,
             args.input_fee_ppk,
             // TODO: add and connect settings for this
-            None
+            None,
         );
         let id = info.id;
         self.localstore.add_keyset_info(info.clone()).await?;
