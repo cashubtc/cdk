@@ -68,6 +68,8 @@ pub async fn init_keysets(
                         highest_index_keyset.max_order,
                         highest_index_keyset.unit.clone(),
                         highest_index_keyset.derivation_path.clone(),
+                        highest_index_keyset.final_expiry.clone(),
+                        cdk_common::nut02::KeySetVersion::Version00,
                     );
                     active_keysets.insert(id, keyset);
                     let mut keyset_info = highest_index_keyset;
@@ -97,6 +99,8 @@ pub async fn init_keysets(
                         unit.clone(),
                         *max_order,
                         *input_fee_ppk,
+                        // TODO: add Mint settings for a final expiry of newly generated keysets
+                        None,
                     );
 
                     let id = keyset_info.id;
@@ -122,6 +126,7 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
     unit: CurrencyUnit,
     max_order: u8,
     input_fee_ppk: u64,
+    final_expiry: Option<u64>,
 ) -> (MintKeySet, MintKeySetInfo) {
     let keyset = MintKeySet::generate(
         secp,
@@ -130,13 +135,16 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
             .expect("RNG busted"),
         unit,
         max_order,
+        final_expiry,
+        // TODO: change this to Version01 to generate keysets v2
+        cdk_common::nut02::KeySetVersion::Version00,
     );
     let keyset_info = MintKeySetInfo {
         id: keyset.id,
         unit: keyset.unit.clone(),
         active: true,
         valid_from: unix_time(),
-        valid_to: None,
+        final_expiry: keyset.final_expiry,
         derivation_path,
         derivation_path_index,
         max_order,

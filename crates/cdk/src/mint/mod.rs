@@ -12,7 +12,6 @@ use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, K
 use cdk_common::secret;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
-use nut02::KeySetVersion;
 #[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;

@@ -1182,7 +1182,7 @@ fn sqlite_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo, Error> 
         derivation_path_index: column_as_nullable_number!(derivation_path_index),
         max_order: column_as_number!(max_order),
         input_fee_ppk: column_as_number!(row_keyset_ppk),
-        final_expiry: column_as_number!(valid_to),
+        final_expiry: column_as_nullable_number!(valid_to),
     })
 }
 

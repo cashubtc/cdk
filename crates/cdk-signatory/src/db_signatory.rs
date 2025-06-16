@@ -72,6 +72,8 @@ impl DbSignatory {
                     unit.clone(),
                     max_order,
                     fee,
+                    // TODO: add and connect settings for this
+                    None,
                 );
 
                 let id = keyset_info.id;
@@ -130,6 +132,8 @@ impl DbSignatory {
             keyset_info.max_order,
             keyset_info.unit.clone(),
             keyset_info.derivation_path.clone(),
+            keyset_info.final_expiry,
+            keyset_info.id.get_version(),
         )
     }
 }
@@ -236,6 +240,8 @@ impl Signatory for DbSignatory {
             args.unit.clone(),
             args.max_order,
             args.input_fee_ppk,
+            // TODO: add and connect settings for this
+            None
         );
         let id = info.id;
         self.localstore.add_keyset_info(info.clone()).await?;
@@ -266,6 +272,8 @@ mod test {
             2,
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
+            None,
+            cdk_common::nut02::KeySetVersion::Version00,
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
@@ -310,6 +318,8 @@ mod test {
             2,
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
+            None,
+            cdk_common::nut02::KeySetVersion::Version00,
         );
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);

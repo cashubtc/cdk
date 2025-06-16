@@ -438,6 +438,7 @@ pub struct KeySet {
     /// Keyset [`Keys`]
     pub keys: Keys,
     /// Expiry
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub final_expiry: Option<u64>,
 }
 

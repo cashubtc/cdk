@@ -60,6 +60,7 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
                     .map(|(amount, pk)| PublicKey::from_slice(&pk).map(|pk| (amount.into(), pk)))
                     .collect::<Result<BTreeMap<Amount, _>, _>>()?,
             ),
+            final_expiry: self.final_expiry,
         })
     }
 }
@@ -78,6 +79,7 @@ impl From<crate::signatory::SignatoryKeySet> for KeySet {
                     .map(|(key, value)| ((*key).into(), value.to_bytes().to_vec()))
                     .collect(),
             }),
+            final_expiry: keyset.final_expiry,
         }
     }
 }
@@ -375,7 +377,8 @@ impl TryInto<cdk_common::CurrencyUnit> for CurrencyUnit {
 impl TryInto<cdk_common::KeySet> for KeySet {
     type Error = cdk_common::error::Error;
     fn try_into(self) -> Result<cdk_common::KeySet, Self::Error> {
-        Ok(cdk_common::KeySet {
+        Ok(
+            cdk_common::KeySet {
             id: self
                 .id
                 .parse()
@@ -393,6 +396,7 @@ impl TryInto<cdk_common::KeySet> for KeySet {
                     .map(|(k, v)| cdk_common::PublicKey::from_slice(&v).map(|pk| (k.into(), pk)))
                     .collect::<Result<BTreeMap<cdk_common::Amount, cdk_common::PublicKey>, _>>()?,
             ),
+            final_expiry: self.final_expiry
         })
     }
 }
@@ -433,6 +437,7 @@ impl From<cdk_common::KeySetInfo> for KeySet {
             active: value.active,
             input_fee_ppk: value.input_fee_ppk,
             keys: Default::default(),
+            final_expiry: value.final_expiry,
         }
     }
 }
@@ -450,6 +455,7 @@ impl TryInto<cdk_common::KeySetInfo> for KeySet {
                 .map_err(|_| cdk_common::Error::Custom("Invalid unit encoding".to_owned()))?,
             active: self.active,
             input_fee_ppk: self.input_fee_ppk,
+            final_expiry: self.final_expiry,
         })
     }
 }

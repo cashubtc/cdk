@@ -77,15 +77,7 @@ async fn test_swap_to_send() {
         )
         .await
         .expect("Failed to send token");
-    let keysets_info = match wallet_alice
-        .localstore
-        .get_mint_keysets(get_mint_url(&mint_bob).await)
-        .await
-        .unwrap()
-    {
-        Some(keysets_info) => keysets_info,
-        None => wallet_alice.get_mint_keysets().await.unwrap(),
-    };
+    let keysets_info = wallet_alice.get_mint_keysets().await.unwrap();
     let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
         Amount::from(40),
@@ -247,7 +239,7 @@ async fn test_mint_double_spend() {
         .await
         .expect("Could not get proofs");
 
-    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
     let keyset_id = keys.id;
 
     let preswap = PreMintSecrets::random(
@@ -304,7 +296,7 @@ async fn test_attempt_to_swap_by_overflowing() {
 
     let amount = 2_u64.pow(63);
 
-    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
     let keyset_id = keys.id;
 
     let pre_mint_amount =
@@ -609,13 +601,10 @@ async fn test_mint_enforce_fee() {
 
     let keys = mint_bob
         .pubkeys()
-        .await
-        .unwrap()
         .keysets
         .first()
         .unwrap()
-        .clone()
-        .keys;
+        .clone();
     let keyset_id = keys.id;
 
     let five_proofs: Vec<_> = proofs.drain(..5).collect();
