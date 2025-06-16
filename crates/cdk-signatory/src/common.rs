@@ -68,7 +68,7 @@ pub async fn init_keysets(
                         highest_index_keyset.max_order,
                         highest_index_keyset.unit.clone(),
                         highest_index_keyset.derivation_path.clone(),
-                        highest_index_keyset.final_expiry.clone(),
+                        highest_index_keyset.final_expiry,
                         cdk_common::nut02::KeySetVersion::Version00,
                     );
                     active_keysets.insert(id, keyset);
@@ -118,6 +118,7 @@ pub async fn init_keysets(
 
 /// Generate new [`MintKeySetInfo`] from path
 #[tracing::instrument(skip_all)]
+#[allow(clippy::too_many_arguments)]
 pub fn create_new_keyset<C: secp256k1::Signing>(
     secp: &secp256k1::Secp256k1<C>,
     xpriv: Xpriv,
