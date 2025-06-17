@@ -114,6 +114,9 @@ pub trait ProofsDatabase {
     type Err: Into<Error> + From<Error>;
 
     /// Add  [`Proofs`]
+    ///
+    /// Adds proofs to the database. The database should error if the proof already exits, with a
+    /// `AttemptUpdateSpentProof` if the proof is already spent or a `Duplicate` error otherwise.
     async fn add_proofs(&self, proof: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err>;
     /// Remove [`Proofs`]
     async fn remove_proofs(

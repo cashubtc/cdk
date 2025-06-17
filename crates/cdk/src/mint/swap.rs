@@ -30,12 +30,13 @@ impl Mint {
             .await
             .err()
         {
-            match err {
-                cdk_common::database::Error::Duplicate => {
-                    // the proofs already exits, it will be errored by `check_ys_spendable`
+            return match err {
+                cdk_common::database::Error::Duplicate => Err(Error::TokenPending),
+                cdk_common::database::Error::AttemptUpdateSpentProof => {
+                    Err(Error::TokenAlreadySpent)
                 }
-                err => return Err(Error::Database(err)),
-            }
+                err => Err(Error::Database(err)),
+            };
         }
         self.check_ys_spendable(&input_ys, State::Pending).await?;
 
