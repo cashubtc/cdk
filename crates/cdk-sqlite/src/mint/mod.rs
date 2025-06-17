@@ -816,6 +816,26 @@ impl MintProofsDatabase for MintSqliteDatabase {
 
         let current_time = unix_time();
 
+        // Check any previous proof, this query should return None in order to proceed storing
+        // Any result here would error
+        match query(r#"SELECT state FROM proof WHERE y IN (:ys) LIMIT 1"#)
+            .bind_vec(
+                ":ys",
+                proofs
+                    .iter()
+                    .map(|y| y.y().map(|y| y.to_bytes().to_vec()))
+                    .collect::<Result<_, _>>()?,
+            )
+            .pluck(&transaction)
+            .await?
+            .map(|state| Ok::<_, Error>(column_as_string!(&state, State::from_str)))
+            .transpose()?
+        {
+            Some(State::Spent) => Err(database::Error::AttemptUpdateSpentProof),
+            Some(_) => Err(database::Error::Duplicate),
+            None => Ok(()), // no previous record
+        }?;
+
         for proof in proofs {
             query(
                 r#"
