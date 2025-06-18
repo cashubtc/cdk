@@ -9,6 +9,10 @@ pub enum Error {
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 
+    /// Duplicate entry
+    #[error("Record already exists")]
+    Duplicate,
+
     /// Pool error
     #[error(transparent)]
     Pool(#[from] crate::pool::Error<rusqlite::Error>),
@@ -98,6 +102,9 @@ pub enum Error {
 
 impl From<Error> for cdk_common::database::Error {
     fn from(e: Error) -> Self {
-        Self::Database(Box::new(e))
+        match e {
+            Error::Duplicate => Self::Duplicate,
+            e => Self::Database(Box::new(e)),
+        }
     }
 }
