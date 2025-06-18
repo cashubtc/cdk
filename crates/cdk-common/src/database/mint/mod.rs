@@ -84,10 +84,12 @@ pub trait QuotesDatabase {
     /// Get [`mint::MeltQuote`]
     async fn get_melt_quote(&self, quote_id: &Uuid) -> Result<Option<mint::MeltQuote>, Self::Err>;
     /// Update [`mint::MeltQuote`] state
+    ///
+    /// It is expected for this function to fail if the state is already set to the new state
     async fn update_melt_quote_state(
         &self,
         quote_id: &Uuid,
-        state: MeltQuoteState,
+        new_state: MeltQuoteState,
     ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err>;
     /// Get all [`mint::MeltQuote`]s
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
