@@ -7,11 +7,11 @@ use cashu::MintInfo;
 use uuid::Uuid;
 
 use super::Error;
-use crate::common::{PaymentProcessorKey, QuoteTTL};
+use crate::common::QuoteTTL;
 use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
 use crate::nuts::{
-    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MeltRequest, MintQuoteState, Proof, Proofs,
-    PublicKey, State,
+    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
+    State,
 };
 
 #[cfg(feature = "auth")]
@@ -95,12 +95,6 @@ pub trait QuotesDatabase {
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
     /// Remove [`mint::MeltQuote`]
     async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err>;
-
-    /// Get melt request
-    async fn get_melt_request(
-        &self,
-        quote_id: &Uuid,
-    ) -> Result<Option<(MeltRequest<Uuid>, PaymentProcessorKey)>, Self::Err>;
 }
 
 /// Mint Proof Database trait
