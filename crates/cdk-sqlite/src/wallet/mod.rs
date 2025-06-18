@@ -329,7 +329,8 @@ ON CONFLICT(mint_url) DO UPDATE SET
                 id,
                 unit,
                 active,
-                input_fee_ppk
+                input_fee_ppk,
+                final_expiry
             FROM
                 keyset
             WHERE mint_url = :mint_url
