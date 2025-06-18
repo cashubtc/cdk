@@ -1,8 +1,6 @@
 name: Publish Docker Image ARM
 
 on:
-  push:
-    branches: [ arm_fix ]
   release:
     types: [ published ]
   workflow_dispatch:
@@ -14,7 +12,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: asmogo/mintd
+  IMAGE_NAME: cashubtc/mintd
 
 jobs:
   build-and-push:
