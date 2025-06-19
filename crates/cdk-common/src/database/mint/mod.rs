@@ -84,11 +84,13 @@ pub trait QuotesDatabase {
     /// Get [`mint::MeltQuote`]
     async fn get_melt_quote(&self, quote_id: &Uuid) -> Result<Option<mint::MeltQuote>, Self::Err>;
     /// Update [`mint::MeltQuote`] state
+    ///
+    /// It is expected for this function to fail if the state is already set to the new state
     async fn update_melt_quote_state(
         &self,
         quote_id: &Uuid,
-        state: MeltQuoteState,
-    ) -> Result<MeltQuoteState, Self::Err>;
+        new_state: MeltQuoteState,
+    ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err>;
     /// Get all [`mint::MeltQuote`]s
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
     /// Remove [`mint::MeltQuote`]
@@ -114,6 +116,9 @@ pub trait ProofsDatabase {
     type Err: Into<Error> + From<Error>;
 
     /// Add  [`Proofs`]
+    ///
+    /// Adds proofs to the database. The database should error if the proof already exits, with a
+    /// `AttemptUpdateSpentProof` if the proof is already spent or a `Duplicate` error otherwise.
     async fn add_proofs(&self, proof: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err>;
     /// Remove [`Proofs`]
     async fn remove_proofs(

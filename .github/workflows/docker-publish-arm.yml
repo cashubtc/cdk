@@ -1,8 +1,8 @@
-name: Publish Docker Image ARM
+name: Publish Docker Image ARM64
 
 on:
   release:
-    types: [ published ]
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -48,6 +48,7 @@ jobs:
             type=sha,suffix=-arm64
             ${{ github.event.inputs.tag != '' && format('{0}-arm64', github.event.inputs.tag) || '' }}
 
+      # Build and push ARM64 image with architecture suffix
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -55,7 +56,7 @@ jobs:
           push: true
           platforms: linux/arm64
           file: ./Dockerfile.arm
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta.outputs.tags }}-arm64
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
