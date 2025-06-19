@@ -696,9 +696,11 @@ ON CONFLICT(request_lookup_id) DO UPDATE SET
                 melt_quote
             WHERE
                 id=:id
+                AND state != :state
             "#,
         )
         .bind(":id", quote_id.as_hyphenated().to_string())
+        .bind(":state", state.to_string())
         .fetch_one(&transaction)
         .await?
         .map(sqlite_row_to_melt_quote)
