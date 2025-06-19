@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
+use cdk_common::common::QuoteTTL;
 use cdk_common::database::{
     self, MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
     MintSignaturesDatabase,
@@ -18,8 +18,8 @@ use cdk_common::nut00::ProofsMethods;
 use cdk_common::state::check_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
-    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MeltRequest, MintInfo, MintQuoteState, Proof,
-    Proofs, PublicKey, State,
+    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintInfo, MintQuoteState, Proof, Proofs,
+    PublicKey, State,
 };
 use migrations::{migrate_01_to_02, migrate_04_to_05};
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
@@ -54,9 +54,6 @@ const QUOTE_PROOFS_TABLE: MultimapTableDefinition<[u8; 16], [u8; 33]> =
     MultimapTableDefinition::new("quote_proofs");
 const QUOTE_SIGNATURES_TABLE: MultimapTableDefinition<[u8; 16], [u8; 33]> =
     MultimapTableDefinition::new("quote_signatures");
-
-const MELT_REQUESTS: TableDefinition<[u8; 16], (&str, &str)> =
-    TableDefinition::new("melt_requests");
 
 const DATABASE_VERSION: u32 = 5;
 
@@ -539,47 +536,6 @@ impl MintQuotesDatabase for MintRedbDatabase {
         write_txn.commit().map_err(Error::from)?;
 
         Ok(())
-    }
-
-    /// Add melt request
-    async fn add_melt_request(
-        &self,
-        melt_request: MeltRequest<Uuid>,
-        ln_key: PaymentProcessorKey,
-    ) -> Result<(), Self::Err> {
-        let write_txn = self.db.begin_write().map_err(Error::from)?;
-        let mut table = write_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
-
-        table
-            .insert(
-                melt_request.quote().as_bytes(),
-                (
-                    serde_json::to_string(&melt_request)?.as_str(),
-                    serde_json::to_string(&ln_key)?.as_str(),
-                ),
-            )
-            .map_err(Error::from)?;
-
-        Ok(())
-    }
-    /// Get melt request
-    async fn get_melt_request(
-        &self,
-        quote_id: &Uuid,
-    ) -> Result<Option<(MeltRequest<Uuid>, PaymentProcessorKey)>, Self::Err> {
-        let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = read_txn.open_table(MELT_REQUESTS).map_err(Error::from)?;
-
-        match table.get(quote_id.as_bytes()).map_err(Error::from)? {
-            Some(melt_request) => {
-                let (melt_request_str, ln_key_str) = melt_request.value();
-                let melt_request = serde_json::from_str(melt_request_str)?;
-                let ln_key = serde_json::from_str(ln_key_str)?;
-
-                Ok(Some((melt_request, ln_key)))
-            }
-            None => Ok(None),
-        }
     }
 }
 
