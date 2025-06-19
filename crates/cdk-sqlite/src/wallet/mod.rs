@@ -357,7 +357,8 @@ ON CONFLICT(mint_url) DO UPDATE SET
                 id,
                 unit,
                 active,
-                input_fee_ppk
+                input_fee_ppk,
+                final_expiry
             FROM
                 keyset
             WHERE id = :id
@@ -918,6 +919,7 @@ fn sqlite_row_to_mint_info(row: Vec<Column>) -> Result<MintInfo, Error> {
     })
 }
 
+#[instrument(skip_all)]
 fn sqlite_row_to_keyset(row: Vec<Column>) -> Result<KeySetInfo, Error> {
     unpack_into!(
         let (
