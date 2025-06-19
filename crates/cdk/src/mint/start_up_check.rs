@@ -34,18 +34,10 @@ impl Mint {
 
         for pending_quote in pending_quotes {
             tracing::debug!("Checking status for melt quote {}.", pending_quote.id);
-            let melt_request_ln_key = self.localstore.get_melt_request(&pending_quote.id).await?;
 
-            let (melt_request, ln_key) = match melt_request_ln_key {
-                None => {
-                    let ln_key = PaymentProcessorKey {
-                        unit: pending_quote.unit,
-                        method: PaymentMethod::Bolt11,
-                    };
-
-                    (None, ln_key)
-                }
-                Some((melt_request, ln_key)) => (Some(melt_request), ln_key),
+            let ln_key = PaymentProcessorKey {
+                unit: pending_quote.unit,
+                method: PaymentMethod::Bolt11,
             };
 
             let ln_backend = match self.ln.get(&ln_key) {
@@ -60,75 +52,31 @@ impl Mint {
                 .check_outgoing_payment(&pending_quote.request_lookup_id)
                 .await?;
 
-            match melt_request {
-                Some(melt_request) => {
-                    match pay_invoice_response.status {
-                        MeltQuoteState::Paid => {
-                            if let Err(err) = self
-                                .process_melt_request(
-                                    &melt_request,
-                                    pay_invoice_response.payment_proof,
-                                    pay_invoice_response.total_spent,
-                                )
-                                .await
-                            {
-                                tracing::error!(
-                                    "Could not process melt request for pending quote: {}",
-                                    melt_request.quote()
-                                );
-                                tracing::error!("{}", err);
-                            }
-                        }
-                        MeltQuoteState::Unpaid
-                        | MeltQuoteState::Unknown
-                        | MeltQuoteState::Failed => {
-                            // Payment has not been made we want to unset
-                            tracing::info!(
-                                "Lightning payment for quote {} failed.",
-                                pending_quote.id
-                            );
-                            if let Err(err) = self.process_unpaid_melt(&melt_request).await {
-                                tracing::error!("Could not reset melt quote state: {}", err);
-                            }
-                        }
-                        MeltQuoteState::Pending => {
-                            tracing::warn!(
-                                "LN payment pending, proofs are stuck as pending for quote: {}",
-                                melt_request.quote()
-                            );
-                            // Quote is still pending we do not want to do anything
-                            // continue to check next quote
-                        }
-                    }
-                }
-                None => {
-                    tracing::warn!(
-                        "There is no stored melt request for pending melt quote: {}",
-                        pending_quote.id
-                    );
+            tracing::warn!(
+                "There is no stored melt request for pending melt quote: {}",
+                pending_quote.id
+            );
 
-                    let melt_quote_state = match pay_invoice_response.status {
-                        MeltQuoteState::Unpaid => MeltQuoteState::Unpaid,
-                        MeltQuoteState::Paid => MeltQuoteState::Paid,
-                        MeltQuoteState::Pending => MeltQuoteState::Pending,
-                        MeltQuoteState::Failed => MeltQuoteState::Unpaid,
-                        MeltQuoteState::Unknown => MeltQuoteState::Unpaid,
-                    };
+            let melt_quote_state = match pay_invoice_response.status {
+                MeltQuoteState::Unpaid => MeltQuoteState::Unpaid,
+                MeltQuoteState::Paid => MeltQuoteState::Paid,
+                MeltQuoteState::Pending => MeltQuoteState::Pending,
+                MeltQuoteState::Failed => MeltQuoteState::Unpaid,
+                MeltQuoteState::Unknown => MeltQuoteState::Unpaid,
+            };
 
-                    if let Err(err) = self
-                        .localstore
-                        .update_melt_quote_state(&pending_quote.id, melt_quote_state)
-                        .await
-                    {
-                        tracing::error!(
-                            "Could not update quote {} to state {}, current state {}, {}",
-                            pending_quote.id,
-                            melt_quote_state,
-                            pending_quote.state,
-                            err
-                        );
-                    };
-                }
+            if let Err(err) = self
+                .localstore
+                .update_melt_quote_state(&pending_quote.id, melt_quote_state)
+                .await
+            {
+                tracing::error!(
+                    "Could not update quote {} to state {}, current state {}, {}",
+                    pending_quote.id,
+                    melt_quote_state,
+                    pending_quote.state,
+                    err
+                );
             };
         }
         Ok(())

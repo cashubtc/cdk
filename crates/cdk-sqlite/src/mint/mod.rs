@@ -8,7 +8,7 @@ use std::str::FromStr;
 use async_rusqlite::{query, DatabaseExecutor};
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
+use cdk_common::common::QuoteTTL;
 use cdk_common::database::{
     self, MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
     MintSignaturesDatabase,
@@ -20,8 +20,8 @@ use cdk_common::secret::Secret;
 use cdk_common::state::check_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
-    Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltQuoteState, MeltRequest,
-    MintInfo, MintQuoteState, PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
+    Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltQuoteState, MintInfo,
+    MintQuoteState, Proof, Proofs, PublicKey, SecretKey, State,
 };
 use error::Error;
 use lightning_invoice::Bolt11Invoice;
@@ -733,60 +733,6 @@ impl MintQuotesDatabase for MintSqliteDatabase {
 
         Ok(())
     }
-
-    async fn add_melt_request(
-        &self,
-        melt_request: MeltRequest<Uuid>,
-        ln_key: PaymentProcessorKey,
-    ) -> Result<(), Self::Err> {
-        query(
-            r#"
-                INSERT INTO melt_request
-                (id, inputs, outputs, method, unit)
-                VALUES
-                (:id, :inputs, :outputs, :method, :unit)
-                ON CONFLICT(id) DO UPDATE SET
-                    inputs = excluded.inputs,
-                    outputs = excluded.outputs,
-                    method = excluded.method,
-                    unit = excluded.unit
-        "#,
-        )
-        .bind(":id", melt_request.quote().to_string())
-        .bind(":inputs", serde_json::to_string(&melt_request.inputs())?)
-        .bind(":outputs", serde_json::to_string(&melt_request.outputs())?)
-        .bind(":method", ln_key.method.to_string())
-        .bind(":unit", ln_key.unit.to_string())
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    async fn get_melt_request(
-        &self,
-        quote_id: &Uuid,
-    ) -> Result<Option<(MeltRequest<Uuid>, PaymentProcessorKey)>, Self::Err> {
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                inputs,
-                outputs,
-                method,
-                unit
-            FROM
-                melt_request
-            WHERE
-                id=?;
-            "#,
-        )
-        .bind(":id", quote_id.hyphenated().to_string())
-        .fetch_one(&self.pool)
-        .await?
-        .map(sqlite_row_to_melt_request)
-        .transpose()?)
-    }
 }
 
 #[async_trait]
@@ -1351,35 +1297,6 @@ fn sqlite_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Err
         c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
         dleq,
     })
-}
-
-fn sqlite_row_to_melt_request(
-    row: Vec<Column>,
-) -> Result<(MeltRequest<Uuid>, PaymentProcessorKey), Error> {
-    unpack_into!(
-        let (
-            id,
-            inputs,
-            outputs,
-            method,
-            unit
-        ) = row
-    );
-
-    let id = column_as_string!(id);
-
-    let melt_request = MeltRequest::new(
-        Uuid::parse_str(&id).map_err(|_| Error::InvalidUuid(id))?,
-        column_as_string!(&inputs, serde_json::from_str),
-        column_as_nullable_string!(&outputs).and_then(|w| serde_json::from_str(&w).ok()),
-    );
-
-    let ln_key = PaymentProcessorKey {
-        unit: column_as_string!(&unit, CurrencyUnit::from_str),
-        method: column_as_string!(&method, PaymentMethod::from_str),
-    };
-
-    Ok((melt_request, ln_key))
 }
 
 #[cfg(test)]
