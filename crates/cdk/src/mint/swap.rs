@@ -12,8 +12,10 @@ impl Mint {
         &self,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
+        let mut tx = self.localstore.begin_transaction().await?;
+
         if let Err(err) = self
-            .verify_transaction_balanced(swap_request.inputs(), swap_request.outputs())
+            .verify_transaction_balanced(&mut tx, swap_request.inputs(), swap_request.outputs())
             .await
         {
             tracing::debug!("Attempt to swap unbalanced transaction, aborting: {err}");
@@ -24,8 +26,7 @@ impl Mint {
 
         // After swap request is fully validated, add the new proofs to DB
         let input_ys = swap_request.inputs().ys()?;
-        if let Some(err) = self
-            .localstore
+        if let Some(err) = tx
             .add_proofs(swap_request.inputs().clone(), None)
             .await
             .err()
@@ -38,7 +39,8 @@ impl Mint {
                 err => Err(Error::Database(err)),
             };
         }
-        self.check_ys_spendable(&input_ys, State::Pending).await?;
+        self.check_ys_spendable(&mut tx, &input_ys, State::Pending)
+            .await?;
 
         let mut promises = Vec::with_capacity(swap_request.outputs().len());
 
@@ -47,14 +49,7 @@ impl Mint {
             promises.push(blinded_signature);
         }
 
-        // TODO: It may be possible to have a race condition, that's why an error when changing the
-        // state can be converted to a TokenAlreadySpent error.
-        //
-        // A concept of transaction/writer for the Database trait would eliminate this problem and
-        // will remove all the "reset" codebase, resulting in fewer lines of code, and less
-        // error-prone database updates
-        self.localstore
-            .update_proofs_states(&input_ys, State::Spent)
+        tx.update_proofs_states(&input_ys, State::Spent)
             .await
             .map_err(|e| match e {
                 cdk_database::Error::AttemptUpdateSpentProof => Error::TokenAlreadySpent,
@@ -65,17 +60,18 @@ impl Mint {
             self.pubsub_manager.proof_state((pub_key, State::Spent));
         }
 
-        self.localstore
-            .add_blind_signatures(
-                &swap_request
-                    .outputs()
-                    .iter()
-                    .map(|o| o.blinded_secret)
-                    .collect::<Vec<PublicKey>>(),
-                &promises,
-                None,
-            )
-            .await?;
+        tx.add_blind_signatures(
+            &swap_request
+                .outputs()
+                .iter()
+                .map(|o| o.blinded_secret)
+                .collect::<Vec<PublicKey>>(),
+            &promises,
+            None,
+        )
+        .await?;
+
+        tx.commit().await?;
 
         Ok(SwapResponse::new(promises))
     }

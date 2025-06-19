@@ -9,9 +9,12 @@ mod wallet;
 pub use mint::MintAuthDatabase;
 #[cfg(feature = "mint")]
 pub use mint::{
-    Database as MintDatabase, KeysDatabase as MintKeysDatabase,
-    ProofsDatabase as MintProofsDatabase, QuotesDatabase as MintQuotesDatabase,
+    Database as MintDatabase, DbTransactionFinalizer as MintDbWriterFinalizer,
+    KeysDatabase as MintKeysDatabase, KeysDatabaseTransaction as MintKeyDatabaseTransaction,
+    ProofsDatabase as MintProofsDatabase, ProofsTransaction as MintProofsTransaction,
+    QuotesDatabase as MintQuotesDatabase, QuotesTransaction as MintQuotesTransaction,
     SignaturesDatabase as MintSignaturesDatabase,
+    SignaturesTransaction as MintSignatureTransaction, Transaction as MintTransaction,
 };
 #[cfg(feature = "wallet")]
 pub use wallet::Database as WalletDatabase;
