@@ -26,9 +26,12 @@ impl Mint {
             }
         }
 
+        let mut tx = self.localstore.begin_transaction().await?;
         for (state, ys) in ys_by_state {
-            self.localstore.update_proofs_states(&ys, state).await?;
+            tx.update_proofs_states(&ys, state).await?;
         }
+
+        tx.commit().await?;
 
         self.localstore.remove_proofs(&unknown_proofs, None).await?;
 
@@ -75,18 +78,18 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn check_ys_spendable(
         &self,
+        tx: &mut Box<dyn cdk_database::MintTransaction<'_, cdk_database::Error> + Send + Sync + '_>,
         ys: &[PublicKey],
         proof_state: State,
     ) -> Result<(), Error> {
-        let original_proofs_state =
-            match self.localstore.update_proofs_states(ys, proof_state).await {
-                Ok(states) => states,
-                Err(cdk_database::Error::AttemptUpdateSpentProof)
-                | Err(cdk_database::Error::AttemptRemoveSpentProof) => {
-                    return Err(Error::TokenAlreadySpent)
-                }
-                Err(err) => return Err(err.into()),
-            };
+        let original_proofs_state = match tx.update_proofs_states(ys, proof_state).await {
+            Ok(states) => states,
+            Err(cdk_database::Error::AttemptUpdateSpentProof)
+            | Err(cdk_database::Error::AttemptRemoveSpentProof) => {
+                return Err(Error::TokenAlreadySpent)
+            }
+            Err(err) => return Err(err.into()),
+        };
 
         assert!(ys.len() == original_proofs_state.len());
 

@@ -7,7 +7,7 @@ use arc_swap::ArcSwap;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
-use cdk_common::database::{self, MintDatabase};
+use cdk_common::database::{self, MintDatabase, MintTransaction};
 use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
 use cdk_common::secret;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
@@ -24,9 +24,9 @@ use crate::cdk_payment::{self, MintPayment};
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::nuts::*;
-use crate::Amount;
 #[cfg(feature = "auth")]
 use crate::OidcClient;
+use crate::{cdk_database, Amount};
 
 #[cfg(feature = "auth")]
 pub(crate) mod auth;
@@ -407,14 +407,11 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn handle_internal_melt_mint(
         &self,
+        tx: &mut Box<dyn MintTransaction<'_, cdk_database::Error> + Send + Sync + '_>,
         melt_quote: &MeltQuote,
         melt_request: &MeltRequest<Uuid>,
     ) -> Result<Option<Amount>, Error> {
-        let mint_quote = match self
-            .localstore
-            .get_mint_quote_by_request(&melt_quote.request)
-            .await
-        {
+        let mint_quote = match tx.get_mint_quote_by_request(&melt_quote.request).await {
             Ok(Some(mint_quote)) => mint_quote,
             // Not an internal melt -> mint
             Ok(None) => return Ok(None),
