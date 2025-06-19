@@ -40,13 +40,13 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha
-            ${{ github.event.inputs.tag != '' && github.event.inputs.tag || '' }}
+            type=raw,value=latest-arm64,enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{version}}-arm64
+            type=semver,pattern={{major}}.{{minor}}-arm64
+            type=ref,event=branch,suffix=-arm64
+            type=ref,event=pr,suffix=-arm64
+            type=sha,suffix=-arm64
+            ${{ github.event.inputs.tag != '' && format('{0}-arm64', github.event.inputs.tag) || '' }}
 
       # Build and push ARM64 image with architecture suffix
       - name: Build and push Docker image
@@ -60,26 +60,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      # Create and push multi-arch manifest if both images exist
-      - name: Create and push multi-arch manifest
-        run: |
-          # For each tag in the metadata output
-          echo "${{ steps.meta.outputs.tags }}" | while read -r tag; do
-            # Check if AMD64 image exists
-            if docker manifest inspect $tag-amd64 >/dev/null 2>&1; then
-              # Create manifest
-              docker manifest create $tag \
-                $tag-amd64 \
-                $tag-arm64
-
-              # Annotate the manifest with architecture specific information
-              docker manifest annotate $tag $tag-amd64 --arch amd64
-              docker manifest annotate $tag $tag-arm64 --arch arm64
-
-              # Push the manifest
-              docker manifest push $tag
-            else
-              echo "AMD64 image not found for $tag, skipping manifest creation"
-            fi
-          done
