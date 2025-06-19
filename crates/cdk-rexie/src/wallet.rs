@@ -547,7 +547,10 @@ impl WalletDatabase for WalletRexieDatabase {
         Ok(())
     }
 
-    async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err> {
+    async fn add_keys(&self, keyset: KeySet) -> Result<(), Self::Err> {
+        // Verify ID by recomputing id
+        keyset.verify_id()?;
+
         let rexie = self.db.lock().await;
 
         let transaction = rexie
@@ -556,7 +559,7 @@ impl WalletDatabase for WalletRexieDatabase {
 
         let keys_store = transaction.store(MINT_KEYS).map_err(Error::from)?;
 
-        let keyset_id = serde_wasm_bindgen::to_value(&Id::from(&keys)).map_err(Error::from)?;
+        let keyset_id = serde_wasm_bindgen::to_value(&keyset.id).map_err(Error::from)?;
         let keys = serde_wasm_bindgen::to_value(&keys).map_err(Error::from)?;
 
         keys_store

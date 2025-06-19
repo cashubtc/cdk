@@ -10,11 +10,11 @@ use bitcoin::base64::engine::{general_purpose, GeneralPurpose};
 use bitcoin::base64::{alphabet, Engine as _};
 use serde::{Deserialize, Serialize};
 
-use super::{Error, Proof, ProofV4, Proofs};
+use super::{Error, Proof, ProofV3, ProofV4, Proofs};
 use crate::mint_url::MintUrl;
-use crate::nuts::nut00::ProofsMethods;
+use crate::nut02::ShortKeysetId;
 use crate::nuts::{CurrencyUnit, Id};
-use crate::{ensure_cdk, Amount};
+use crate::{ensure_cdk, Amount, KeySetInfo};
 
 /// Token Enum
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,10 +66,10 @@ impl Token {
     }
 
     /// Proofs in [`Token`]
-    pub fn proofs(&self) -> Proofs {
+    pub fn proofs(&self, mint_keysets: &[KeySetInfo]) -> Result<Proofs, Error> {
         match self {
-            Self::TokenV3(token) => token.proofs(),
-            Self::TokenV4(token) => token.proofs(),
+            Self::TokenV3(token) => token.proofs(mint_keysets),
+            Self::TokenV4(token) => token.proofs(mint_keysets),
         }
     }
 
@@ -181,8 +181,8 @@ impl TryFrom<&Vec<u8>> for Token {
 pub struct TokenV3Token {
     /// Url of mint
     pub mint: MintUrl,
-    /// [`Proofs`]
-    pub proofs: Proofs,
+    /// [`Vec<ProofV3>`]
+    pub proofs: Vec<ProofV3>,
 }
 
 impl TokenV3Token {
@@ -190,7 +190,7 @@ impl TokenV3Token {
     pub fn new(mint_url: MintUrl, proofs: Proofs) -> Self {
         Self {
             mint: mint_url,
-            proofs,
+            proofs: proofs.into_iter().map(ProofV3::from).collect(),
         }
     }
 }
@@ -226,17 +226,21 @@ impl TokenV3 {
     }
 
     /// Proofs
-    pub fn proofs(&self) -> Proofs {
-        self.token
-            .iter()
-            .flat_map(|token| token.proofs.clone())
-            .collect()
+    pub fn proofs(&self, mint_keysets: &[KeySetInfo]) -> Result<Proofs, Error> {
+        let mut proofs: Proofs = vec![];
+        for t in self.token.iter() {
+            for p in t.proofs.iter() {
+                let long_id = Id::from_short_keyset_id(&p.keyset_id, mint_keysets)?;
+                proofs.push(p.into_proof(&long_id));
+            }
+        }
+        Ok(proofs)
     }
 
     /// Value - errors if duplicate proofs are found
     #[inline]
     pub fn value(&self) -> Result<Amount, Error> {
-        let proofs = self.proofs();
+        let proofs: Vec<ProofV3> = self.token.iter().flat_map(|t| t.proofs.clone()).collect();
         let unique_count = proofs
             .iter()
             .collect::<std::collections::HashSet<_>>()
@@ -247,7 +251,12 @@ impl TokenV3 {
             return Err(Error::DuplicateProofs);
         }
 
-        proofs.total_amount()
+        Ok(Amount::try_sum(
+            self.token
+                .iter()
+                .map(|t| Amount::try_sum(t.proofs.iter().map(|p| p.amount)))
+                .collect::<Result<Vec<Amount>, _>>()?,
+        )?)
     }
 
     /// Memo
@@ -306,10 +315,27 @@ impl fmt::Display for TokenV3 {
 
 impl From<TokenV4> for TokenV3 {
     fn from(token: TokenV4) -> Self {
-        let proofs = token.proofs();
+        let proofs: Vec<ProofV3> = token
+            .token
+            .into_iter()
+            .flat_map(|token| {
+                token.proofs.into_iter().map(move |p| ProofV3 {
+                    amount: p.amount,
+                    keyset_id: token.keyset_id.clone(),
+                    secret: p.secret,
+                    c: p.c,
+                    witness: p.witness,
+                    dleq: p.dleq,
+                })
+            })
+            .collect();
 
+        let token_v3_token = TokenV3Token {
+            mint: token.mint_url,
+            proofs,
+        };
         TokenV3 {
-            token: vec![TokenV3Token::new(token.mint_url, proofs)],
+            token: vec![token_v3_token],
             memo: token.memo,
             unit: Some(token.unit),
         }
@@ -335,17 +361,19 @@ pub struct TokenV4 {
 
 impl TokenV4 {
     /// Proofs from token
-    pub fn proofs(&self) -> Proofs {
-        self.token
-            .iter()
-            .flat_map(|token| token.proofs.iter().map(|p| p.into_proof(&token.keyset_id)))
-            .collect()
+    pub fn proofs(&self, mint_keysets: &[KeySetInfo]) -> Result<Proofs, Error> {
+        let mut proofs: Proofs = vec![];
+        for t in self.token.iter() {
+            let long_id = Id::from_short_keyset_id(&t.keyset_id, mint_keysets)?;
+            proofs.extend(t.proofs.iter().map(|p| p.into_proof(&long_id)));
+        }
+        Ok(proofs)
     }
 
     /// Value - errors if duplicate proofs are found
     #[inline]
     pub fn value(&self) -> Result<Amount, Error> {
-        let proofs = self.proofs();
+        let proofs: Vec<ProofV4> = self.token.iter().flat_map(|t| t.proofs.clone()).collect();
         let unique_count = proofs
             .iter()
             .collect::<std::collections::HashSet<_>>()
@@ -356,7 +384,12 @@ impl TokenV4 {
             return Err(Error::DuplicateProofs);
         }
 
-        proofs.total_amount()
+        Ok(Amount::try_sum(
+            self.token
+                .iter()
+                .map(|t| Amount::try_sum(t.proofs.iter().map(|p| p.amount)))
+                .collect::<Result<Vec<Amount>, _>>()?,
+        )?)
     }
 
     /// Memo
@@ -421,23 +454,29 @@ impl TryFrom<&Vec<u8>> for TokenV4 {
 impl TryFrom<TokenV3> for TokenV4 {
     type Error = Error;
     fn try_from(token: TokenV3) -> Result<Self, Self::Error> {
-        let proofs = token.proofs();
         let mint_urls = token.mint_urls();
+        let proofs: Vec<ProofV3> = token.token.into_iter().flat_map(|t| t.proofs).collect();
 
         ensure_cdk!(mint_urls.len() == 1, Error::UnsupportedToken);
 
         let mint_url = mint_urls.first().ok_or(Error::UnsupportedToken)?;
 
         let proofs = proofs
-            .iter()
-            .fold(HashMap::new(), |mut acc, val| {
-                acc.entry(val.keyset_id)
-                    .and_modify(|p: &mut Vec<Proof>| p.push(val.clone()))
-                    .or_insert(vec![val.clone()]);
-                acc
-            })
             .into_iter()
-            .map(|(id, proofs)| TokenV4Token::new(id, proofs))
+            .fold(
+                HashMap::<ShortKeysetId, Vec<ProofV4>>::new(),
+                |mut acc, val| {
+                    acc.entry(val.keyset_id.clone())
+                        .and_modify(|p: &mut Vec<ProofV4>| p.push(val.clone().into()))
+                        .or_insert(vec![val.clone().into()]);
+                    acc
+                },
+            )
+            .into_iter()
+            .map(|(id, proofs)| TokenV4Token {
+                keyset_id: id,
+                proofs,
+            })
             .collect();
 
         Ok(TokenV4 {
@@ -458,32 +497,34 @@ pub struct TokenV4Token {
         serialize_with = "serialize_v4_keyset_id",
         deserialize_with = "deserialize_v4_keyset_id"
     )]
-    pub keyset_id: Id,
+    pub keyset_id: ShortKeysetId,
     /// Proofs
     #[serde(rename = "p")]
     pub proofs: Vec<ProofV4>,
 }
 
-fn serialize_v4_keyset_id<S>(keyset_id: &Id, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_v4_keyset_id<S>(keyset_id: &ShortKeysetId, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
     serializer.serialize_bytes(&keyset_id.to_bytes())
 }
 
-fn deserialize_v4_keyset_id<'de, D>(deserializer: D) -> Result<Id, D::Error>
+fn deserialize_v4_keyset_id<'de, D>(deserializer: D) -> Result<ShortKeysetId, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let bytes = Vec::<u8>::deserialize(deserializer)?;
-    Id::from_bytes(&bytes).map_err(serde::de::Error::custom)
+    ShortKeysetId::from_bytes(&bytes).map_err(serde::de::Error::custom)
 }
 
 impl TokenV4Token {
     /// Create new [`TokenV4Token`]
     pub fn new(keyset_id: Id, proofs: Proofs) -> Self {
+        // Create a short keyset id from id
+        let short_id = ShortKeysetId::from(keyset_id);
         Self {
-            keyset_id,
+            keyset_id: short_id,
             proofs: proofs.into_iter().map(|p| p.into()).collect(),
         }
     }
@@ -493,7 +534,10 @@ impl TokenV4Token {
 mod tests {
     use std::str::FromStr;
 
+    use bip39::rand::{self, RngCore};
+
     use super::*;
+    use crate::dhke::hash_to_curve;
     use crate::mint_url::MintUrl;
     use crate::secret::Secret;
     use crate::util::hex;
@@ -522,7 +566,7 @@ mod tests {
         );
         assert_eq!(
             token.token[0].keyset_id,
-            Id::from_str("00ad268c4d1f5826").unwrap()
+            ShortKeysetId::from_str("00ad268c4d1f5826").unwrap()
         );
 
         let encoded = &token.to_string();
@@ -546,12 +590,13 @@ mod tests {
 
         match token {
             Token::TokenV4(token) => {
-                let tokens: Vec<Id> = token.token.iter().map(|t| t.keyset_id).collect();
+                let tokens: Vec<ShortKeysetId> =
+                    token.token.iter().map(|t| t.keyset_id.clone()).collect();
 
                 assert_eq!(tokens.len(), 2);
 
-                assert!(tokens.contains(&Id::from_str("00ffd48b8f5ecf80").unwrap()));
-                assert!(tokens.contains(&Id::from_str("00ad268c4d1f5826").unwrap()));
+                assert!(tokens.contains(&ShortKeysetId::from_str("00ffd48b8f5ecf80").unwrap()));
+                assert!(tokens.contains(&ShortKeysetId::from_str("00ad268c4d1f5826").unwrap()));
 
                 let mint_url = token.mint_url;
 
@@ -584,7 +629,7 @@ mod tests {
         );
         assert_eq!(
             token.token[0].proofs[0].clone().keyset_id,
-            Id::from_str("009a1f293253e41e").unwrap()
+            ShortKeysetId::from_str("009a1f293253e41e").unwrap()
         );
         assert_eq!(token.unit.clone().unwrap(), CurrencyUnit::Sat);
 
@@ -683,5 +728,102 @@ mod tests {
         let result = token.value();
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Amount::from(20));
+    }
+
+    #[test]
+    fn test_token_from_proofs_with_idv2_round_trip() {
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+
+        let keysets_info: Vec<KeySetInfo> = (0..10)
+            .map(|_| {
+                let mut bytes: [u8; 33] = [0u8; 33];
+                bytes[0] = 1u8;
+                rand::thread_rng().fill_bytes(&mut bytes[1..]);
+                let id = Id::from_bytes(&bytes).unwrap();
+                KeySetInfo {
+                    id,
+                    unit: CurrencyUnit::Sat,
+                    active: true,
+                    input_fee_ppk: 0,
+                    final_expiry: None,
+                }
+            })
+            .collect();
+
+        let chosen_keyset_id = keysets_info[0].id;
+        // Make up a bunch of fake proofs
+        let proofs = (0..5)
+            .map(|_| {
+                let mut c_preimage: [u8; 33] = [0u8; 33];
+                c_preimage[0] = 1u8;
+                rand::thread_rng().fill_bytes(&mut c_preimage[1..]);
+                Proof::new(
+                    Amount::from(1),
+                    chosen_keyset_id,
+                    Secret::generate(),
+                    hash_to_curve(&c_preimage).unwrap(),
+                )
+            })
+            .collect();
+
+        let token = Token::new(mint_url.clone(), proofs, None, CurrencyUnit::Sat);
+        let token_str = token.to_string();
+
+        let token1 = Token::from_str(&token_str);
+        assert!(token1.is_ok());
+
+        let proofs1 = token1.unwrap().proofs(&keysets_info);
+        assert!(proofs1.is_ok());
+
+        //println!("{:?}", proofs1);
+    }
+
+    #[test]
+    fn test_token_proofs_with_unknown_short_keyset_id() {
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+
+        let keysets_info: Vec<KeySetInfo> = (0..10)
+            .map(|_| {
+                let mut bytes: [u8; 33] = [0u8; 33];
+                bytes[0] = 1u8;
+                rand::thread_rng().fill_bytes(&mut bytes[1..]);
+                let id = Id::from_bytes(&bytes).unwrap();
+                KeySetInfo {
+                    id,
+                    unit: CurrencyUnit::Sat,
+                    active: true,
+                    input_fee_ppk: 0,
+                    final_expiry: None,
+                }
+            })
+            .collect();
+
+        let chosen_keyset_id =
+            Id::from_str("01c352c0b47d42edb764bddf8c53d77b85f057157d92084d9d05e876251ecd8422")
+                .unwrap();
+
+        // Make up a bunch of fake proofs
+        let proofs = (0..5)
+            .map(|_| {
+                let mut c_preimage: [u8; 33] = [0u8; 33];
+                c_preimage[0] = 1u8;
+                rand::thread_rng().fill_bytes(&mut c_preimage[1..]);
+                Proof::new(
+                    Amount::from(1),
+                    chosen_keyset_id,
+                    Secret::generate(),
+                    hash_to_curve(&c_preimage).unwrap(),
+                )
+            })
+            .collect();
+
+        let token = Token::new(mint_url.clone(), proofs, None, CurrencyUnit::Sat);
+        let token_str = token.to_string();
+
+        let token1 = Token::from_str(&token_str);
+        assert!(token1.is_ok());
+
+        let proofs1 = token1.unwrap().proofs(&keysets_info);
+        assert!(proofs1.is_err());
     }
 }

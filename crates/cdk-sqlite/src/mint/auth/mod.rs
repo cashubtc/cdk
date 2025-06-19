@@ -121,7 +121,7 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
         .bind(":unit", keyset.unit.to_string())
         .bind(":active", keyset.active)
         .bind(":valid_from", keyset.valid_from as i64)
-        .bind(":valid_to", keyset.valid_to.map(|v| v as i64))
+        .bind(":valid_to", keyset.final_expiry.map(|v| v as i64))
         .bind(":derivation_path", keyset.derivation_path.to_string())
         .bind(":max_order", keyset.max_order)
         .bind(":derivation_path_index", keyset.derivation_path_index)

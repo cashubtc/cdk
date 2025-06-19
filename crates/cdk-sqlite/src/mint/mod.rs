@@ -214,7 +214,7 @@ impl MintKeysDatabase for MintSqliteDatabase {
         .bind(":unit", keyset.unit.to_string())
         .bind(":active", keyset.active)
         .bind(":valid_from", keyset.valid_from as i64)
-        .bind(":valid_to", keyset.valid_to.map(|v| v as i64))
+        .bind(":valid_to", keyset.final_expiry.map(|v| v as i64))
         .bind(":derivation_path", keyset.derivation_path.to_string())
         .bind(":max_order", keyset.max_order)
         .bind(":input_fee_ppk", keyset.input_fee_ppk as i64)
@@ -1134,11 +1134,11 @@ fn sqlite_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo, Error> 
         unit: column_as_string!(unit, CurrencyUnit::from_str),
         active: matches!(active, Column::Integer(1)),
         valid_from: column_as_number!(valid_from),
-        valid_to: column_as_nullable_number!(valid_to),
         derivation_path: column_as_string!(derivation_path, DerivationPath::from_str),
         derivation_path_index: column_as_nullable_number!(derivation_path_index),
         max_order: column_as_number!(max_order),
         input_fee_ppk: column_as_number!(row_keyset_ppk),
+        final_expiry: column_as_nullable_number!(valid_to),
     })
 }
 
@@ -1319,11 +1319,11 @@ mod tests {
             unit: CurrencyUnit::Sat,
             active: true,
             valid_from: 0,
-            valid_to: None,
             derivation_path: bitcoin::bip32::DerivationPath::from_str("m/0'/0'/0'").unwrap(),
             derivation_path_index: Some(0),
             max_order: 32,
             input_fee_ppk: 0,
+            final_expiry: None,
         };
         db.add_keyset_info(keyset_info).await.unwrap();
 
@@ -1387,11 +1387,11 @@ mod tests {
             unit: CurrencyUnit::Sat,
             active: true,
             valid_from: 0,
-            valid_to: None,
             derivation_path: bitcoin::bip32::DerivationPath::from_str("m/0'/0'/0'").unwrap(),
             derivation_path_index: Some(0),
             max_order: 32,
             input_fee_ppk: 0,
+            final_expiry: None,
         };
         db.add_keyset_info(keyset_info).await.unwrap();
 
