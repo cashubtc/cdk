@@ -19,7 +19,7 @@ async fn setup_keyset<E: Debug, DB: Database<E> + KeysDatabase<Err = E>>(db: &DB
         unit: CurrencyUnit::Sat,
         active: true,
         valid_from: 0,
-        valid_to: None,
+        final_expiry: None,
         derivation_path: bitcoin::bip32::DerivationPath::from_str("m/0'/0'/0'").unwrap(),
         derivation_path_index: Some(0),
         max_order: 32,

@@ -14,8 +14,8 @@ use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
 use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
 use cdk_common::{
-    database, Amount, CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, Proof, ProofDleq, PublicKey,
-    SecretKey, SpendingConditions, State,
+    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, Proof, ProofDleq,
+    PublicKey, SecretKey, SpendingConditions, State,
 };
 use error::Error;
 use tracing::instrument;
@@ -294,14 +294,15 @@ ON CONFLICT(mint_url) DO UPDATE SET
             Statement::new(
                 r#"
     INSERT INTO keyset
-    (mint_url, id, unit, active, input_fee_ppk)
+    (mint_url, id, unit, active, input_fee_ppk, final_expiry)
     VALUES
-    (:mint_url, :id, :unit, :active, :input_fee_ppk)
+    (:mint_url, :id, :unit, :active, :input_fee_ppk, :final_expiry)
     ON CONFLICT(id) DO UPDATE SET
         mint_url = excluded.mint_url,
         unit = excluded.unit,
         active = excluded.active,
-        input_fee_ppk = excluded.input_fee_ppk;
+        input_fee_ppk = excluded.input_fee_ppk,
+        final_expiry = excluded.final_expiry;
     "#,
             )
             .bind(":mint_url", mint_url.to_string())
@@ -309,6 +310,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
             .bind(":unit", keyset.unit.to_string())
             .bind(":active", keyset.active)
             .bind(":input_fee_ppk", keyset.input_fee_ppk as i64)
+            .bind(":final_expiry", keyset.final_expiry.map(|v| v as i64))
             .execute(&conn)
             .map_err(Error::Sqlite)?;
         }
@@ -327,7 +329,8 @@ ON CONFLICT(mint_url) DO UPDATE SET
                 id,
                 unit,
                 active,
-                input_fee_ppk
+                input_fee_ppk,
+                final_expiry
             FROM
                 keyset
             WHERE mint_url = :mint_url
@@ -354,7 +357,8 @@ ON CONFLICT(mint_url) DO UPDATE SET
                 id,
                 unit,
                 active,
-                input_fee_ppk
+                input_fee_ppk,
+                final_expiry
             FROM
                 keyset
             WHERE id = :id
@@ -528,7 +532,10 @@ ON CONFLICT(id) DO UPDATE SET
     }
 
     #[instrument(skip_all)]
-    async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err> {
+    async fn add_keys(&self, keyset: KeySet) -> Result<(), Self::Err> {
+        // Recompute ID for verification
+        keyset.verify_id()?;
+
         Statement::new(
             r#"
             INSERT INTO key
@@ -539,8 +546,11 @@ ON CONFLICT(id) DO UPDATE SET
                 keys = excluded.keys
         "#,
         )
-        .bind(":id", Id::from(&keys).to_string())
-        .bind(":keys", serde_json::to_string(&keys).map_err(Error::from)?)
+        .bind(":id", keyset.id.to_string())
+        .bind(
+            ":keys",
+            serde_json::to_string(&keyset.keys).map_err(Error::from)?,
+        )
         .execute(&self.pool.get().map_err(Error::Pool)?)
         .map_err(Error::Sqlite)?;
 
@@ -909,13 +919,15 @@ fn sqlite_row_to_mint_info(row: Vec<Column>) -> Result<MintInfo, Error> {
     })
 }
 
+#[instrument(skip_all)]
 fn sqlite_row_to_keyset(row: Vec<Column>) -> Result<KeySetInfo, Error> {
     unpack_into!(
         let (
             id,
             unit,
             active,
-            input_fee_ppk
+            input_fee_ppk,
+            final_expiry
         ) = row
     );
 
@@ -924,6 +936,7 @@ fn sqlite_row_to_keyset(row: Vec<Column>) -> Result<KeySetInfo, Error> {
         unit: column_as_string!(unit, CurrencyUnit::from_str),
         active: matches!(active, Column::Integer(1)),
         input_fee_ppk: column_as_nullable_number!(input_fee_ppk).unwrap_or_default(),
+        final_expiry: column_as_nullable_number!(final_expiry),
     })
 }
 

@@ -19,7 +19,7 @@ impl Wallet {
 
             keys.verify_id()?;
 
-            self.localstore.add_keys(keys.keys.clone()).await?;
+            self.localstore.add_keys(keys.clone()).await?;
 
             keys.keys
         };
@@ -27,7 +27,23 @@ impl Wallet {
         Ok(keys)
     }
 
-    /// Get keysets for mint
+    /// Get keysets from DB or fetch them
+    ///
+    /// Checks the database for keysets and queries the Mint if
+    /// it can't find any.
+    #[instrument(skip(self))]
+    pub async fn load_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
+        match self
+            .localstore
+            .get_mint_keysets(self.mint_url.clone())
+            .await?
+        {
+            Some(keysets_info) => Ok(keysets_info),
+            None => self.get_mint_keysets().await, // Hit the keysets endpoint if we don't have the keysets for this Mint
+        }
+    }
+
+    /// Get keysets for wallet's mint
     ///
     /// Queries mint for all keysets
     #[instrument(skip(self))]

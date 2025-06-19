@@ -219,7 +219,8 @@ impl Wallet {
 
         ensure_cdk!(unit == self.unit, Error::UnsupportedUnit);
 
-        let proofs = token.proofs();
+        let keysets_info = self.load_mint_keysets().await?;
+        let proofs = token.proofs(&keysets_info)?;
 
         if let Token::TokenV3(token) = &token {
             ensure_cdk!(!token.is_multi_mint(), Error::MultiMintTokenNotSupported);
