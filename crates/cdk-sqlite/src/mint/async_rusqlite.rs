@@ -4,7 +4,7 @@ use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::thread::spawn;
 use std::time::Instant;
 
-use rusqlite::Connection;
+use rusqlite::{ffi, Connection, ErrorCode, TransactionBehavior};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::common::SqliteConnectionManager;
@@ -196,12 +196,32 @@ fn rusqlite_spawn_worker_threads(
         let inflight_requests = inflight_requests.clone();
         spawn(move || loop {
             while let Ok((conn, sql, reply_to)) = rx.lock().expect("failed to acquire").recv() {
-                tracing::info!("Execute query: {}", sql.sql);
+                tracing::trace!("Execute query: {}", sql.sql);
                 let result = process_query(&conn, sql);
                 let _ = match result {
                     Ok(ok) => reply_to.send(ok),
                     Err(err) => {
                         tracing::error!("Failed query with error {:?}", err);
+                        let err = if let Error::Sqlite(rusqlite::Error::SqliteFailure(
+                            ffi::Error {
+                                code,
+                                extended_code,
+                            },
+                            _,
+                        )) = &err
+                        {
+                            if *code == ErrorCode::ConstraintViolation
+                                && (*extended_code == ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                                    || *extended_code == ffi::SQLITE_CONSTRAINT_UNIQUE)
+                            {
+                                Error::Duplicate
+                            } else {
+                                err
+                            }
+                        } else {
+                            err
+                        };
+
                         reply_to.send(DbResponse::Error(err))
                     }
                 };
@@ -262,7 +282,7 @@ fn rusqlite_worker_manager(
                     }
                 };
 
-                let tx = match conn.transaction() {
+                let tx = match conn.transaction_with_behavior(TransactionBehavior::Immediate) {
                     Ok(tx) => tx,
                     Err(err) => {
                         tracing::error!("Failed to begin a transaction: {:?}", err);
@@ -290,25 +310,31 @@ fn rusqlite_worker_manager(
                         // If the receiver loop is broken (i.e no more `senders` are active) and no
                         // `Commit` statement has been sent, this will trigger a `Rollback`
                         // automatically
-                        tracing::info!("Tx {}: Transaction rollback on drop", tx_id);
+                        tracing::trace!("Tx {}: Transaction rollback on drop", tx_id);
                         let _ = tx.rollback();
                         break;
                     };
 
                     match request {
                         DbRequest::Commit(reply_to) => {
-                            tracing::info!("Tx {}: Commit", tx_id);
+                            tracing::trace!("Tx {}: Commit", tx_id);
                             let _ = reply_to.send(match tx.commit() {
                                 Ok(()) => DbResponse::Ok,
-                                Err(err) => DbResponse::Error(err.into()),
+                                Err(err) => {
+                                    tracing::error!("Failed commit {:?}", err);
+                                    DbResponse::Error(err.into())
+                                }
                             });
                             break;
                         }
                         DbRequest::Rollback(reply_to) => {
-                            tracing::info!("Tx {}: Rollback", tx_id);
+                            tracing::trace!("Tx {}: Rollback", tx_id);
                             let _ = reply_to.send(match tx.rollback() {
                                 Ok(()) => DbResponse::Ok,
-                                Err(err) => DbResponse::Error(err.into()),
+                                Err(err) => {
+                                    tracing::error!("Failed rollback {:?}", err);
+                                    DbResponse::Error(err.into())
+                                }
                             });
                             break;
                         }
@@ -316,10 +342,38 @@ fn rusqlite_worker_manager(
                             let _ = reply_to.send(DbResponse::Unexpected);
                         }
                         DbRequest::Sql(sql, reply_to) => {
-                            tracing::info!("Tx {}: SQL {}", tx_id, sql.sql);
+                            tracing::trace!("Tx {}: SQL {}", tx_id, sql.sql);
                             let _ = match process_query(&tx, sql) {
                                 Ok(ok) => reply_to.send(ok),
-                                Err(err) => reply_to.send(DbResponse::Error(err)),
+                                Err(err) => {
+                                    tracing::error!(
+                                        "Tx {}: Failed query with error {:?}",
+                                        tx_id,
+                                        err
+                                    );
+                                    let err = if let Error::Sqlite(
+                                        rusqlite::Error::SqliteFailure(
+                                            ffi::Error {
+                                                code,
+                                                extended_code,
+                                            },
+                                            _,
+                                        ),
+                                    ) = &err
+                                    {
+                                        if *code == ErrorCode::ConstraintViolation
+                                            && (*extended_code == ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                                                || *extended_code == ffi::SQLITE_CONSTRAINT_UNIQUE)
+                                        {
+                                            Error::Duplicate
+                                        } else {
+                                            err
+                                        }
+                                    } else {
+                                        err
+                                    };
+                                    reply_to.send(DbResponse::Error(err))
+                                }
                             };
                         }
                     }
