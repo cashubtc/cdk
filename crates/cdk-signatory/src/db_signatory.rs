@@ -37,7 +37,7 @@ impl DbSignatory {
     pub async fn new(
         localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
         seed: &[u8],
-        mut supported_units: HashMap<CurrencyUnit, (u64, u8)>,
+        supported_units: HashMap<CurrencyUnit, (u64, u8)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
@@ -51,8 +51,6 @@ impl DbSignatory {
             &custom_paths,
         )
         .await?;
-
-        supported_units.entry(CurrencyUnit::Auth).or_insert((0, 1));
 
         // Create new keysets for supported units that aren't covered by the current keysets
         for (unit, (fee, max_order)) in supported_units {
