@@ -44,7 +44,7 @@ pub async fn new_with_state(
     let mut tx = MintDatabase::begin_transaction(&db).await?;
 
     for quote in mint_quotes {
-        tx.add_mint_quote(quote).await?;
+        tx.add_or_replace_mint_quote(quote).await?;
     }
 
     for quote in melt_quotes {

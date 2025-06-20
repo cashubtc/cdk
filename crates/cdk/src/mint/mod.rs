@@ -420,6 +420,7 @@ impl Mint {
                 return Err(Error::Internal);
             }
         };
+        tracing::error!("internal stuff");
 
         // Mint quote has already been settled, proofs should not be burned or held.
         if mint_quote.state == MintQuoteState::Issued || mint_quote.state == MintQuoteState::Paid {
@@ -446,7 +447,7 @@ impl Mint {
 
         let amount = melt_quote.amount;
 
-        self.update_mint_quote(mint_quote).await?;
+        tx.add_or_replace_mint_quote(mint_quote).await?;
 
         Ok(Some(amount))
     }

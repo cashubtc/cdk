@@ -311,7 +311,7 @@ impl MintKeysDatabase for MintSqliteDatabase {
 impl<'a> MintQuotesTransaction<'a> for SqliteTransaction<'a> {
     type Err = database::Error;
 
-    async fn add_mint_quote(&mut self, quote: MintQuote) -> Result<(), Self::Err> {
+    async fn add_or_replace_mint_quote(&mut self, quote: MintQuote) -> Result<(), Self::Err> {
         query(
             r#"
                 INSERT OR REPLACE INTO mint_quote (
