@@ -67,7 +67,7 @@ pub trait QuotesTransaction<'a> {
     async fn get_mint_quote(&mut self, quote_id: &Uuid)
         -> Result<Option<MintMintQuote>, Self::Err>;
     /// Add [`MintMintQuote`]
-    async fn add_mint_quote(&mut self, quote: MintMintQuote) -> Result<(), Self::Err>;
+    async fn add_or_replace_mint_quote(&mut self, quote: MintMintQuote) -> Result<(), Self::Err>;
     /// Update state of [`MintMintQuote`]
     async fn update_mint_quote_state(
         &mut self,

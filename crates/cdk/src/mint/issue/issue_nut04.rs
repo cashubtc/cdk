@@ -106,7 +106,7 @@ impl Mint {
         );
 
         let mut tx = self.localstore.begin_transaction().await?;
-        tx.add_mint_quote(quote.clone()).await?;
+        tx.add_or_replace_mint_quote(quote.clone()).await?;
         tx.commit().await?;
 
         let quote: MintQuoteBolt11Response<Uuid> = quote.into();
@@ -146,15 +146,6 @@ impl Mint {
             amount: Some(mint_quote.amount),
             unit: Some(mint_quote.unit.clone()),
         })
-    }
-
-    /// Update mint quote
-    #[instrument(skip_all)]
-    pub async fn update_mint_quote(&self, quote: MintQuote) -> Result<(), Error> {
-        let mut tx = self.localstore.begin_transaction().await?;
-        tx.add_mint_quote(quote).await?;
-        tx.commit().await?;
-        Ok(())
     }
 
     /// Get mint quotes
