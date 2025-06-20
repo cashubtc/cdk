@@ -3,9 +3,8 @@ use std::collections::HashSet;
 use cdk_common::{Amount, BlindedMessage, CurrencyUnit, Id, Proofs, ProofsMethods, PublicKey};
 use tracing::instrument;
 
-use crate::cdk_database;
-
 use super::{Error, Mint};
+use crate::cdk_database;
 
 /// Verification result
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]

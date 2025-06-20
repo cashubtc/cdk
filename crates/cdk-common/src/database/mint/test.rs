@@ -12,7 +12,6 @@ use crate::database;
 use crate::mint::MintKeySetInfo;
 
 #[inline]
-
 async fn setup_keyset<DB>(db: &DB) -> Id
 where
     DB: KeysDatabase<Err = database::Error>,

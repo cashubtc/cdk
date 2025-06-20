@@ -231,16 +231,6 @@ impl Mint {
         Ok(quotes)
     }
 
-    /// Remove melt quote
-    #[instrument(skip(self))]
-    pub async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Error> {
-        let mut tx = self.localstore.begin_transaction().await?;
-        tx.remove_melt_quote(quote_id).await?;
-        tx.commit().await?;
-
-        Ok(())
-    }
-
     /// Check melt has expected fees
     #[instrument(skip_all)]
     pub async fn check_melt_expected_ln_fees(
@@ -435,10 +425,6 @@ impl Mint {
                 err
             })?;
 
-        tx.commit().await?;
-
-        let mut tx = self.localstore.begin_transaction().await?;
-
         let (preimage, amount_spent_quote_unit, quote) = match settled_internally_amount {
             Some(amount_spent) => (None, amount_spent, quote),
             None => {
@@ -482,12 +468,17 @@ impl Mint {
                         if pay.status == MeltQuoteState::Unknown
                             || pay.status == MeltQuoteState::Failed =>
                     {
-                        let check_response = check_payment_state(Arc::clone(ln), &quote)
-                            .await
-                            .map_err(|_| Error::Internal)?;
+                        let check_response =
+                            if let Ok(ok) = check_payment_state(Arc::clone(ln), &quote).await {
+                                ok
+                            } else {
+                                tx.commit().await?;
+                                return Err(Error::Internal);
+                            };
 
                         if check_response.status == MeltQuoteState::Paid {
                             tracing::warn!("Pay invoice returned {} but check returned {}. Proofs stuck as pending", pay.status.to_string(), check_response.status.to_string());
+                            tx.commit().await?;
 
                             return Err(Error::Internal);
                         }
@@ -505,12 +496,17 @@ impl Mint {
 
                         tracing::error!("Error returned attempting to pay: {} {}", quote.id, err);
 
-                        let check_response = check_payment_state(Arc::clone(ln), &quote)
-                            .await
-                            .map_err(|_| Error::Internal)?;
+                        let check_response =
+                            if let Ok(ok) = check_payment_state(Arc::clone(ln), &quote).await {
+                                ok
+                            } else {
+                                tx.commit().await?;
+                                return Err(Error::Internal);
+                            };
                         // If there error is something else we want to check the status of the payment ensure it is not pending or has been made.
                         if check_response.status == MeltQuoteState::Paid {
                             tracing::warn!("Pay invoice returned an error but check returned {}. Proofs stuck as pending", check_response.status.to_string());
+                            tx.commit().await?;
 
                             return Err(Error::Internal);
                         }
@@ -532,6 +528,7 @@ impl Mint {
                             "LN payment pending, proofs are stuck as pending for quote: {}",
                             melt_request.quote()
                         );
+                        tx.commit().await?;
                         return Err(Error::PendingQuote);
                     }
                 }

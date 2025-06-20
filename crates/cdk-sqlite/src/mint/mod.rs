@@ -144,7 +144,7 @@ pub struct SqliteTransaction<'a> {
 impl<'a> database::MintTransaction<'a, database::Error> for SqliteTransaction<'a> {}
 
 #[async_trait]
-impl<'a> MintDbWriterFinalizer for SqliteTransaction<'a> {
+impl MintDbWriterFinalizer for SqliteTransaction<'_> {
     type Err = database::Error;
 
     async fn commit(self: Box<Self>) -> Result<(), database::Error> {

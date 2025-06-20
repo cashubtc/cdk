@@ -279,9 +279,6 @@ impl Mint {
                 Ok(verification) => verification,
                 Err(err) => {
                     tracing::debug!("Could not verify mint outputs");
-                    tx.update_mint_quote_state(&mint_request.quote, MintQuoteState::Paid)
-                        .await?;
-                    tx.commit().await?;
                     return Err(err);
                 }
             };
