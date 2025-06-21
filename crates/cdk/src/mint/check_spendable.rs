@@ -33,8 +33,6 @@ impl Mint {
 
         tx.commit().await?;
 
-        self.localstore.remove_proofs(&unknown_proofs, None).await?;
-
         Ok(())
     }
 

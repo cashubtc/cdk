@@ -225,7 +225,9 @@ impl Mint {
     /// Set mint info
     #[instrument(skip_all)]
     pub async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error> {
-        Ok(self.localstore.set_mint_info(mint_info).await?)
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.set_mint_info(mint_info).await?;
+        Ok(tx.commit().await?)
     }
 
     /// Get quote ttl
@@ -237,7 +239,9 @@ impl Mint {
     /// Set quote ttl
     #[instrument(skip_all)]
     pub async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Error> {
-        Ok(self.localstore.set_quote_ttl(quote_ttl).await?)
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.set_quote_ttl(quote_ttl).await?;
+        Ok(tx.commit().await?)
     }
 
     /// Wait for any invoice to be paid

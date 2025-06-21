@@ -157,12 +157,6 @@ pub trait ProofsDatabase {
     /// Mint Proof Database Error
     type Err: Into<Error> + From<Error>;
 
-    /// Remove [`Proofs`]
-    async fn remove_proofs(
-        &self,
-        ys: &[PublicKey],
-        quote_id: Option<Uuid>,
-    ) -> Result<(), Self::Err>;
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
     /// Get ys by quote id
@@ -241,6 +235,11 @@ pub trait Transaction<'a, Error>:
     + SignaturesTransaction<'a, Err = Error>
     + ProofsTransaction<'a, Err = Error>
 {
+    /// Set [`QuoteTTL`]
+    async fn set_quote_ttl(&mut self, quote_ttl: QuoteTTL) -> Result<(), Error>;
+
+    /// Set [`MintInfo`]
+    async fn set_mint_info(&mut self, mint_info: MintInfo) -> Result<(), Error>;
 }
 
 /// Mint Database trait
@@ -253,14 +252,9 @@ pub trait Database<Error>:
         &'a self,
     ) -> Result<Box<dyn Transaction<'a, Error> + Send + Sync + 'a>, Error>;
 
-    /// Set [`MintInfo`]
-    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error>;
-
     /// Get [`MintInfo`]
     async fn get_mint_info(&self) -> Result<MintInfo, Error>;
 
-    /// Set [`QuoteTTL`]
-    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Error>;
     /// Get [`QuoteTTL`]
     async fn get_quote_ttl(&self) -> Result<QuoteTTL, Error>;
 }

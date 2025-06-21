@@ -53,9 +53,8 @@ pub async fn new_with_state(
 
     tx.add_proofs(pending_proofs, None).await?;
     tx.add_proofs(spent_proofs, None).await?;
+    tx.set_mint_info(mint_info).await?;
     tx.commit().await?;
-
-    db.set_mint_info(mint_info).await?;
 
     Ok(db)
 }
