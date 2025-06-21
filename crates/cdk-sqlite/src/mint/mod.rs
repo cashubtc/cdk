@@ -75,6 +75,26 @@ where
         .collect::<Result<HashMap<_, _>, _>>()
 }
 
+#[inline(always)]
+async fn set_to_config<T, C>(conn: &C, id: &str, value: &T) -> Result<(), Error>
+where
+    T: ?Sized + serde::Serialize,
+    C: DatabaseExecutor + Send + Sync,
+{
+    query(
+        r#"
+        INSERT INTO config (id, value) VALUES (:id, :value)
+            ON CONFLICT(id) DO UPDATE SET value = excluded.value
+            "#,
+    )
+    .bind(":id", id.to_owned())
+    .bind(":value", serde_json::to_string(&value)?)
+    .execute(conn)
+    .await?;
+
+    Ok(())
+}
+
 impl MintSqliteDatabase {
     /// Create new [`MintSqliteDatabase`]
     #[cfg(not(feature = "sqlcipher"))]
@@ -102,25 +122,6 @@ impl MintSqliteDatabase {
     }
 
     #[inline(always)]
-    async fn set_to_config<T>(&self, id: &str, value: &T) -> Result<(), Error>
-    where
-        T: ?Sized + serde::Serialize,
-    {
-        query(
-            r#"
-            INSERT INTO config (id, value) VALUES (:id, :value)
-                ON CONFLICT(id) DO UPDATE SET value = excluded.value
-                "#,
-        )
-        .bind(":id", id.to_owned())
-        .bind(":value", serde_json::to_string(&value)?)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    #[inline(always)]
     async fn fetch_from_config<T>(&self, id: &str) -> Result<T, Error>
     where
         T: serde::de::DeserializeOwned,
@@ -141,7 +142,15 @@ pub struct SqliteTransaction<'a> {
 }
 
 #[async_trait]
-impl<'a> database::MintTransaction<'a, database::Error> for SqliteTransaction<'a> {}
+impl<'a> database::MintTransaction<'a, database::Error> for SqliteTransaction<'a> {
+    async fn set_mint_info(&mut self, mint_info: MintInfo) -> Result<(), database::Error> {
+        Ok(set_to_config(&self.transaction, "mint_info", &mint_info).await?)
+    }
+
+    async fn set_quote_ttl(&mut self, quote_ttl: QuoteTTL) -> Result<(), database::Error> {
+        Ok(set_to_config(&self.transaction, "quote_ttl", &quote_ttl).await?)
+    }
+}
 
 #[async_trait]
 impl MintDbWriterFinalizer for SqliteTransaction<'_> {
@@ -943,33 +952,6 @@ impl<'a> MintProofsTransaction<'a> for SqliteTransaction<'a> {
 impl MintProofsDatabase for MintSqliteDatabase {
     type Err = database::Error;
 
-    async fn remove_proofs(
-        &self,
-        ys: &[PublicKey],
-        _quote_id: Option<Uuid>,
-    ) -> Result<(), Self::Err> {
-        let transaction = self.pool.begin().await?;
-
-        let total_deleted = query(
-            r#"
-            DELETE FROM proof WHERE y IN (:ys) AND state NOT IN (:exclude_state)
-            "#,
-        )
-        .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
-        .bind_vec(":exclude_state", vec![State::Spent.to_string()])
-        .execute(&transaction)
-        .await?;
-
-        if total_deleted != ys.len() {
-            transaction.rollback().await?;
-            return Err(Self::Err::AttemptRemoveSpentProof);
-        }
-
-        transaction.commit().await?;
-
-        Ok(())
-    }
-
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
         let mut proofs = query(
             r#"
@@ -1267,16 +1249,8 @@ impl MintDatabase<database::Error> for MintSqliteDatabase {
         }))
     }
 
-    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), database::Error> {
-        Ok(self.set_to_config("mint_info", &mint_info).await?)
-    }
-
     async fn get_mint_info(&self) -> Result<MintInfo, database::Error> {
         Ok(self.fetch_from_config("mint_info").await?)
-    }
-
-    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), database::Error> {
-        Ok(self.set_to_config("quote_ttl", &quote_ttl).await?)
     }
 
     async fn get_quote_ttl(&self) -> Result<QuoteTTL, database::Error> {
@@ -1528,17 +1502,6 @@ mod tests {
             .unwrap();
 
         tx.commit().await.unwrap();
-
-        // Try to remove both proofs - should fail because one is spent
-        let result = db
-            .remove_proofs(&[proofs[0].y().unwrap(), proofs[1].y().unwrap()], None)
-            .await;
-
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            database::Error::AttemptRemoveSpentProof
-        ));
 
         // Verify both proofs still exist
         let states = db
