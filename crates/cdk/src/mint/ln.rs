@@ -1,19 +1,18 @@
 use cdk_common::common::PaymentProcessorKey;
+use cdk_common::database::{self, MintTransaction};
+use cdk_common::mint::MintQuote;
 use cdk_common::MintQuoteState;
 
 use super::Mint;
-use crate::mint::Uuid;
 use crate::Error;
 
 impl Mint {
     /// Check the status of an ln payment for a quote
-    pub async fn check_mint_quote_paid(&self, quote_id: &Uuid) -> Result<MintQuoteState, Error> {
-        let mut quote = self
-            .localstore
-            .get_mint_quote(quote_id)
-            .await?
-            .ok_or(Error::UnknownQuote)?;
-
+    pub async fn check_mint_quote_paid(
+        &self,
+        tx: &mut Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
+        quote: &mut MintQuote,
+    ) -> Result<(), Error> {
         let ln = match self.ln.get(&PaymentProcessorKey::new(
             quote.unit.clone(),
             cdk_common::PaymentMethod::Bolt11,
@@ -31,9 +30,7 @@ impl Mint {
             .await?;
 
         if ln_status != quote.state && quote.state != MintQuoteState::Issued {
-            self.localstore
-                .update_mint_quote_state(quote_id, ln_status)
-                .await?;
+            tx.update_mint_quote_state(&quote.id, ln_status).await?;
 
             quote.state = ln_status;
 
@@ -41,6 +38,6 @@ impl Mint {
                 .mint_quote_bolt11_status(quote.clone(), ln_status);
         }
 
-        Ok(quote.state)
+        Ok(())
     }
 }

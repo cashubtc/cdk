@@ -13,7 +13,7 @@ pub mod cdk_database {
     #[cfg(feature = "mint")]
     pub use cdk_common::database::{
         MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
-        MintSignaturesDatabase,
+        MintSignaturesDatabase, MintTransaction,
     };
 }
 

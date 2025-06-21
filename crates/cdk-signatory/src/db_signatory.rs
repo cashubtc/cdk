@@ -52,6 +52,8 @@ impl DbSignatory {
         )
         .await?;
 
+        let mut tx = localstore.begin_transaction().await?;
+
         // Create new keysets for supported units that aren't covered by the current keysets
         for (unit, (fee, max_order)) in supported_units {
             if !active_keyset_units.contains(&unit) {
@@ -75,11 +77,13 @@ impl DbSignatory {
                 );
 
                 let id = keyset_info.id;
-                localstore.add_keyset_info(keyset_info).await?;
-                localstore.set_active_keyset(unit, id).await?;
+                tx.add_keyset_info(keyset_info).await?;
+                tx.set_active_keyset(unit, id).await?;
                 active_keysets.insert(id, keyset);
             }
         }
+
+        tx.commit().await?;
 
         let keys = Self {
             keysets: Default::default(),
@@ -242,8 +246,10 @@ impl Signatory for DbSignatory {
             None,
         );
         let id = info.id;
-        self.localstore.add_keyset_info(info.clone()).await?;
-        self.localstore.set_active_keyset(args.unit, id).await?;
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.add_keyset_info(info.clone()).await?;
+        tx.set_active_keyset(args.unit, id).await?;
+        tx.commit().await?;
 
         self.reload_keys_from_db().await?;
 
