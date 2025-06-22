@@ -12,7 +12,7 @@ license.workspace = true
 
 [features]
 default = ["mint", "wallet", "auth"]
-wallet = ["dep:reqwest", "cdk-common/wallet"]
+wallet = ["dep:reqwest", "cdk-common/wallet", "dep:rustls"]
 mint = ["dep:futures", "dep:reqwest", "cdk-common/mint", "cdk-signatory"]
 auth = ["dep:jsonwebtoken", "cdk-common/auth", "cdk-common/auth"]
 # We do not commit to a MSRV with swagger enabled
@@ -41,6 +41,7 @@ url.workspace = true
 utoipa = { workspace = true, optional = true }
 uuid.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
 
 # -Z minimal-versions
 sync_wrapper = "0.1.2"

@@ -34,6 +34,10 @@ struct HttpClientCore {
 
 impl HttpClientCore {
     fn new() -> Self {
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        }
+
         Self {
             inner: Client::new(),
         }

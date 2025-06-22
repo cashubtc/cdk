@@ -33,6 +33,10 @@ impl LndCertVerifier {
     pub(crate) async fn load(path: impl AsRef<Path>) -> Result<Self, Error> {
         let provider = default_provider();
 
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        }
+
         let contents = fs::read(path).await.map_err(|_| Error::ReadFile)?;
         let mut reader = std::io::Cursor::new(contents);
 
@@ -167,13 +171,11 @@ pub async fn connect<P: AsRef<Path>>(
     cert_path: P,
     macaroon_path: P,
 ) -> Result<Client, Error> {
-    let provider = default_provider();
-
-    // Create a clone for install_default
-    let provider_clone = provider.clone();
-    provider_clone
-        .install_default()
-        .map_err(|e| Error::InvalidConfig(format!("Failed to install CryptoProvider: {e:?}")))?;
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("Failed to install rustls crypto provider");
+    }
 
     let config = ClientConfig::builder()
         .dangerous()
