@@ -526,12 +526,11 @@ async fn main() -> anyhow::Result<()> {
 
         mint_builder = mint_builder.set_blind_auth_settings(auth_settings.mint_max_bat);
 
-        auth_localstore
-            .remove_protected_endpoints(unprotected_endpoints)
-            .await?;
-        auth_localstore
-            .add_protected_endpoints(protected_endpoints)
-            .await?;
+        let mut tx = auth_localstore.begin_transaction().await?;
+
+        tx.remove_protected_endpoints(unprotected_endpoints).await?;
+        tx.add_protected_endpoints(protected_endpoints).await?;
+        tx.commit().await?;
     }
 
     let mint = mint_builder.build().await?;

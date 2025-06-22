@@ -21,7 +21,7 @@ mod auth;
 pub mod test;
 
 #[cfg(feature = "auth")]
-pub use auth::MintAuthDatabase;
+pub use auth::{MintAuthDatabase, MintAuthTransaction};
 
 /// KeysDatabaseWriter
 #[async_trait]

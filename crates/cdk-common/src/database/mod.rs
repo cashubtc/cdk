@@ -5,8 +5,6 @@ pub mod mint;
 #[cfg(feature = "wallet")]
 mod wallet;
 
-#[cfg(all(feature = "mint", feature = "auth"))]
-pub use mint::MintAuthDatabase;
 #[cfg(feature = "mint")]
 pub use mint::{
     Database as MintDatabase, DbTransactionFinalizer as MintDbWriterFinalizer,
@@ -16,6 +14,8 @@ pub use mint::{
     SignaturesDatabase as MintSignaturesDatabase,
     SignaturesTransaction as MintSignatureTransaction, Transaction as MintTransaction,
 };
+#[cfg(all(feature = "mint", feature = "auth"))]
+pub use mint::{MintAuthDatabase, MintAuthTransaction};
 #[cfg(feature = "wallet")]
 pub use wallet::Database as WalletDatabase;
 

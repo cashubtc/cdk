@@ -25,7 +25,7 @@ pub async fn init_keysets(
     // Get keysets info from DB
     let keysets_infos = localstore.get_keyset_infos().await?;
 
-    let mut tx = localstore.begin_transaction().await.expect("begin");
+    let mut tx = localstore.begin_transaction().await?;
     if !keysets_infos.is_empty() {
         tracing::debug!("Setting all saved keysets to inactive");
         for keyset in keysets_infos.clone() {
@@ -114,7 +114,7 @@ pub async fn init_keysets(
         }
     }
 
-    tx.commit().await.expect("commit");
+    tx.commit().await?;
 
     Ok((active_keysets, active_keyset_units))
 }

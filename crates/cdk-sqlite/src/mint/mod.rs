@@ -366,7 +366,7 @@ impl<'a> MintQuotesTransaction<'a> for SqliteTransaction<'a> {
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
         query(
             r#"
-            INSERT INTO melt_quote
+            INSERT OR REPLACE INTO melt_quote
             (
                 id, unit, amount, request, fee_reserve, state,
                 expiry, payment_preimage, request_lookup_id, msat_to_pay,
@@ -378,29 +378,6 @@ impl<'a> MintQuotesTransaction<'a> for SqliteTransaction<'a> {
                 :expiry, :payment_preimage, :request_lookup_id, :msat_to_pay,
                 :created_time, :paid_time
             )
-            ON CONFLICT(id) DO UPDATE SET
-                unit = excluded.unit,
-                amount = excluded.amount,
-                request = excluded.request,
-                fee_reserve = excluded.fee_reserve,
-                state = excluded.state,
-                expiry = excluded.expiry,
-                payment_preimage = excluded.payment_preimage,
-                request_lookup_id = excluded.request_lookup_id,
-                msat_to_pay = excluded.msat_to_pay,
-                created_time = excluded.created_time,
-                paid_time = excluded.paid_time
-            ON CONFLICT(request_lookup_id) DO UPDATE SET
-                unit = excluded.unit,
-                amount = excluded.amount,
-                request = excluded.request,
-                fee_reserve = excluded.fee_reserve,
-                state = excluded.state,
-                expiry = excluded.expiry,
-                payment_preimage = excluded.payment_preimage,
-                id = excluded.id,
-                created_time = excluded.created_time,
-                paid_time = excluded.paid_time;
         "#,
         )
         .bind(":id", quote.id.to_string())
