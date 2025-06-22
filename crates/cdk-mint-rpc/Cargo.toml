@@ -24,7 +24,7 @@ cdk = { workspace = true, features = [
     "mint",
 ] }
 clap.workspace = true
-tonic.workspace = true
+tonic = { workspace = true, features = ["transport"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio.workspace = true

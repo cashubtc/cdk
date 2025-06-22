@@ -22,7 +22,7 @@ cdk-common = { workspace = true, default-features = false, features = [
     "mint",
     "auth",
 ] }
-tonic = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true, features = ["router"] }
 prost = { workspace = true, optional = true }
 tracing.workspace = true
 

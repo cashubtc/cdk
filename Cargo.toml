@@ -93,10 +93,7 @@ instant = { version = "0.1", default-features = false }
 rand = "0.9.1"
 regex = "1"
 home = "0.5.5"
-tonic = { version = "0.13.1", features = [
-    "channel",
-    "tls-webpki-roots",
-] }
+tonic = { version = "0.13.1", features = ["tls-aws-lc", "codegen", "prost", "transport"], default-features = false }
 prost = "0.13.1"
 tonic-build = "0.13.1"
 strum = "0.27.1"
