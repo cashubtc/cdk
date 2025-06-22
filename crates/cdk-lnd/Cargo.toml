@@ -14,10 +14,20 @@ readme = "README.md"
 async-trait.workspace = true
 anyhow.workspace = true
 cdk-common = { workspace = true, features = ["mint"] }
-fedimint-tonic-lnd = "0.2.0"
 futures.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
+prost.workspace = true
+tonic = { workspace = true, features = ["transport", "channel", "tls-ring"] }
+http = "1.3.1"
+hyper = { version = "1.6.0", features = ["http2", "client"] }
+hyper-util = { version = "0.1.14", features = ["client"] }
+hyper-rustls = { version = "0.27.7", features = ["http2", "tls12"] }
+rustls = { version = "0.23.28", default-features = false }
+rustls-pemfile = "2.2.0"
+
+[build-dependencies]
+tonic-build.workspace = true
