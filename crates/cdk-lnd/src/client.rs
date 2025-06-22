@@ -10,7 +10,7 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::rt::TokioExecutor;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::aws_lc_rs::default_provider;
+use rustls::crypto::ring::default_provider;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, Error as TLSError, SignatureScheme};
 use tokio::fs;
@@ -168,7 +168,7 @@ pub async fn connect<P: AsRef<Path>>(
     macaroon_path: P,
 ) -> Result<Client, Error> {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let _ = rustls::crypto::ring::default_provider().install_default();
     }
 
     let config = ClientConfig::builder()
