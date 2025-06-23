@@ -34,6 +34,11 @@ struct HttpClientCore {
 
 impl HttpClientCore {
     fn new() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
+
         Self {
             inner: Client::new(),
         }
