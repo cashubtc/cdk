@@ -1,7 +1,7 @@
 //! LND Errors
 
-use fedimint_tonic_lnd::tonic::Status;
 use thiserror::Error;
+use tonic::Status;
 
 /// LND Error
 #[derive(Debug, Error)]
@@ -36,10 +36,19 @@ pub enum Error {
     /// Errors invalid config
     #[error("LND invalid config: `{0}`")]
     InvalidConfig(String),
+    /// Could not read file
+    #[error("Could not read file")]
+    ReadFile,
 }
 
 impl From<Error> for cdk_common::payment::Error {
     fn from(e: Error) -> Self {
         Self::Lightning(Box::new(e))
+    }
+}
+
+impl From<tonic::transport::Error> for Error {
+    fn from(e: tonic::transport::Error) -> Self {
+        Error::InvalidConfig(format!("Transport error: {e}"))
     }
 }

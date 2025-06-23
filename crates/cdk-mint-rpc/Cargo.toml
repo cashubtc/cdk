@@ -24,7 +24,7 @@ cdk = { workspace = true, features = [
     "mint",
 ] }
 clap.workspace = true
-tonic.workspace = true
+tonic = { workspace = true, features = ["transport"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio.workspace = true
@@ -33,6 +33,7 @@ serde.workspace = true
 thiserror.workspace = true
 prost.workspace = true
 home.workspace = true
+rustls.workspace = true
 
 
 [build-dependencies]

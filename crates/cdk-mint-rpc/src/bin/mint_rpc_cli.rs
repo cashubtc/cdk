@@ -94,6 +94,10 @@ async fn main() -> Result<()> {
     tracing::debug!("Using work dir: {}", work_dir.display());
 
     let channel = if work_dir.join("tls").is_dir() {
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
+
         // TLS directory exists, configure TLS
         let server_root_ca_cert = std::fs::read_to_string(work_dir.join("tls/ca.pem")).unwrap();
         let server_root_ca_cert = Certificate::from_pem(server_root_ca_cert);

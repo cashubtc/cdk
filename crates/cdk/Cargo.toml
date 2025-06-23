@@ -12,7 +12,7 @@ license.workspace = true
 
 [features]
 default = ["mint", "wallet", "auth"]
-wallet = ["dep:reqwest", "cdk-common/wallet"]
+wallet = ["dep:reqwest", "cdk-common/wallet", "dep:rustls"]
 mint = ["dep:futures", "dep:reqwest", "cdk-common/mint", "cdk-signatory"]
 auth = ["dep:jsonwebtoken", "cdk-common/auth", "cdk-common/auth"]
 # We do not commit to a MSRV with swagger enabled
@@ -61,6 +61,7 @@ tokio-tungstenite = { workspace = true, features = [
     "rustls-tls-native-roots",
     "connect"
 ] }
+rustls = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
