@@ -16,6 +16,40 @@ use crate::nut02::ShortKeysetId;
 use crate::nuts::{CurrencyUnit, Id};
 use crate::{ensure_cdk, Amount, KeySetInfo};
 
+pub trait TokenIdentifier {
+    const READABLE_IDENTIFIER: &'static str;
+    const RAW_IDENTIFIER: &'static str;
+
+    fn starts_with_readable(s: &str) -> bool {
+        s.starts_with(Self::READABLE_IDENTIFIER)
+    }
+    fn strip_readable(s: &str) -> &str {
+        s.strip_prefix(Self::READABLE_IDENTIFIER).unwrap_or(s)
+    }
+    fn prefix_readable(inner: &str) -> String {
+        format!("{}{}", Self::READABLE_IDENTIFIER, inner)
+    }
+
+    fn starts_with_raw(s: &[u8]) -> bool {
+        s.starts_with(Self::RAW_IDENTIFIER.as_bytes())
+    }
+    fn strip_raw(s: &[u8]) -> &[u8] {
+        s.strip_prefix(Self::RAW_IDENTIFIER.as_bytes()).unwrap_or(s)
+    }
+    fn prefix_raw(inner: &[u8]) -> Vec<u8> {
+        let mut retv = Self::RAW_IDENTIFIER.as_bytes().to_vec();
+        retv.extend_from_slice(inner);
+        retv
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CashuIdentifier {}
+impl TokenIdentifier for CashuIdentifier {
+    const READABLE_IDENTIFIER: &'static str = "cashu";
+    const RAW_IDENTIFIER: &'static str = "craw";
+}
+
 /// Token Enum
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -62,6 +96,7 @@ impl Token {
             unit,
             memo,
             token: proofs,
+            _phantom: std::marker::PhantomData,
         })
     }
 
@@ -344,7 +379,10 @@ impl From<TokenV4> for TokenV3 {
 
 /// Token V4
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TokenV4 {
+pub struct TokenV4<TI = CashuIdentifier>
+where
+    TI: TokenIdentifier,
+{
     /// Mint Url
     #[serde(rename = "m")]
     pub mint_url: MintUrl,
@@ -357,9 +395,14 @@ pub struct TokenV4 {
     /// Proofs grouped by keyset_id
     #[serde(rename = "t")]
     pub token: Vec<TokenV4Token>,
+    #[serde(skip)]
+    _phantom: std::marker::PhantomData<TI>,
 }
 
-impl TokenV4 {
+impl<TI> TokenV4<TI>
+where
+    TI: TokenIdentifier,
+{
     /// Proofs from token
     pub fn proofs(&self, mint_keysets: &[KeySetInfo]) -> Result<Proofs, Error> {
         let mut proofs: Proofs = vec![];
@@ -391,7 +434,6 @@ impl TokenV4 {
                 .collect::<Result<Vec<Amount>, _>>()?,
         )?)
     }
-
     /// Memo
     #[inline]
     pub fn memo(&self) -> &Option<String> {
@@ -406,7 +448,7 @@ impl TokenV4 {
 
     /// Serialize the token to raw binary
     pub fn to_raw_bytes(&self) -> Result<Vec<u8>, Error> {
-        let mut prefix = b"crawB".to_vec();
+        let mut prefix = TI::prefix_raw("B".as_bytes());
         let mut data = Vec::new();
         ciborium::into_writer(self, &mut data).map_err(Error::CiboriumSerError)?;
         prefix.extend(data);
@@ -414,40 +456,50 @@ impl TokenV4 {
     }
 }
 
-impl fmt::Display for TokenV4 {
+impl<TI> fmt::Display for TokenV4<TI>
+where
+    TI: TokenIdentifier,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use serde::ser::Error;
         let mut data = Vec::new();
         ciborium::into_writer(self, &mut data).map_err(|e| fmt::Error::custom(e.to_string()))?;
         let encoded = general_purpose::URL_SAFE.encode(data);
-        write!(f, "cashuB{encoded}")
+        write!(f, "{}B{encoded}", TI::READABLE_IDENTIFIER)
     }
 }
 
-impl FromStr for TokenV4 {
+impl<TI> FromStr for TokenV4<TI>
+where
+    TI: TokenIdentifier,
+{
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.strip_prefix("cashuB").ok_or(Error::UnsupportedToken)?;
+        let s = TI::strip_readable(s);
+        let s = s.strip_prefix("B").ok_or(Error::UnsupportedToken)?;
 
         let decode_config = general_purpose::GeneralPurposeConfig::new()
             .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
         let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
-        let token: TokenV4 = ciborium::from_reader(&decoded[..])?;
+        let token: TokenV4<TI> = ciborium::from_reader(&decoded[..])?;
         Ok(token)
     }
 }
 
-impl TryFrom<&Vec<u8>> for TokenV4 {
+impl<TI> TryFrom<&Vec<u8>> for TokenV4<TI>
+where
+    TI: TokenIdentifier,
+{
     type Error = Error;
 
     fn try_from(bytes: &Vec<u8>) -> Result<Self, Self::Error> {
-        ensure_cdk!(bytes.len() >= 5, Error::UnsupportedToken);
+        ensure_cdk!(TI::starts_with_raw(bytes), Error::UnsupportedToken);
+        let bytes = TI::strip_raw(bytes);
+        ensure_cdk!(bytes.len() >= 1, Error::UnsupportedToken);
+        ensure_cdk!(bytes.starts_with("B".as_bytes()), Error::UnsupportedToken);
 
-        let prefix = String::from_utf8(bytes[..5].to_vec())?;
-        ensure_cdk!(prefix.as_str() == "crawB", Error::UnsupportedToken);
-
-        Ok(ciborium::from_reader(&bytes[5..])?)
+        Ok(ciborium::from_reader(&bytes[1..])?)
     }
 }
 
@@ -484,6 +536,7 @@ impl TryFrom<TokenV3> for TokenV4 {
             token: proofs,
             memo: token.memo,
             unit: token.unit.ok_or(Error::UnsupportedUnit)?,
+            _phantom: std::marker::PhantomData,
         })
     }
 }
@@ -558,7 +611,7 @@ mod tests {
     #[test]
     fn test_token_v4_str_round_trip() {
         let token_str = "cashuBpGF0gaJhaUgArSaMTR9YJmFwgaNhYQFhc3hAOWE2ZGJiODQ3YmQyMzJiYTc2ZGIwZGYxOTcyMTZiMjlkM2I4Y2MxNDU1M2NkMjc4MjdmYzFjYzk0MmZlZGI0ZWFjWCEDhhhUP_trhpXfStS6vN6So0qWvc2X3O4NfM-Y1HISZ5JhZGlUaGFuayB5b3VhbXVodHRwOi8vbG9jYWxob3N0OjMzMzhhdWNzYXQ=";
-        let token = TokenV4::from_str(token_str).unwrap();
+        let token: TokenV4 = TokenV4::from_str(token_str).unwrap();
 
         assert_eq!(
             token.mint_url,
@@ -664,7 +717,7 @@ mod tests {
     #[test]
     fn test_token_v4_raw_roundtrip() {
         let token_raw = hex::decode("6372617742a4617481a261694800ad268c4d1f5826617081a3616101617378403961366462623834376264323332626137366462306466313937323136623239643362386363313435353363643237383237666331636339343266656462346561635821038618543ffb6b8695df4ad4babcde92a34a96bdcd97dcee0d7ccf98d4721267926164695468616e6b20796f75616d75687474703a2f2f6c6f63616c686f73743a33333338617563736174").unwrap();
-        let token = TokenV4::try_from(&token_raw).expect("Token deserialization error");
+        let token: TokenV4 = TokenV4::try_from(&token_raw).expect("Token deserialization error");
         let token_raw_ = token.to_raw_bytes().expect("Token serialization error");
         let token_ = TokenV4::try_from(&token_raw_).expect("Token deserialization error");
         assert!(token_ == token)
@@ -674,7 +727,7 @@ mod tests {
     fn test_token_generic_raw_roundtrip() {
         let tokenv4_raw = hex::decode("6372617742a4617481a261694800ad268c4d1f5826617081a3616101617378403961366462623834376264323332626137366462306466313937323136623239643362386363313435353363643237383237666331636339343266656462346561635821038618543ffb6b8695df4ad4babcde92a34a96bdcd97dcee0d7ccf98d4721267926164695468616e6b20796f75616d75687474703a2f2f6c6f63616c686f73743a33333338617563736174").unwrap();
         let tokenv4 = Token::try_from(&tokenv4_raw).expect("Token deserialization error");
-        let tokenv4_ = TokenV4::try_from(&tokenv4_raw).expect("Token deserialization error");
+        let tokenv4_: TokenV4 = TokenV4::try_from(&tokenv4_raw).expect("Token deserialization error");
         let tokenv4_bytes = tokenv4.to_raw_bytes().expect("Serialization error");
         let tokenv4_bytes_ = tokenv4_.to_raw_bytes().expect("Serialization error");
         assert!(tokenv4_bytes_ == tokenv4_bytes);
