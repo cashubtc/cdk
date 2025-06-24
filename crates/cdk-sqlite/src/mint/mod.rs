@@ -971,7 +971,7 @@ impl MintProofsDatabase for MintSqliteDatabase {
                amount,
                secret,
                c,
-               witness
+               witness,
                state
             FROM
                 proof
