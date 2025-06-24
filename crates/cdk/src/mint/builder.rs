@@ -340,14 +340,6 @@ impl MintBuilder {
             .ok_or(anyhow!("Localstore not set"))?;
         let ln = self.ln.clone().ok_or(anyhow!("Ln backends not set"))?;
 
-        #[allow(unused_mut)]
-        let mut supported_units = self.supported_units.clone();
-
-        #[cfg(feature = "auth")]
-        if self.openid_discovery.is_some() {
-            supported_units.entry(CurrencyUnit::Auth).or_insert((0, 1));
-        }
-
         let signatory = if let Some(signatory) = self.signatory.as_ref() {
             signatory.clone()
         } else {
@@ -355,7 +347,7 @@ impl MintBuilder {
             let in_memory_signatory = cdk_signatory::db_signatory::DbSignatory::new(
                 self.keystore.clone().ok_or(anyhow!("keystore not set"))?,
                 seed,
-                supported_units,
+                self.supported_units.clone(),
                 HashMap::new(),
             )
             .await?;

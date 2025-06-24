@@ -26,7 +26,7 @@ pub async fn check_pending(multi_mint_wallet: &MultiMintWallet) -> Result<()> {
         // Try to reclaim any proofs that are no longer pending
         match wallet.reclaim_unspent(pending_proofs).await {
             Ok(()) => println!("Successfully reclaimed pending proofs"),
-            Err(e) => println!("Error reclaimed pending proofs: {e}"),
+            Err(e) => println!("Error reclaimed pending proofs: {}", e),
         }
     }
     Ok(())
