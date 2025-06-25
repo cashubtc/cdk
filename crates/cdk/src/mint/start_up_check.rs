@@ -21,14 +21,16 @@ impl Mint {
             "There are {} pending and unpaid mint quotes.",
             all_quotes.len()
         );
-        let mut tx = self.localstore.begin_transaction().await?;
         for mut quote in all_quotes.into_iter() {
             tracing::debug!("Checking status of mint quote: {}", quote.id);
-            if let Err(err) = self.check_mint_quote_paid(&mut tx, &mut quote).await {
-                tracing::error!("Could not check status of {}, {}", quote.id, err);
+            match self
+                .check_mint_quote_paid(self.localstore.begin_transaction().await?, &mut quote)
+                .await
+            {
+                Ok(tx) => tx.commit().await?,
+                Err(err) => tracing::error!("Could not check status of {}, {}", quote.id, err),
             }
         }
-        tx.commit().await?;
         Ok(())
     }
 

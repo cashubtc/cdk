@@ -36,6 +36,7 @@ mod issue;
 mod keysets;
 mod ln;
 mod melt;
+mod proof_writer;
 mod start_up_check;
 pub mod subscription;
 mod swap;

@@ -133,8 +133,10 @@ impl Mint {
         // response. In practice the wallet should not be checking the state of
         // a quote while waiting for the mint response.
         if mint_quote.state == MintQuoteState::Unpaid {
-            self.check_mint_quote_paid(&mut tx, &mut mint_quote).await?;
-            tx.commit().await?;
+            self.check_mint_quote_paid(tx, &mut mint_quote)
+                .await?
+                .commit()
+                .await?;
         }
 
         Ok(MintQuoteBolt11Response {
@@ -242,9 +244,11 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        if mint_quote.state == MintQuoteState::Unpaid {
-            self.check_mint_quote_paid(&mut tx, &mut mint_quote).await?
-        }
+        let mut tx = if mint_quote.state == MintQuoteState::Unpaid {
+            self.check_mint_quote_paid(tx, &mut mint_quote).await?
+        } else {
+            tx
+        };
 
         match mint_quote.state {
             MintQuoteState::Unpaid => {

@@ -70,7 +70,7 @@ impl MintAuthTransaction<database::Error> for SqliteTransaction<'_> {
             "#,
         )
         .bind(":id", id.to_string())
-        .execute(&self.transaction)
+        .execute(&self.inner)
         .await?;
 
         Ok(())
@@ -106,7 +106,7 @@ impl MintAuthTransaction<database::Error> for SqliteTransaction<'_> {
         .bind(":derivation_path", keyset.derivation_path.to_string())
         .bind(":max_order", keyset.max_order)
         .bind(":derivation_path_index", keyset.derivation_path_index)
-        .execute(&self.transaction)
+        .execute(&self.inner)
         .await?;
 
         Ok(())
@@ -126,7 +126,7 @@ impl MintAuthTransaction<database::Error> for SqliteTransaction<'_> {
         .bind(":secret", proof.secret.to_string())
         .bind(":c", proof.c.to_bytes().to_vec())
         .bind(":state", "UNSPENT".to_string())
-        .execute(&self.transaction)
+        .execute(&self.inner)
         .await
         {
             tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
@@ -141,7 +141,7 @@ impl MintAuthTransaction<database::Error> for SqliteTransaction<'_> {
     ) -> Result<Option<State>, Self::Err> {
         let current_state = query(r#"SELECT state FROM proof WHERE y = :y"#)
             .bind(":y", y.to_bytes().to_vec())
-            .pluck(&self.transaction)
+            .pluck(&self.inner)
             .await?
             .map(|state| Ok::<_, Error>(column_as_string!(state, State::from_str)))
             .transpose()?;
@@ -153,7 +153,7 @@ impl MintAuthTransaction<database::Error> for SqliteTransaction<'_> {
                 current_state.as_ref().map(|state| state.to_string()),
             )
             .bind(":new_state", proofs_state.to_string())
-            .execute(&self.transaction)
+            .execute(&self.inner)
             .await?;
 
         Ok(current_state)
@@ -178,7 +178,7 @@ impl MintAuthTransaction<database::Error> for SqliteTransaction<'_> {
             .bind(":amount", u64::from(signature.amount) as i64)
             .bind(":keyset_id", signature.keyset_id.to_string())
             .bind(":c", signature.c.to_bytes().to_vec())
-            .execute(&self.transaction)
+            .execute(&self.inner)
             .await?;
         }
 
@@ -199,7 +199,7 @@ impl MintAuthTransaction<database::Error> for SqliteTransaction<'_> {
             )
             .bind(":endpoint", serde_json::to_string(endpoint)?)
             .bind(":auth", serde_json::to_string(auth)?)
-            .execute(&self.transaction)
+            .execute(&self.inner)
             .await
             {
                 tracing::debug!(
@@ -223,7 +223,7 @@ impl MintAuthTransaction<database::Error> for SqliteTransaction<'_> {
                     .map(serde_json::to_string)
                     .collect::<Result<_, _>>()?,
             )
-            .execute(&self.transaction)
+            .execute(&self.inner)
             .await?;
         Ok(())
     }
@@ -238,7 +238,7 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
     ) -> Result<Box<dyn MintAuthTransaction<database::Error> + Send + Sync + 'a>, database::Error>
     {
         Ok(Box::new(SqliteTransaction {
-            transaction: self.pool.begin().await?,
+            inner: self.pool.begin().await?,
         }))
     }
 

@@ -149,6 +149,13 @@ pub trait ProofsTransaction<'a> {
         ys: &[PublicKey],
         proofs_state: State,
     ) -> Result<Vec<Option<State>>, Self::Err>;
+
+    /// Remove [`Proofs`]
+    async fn remove_proofs(
+        &mut self,
+        ys: &[PublicKey],
+        quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err>;
 }
 
 /// Mint Proof Database trait

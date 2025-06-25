@@ -10,9 +10,9 @@ impl Mint {
     /// Check the status of an ln payment for a quote
     pub async fn check_mint_quote_paid(
         &self,
-        tx: &mut Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
+        tx: Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
         quote: &mut MintQuote,
-    ) -> Result<(), Error> {
+    ) -> Result<Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>, Error> {
         let ln = match self.ln.get(&PaymentProcessorKey::new(
             quote.unit.clone(),
             cdk_common::PaymentMethod::Bolt11,
@@ -25,9 +25,13 @@ impl Mint {
             }
         };
 
+        tx.commit().await?;
+
         let ln_status = ln
             .check_incoming_payment_status(&quote.request_lookup_id)
             .await?;
+
+        let mut tx = self.localstore.begin_transaction().await?;
 
         if ln_status != quote.state && quote.state != MintQuoteState::Issued {
             tx.update_mint_quote_state(&quote.id, ln_status).await?;
@@ -38,6 +42,6 @@ impl Mint {
                 .mint_quote_bolt11_status(quote.clone(), ln_status);
         }
 
-        Ok(())
+        Ok(tx)
     }
 }
