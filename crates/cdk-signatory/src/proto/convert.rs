@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 use cdk_common::secret::Secret;
 use cdk_common::util::hex;
-use cdk_common::{Amount, HTLCWitness, P2PKWitness, PublicKey};
+use cdk_common::{Amount, PublicKey};
 use tonic::Status;
 
 use super::*;
@@ -192,31 +192,6 @@ impl TryInto<cdk_common::Proof> for Proof {
     }
 }
 
-impl From<cdk_common::ProofDleq> for ProofDleq {
-    fn from(value: cdk_common::ProofDleq) -> Self {
-        ProofDleq {
-            e: value.e.as_secret_bytes().to_vec(),
-            s: value.s.as_secret_bytes().to_vec(),
-            r: value.r.as_secret_bytes().to_vec(),
-        }
-    }
-}
-
-impl TryInto<cdk_common::ProofDleq> for ProofDleq {
-    type Error = Status;
-
-    fn try_into(self) -> Result<cdk_common::ProofDleq, Self::Error> {
-        Ok(cdk_common::ProofDleq {
-            e: cdk_common::SecretKey::from_slice(&self.e)
-                .map_err(|e| Status::from_error(Box::new(e)))?,
-            s: cdk_common::SecretKey::from_slice(&self.s)
-                .map_err(|e| Status::from_error(Box::new(e)))?,
-            r: cdk_common::SecretKey::from_slice(&self.r)
-                .map_err(|e| Status::from_error(Box::new(e)))?,
-        })
-    }
-}
-
 impl TryInto<cdk_common::BlindSignature> for BlindSignature {
     type Error = cdk_common::error::Error;
 
@@ -253,48 +228,6 @@ impl TryInto<cdk_common::BlindedMessage> for BlindedMessage {
                 .map_err(|e| Status::from_error(Box::new(e)))?,
             witness: None,
         })
-    }
-}
-
-impl From<cdk_common::Witness> for Witness {
-    fn from(value: cdk_common::Witness) -> Self {
-        match value {
-            cdk_common::Witness::P2PKWitness(P2PKWitness { signatures }) => Witness {
-                witness_type: Some(witness::WitnessType::P2pkWitness(P2pkWitness {
-                    signatures,
-                })),
-            },
-            cdk_common::Witness::HTLCWitness(HTLCWitness {
-                preimage,
-                signatures,
-            }) => Witness {
-                witness_type: Some(witness::WitnessType::HtlcWitness(HtlcWitness {
-                    preimage,
-                    signatures: signatures.unwrap_or_default(),
-                })),
-            },
-        }
-    }
-}
-
-impl TryInto<cdk_common::Witness> for Witness {
-    type Error = Status;
-    fn try_into(self) -> Result<cdk_common::Witness, Self::Error> {
-        match self.witness_type {
-            Some(witness::WitnessType::P2pkWitness(P2pkWitness { signatures })) => {
-                Ok(P2PKWitness { signatures }.into())
-            }
-            Some(witness::WitnessType::HtlcWitness(hltc_witness)) => Ok(HTLCWitness {
-                preimage: hltc_witness.preimage,
-                signatures: if hltc_witness.signatures.is_empty() {
-                    None
-                } else {
-                    Some(hltc_witness.signatures)
-                },
-            }
-            .into()),
-            None => Err(Status::invalid_argument("Witness type not set")),
-        }
     }
 }
 

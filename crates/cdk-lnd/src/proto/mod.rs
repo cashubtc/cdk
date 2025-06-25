@@ -1,4 +1,5 @@
 #[allow(clippy::all, clippy::pedantic, clippy::restriction, clippy::nursery)]
+#[allow(dead_code)]
 pub(crate) mod lnrpc {
     tonic::include_proto!("lnrpc");
 }

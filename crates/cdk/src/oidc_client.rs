@@ -71,15 +71,6 @@ pub enum GrantType {
 
 #[cfg(feature = "wallet")]
 #[derive(Debug, Clone, Serialize)]
-pub struct AccessTokenRequest {
-    pub grant_type: GrantType,
-    pub client_id: String,
-    pub username: String,
-    pub password: String,
-}
-
-#[cfg(feature = "wallet")]
-#[derive(Debug, Clone, Serialize)]
 pub struct RefreshTokenRequest {
     pub grant_type: GrantType,
     pub client_id: String,
