@@ -40,7 +40,7 @@ struct Cli {
     #[arg(short, long)]
     work_dir: Option<PathBuf>,
     /// Logging level
-    #[arg(short, long, default_value = "error")]
+    #[arg(short, long, default_value = "debug")]
     log_level: Level,
     #[arg(long, default_value = "127.0.0.1")]
     listen_addr: String,

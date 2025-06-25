@@ -67,6 +67,7 @@ rustls = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 cdk-signatory = { workspace = true, default-features = false }
 getrandom = { version = "0.2", features = ["js"] }
+ring = { version = "0.17.14", features = ["wasm32_unknown_unknown_js"] }
 
 [[example]]
 name = "mint-token"
