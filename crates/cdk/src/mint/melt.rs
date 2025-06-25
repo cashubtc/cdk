@@ -108,19 +108,6 @@ impl Mint {
             ..
         } = melt_request;
 
-        let amount_msats = melt_request.amount_msat()?;
-
-        let amount_quote_unit = to_unit(amount_msats, &CurrencyUnit::Msat, unit)?;
-
-        self.check_melt_request_acceptable(
-            amount_quote_unit,
-            unit.clone(),
-            PaymentMethod::Bolt11,
-            request.to_string(),
-            *options,
-        )
-        .await?;
-
         let ln = self
             .ln
             .get(&PaymentProcessorKey::new(
@@ -150,6 +137,15 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
+        self.check_melt_request_acceptable(
+            payment_quote.amount,
+            unit.clone(),
+            PaymentMethod::Bolt11,
+            request.to_string(),
+            *options,
+        )
+        .await?;
+
         // We only want to set the msats_to_pay of the melt quote if the invoice is amountless
         // or we want to ignore the amount and do an mpp payment
         let msats_to_pay = options.map(|opt| opt.amount_msat());
@@ -169,7 +165,7 @@ impl Mint {
         tracing::debug!(
             "New melt quote {} for {} {} with request id {}",
             quote.id,
-            amount_quote_unit,
+            payment_quote.amount,
             unit,
             payment_quote.request_lookup_id
         );
