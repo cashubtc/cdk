@@ -8,6 +8,7 @@ use bip39::rand::{thread_rng, Rng};
 use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
+use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{HttpClient, MultiMintWallet, Wallet, WalletBuilder};
 #[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
@@ -171,33 +172,54 @@ async fn main() -> Result<()> {
 
     let mints = localstore.get_mints().await?;
 
-    for (mint_url, _) in mints {
-        let mut builder = WalletBuilder::new()
-            .mint_url(mint_url.clone())
-            .unit(cdk::nuts::CurrencyUnit::Sat)
-            .localstore(localstore.clone())
-            .seed(&mnemonic.to_seed_normalized(""));
+    for (mint_url, mint_info) in mints {
+        let units = if let Some(mint_info) = mint_info {
+            mint_info.supported_units().into_iter().cloned().collect()
+        } else {
+            vec![CurrencyUnit::Sat]
+        };
 
-        if let Some(proxy_url) = args.proxy.as_ref() {
-            let http_client = HttpClient::with_proxy(mint_url, proxy_url.clone(), None, true)?;
-            builder = builder.client(http_client);
-        }
+        let proxy_client = if let Some(proxy_url) = args.proxy.as_ref() {
+            Some(HttpClient::with_proxy(
+                mint_url.clone(),
+                proxy_url.clone(),
+                None,
+                true,
+            )?)
+        } else {
+            None
+        };
 
-        let wallet = builder.build()?;
+        let seed = mnemonic.to_seed_normalized("");
 
-        let wallet_clone = wallet.clone();
+        for unit in units {
+            let mint_url_clone = mint_url.clone();
+            let mut builder = WalletBuilder::new()
+                .mint_url(mint_url_clone.clone())
+                .unit(unit)
+                .localstore(localstore.clone())
+                .seed(&seed);
 
-        tokio::spawn(async move {
-            if let Err(err) = wallet_clone.get_mint_info().await {
-                tracing::error!(
-                    "Could not get mint quote for {}, {}",
-                    wallet_clone.mint_url,
-                    err
-                );
+            if let Some(http_client) = &proxy_client {
+                builder = builder.client(http_client.clone());
             }
-        });
 
-        wallets.push(wallet);
+            let wallet = builder.build()?;
+
+            let wallet_clone = wallet.clone();
+
+            tokio::spawn(async move {
+                if let Err(err) = wallet_clone.get_mint_info().await {
+                    tracing::error!(
+                        "Could not get mint quote for {}, {}",
+                        wallet_clone.mint_url,
+                        err
+                    );
+                }
+            });
+
+            wallets.push(wallet);
+        }
     }
 
     let multi_mint_wallet = MultiMintWallet::new(localstore, Arc::new(seed), wallets);
