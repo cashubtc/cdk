@@ -201,6 +201,7 @@ impl MintPayment for Cln {
         Ok(PaymentQuoteResponse {
             request_lookup_id: bolt11.payment_hash().to_string(),
             amount,
+            unit: unit.clone(),
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
         })

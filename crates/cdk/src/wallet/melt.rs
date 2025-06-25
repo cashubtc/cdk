@@ -50,33 +50,35 @@ impl Wallet {
     ) -> Result<MeltQuote, Error> {
         let invoice = Bolt11Invoice::from_str(&request)?;
 
-        let amount_msat = options
-            .map(|opt| opt.amount_msat().into())
-            .or_else(|| invoice.amount_milli_satoshis())
-            .ok_or(Error::InvoiceAmountUndefined)?;
-
-        let amount_quote_unit = to_unit(amount_msat, &CurrencyUnit::Msat, &self.unit).unwrap();
-
         let quote_request = MeltQuoteBolt11Request {
             request: Bolt11Invoice::from_str(&request)?,
             unit: self.unit.clone(),
             options,
         };
 
-        let quote_res = self.client.post_melt_quote(quote_request).await.unwrap();
+        let quote_res = self.client.post_melt_quote(quote_request).await?;
 
-        if quote_res.amount != amount_quote_unit {
-            tracing::warn!(
-                "Mint returned incorrect quote amount. Expected {}, got {}",
-                amount_quote_unit,
-                quote_res.amount
-            );
-            return Err(Error::IncorrectQuoteAmount);
+        if self.unit == CurrencyUnit::Msat || self.unit == CurrencyUnit::Sat {
+            let amount_msat = options
+                .map(|opt| opt.amount_msat().into())
+                .or_else(|| invoice.amount_milli_satoshis())
+                .ok_or(Error::InvoiceAmountUndefined)?;
+
+            let amount_quote_unit = to_unit(amount_msat, &CurrencyUnit::Msat, &self.unit)?;
+
+            if quote_res.amount != amount_quote_unit {
+                tracing::warn!(
+                    "Mint returned incorrect quote amount. Expected {}, got {}",
+                    amount_quote_unit,
+                    quote_res.amount
+                );
+                return Err(Error::IncorrectQuoteAmount);
+            }
         }
 
         let quote = MeltQuote {
             id: quote_res.quote,
-            amount: amount_quote_unit,
+            amount: quote_res.amount,
             request,
             unit: self.unit.clone(),
             fee_reserve: quote_res.fee_reserve,
