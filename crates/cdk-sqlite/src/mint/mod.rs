@@ -968,12 +968,12 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
             query(
                 r#"
                     INSERT INTO blind_signature
-                    (y, amount, keyset_id, c, quote_id, dleq_e, dleq_s, created_time)
+                    (blinded_message, amount, keyset_id, c, quote_id, dleq_e, dleq_s, created_time)
                     VALUES
-                    (:y, :amount, :keyset_id, :c, :quote_id, :dleq_e, :dleq_s, :created_time)
+                    (:blinded_message, :amount, :keyset_id, :c, :quote_id, :dleq_e, :dleq_s, :created_time)
                 "#,
             )
-            .bind(":y", message.to_bytes().to_vec())
+            .bind(":blinded_message", message.to_bytes().to_vec())
             .bind(":amount", u64::from(signature.amount) as i64)
             .bind(":keyset_id", signature.keyset_id.to_string())
             .bind(":c", signature.c.to_bytes().to_vec())
@@ -988,8 +988,7 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
             )
             .bind(":created_time", current_time as i64)
             .execute(&transaction)
-            .await
-            .expect("fasdas");
+            .await?;
         }
 
         transaction.commit().await?;
@@ -1008,17 +1007,17 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
                 c,
                 dleq_e,
                 dleq_s,
-                y
+                blinded_message
             FROM
                 blind_signature
-            WHERE y IN (:y)
+            WHERE blinded_message IN (:blinded_message)
             "#,
         )
         .bind_vec(
-            ":y",
+            ":blinded_message",
             blinded_messages
                 .iter()
-                .map(|y| y.to_bytes().to_vec())
+                .map(|b_| b_.to_bytes().to_vec())
                 .collect(),
         )
         .fetch_all(&self.pool)

@@ -20,4 +20,5 @@ pub static MIGRATIONS: &[(&str, &str)] = &[
     ("20250406091754_mint_time_of_quotes.sql", include_str!(r#"./migrations/20250406091754_mint_time_of_quotes.sql"#)),
     ("20250406093755_mint_created_time_signature.sql", include_str!(r#"./migrations/20250406093755_mint_created_time_signature.sql"#)),
     ("20250415093121_drop_keystore_foreign.sql", include_str!(r#"./migrations/20250415093121_drop_keystore_foreign.sql"#)),
+    ("20250626120251_rename_blind_message_y_to_b.sql", include_str!(r#"./migrations/20250626120251_rename_blind_message_y_to_b.sql"#)),
 ];
