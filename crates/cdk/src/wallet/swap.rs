@@ -213,6 +213,8 @@ impl Wallet {
             .update_proofs_state(ys, State::Reserved)
             .await?;
 
+        self.notify_update_balance();
+
         let fee = self.get_proofs_fee(&proofs).await?;
 
         let change_amount: Amount = proofs_total - amount.unwrap_or(Amount::ZERO) - fee;
