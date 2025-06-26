@@ -15,7 +15,7 @@ impl Mint {
         let pending_quotes = self.get_pending_mint_quotes().await?;
         let unpaid_quotes = self.get_unpaid_mint_quotes().await?;
 
-        let all_quotes = vec![pending_quotes, unpaid_quotes].concat();
+        let all_quotes = [pending_quotes, unpaid_quotes].concat();
 
         tracing::info!(
             "There are {} pending and unpaid mint quotes.",
