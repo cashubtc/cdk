@@ -59,6 +59,7 @@ const MELT_REQUESTS: TableDefinition<[u8; 16], (&str, &str)> =
     TableDefinition::new("melt_requests");
 
 const SPENT_FILTERS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("spent_filters");
+const ISSUED_FILTERS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("issued_filters");
 
 const DATABASE_VERSION: u32 = 5;
 
@@ -162,6 +163,8 @@ impl MintRedbDatabase {
                         let _ = write_txn.open_table(BLIND_SIGNATURE_CREATED_TIME)?;
                         let _ = write_txn.open_multimap_table(QUOTE_PROOFS_TABLE)?;
                         let _ = write_txn.open_multimap_table(QUOTE_SIGNATURES_TABLE)?;
+                        let _ = write_txn.open_table(SPENT_FILTERS_TABLE)?;
+                        let _ = write_txn.open_table(ISSUED_FILTERS_TABLE)?;
 
                         table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
                     }
@@ -223,6 +226,54 @@ impl MintFiltersDatabase for MintRedbDatabase {
         filter: GCSFilter,
     ) -> Result<(), Self::Err> {
         self.store_spent_filter(keyset_id, filter).await
+    }
+
+    async fn store_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn
+                .open_table(ISSUED_FILTERS_TABLE)
+                .map_err(Error::from)?;
+            table
+                .insert(
+                    keyset_id.to_string().as_str(),
+                    serde_json::to_string(&filter)?.as_str(),
+                )
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    async fn get_issued_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(ISSUED_FILTERS_TABLE)
+            .map_err(Error::from)?;
+
+        match table
+            .get(keyset_id.to_string().as_str())
+            .map_err(Error::from)?
+        {
+            Some(filter) => Ok(Some(
+                serde_json::from_str(filter.value()).map_err(Error::from)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    async fn update_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
+        self.store_issued_filter(keyset_id, filter).await
     }
 }
 
@@ -949,7 +1000,7 @@ impl MintSignaturesDatabase for MintRedbDatabase {
     async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
-    ) -> Result<Vec<BlindSignature>, Self::Err> {
+    ) -> Result<Vec<(PublicKey, BlindSignature)>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
         let table = read_txn
             .open_table(BLINDED_SIGNATURES)
@@ -959,10 +1010,17 @@ impl MintSignaturesDatabase for MintRedbDatabase {
             .iter()
             .map_err(Error::from)?
             .flatten()
-            .filter_map(|(_m, s)| {
-                match serde_json::from_str::<BlindSignature>(s.value()).ok() {
-                    Some(signature) if &signature.keyset_id == keyset_id => Some(signature), // Filter by keyset_id
-                    _ => None, // Exclude non-matching entries
+            .filter_map(|(m, s)| {
+                match PublicKey::from_slice(&m.value()) {
+                    Ok(b_) => {
+                        match serde_json::from_str::<BlindSignature>(s.value()).ok() {
+                            Some(signature) if &signature.keyset_id == keyset_id => {
+                                Some((b_, signature))
+                            } // Filter by keyset_id
+                            _ => None, // Exclude non-matching entries
+                        }
+                    }
+                    Err(_e) => None,
                 }
             })
             .collect())

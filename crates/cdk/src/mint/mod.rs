@@ -323,10 +323,12 @@ impl Mint {
                 loop {
                     let keysets = self.keysets.load();
                     for keyset in (*keysets).iter() {
+
+                        // *** UPDATE SPENT FILTERS ***
                         let spent_filter = self.localstore.get_spent_filter(&keyset.id).await;
 
                         if let Err(e) = spent_filter {
-                            tracing::warn!("Failed to get filter for keyset {:?}: {:?}", &keyset.id, e);
+                            tracing::warn!("Failed to get spent filter for keyset {:?}: {:?}", &keyset.id, e);
                             continue;
                         }
 
@@ -355,7 +357,7 @@ impl Mint {
 
                                 match GCSFilter::create(&spent_proofs, p, m) {
                                     Err(e) => {
-                                        tracing::warn!("Failed to compute filter for keyset {:?}: {:?}", &keyset.id, e);
+                                        tracing::warn!("Failed to compute spent filter for keyset {:?}: {:?}", &keyset.id, e);
                                     },
                                     Ok(compressed_set) => {
                                         let gcs_filter = cdk_common::common::GCSFilter {
@@ -368,15 +370,64 @@ impl Mint {
                                         if spent_filter.expect("a spent filter is expected at this point").is_some() {
                                             let res = self.localstore.update_spent_filter(&keyset.id, gcs_filter).await;
                                             if let Err(e) = res {
-                                                tracing::warn!("Failed to update filter for keyset {:?}: {:?}", &keyset.id, e);
+                                                tracing::warn!("Failed to update spent filter for keyset {:?}: {:?}", &keyset.id, e);
                                             }
                                         } else {
                                             let res = self.localstore.store_spent_filter(&keyset.id, gcs_filter).await;
                                             if let Err(e) = res {
-                                                tracing::warn!("Failed to store filter for keyset {:?}: {:?}", &keyset.id, e);
+                                                tracing::warn!("Failed to store spent filter for keyset {:?}: {:?}", &keyset.id, e);
                                             }
                                         }
-                                        tracing::debug!("Successfully recomputed GCS filter for keyset {:?}", &keyset.id);
+                                        tracing::debug!("Successfully recomputed GCS spent filter for keyset {:?}", &keyset.id);
+                                    }
+                                }
+                            }
+                        }
+
+                        // *** UPDATE ISSUED FILTERS ***
+                        let issued_filter = self.localstore.get_issued_filter(&keyset.id).await;
+
+                        if let Err(e) = issued_filter {
+                            tracing::warn!("Failed to get issued filter for keyset {:?}: {:?}", &keyset.id, e);
+                            continue;
+                        }
+
+                        let blind_signatures = self.localstore.get_blind_signatures_for_keyset(&keyset.id).await;
+                        match blind_signatures {
+                            Err(e) => {
+                                tracing::warn!("Failed to get blind signatures for keyset {:?}: {:?}", &keyset.id, e);
+                                continue;
+                            },
+                            Ok(blind_signatures) => {
+                                let blind_messages: Vec<Vec<u8>> = blind_signatures
+                                    .iter()
+                                    .map(|(blind_message, _)| blind_message.serialize().to_vec())
+                                    .collect();
+
+                                match GCSFilter::create(&blind_messages, p, m) {
+                                    Err(e) => {
+                                        tracing::warn!("Failed to compute spent filter for keyset {:?}: {:?}", &keyset.id, e);
+                                    },
+                                    Ok(compressed_set) => {
+                                        let gcs_filter = cdk_common::common::GCSFilter {
+                                            num_items: blind_messages.len() as u32,
+                                            content: compressed_set,
+                                            m,
+                                            p,
+                                            time: unix_time() as i64,
+                                        };
+                                        if issued_filter.expect("a issued filter is expected at this point").is_some() {
+                                            let res = self.localstore.update_issued_filter(&keyset.id, gcs_filter).await;
+                                            if let Err(e) = res {
+                                                tracing::warn!("Failed to update issued filter for keyset {:?}: {:?}", &keyset.id, e);
+                                            }
+                                        } else {
+                                            let res = self.localstore.store_issued_filter(&keyset.id, gcs_filter).await;
+                                            if let Err(e) = res {
+                                                tracing::warn!("Failed to store issued filter for keyset {:?}: {:?}", &keyset.id, e);
+                                            }
+                                        }
+                                        tracing::debug!("Successfully recomputed GCS issued filter for keyset {:?}", &keyset.id);
                                     }
                                 }
                             }
@@ -592,7 +643,7 @@ impl Mint {
                 .get_blind_signatures_for_keyset(&keyset.id)
                 .await?;
 
-            let total = Amount::try_sum(blinded.iter().map(|b| b.amount))?;
+            let total = Amount::try_sum(blinded.iter().map(|(_m, b)| b.amount))?;
 
             total_issued.insert(keyset.id, total);
         }
@@ -627,6 +678,20 @@ impl Mint {
     /// Get spent GCS filter for a specific keyset
     pub async fn get_spent_filter(&self, keyset_id: Id) -> Result<GetFilterResponse, Error> {
         match self.localstore.get_spent_filter(&keyset_id).await? {
+            Some(gcs_filter) => Ok(GetFilterResponse {
+                n: gcs_filter.num_items,
+                p: gcs_filter.p,
+                m: gcs_filter.m,
+                content: general_purpose::STANDARD.encode(gcs_filter.content),
+                timestamp: gcs_filter.time,
+            }),
+            None => Err(Error::NoSuchFilter(keyset_id.to_string())),
+        }
+    }
+
+    /// Get issued blind signatures GCS filter for a specific keyset
+    pub async fn get_issued_filter(&self, keyset_id: Id) -> Result<GetFilterResponse, Error> {
+        match self.localstore.get_issued_filter(&keyset_id).await? {
             Some(gcs_filter) => Ok(GetFilterResponse {
                 n: gcs_filter.num_items,
                 p: gcs_filter.p,

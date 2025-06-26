@@ -572,6 +572,38 @@ pub(crate) async fn get_spent_filter(
     Ok(Json(response))
 }
 
+#[cfg_attr(feature = "swagger", utoipa::path(
+    get,
+    context_path = "/v1",
+    path = "/filters/issued/{keyset_id}",
+    params(
+        ("keyset_id" = String, description = "The filter's keyset ID"),
+    ),
+    responses(
+        (status = 200, description = "Successful response", body = GetFilterResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+#[instrument(skip_all)]
+pub(crate) async fn get_issued_filter(
+    State(state): State<MintState>,
+    Path(keyset_id): Path<Id>,
+) -> Result<Json<GetFilterResponse>, Response> {
+    let response = state
+        .mint
+        .get_issued_filter(keyset_id)
+        .await
+        .map_err(|err| {
+            tracing::error!(
+                "Could not get spent filter for keyset {}: {}",
+                keyset_id,
+                err
+            );
+            into_response(err)
+        })?;
+    Ok(Json(response))
+}
+
 #[instrument(skip_all)]
 pub(crate) fn into_response<T>(error: T) -> Response
 where

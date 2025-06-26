@@ -134,6 +134,96 @@ WHERE keyset_id=?;
     ) -> Result<(), Self::Err> {
         self.store_spent_filter(keyset_id, filter).await
     }
+    async fn store_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let res = sqlx::query(
+            r#"
+INSERT INTO issued_filters (keyset_id, content, num_items, inv_false_positive_rate, remainder_bitlength, time)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(keyset_id) DO UPDATE SET
+    content = excluded.content,
+    num_items = excluded.num_items,
+    inv_false_positive_rate = excluded.inv_false_positive_rate,
+    remainder_bitlength = excluded.remainder_bitlength,
+    time = excluded.time;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .bind(filter.content)
+        .bind(filter.num_items as i64)
+        .bind(filter.m as i64)
+        .bind(filter.p as i64)
+        .bind(unix_time() as i64)
+        .execute(&mut *transaction)
+        .await;
+
+        match res {
+            Ok(_) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(())
+            }
+            Err(err) => {
+                tracing::error!("SQLite could not store spent filter");
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                Err(Error::from(err).into())
+            }
+        }
+    }
+
+    async fn get_issued_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err> {
+        let mut transaction = self.pool.begin().await.map_err(Error::from)?;
+
+        let rec = sqlx::query(
+            r#"
+SELECT *
+FROM issued_filters
+WHERE keyset_id=?;
+        "#,
+        )
+        .bind(keyset_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await;
+
+        match rec {
+            Ok(row) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(Some(GCSFilter {
+                    content: row.try_get("content").map_err(Error::from)?,
+                    num_items: row.try_get("num_items").map_err(Error::from)?,
+                    m: row
+                        .try_get("inv_false_positive_rate")
+                        .map_err(Error::from)?,
+                    p: row.try_get("remainder_bitlength").map_err(Error::from)?,
+                    time: row.try_get("time").map_err(Error::from)?,
+                }))
+            }
+            Err(sqlx::Error::RowNotFound) => {
+                transaction.commit().await.map_err(Error::from)?;
+                Ok(None)
+            }
+            Err(err) => {
+                if let Err(err) = transaction.rollback().await {
+                    tracing::error!("Could not rollback sql transaction: {}", err);
+                }
+                Err(Error::SQLX(err).into())
+            }
+        }
+    }
+
+    async fn update_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
+        self.store_issued_filter(keyset_id, filter).await
+    }
 }
 
 impl MintSqliteDatabase {
@@ -1516,7 +1606,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
     async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
-    ) -> Result<Vec<BlindSignature>, Self::Err> {
+    ) -> Result<Vec<(PublicKey, BlindSignature)>, Self::Err> {
         let mut transaction = self.pool.begin().await.map_err(Error::from)?;
 
         let rec = sqlx::query(
@@ -1535,8 +1625,13 @@ WHERE keyset_id=?;
                 transaction.commit().await.map_err(Error::from)?;
                 let sigs = rec
                     .into_iter()
-                    .map(sqlite_row_to_blind_signature)
-                    .collect::<Result<Vec<BlindSignature>, _>>()?;
+                    .map(|row| -> Result<(PublicKey, BlindSignature), Error> {
+                        let b_: Vec<u8> = row.try_get("y").map_err(Error::from)?;
+
+                        let b_ = PublicKey::from_slice(&b_).map_err(Error::from)?;
+                        Ok((b_, sqlite_row_to_blind_signature(row)?))
+                    })
+                    .collect::<Result<Vec<(PublicKey, BlindSignature)>, _>>()?;
 
                 Ok(sigs)
             }

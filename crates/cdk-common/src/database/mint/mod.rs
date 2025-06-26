@@ -58,6 +58,20 @@ pub trait FiltersDatabase {
     /// Update a spent filter identified by keyset_id
     async fn update_spent_filter(&self, keyset_id: &Id, filter: GCSFilter)
         -> Result<(), Self::Err>;
+
+    /// Store a spent filter identified by keyset_id
+    async fn store_issued_filter(&self, keyset_id: &Id, filter: GCSFilter)
+        -> Result<(), Self::Err>;
+
+    /// Get a spent filter by keyset_id
+    async fn get_issued_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err>;
+
+    /// Update a spent filter identified by keyset_id
+    async fn update_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err>;
 }
 
 /// Mint Quote Database trait
@@ -179,7 +193,7 @@ pub trait SignaturesDatabase {
     async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
-    ) -> Result<Vec<BlindSignature>, Self::Err>;
+    ) -> Result<Vec<(PublicKey, BlindSignature)>, Self::Err>;
     /// Get [`BlindSignature`]s for quote
     async fn get_blind_signatures_for_quote(
         &self,
