@@ -5,6 +5,22 @@ alias t := test
 default:
   @just --list
 
+# Create a new SQL migration file
+new-migration target name:
+    #!/usr/bin/env bash
+    if [ "{{target}}" != "mint" ] && [ "{{target}}" != "wallet" ]; then
+        echo "Error: target must be either 'mint' or 'wallet'"
+        exit 1
+    fi
+    
+    timestamp=$(date +%Y%m%d%H%M%S)
+    migration_path="./crates/cdk-sqlite/src/{{target}}/migrations/${timestamp}_{{name}}.sql"
+    
+    # Create the file
+    mkdir -p "$(dirname "$migration_path")"
+    touch "$migration_path"
+    echo "Created new migration: $migration_path"
+
 final-check: typos format clippy test
 
 # run `cargo build` on everything
