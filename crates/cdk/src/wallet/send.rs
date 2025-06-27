@@ -156,18 +156,18 @@ impl Wallet {
             .update_proofs_state(proofs.ys()?, State::Reserved)
             .await?;
 
-        // Check if proofs are exact send amount
-        let proofs_exact_amount = proofs.total_amount()? == amount + send_fee;
+        // Check if proofs are exact send amount (and does not exceed max_proofs)
+        let mut exact_proofs = proofs.total_amount()? == amount + send_fee;
+        if let Some(max_proofs) = opts.max_proofs {
+            exact_proofs &= proofs.len() <= max_proofs;
+        }
 
         // Split proofs to swap and send
         let mut proofs_to_swap = Proofs::new();
         let mut proofs_to_send = Proofs::new();
         if force_swap {
             proofs_to_swap = proofs;
-        } else if proofs_exact_amount
-            || opts.send_kind.is_offline()
-            || opts.send_kind.has_tolerance()
-        {
+        } else if exact_proofs || opts.send_kind.is_offline() || opts.send_kind.has_tolerance() {
             proofs_to_send = proofs;
         } else {
             let mut remaining_send_amounts = send_amounts.clone();
@@ -420,6 +420,9 @@ pub struct SendOptions {
     ///
     /// When this is true the token created will include the amount of fees needed to redeem the token (amount + fee_to_redeem)
     pub include_fee: bool,
+    /// Maximum number of proofs to include in the token
+    /// Default is `None`, which means all selected proofs will be included.
+    pub max_proofs: Option<usize>,
     /// Metadata
     pub metadata: HashMap<String, String>,
 }
