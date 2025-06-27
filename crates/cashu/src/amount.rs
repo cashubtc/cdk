@@ -172,6 +172,15 @@ impl Amount {
             acc.checked_add(x).ok_or(Error::AmountOverflow)
         })
     }
+
+    /// Convert unit
+    pub fn convert_unit(
+        &self,
+        current_unit: &CurrencyUnit,
+        target_unit: &CurrencyUnit,
+    ) -> Result<Amount, Error> {
+        to_unit(self.0, current_unit, target_unit)
+    }
 }
 
 impl Default for Amount {
