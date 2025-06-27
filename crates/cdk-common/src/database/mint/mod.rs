@@ -83,6 +83,14 @@ pub trait QuotesTransaction<'a> {
     ) -> Result<Option<mint::MeltQuote>, Self::Err>;
     /// Add [`mint::MeltQuote`]
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err>;
+
+    /// Updates the request lookup id for a melt quote
+    async fn update_melt_quote_request_lookup_id(
+        &mut self,
+        quote_id: &Uuid,
+        new_request_lookup_id: &str,
+    ) -> Result<(), Self::Err>;
+
     /// Update [`mint::MeltQuote`] state
     ///
     /// It is expected for this function to fail if the state is already set to the new state

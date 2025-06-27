@@ -173,7 +173,23 @@ impl Mint {
         );
 
         let mut tx = self.localstore.begin_transaction().await?;
-        tx.add_melt_quote(quote.clone()).await?;
+        if let Some(mut from_db_quote) = tx.get_melt_quote(&quote.id).await? {
+            if from_db_quote.state != quote.state {
+                tx.update_melt_quote_state(&quote.id, from_db_quote.state)
+                    .await?;
+                from_db_quote.state = quote.state;
+            }
+            if from_db_quote.request_lookup_id != quote.request_lookup_id {
+                tx.update_melt_quote_request_lookup_id(&quote.id, &quote.request_lookup_id)
+                    .await?;
+                from_db_quote.request_lookup_id = quote.request_lookup_id.clone();
+            }
+            if from_db_quote != quote {
+                return Err(Error::Internal);
+            }
+        } else {
+            tx.add_melt_quote(quote.clone()).await?;
+        }
         tx.commit().await?;
 
         Ok(quote.into())
@@ -533,9 +549,16 @@ impl Mint {
                     let mut melt_quote = quote;
                     melt_quote.request_lookup_id = payment_lookup_id;
 
-                    if let Err(err) = tx.add_melt_quote(melt_quote.clone()).await {
+                    if let Err(err) = tx
+                        .update_melt_quote_request_lookup_id(
+                            &melt_quote.id,
+                            &melt_quote.request_lookup_id,
+                        )
+                        .await
+                    {
                         tracing::warn!("Could not update payment lookup id: {}", err);
                     }
+
                     (tx, pre.payment_proof, amount_spent, melt_quote)
                 } else {
                     (tx, pre.payment_proof, amount_spent, quote)

@@ -361,7 +361,7 @@ impl<'a> MintQuotesTransaction<'a> for SqliteTransaction<'a> {
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
         query(
             r#"
-            INSERT OR REPLACE INTO melt_quote
+            INSERT INTO melt_quote
             (
                 id, unit, amount, request, fee_reserve, state,
                 expiry, payment_preimage, request_lookup_id, msat_to_pay,
@@ -393,6 +393,19 @@ impl<'a> MintQuotesTransaction<'a> for SqliteTransaction<'a> {
         .execute(&self.inner)
         .await?;
 
+        Ok(())
+    }
+
+    async fn update_melt_quote_request_lookup_id(
+        &mut self,
+        quote_id: &Uuid,
+        new_request_lookup_id: &str,
+    ) -> Result<(), Self::Err> {
+        query(r#"UPDATE melt_quote SET request_lookup_id = :new_req_id WHERE id = :id"#)
+            .bind(":new_req_id", new_request_lookup_id.to_owned())
+            .bind(":id", quote_id.as_hyphenated().to_string())
+            .execute(&self.inner)
+            .await?;
         Ok(())
     }
 
