@@ -21,10 +21,14 @@ impl Mint {
             "There are {} pending and unpaid mint quotes.",
             all_quotes.len()
         );
-        for quote in all_quotes.iter() {
+        for mut quote in all_quotes.into_iter() {
             tracing::debug!("Checking status of mint quote: {}", quote.id);
-            if let Err(err) = self.check_mint_quote_paid(&quote.id).await {
-                tracing::error!("Could not check status of {}, {}", quote.id, err);
+            match self
+                .check_mint_quote_paid(self.localstore.begin_transaction().await?, &mut quote)
+                .await
+            {
+                Ok(tx) => tx.commit().await?,
+                Err(err) => tracing::error!("Could not check status of {}, {}", quote.id, err),
             }
         }
         Ok(())
@@ -38,6 +42,8 @@ impl Mint {
             .filter(|q| q.state == MeltQuoteState::Pending || q.state == MeltQuoteState::Unknown)
             .collect();
         tracing::info!("There are {} pending melt quotes.", pending_quotes.len());
+
+        let mut tx = self.localstore.begin_transaction().await?;
 
         for pending_quote in pending_quotes {
             tracing::debug!("Checking status for melt quote {}.", pending_quote.id);
@@ -72,8 +78,7 @@ impl Mint {
                 MeltQuoteState::Unknown => MeltQuoteState::Unpaid,
             };
 
-            if let Err(err) = self
-                .localstore
+            if let Err(err) = tx
                 .update_melt_quote_state(&pending_quote.id, melt_quote_state)
                 .await
             {
@@ -86,6 +91,9 @@ impl Mint {
                 );
             };
         }
+
+        tx.commit().await?;
+
         Ok(())
     }
 }

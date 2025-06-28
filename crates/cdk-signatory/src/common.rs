@@ -25,13 +25,14 @@ pub async fn init_keysets(
     // Get keysets info from DB
     let keysets_infos = localstore.get_keyset_infos().await?;
 
+    let mut tx = localstore.begin_transaction().await?;
     if !keysets_infos.is_empty() {
         tracing::debug!("Setting all saved keysets to inactive");
         for keyset in keysets_infos.clone() {
             // Set all to in active
             let mut keyset = keyset;
             keyset.active = false;
-            localstore.add_keyset_info(keyset).await?;
+            tx.add_keyset_info(keyset).await?;
         }
 
         let keysets_by_unit: HashMap<CurrencyUnit, Vec<MintKeySetInfo>> =
@@ -74,9 +75,9 @@ pub async fn init_keysets(
                     active_keysets.insert(id, keyset);
                     let mut keyset_info = highest_index_keyset;
                     keyset_info.active = true;
-                    localstore.add_keyset_info(keyset_info).await?;
+                    tx.add_keyset_info(keyset_info).await?;
                     active_keyset_units.push(unit.clone());
-                    localstore.set_active_keyset(unit, id).await?;
+                    tx.set_active_keyset(unit, id).await?;
                 } else {
                     // Check to see if there are not keysets by this unit
                     let derivation_path_index = if keysets.is_empty() {
@@ -104,14 +105,16 @@ pub async fn init_keysets(
                     );
 
                     let id = keyset_info.id;
-                    localstore.add_keyset_info(keyset_info).await?;
-                    localstore.set_active_keyset(unit.clone(), id).await?;
+                    tx.add_keyset_info(keyset_info).await?;
+                    tx.set_active_keyset(unit.clone(), id).await?;
                     active_keysets.insert(id, keyset);
                     active_keyset_units.push(unit.clone());
                 };
             }
         }
     }
+
+    tx.commit().await?;
 
     Ok((active_keysets, active_keyset_units))
 }

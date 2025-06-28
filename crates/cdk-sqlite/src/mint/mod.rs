@@ -5,13 +5,14 @@ use std::ops::DerefMut;
 use std::path::Path;
 use std::str::FromStr;
 
-use async_rusqlite::{query, DatabaseExecutor};
+use async_rusqlite::{query, DatabaseExecutor, Transaction};
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::common::QuoteTTL;
 use cdk_common::database::{
-    self, MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
-    MintSignaturesDatabase,
+    self, MintDatabase, MintDbWriterFinalizer, MintKeyDatabaseTransaction, MintKeysDatabase,
+    MintProofsDatabase, MintProofsTransaction, MintQuotesDatabase, MintQuotesTransaction,
+    MintSignatureTransaction, MintSignaturesDatabase,
 };
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
@@ -52,6 +53,48 @@ pub struct MintSqliteDatabase {
     pool: async_rusqlite::AsyncRusqlite,
 }
 
+#[inline(always)]
+async fn get_current_states<C>(
+    conn: &C,
+    ys: &[PublicKey],
+) -> Result<HashMap<PublicKey, State>, Error>
+where
+    C: DatabaseExecutor + Send + Sync,
+{
+    query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)
+        .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+        .fetch_all(conn)
+        .await?
+        .into_iter()
+        .map(|row| {
+            Ok((
+                column_as_string!(&row[0], PublicKey::from_hex, PublicKey::from_slice),
+                column_as_string!(&row[1], State::from_str),
+            ))
+        })
+        .collect::<Result<HashMap<_, _>, _>>()
+}
+
+#[inline(always)]
+async fn set_to_config<T, C>(conn: &C, id: &str, value: &T) -> Result<(), Error>
+where
+    T: ?Sized + serde::Serialize,
+    C: DatabaseExecutor + Send + Sync,
+{
+    query(
+        r#"
+        INSERT INTO config (id, value) VALUES (:id, :value)
+            ON CONFLICT(id) DO UPDATE SET value = excluded.value
+            "#,
+    )
+    .bind(":id", id.to_owned())
+    .bind(":value", serde_json::to_string(&value)?)
+    .execute(conn)
+    .await?;
+
+    Ok(())
+}
+
 impl MintSqliteDatabase {
     /// Create new [`MintSqliteDatabase`]
     #[cfg(not(feature = "sqlcipher"))]
@@ -79,48 +122,6 @@ impl MintSqliteDatabase {
     }
 
     #[inline(always)]
-    async fn get_current_states<C>(
-        &self,
-        conn: &C,
-        ys: &[PublicKey],
-    ) -> Result<HashMap<PublicKey, State>, Error>
-    where
-        C: DatabaseExecutor + Send + Sync,
-    {
-        query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)
-            .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
-            .fetch_all(conn)
-            .await?
-            .into_iter()
-            .map(|row| {
-                Ok((
-                    column_as_string!(&row[0], PublicKey::from_hex, PublicKey::from_slice),
-                    column_as_string!(&row[1], State::from_str),
-                ))
-            })
-            .collect::<Result<HashMap<_, _>, _>>()
-    }
-
-    #[inline(always)]
-    async fn set_to_config<T>(&self, id: &str, value: &T) -> Result<(), Error>
-    where
-        T: ?Sized + serde::Serialize,
-    {
-        query(
-            r#"
-            INSERT INTO config (id, value) VALUES (:id, :value)
-                ON CONFLICT(id) DO UPDATE SET value = excluded.value
-                "#,
-        )
-        .bind(":id", id.to_owned())
-        .bind(":value", serde_json::to_string(&value)?)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    #[inline(always)]
     async fn fetch_from_config<T>(&self, id: &str) -> Result<T, Error>
     where
         T: serde::de::DeserializeOwned,
@@ -135,59 +136,38 @@ impl MintSqliteDatabase {
     }
 }
 
+/// Sqlite Writer
+pub struct SqliteTransaction<'a> {
+    inner: Transaction<'a>,
+}
+
 #[async_trait]
-impl MintKeysDatabase for MintSqliteDatabase {
+impl<'a> database::MintTransaction<'a, database::Error> for SqliteTransaction<'a> {
+    async fn set_mint_info(&mut self, mint_info: MintInfo) -> Result<(), database::Error> {
+        Ok(set_to_config(&self.inner, "mint_info", &mint_info).await?)
+    }
+
+    async fn set_quote_ttl(&mut self, quote_ttl: QuoteTTL) -> Result<(), database::Error> {
+        Ok(set_to_config(&self.inner, "quote_ttl", &quote_ttl).await?)
+    }
+}
+
+#[async_trait]
+impl MintDbWriterFinalizer for SqliteTransaction<'_> {
     type Err = database::Error;
 
-    async fn set_active_keyset(&self, unit: CurrencyUnit, id: Id) -> Result<(), Self::Err> {
-        let transaction = self.pool.begin().await?;
-
-        query(r#"UPDATE keyset SET active=FALSE WHERE unit IS :unit"#)
-            .bind(":unit", unit.to_string())
-            .execute(&transaction)
-            .await?;
-
-        query(r#"UPDATE keyset SET active=TRUE WHERE unit IS :unit AND id IS :id"#)
-            .bind(":unit", unit.to_string())
-            .bind(":id", id.to_string())
-            .execute(&transaction)
-            .await?;
-
-        transaction.commit().await?;
-
-        Ok(())
+    async fn commit(self: Box<Self>) -> Result<(), database::Error> {
+        Ok(self.inner.commit().await?)
     }
 
-    async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
-        Ok(
-            query(r#" SELECT id FROM keyset WHERE active = 1 AND unit IS :unit"#)
-                .bind(":unit", unit.to_string())
-                .pluck(&self.pool)
-                .await?
-                .map(|id| match id {
-                    Column::Text(text) => Ok(Id::from_str(&text)?),
-                    Column::Blob(id) => Ok(Id::from_bytes(&id)?),
-                    _ => Err(Error::InvalidKeysetId),
-                })
-                .transpose()?,
-        )
+    async fn rollback(self: Box<Self>) -> Result<(), database::Error> {
+        Ok(self.inner.rollback().await?)
     }
+}
 
-    async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
-        Ok(query(r#"SELECT id, unit FROM keyset WHERE active = 1"#)
-            .fetch_all(&self.pool)
-            .await?
-            .into_iter()
-            .map(|row| {
-                Ok((
-                    column_as_string!(&row[1], CurrencyUnit::from_str),
-                    column_as_string!(&row[0], Id::from_str, Id::from_bytes),
-                ))
-            })
-            .collect::<Result<HashMap<_, _>, Error>>()?)
-    }
-
-    async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
+#[async_trait]
+impl<'a> MintKeyDatabaseTransaction<'a, database::Error> for SqliteTransaction<'a> {
+    async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), database::Error> {
         query(
             r#"
         INSERT INTO
@@ -219,10 +199,74 @@ impl MintKeysDatabase for MintSqliteDatabase {
         .bind(":max_order", keyset.max_order)
         .bind(":input_fee_ppk", keyset.input_fee_ppk as i64)
         .bind(":derivation_path_index", keyset.derivation_path_index)
-        .execute(&self.pool)
+        .execute(&self.inner)
         .await?;
 
         Ok(())
+    }
+
+    async fn set_active_keyset(
+        &mut self,
+        unit: CurrencyUnit,
+        id: Id,
+    ) -> Result<(), database::Error> {
+        query(r#"UPDATE keyset SET active=FALSE WHERE unit IS :unit"#)
+            .bind(":unit", unit.to_string())
+            .execute(&self.inner)
+            .await?;
+
+        query(r#"UPDATE keyset SET active=TRUE WHERE unit IS :unit AND id IS :id"#)
+            .bind(":unit", unit.to_string())
+            .bind(":id", id.to_string())
+            .execute(&self.inner)
+            .await?;
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl MintKeysDatabase for MintSqliteDatabase {
+    type Err = database::Error;
+
+    async fn begin_transaction<'a>(
+        &'a self,
+    ) -> Result<
+        Box<dyn MintKeyDatabaseTransaction<'a, database::Error> + Send + Sync + 'a>,
+        database::Error,
+    > {
+        Ok(Box::new(SqliteTransaction {
+            inner: self.pool.begin().await?,
+        }))
+    }
+
+    async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
+        Ok(
+            query(r#" SELECT id FROM keyset WHERE active = 1 AND unit IS :unit"#)
+                .bind(":unit", unit.to_string())
+                .pluck(&self.pool)
+                .await?
+                .map(|id| match id {
+                    Column::Text(text) => Ok(Id::from_str(&text)?),
+                    Column::Blob(id) => Ok(Id::from_bytes(&id)?),
+                    _ => Err(Error::InvalidKeysetId),
+                })
+                .transpose()?,
+        )
+    }
+
+    async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
+        Ok(query(r#"SELECT id, unit FROM keyset WHERE active = 1"#)
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|row| {
+                Ok((
+                    column_as_string!(&row[1], CurrencyUnit::from_str),
+                    column_as_string!(&row[0], Id::from_str, Id::from_bytes),
+                ))
+            })
+            .collect::<Result<HashMap<_, _>, Error>>()?)
     }
 
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
@@ -273,10 +317,10 @@ impl MintKeysDatabase for MintSqliteDatabase {
 }
 
 #[async_trait]
-impl MintQuotesDatabase for MintSqliteDatabase {
+impl<'a> MintQuotesTransaction<'a> for SqliteTransaction<'a> {
     type Err = database::Error;
 
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
+    async fn add_or_replace_mint_quote(&mut self, quote: MintQuote) -> Result<(), Self::Err> {
         query(
             r#"
                 INSERT OR REPLACE INTO mint_quote (
@@ -300,11 +344,327 @@ impl MintQuotesDatabase for MintSqliteDatabase {
         .bind(":created_time", quote.created_time as i64)
         .bind(":paid_time", quote.paid_time.map(|t| t as i64))
         .bind(":issued_time", quote.issued_time.map(|t| t as i64))
-        .execute(&self.pool)
+        .execute(&self.inner)
         .await?;
 
         Ok(())
     }
+
+    async fn remove_mint_quote(&mut self, quote_id: &Uuid) -> Result<(), Self::Err> {
+        query(r#"DELETE FROM mint_quote WHERE id=:id"#)
+            .bind(":id", quote_id.as_hyphenated().to_string())
+            .execute(&self.inner)
+            .await?;
+        Ok(())
+    }
+
+    async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
+        // First try to find and replace any expired UNPAID quotes with the same request_lookup_id
+        let current_time = unix_time();
+        let row_affected = query(
+            r#"
+            DELETE FROM melt_quote 
+            WHERE request_lookup_id = :request_lookup_id 
+            AND state = :state
+            AND expiry < :current_time
+            "#,
+        )
+        .bind(":request_lookup_id", quote.request_lookup_id.to_string())
+        .bind(":state", MeltQuoteState::Unpaid.to_string())
+        .bind(":current_time", current_time as i64)
+        .execute(&self.inner)
+        .await?;
+
+        if row_affected > 0 {
+            tracing::info!("Received new melt quote for existing invoice with expired quote.");
+        }
+
+        // Now insert the new quote
+        query(
+            r#"
+            INSERT INTO melt_quote
+            (
+                id, unit, amount, request, fee_reserve, state,
+                expiry, payment_preimage, request_lookup_id, msat_to_pay,
+                created_time, paid_time
+            )
+            VALUES
+            (
+                :id, :unit, :amount, :request, :fee_reserve, :state,
+                :expiry, :payment_preimage, :request_lookup_id, :msat_to_pay,
+                :created_time, :paid_time
+            )
+        "#,
+        )
+        .bind(":id", quote.id.to_string())
+        .bind(":unit", quote.unit.to_string())
+        .bind(":amount", u64::from(quote.amount) as i64)
+        .bind(":request", quote.request)
+        .bind(":fee_reserve", u64::from(quote.fee_reserve) as i64)
+        .bind(":state", quote.state.to_string())
+        .bind(":expiry", quote.expiry as i64)
+        .bind(":payment_preimage", quote.payment_preimage)
+        .bind(":request_lookup_id", quote.request_lookup_id)
+        .bind(
+            ":msat_to_pay",
+            quote.msat_to_pay.map(|a| u64::from(a) as i64),
+        )
+        .bind(":created_time", quote.created_time as i64)
+        .bind(":paid_time", quote.paid_time.map(|t| t as i64))
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn update_melt_quote_request_lookup_id(
+        &mut self,
+        quote_id: &Uuid,
+        new_request_lookup_id: &str,
+    ) -> Result<(), Self::Err> {
+        query(r#"UPDATE melt_quote SET request_lookup_id = :new_req_id WHERE id = :id"#)
+            .bind(":new_req_id", new_request_lookup_id.to_owned())
+            .bind(":id", quote_id.as_hyphenated().to_string())
+            .execute(&self.inner)
+            .await?;
+        Ok(())
+    }
+
+    async fn update_melt_quote_state(
+        &mut self,
+        quote_id: &Uuid,
+        state: MeltQuoteState,
+    ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err> {
+        let mut quote = query(
+            r#"
+            SELECT
+                id,
+                unit,
+                amount,
+                request,
+                fee_reserve,
+                state,
+                expiry,
+                payment_preimage,
+                request_lookup_id,
+                msat_to_pay,
+                created_time,
+                paid_time
+            FROM
+                melt_quote
+            WHERE
+                id=:id
+                AND state != :state
+            "#,
+        )
+        .bind(":id", quote_id.as_hyphenated().to_string())
+        .bind(":state", state.to_string())
+        .fetch_one(&self.inner)
+        .await?
+        .map(sqlite_row_to_melt_quote)
+        .transpose()?
+        .ok_or(Error::QuoteNotFound)?;
+
+        let rec = if state == MeltQuoteState::Paid {
+            let current_time = unix_time();
+            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time WHERE id = :id"#)
+                .bind(":state", state.to_string())
+                .bind(":paid_time", current_time as i64)
+                .bind(":id", quote_id.as_hyphenated().to_string())
+                .execute(&self.inner)
+                .await
+        } else {
+            query(r#"UPDATE melt_quote SET state = :state WHERE id = :id"#)
+                .bind(":state", state.to_string())
+                .bind(":id", quote_id.as_hyphenated().to_string())
+                .execute(&self.inner)
+                .await
+        };
+
+        match rec {
+            Ok(_) => {}
+            Err(err) => {
+                tracing::error!("SQLite Could not update melt quote");
+                return Err(err.into());
+            }
+        };
+
+        let old_state = quote.state;
+        quote.state = state;
+
+        Ok((old_state, quote))
+    }
+
+    async fn remove_melt_quote(&mut self, quote_id: &Uuid) -> Result<(), Self::Err> {
+        query(
+            r#"
+            DELETE FROM melt_quote
+            WHERE id=?
+            "#,
+        )
+        .bind(":id", quote_id.as_hyphenated().to_string())
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn update_mint_quote_state(
+        &mut self,
+        quote_id: &Uuid,
+        state: MintQuoteState,
+    ) -> Result<MintQuoteState, Self::Err> {
+        let quote = query(
+            r#"
+            SELECT
+                id,
+                amount,
+                unit,
+                request,
+                state,
+                expiry,
+                request_lookup_id,
+                pubkey,
+                created_time,
+                paid_time,
+                issued_time
+            FROM
+                mint_quote
+            WHERE id = :id"#,
+        )
+        .bind(":id", quote_id.as_hyphenated().to_string())
+        .fetch_one(&self.inner)
+        .await?
+        .map(sqlite_row_to_mint_quote)
+        .ok_or(Error::QuoteNotFound)??;
+
+        let update_query = match state {
+            MintQuoteState::Paid => {
+                r#"UPDATE mint_quote SET state = :state, paid_time = :current_time WHERE id = :quote_id"#
+            }
+            MintQuoteState::Issued => {
+                r#"UPDATE mint_quote SET state = :state, issued_time = :current_time WHERE id = :quote_id"#
+            }
+            _ => r#"UPDATE mint_quote SET state = :state WHERE id = :quote_id"#,
+        };
+
+        let current_time = unix_time();
+
+        let update = match state {
+            MintQuoteState::Paid => query(update_query)
+                .bind(":state", state.to_string())
+                .bind(":current_time", current_time as i64)
+                .bind(":quote_id", quote_id.as_hyphenated().to_string()),
+            MintQuoteState::Issued => query(update_query)
+                .bind(":state", state.to_string())
+                .bind(":current_time", current_time as i64)
+                .bind(":quote_id", quote_id.as_hyphenated().to_string()),
+            _ => query(update_query)
+                .bind(":state", state.to_string())
+                .bind(":quote_id", quote_id.as_hyphenated().to_string()),
+        };
+
+        match update.execute(&self.inner).await {
+            Ok(_) => Ok(quote.state),
+            Err(err) => {
+                tracing::error!("SQLite Could not update keyset: {:?}", err);
+
+                return Err(err.into());
+            }
+        }
+    }
+
+    async fn get_mint_quote(&mut self, quote_id: &Uuid) -> Result<Option<MintQuote>, Self::Err> {
+        Ok(query(
+            r#"
+            SELECT
+                id,
+                amount,
+                unit,
+                request,
+                state,
+                expiry,
+                request_lookup_id,
+                pubkey,
+                created_time,
+                paid_time,
+                issued_time
+            FROM
+                mint_quote
+            WHERE id = :id"#,
+        )
+        .bind(":id", quote_id.as_hyphenated().to_string())
+        .fetch_one(&self.inner)
+        .await?
+        .map(sqlite_row_to_mint_quote)
+        .transpose()?)
+    }
+
+    async fn get_melt_quote(
+        &mut self,
+        quote_id: &Uuid,
+    ) -> Result<Option<mint::MeltQuote>, Self::Err> {
+        Ok(query(
+            r#"
+            SELECT
+                id,
+                unit,
+                amount,
+                request,
+                fee_reserve,
+                state,
+                expiry,
+                payment_preimage,
+                request_lookup_id,
+                msat_to_pay,
+                created_time,
+                paid_time
+            FROM
+                melt_quote
+            WHERE
+                id=:id
+            "#,
+        )
+        .bind(":id", quote_id.as_hyphenated().to_string())
+        .fetch_one(&self.inner)
+        .await?
+        .map(sqlite_row_to_melt_quote)
+        .transpose()?)
+    }
+
+    async fn get_mint_quote_by_request(
+        &mut self,
+        request: &str,
+    ) -> Result<Option<MintQuote>, Self::Err> {
+        Ok(query(
+            r#"
+            SELECT
+                id,
+                amount,
+                unit,
+                request,
+                state,
+                expiry,
+                request_lookup_id,
+                pubkey,
+                created_time,
+                paid_time,
+                issued_time
+            FROM
+                mint_quote
+            WHERE request = :request"#,
+        )
+        .bind(":request", request.to_owned())
+        .fetch_one(&self.inner)
+        .await?
+        .map(sqlite_row_to_mint_quote)
+        .transpose()?)
+    }
+}
+
+#[async_trait]
+impl MintQuotesDatabase for MintSqliteDatabase {
+    type Err = database::Error;
 
     async fn get_mint_quote(&self, quote_id: &Uuid) -> Result<Option<MintQuote>, Self::Err> {
         Ok(query(
@@ -390,79 +750,6 @@ impl MintQuotesDatabase for MintSqliteDatabase {
         .transpose()?)
     }
 
-    async fn update_mint_quote_state(
-        &self,
-        quote_id: &Uuid,
-        state: MintQuoteState,
-    ) -> Result<MintQuoteState, Self::Err> {
-        let transaction = self.pool.begin().await?;
-
-        let quote = query(
-            r#"
-            SELECT
-                id,
-                amount,
-                unit,
-                request,
-                state,
-                expiry,
-                request_lookup_id,
-                pubkey,
-                created_time,
-                paid_time,
-                issued_time
-            FROM
-                mint_quote
-            WHERE id = :id"#,
-        )
-        .bind(":id", quote_id.as_hyphenated().to_string())
-        .fetch_one(&transaction)
-        .await?
-        .map(sqlite_row_to_mint_quote)
-        .ok_or(Error::QuoteNotFound)??;
-
-        let update_query = match state {
-            MintQuoteState::Paid => {
-                r#"UPDATE mint_quote SET state = :state, paid_time = :current_time WHERE id = :quote_id"#
-            }
-            MintQuoteState::Issued => {
-                r#"UPDATE mint_quote SET state = :state, issued_time = :current_time WHERE id = :quote_id"#
-            }
-            _ => r#"UPDATE mint_quote SET state = :state WHERE id = :quote_id"#,
-        };
-
-        let current_time = unix_time();
-
-        let update = match state {
-            MintQuoteState::Paid => query(update_query)
-                .bind(":state", state.to_string())
-                .bind(":current_time", current_time as i64)
-                .bind(":quote_id", quote_id.as_hyphenated().to_string()),
-            MintQuoteState::Issued => query(update_query)
-                .bind(":state", state.to_string())
-                .bind(":current_time", current_time as i64)
-                .bind(":quote_id", quote_id.as_hyphenated().to_string()),
-            _ => query(update_query)
-                .bind(":state", state.to_string())
-                .bind(":quote_id", quote_id.as_hyphenated().to_string()),
-        };
-
-        match update.execute(&transaction).await {
-            Ok(_) => {
-                transaction.commit().await?;
-                Ok(quote.state)
-            }
-            Err(err) => {
-                tracing::error!("SQLite Could not update keyset: {:?}", err);
-                if let Err(err) = transaction.rollback().await {
-                    tracing::error!("Could not rollback sql transaction: {}", err);
-                }
-
-                return Err(err.into());
-            }
-        }
-    }
-
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         Ok(query(
             r#"
@@ -521,79 +808,6 @@ impl MintQuotesDatabase for MintSqliteDatabase {
         .collect::<Result<Vec<_>, _>>()?)
     }
 
-    async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
-        query(
-            r#"
-            DELETE FROM mint_quote
-            WHERE id=?
-            "#,
-        )
-        .bind(":id", quote_id.as_hyphenated().to_string())
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    async fn add_melt_quote(&self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
-        query(
-            r#"
-            INSERT INTO melt_quote
-            (
-                id, unit, amount, request, fee_reserve, state,
-                expiry, payment_preimage, request_lookup_id, msat_to_pay,
-                created_time, paid_time
-            )
-            VALUES
-            (
-                :id, :unit, :amount, :request, :fee_reserve, :state,
-                :expiry, :payment_preimage, :request_lookup_id, :msat_to_pay,
-                :created_time, :paid_time
-            )
-            ON CONFLICT(id) DO UPDATE SET
-                unit = excluded.unit,
-                amount = excluded.amount,
-                request = excluded.request,
-                fee_reserve = excluded.fee_reserve,
-                state = excluded.state,
-                expiry = excluded.expiry,
-                payment_preimage = excluded.payment_preimage,
-                request_lookup_id = excluded.request_lookup_id,
-                msat_to_pay = excluded.msat_to_pay,
-                created_time = excluded.created_time,
-                paid_time = excluded.paid_time
-            ON CONFLICT(request_lookup_id) DO UPDATE SET
-                unit = excluded.unit,
-                amount = excluded.amount,
-                request = excluded.request,
-                fee_reserve = excluded.fee_reserve,
-                state = excluded.state,
-                expiry = excluded.expiry,
-                payment_preimage = excluded.payment_preimage,
-                id = excluded.id,
-                created_time = excluded.created_time,
-                paid_time = excluded.paid_time;
-        "#,
-        )
-        .bind(":id", quote.id.to_string())
-        .bind(":unit", quote.unit.to_string())
-        .bind(":amount", u64::from(quote.amount) as i64)
-        .bind(":request", quote.request)
-        .bind(":fee_reserve", u64::from(quote.fee_reserve) as i64)
-        .bind(":state", quote.state.to_string())
-        .bind(":expiry", quote.expiry as i64)
-        .bind(":payment_preimage", quote.payment_preimage)
-        .bind(":request_lookup_id", quote.request_lookup_id)
-        .bind(
-            ":msat_to_pay",
-            quote.msat_to_pay.map(|a| u64::from(a) as i64),
-        )
-        .bind(":created_time", quote.created_time as i64)
-        .bind(":paid_time", quote.paid_time.map(|t| t as i64))
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
     async fn get_melt_quote(&self, quote_id: &Uuid) -> Result<Option<mint::MeltQuote>, Self::Err> {
         Ok(query(
             r#"
@@ -649,99 +863,17 @@ impl MintQuotesDatabase for MintSqliteDatabase {
         .map(sqlite_row_to_melt_quote)
         .collect::<Result<Vec<_>, _>>()?)
     }
-
-    async fn update_melt_quote_state(
-        &self,
-        quote_id: &Uuid,
-        state: MeltQuoteState,
-    ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err> {
-        let transaction = self.pool.begin().await?;
-
-        let mut quote = query(
-            r#"
-            SELECT
-                id,
-                unit,
-                amount,
-                request,
-                fee_reserve,
-                state,
-                expiry,
-                payment_preimage,
-                request_lookup_id,
-                msat_to_pay,
-                created_time,
-                paid_time
-            FROM
-                melt_quote
-            WHERE
-                id=:id
-                AND state != :state
-            "#,
-        )
-        .bind(":id", quote_id.as_hyphenated().to_string())
-        .bind(":state", state.to_string())
-        .fetch_one(&transaction)
-        .await?
-        .map(sqlite_row_to_melt_quote)
-        .transpose()?
-        .ok_or(Error::QuoteNotFound)?;
-
-        let rec = if state == MeltQuoteState::Paid {
-            let current_time = unix_time();
-            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time WHERE id = :id"#)
-                .bind(":state", state.to_string())
-                .bind(":paid_time", current_time as i64)
-                .bind(":id", quote_id.as_hyphenated().to_string())
-                .execute(&transaction)
-                .await
-        } else {
-            query(r#"UPDATE melt_quote SET state = :state WHERE id = :id"#)
-                .bind(":state", state.to_string())
-                .bind(":id", quote_id.as_hyphenated().to_string())
-                .execute(&transaction)
-                .await
-        };
-
-        match rec {
-            Ok(_) => {
-                transaction.commit().await?;
-            }
-            Err(err) => {
-                tracing::error!("SQLite Could not update melt quote");
-                transaction.rollback().await?;
-                return Err(err.into());
-            }
-        };
-
-        let old_state = quote.state;
-        quote.state = state;
-
-        Ok((old_state, quote))
-    }
-
-    async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err> {
-        query(
-            r#"
-            DELETE FROM melt_quote
-            WHERE id=?
-            "#,
-        )
-        .bind(":id", quote_id.as_hyphenated().to_string())
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
 }
 
 #[async_trait]
-impl MintProofsDatabase for MintSqliteDatabase {
+impl<'a> MintProofsTransaction<'a> for SqliteTransaction<'a> {
     type Err = database::Error;
 
-    async fn add_proofs(&self, proofs: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err> {
-        let transaction = self.pool.begin().await?;
-
+    async fn add_proofs(
+        &mut self,
+        proofs: Proofs,
+        quote_id: Option<Uuid>,
+    ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
         // Check any previous proof, this query should return None in order to proceed storing
@@ -754,7 +886,7 @@ impl MintProofsDatabase for MintSqliteDatabase {
                     .map(|y| y.y().map(|y| y.to_bytes().to_vec()))
                     .collect::<Result<_, _>>()?,
             )
-            .pluck(&transaction)
+            .pluck(&self.inner)
             .await?
             .map(|state| Ok::<_, Error>(column_as_string!(&state, State::from_str)))
             .transpose()?
@@ -767,11 +899,11 @@ impl MintProofsDatabase for MintSqliteDatabase {
         for proof in proofs {
             query(
                 r#"
-                INSERT INTO proof
-                (y, amount, keyset_id, secret, c, witness, state, quote_id, created_time)
-                VALUES
-                (:y, :amount, :keyset_id, :secret, :c, :witness, :state, :quote_id, :created_time)
-                "#,
+                  INSERT INTO proof
+                  (y, amount, keyset_id, secret, c, witness, state, quote_id, created_time)
+                  VALUES
+                  (:y, :amount, :keyset_id, :secret, :c, :witness, :state, :quote_id, :created_time)
+                  "#,
             )
             .bind(":y", proof.y()?.to_bytes().to_vec())
             .bind(":amount", u64::from(proof.amount) as i64)
@@ -785,22 +917,47 @@ impl MintProofsDatabase for MintSqliteDatabase {
             .bind(":state", "UNSPENT".to_string())
             .bind(":quote_id", quote_id.map(|q| q.hyphenated().to_string()))
             .bind(":created_time", current_time as i64)
-            .execute(&transaction)
+            .execute(&self.inner)
             .await?;
         }
-
-        transaction.commit().await?;
 
         Ok(())
     }
 
+    async fn update_proofs_states(
+        &mut self,
+        ys: &[PublicKey],
+        new_state: State,
+    ) -> Result<Vec<Option<State>>, Self::Err> {
+        let mut current_states = get_current_states(&self.inner, ys).await?;
+
+        if current_states.len() != ys.len() {
+            tracing::warn!(
+                "Attempted to update state of non-existent proof {} {}",
+                current_states.len(),
+                ys.len()
+            );
+            return Err(database::Error::ProofNotFound);
+        }
+
+        for state in current_states.values() {
+            check_state_transition(*state, new_state)?;
+        }
+
+        query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)
+            .bind(":new_state", new_state.to_string())
+            .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+            .execute(&self.inner)
+            .await?;
+
+        Ok(ys.iter().map(|y| current_states.remove(y)).collect())
+    }
+
     async fn remove_proofs(
-        &self,
+        &mut self,
         ys: &[PublicKey],
         _quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err> {
-        let transaction = self.pool.begin().await?;
-
         let total_deleted = query(
             r#"
             DELETE FROM proof WHERE y IN (:ys) AND state NOT IN (:exclude_state)
@@ -808,18 +965,20 @@ impl MintProofsDatabase for MintSqliteDatabase {
         )
         .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
         .bind_vec(":exclude_state", vec![State::Spent.to_string()])
-        .execute(&transaction)
+        .execute(&self.inner)
         .await?;
 
         if total_deleted != ys.len() {
-            transaction.rollback().await?;
             return Err(Self::Err::AttemptRemoveSpentProof);
         }
 
-        transaction.commit().await?;
-
         Ok(())
     }
+}
+
+#[async_trait]
+impl MintProofsDatabase for MintSqliteDatabase {
+    type Err = database::Error;
 
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
         let mut proofs = query(
@@ -881,7 +1040,7 @@ impl MintProofsDatabase for MintSqliteDatabase {
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
-        let mut current_states = self.get_current_states(&self.pool, ys).await?;
+        let mut current_states = get_current_states(&self.pool, ys).await?;
 
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
     }
@@ -914,54 +1073,18 @@ impl MintProofsDatabase for MintSqliteDatabase {
         .into_iter()
         .unzip())
     }
-
-    async fn update_proofs_states(
-        &self,
-        ys: &[PublicKey],
-        new_state: State,
-    ) -> Result<Vec<Option<State>>, Self::Err> {
-        let transaction = self.pool.begin().await?;
-
-        let mut current_states = self.get_current_states(&transaction, ys).await?;
-
-        if current_states.len() != ys.len() {
-            transaction.rollback().await?;
-            tracing::warn!(
-                "Attempted to update state of non-existent proof {} {}",
-                current_states.len(),
-                ys.len()
-            );
-            return Err(database::Error::ProofNotFound);
-        }
-
-        for state in current_states.values() {
-            check_state_transition(*state, new_state)?;
-        }
-
-        query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)
-            .bind(":new_state", new_state.to_string())
-            .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
-            .execute(&transaction)
-            .await?;
-
-        transaction.commit().await?;
-
-        Ok(ys.iter().map(|y| current_states.remove(y)).collect())
-    }
 }
 
 #[async_trait]
-impl MintSignaturesDatabase for MintSqliteDatabase {
+impl<'a> MintSignatureTransaction<'a> for SqliteTransaction<'a> {
     type Err = database::Error;
 
     async fn add_blind_signatures(
-        &self,
+        &mut self,
         blinded_messages: &[PublicKey],
         blind_signatures: &[BlindSignature],
         quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err> {
-        let transaction = self.pool.begin().await?;
-
         let current_time = unix_time();
 
         for (message, signature) in blinded_messages.iter().zip(blind_signatures) {
@@ -987,14 +1110,61 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
                 signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()),
             )
             .bind(":created_time", current_time as i64)
-            .execute(&transaction)
+            .execute(&self.inner)
             .await?;
         }
 
-        transaction.commit().await?;
-
         Ok(())
     }
+
+    async fn get_blind_signatures(
+        &mut self,
+        blinded_messages: &[PublicKey],
+    ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
+        let mut blinded_signatures = query(
+            r#"SELECT
+                keyset_id,
+                amount,
+                c,
+                dleq_e,
+                dleq_s,
+                blinded_message
+            FROM
+                blind_signature
+            WHERE blinded_message IN (:y)
+            "#,
+        )
+        .bind_vec(
+            ":y",
+            blinded_messages
+                .iter()
+                .map(|y| y.to_bytes().to_vec())
+                .collect(),
+        )
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(|mut row| {
+            Ok((
+                column_as_string!(
+                    &row.pop().ok_or(Error::InvalidDbResponse)?,
+                    PublicKey::from_hex,
+                    PublicKey::from_slice
+                ),
+                sqlite_row_to_blind_signature(row)?,
+            ))
+        })
+        .collect::<Result<HashMap<_, _>, Error>>()?;
+        Ok(blinded_messages
+            .iter()
+            .map(|y| blinded_signatures.remove(y))
+            .collect())
+    }
+}
+
+#[async_trait]
+impl MintSignaturesDatabase for MintSqliteDatabase {
+    type Err = database::Error;
 
     async fn get_blind_signatures(
         &self,
@@ -1096,16 +1266,19 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
 
 #[async_trait]
 impl MintDatabase<database::Error> for MintSqliteDatabase {
-    async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), database::Error> {
-        Ok(self.set_to_config("mint_info", &mint_info).await?)
+    async fn begin_transaction<'a>(
+        &'a self,
+    ) -> Result<
+        Box<dyn database::MintTransaction<'a, database::Error> + Send + Sync + 'a>,
+        database::Error,
+    > {
+        Ok(Box::new(SqliteTransaction {
+            inner: self.pool.begin().await?,
+        }))
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, database::Error> {
         Ok(self.fetch_from_config("mint_info").await?)
-    }
-
-    async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), database::Error> {
-        Ok(self.set_to_config("quote_ttl", &quote_ttl).await?)
     }
 
     async fn get_quote_ttl(&self) -> Result<QuoteTTL, database::Error> {
@@ -1324,7 +1497,9 @@ mod tests {
             input_fee_ppk: 0,
             final_expiry: None,
         };
-        db.add_keyset_info(keyset_info).await.unwrap();
+        let mut tx = MintKeysDatabase::begin_transaction(&db).await.unwrap();
+        tx.add_keyset_info(keyset_info).await.unwrap();
+        tx.commit().await.unwrap();
 
         let proofs = vec![
             Proof {
@@ -1346,23 +1521,15 @@ mod tests {
         ];
 
         // Add proofs to database
-        db.add_proofs(proofs.clone(), None).await.unwrap();
+        let mut tx = MintDatabase::begin_transaction(&db).await.unwrap();
+        tx.add_proofs(proofs.clone(), None).await.unwrap();
 
         // Mark one proof as spent
-        db.update_proofs_states(&[proofs[0].y().unwrap()], State::Spent)
+        tx.update_proofs_states(&[proofs[0].y().unwrap()], State::Spent)
             .await
             .unwrap();
 
-        // Try to remove both proofs - should fail because one is spent
-        let result = db
-            .remove_proofs(&[proofs[0].y().unwrap(), proofs[1].y().unwrap()], None)
-            .await;
-
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            database::Error::AttemptRemoveSpentProof
-        ));
+        tx.commit().await.unwrap();
 
         // Verify both proofs still exist
         let states = db
@@ -1392,7 +1559,11 @@ mod tests {
             input_fee_ppk: 0,
             final_expiry: None,
         };
-        db.add_keyset_info(keyset_info).await.unwrap();
+        let mut tx = MintKeysDatabase::begin_transaction(&db)
+            .await
+            .expect("begin");
+        tx.add_keyset_info(keyset_info).await.unwrap();
+        tx.commit().await.expect("commit");
 
         let proofs = vec![
             Proof {
@@ -1414,17 +1585,20 @@ mod tests {
         ];
 
         // Add proofs to database
-        db.add_proofs(proofs.clone(), None).await.unwrap();
+        let mut tx = MintDatabase::begin_transaction(&db).await.unwrap();
+        tx.add_proofs(proofs.clone(), None).await.unwrap();
 
         // Mark one proof as spent
-        db.update_proofs_states(&[proofs[0].y().unwrap()], State::Spent)
+        tx.update_proofs_states(&[proofs[0].y().unwrap()], State::Spent)
             .await
             .unwrap();
 
         // Try to update both proofs - should fail because one is spent
-        let result = db
+        let result = tx
             .update_proofs_states(&[proofs[0].y().unwrap()], State::Unspent)
             .await;
+
+        tx.commit().await.unwrap();
 
         assert!(result.is_err());
         assert!(matches!(

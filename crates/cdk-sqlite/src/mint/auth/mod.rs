@@ -6,14 +6,14 @@ use std::path::Path;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::database::{self, MintAuthDatabase};
+use cdk_common::database::{self, MintAuthDatabase, MintAuthTransaction};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{AuthProof, BlindSignature, Id, PublicKey, State};
 use cdk_common::{AuthRequired, ProtectedEndpoint};
 use tracing::instrument;
 
 use super::async_rusqlite::AsyncRusqlite;
-use super::{sqlite_row_to_blind_signature, sqlite_row_to_keyset_info};
+use super::{sqlite_row_to_blind_signature, sqlite_row_to_keyset_info, SqliteTransaction};
 use crate::column_as_string;
 use crate::common::{create_sqlite_pool, migrate};
 use crate::mint::async_rusqlite::query;
@@ -56,11 +56,9 @@ impl MintSqliteAuthDatabase {
 }
 
 #[async_trait]
-impl MintAuthDatabase for MintSqliteAuthDatabase {
-    type Err = database::Error;
-
+impl MintAuthTransaction<database::Error> for SqliteTransaction<'_> {
     #[instrument(skip(self))]
-    async fn set_active_keyset(&self, id: Id) -> Result<(), Self::Err> {
+    async fn set_active_keyset(&mut self, id: Id) -> Result<(), database::Error> {
         tracing::info!("Setting auth keyset {id} active");
         query(
             r#"
@@ -72,30 +70,13 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
             "#,
         )
         .bind(":id", id.to_string())
-        .execute(&self.pool)
+        .execute(&self.inner)
         .await?;
 
         Ok(())
     }
 
-    async fn get_active_keyset_id(&self) -> Result<Option<Id>, Self::Err> {
-        Ok(query(
-            r#"
-            SELECT
-                id
-            FROM
-                keyset
-            WHERE
-                active = 1;
-            "#,
-        )
-        .pluck(&self.pool)
-        .await?
-        .map(|id| Ok::<_, Error>(column_as_string!(id, Id::from_str, Id::from_bytes)))
-        .transpose()?)
-    }
-
-    async fn add_keyset_info(&self, keyset: MintKeySetInfo) -> Result<(), Self::Err> {
+    async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), database::Error> {
         query(
             r#"
         INSERT INTO
@@ -125,10 +106,157 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
         .bind(":derivation_path", keyset.derivation_path.to_string())
         .bind(":max_order", keyset.max_order)
         .bind(":derivation_path_index", keyset.derivation_path_index)
-        .execute(&self.pool)
+        .execute(&self.inner)
         .await?;
 
         Ok(())
+    }
+
+    async fn add_proof(&mut self, proof: AuthProof) -> Result<(), database::Error> {
+        if let Err(err) = query(
+            r#"
+                INSERT INTO proof
+                (y, keyset_id, secret, c, state)
+                VALUES
+                (:y, :keyset_id, :secret, :c, :state)
+                "#,
+        )
+        .bind(":y", proof.y()?.to_bytes().to_vec())
+        .bind(":keyset_id", proof.keyset_id.to_string())
+        .bind(":secret", proof.secret.to_string())
+        .bind(":c", proof.c.to_bytes().to_vec())
+        .bind(":state", "UNSPENT".to_string())
+        .execute(&self.inner)
+        .await
+        {
+            tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
+        }
+        Ok(())
+    }
+
+    async fn update_proof_state(
+        &mut self,
+        y: &PublicKey,
+        proofs_state: State,
+    ) -> Result<Option<State>, Self::Err> {
+        let current_state = query(r#"SELECT state FROM proof WHERE y = :y"#)
+            .bind(":y", y.to_bytes().to_vec())
+            .pluck(&self.inner)
+            .await?
+            .map(|state| Ok::<_, Error>(column_as_string!(state, State::from_str)))
+            .transpose()?;
+
+        query(r#"UPDATE proof SET state = :new_state WHERE state = :state AND y = :y"#)
+            .bind(":y", y.to_bytes().to_vec())
+            .bind(
+                ":state",
+                current_state.as_ref().map(|state| state.to_string()),
+            )
+            .bind(":new_state", proofs_state.to_string())
+            .execute(&self.inner)
+            .await?;
+
+        Ok(current_state)
+    }
+
+    async fn add_blind_signatures(
+        &mut self,
+        blinded_messages: &[PublicKey],
+        blind_signatures: &[BlindSignature],
+    ) -> Result<(), database::Error> {
+        for (message, signature) in blinded_messages.iter().zip(blind_signatures) {
+            query(
+                r#"
+                       INSERT
+                       INTO blind_signature
+                       (y, amount, keyset_id, c)
+                       VALUES
+                       (:y, :amount, :keyset_id, :c)
+                   "#,
+            )
+            .bind(":y", message.to_bytes().to_vec())
+            .bind(":amount", u64::from(signature.amount) as i64)
+            .bind(":keyset_id", signature.keyset_id.to_string())
+            .bind(":c", signature.c.to_bytes().to_vec())
+            .execute(&self.inner)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn add_protected_endpoints(
+        &mut self,
+        protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
+    ) -> Result<(), database::Error> {
+        for (endpoint, auth) in protected_endpoints.iter() {
+            if let Err(err) = query(
+                r#"
+                 INSERT OR REPLACE INTO protected_endpoints
+                 (endpoint, auth)
+                 VALUES (:endpoint, :auth);
+                 "#,
+            )
+            .bind(":endpoint", serde_json::to_string(endpoint)?)
+            .bind(":auth", serde_json::to_string(auth)?)
+            .execute(&self.inner)
+            .await
+            {
+                tracing::debug!(
+                    "Attempting to add protected endpoint. Skipping.... {:?}",
+                    err
+                );
+            }
+        }
+
+        Ok(())
+    }
+    async fn remove_protected_endpoints(
+        &mut self,
+        protected_endpoints: Vec<ProtectedEndpoint>,
+    ) -> Result<(), database::Error> {
+        query(r#"DELETE FROM protected_endpoints WHERE endpoint IN (:endpoints)"#)
+            .bind_vec(
+                ":endpoints",
+                protected_endpoints
+                    .iter()
+                    .map(serde_json::to_string)
+                    .collect::<Result<_, _>>()?,
+            )
+            .execute(&self.inner)
+            .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl MintAuthDatabase for MintSqliteAuthDatabase {
+    type Err = database::Error;
+
+    async fn begin_transaction<'a>(
+        &'a self,
+    ) -> Result<Box<dyn MintAuthTransaction<database::Error> + Send + Sync + 'a>, database::Error>
+    {
+        Ok(Box::new(SqliteTransaction {
+            inner: self.pool.begin().await?,
+        }))
+    }
+
+    async fn get_active_keyset_id(&self) -> Result<Option<Id>, Self::Err> {
+        Ok(query(
+            r#"
+            SELECT
+                id
+            FROM
+                keyset
+            WHERE
+                active = 1;
+            "#,
+        )
+        .pluck(&self.pool)
+        .await?
+        .map(|id| Ok::<_, Error>(column_as_string!(id, Id::from_str, Id::from_bytes)))
+        .transpose()?)
     }
 
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
@@ -177,28 +305,6 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
         .collect::<Result<Vec<_>, _>>()?)
     }
 
-    async fn add_proof(&self, proof: AuthProof) -> Result<(), Self::Err> {
-        if let Err(err) = query(
-            r#"
-            INSERT INTO proof
-            (y, keyset_id, secret, c, state)
-            VALUES
-            (:y, :keyset_id, :secret, :c, :state)
-            "#,
-        )
-        .bind(":y", proof.y()?.to_bytes().to_vec())
-        .bind(":keyset_id", proof.keyset_id.to_string())
-        .bind(":secret", proof.secret.to_string())
-        .bind(":c", proof.c.to_bytes().to_vec())
-        .bind(":state", "UNSPENT".to_string())
-        .execute(&self.pool)
-        .await
-        {
-            tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
-        }
-        Ok(())
-    }
-
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
         let mut current_states = query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)
             .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
@@ -214,65 +320,6 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
             .collect::<Result<HashMap<_, _>, Error>>()?;
 
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
-    }
-
-    async fn update_proof_state(
-        &self,
-        y: &PublicKey,
-        proofs_state: State,
-    ) -> Result<Option<State>, Self::Err> {
-        let transaction = self.pool.begin().await?;
-
-        let current_state = query(r#"SELECT state FROM proof WHERE y = :y"#)
-            .bind(":y", y.to_bytes().to_vec())
-            .pluck(&transaction)
-            .await?
-            .map(|state| Ok::<_, Error>(column_as_string!(state, State::from_str)))
-            .transpose()?;
-
-        query(r#"UPDATE proof SET state = :new_state WHERE state = :state AND y = :y"#)
-            .bind(":y", y.to_bytes().to_vec())
-            .bind(
-                ":state",
-                current_state.as_ref().map(|state| state.to_string()),
-            )
-            .bind(":new_state", proofs_state.to_string())
-            .execute(&transaction)
-            .await?;
-
-        transaction.commit().await?;
-
-        Ok(current_state)
-    }
-
-    async fn add_blind_signatures(
-        &self,
-        blinded_messages: &[PublicKey],
-        blind_signatures: &[BlindSignature],
-    ) -> Result<(), Self::Err> {
-        let transaction = self.pool.begin().await?;
-
-        for (message, signature) in blinded_messages.iter().zip(blind_signatures) {
-            query(
-                r#"
-                    INSERT
-                    INTO blind_signature
-                    (y, amount, keyset_id, c)
-                    VALUES
-                    (:y, :amount, :keyset_id, :c)
-                "#,
-            )
-            .bind(":y", message.to_bytes().to_vec())
-            .bind(":amount", u64::from(signature.amount) as i64)
-            .bind(":keyset_id", signature.keyset_id.to_string())
-            .bind(":c", signature.c.to_bytes().to_vec())
-            .execute(&transaction)
-            .await?;
-        }
-
-        transaction.commit().await?;
-
-        Ok(())
     }
 
     async fn get_blind_signatures(
@@ -317,53 +364,6 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
             .iter()
             .map(|y| blinded_signatures.remove(y))
             .collect())
-    }
-
-    async fn add_protected_endpoints(
-        &self,
-        protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
-    ) -> Result<(), Self::Err> {
-        let transaction = self.pool.begin().await?;
-
-        for (endpoint, auth) in protected_endpoints.iter() {
-            if let Err(err) = query(
-                r#"
-                INSERT OR REPLACE INTO protected_endpoints
-                (endpoint, auth)
-                VALUES (:endpoint, :auth);
-                "#,
-            )
-            .bind(":endpoint", serde_json::to_string(endpoint)?)
-            .bind(":auth", serde_json::to_string(auth)?)
-            .execute(&transaction)
-            .await
-            {
-                tracing::debug!(
-                    "Attempting to add protected endpoint. Skipping.... {:?}",
-                    err
-                );
-            }
-        }
-
-        transaction.commit().await?;
-
-        Ok(())
-    }
-    async fn remove_protected_endpoints(
-        &self,
-        protected_endpoints: Vec<ProtectedEndpoint>,
-    ) -> Result<(), Self::Err> {
-        query(r#"DELETE FROM protected_endpoints WHERE endpoint IN (:endpoints)"#)
-            .bind_vec(
-                ":endpoints",
-                protected_endpoints
-                    .iter()
-                    .map(serde_json::to_string)
-                    .collect::<Result<_, _>>()?,
-            )
-            .execute(&self.pool)
-            .await?;
-        Ok(())
     }
 
     async fn get_auth_for_endpoint(

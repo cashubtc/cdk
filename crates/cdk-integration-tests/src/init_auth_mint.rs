@@ -71,9 +71,9 @@ where
                 acc
             });
 
-    auth_database
-        .add_protected_endpoints(blind_auth_endpoints)
-        .await?;
+    let mut tx = auth_database.begin_transaction().await?;
+
+    tx.add_protected_endpoints(blind_auth_endpoints).await?;
 
     let mut clear_auth_endpoint = HashMap::new();
     clear_auth_endpoint.insert(
@@ -81,9 +81,9 @@ where
         AuthRequired::Clear,
     );
 
-    auth_database
-        .add_protected_endpoints(clear_auth_endpoint)
-        .await?;
+    tx.add_protected_endpoints(clear_auth_endpoint).await?;
+
+    tx.commit().await?;
 
     mint_builder = mint_builder.with_auth_localstore(Arc::new(auth_database));
 

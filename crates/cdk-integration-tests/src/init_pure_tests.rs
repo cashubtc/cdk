@@ -227,11 +227,12 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         .map(|x| x.clone())
         .expect("localstore");
 
-    localstore
-        .set_mint_info(mint_builder.mint_info.clone())
-        .await?;
+    let mut tx = localstore.begin_transaction().await?;
+    tx.set_mint_info(mint_builder.mint_info.clone()).await?;
+
     let quote_ttl = QuoteTTL::new(10000, 10000);
-    localstore.set_quote_ttl(quote_ttl).await?;
+    tx.set_quote_ttl(quote_ttl).await?;
+    tx.commit().await?;
 
     let mint = mint_builder.build().await?;
 
