@@ -210,7 +210,7 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "Running happy_path_mint_wallet test with CLN mint"
-cargo test -p cdk-integration-tests --test happy_path_mint_wallet test_happy_mint_melt_round_trip
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 if [ $? -ne 0 ]; then
     echo "happy_path_mint_wallet test failed, exiting"
     exit 1

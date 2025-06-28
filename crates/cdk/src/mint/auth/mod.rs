@@ -163,17 +163,16 @@ impl Mint {
             err
         })?;
 
+        let mut tx = auth_localstore.begin_transaction().await?;
+
         // Add proof to the database
-        auth_localstore
-            .add_proof(proof.clone())
-            .await
-            .map_err(|err| {
-                tracing::error!("Failed to add proof to database: {:?}", err);
-                err
-            })?;
+        tx.add_proof(proof.clone()).await.map_err(|err| {
+            tracing::error!("Failed to add proof to database: {:?}", err);
+            err
+        })?;
 
         // Update proof state to spent
-        let state = match auth_localstore.update_proof_state(&y, State::Spent).await {
+        let state = match tx.update_proof_state(&y, State::Spent).await {
             Ok(state) => {
                 tracing::debug!(
                     "Successfully updated proof state to SPENT, previous state: {:?}",
@@ -204,6 +203,8 @@ impl Mint {
                 tracing::trace!("Token was in state None, now marked as spent");
             }
         };
+
+        tx.commit().await?;
 
         Ok(())
     }
