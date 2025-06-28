@@ -118,6 +118,7 @@ pub async fn send(
                 refund_keys,
                 sub_command_args.required_sigs,
                 None,
+                None,
             )
             .unwrap();
 
@@ -155,8 +156,8 @@ pub async fn send(
                 refund_keys,
                 sub_command_args.required_sigs,
                 None,
-            )
-            .unwrap();
+                None,
+            )?;
 
             Some(SpendingConditions::new_htlc_hash(hash, Some(conditions))?)
         }
@@ -187,8 +188,8 @@ pub async fn send(
                     refund_keys,
                     sub_command_args.required_sigs,
                     None,
-                )
-                .unwrap();
+                    None,
+                )?;
 
                 Some(SpendingConditions::P2PKConditions {
                     data: data_pubkey,
