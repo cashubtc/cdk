@@ -161,6 +161,7 @@ pub async fn create_request(
                     refund_keys: None,
                     num_sigs: Some(num_sigs),
                     sig_flag: SigFlag::SigInputs,
+                    num_sigs_refund: None,
                 };
 
                 // Try to parse the hash
@@ -186,6 +187,7 @@ pub async fn create_request(
                     refund_keys: None,
                     num_sigs: Some(num_sigs),
                     sig_flag: SigFlag::SigInputs,
+                    num_sigs_refund: None,
                 };
 
                 // Create HTLC conditions with the hash and pubkeys in conditions
@@ -203,6 +205,7 @@ pub async fn create_request(
                         refund_keys: None,
                         num_sigs: Some(num_sigs),
                         sig_flag: SigFlag::SigInputs,
+                        num_sigs_refund: None,
                     }),
                 ))
             }
