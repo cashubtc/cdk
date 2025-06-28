@@ -359,6 +359,27 @@ impl<'a> MintQuotesTransaction<'a> for SqliteTransaction<'a> {
     }
 
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
+        // First try to find and replace any expired UNPAID quotes with the same request_lookup_id
+        let current_time = unix_time();
+        let row_affected = query(
+            r#"
+            DELETE FROM melt_quote 
+            WHERE request_lookup_id = :request_lookup_id 
+            AND state = :state
+            AND expiry < :current_time
+            "#,
+        )
+        .bind(":request_lookup_id", quote.request_lookup_id.to_string())
+        .bind(":state", MeltQuoteState::Unpaid.to_string())
+        .bind(":current_time", current_time as i64)
+        .execute(&self.inner)
+        .await?;
+
+        if row_affected > 0 {
+            tracing::info!("Received new melt quote for existing invoice with expired quote.");
+        }
+
+        // Now insert the new quote
         query(
             r#"
             INSERT INTO melt_quote

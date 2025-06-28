@@ -187,8 +187,13 @@ impl Mint {
             if from_db_quote != quote {
                 return Err(Error::Internal);
             }
-        } else {
-            tx.add_melt_quote(quote.clone()).await?;
+        } else if let Err(err) = tx.add_melt_quote(quote.clone()).await {
+            match err {
+                database::Error::Duplicate => {
+                    return Err(Error::RequestAlreadyPaid);
+                }
+                _ => return Err(Error::from(err)),
+            }
         }
         tx.commit().await?;
 
@@ -226,15 +231,6 @@ impl Mint {
             request: Some(quote.request.clone()),
             unit: Some(quote.unit.clone()),
         })
-    }
-
-    /// Update melt quote
-    #[instrument(skip_all)]
-    pub async fn update_melt_quote(&self, quote: MeltQuote) -> Result<(), Error> {
-        let mut tx = self.localstore.begin_transaction().await?;
-        tx.add_melt_quote(quote).await?;
-        tx.commit().await?;
-        Ok(())
     }
 
     /// Get melt quotes
