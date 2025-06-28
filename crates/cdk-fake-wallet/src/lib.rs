@@ -29,6 +29,7 @@ use error::Error;
 use futures::stream::StreamExt;
 use futures::Stream;
 use lightning_invoice::{Bolt11Invoice, Currency, InvoiceBuilder, PaymentSecret};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -150,7 +151,27 @@ impl MintPayment for FakeWallet {
                 .into(),
         };
 
-        let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
+        let amount = if unit != &CurrencyUnit::Sat && unit != &CurrencyUnit::Msat {
+            let client = Client::new();
+
+            let response: Value = client
+                .get("https://mempool.space/api/v1/prices")
+                .send()
+                .await
+                .map_err(|_| Error::UnknownInvoice)?
+                .json()
+                .await
+                .unwrap();
+
+            let price = response.get(unit.to_string().to_uppercase()).unwrap();
+
+            let bitcoin_amount = u64::from(amount_msat) as f64 / 100_000_000_000.0;
+            let total_price = price.as_f64().unwrap() * bitcoin_amount;
+
+            Amount::from((total_price * 100.0).ceil() as u64)
+        } else {
+            to_unit(amount_msat, &CurrencyUnit::Msat, unit)?
+        };
 
         let relative_fee_reserve =
             (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
@@ -163,6 +184,7 @@ impl MintPayment for FakeWallet {
             request_lookup_id: bolt11.payment_hash().to_string(),
             amount,
             fee: fee.into(),
+            unit: unit.clone(),
             state: MeltQuoteState::Unpaid,
         })
     }

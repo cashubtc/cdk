@@ -108,19 +108,6 @@ impl Mint {
             ..
         } = melt_request;
 
-        let amount_msats = melt_request.amount_msat()?;
-
-        let amount_quote_unit = to_unit(amount_msats, &CurrencyUnit::Msat, unit)?;
-
-        self.check_melt_request_acceptable(
-            amount_quote_unit,
-            unit.clone(),
-            PaymentMethod::Bolt11,
-            request.to_string(),
-            *options,
-        )
-        .await?;
-
         let ln = self
             .ln
             .get(&PaymentProcessorKey::new(
@@ -150,6 +137,15 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
+        self.check_melt_request_acceptable(
+            payment_quote.amount,
+            unit.clone(),
+            PaymentMethod::Bolt11,
+            request.to_string(),
+            *options,
+        )
+        .await?;
+
         // We only want to set the msats_to_pay of the melt quote if the invoice is amountless
         // or we want to ignore the amount and do an mpp payment
         let msats_to_pay = options.map(|opt| opt.amount_msat());
@@ -169,7 +165,7 @@ impl Mint {
         tracing::debug!(
             "New melt quote {} for {} {} with request id {}",
             quote.id,
-            amount_quote_unit,
+            payment_quote.amount,
             unit,
             payment_quote.request_lookup_id
         );
@@ -297,7 +293,7 @@ impl Mint {
         &self,
         melt_request: &MeltRequest<Uuid>,
     ) -> Result<MeltQuote, Error> {
-        let state = self
+        let (state, quote) = self
             .localstore
             .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending)
             .await?;
@@ -308,12 +304,6 @@ impl Mint {
             MeltQuoteState::Paid => Err(Error::PaidQuote),
             MeltQuoteState::Unknown => Err(Error::UnknownPaymentState),
         }?;
-
-        let quote = self
-            .localstore
-            .get_melt_quote(melt_request.quote())
-            .await?
-            .ok_or(Error::UnknownQuote)?;
 
         self.pubsub_manager
             .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
@@ -347,11 +337,23 @@ impl Mint {
             ));
         }
 
-        self.localstore
+        if let Some(err) = self
+            .localstore
             .add_proofs(melt_request.inputs().clone(), None)
-            .await?;
+            .await
+            .err()
+        {
+            return match err {
+                cdk_common::database::Error::Duplicate => Err(Error::TokenPending),
+                cdk_common::database::Error::AttemptUpdateSpentProof => {
+                    Err(Error::TokenAlreadySpent)
+                }
+                err => Err(Error::Database(err)),
+            };
+        }
 
         self.check_ys_spendable(&input_ys, State::Pending).await?;
+
         for proof in melt_request.inputs() {
             self.pubsub_manager
                 .proof_state((proof.y()?, State::Pending));

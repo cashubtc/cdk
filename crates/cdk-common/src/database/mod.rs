@@ -22,6 +22,11 @@ pub enum Error {
     /// Database Error
     #[error(transparent)]
     Database(Box<dyn std::error::Error + Send + Sync>),
+
+    /// Duplicate entry
+    #[error("Duplicate entry")]
+    Duplicate,
+
     /// DHKE error
     #[error(transparent)]
     DHKE(#[from] crate::dhke::Error),

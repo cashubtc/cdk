@@ -74,7 +74,7 @@ if [ "$2" = "external_signatory" ]; then
 fi
 
 echo "Starting fake mintd"
-cargo run --bin cdk-mintd --features "redb" &
+cargo run --bin cdk-mintd &
 export CDK_MINTD_PID=$!
 
 URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT/v1/info"

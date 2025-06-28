@@ -6,14 +6,12 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use bitcoin::base64::engine::general_purpose;
 use bitcoin::base64::Engine;
-use bitcoin::bip32::{DerivationPath, Xpriv};
-use bitcoin::secp256k1;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::nut24::GetFilterResponse;
-use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind, MintKeySet};
+use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
 use cdk_common::secret;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
@@ -30,7 +28,6 @@ use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::gcs::GCSFilter;
 use crate::nuts::*;
-use crate::util::unix_time;
 use crate::Amount;
 #[cfg(feature = "auth")]
 use crate::OidcClient;
@@ -526,7 +523,7 @@ impl Mint {
                     // only supported secret kinds are used as there is no way for the mint to
                     // enforce only signing supported secrets as they are blinded at
                     // that point.
-                    match secret.kind {
+                    match secret.kind() {
                         Kind::P2PK => {
                             proof.verify_p2pk()?;
                         }
@@ -674,76 +671,13 @@ impl Mint {
 
         Ok(total_redeemed)
     }
-
-    /// Get spent GCS filter for a specific keyset
-    pub async fn get_spent_filter(&self, keyset_id: Id) -> Result<GetFilterResponse, Error> {
-        match self.localstore.get_spent_filter(&keyset_id).await? {
-            Some(gcs_filter) => Ok(GetFilterResponse {
-                n: gcs_filter.num_items,
-                p: gcs_filter.p,
-                m: gcs_filter.m,
-                content: general_purpose::STANDARD.encode(gcs_filter.content),
-                timestamp: gcs_filter.time,
-            }),
-            None => Err(Error::NoSuchFilter(keyset_id.to_string())),
-        }
-    }
-
-    /// Get issued blind signatures GCS filter for a specific keyset
-    pub async fn get_issued_filter(&self, keyset_id: Id) -> Result<GetFilterResponse, Error> {
-        match self.localstore.get_issued_filter(&keyset_id).await? {
-            Some(gcs_filter) => Ok(GetFilterResponse {
-                n: gcs_filter.num_items,
-                p: gcs_filter.p,
-                m: gcs_filter.m,
-                content: general_purpose::STANDARD.encode(gcs_filter.content),
-                timestamp: gcs_filter.time,
-            }),
-            None => Err(Error::NoSuchFilter(keyset_id.to_string())),
-        }
-    }
-}
-
-/// Generate new [`MintKeySetInfo`] from path
-#[instrument(skip_all)]
-fn create_new_keyset<C: secp256k1::Signing>(
-    secp: &secp256k1::Secp256k1<C>,
-    xpriv: Xpriv,
-    derivation_path: DerivationPath,
-    derivation_path_index: Option<u32>,
-    unit: CurrencyUnit,
-    max_order: u8,
-    input_fee_ppk: u64,
-) -> (MintKeySet, MintKeySetInfo) {
-    let keyset = MintKeySet::generate(
-        secp,
-        xpriv
-            .derive_priv(secp, &derivation_path)
-            .expect("RNG busted"),
-        unit,
-        max_order,
-    );
-    let keyset_info = MintKeySetInfo {
-        id: keyset.id,
-        unit: keyset.unit.clone(),
-        active: true,
-        valid_from: unix_time(),
-        valid_to: None,
-        derivation_path,
-        derivation_path_index,
-        max_order,
-        input_fee_ppk,
-    };
-    (keyset, keyset_info)
 }
 
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
 
-    use cdk_common::common::PaymentProcessorKey;
     use cdk_sqlite::mint::memory::new_with_state;
-    use uuid::Uuid;
 
     use super::*;
 
@@ -758,7 +692,6 @@ mod tests {
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
-        melt_requests: Vec<(MeltRequest<Uuid>, PaymentProcessorKey)>,
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Mint {
@@ -770,7 +703,6 @@ mod tests {
                 config.melt_quotes,
                 config.pending_proofs,
                 config.spent_proofs,
-                config.melt_requests,
                 config.mint_info,
             )
             .await

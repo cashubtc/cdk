@@ -23,12 +23,10 @@ use cdk_common::payment::{
 use cdk_common::util::unix_time;
 use cdk_common::{mint, Bolt11Invoice};
 use error::Error;
-use futures::stream::StreamExt;
 use futures::Stream;
 use lnbits_rs::api::invoice::CreateInvoiceRequest;
 use lnbits_rs::LNBitsClient;
 use serde_json::Value;
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 pub mod error;
@@ -38,8 +36,7 @@ pub mod error;
 pub struct LNbits {
     lnbits_api: LNBitsClient,
     fee_reserve: FeeReserve,
-    receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
-    webhook_url: String,
+    webhook_url: Option<String>,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
     settings: Bolt11Settings,
@@ -53,14 +50,12 @@ impl LNbits {
         invoice_api_key: String,
         api_url: String,
         fee_reserve: FeeReserve,
-        receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
-        webhook_url: String,
+        webhook_url: Option<String>,
     ) -> Result<Self, Error> {
         let lnbits_api = LNBitsClient::new("", &admin_api_key, &invoice_api_key, &api_url, None)?;
 
         Ok(Self {
             lnbits_api,
-            receiver,
             fee_reserve,
             webhook_url,
             wait_invoice_cancel_token: CancellationToken::new(),
@@ -72,6 +67,17 @@ impl LNbits {
                 amountless: false,
             },
         })
+    }
+
+    /// Subscribe to lnbits ws
+    pub async fn subscribe_ws(&self) -> Result<(), Error> {
+        self.lnbits_api
+            .subscribe_to_websocket()
+            .await
+            .map_err(|err| {
+                tracing::error!("Could not subscribe to lnbits ws");
+                Error::Anyhow(err)
+            })
     }
 }
 
@@ -94,61 +100,50 @@ impl MintPayment for LNbits {
     async fn wait_any_incoming_payment(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
-        let receiver = self
-            .receiver
-            .lock()
-            .await
-            .take()
-            .ok_or(anyhow!("No receiver"))?;
-
-        let lnbits_api = self.lnbits_api.clone();
-
+        let api = self.lnbits_api.clone();
         let cancel_token = self.wait_invoice_cancel_token.clone();
+        let is_active = Arc::clone(&self.wait_invoice_is_active);
 
-        Ok(futures::stream::unfold(
-            (
-                receiver,
-                lnbits_api,
-                cancel_token,
-                Arc::clone(&self.wait_invoice_is_active),
-            ),
-            |(mut receiver, lnbits_api, cancel_token, is_active)| async move {
+        Ok(Box::pin(futures::stream::unfold(
+            (api, cancel_token, is_active),
+            |(api, cancel_token, is_active)| async move {
                 is_active.store(true, Ordering::SeqCst);
+
+                let receiver = api.receiver();
+                let mut receiver = receiver.lock().await;
 
                 tokio::select! {
                     _ = cancel_token.cancelled() => {
                         // Stream is cancelled
                         is_active.store(false, Ordering::SeqCst);
-                        tracing::info!("Waiting for phonixd invoice ending");
+                        tracing::info!("Waiting for lnbits invoice ending");
                         None
                     }
                     msg_option = receiver.recv() => {
-                    match msg_option {
-                        Some(msg) => {
-                            let check = lnbits_api.is_invoice_paid(&msg).await;
+                        match msg_option {
+                            Some(msg) => {
+                                let check = api.is_invoice_paid(&msg).await;
 
-                            match check {
-                                Ok(state) => {
-                                    if state {
-                                        Some((msg, (receiver, lnbits_api, cancel_token, is_active)))
-                                    } else {
-                                        None
+                                match check {
+                                    Ok(state) => {
+                                        if state {
+                                            Some((msg, (api, cancel_token, is_active)))
+                                        } else {
+                                            Some(("".to_string(), (api, cancel_token, is_active)))
+                                        }
                                     }
+                                    _ => Some(("".to_string(), (api, cancel_token, is_active))),
                                 }
-                                _ => None,
                             }
+                            None => {
+                                is_active.store(false, Ordering::SeqCst);
+                                None
+                            },
                         }
-                        None => {
-                            is_active.store(true, Ordering::SeqCst);
-                            None
-                        },
-                    }
-
                     }
                 }
             },
-        )
-        .boxed())
+        )))
     }
 
     async fn get_payment_quote(
@@ -188,6 +183,7 @@ impl MintPayment for LNbits {
         Ok(PaymentQuoteResponse {
             request_lookup_id: bolt11.payment_hash().to_string(),
             amount,
+            unit: unit.clone(),
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
         })
@@ -211,7 +207,7 @@ impl MintPayment for LNbits {
 
         let invoice_info = self
             .lnbits_api
-            .find_invoice(&pay_response.payment_hash)
+            .get_payment_info(&pay_response.payment_hash)
             .await
             .map_err(|err| {
                 tracing::error!("Could not find invoice");
@@ -219,22 +215,23 @@ impl MintPayment for LNbits {
                 Self::Err::Anyhow(anyhow!("Could not find invoice"))
             })?;
 
-        let status = match invoice_info.pending {
-            true => MeltQuoteState::Unpaid,
-            false => MeltQuoteState::Paid,
+        let status = match invoice_info.paid {
+            true => MeltQuoteState::Paid,
+            false => MeltQuoteState::Unpaid,
         };
 
         let total_spent = Amount::from(
             (invoice_info
+                .details
                 .amount
-                .checked_add(invoice_info.fee)
+                .checked_add(invoice_info.details.fee)
                 .ok_or(Error::AmountOverflow)?)
             .unsigned_abs(),
         );
 
         Ok(MakePaymentResponse {
             payment_lookup_id: pay_response.payment_hash,
-            payment_proof: Some(invoice_info.payment_hash),
+            payment_proof: invoice_info.details.preimage,
             status,
             total_spent,
             unit: CurrencyUnit::Sat,
@@ -261,7 +258,7 @@ impl MintPayment for LNbits {
             memo: Some(description),
             unit: unit.to_string(),
             expiry,
-            webhook: Some(self.webhook_url.clone()),
+            webhook: self.webhook_url.clone(),
             internal: None,
             out: false,
         };
@@ -283,7 +280,7 @@ impl MintPayment for LNbits {
         let expiry = request.expires_at().map(|t| t.as_secs());
 
         Ok(CreateIncomingPaymentResponse {
-            request_lookup_id: create_invoice_response.payment_hash,
+            request_lookup_id: create_invoice_response.payment_hash().to_string(),
             request: request.to_string(),
             expiry,
         })
@@ -327,7 +324,7 @@ impl MintPayment for LNbits {
 
         let pay_response = MakePaymentResponse {
             payment_lookup_id: payment.details.payment_hash,
-            payment_proof: Some(payment.preimage),
+            payment_proof: payment.preimage,
             status: lnbits_to_melt_status(&payment.details.status, payment.details.pending),
             total_spent: Amount::from(
                 payment.details.amount.unsigned_abs()
@@ -340,12 +337,16 @@ impl MintPayment for LNbits {
     }
 }
 
-fn lnbits_to_melt_status(status: &str, pending: bool) -> MeltQuoteState {
-    match (status, pending) {
-        ("success", false) => MeltQuoteState::Paid,
-        ("failed", false) => MeltQuoteState::Unpaid,
-        (_, false) => MeltQuoteState::Unknown,
-        (_, true) => MeltQuoteState::Pending,
+fn lnbits_to_melt_status(status: &str, pending: Option<bool>) -> MeltQuoteState {
+    if pending.unwrap_or_default() {
+        return MeltQuoteState::Pending;
+    }
+
+    match status {
+        "success" => MeltQuoteState::Paid,
+        "failed" => MeltQuoteState::Unpaid,
+        "pending" => MeltQuoteState::Pending,
+        _ => MeltQuoteState::Unknown,
     }
 }
 
@@ -354,10 +355,9 @@ impl LNbits {
     pub async fn create_invoice_webhook_router(
         &self,
         webhook_endpoint: &str,
-        sender: tokio::sync::mpsc::Sender<String>,
     ) -> anyhow::Result<Router> {
         self.lnbits_api
-            .create_invoice_webhook_router(webhook_endpoint, sender)
+            .create_invoice_webhook_router(webhook_endpoint)
             .await
     }
 }

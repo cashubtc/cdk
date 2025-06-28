@@ -7,11 +7,11 @@ use cashu::MintInfo;
 use uuid::Uuid;
 
 use super::Error;
-use crate::common::{GCSFilter, PaymentProcessorKey, QuoteTTL};
+use crate::common::{GCSFilter, QuoteTTL};
 use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
 use crate::nuts::{
-    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MeltRequest, MintQuoteState, Proof, Proofs,
-    PublicKey, State,
+    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
+    State,
 };
 
 #[cfg(feature = "auth")]
@@ -115,27 +115,17 @@ pub trait QuotesDatabase {
     /// Get [`mint::MeltQuote`]
     async fn get_melt_quote(&self, quote_id: &Uuid) -> Result<Option<mint::MeltQuote>, Self::Err>;
     /// Update [`mint::MeltQuote`] state
+    ///
+    /// It is expected for this function to fail if the state is already set to the new state
     async fn update_melt_quote_state(
         &self,
         quote_id: &Uuid,
-        state: MeltQuoteState,
-    ) -> Result<MeltQuoteState, Self::Err>;
+        new_state: MeltQuoteState,
+    ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err>;
     /// Get all [`mint::MeltQuote`]s
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
     /// Remove [`mint::MeltQuote`]
     async fn remove_melt_quote(&self, quote_id: &Uuid) -> Result<(), Self::Err>;
-
-    /// Add melt request
-    async fn add_melt_request(
-        &self,
-        melt_request: MeltRequest<Uuid>,
-        ln_key: PaymentProcessorKey,
-    ) -> Result<(), Self::Err>;
-    /// Get melt request
-    async fn get_melt_request(
-        &self,
-        quote_id: &Uuid,
-    ) -> Result<Option<(MeltRequest<Uuid>, PaymentProcessorKey)>, Self::Err>;
 }
 
 /// Mint Proof Database trait
@@ -145,6 +135,9 @@ pub trait ProofsDatabase {
     type Err: Into<Error> + From<Error>;
 
     /// Add  [`Proofs`]
+    ///
+    /// Adds proofs to the database. The database should error if the proof already exits, with a
+    /// `AttemptUpdateSpentProof` if the proof is already spent or a `Duplicate` error otherwise.
     async fn add_proofs(&self, proof: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err>;
     /// Remove [`Proofs`]
     async fn remove_proofs(

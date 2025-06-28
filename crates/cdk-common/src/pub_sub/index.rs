@@ -1,6 +1,4 @@
 //! WS Index
-//!
-//!
 
 use std::fmt::Debug;
 use std::ops::Deref;

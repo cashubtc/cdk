@@ -1,4 +1,4 @@
-name: Publish Docker Image ARM
+name: Publish Docker Image ARM64
 
 on:
   release:
@@ -12,7 +12,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: thesimplekid/cdk-mintd
+  IMAGE_NAME: cashubtc/mintd
 
 jobs:
   build-and-push:
@@ -40,14 +40,15 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha
-            ${{ github.event.inputs.tag != '' && github.event.inputs.tag || '' }}
+            type=raw,value=latest-arm64,enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{version}}-arm64
+            type=semver,pattern={{major}}.{{minor}}-arm64
+            type=ref,event=branch,suffix=-arm64
+            type=ref,event=pr,suffix=-arm64
+            type=sha,suffix=-arm64
+            ${{ github.event.inputs.tag != '' && format('{0}-arm64', github.event.inputs.tag) || '' }}
 
+      # Build and push ARM64 image with architecture suffix
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -55,7 +56,7 @@ jobs:
           push: true
           platforms: linux/arm64
           file: ./Dockerfile.arm
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta.outputs.tags }}-arm64
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
