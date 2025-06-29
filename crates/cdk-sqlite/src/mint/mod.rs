@@ -1273,6 +1273,7 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
     }
 }
 
+#[async_trait]
 impl MintFiltersDatabase for MintSqliteDatabase {
     type Err = database::Error;
 
