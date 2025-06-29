@@ -1043,7 +1043,7 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
     async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
-    ) -> Result<Vec<BlindSignature>, Self::Err> {
+    ) -> Result<Vec<(PublicKey, BlindSignature)>, Self::Err> {
         Ok(query(
             r#"
             SELECT
@@ -1051,7 +1051,8 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
                 amount,
                 c,
                 dleq_e,
-                dleq_s
+                dleq_s,
+                blinded_message
             FROM
                 blind_signature
             WHERE
@@ -1062,8 +1063,17 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
         .fetch_all(&self.pool)
         .await?
         .into_iter()
-        .map(sqlite_row_to_blind_signature)
-        .collect::<Result<Vec<BlindSignature>, _>>()?)
+        .map(|mut row| {
+            Ok((
+                column_as_string!(
+                    &row.pop().ok_or(Error::InvalidDbResponse)?,
+                    PublicKey::from_hex,
+                    PublicKey::from_slice
+                ),
+                sqlite_row_to_blind_signature(row)?,
+            ))
+        })
+        .collect::<Result<Vec<(PublicKey, BlindSignature)>, Error>>()?)
     }
 
     /// Get [`BlindSignature`]s for quote
