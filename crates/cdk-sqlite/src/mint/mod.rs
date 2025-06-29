@@ -1297,7 +1297,7 @@ impl MintFiltersDatabase for MintSqliteDatabase {
         .bind(":num_items", filter.num_items as i64)
         .bind(":inv_false_positive_rate", filter.m as i64)
         .bind(":remainder_bitlength", filter.p as i64)
-        .bind(":time", filter.time as i64)
+        .bind(":time", filter.time)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1339,7 +1339,7 @@ impl MintFiltersDatabase for MintSqliteDatabase {
         .bind(":num_items", filter.num_items as i64)
         .bind(":inv_false_positive_rate", filter.m as i64)
         .bind(":remainder_bitlength", filter.p as i64)
-        .bind(":time", filter.time as i64)
+        .bind(":time", filter.time)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1368,7 +1368,7 @@ impl MintFiltersDatabase for MintSqliteDatabase {
         .bind(":num_items", filter.num_items as i64)
         .bind(":inv_false_positive_rate", filter.m as i64)
         .bind(":remainder_bitlength", filter.p as i64)
-        .bind(":time", filter.time as i64)
+        .bind(":time", filter.time)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1410,7 +1410,7 @@ impl MintFiltersDatabase for MintSqliteDatabase {
         .bind(":num_items", filter.num_items as i64)
         .bind(":inv_false_positive_rate", filter.m as i64)
         .bind(":remainder_bitlength", filter.p as i64)
-        .bind(":time", filter.time as i64)
+        .bind(":time", filter.time)
         .execute(&self.pool)
         .await?;
         Ok(())
