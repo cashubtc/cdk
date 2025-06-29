@@ -1107,7 +1107,95 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
 impl MintFiltersDatabase for MintSqliteDatabase {
     type Err = database::Error;
 
-    
+    async fn store_spent_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
+        query(
+            r#"
+            INSERT INTO spent_filter (keyset_id, filter)
+            VALUES (:keyset_id, :filter)
+            ON CONFLICT(keyset_id) DO UPDATE SET filter = excluded.filter
+            "#,
+        )
+        .bind(":keyset_id", keyset_id.to_string())
+        .bind(":filter", serde_json::to_string(&filter)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_spent_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err> {
+        let result = query(
+            r#"
+            SELECT filter FROM spent_filter WHERE keyset_id = :keyset_id
+            "#,
+        )
+        .bind(":keyset_id", keyset_id.to_string())
+        .fetch_one(&self.pool)
+        .await?
+        .map(|row| {
+            let filter: String = column_as_string!(row[0]);
+            serde_json::from_str(&filter).map_err(|e| database::Error::from(e))
+        })
+        .transpose()?;
+        Ok(result)
+    }
+
+    async fn update_spent_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
+        query(
+            r#"
+            UPDATE spent_filter SET filter = :filter WHERE keyset_id = :keyset_id
+            "#,
+        )
+        .bind(":keyset_id", keyset_id.to_string())
+        .bind(":filter", serde_json::to_string(&filter)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn store_issued_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
+        query(
+            r#"
+            INSERT INTO issued_filter (keyset_id, filter)
+            VALUES (:keyset_id, :filter)
+            ON CONFLICT(keyset_id) DO UPDATE SET filter = excluded.filter
+            "#,
+        )
+        .bind(":keyset_id", keyset_id.to_string())
+        .bind(":filter", serde_json::to_string(&filter)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_issued_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err> {
+        let result = query(
+            r#"
+            SELECT filter FROM issued_filter WHERE keyset_id = :keyset_id
+            "#,
+        )
+        .bind(":keyset_id", keyset_id.to_string())
+        .fetch_one(&self.pool)
+        .await?
+        .map(|row| {
+            let filter: String = column_as_string!(row[0]);
+            serde_json::from_str(&filter).map_err(|e| database::Error::from(e))
+        })
+        .transpose()?;
+        Ok(result)
+    }
+
+    async fn update_issued_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
+        query(
+            r#"
+            UPDATE issued_filter SET filter = :filter WHERE keyset_id = :keyset_id
+            "#,
+        )
+        .bind(":keyset_id", keyset_id.to_string())
+        .bind(":filter", serde_json::to_string(&filter)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 #[async_trait]
