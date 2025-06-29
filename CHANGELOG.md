@@ -4,9 +4,35 @@
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
-[Unreleased]
+## [0.11.0](https://github.com/cashubtc/cdk/releases/tag/v0.11.0)
+
+### Added
+- cdk-lnbits: Support lnbits v1 and pre-v1 [PR](https://github.com/cashubtc/cdk/pull/802) ([thesimplekid]).
+- Support for Keyset v2 [PR](https://github.com/cashubtc/cdk/pull/702) ([lollerfirst]).
+- Add option to limit the token size of a send [PR](https://github.com/cashubtc/cdk/pull/855) ([davidcaseria]).
+- Database transaction support [PR](https://github.com/cashubtc/cdk/pull/826) ([crodas]).
+- Support for multsig refund [PR](https://github.com/cashubtc/cdk/pull/860) ([thesimplekid]).
+- Convert unit helper fn [PR](https://github.com/cashubtc/cdk/pull/856) ([davidcaseria]).
+
+### Changed
+- cdk-sqlite: remove sqlx in favor of rusqlite ([crodas]).
+- cdk-lnd: use custom tonic gRPC instead of fedimint-tonic-grpc [PR](https://github.com/cashubtc/cdk/pull/831) ([thesimplekid]).
+- cdk-cln: remove the us of mutex on cln client [PR](https://github.com/cashubtc/cdk/pull/832) ([thesimplekid]).
+
 ### Fixed
-- Mintd version updated when grpc is enabled [PR](https://github.com/cashubtc/cdk/pull/803) ([thesimplekid]).
+- mint start up check was not checking unpaid quotes [PR](https://github.com/cashubtc/cdk/pull/844) ([gudnuf]).
+- Naming of blinded_message column on blind_signatures was y [PR](https://github.com/cashubtc/cdk/pull/845) ([thesimplekid]).
+- cdk-cli: Create wallets for non sat units if supported [PR](https://github.com/cashubtc/cdk/pull/841) ([thesimplekid]).
+
+### Removed
+- cdk-redb support for the mint [PR](https://github.com/cashubtc/cdk/pull/787) ([thesimplekid]).
+- cdk-sqlite remove unused melt_request table [PR](https://github.com/cashubtc/cdk/pull/819) ([crodas])
+
+
+## [0.10.1](https://github.com/cashubtc/cdk/releases/tag/v0.10.1)
+### Fix
+- Set mint version when mint rpc is enabled [PR](https://github.com/cashubtc/cdk/pull/803) ([thesimplekid]).
+- `cdk-signatory` is optional for wallet [PR](https://github.com/cashubtc/cdk/pull/815) ([thesimplekid]).
 
 ## [0.10.0](https://github.com/cashubtc/cdk/releases/tag/v0.10.0)
 ### Added
@@ -379,3 +405,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [benthecarman]: https://github.com/benthecarman
 [Darrell]: https://github.com/Darrellbor
 [asmo]: https://github.com/asmogo
+[gudnuf]: https://github.com/gudnuf
