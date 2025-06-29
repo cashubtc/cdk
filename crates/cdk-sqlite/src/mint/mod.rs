@@ -30,8 +30,7 @@ use uuid::Uuid;
 use crate::common::{create_sqlite_pool, migrate};
 use crate::stmt::Column;
 use crate::{
-    column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
-    unpack_into,
+    column_as_binary, column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string, unpack_into
 };
 
 mod async_rusqlite;
@@ -1124,8 +1123,8 @@ impl MintFiltersDatabase for MintSqliteDatabase {
         .bind(":keyset_id", keyset_id.to_string())
         .bind(":content", filter.content)
         .bind(":num_items", filter.num_items as i64)
-        .bind(":inv_false_positive_rate", filter.inv_false_positive_rate as i64)
-        .bind(":remainder_bitlength", filter.remainder_bitlength as i64)
+        .bind(":inv_false_positive_rate", filter.m as i64)
+        .bind(":remainder_bitlength", filter.p as i64)
         .bind(":time", filter.time as i64)
         .execute(&self.pool)
         .await?;
@@ -1142,21 +1141,7 @@ impl MintFiltersDatabase for MintSqliteDatabase {
         .bind(":keyset_id", keyset_id.to_string())
         .fetch_one(&self.pool)
         .await?
-        .map(|row| {
-            let content: Vec<u8> = column_as_string!(row[0]);
-            let num_items: i64 = column_as_number!(row[1]);
-            let inv_false_positive_rate: i64 = column_as_number!(row[2]);
-            let remainder_bitlength: i64 = column_as_number!(row[3]);
-            let time: i64 = column_as_number!(row[4]);
-
-            Ok(GCSFilter {
-                content,
-                num_items: num_items as usize,
-                inv_false_positive_rate: inv_false_positive_rate as usize,
-                remainder_bitlength: remainder_bitlength as usize,
-                time: time as u64,
-            })
-        })
+        .map(sqlite_row_to_gcs_filter)
         .transpose()?;
         Ok(result)
     }
@@ -1174,7 +1159,11 @@ impl MintFiltersDatabase for MintSqliteDatabase {
             "#,
         )
         .bind(":keyset_id", keyset_id.to_string())
-        .bind(":filter", serde_json::to_string(&filter)?)
+        .bind(":content", filter.content)
+        .bind(":num_items", filter.num_items as i64)
+        .bind(":inv_false_positive_rate", filter.m as i64)
+        .bind(":remainder_bitlength", filter.p as i64)
+        .bind(":time", filter.time as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1195,7 +1184,11 @@ impl MintFiltersDatabase for MintSqliteDatabase {
             "#,
         )
         .bind(":keyset_id", keyset_id.to_string())
-        .bind(":filter", serde_json::to_string(&filter)?)
+        .bind(":content", filter.content)
+        .bind(":num_items", filter.num_items as i64)
+        .bind(":inv_false_positive_rate", filter.m as i64)
+        .bind(":remainder_bitlength", filter.p as i64)
+        .bind(":time", filter.time as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1211,10 +1204,7 @@ impl MintFiltersDatabase for MintSqliteDatabase {
         .bind(":keyset_id", keyset_id.to_string())
         .fetch_one(&self.pool)
         .await?
-        .map(|row| {
-            let filter: String = column_as_string!(row[0]);
-            serde_json::from_str(&filter).map_err(|e| database::Error::from(e))
-        })
+        .map(sqlite_row_to_gcs_filter)
         .transpose()?;
         Ok(result)
     }
@@ -1232,7 +1222,11 @@ impl MintFiltersDatabase for MintSqliteDatabase {
             "#,
         )
         .bind(":keyset_id", keyset_id.to_string())
-        .bind(":filter", serde_json::to_string(&filter)?)
+        .bind(":content", filter.content)
+        .bind(":num_items", filter.num_items as i64)
+        .bind(":inv_false_positive_rate", filter.m as i64)
+        .bind(":remainder_bitlength", filter.p as i64)
+        .bind(":time", filter.time as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1440,6 +1434,27 @@ fn sqlite_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Err
         keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
         c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
         dleq,
+    })
+}
+
+fn sqlite_row_to_gcs_filter(row: Vec<Column>) -> Result<GCSFilter, Error> {
+
+    unpack_into!(
+        let (content, num_items, inv_false_positive_rate, remainder_bitlength, time) = row
+    ); 
+
+    let content: Vec<u8> = column_as_binary!(content);
+    let num_items: i64 = column_as_number!(num_items);
+    let inv_false_positive_rate: i64 = column_as_number!(inv_false_positive_rate);
+    let remainder_bitlength: i64 = column_as_number!(remainder_bitlength);
+    let time: i64 = column_as_number!(time);
+
+    Ok(GCSFilter {
+        content,
+        num_items: num_items as u32,
+        m: inv_false_positive_rate as u32,
+        p: remainder_bitlength as u32,
+        time,
     })
 }
 
