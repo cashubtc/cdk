@@ -681,15 +681,14 @@ impl Mint {
         let spent_filter = self.localstore.get_spent_filter(keyset_id).await?;
 
         match spent_filter {
-            Some(spent_filter) => Ok(
-                GetFilterResponse {
-                    n: spent_filter.num_items,
-                    m: spent_filter.m,
-                    p: spent_filter.p,
-                    content: general_purpose::STANDARD.encode(spent_filter.content),
-                    timestamp: spent_filter.time,
-                }),
-            None => Err(Error::NoSuchFilter(keyset_id.to_string()))
+            Some(spent_filter) => Ok(GetFilterResponse {
+                n: spent_filter.num_items,
+                m: spent_filter.m,
+                p: spent_filter.p,
+                content: general_purpose::STANDARD.encode(spent_filter.content),
+                timestamp: spent_filter.time,
+            }),
+            None => Err(Error::NoSuchFilter(keyset_id.to_string())),
         }
     }
 
@@ -698,15 +697,14 @@ impl Mint {
         let issued_filter = self.localstore.get_issued_filter(keyset_id).await?;
 
         match issued_filter {
-            Some(issued_filter) => Ok(
-                GetFilterResponse {
-                    n: issued_filter.num_items,
-                    m: issued_filter.m,
-                    p: issued_filter.p,
-                    content: general_purpose::STANDARD.encode(issued_filter.content),
-                    timestamp: issued_filter.time,
-                }),
-            None => Err(Error::NoSuchFilter(keyset_id.to_string()))
+            Some(issued_filter) => Ok(GetFilterResponse {
+                n: issued_filter.num_items,
+                m: issued_filter.m,
+                p: issued_filter.p,
+                content: general_purpose::STANDARD.encode(issued_filter.content),
+                timestamp: issued_filter.time,
+            }),
+            None => Err(Error::NoSuchFilter(keyset_id.to_string())),
         }
     }
 }
