@@ -4,6 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use bitcoin::base64::engine::general_purpose;
+use bitcoin::base64::Engine;
+use cashu::nut24::GetFilterResponse;
 use cashu::util::unix_time;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
@@ -671,6 +674,40 @@ impl Mint {
         }
 
         Ok(total_redeemed)
+    }
+
+    /// Spent ecash GCS filter
+    pub async fn get_spent_filter(&self, keyset_id: &Id) -> Result<GetFilterResponse, Error> {
+        let spent_filter = self.localstore.get_spent_filter(keyset_id).await?;
+
+        match spent_filter {
+            Some(spent_filter) => Ok(
+                GetFilterResponse {
+                    n: spent_filter.num_items,
+                    m: spent_filter.m,
+                    p: spent_filter.p,
+                    content: general_purpose::STANDARD.encode(spent_filter.content),
+                    timestamp: spent_filter.time,
+                }),
+            None => Err(Error::NoSuchFilter(keyset_id.to_string()))
+        }
+    }
+
+    /// Issued blind signatures GCS filter
+    pub async fn get_issued_filter(&self, keyset_id: &Id) -> Result<GetFilterResponse, Error> {
+        let issued_filter = self.localstore.get_issued_filter(keyset_id).await?;
+
+        match issued_filter {
+            Some(issued_filter) => Ok(
+                GetFilterResponse {
+                    n: issued_filter.num_items,
+                    m: issued_filter.m,
+                    p: issued_filter.p,
+                    content: general_purpose::STANDARD.encode(issued_filter.content),
+                    timestamp: issued_filter.time,
+                }),
+            None => Err(Error::NoSuchFilter(keyset_id.to_string()))
+        }
     }
 }
 
