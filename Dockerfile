@@ -13,7 +13,7 @@ COPY crates ./crates
 RUN nix develop --extra-experimental-features nix-command --extra-experimental-features flakes --command cargo build --release --bin cdk-mintd --features redis
 
 # Create a runtime stage
-FROM debian:bookworm-slim
+FROM debian:sid-slim
 
 # Set the working directory
 WORKDIR /usr/src/app
