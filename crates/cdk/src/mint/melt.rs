@@ -361,7 +361,9 @@ impl Mint {
 
         let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs().clone());
 
-        ensure_cdk!(sig_flag.ne(&SigFlag::SigAll), Error::SigAllUsedInMelt);
+        if sig_flag == SigFlag::SigAll {
+            melt_request.verify_sig_all()?;
+        }
 
         if let Some(outputs) = &melt_request.outputs() {
             if !outputs.is_empty() {
