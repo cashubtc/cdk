@@ -1,0 +1,5 @@
+This is a rust project with crates in crate dir. 
+
+tips: 
+- can look at unstaged changes for what is being worked on if starting
+- Do not make code comments that explain *what* is happening. Only explain *why* something is being done.
