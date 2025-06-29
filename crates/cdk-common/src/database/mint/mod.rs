@@ -7,7 +7,7 @@ use cashu::MintInfo;
 use uuid::Uuid;
 
 use super::Error;
-use crate::common::QuoteTTL;
+use crate::common::{GCSFilter, QuoteTTL};
 use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
 use crate::nuts::{
     BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
@@ -106,6 +106,37 @@ pub trait QuotesTransaction<'a> {
         &mut self,
         request: &str,
     ) -> Result<Option<MintMintQuote>, Self::Err>;
+}
+
+/// Filters Database trait
+#[async_trait]
+pub trait FiltersDatabase {
+    /// Filters Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Store a spent filter identified by keyset_id
+    async fn store_spent_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err>;
+
+    /// Get a spent filter by keyset_id
+    async fn get_spent_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err>;
+
+    /// Update a spent filter identified by keyset_id
+    async fn update_spent_filter(&self, keyset_id: &Id, filter: GCSFilter)
+        -> Result<(), Self::Err>;
+
+    /// Store a spent filter identified by keyset_id
+    async fn store_issued_filter(&self, keyset_id: &Id, filter: GCSFilter)
+        -> Result<(), Self::Err>;
+
+    /// Get a spent filter by keyset_id
+    async fn get_issued_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err>;
+
+    /// Update a spent filter identified by keyset_id
+    async fn update_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err>;
 }
 
 /// Mint Quote Database trait
@@ -221,7 +252,7 @@ pub trait SignaturesDatabase {
     async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
-    ) -> Result<Vec<BlindSignature>, Self::Err>;
+    ) -> Result<Vec<(PublicKey, BlindSignature)>, Self::Err>;
     /// Get [`BlindSignature`]s for quote
     async fn get_blind_signatures_for_quote(
         &self,
@@ -260,7 +291,10 @@ pub trait Transaction<'a, Error>:
 /// Mint Database trait
 #[async_trait]
 pub trait Database<Error>:
-    QuotesDatabase<Err = Error> + ProofsDatabase<Err = Error> + SignaturesDatabase<Err = Error>
+    QuotesDatabase<Err = Error>
+    + ProofsDatabase<Err = Error>
+    + SignaturesDatabase<Err = Error>
+    + FiltersDatabase<Err = Error>
 {
     /// Beings a transaction
     async fn begin_transaction<'a>(
