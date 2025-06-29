@@ -9,7 +9,7 @@ use bitcoin::base64::Engine;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
-use cdk_common::database::{self, MintDatabase};
+use cdk_common::database::{self, MintDatabase, MintTransaction};
 use cdk_common::nut24::GetFilterResponse;
 use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
 use cdk_common::secret;
@@ -28,9 +28,9 @@ use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::gcs::GCSFilter;
 use crate::nuts::*;
-use crate::Amount;
 #[cfg(feature = "auth")]
 use crate::OidcClient;
+use crate::{cdk_database, Amount};
 
 #[cfg(feature = "auth")]
 pub(crate) mod auth;
@@ -40,6 +40,7 @@ mod issue;
 mod keysets;
 mod ln;
 mod melt;
+mod proof_writer;
 mod start_up_check;
 pub mod subscription;
 mod swap;
@@ -229,7 +230,9 @@ impl Mint {
     /// Set mint info
     #[instrument(skip_all)]
     pub async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error> {
-        Ok(self.localstore.set_mint_info(mint_info).await?)
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.set_mint_info(mint_info).await?;
+        Ok(tx.commit().await?)
     }
 
     /// Get quote ttl
@@ -241,7 +244,9 @@ impl Mint {
     /// Set quote ttl
     #[instrument(skip_all)]
     pub async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Error> {
-        Ok(self.localstore.set_quote_ttl(quote_ttl).await?)
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.set_quote_ttl(quote_ttl).await?;
+        Ok(tx.commit().await?)
     }
 
     /// Wait for any invoice to be paid
@@ -546,14 +551,11 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn handle_internal_melt_mint(
         &self,
+        tx: &mut Box<dyn MintTransaction<'_, cdk_database::Error> + Send + Sync + '_>,
         melt_quote: &MeltQuote,
         melt_request: &MeltRequest<Uuid>,
     ) -> Result<Option<Amount>, Error> {
-        let mint_quote = match self
-            .localstore
-            .get_mint_quote_by_request(&melt_quote.request)
-            .await
-        {
+        let mint_quote = match tx.get_mint_quote_by_request(&melt_quote.request).await {
             Ok(Some(mint_quote)) => mint_quote,
             // Not an internal melt -> mint
             Ok(None) => return Ok(None),
@@ -562,6 +564,7 @@ impl Mint {
                 return Err(Error::Internal);
             }
         };
+        tracing::error!("internal stuff");
 
         // Mint quote has already been settled, proofs should not be burned or held.
         if mint_quote.state == MintQuoteState::Issued || mint_quote.state == MintQuoteState::Paid {
@@ -588,7 +591,7 @@ impl Mint {
 
         let amount = melt_quote.amount;
 
-        self.update_mint_quote(mint_quote).await?;
+        tx.add_or_replace_mint_quote(mint_quote).await?;
 
         Ok(Some(amount))
     }

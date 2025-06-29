@@ -425,9 +425,7 @@ async fn test_pay_invoice_twice() {
 
     let melt = wallet.melt(&melt_quote.id).await.unwrap();
 
-    let melt_two = wallet.melt_quote(invoice, None).await.unwrap();
-
-    let melt_two = wallet.melt(&melt_two.id).await;
+    let melt_two = wallet.melt_quote(invoice, None).await;
 
     match melt_two {
         Err(err) => match err {
