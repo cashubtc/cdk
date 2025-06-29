@@ -9,13 +9,14 @@ use std::{fmt, vec};
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
-use serde::de::Error as DeserializerError;
+use serde::de::{DeserializeOwned, Error as DeserializerError};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 use super::nut00::Witness;
 use super::nut01::PublicKey;
+use super::nut05::MeltRequest;
 use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
 use crate::nuts::nut00::BlindedMessage;
 use crate::secret::Secret;
@@ -978,6 +979,189 @@ impl SwapRequest {
     }
 }
 
+impl<Q: std::fmt::Display + Serialize + DeserializeOwned> MeltRequest<Q> {
+    /// Generate the message to sign for SIG_ALL validation
+    /// Concatenates all input secrets, blank outputs, and quote ID in order
+    fn sig_all_msg_to_sign(&self) -> String {
+        let mut msg_to_sign = String::new();
+
+        // Add all input secrets in order
+        for proof in self.inputs() {
+            let secret = proof.secret.to_string();
+            msg_to_sign.push_str(&secret);
+        }
+
+        // Add all blank outputs in order if they exist
+        if let Some(outputs) = self.outputs() {
+            for output in outputs {
+                msg_to_sign.push_str(&output.blinded_secret.to_hex());
+            }
+        }
+
+        // Add quote ID
+        msg_to_sign.push_str(&self.quote().to_string());
+
+        msg_to_sign
+    }
+
+    /// Get required signature count from first input's spending conditions
+    fn get_sig_all_required_sigs(&self) -> Result<(u64, SpendingConditions), Error> {
+        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
+        let first_conditions: SpendingConditions =
+            SpendingConditions::try_from(&first_input.secret)?;
+
+        let required_sigs = match first_conditions.clone() {
+            SpendingConditions::P2PKConditions { conditions, .. } => {
+                let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
+
+                if SigFlag::SigAll != conditions.sig_flag {
+                    return Err(Error::IncorrectSecretKind);
+                }
+
+                conditions.num_sigs.unwrap_or(1)
+            }
+            _ => return Err(Error::IncorrectSecretKind),
+        };
+
+        Ok((required_sigs, first_conditions))
+    }
+
+    /// Verify all inputs have matching secrets and tags
+    fn verify_matching_conditions(&self) -> Result<(), Error> {
+        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
+        let first_nut10: Nut10Secret = (&first_input.secret).try_into()?;
+
+        for proof in self.inputs().iter().skip(1) {
+            let current_secret: Nut10Secret = proof.secret.clone().try_into()?;
+
+            // Check data matches
+            if current_secret.secret_data().data() != first_nut10.secret_data().data() {
+                return Err(Error::SpendConditionsNotMet);
+            }
+
+            // Check tags match
+            if current_secret.secret_data().tags() != first_nut10.secret_data().tags() {
+                return Err(Error::SpendConditionsNotMet);
+            }
+        }
+        Ok(())
+    }
+
+    /// Get validated signatures from first input's witness
+    fn get_valid_witness_signatures(&self) -> Result<Vec<Signature>, Error> {
+        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
+        let first_witness = first_input
+            .witness
+            .as_ref()
+            .ok_or(Error::SignaturesNotProvided)?;
+
+        let witness_sigs = first_witness
+            .signatures()
+            .ok_or(Error::SignaturesNotProvided)?;
+
+        // Convert witness strings to signatures
+        witness_sigs
+            .iter()
+            .map(|s| Signature::from_str(s))
+            .collect::<Result<Vec<Signature>, _>>()
+            .map_err(Error::from)
+    }
+
+    /// Check if melt request can be signed with the given secret key
+    fn can_sign_sig_all(
+        &self,
+        secret_key: &SecretKey,
+    ) -> Result<(SpendingConditions, PublicKey), Error> {
+        // Get the first input since all must match for SIG_ALL
+        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
+        let first_conditions: SpendingConditions =
+            SpendingConditions::try_from(&first_input.secret)?;
+
+        // Verify this is a P2PK condition with SIG_ALL
+        match first_conditions.clone() {
+            SpendingConditions::P2PKConditions { conditions, .. } => {
+                let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
+                if conditions.sig_flag != SigFlag::SigAll {
+                    return Err(Error::IncorrectSecretKind);
+                }
+                conditions
+            }
+            _ => return Err(Error::IncorrectSecretKind),
+        };
+
+        // Get authorized keys and verify secret_key matches one
+        let pubkey = secret_key.public_key();
+        let authorized_keys = first_conditions
+            .pubkeys()
+            .ok_or(Error::P2PKPubkeyRequired)?;
+
+        if !authorized_keys.contains(&pubkey) {
+            return Err(Error::SpendConditionsNotMet);
+        }
+
+        Ok((first_conditions, pubkey))
+    }
+
+    /// Sign melt request with SIG_ALL if conditions are met
+    pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
+        // Verify we can sign and get conditions
+        let (_first_conditions, _) = self.can_sign_sig_all(&secret_key)?;
+
+        // Verify all inputs have matching conditions
+        self.verify_matching_conditions()?;
+
+        // Get message to sign
+        let msg = self.sig_all_msg_to_sign();
+        let signature = secret_key.sign(msg.as_bytes())?;
+
+        // Add signature to first input witness
+        let first_input = self
+            .inputs_mut()
+            .first_mut()
+            .ok_or(Error::SpendConditionsNotMet)?;
+
+        match first_input.witness.as_mut() {
+            Some(witness) => {
+                witness.add_signatures(vec![signature.to_string()]);
+            }
+            None => {
+                let mut p2pk_witness = Witness::P2PKWitness(P2PKWitness::default());
+                p2pk_witness.add_signatures(vec![signature.to_string()]);
+                first_input.witness = Some(p2pk_witness);
+            }
+        };
+
+        Ok(())
+    }
+
+    /// Validate SIG_ALL conditions and signatures for the melt request
+    pub fn verify_sig_all(&self) -> Result<(), Error> {
+        // Get required signatures and conditions from first input
+        let (required_sigs, first_conditions) = self.get_sig_all_required_sigs()?;
+
+        // Verify all inputs have matching secrets
+        self.verify_matching_conditions()?;
+
+        // Get and validate witness signatures
+        let signatures = self.get_valid_witness_signatures()?;
+
+        // Get signing pubkeys
+        let verifying_pubkeys = first_conditions
+            .pubkeys()
+            .ok_or(Error::P2PKPubkeyRequired)?;
+
+        // Get aggregated message and validate signatures
+        let msg = self.sig_all_msg_to_sign();
+        let valid_sigs = valid_signatures(msg.as_bytes(), &verifying_pubkeys, &signatures)?;
+
+        if valid_sigs >= required_sigs {
+            Ok(())
+        } else {
+            Err(Error::SpendConditionsNotMet)
+        }
+    }
+}
+
 impl Serialize for Tag {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1006,6 +1190,8 @@ impl<'de> Deserialize<'de> for Tag {
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
+
+    use uuid::Uuid;
 
     use super::*;
     use crate::nuts::Id;
@@ -1150,6 +1336,279 @@ mod tests {
         assert!(invalid_proof.verify_p2pk().is_err());
     }
 
+    // Helper functions for melt request tests
+    fn create_test_proof(secret: Secret, pubkey: PublicKey, id: &str) -> Proof {
+        Proof {
+            keyset_id: Id::from_str(id).unwrap(),
+            amount: Amount::ZERO,
+            secret,
+            c: pubkey,
+            witness: None,
+            dleq: None,
+        }
+    }
+
+    fn create_test_secret(pubkey: PublicKey, conditions: Conditions) -> Secret {
+        Nut10Secret::new(Kind::P2PK, pubkey.to_string(), Some(conditions))
+            .try_into()
+            .unwrap()
+    }
+
+    fn create_test_blinded_msg(pubkey: PublicKey) -> BlindedMessage {
+        BlindedMessage {
+            amount: Amount::ZERO,
+            blinded_secret: pubkey,
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            witness: None,
+        }
+    }
+
+    #[test]
+    fn test_melt_sig_all_basic_signing() {
+        let secret_key =
+            SecretKey::from_str("99590802251e78ee1051648439eedb003dc539093a48a44e7b8f2642c909ea37")
+                .unwrap();
+        let pubkey = secret_key.public_key();
+
+        // Create conditions with SIG_ALL
+        let conditions = Conditions {
+            sig_flag: SigFlag::SigAll,
+            pubkeys: Some(vec![pubkey]),
+            ..Default::default()
+        };
+
+        let secret = create_test_secret(pubkey, conditions);
+        let proof = create_test_proof(secret, pubkey, "009a1f293253e41e");
+        let blinded_msg = create_test_blinded_msg(pubkey);
+
+        // Create melt request
+        let mut melt = MeltRequest::new(Uuid::new_v4(), vec![proof], Some(vec![blinded_msg]));
+
+        // Before signing, should fail verification
+        assert!(
+            melt.verify_sig_all().is_err(),
+            "Unsigned melt request should fail verification"
+        );
+
+        // Sign the request
+        assert!(
+            melt.sign_sig_all(secret_key).is_ok(),
+            "Signing should succeed"
+        );
+
+        // After signing, should pass verification
+        assert!(
+            melt.verify_sig_all().is_ok(),
+            "Signed melt request should pass verification"
+        );
+    }
+
+    #[test]
+    fn test_melt_sig_all_unauthorized_key() {
+        let secret_key =
+            SecretKey::from_str("99590802251e78ee1051648439eedb003dc539093a48a44e7b8f2642c909ea37")
+                .unwrap();
+        let pubkey = secret_key.public_key();
+
+        // Create conditions with explicit authorized pubkey
+        let conditions = Conditions {
+            sig_flag: SigFlag::SigAll,
+            pubkeys: Some(vec![pubkey]),
+            ..Default::default()
+        };
+
+        let secret = create_test_secret(pubkey, conditions);
+        let proof = create_test_proof(secret, pubkey, "009a1f293253e41e");
+
+        let mut melt = MeltRequest::new(Uuid::new_v4(), vec![proof], None);
+
+        // Try to sign with unauthorized key
+        let unauthorized_key =
+            SecretKey::from_str("0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap();
+
+        assert!(
+            melt.sign_sig_all(unauthorized_key).is_err(),
+            "Signing with unauthorized key should fail"
+        );
+    }
+
+    #[test]
+    fn test_melt_sig_all_wrong_flag() {
+        let secret_key =
+            SecretKey::from_str("99590802251e78ee1051648439eedb003dc539093a48a44e7b8f2642c909ea37")
+                .unwrap();
+        let pubkey = secret_key.public_key();
+
+        // Create conditions with SIG_INPUTS instead of SIG_ALL
+        let conditions = Conditions {
+            sig_flag: SigFlag::SigInputs,
+            pubkeys: Some(vec![pubkey]),
+            ..Default::default()
+        };
+
+        let secret = create_test_secret(pubkey, conditions);
+        let proof = create_test_proof(secret, pubkey, "009a1f293253e41e");
+
+        let mut melt = MeltRequest::new(Uuid::new_v4(), vec![proof], None);
+
+        assert!(
+            melt.sign_sig_all(secret_key).is_err(),
+            "Signing with SIG_INPUTS flag should fail"
+        );
+    }
+
+    #[test]
+    fn test_melt_sig_all_multiple_inputs() {
+        let secret_key =
+            SecretKey::from_str("99590802251e78ee1051648439eedb003dc539093a48a44e7b8f2642c909ea37")
+                .unwrap();
+        let pubkey = secret_key.public_key();
+
+        // Create conditions
+        let conditions = Conditions {
+            sig_flag: SigFlag::SigAll,
+            pubkeys: Some(vec![pubkey]),
+            ..Default::default()
+        };
+
+        let secret = create_test_secret(pubkey, conditions);
+
+        // Create two proofs with same secret
+        let proof1 = create_test_proof(secret.clone(), pubkey, "009a1f293253e41e");
+        let proof2 = create_test_proof(secret, pubkey, "009a1f293253e41f");
+
+        let mut melt = MeltRequest::new(Uuid::new_v4(), vec![proof1, proof2], None);
+
+        // Signing should work with multiple matching inputs
+        assert!(
+            melt.sign_sig_all(secret_key).is_ok(),
+            "Signing with multiple matching inputs should succeed"
+        );
+        assert!(
+            melt.verify_sig_all().is_ok(),
+            "Verification should succeed with multiple matching inputs"
+        );
+    }
+
+    #[test]
+    fn test_melt_sig_all_mismatched_inputs() {
+        let secret_key =
+            SecretKey::from_str("99590802251e78ee1051648439eedb003dc539093a48a44e7b8f2642c909ea37")
+                .unwrap();
+        let pubkey = secret_key.public_key();
+
+        // Create first secret and proof
+        let conditions1 = Conditions {
+            sig_flag: SigFlag::SigAll,
+            ..Default::default()
+        };
+        let secret1 = create_test_secret(pubkey, conditions1.clone());
+        let proof1 = create_test_proof(secret1, pubkey, "009a1f293253e41e");
+
+        // Create second secret with different data
+        let conditions2 = conditions1.clone();
+        let secret2 = Nut10Secret::new(
+            Kind::P2PK,
+            "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+            Some(conditions2),
+        )
+        .try_into()
+        .unwrap();
+        let proof2 = create_test_proof(secret2, pubkey, "009a1f293253e41f");
+
+        let mut melt = MeltRequest::new(Uuid::new_v4(), vec![proof1, proof2], None);
+
+        assert!(
+            melt.sign_sig_all(secret_key).is_err(),
+            "Signing with mismatched input secrets should fail"
+        );
+    }
+
+    #[test]
+    fn test_melt_sig_all_multiple_signatures() {
+        let secret_key1 =
+            SecretKey::from_str("99590802251e78ee1051648439eedb003dc539093a48a44e7b8f2642c909ea37")
+                .unwrap();
+        let pubkey1 = secret_key1.public_key();
+
+        let secret_key2 =
+            SecretKey::from_str("7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f")
+                .unwrap();
+        let pubkey2 = secret_key2.public_key();
+
+        // Create conditions requiring 2 signatures
+        let conditions = Conditions {
+            sig_flag: SigFlag::SigAll,
+            num_sigs: Some(2),
+            pubkeys: Some(vec![pubkey1, pubkey2]),
+            ..Default::default()
+        };
+
+        let secret = create_test_secret(pubkey1, conditions);
+        let proof = create_test_proof(secret, pubkey1, "009a1f293253e41e");
+
+        let mut melt = MeltRequest::new(Uuid::new_v4(), vec![proof], None);
+
+        // First signature
+        assert!(
+            melt.sign_sig_all(secret_key1).is_ok(),
+            "First signature should succeed"
+        );
+        assert!(
+            melt.verify_sig_all().is_err(),
+            "Single signature should not verify when two required"
+        );
+
+        // Second signature
+        assert!(
+            melt.sign_sig_all(secret_key2).is_ok(),
+            "Second signature should succeed"
+        );
+        assert!(
+            melt.verify_sig_all().is_ok(),
+            "Both signatures should verify successfully"
+        );
+    }
+
+    #[test]
+    fn test_melt_sig_all_message_components() {
+        let secret_key =
+            SecretKey::from_str("99590802251e78ee1051648439eedb003dc539093a48a44e7b8f2642c909ea37")
+                .unwrap();
+        let pubkey = secret_key.public_key();
+
+        let conditions = Conditions {
+            sig_flag: SigFlag::SigAll,
+            pubkeys: Some(vec![pubkey]),
+            ..Default::default()
+        };
+
+        let secret = create_test_secret(pubkey, conditions);
+        let proof = create_test_proof(secret.clone(), pubkey, "009a1f293253e41e");
+        let blinded_msg = create_test_blinded_msg(pubkey);
+        let quote_id = Uuid::new_v4();
+
+        let melt = MeltRequest::new(quote_id, vec![proof], Some(vec![blinded_msg.clone()]));
+
+        // Get message to sign
+        let msg = melt.sig_all_msg_to_sign();
+
+        // Verify all components are present in the message
+        assert!(
+            msg.contains(&secret.to_string()),
+            "Message should contain secret"
+        );
+        assert!(
+            msg.contains(&blinded_msg.blinded_secret.to_hex()),
+            "Message should contain blinded message in hex format"
+        );
+        assert!(
+            msg.contains(&quote_id.to_string()),
+            "Message should contain quote ID"
+        );
+    }
+
     #[test]
     fn test_duplicate_signatures_counting() {
         let proof: Proof = serde_json::from_str(
@@ -1166,32 +1625,6 @@ mod tests {
                 .unwrap();
         let pubkey = secret_key.public_key();
         (secret_key, pubkey)
-    }
-
-    fn create_test_secret(pubkey: PublicKey, conditions: Conditions) -> Secret {
-        Nut10Secret::new(Kind::P2PK, pubkey.to_string(), Some(conditions))
-            .try_into()
-            .unwrap()
-    }
-
-    fn create_test_proof(secret: Secret, pubkey: PublicKey, id: &str) -> Proof {
-        Proof {
-            keyset_id: Id::from_str(id).unwrap(),
-            amount: Amount::ZERO,
-            secret,
-            c: pubkey,
-            witness: None,
-            dleq: None,
-        }
-    }
-
-    fn create_test_blinded_msg(pubkey: PublicKey) -> BlindedMessage {
-        BlindedMessage {
-            amount: Amount::ZERO,
-            blinded_secret: pubkey,
-            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
-            witness: None,
-        }
     }
 
     #[test]
