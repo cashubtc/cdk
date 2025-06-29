@@ -291,8 +291,7 @@ pub trait Transaction<'a, Error>:
 /// Mint Database trait
 #[async_trait]
 pub trait Database<Error>:
-    KeysDatabase<Err = Error>
-    + QuotesDatabase<Err = Error>
+    QuotesDatabase<Err = Error>
     + ProofsDatabase<Err = Error>
     + SignaturesDatabase<Err = Error>
     + FiltersDatabase<Err = Error>

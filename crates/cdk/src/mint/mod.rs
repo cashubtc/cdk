@@ -4,13 +4,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use bitcoin::base64::engine::general_purpose;
-use bitcoin::base64::Engine;
+use cashu::util::unix_time;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase, MintTransaction};
-use cdk_common::nut24::GetFilterResponse;
 use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
 use cdk_common::secret;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
