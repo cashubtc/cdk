@@ -8,7 +8,7 @@ use std::str::FromStr;
 use async_rusqlite::{query, DatabaseExecutor};
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::common::QuoteTTL;
+use cdk_common::common::{GCSFilter, QuoteTTL};
 use cdk_common::database::{
     self, MintDatabase, MintFiltersDatabase, MintKeysDatabase, MintProofsDatabase,
     MintQuotesDatabase, MintSignaturesDatabase,
@@ -1110,9 +1110,14 @@ impl MintFiltersDatabase for MintSqliteDatabase {
     async fn store_spent_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
         query(
             r#"
-            INSERT INTO spent_filter (keyset_id, filter)
-            VALUES (:keyset_id, :filter)
-            ON CONFLICT(keyset_id) DO UPDATE SET filter = excluded.filter
+            INSERT INTO spent_filter
+            (keyset_id, content, num_items, inv_false_positive_rate, remainder_bitlength, time)
+            VALUES (:keyset_id, :content, :num_items, :inv_false_positive_rate, :remainder_bitlength, :time)
+            ON CONFLICT(keyset_id) DO UPDATE SET content = excluded.content,
+            num_items = excluded,
+            inv_false_positive_rate = excluded.inv_false_positive_rate,
+            remainder_bitlength = excluded.remainder_bitlength
+            time = excluded.time
             "#,
         )
         .bind(":keyset_id", keyset_id.to_string())
