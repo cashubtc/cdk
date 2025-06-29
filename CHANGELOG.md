@@ -4,7 +4,29 @@
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
+
+
 ## [0.11.0](https://github.com/cashubtc/cdk/releases/tag/v0.11.0)
+
+### Summary
+
+Version 0.11.0 brings significant architectural changes to enhance database reliability and performance. The major changes include:
+
+1. **Database Engine Change**: Replaced `sqlx` with `rusqlite` as the SQLite database driver and removed support for `redb`. This change provides better performance and reliability for database operations.
+
+2. **Transaction Management**: Introduced robust database transaction support that encapsulates all database changes. The new Transaction trait implements a rollback operation on Drop unless explicitly committed, ensuring data integrity.
+
+3. **Race Condition Prevention**: Added READ-and-lock operations to securely read and lock records from the database for exclusive access, preventing race conditions in concurrent operations.
+
+### ⚠️ Important Migration Note for redb Users
+If you are currently running a mint with redb, you must migrate to SQLite before upgrading to v0.11. Follow these steps:
+
+1. Stop your current mint
+2. Back up your database
+3. Use the migration script available at: https://github.com/cashubtc/cdk/blob/main/misc/convert_redb_to_sqlite.sh
+4. Update your config file to target the SQLite database engine
+5. Start your mint with v0.11
+
 
 ### Added
 - cdk-lnbits: Support lnbits v1 and pre-v1 [PR](https://github.com/cashubtc/cdk/pull/802) ([thesimplekid]).
