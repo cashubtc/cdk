@@ -8,10 +8,10 @@ mod wallet;
 #[cfg(feature = "mint")]
 pub use mint::{
     Database as MintDatabase, DbTransactionFinalizer as MintDbWriterFinalizer,
-    FiltersDatabase as MintFiltersDatabase,
-    KeysDatabase as MintKeysDatabase, KeysDatabaseTransaction as MintKeyDatabaseTransaction, ProofsDatabase as MintProofsDatabase, ProofsTransaction as MintProofsTransaction,
-   
-    QuotesDatabase as MintQuotesDatabase, QuotesTransaction as MintQuotesTransaction, SignaturesDatabase as MintSignaturesDatabase,
+    FiltersDatabase as MintFiltersDatabase, KeysDatabase as MintKeysDatabase,
+    KeysDatabaseTransaction as MintKeyDatabaseTransaction, ProofsDatabase as MintProofsDatabase,
+    ProofsTransaction as MintProofsTransaction, QuotesDatabase as MintQuotesDatabase,
+    QuotesTransaction as MintQuotesTransaction, SignaturesDatabase as MintSignaturesDatabase,
     SignaturesTransaction as MintSignatureTransaction, Transaction as MintTransaction,
 };
 #[cfg(all(feature = "mint", feature = "auth"))]

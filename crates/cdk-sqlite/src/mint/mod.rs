@@ -10,9 +10,9 @@ use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::common::{GCSFilter, QuoteTTL};
 use cdk_common::database::{
-    self, MintDatabase, MintDbWriterFinalizer, MintKeyDatabaseTransaction, MintFiltersDatabase, MintKeysDatabase,
-    MintProofsDatabase, MintProofsTransaction,
-    MintQuotesDatabase, MintQuotesTransaction, MintSignatureTransaction, MintSignaturesDatabase,
+    self, MintDatabase, MintDbWriterFinalizer, MintFiltersDatabase, MintKeyDatabaseTransaction,
+    MintKeysDatabase, MintProofsDatabase, MintProofsTransaction, MintQuotesDatabase,
+    MintQuotesTransaction, MintSignatureTransaction, MintSignaturesDatabase,
 };
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
 use cdk_common::nut00::ProofsMethods;
@@ -31,7 +31,8 @@ use uuid::Uuid;
 use crate::common::{create_sqlite_pool, migrate};
 use crate::stmt::Column;
 use crate::{
-    column_as_binary, column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string, unpack_into
+    column_as_binary, column_as_nullable_number, column_as_nullable_string, column_as_number,
+    column_as_string, unpack_into,
 };
 
 mod async_rusqlite;
@@ -1317,7 +1318,11 @@ impl MintFiltersDatabase for MintSqliteDatabase {
         Ok(result)
     }
 
-    async fn update_spent_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
+    async fn update_spent_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
         query(
             r#"
             UPDATE spent_filters
@@ -1340,7 +1345,11 @@ impl MintFiltersDatabase for MintSqliteDatabase {
         Ok(())
     }
 
-    async fn store_issued_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
+    async fn store_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
         query(
             r#"
             INSERT INTO issued_filters
@@ -1380,7 +1389,11 @@ impl MintFiltersDatabase for MintSqliteDatabase {
         Ok(result)
     }
 
-    async fn update_issued_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
+    async fn update_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
         query(
             r#"
             UPDATE issued_filters
@@ -1612,10 +1625,9 @@ fn sqlite_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Err
 }
 
 fn sqlite_row_to_gcs_filter(row: Vec<Column>) -> Result<GCSFilter, Error> {
-
     unpack_into!(
         let (content, num_items, inv_false_positive_rate, remainder_bitlength, time) = row
-    ); 
+    );
 
     let content: Vec<u8> = column_as_binary!(content);
     let num_items: i64 = column_as_number!(num_items);
