@@ -559,7 +559,7 @@ pub(crate) async fn get_spent_filter(
 ) -> Result<Json<GetFilterResponse>, Response> {
     let response = state
         .mint
-        .get_spent_filter(keyset_id)
+        .get_spent_filter(&keyset_id)
         .await
         .map_err(|err| {
             tracing::error!(
@@ -591,7 +591,7 @@ pub(crate) async fn get_issued_filter(
 ) -> Result<Json<GetFilterResponse>, Response> {
     let response = state
         .mint
-        .get_issued_filter(keyset_id)
+        .get_issued_filter(&keyset_id)
         .await
         .map_err(|err| {
             tracing::error!(
