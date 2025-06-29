@@ -1110,18 +1110,23 @@ impl MintFiltersDatabase for MintSqliteDatabase {
     async fn store_spent_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
         query(
             r#"
-            INSERT INTO spent_filter
+            INSERT INTO spent_filters
             (keyset_id, content, num_items, inv_false_positive_rate, remainder_bitlength, time)
             VALUES (:keyset_id, :content, :num_items, :inv_false_positive_rate, :remainder_bitlength, :time)
-            ON CONFLICT(keyset_id) DO UPDATE SET content = excluded.content,
-            num_items = excluded,
+            ON CONFLICT(keyset_id) DO UPDATE SET
+            content = excluded.content,
+            num_items = excluded.num_items,
             inv_false_positive_rate = excluded.inv_false_positive_rate,
-            remainder_bitlength = excluded.remainder_bitlength
+            remainder_bitlength = excluded.remainder_bitlength,
             time = excluded.time
             "#,
         )
         .bind(":keyset_id", keyset_id.to_string())
-        .bind(":filter", serde_json::to_string(&filter)?)
+        .bind(":content", filter.content)
+        .bind(":num_items", filter.num_items as i64)
+        .bind(":inv_false_positive_rate", filter.inv_false_positive_rate as i64)
+        .bind(":remainder_bitlength", filter.remainder_bitlength as i64)
+        .bind(":time", filter.time as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1130,15 +1135,27 @@ impl MintFiltersDatabase for MintSqliteDatabase {
     async fn get_spent_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err> {
         let result = query(
             r#"
-            SELECT filter FROM spent_filter WHERE keyset_id = :keyset_id
+            SELECT content, num_items, inv_false_positive_rate, remainder_bitlength, time
+            FROM spent_filters WHERE keyset_id = :keyset_id
             "#,
         )
         .bind(":keyset_id", keyset_id.to_string())
         .fetch_one(&self.pool)
         .await?
         .map(|row| {
-            let filter: String = column_as_string!(row[0]);
-            serde_json::from_str(&filter).map_err(|e| database::Error::from(e))
+            let content: Vec<u8> = column_as_string!(row[0]);
+            let num_items: i64 = column_as_number!(row[1]);
+            let inv_false_positive_rate: i64 = column_as_number!(row[2]);
+            let remainder_bitlength: i64 = column_as_number!(row[3]);
+            let time: i64 = column_as_number!(row[4]);
+
+            Ok(GCSFilter {
+                content,
+                num_items: num_items as usize,
+                inv_false_positive_rate: inv_false_positive_rate as usize,
+                remainder_bitlength: remainder_bitlength as usize,
+                time: time as u64,
+            })
         })
         .transpose()?;
         Ok(result)
@@ -1147,7 +1164,13 @@ impl MintFiltersDatabase for MintSqliteDatabase {
     async fn update_spent_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
         query(
             r#"
-            UPDATE spent_filter SET filter = :filter WHERE keyset_id = :keyset_id
+            UPDATE spent_filters
+            SET content = :content,
+                num_items = :num_items,
+                inv_false_positive_rate = :inv_false_positive_rate,
+                remainder_bitlength = :remainder_bitlength,
+                time = :time
+            WHERE keyset_id = :keyset_id
             "#,
         )
         .bind(":keyset_id", keyset_id.to_string())
@@ -1160,9 +1183,15 @@ impl MintFiltersDatabase for MintSqliteDatabase {
     async fn store_issued_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
         query(
             r#"
-            INSERT INTO issued_filter (keyset_id, filter)
-            VALUES (:keyset_id, :filter)
-            ON CONFLICT(keyset_id) DO UPDATE SET filter = excluded.filter
+            INSERT INTO issued_filters
+            (keyset_id, content, num_items, inv_false_positive_rate, remainder_bitlength, time)
+            VALUES (:keyset_id, :content, :num_items, :inv_false_positive_rate, :remainder_bitlength, :time)
+            ON CONFLICT(keyset_id) DO UPDATE SET
+            content = excluded.content,
+            num_items = excluded.num_items,
+            inv_false_positive_rate = excluded.inv_false_positive_rate,
+            remainder_bitlength = excluded.remainder_bitlength,
+            time = excluded.time
             "#,
         )
         .bind(":keyset_id", keyset_id.to_string())
@@ -1175,7 +1204,8 @@ impl MintFiltersDatabase for MintSqliteDatabase {
     async fn get_issued_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err> {
         let result = query(
             r#"
-            SELECT filter FROM issued_filter WHERE keyset_id = :keyset_id
+            SELECT content, num_items, inv_false_positive_rate, remainder_bitlength, time
+            FROM issued_filters WHERE keyset_id = :keyset_id
             "#,
         )
         .bind(":keyset_id", keyset_id.to_string())
@@ -1192,7 +1222,13 @@ impl MintFiltersDatabase for MintSqliteDatabase {
     async fn update_issued_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
         query(
             r#"
-            UPDATE issued_filter SET filter = :filter WHERE keyset_id = :keyset_id
+            UPDATE issued_filters
+            SET content = :content,
+                num_items = :num_items,
+                inv_false_positive_rate = :inv_false_positive_rate,
+                remainder_bitlength = :remainder_bitlength,
+                time = :time
+            WHERE keyset_id = :keyset_id
             "#,
         )
         .bind(":keyset_id", keyset_id.to_string())
