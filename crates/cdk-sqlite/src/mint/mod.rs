@@ -1104,6 +1104,12 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
     }
 }
 
+impl MintFiltersDatabase for MintSqliteDatabase {
+    type Err = database::Error;
+
+    
+}
+
 #[async_trait]
 impl MintDatabase<database::Error> for MintSqliteDatabase {
     async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), database::Error> {
