@@ -17,10 +17,10 @@ use thiserror::Error;
 use super::nut00::Witness;
 use super::nut01::PublicKey;
 use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
-use crate::ensure_cdk;
 use crate::nuts::nut00::BlindedMessage;
 use crate::secret::Secret;
 use crate::util::{hex, unix_time};
+use crate::{ensure_cdk, SwapRequest};
 
 pub mod serde_p2pk_witness;
 
@@ -358,8 +358,9 @@ impl SpendingConditions {
                 if let Some(conditions) = conditions {
                     pubkeys.extend(conditions.pubkeys.clone().unwrap_or_default());
                 }
-
-                Some(pubkeys)
+                // Remove duplicates
+                let unique_pubkeys: HashSet<_> = pubkeys.into_iter().collect();
+                Some(unique_pubkeys.into_iter().collect())
             }
             Self::HTLCConditions { conditions, .. } => conditions.clone().and_then(|c| c.pubkeys),
         }
@@ -798,6 +799,185 @@ impl From<Tag> for Vec<String> {
     }
 }
 
+impl SwapRequest {
+    /// Generate the message to sign for SIG_ALL validation
+    /// Concatenates all input secrets and output blinded messages in order
+    fn sig_all_msg_to_sign(&self) -> String {
+        let mut msg_to_sign = String::new();
+
+        // Add all input secrets in order
+        for proof in self.inputs() {
+            let secret = proof.secret.to_string();
+            msg_to_sign.push_str(&secret);
+        }
+
+        // Add all output blinded messages in order
+        for output in self.outputs() {
+            let message = output.blinded_secret.to_string();
+            msg_to_sign.push_str(&message);
+        }
+
+        msg_to_sign
+    }
+
+    /// Get required signature count from first input's spending conditions
+    fn get_sig_all_required_sigs(&self) -> Result<(u64, SpendingConditions), Error> {
+        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
+        let first_conditions: SpendingConditions =
+            SpendingConditions::try_from(&first_input.secret)?;
+
+        let required_sigs = match first_conditions.clone() {
+            SpendingConditions::P2PKConditions { conditions, .. } => {
+                let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
+
+                if SigFlag::SigAll != conditions.sig_flag {
+                    return Err(Error::IncorrectSecretKind);
+                }
+
+                conditions.num_sigs.unwrap_or(1)
+            }
+            _ => return Err(Error::IncorrectSecretKind),
+        };
+
+        Ok((required_sigs, first_conditions))
+    }
+
+    /// Verify all inputs have matching secrets and tags
+    fn verify_matching_conditions(&self) -> Result<(), Error> {
+        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
+        let first_nut10: Nut10Secret = (&first_input.secret).try_into()?;
+
+        for proof in self.inputs().iter().skip(1) {
+            let current_secret: Nut10Secret = proof.secret.clone().try_into()?;
+
+            // Check data matches
+            if current_secret.secret_data().data() != first_nut10.secret_data().data() {
+                return Err(Error::SpendConditionsNotMet);
+            }
+
+            // Check tags match
+            if current_secret.secret_data().tags() != first_nut10.secret_data().tags() {
+                return Err(Error::SpendConditionsNotMet);
+            }
+        }
+        Ok(())
+    }
+
+    /// Get validated signatures from first input's witness
+    fn get_valid_witness_signatures(&self) -> Result<Vec<Signature>, Error> {
+        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
+        let first_witness = first_input
+            .witness
+            .as_ref()
+            .ok_or(Error::SignaturesNotProvided)?;
+
+        let witness_sigs = first_witness
+            .signatures()
+            .ok_or(Error::SignaturesNotProvided)?;
+
+        // Convert witness strings to signatures
+        witness_sigs
+            .iter()
+            .map(|s| Signature::from_str(s))
+            .collect::<Result<Vec<Signature>, _>>()
+            .map_err(Error::from)
+    }
+
+    /// Check if swap request can be signed with the given secret key
+    fn can_sign_sig_all(
+        &self,
+        secret_key: &SecretKey,
+    ) -> Result<(SpendingConditions, PublicKey), Error> {
+        // Get the first input since all must match for SIG_ALL
+        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
+        let first_conditions: SpendingConditions =
+            SpendingConditions::try_from(&first_input.secret)?;
+
+        // Verify this is a P2PK condition with SIG_ALL
+        match first_conditions.clone() {
+            SpendingConditions::P2PKConditions { conditions, .. } => {
+                let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
+                if conditions.sig_flag != SigFlag::SigAll {
+                    return Err(Error::IncorrectSecretKind);
+                }
+                conditions
+            }
+            _ => return Err(Error::IncorrectSecretKind),
+        };
+
+        // Get authorized keys and verify secret_key matches one
+        let pubkey = secret_key.public_key();
+        let authorized_keys = first_conditions
+            .pubkeys()
+            .ok_or(Error::P2PKPubkeyRequired)?;
+
+        if !authorized_keys.contains(&pubkey) {
+            return Err(Error::SpendConditionsNotMet);
+        }
+
+        Ok((first_conditions, pubkey))
+    }
+
+    /// Sign swap request with SIG_ALL if conditions are met
+    pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
+        // Verify we can sign and get conditions
+        let (_first_conditions, _) = self.can_sign_sig_all(&secret_key)?;
+
+        // Verify all inputs have matching conditions
+        self.verify_matching_conditions()?;
+
+        // Get message to sign
+        let msg = self.sig_all_msg_to_sign();
+        let signature = secret_key.sign(msg.as_bytes())?;
+
+        // Add signature to first input witness
+        let first_input = self
+            .inputs_mut()
+            .first_mut()
+            .ok_or(Error::IncorrectSecretKind)?;
+
+        match first_input.witness.as_mut() {
+            Some(witness) => {
+                witness.add_signatures(vec![signature.to_string()]);
+            }
+            None => {
+                let mut p2pk_witness = Witness::P2PKWitness(P2PKWitness::default());
+                p2pk_witness.add_signatures(vec![signature.to_string()]);
+                first_input.witness = Some(p2pk_witness);
+            }
+        };
+
+        Ok(())
+    }
+
+    /// Validate SIG_ALL conditions and signatures for the swap request
+    pub fn verify_sig_all(&self) -> Result<(), Error> {
+        // Get required signatures and conditions from first input
+        let (required_sigs, first_conditions) = self.get_sig_all_required_sigs()?;
+
+        // Verify all inputs have matching secrets
+        self.verify_matching_conditions()?;
+
+        // Get and validate witness signatures
+        let signatures = self.get_valid_witness_signatures()?;
+
+        // Get signing pubkeys
+        let verifying_pubkeys = first_conditions
+            .pubkeys()
+            .ok_or(Error::P2PKPubkeyRequired)?;
+
+        // Get aggregated message and validate signatures
+        let msg = self.sig_all_msg_to_sign();
+        let valid_sigs = valid_signatures(msg.as_bytes(), &verifying_pubkeys, &signatures)?;
+
+        if valid_sigs >= required_sigs {
+            Ok(())
+        } else {
+            Err(Error::SpendConditionsNotMet)
+        }
+    }
+}
+
 impl Serialize for Tag {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -830,7 +1010,7 @@ mod tests {
     use super::*;
     use crate::nuts::Id;
     use crate::secret::Secret;
-    use crate::Amount;
+    use crate::{Amount, BlindedMessage};
 
     #[test]
     fn test_secret_ser() {
@@ -977,5 +1157,193 @@ mod tests {
         ).unwrap();
 
         assert!(proof.verify_p2pk().is_err());
+    }
+
+    // Helper functions for tests
+    fn create_test_keys() -> (SecretKey, PublicKey) {
+        let secret_key =
+            SecretKey::from_str("99590802251e78ee1051648439eedb003dc539093a48a44e7b8f2642c909ea37")
+                .unwrap();
+        let pubkey = secret_key.public_key();
+        (secret_key, pubkey)
+    }
+
+    fn create_test_secret(pubkey: PublicKey, conditions: Conditions) -> Secret {
+        Nut10Secret::new(Kind::P2PK, pubkey.to_string(), Some(conditions))
+            .try_into()
+            .unwrap()
+    }
+
+    fn create_test_proof(secret: Secret, pubkey: PublicKey, id: &str) -> Proof {
+        Proof {
+            keyset_id: Id::from_str(id).unwrap(),
+            amount: Amount::ZERO,
+            secret,
+            c: pubkey,
+            witness: None,
+            dleq: None,
+        }
+    }
+
+    fn create_test_blinded_msg(pubkey: PublicKey) -> BlindedMessage {
+        BlindedMessage {
+            amount: Amount::ZERO,
+            blinded_secret: pubkey,
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            witness: None,
+        }
+    }
+
+    #[test]
+    fn test_sig_all_basic_signing_verification() {
+        let (secret_key, pubkey) = create_test_keys();
+
+        // Create basic SIG_ALL conditions
+        let conditions = Conditions {
+            sig_flag: SigFlag::SigAll,
+            ..Default::default()
+        };
+
+        let secret = create_test_secret(pubkey, conditions);
+        let proof1 = create_test_proof(secret.clone(), pubkey, "009a1f293253e41e");
+        let proof2 = create_test_proof(secret, pubkey, "009a1f293253e41f");
+        let blinded_msg = create_test_blinded_msg(pubkey);
+
+        // Test basic signing flow
+        let mut swap = SwapRequest::new(vec![proof1, proof2], vec![blinded_msg]);
+        assert!(
+            swap.verify_sig_all().is_err(),
+            "Unsigned swap should fail verification"
+        );
+
+        assert!(
+            swap.sign_sig_all(secret_key).is_ok(),
+            "Signing should succeed"
+        );
+        assert!(
+            swap.verify_sig_all().is_ok(),
+            "Signed swap should pass verification"
+        );
+    }
+
+    #[test]
+    fn test_sig_all_unauthorized_key() {
+        let (_secret_key, pubkey) = create_test_keys();
+
+        let conditions = Conditions {
+            sig_flag: SigFlag::SigAll,
+            ..Default::default()
+        };
+
+        let secret = create_test_secret(pubkey, conditions);
+        let proof = create_test_proof(secret, pubkey, "009a1f293253e41e");
+        let blinded_msg = create_test_blinded_msg(pubkey);
+
+        // Create unauthorized key
+        let unauthorized_key =
+            SecretKey::from_str("0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap();
+
+        let mut swap = SwapRequest::new(vec![proof], vec![blinded_msg]);
+        assert!(
+            swap.sign_sig_all(unauthorized_key).is_err(),
+            "Signing with unauthorized key should fail"
+        );
+    }
+
+    #[test]
+    fn test_sig_all_mismatched_secrets() {
+        let (secret_key, pubkey) = create_test_keys();
+
+        let conditions = Conditions {
+            sig_flag: SigFlag::SigAll,
+            ..Default::default()
+        };
+
+        // Create first proof with original secret
+        let secret1 = create_test_secret(pubkey, conditions.clone());
+
+        // Create second proof with different secret data
+        let different_secret = Nut10Secret::new(
+            Kind::P2PK,
+            "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+            Some(conditions),
+        )
+        .try_into()
+        .unwrap();
+
+        let proof1 = create_test_proof(secret1, pubkey, "009a1f293253e41e");
+        let proof2 = create_test_proof(different_secret, pubkey, "009a1f293253e41f");
+        let blinded_msg = create_test_blinded_msg(pubkey);
+
+        let mut swap = SwapRequest::new(vec![proof1, proof2], vec![blinded_msg]);
+        assert!(
+            swap.sign_sig_all(secret_key).is_err(),
+            "Signing with mismatched secrets should fail"
+        );
+    }
+
+    #[test]
+    fn test_sig_all_wrong_flag() {
+        let (secret_key, pubkey) = create_test_keys();
+
+        // Create conditions with SIG_INPUTS instead of SIG_ALL
+        let sig_inputs_conditions = Conditions {
+            sig_flag: SigFlag::SigInputs,
+            ..Default::default()
+        };
+
+        let secret = create_test_secret(pubkey, sig_inputs_conditions);
+        let proof = create_test_proof(secret, pubkey, "009a1f293253e41e");
+        let blinded_msg = create_test_blinded_msg(pubkey);
+
+        let mut swap = SwapRequest::new(vec![proof], vec![blinded_msg]);
+        assert!(
+            swap.sign_sig_all(secret_key).is_err(),
+            "Signing with SIG_INPUTS flag should fail"
+        );
+    }
+
+    #[test]
+    fn test_sig_all_multiple_signatures() {
+        let (secret_key1, pubkey1) = create_test_keys();
+        let secret_key2 =
+            SecretKey::from_str("7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f")
+                .unwrap();
+        let pubkey2 = secret_key2.public_key();
+
+        // Create conditions requiring 2 signatures
+        let conditions = Conditions {
+            num_sigs: Some(2),
+            sig_flag: SigFlag::SigAll,
+            pubkeys: Some(vec![pubkey2]),
+            ..Default::default()
+        };
+
+        let secret = create_test_secret(pubkey1, conditions);
+        let proof = create_test_proof(secret, pubkey1, "009a1f293253e41e");
+        let blinded_msg = create_test_blinded_msg(pubkey1);
+
+        let mut swap = SwapRequest::new(vec![proof], vec![blinded_msg]);
+
+        // Sign with first key
+        assert!(
+            swap.sign_sig_all(secret_key1).is_ok(),
+            "First signature should succeed"
+        );
+        assert!(
+            swap.verify_sig_all().is_err(),
+            "Single signature should not verify when two required"
+        );
+
+        // Sign with second key
+        assert!(
+            swap.sign_sig_all(secret_key2).is_ok(),
+            "Second signature should succeed"
+        );
+        assert!(
+            swap.verify_sig_all().is_ok(),
+            "Both signatures should verify"
+        );
     }
 }
