@@ -132,7 +132,7 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
 #[async_trait::async_trait]
 /// Signatory trait
 pub trait Signatory {
-    /// The Signatory implementation name. This may be exposed, so being as discreet as possible is
+    /// The Signatory implementation name. This may be exposed, so being as discrete as possible is
     /// advised.
     fn name(&self) -> String;
 
