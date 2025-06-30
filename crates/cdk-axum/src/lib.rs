@@ -142,6 +142,11 @@ async fn cors_middleware(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> Response {
+    #[cfg(feature = "auth")]
+    let allowed_headers = "Content-Type, Clear-auth, Blind-auth";
+    #[cfg(not(feature = "auth"))]
+    let allowed_headers = "Content-Type";
+
     // Handle preflight requests
     if req.method() == axum::http::Method::OPTIONS {
         let mut response = Response::new("".into());
@@ -154,7 +159,7 @@ async fn cors_middleware(
         );
         response.headers_mut().insert(
             "Access-Control-Allow-Headers",
-            "Content-Type".parse().unwrap(),
+            allowed_headers.parse().unwrap(),
         );
         return response;
     }
@@ -171,7 +176,7 @@ async fn cors_middleware(
     );
     response.headers_mut().insert(
         "Access-Control-Allow-Headers",
-        "Content-Type".parse().unwrap(),
+        allowed_headers.parse().unwrap(),
     );
 
     response
@@ -210,15 +215,15 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore));
 
-    let mint_router = Router::new()
-        .nest("/v1", v1_router)
-        .layer(from_fn(cors_middleware));
+    let mint_router = Router::new().nest("/v1", v1_router);
 
     #[cfg(feature = "auth")]
     let mint_router = {
         let auth_router = create_auth_router(state.clone());
         mint_router.nest("/v1", auth_router)
     };
+
+    let mint_router = mint_router.layer(from_fn(cors_middleware));
 
     let mint_router = mint_router.with_state(state);
 
