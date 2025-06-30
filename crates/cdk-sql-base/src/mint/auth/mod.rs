@@ -1,8 +1,7 @@
-//! SQLite Mint Auth
+//! SQL Mint Auth
 
 use std::collections::HashMap;
-use std::ops::DerefMut;
-use std::path::Path;
+use std::marker::PhantomData;
 use std::str::FromStr;
 
 use async_trait::async_trait;
@@ -10,53 +9,57 @@ use cdk_common::database::{self, MintAuthDatabase, MintAuthTransaction};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{AuthProof, BlindSignature, Id, PublicKey, State};
 use cdk_common::{AuthRequired, ProtectedEndpoint};
+use migrations::MIGRATIONS;
 use tracing::instrument;
 
-use super::async_rusqlite::AsyncRusqlite;
-use super::{sqlite_row_to_blind_signature, sqlite_row_to_keyset_info, SqliteTransaction};
+use super::{sql_row_to_blind_signature, sql_row_to_keyset_info, SQLTransaction};
 use crate::column_as_string;
-use crate::common::{create_sqlite_pool, migrate};
-use crate::mint::async_rusqlite::query;
+use crate::common::migrate;
+use crate::database::{DatabaseConnector, DatabaseTransaction};
 use crate::mint::Error;
+use crate::stmt::query;
 
-/// Mint SQLite Database
+/// Mint SQL Database
 #[derive(Debug, Clone)]
-pub struct MintSqliteAuthDatabase {
-    pool: AsyncRusqlite,
+pub struct SQLMintAuthDatabase<DB>
+where
+    DB: DatabaseConnector,
+{
+    db: DB,
+}
+
+impl<DB> SQLMintAuthDatabase<DB>
+where
+    DB: DatabaseConnector,
+{
+    /// Creates a new instance
+    pub async fn new<X>(db: X) -> Result<Self, Error>
+    where
+        X: Into<DB>,
+    {
+        let db = db.into();
+        Self::migrate(&db).await?;
+        Ok(Self { db })
+    }
+
+    /// Migrate
+    async fn migrate(conn: &DB) -> Result<(), Error> {
+        let tx = conn.begin().await?;
+        migrate(&tx, MIGRATIONS).await?;
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 #[rustfmt::skip]
 mod migrations;
 
-impl MintSqliteAuthDatabase {
-    /// Create new [`MintSqliteAuthDatabase`]
-    #[cfg(not(feature = "sqlcipher"))]
-    pub async fn new<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let pool = create_sqlite_pool(path.as_ref().to_str().ok_or(Error::InvalidDbPath)?);
-        migrate(pool.get()?.deref_mut(), migrations::MIGRATIONS)?;
-
-        Ok(Self {
-            pool: AsyncRusqlite::new(pool),
-        })
-    }
-
-    /// Create new [`MintSqliteAuthDatabase`]
-    #[cfg(feature = "sqlcipher")]
-    pub async fn new<P: AsRef<Path>>(path: P, password: String) -> Result<Self, Error> {
-        let pool = create_sqlite_pool(
-            path.as_ref().to_str().ok_or(Error::InvalidDbPath)?,
-            password,
-        );
-        migrate(pool.get()?.deref_mut(), migrations::MIGRATIONS)?;
-
-        Ok(Self {
-            pool: AsyncRusqlite::new(pool),
-        })
-    }
-}
 
 #[async_trait]
-impl MintAuthTransaction<database::Error> for SqliteTransaction<'_> {
+impl<'a, T> MintAuthTransaction<database::Error> for SQLTransaction<'a, T>
+where
+    T: DatabaseTransaction<'a>,
+{
     #[instrument(skip(self))]
     async fn set_active_keyset(&mut self, id: Id) -> Result<(), database::Error> {
         tracing::info!("Setting auth keyset {id} active");
@@ -230,15 +233,19 @@ impl MintAuthTransaction<database::Error> for SqliteTransaction<'_> {
 }
 
 #[async_trait]
-impl MintAuthDatabase for MintSqliteAuthDatabase {
+impl<DB> MintAuthDatabase for SQLMintAuthDatabase<DB>
+where
+    DB: DatabaseConnector,
+{
     type Err = database::Error;
 
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn MintAuthTransaction<database::Error> + Send + Sync + 'a>, database::Error>
     {
-        Ok(Box::new(SqliteTransaction {
-            inner: self.pool.begin().await?,
+        Ok(Box::new(SQLTransaction {
+            inner: self.db.begin().await?,
+            _phantom: PhantomData,
         }))
     }
 
@@ -253,7 +260,7 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
                 active = 1;
             "#,
         )
-        .pluck(&self.pool)
+        .pluck(&self.db)
         .await?
         .map(|id| Ok::<_, Error>(column_as_string!(id, Id::from_str, Id::from_bytes)))
         .transpose()?)
@@ -276,9 +283,9 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
                 WHERE id=:id"#,
         )
         .bind(":id", id.to_string())
-        .fetch_one(&self.pool)
+        .fetch_one(&self.db)
         .await?
-        .map(sqlite_row_to_keyset_info)
+        .map(sql_row_to_keyset_info)
         .transpose()?)
     }
 
@@ -298,17 +305,17 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
                 keyset
                 WHERE id=:id"#,
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&self.db)
         .await?
         .into_iter()
-        .map(sqlite_row_to_keyset_info)
+        .map(sql_row_to_keyset_info)
         .collect::<Result<Vec<_>, _>>()?)
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
         let mut current_states = query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)
             .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
-            .fetch_all(&self.pool)
+            .fetch_all(&self.db)
             .await?
             .into_iter()
             .map(|row| {
@@ -346,7 +353,7 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
                 .map(|y| y.to_bytes().to_vec())
                 .collect(),
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&self.db)
         .await?
         .into_iter()
         .map(|mut row| {
@@ -356,7 +363,7 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
                     PublicKey::from_hex,
                     PublicKey::from_slice
                 ),
-                sqlite_row_to_blind_signature(row)?,
+                sql_row_to_blind_signature(row)?,
             ))
         })
         .collect::<Result<HashMap<_, _>, Error>>()?;
@@ -373,7 +380,7 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
         Ok(
             query(r#"SELECT auth FROM protected_endpoints WHERE endpoint = :endpoint"#)
                 .bind(":endpoint", serde_json::to_string(&protected_endpoint)?)
-                .pluck(&self.pool)
+                .pluck(&self.db)
                 .await?
                 .map(|auth| {
                     Ok::<_, Error>(column_as_string!(
@@ -390,7 +397,7 @@ impl MintAuthDatabase for MintSqliteAuthDatabase {
         &self,
     ) -> Result<HashMap<ProtectedEndpoint, Option<AuthRequired>>, Self::Err> {
         Ok(query(r#"SELECT endpoint, auth FROM protected_endpoints"#)
-            .fetch_all(&self.pool)
+            .fetch_all(&self.db)
             .await?
             .into_iter()
             .map(|row| {

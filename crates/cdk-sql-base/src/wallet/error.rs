@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-/// SQLite Wallet Error
+/// SQL Wallet Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// SQLX Error

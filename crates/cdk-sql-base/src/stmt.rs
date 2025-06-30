@@ -1,12 +1,10 @@
+//! Stataments mod
 use std::collections::HashMap;
 
-use rusqlite::{self, CachedStatement};
+use cdk_common::database::Error;
 
-use crate::common::SqliteConnectionManager;
-use crate::pool::PooledResource;
-
-/// The Value coming from SQLite
-pub type Value = rusqlite::types::Value;
+use crate::database::DatabaseExecutor;
+use crate::value::Value;
 
 /// The Column type
 pub type Column = Value;
@@ -23,10 +21,12 @@ pub enum ExpectedSqlResponse {
     AffectedRows,
     /// Return the first column of the first row
     Pluck,
+    /// Batch
+    Batch,
 }
 
 /// Sql message
-#[derive(Default, Debug)]
+#[derive(Debug, Default)]
 pub struct Statement {
     /// The SQL statement
     pub sql: String,
@@ -109,76 +109,52 @@ impl Statement {
         self
     }
 
-    fn get_stmt(
-        self,
-        conn: &PooledResource<SqliteConnectionManager>,
-    ) -> rusqlite::Result<CachedStatement<'_>> {
-        let mut stmt = conn.prepare_cached(&self.sql)?;
-        for (name, value) in self.args {
-            let index = stmt
-                .parameter_index(&name)
-                .map_err(|_| rusqlite::Error::InvalidColumnName(name.clone()))?
-                .ok_or(rusqlite::Error::InvalidColumnName(name))?;
-
-            stmt.raw_bind_parameter(index, value)?;
-        }
-
-        Ok(stmt)
+    /// Executes a query and returns the affected rows
+    pub async fn pluck<C>(self, conn: &C) -> Result<Option<Value>, Error>
+    where
+        C: DatabaseExecutor,
+    {
+        conn.pluck(self).await
     }
 
     /// Executes a query and returns the affected rows
-    pub fn plunk(
-        self,
-        conn: &PooledResource<SqliteConnectionManager>,
-    ) -> rusqlite::Result<Option<Value>> {
-        let mut stmt = self.get_stmt(conn)?;
-        let mut rows = stmt.raw_query();
-        rows.next()?.map(|row| row.get(0)).transpose()
+    pub async fn batch<C>(self, conn: &C) -> Result<(), Error>
+    where
+        C: DatabaseExecutor,
+    {
+        conn.batch(self).await
     }
 
     /// Executes a query and returns the affected rows
-    pub fn execute(
-        self,
-        conn: &PooledResource<SqliteConnectionManager>,
-    ) -> rusqlite::Result<usize> {
-        self.get_stmt(conn)?.raw_execute()
+    pub async fn execute<C>(self, conn: &C) -> Result<usize, Error>
+    where
+        C: DatabaseExecutor,
+    {
+        conn.execute(self).await
     }
 
     /// Runs the query and returns the first row or None
-    pub fn fetch_one(
-        self,
-        conn: &PooledResource<SqliteConnectionManager>,
-    ) -> rusqlite::Result<Option<Vec<Column>>> {
-        let mut stmt = self.get_stmt(conn)?;
-        let columns = stmt.column_count();
-        let mut rows = stmt.raw_query();
-        rows.next()?
-            .map(|row| {
-                (0..columns)
-                    .map(|i| row.get(i))
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()
+    pub async fn fetch_one<C>(self, conn: &C) -> Result<Option<Vec<Column>>, Error>
+    where
+        C: DatabaseExecutor,
+    {
+        conn.fetch_one(self).await
     }
 
     /// Runs the query and returns the first row or None
-    pub fn fetch_all(
-        self,
-        conn: &PooledResource<SqliteConnectionManager>,
-    ) -> rusqlite::Result<Vec<Vec<Column>>> {
-        let mut stmt = self.get_stmt(conn)?;
-        let columns = stmt.column_count();
-        let mut rows = stmt.raw_query();
-        let mut results = vec![];
-
-        while let Some(row) = rows.next()? {
-            results.push(
-                (0..columns)
-                    .map(|i| row.get(i))
-                    .collect::<Result<Vec<_>, _>>()?,
-            );
-        }
-
-        Ok(results)
+    pub async fn fetch_all<C>(self, conn: &C) -> Result<Vec<Vec<Column>>, Error>
+    where
+        C: DatabaseExecutor,
+    {
+        conn.fetch_all(self).await
     }
+}
+
+/// Creates a new query statement
+#[inline(always)]
+pub fn query<T>(sql: T) -> Statement
+where
+    T: ToString,
+{
+    Statement::new(sql)
 }
