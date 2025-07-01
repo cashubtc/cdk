@@ -21,7 +21,7 @@ pub trait MintAuthTransaction<Error>: DbTransactionFinalizer<Err = Error> {
     async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), Error>;
 
     /// Add spent [`AuthProof`]
-    async fn add_proof(&mut self, proof: AuthProof) -> Result<(), Error>;
+    async fn add_proof(&mut self, proof: AuthProof, state: State) -> Result<Option<State>, Error>;
 
     /// Update [`AuthProof`]s state
     async fn update_proof_state(

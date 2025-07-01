@@ -166,22 +166,13 @@ impl Mint {
         let mut tx = auth_localstore.begin_transaction().await?;
 
         // Add proof to the database
-        tx.add_proof(proof.clone()).await.map_err(|err| {
-            tracing::error!("Failed to add proof to database: {:?}", err);
-            err
-        })?;
-
-        // Update proof state to spent
-        let state = match tx.update_proof_state(&y, State::Spent).await {
+        let state = match tx.add_proof(proof.clone(), State::Spent).await {
             Ok(state) => {
-                tracing::debug!(
-                    "Successfully updated proof state to SPENT, previous state: {:?}",
-                    state
-                );
+                tracing::debug!("Successfully added proof with state of SPENT: {:?}", state);
                 state
             }
             Err(e) => {
-                tracing::error!("Failed to update proof state: {:?}", e);
+                tracing::error!("Failed to add proof with state SPENT: {:?}", e);
                 return Err(e.into());
             }
         };
