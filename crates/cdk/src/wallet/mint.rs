@@ -142,12 +142,13 @@ impl Wallet {
     }
 
     /// Get active mint quotes
-    /// Mint quotes that are not expired and not paid will be returned (including those that are paid but not yet issued).
+    /// Returns mint quotes that are not expired and not yet issued.
     #[instrument(skip(self))]
     pub async fn get_active_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
         let mut mint_quotes = self.localstore.get_mint_quotes().await?;
         let unix_time = unix_time();
-        mint_quotes.retain(|quote| quote.state != MintQuoteState::Paid && quote.expiry > unix_time);
+        mint_quotes
+            .retain(|quote| quote.state != MintQuoteState::Issued && quote.expiry > unix_time);
         Ok(mint_quotes)
     }
 
