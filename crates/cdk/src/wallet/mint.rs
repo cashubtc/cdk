@@ -237,7 +237,24 @@ impl Wallet {
             request.sign(secret_key)?;
         }
 
-        let mint_res = self.client.post_mint(request).await?;
+        let mint_res = match self.client.post_mint(request).await {
+            Ok(res) => res,
+            Err(Error::BlindedMessageAlreadySigned) => {
+                let count = premint_secrets.secrets.len();
+                tracing::warn!(
+                    "BlindedMessageAlreadySigned: Incrementing keyset {} counter by {}",
+                    active_keyset_id,
+                    count
+                );
+                self.localstore
+                    .increment_keyset_counter(&active_keyset_id, count as u32)
+                    .await?;
+                return Err(Error::BlindedMessageAlreadySigned);
+            }
+            Err(e) => {
+                return Err(e.into());
+            }
+        };
 
         let keys = self.get_keyset_keys(active_keyset_id).await?;
 
