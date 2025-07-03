@@ -138,7 +138,25 @@ impl Wallet {
             }
         }
 
-        let swap_response = self.client.post_swap(pre_swap.swap_request).await?;
+        let outputs_count = pre_swap.derived_secret_count;
+
+        let swap_response = match self.client.post_swap(pre_swap.swap_request).await {
+            Ok(swap_response) => swap_response,
+            Err(Error::BlindedMessageAlreadySigned) => {
+                tracing::warn!(
+                    "BlindedMessageAlreadySigned: Incrementing keyset {} counter by {}",
+                    active_keyset_id,
+                    outputs_count
+                );
+                self.localstore
+                    .increment_keyset_counter(&active_keyset_id, outputs_count)
+                    .await?;
+                return Err(Error::BlindedMessageAlreadySigned);
+            }
+            Err(e) => {
+                return Err(e.into());
+            }
+        };
 
         // Proof to keep
         let recv_proofs = construct_proofs(

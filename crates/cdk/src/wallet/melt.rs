@@ -165,6 +165,23 @@ impl Wallet {
 
         let melt_response = match melt_response {
             Ok(melt_response) => melt_response,
+            Err(Error::BlindedMessageAlreadySigned) => {
+                tracing::error!("Could not melt: BlindedMessageAlreadySigned");
+                let count = premint_secrets.secrets.len();
+                tracing::warn!(
+                    "BlindedMessageAlreadySigned: Incrementing keyset {} counter by {}",
+                    active_keyset_id,
+                    count
+                );
+                self.localstore
+                    .increment_keyset_counter(&active_keyset_id, count as u32)
+                    .await?;
+
+                tracing::info!("Checking status of input proofs.");
+                self.reclaim_unspent(proofs).await?;
+
+                return Err(Error::BlindedMessageAlreadySigned);
+            }
             Err(err) => {
                 tracing::error!("Could not melt: {}", err);
                 tracing::info!("Checking status of input proofs.");
