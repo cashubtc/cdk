@@ -76,6 +76,11 @@ impl MintRPCServer {
     pub async fn start(&mut self, tls_dir: Option<PathBuf>) -> Result<(), Error> {
         tracing::info!("Starting RPC server {}", self.socket_addr);
 
+        #[cfg(not(target_arch = "wasm32"))]
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
+
         let server = match tls_dir {
             Some(tls_dir) => {
                 tracing::info!("TLS configuration found, starting secure server");
