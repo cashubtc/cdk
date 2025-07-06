@@ -539,12 +539,6 @@ async fn main() -> anyhow::Result<()> {
 
     let mint = Arc::new(mint);
 
-    // Check the status of any mint quotes that are pending
-    // In the event that the mint server is down but the ln node is not
-    // it is possible that a mint quote was paid but the mint has not been updated
-    // this will check and update the mint state of those quotes
-    mint.check_pending_mint_quotes().await?;
-
     // Checks the status of all pending melt quotes
     // Pending melt quotes where the payment has gone through inputs are burnt
     // Pending melt quotes where the payment has **failed** inputs are reset to unspent
