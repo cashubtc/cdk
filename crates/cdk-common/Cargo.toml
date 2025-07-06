@@ -27,6 +27,7 @@ cbor-diag.workspace = true
 ciborium.workspace = true
 serde.workspace = true
 lightning-invoice.workspace = true
+lightning.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 url.workspace = true

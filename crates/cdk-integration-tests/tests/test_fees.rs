@@ -28,6 +28,10 @@ async fn test_swap() {
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&invoice).await.unwrap();
 
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 10)
+        .await
+        .unwrap();
+
     let _mint_amount = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await

@@ -81,6 +81,9 @@ impl Indexable for NotificationPayload<Uuid> {
             NotificationPayload::MintQuoteBolt11Response(mint_quote) => {
                 vec![Index::from(Notification::MintQuoteBolt11(mint_quote.quote))]
             }
+            NotificationPayload::MintQuoteBolt12Response(mint_quote) => {
+                vec![Index::from(Notification::MintQuoteBolt12(mint_quote.quote))]
+            }
         }
     }
 }

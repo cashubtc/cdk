@@ -28,6 +28,7 @@ async-trait.workspace = true
 anyhow.workspace = true
 bitcoin.workspace = true
 ciborium.workspace = true
+lightning.workspace = true
 lightning-invoice.workspace = true
 regex.workspace = true
 reqwest = { workspace = true, optional = true }

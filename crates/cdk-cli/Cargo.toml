@@ -11,6 +11,8 @@ rust-version.workspace = true
 readme = "README.md"
 
 [features]
+default = ["bip353"]
+bip353 = ["dep:trust-dns-resolver"]
 sqlcipher = ["cdk-sqlite/sqlcipher"]
 # MSRV is not tracked with redb enabled
 redb = ["dep:cdk-redb"]
@@ -37,3 +39,5 @@ nostr-sdk = { version = "0.41.0", default-features = false, features = [
 reqwest.workspace = true
 url.workspace = true
 serde_with.workspace = true
+lightning.workspace = true
+trust-dns-resolver = { version = "0.23.2", optional = true }

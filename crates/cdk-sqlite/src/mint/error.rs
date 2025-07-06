@@ -101,6 +101,9 @@ pub enum Error {
     /// Invalid keyset ID
     #[error("Invalid keyset ID")]
     InvalidKeysetId,
+    /// Invalid melt payment request
+    #[error("Invalid melt payment request")]
+    InvalidMeltPaymentRequest,
 }
 
 impl From<Error> for cdk_common::database::Error {

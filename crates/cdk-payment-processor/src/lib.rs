@@ -3,6 +3,7 @@
 #![warn(rustdoc::bare_urls)]
 
 pub mod error;
+/// Protocol types and functionality for the CDK payment processor
 pub mod proto;
 
 pub use proto::cdk_payment_processor_client::CdkPaymentProcessorClient;
