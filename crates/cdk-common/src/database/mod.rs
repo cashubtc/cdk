@@ -29,6 +29,9 @@ pub enum Error {
     /// Duplicate entry
     #[error("Duplicate entry")]
     Duplicate,
+    /// Amount overflow
+    #[error("Amount overflow")]
+    AmountOverflow,
 
     /// DHKE error
     #[error(transparent)]
