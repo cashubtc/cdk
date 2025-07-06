@@ -3,16 +3,16 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use cashu::MintInfo;
+use cashu::{Amount, MintInfo};
 use uuid::Uuid;
 
 use super::Error;
 use crate::common::QuoteTTL;
 use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
 use crate::nuts::{
-    BlindSignature, CurrencyUnit, Id, MeltQuoteState, MintQuoteState, Proof, Proofs, PublicKey,
-    State,
+    BlindSignature, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey, State,
 };
+use crate::payment::PaymentIdentifier;
 
 #[cfg(feature = "auth")]
 mod auth;
@@ -67,13 +67,20 @@ pub trait QuotesTransaction<'a> {
     async fn get_mint_quote(&mut self, quote_id: &Uuid)
         -> Result<Option<MintMintQuote>, Self::Err>;
     /// Add [`MintMintQuote`]
-    async fn add_or_replace_mint_quote(&mut self, quote: MintMintQuote) -> Result<(), Self::Err>;
-    /// Update state of [`MintMintQuote`]
-    async fn update_mint_quote_state(
+    async fn add_mint_quote(&mut self, quote: MintMintQuote) -> Result<(), Self::Err>;
+    /// Increment amount paid [`MintMintQuote`]
+    async fn increment_mint_quote_amount_paid(
         &mut self,
         quote_id: &Uuid,
-        state: MintQuoteState,
-    ) -> Result<MintQuoteState, Self::Err>;
+        amount_paid: Amount,
+        payment_id: String,
+    ) -> Result<Amount, Self::Err>;
+    /// Increment amount paid [`MintMintQuote`]
+    async fn increment_mint_quote_amount_issued(
+        &mut self,
+        quote_id: &Uuid,
+        amount_issued: Amount,
+    ) -> Result<Amount, Self::Err>;
     /// Remove [`MintMintQuote`]
     async fn remove_mint_quote(&mut self, quote_id: &Uuid) -> Result<(), Self::Err>;
     /// Get [`mint::MeltQuote`] and lock it for update in this transaction
@@ -88,7 +95,7 @@ pub trait QuotesTransaction<'a> {
     async fn update_melt_quote_request_lookup_id(
         &mut self,
         quote_id: &Uuid,
-        new_request_lookup_id: &str,
+        new_request_lookup_id: &PaymentIdentifier,
     ) -> Result<(), Self::Err>;
 
     /// Update [`mint::MeltQuote`] state
@@ -98,6 +105,7 @@ pub trait QuotesTransaction<'a> {
         &mut self,
         quote_id: &Uuid,
         new_state: MeltQuoteState,
+        payment_proof: Option<String>,
     ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err>;
     /// Remove [`mint::MeltQuote`]
     async fn remove_melt_quote(&mut self, quote_id: &Uuid) -> Result<(), Self::Err>;
@@ -105,6 +113,12 @@ pub trait QuotesTransaction<'a> {
     async fn get_mint_quote_by_request(
         &mut self,
         request: &str,
+    ) -> Result<Option<MintMintQuote>, Self::Err>;
+
+    /// Get all [`MintMintQuote`]s
+    async fn get_mint_quote_by_request_lookup_id(
+        &mut self,
+        request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintMintQuote>, Self::Err>;
 }
 
@@ -125,15 +139,10 @@ pub trait QuotesDatabase {
     /// Get all [`MintMintQuote`]s
     async fn get_mint_quote_by_request_lookup_id(
         &self,
-        request_lookup_id: &str,
+        request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintMintQuote>, Self::Err>;
     /// Get Mint Quotes
     async fn get_mint_quotes(&self) -> Result<Vec<MintMintQuote>, Self::Err>;
-    /// Get Mint Quotes with state
-    async fn get_mint_quotes_with_state(
-        &self,
-        state: MintQuoteState,
-    ) -> Result<Vec<MintMintQuote>, Self::Err>;
     /// Get [`mint::MeltQuote`]
     async fn get_melt_quote(&self, quote_id: &Uuid) -> Result<Option<mint::MeltQuote>, Self::Err>;
     /// Get all [`mint::MeltQuote`]s

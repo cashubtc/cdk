@@ -3,30 +3,73 @@ syntax = "proto3";
 package cdk_payment_processor;
 
 service CdkPaymentProcessor {  
-    rpc GetSettings(SettingsRequest) returns (SettingsResponse) {}
+    rpc GetSettings(EmptyRequest) returns (SettingsResponse) {}
     rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse) {}
     rpc GetPaymentQuote(PaymentQuoteRequest) returns (PaymentQuoteResponse) {}
     rpc MakePayment(MakePaymentRequest) returns (MakePaymentResponse) {}
     rpc CheckIncomingPayment(CheckIncomingPaymentRequest) returns (CheckIncomingPaymentResponse) {}
     rpc CheckOutgoingPayment(CheckOutgoingPaymentRequest) returns (MakePaymentResponse) {}
-    rpc WaitIncomingPayment(WaitIncomingPaymentRequest) returns (stream WaitIncomingPaymentResponse) {}
+    rpc WaitIncomingPayment(EmptyRequest) returns (stream WaitIncomingPaymentResponse) {}
 }
 
-message SettingsRequest {}
+message EmptyRequest {}
 
 message SettingsResponse {
   string inner = 1;
 }
 
+message Bolt11IncomingPaymentOptions {
+  optional string description = 1;
+  uint64 amount = 2;
+  optional uint64 unix_expiry = 3;
+}
+
+message Bolt12IncomingPaymentOptions {
+  optional string description = 1;
+  optional uint64 amount = 2;
+  optional uint64 unix_expiry = 3;
+}
+
+enum PaymentMethodType {
+  BOLT11 = 0;
+  BOLT12 = 1;
+}
+
+enum OutgoingPaymentRequestType {
+  BOLT11_INVOICE = 0;
+  BOLT12_OFFER = 1;
+}
+
+enum PaymentIdentifierType {
+  PAYMENT_HASH = 0;
+  OFFER_ID = 1;
+  LABEL = 2;
+  BOLT12_PAYMENT_HASH = 3;
+  CUSTOM_ID = 4;
+}
+
+message PaymentIdentifier {
+  PaymentIdentifierType type = 1;
+  oneof value {
+    string hash = 2; // Used for PAYMENT_HASH and BOLT12_PAYMENT_HASH
+    string id = 3;   // Used for OFFER_ID, LABEL, and CUSTOM_ID
+  }
+}
+
+message IncomingPaymentOptions {
+  oneof options {
+    Bolt11IncomingPaymentOptions bolt11 = 1;
+    Bolt12IncomingPaymentOptions bolt12 = 2;
+  }
+}
+
 message CreatePaymentRequest {
-  uint64 amount = 1;
-  string unit = 2;
-  string description = 3;
-  optional uint64 unix_expiry = 4;
+  string unit = 1;
+  IncomingPaymentOptions options = 2;
 }
 
 message CreatePaymentResponse {
-  string request_lookup_id = 1;
+  PaymentIdentifier request_identifier = 1;
   string request = 2;
   optional uint64 expiry = 3;
 }
@@ -34,7 +77,6 @@ message CreatePaymentResponse {
 message Mpp {
     uint64 amount = 1;
 }
-
 
 message Amountless {
     uint64 amount_msat = 1;
@@ -51,6 +93,7 @@ message PaymentQuoteRequest {
   string request = 1;
   string unit = 2;
   optional MeltOptions options = 3;
+  OutgoingPaymentRequestType request_type = 4;
 }
 
 enum QuoteState {
@@ -62,38 +105,60 @@ enum QuoteState {
     ISSUED = 5;
 }
 
+message Bolt12Options {
+  optional string invoice = 1;
+}
+
+message PaymentQuoteOptions {
+  oneof melt_options {
+    Bolt12Options bolt12 = 1;
+  }
+}
 
 message PaymentQuoteResponse {
-  string request_lookup_id = 1;
+  PaymentIdentifier request_identifier = 1;
   uint64 amount = 2;
   uint64 fee = 3;
   QuoteState state = 4;
-  string unit = 5;
+  optional PaymentQuoteOptions melt_options = 5;
+  string unit = 6;
 }
 
-message MeltQuote {
-    string id = 1;
-    string unit = 2;
-    uint64 amount = 3;
-    string request = 4;
-    uint64 fee_reserve = 5;
-    QuoteState state = 6;
-    uint64 expiry = 7;
-    optional string payment_preimage = 8;
-    string request_lookup_id = 9;
-    optional uint64 msat_to_pay = 10;
-    uint64 created_time = 11;
-    optional uint64 paid_time = 12;
+message Bolt11OutgoingPaymentOptions {
+  string bolt11 = 1;
+  optional uint64 max_fee_amount = 2;
+  optional uint64 timeout_secs = 3;
+  optional MeltOptions melt_options = 4;
+}
+
+message Bolt12OutgoingPaymentOptions {
+  string offer = 1;
+  optional uint64 max_fee_amount = 2;
+  optional uint64 timeout_secs = 3;
+  optional bytes invoice = 4;
+  optional MeltOptions melt_options = 5;
+}
+
+enum OutgoingPaymentOptionsType {
+  OUTGOING_BOLT11 = 0;
+  OUTGOING_BOLT12 = 1;
+}
+
+message OutgoingPaymentVariant {
+  oneof options {
+    Bolt11OutgoingPaymentOptions bolt11 = 1;
+    Bolt12OutgoingPaymentOptions bolt12 = 2;
+  }
 }
 
 message MakePaymentRequest {
-  MeltQuote melt_quote = 1;
+  OutgoingPaymentVariant payment_options = 1;
   optional uint64 partial_amount = 2;
   optional uint64 max_fee_amount = 3;
 }
 
 message MakePaymentResponse {
-  string payment_lookup_id = 1;
+  PaymentIdentifier payment_identifier = 1;
   optional string payment_proof = 2;
   QuoteState status = 3;
   uint64 total_spent = 4;
@@ -101,22 +166,20 @@ message MakePaymentResponse {
 }
 
 message CheckIncomingPaymentRequest {
-  string request_lookup_id = 1;
+  PaymentIdentifier request_identifier = 1;
 }
 
 message CheckIncomingPaymentResponse {
-  QuoteState status = 1;
+  repeated WaitIncomingPaymentResponse payments = 1;
 }
 
 message CheckOutgoingPaymentRequest {
-  string request_lookup_id = 1;
+  PaymentIdentifier request_identifier = 1;
 }
-
-
-message WaitIncomingPaymentRequest {
-}
-
 
 message WaitIncomingPaymentResponse {
-  string lookup_id = 1;
+  PaymentIdentifier payment_identifier = 1;
+  uint64 payment_amount = 2;
+  string unit = 3;
+  string payment_id = 4;
 }
