@@ -20,7 +20,7 @@ lnbits = ["dep:cdk-lnbits"]
 fakewallet = ["dep:cdk-fake-wallet"]
 grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
 sqlcipher = ["cdk-sqlite/sqlcipher"]
-# MSRV is not committed to with redb enabled
+# MSRV is not committed to with swagger enabled
 swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
 redis = ["cdk-axum/redis"]
 auth = ["cdk/auth", "cdk-sqlite/auth"]
