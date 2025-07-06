@@ -1,3 +1,4 @@
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,7 +24,10 @@ impl ResourceManager for SqliteConnectionManager {
 
     type Error = rusqlite::Error;
 
-    fn new_resource(config: &Self::Config) -> Result<Self::Resource, pool::Error<Self::Error>> {
+    fn new_resource(
+        config: &Self::Config,
+        _still_valid: Arc<AtomicBool>,
+    ) -> Result<Self::Resource, pool::Error<Self::Error>> {
         let conn = if let Some(path) = config.path.as_ref() {
             Connection::open(path)?
         } else {
