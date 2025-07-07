@@ -1,5 +1,5 @@
 //! Stataments mod
-use std::collections::HashMap;
+use std::sync::Arc;
 
 use cdk_common::database::Error;
 
@@ -25,28 +25,173 @@ pub enum ExpectedSqlResponse {
     Batch,
 }
 
+/// Part value
+#[derive(Debug, Clone)]
+pub enum PlaceholderValue {
+    /// Value
+    Value(Value),
+    /// Set
+    Set(Vec<Value>),
+}
+
+impl From<Value> for PlaceholderValue {
+    fn from(value: Value) -> Self {
+        PlaceholderValue::Value(value)
+    }
+}
+
+impl From<Vec<Value>> for PlaceholderValue {
+    fn from(value: Vec<Value>) -> Self {
+        PlaceholderValue::Set(value)
+    }
+}
+
+/// SQL Part
+#[derive(Debug, Clone)]
+pub enum SqlPart {
+    /// Raw SQL statement
+    Raw(Arc<str>),
+    /// Placeholder
+    Placeholder(Arc<str>, Option<PlaceholderValue>),
+}
+
+/// SQL parser error
+#[derive(Debug, PartialEq, thiserror::Error)]
+pub enum SqlParseError {
+    /// Invalid SQL
+    #[error("Unterminated String literal")]
+    UnterminatedStringLiteral,
+    /// Invalid placeholder name
+    #[error("Invalid placeholder name")]
+    InvalidPlaceholder,
+}
+
+/// Rudimentary SQL parser.
+///
+/// This function does not validate the SQL statement, it only extracts the placeholder to be
+/// database agnostic.
+pub fn split_sql_parts(input: &str) -> Result<Vec<SqlPart>, SqlParseError> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+
+    while let Some(&c) = chars.peek() {
+        match c {
+            '\'' | '"' => {
+                // Start of string literal
+                let quote = c;
+                current.push(chars.next().unwrap());
+
+                let mut closed = false;
+                while let Some(&next) = chars.peek() {
+                    current.push(chars.next().unwrap());
+
+                    if next == quote {
+                        if chars.peek() == Some(&quote) {
+                            // Escaped quote (e.g. '' inside strings)
+                            current.push(chars.next().unwrap());
+                        } else {
+                            closed = true;
+                            break;
+                        }
+                    }
+                }
+
+                if !closed {
+                    return Err(SqlParseError::UnterminatedStringLiteral);
+                }
+            }
+
+            ':' => {
+                // Flush current raw SQL
+                if !current.is_empty() {
+                    parts.push(SqlPart::Raw(current.clone().into()));
+                    current.clear();
+                }
+
+                chars.next(); // consume ':'
+                let mut name = String::new();
+
+                while let Some(&next) = chars.peek() {
+                    if next.is_alphanumeric() || next == '_' {
+                        name.push(chars.next().unwrap());
+                    } else {
+                        break;
+                    }
+                }
+
+                if name.is_empty() {
+                    return Err(SqlParseError::InvalidPlaceholder);
+                }
+
+                parts.push(SqlPart::Placeholder(name.into(), None));
+            }
+
+            _ => {
+                current.push(chars.next().unwrap());
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        parts.push(SqlPart::Raw(current.into()));
+    }
+
+    Ok(parts)
+}
+
 /// Sql message
 #[derive(Debug, Default)]
 pub struct Statement {
     /// The SQL statement
-    pub sql: String,
-    /// The list of arguments for the placeholders. It only supports named arguments for simplicity
-    /// sake
-    pub args: HashMap<String, Value>,
+    pub parts: Vec<SqlPart>,
     /// The expected response type
     pub expected_response: ExpectedSqlResponse,
 }
 
 impl Statement {
     /// Creates a new statement
-    pub fn new<T>(sql: T) -> Self
-    where
-        T: ToString,
-    {
-        Self {
-            sql: sql.to_string(),
+    pub fn new(sql: &str) -> Result<Self, SqlParseError> {
+        Ok(Self {
+            parts: split_sql_parts(sql)?,
             ..Default::default()
-        }
+        })
+    }
+
+    /// Convert Statement into a SQL statement and the list of placeholders
+    ///
+    /// By default it converts the statement into placeholder using $1..$n placeholders which seems
+    /// to be more widely supported, although it can be reimplemented with other formats since part
+    /// is public
+    pub fn to_sql(self) -> Result<(String, Vec<Value>), Error> {
+        let mut placeholder_values = Vec::new();
+        let sql = self
+            .parts
+            .into_iter()
+            .map(|x| match x {
+                SqlPart::Placeholder(name, value) => {
+                    match value.ok_or(Error::MissingPlaceholder(name.to_string()))? {
+                        PlaceholderValue::Value(value) => {
+                            placeholder_values.push(value);
+                            Ok::<_, Error>(format!("${}", placeholder_values.len()))
+                        }
+                        PlaceholderValue::Set(mut values) => {
+                            let start_size = placeholder_values.len();
+                            placeholder_values.append(&mut values);
+                            let placeholders = (start_size + 1..=placeholder_values.len())
+                                .map(|i| format!("${i}"))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            Ok(placeholders)
+                        }
+                    }
+                }
+                SqlPart::Raw(raw) => Ok(raw.to_string()),
+            })
+            .collect::<Result<Vec<String>, _>>()?
+            .join("");
+
+        Ok((sql, placeholder_values))
     }
 
     /// Binds a given placeholder to a value.
@@ -56,7 +201,18 @@ impl Statement {
         C: ToString,
         V: Into<Value>,
     {
-        self.args.insert(name.to_string(), value.into());
+        let name = name.to_string();
+        let value = value.into();
+        let value: PlaceholderValue = value.into();
+
+        for part in self.parts.iter_mut() {
+            if let SqlPart::Placeholder(part_name, part_value) = part {
+                if **part_name == *name.as_str() {
+                    *part_value = Some(value.clone());
+                }
+            }
+        }
+
         self
     }
 
@@ -70,42 +226,21 @@ impl Statement {
         C: ToString,
         V: Into<Value>,
     {
-        let mut new_sql = String::with_capacity(self.sql.len());
-        let target = name.to_string();
-        let mut i = 0;
-
-        let placeholders = value
+        let name = name.to_string();
+        let value: PlaceholderValue = value
             .into_iter()
-            .enumerate()
-            .map(|(key, value)| {
-                let key = format!("{target}{key}");
-                self.args.insert(key.clone(), value.into());
-                key
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+            .map(|x| x.into())
+            .collect::<Vec<Value>>()
+            .into();
 
-        while let Some(pos) = self.sql[i..].find(&target) {
-            let abs_pos = i + pos;
-            let after = abs_pos + target.len();
-            let is_word_boundary = self.sql[after..]
-                .chars()
-                .next()
-                .map_or(true, |c| !c.is_alphanumeric() && c != '_');
-
-            if is_word_boundary {
-                new_sql.push_str(&self.sql[i..abs_pos]);
-                new_sql.push_str(&placeholders);
-                i = after;
-            } else {
-                new_sql.push_str(&self.sql[i..=abs_pos]);
-                i = abs_pos + 1;
+        for part in self.parts.iter_mut() {
+            if let SqlPart::Placeholder(part_name, part_value) = part {
+                if **part_name == *name.as_str() {
+                    *part_value = Some(value.clone());
+                }
             }
         }
 
-        new_sql.push_str(&self.sql[i..]);
-
-        self.sql = new_sql;
         self
     }
 
@@ -152,9 +287,6 @@ impl Statement {
 
 /// Creates a new query statement
 #[inline(always)]
-pub fn query<T>(sql: T) -> Statement
-where
-    T: ToString,
-{
-    Statement::new(sql)
+pub fn query(sql: &str) -> Result<Statement, Error> {
+    Statement::new(sql).map_err(|e| Error::Database(Box::new(e)))
 }

@@ -78,8 +78,8 @@ async fn get_current_states<C>(
 where
     C: DatabaseExecutor + Send + Sync,
 {
-    query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)
-        .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+    query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)?
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
         .fetch_all(conn)
         .await?
         .into_iter()
@@ -103,9 +103,9 @@ where
         INSERT INTO config (id, value) VALUES (:id, :value)
             ON CONFLICT(id) DO UPDATE SET value = excluded.value
             "#,
-    )
-    .bind(":id", id.to_owned())
-    .bind(":value", serde_json::to_string(&value)?)
+    )?
+    .bind("id", id.to_owned())
+    .bind("value", serde_json::to_string(&value)?)
     .execute(conn)
     .await?;
 
@@ -139,8 +139,8 @@ where
     where
         R: serde::de::DeserializeOwned,
     {
-        let value = column_as_string!(query(r#"SELECT value FROM config WHERE id = :id LIMIT 1"#)
-            .bind(":id", id.to_owned())
+        let value = column_as_string!(query(r#"SELECT value FROM config WHERE id = :id LIMIT 1"#)?
+            .bind("id", id.to_owned())
             .pluck(&self.db)
             .await?
             .ok_or(Error::UnknownQuoteTTL)?);
@@ -206,16 +206,16 @@ where
             input_fee_ppk = excluded.input_fee_ppk,
             derivation_path_index = excluded.derivation_path_index
         "#,
-        )
-        .bind(":id", keyset.id.to_string())
-        .bind(":unit", keyset.unit.to_string())
-        .bind(":active", keyset.active)
-        .bind(":valid_from", keyset.valid_from as i64)
-        .bind(":valid_to", keyset.final_expiry.map(|v| v as i64))
-        .bind(":derivation_path", keyset.derivation_path.to_string())
-        .bind(":max_order", keyset.max_order)
-        .bind(":input_fee_ppk", keyset.input_fee_ppk as i64)
-        .bind(":derivation_path_index", keyset.derivation_path_index)
+        )?
+        .bind("id", keyset.id.to_string())
+        .bind("unit", keyset.unit.to_string())
+        .bind("active", keyset.active)
+        .bind("valid_from", keyset.valid_from as i64)
+        .bind("valid_to", keyset.final_expiry.map(|v| v as i64))
+        .bind("derivation_path", keyset.derivation_path.to_string())
+        .bind("max_order", keyset.max_order)
+        .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
+        .bind("derivation_path_index", keyset.derivation_path_index)
         .execute(&self.inner)
         .await?;
 
@@ -223,14 +223,14 @@ where
     }
 
     async fn set_active_keyset(&mut self, unit: CurrencyUnit, id: Id) -> Result<(), Error> {
-        query(r#"UPDATE keyset SET active=FALSE WHERE unit IS :unit"#)
-            .bind(":unit", unit.to_string())
+        query(r#"UPDATE keyset SET active=FALSE WHERE unit IS :unit"#)?
+            .bind("unit", unit.to_string())
             .execute(&self.inner)
             .await?;
 
-        query(r#"UPDATE keyset SET active=TRUE WHERE unit IS :unit AND id IS :id"#)
-            .bind(":unit", unit.to_string())
-            .bind(":id", id.to_string())
+        query(r#"UPDATE keyset SET active=TRUE WHERE unit IS :unit AND id IS :id"#)?
+            .bind("unit", unit.to_string())
+            .bind("id", id.to_string())
             .execute(&self.inner)
             .await?;
 
@@ -256,8 +256,8 @@ where
 
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
         Ok(
-            query(r#" SELECT id FROM keyset WHERE active = 1 AND unit IS :unit"#)
-                .bind(":unit", unit.to_string())
+            query(r#" SELECT id FROM keyset WHERE active = 1 AND unit IS :unit"#)?
+                .bind("unit", unit.to_string())
                 .pluck(&self.db)
                 .await?
                 .map(|id| match id {
@@ -270,7 +270,7 @@ where
     }
 
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
-        Ok(query(r#"SELECT id, unit FROM keyset WHERE active = 1"#)
+        Ok(query(r#"SELECT id, unit FROM keyset WHERE active = 1"#)?
             .fetch_all(&self.db)
             .await?
             .into_iter()
@@ -298,8 +298,8 @@ where
             FROM
                 keyset
                 WHERE id=:id"#,
-        )
-        .bind(":id", id.to_string())
+        )?
+        .bind("id", id.to_string())
         .fetch_one(&self.db)
         .await?
         .map(sql_row_to_keyset_info)
@@ -321,7 +321,7 @@ where
             FROM
                 keyset
             "#,
-        )
+        )?
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -349,18 +349,18 @@ where
                     :pubkey, :created_time, :paid_time, :issued_time
                 )
             "#,
-        )
-        .bind(":id", quote.id.to_string())
-        .bind(":amount", u64::from(quote.amount) as i64)
-        .bind(":unit", quote.unit.to_string())
-        .bind(":request", quote.request)
-        .bind(":state", quote.state.to_string())
-        .bind(":expiry", quote.expiry as i64)
-        .bind(":request_lookup_id", quote.request_lookup_id)
-        .bind(":pubkey", quote.pubkey.map(|p| p.to_string()))
-        .bind(":created_time", quote.created_time as i64)
-        .bind(":paid_time", quote.paid_time.map(|t| t as i64))
-        .bind(":issued_time", quote.issued_time.map(|t| t as i64))
+        )?
+        .bind("id", quote.id.to_string())
+        .bind("amount", u64::from(quote.amount) as i64)
+        .bind("unit", quote.unit.to_string())
+        .bind("request", quote.request)
+        .bind("state", quote.state.to_string())
+        .bind("expiry", quote.expiry as i64)
+        .bind("request_lookup_id", quote.request_lookup_id)
+        .bind("pubkey", quote.pubkey.map(|p| p.to_string()))
+        .bind("created_time", quote.created_time as i64)
+        .bind("paid_time", quote.paid_time.map(|t| t as i64))
+        .bind("issued_time", quote.issued_time.map(|t| t as i64))
         .execute(&self.inner)
         .await?;
 
@@ -368,8 +368,8 @@ where
     }
 
     async fn remove_mint_quote(&mut self, quote_id: &Uuid) -> Result<(), Self::Err> {
-        query(r#"DELETE FROM mint_quote WHERE id=:id"#)
-            .bind(":id", quote_id.as_hyphenated().to_string())
+        query(r#"DELETE FROM mint_quote WHERE id=:id"#)?
+            .bind("id", quote_id.as_hyphenated().to_string())
             .execute(&self.inner)
             .await?;
         Ok(())
@@ -385,10 +385,10 @@ where
             AND state = :state
             AND expiry < :current_time
             "#,
-        )
-        .bind(":request_lookup_id", quote.request_lookup_id.to_string())
-        .bind(":state", MeltQuoteState::Unpaid.to_string())
-        .bind(":current_time", current_time as i64)
+        )?
+        .bind("request_lookup_id", quote.request_lookup_id.to_string())
+        .bind("state", MeltQuoteState::Unpaid.to_string())
+        .bind("current_time", current_time as i64)
         .execute(&self.inner)
         .await?;
 
@@ -412,22 +412,22 @@ where
                 :created_time, :paid_time
             )
         "#,
-        )
-        .bind(":id", quote.id.to_string())
-        .bind(":unit", quote.unit.to_string())
-        .bind(":amount", u64::from(quote.amount) as i64)
-        .bind(":request", quote.request)
-        .bind(":fee_reserve", u64::from(quote.fee_reserve) as i64)
-        .bind(":state", quote.state.to_string())
-        .bind(":expiry", quote.expiry as i64)
-        .bind(":payment_preimage", quote.payment_preimage)
-        .bind(":request_lookup_id", quote.request_lookup_id)
+        )?
+        .bind("id", quote.id.to_string())
+        .bind("unit", quote.unit.to_string())
+        .bind("amount", u64::from(quote.amount) as i64)
+        .bind("request", quote.request)
+        .bind("fee_reserve", u64::from(quote.fee_reserve) as i64)
+        .bind("state", quote.state.to_string())
+        .bind("expiry", quote.expiry as i64)
+        .bind("payment_preimage", quote.payment_preimage)
+        .bind("request_lookup_id", quote.request_lookup_id)
         .bind(
-            ":msat_to_pay",
+            "msat_to_pay",
             quote.msat_to_pay.map(|a| u64::from(a) as i64),
         )
-        .bind(":created_time", quote.created_time as i64)
-        .bind(":paid_time", quote.paid_time.map(|t| t as i64))
+        .bind("created_time", quote.created_time as i64)
+        .bind("paid_time", quote.paid_time.map(|t| t as i64))
         .execute(&self.inner)
         .await?;
 
@@ -439,9 +439,9 @@ where
         quote_id: &Uuid,
         new_request_lookup_id: &str,
     ) -> Result<(), Self::Err> {
-        query(r#"UPDATE melt_quote SET request_lookup_id = :new_req_id WHERE id = :id"#)
-            .bind(":new_req_id", new_request_lookup_id.to_owned())
-            .bind(":id", quote_id.as_hyphenated().to_string())
+        query(r#"UPDATE melt_quote SET request_lookup_id = :new_req_id WHERE id = :id"#)?
+            .bind("new_req_id", new_request_lookup_id.to_owned())
+            .bind("id", quote_id.as_hyphenated().to_string())
             .execute(&self.inner)
             .await?;
         Ok(())
@@ -473,9 +473,9 @@ where
                 id=:id
                 AND state != :state
             "#,
-        )
-        .bind(":id", quote_id.as_hyphenated().to_string())
-        .bind(":state", state.to_string())
+        )?
+        .bind("id", quote_id.as_hyphenated().to_string())
+        .bind("state", state.to_string())
         .fetch_one(&self.inner)
         .await?
         .map(sql_row_to_melt_quote)
@@ -484,16 +484,16 @@ where
 
         let rec = if state == MeltQuoteState::Paid {
             let current_time = unix_time();
-            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time WHERE id = :id"#)
-                .bind(":state", state.to_string())
-                .bind(":paid_time", current_time as i64)
-                .bind(":id", quote_id.as_hyphenated().to_string())
+            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time WHERE id = :id"#)?
+                .bind("state", state.to_string())
+                .bind("paid_time", current_time as i64)
+                .bind("id", quote_id.as_hyphenated().to_string())
                 .execute(&self.inner)
                 .await
         } else {
-            query(r#"UPDATE melt_quote SET state = :state WHERE id = :id"#)
-                .bind(":state", state.to_string())
-                .bind(":id", quote_id.as_hyphenated().to_string())
+            query(r#"UPDATE melt_quote SET state = :state WHERE id = :id"#)?
+                .bind("state", state.to_string())
+                .bind("id", quote_id.as_hyphenated().to_string())
                 .execute(&self.inner)
                 .await
         };
@@ -518,8 +518,8 @@ where
             DELETE FROM melt_quote
             WHERE id=?
             "#,
-        )
-        .bind(":id", quote_id.as_hyphenated().to_string())
+        )?
+        .bind("id", quote_id.as_hyphenated().to_string())
         .execute(&self.inner)
         .await?;
 
@@ -548,8 +548,8 @@ where
             FROM
                 mint_quote
             WHERE id = :id"#,
-        )
-        .bind(":id", quote_id.as_hyphenated().to_string())
+        )?
+        .bind("id", quote_id.as_hyphenated().to_string())
         .fetch_one(&self.inner)
         .await?
         .map(sql_row_to_mint_quote)
@@ -568,17 +568,17 @@ where
         let current_time = unix_time();
 
         let update = match state {
-            MintQuoteState::Paid => query(update_query)
-                .bind(":state", state.to_string())
-                .bind(":current_time", current_time as i64)
-                .bind(":quote_id", quote_id.as_hyphenated().to_string()),
-            MintQuoteState::Issued => query(update_query)
-                .bind(":state", state.to_string())
-                .bind(":current_time", current_time as i64)
-                .bind(":quote_id", quote_id.as_hyphenated().to_string()),
-            _ => query(update_query)
-                .bind(":state", state.to_string())
-                .bind(":quote_id", quote_id.as_hyphenated().to_string()),
+            MintQuoteState::Paid => query(update_query)?
+                .bind("state", state.to_string())
+                .bind("current_time", current_time as i64)
+                .bind("quote_id", quote_id.as_hyphenated().to_string()),
+            MintQuoteState::Issued => query(update_query)?
+                .bind("state", state.to_string())
+                .bind("current_time", current_time as i64)
+                .bind("quote_id", quote_id.as_hyphenated().to_string()),
+            _ => query(update_query)?
+                .bind("state", state.to_string())
+                .bind("quote_id", quote_id.as_hyphenated().to_string()),
         };
 
         match update.execute(&self.inner).await {
@@ -609,8 +609,8 @@ where
             FROM
                 mint_quote
             WHERE id = :id"#,
-        )
-        .bind(":id", quote_id.as_hyphenated().to_string())
+        )?
+        .bind("id", quote_id.as_hyphenated().to_string())
         .fetch_one(&self.inner)
         .await?
         .map(sql_row_to_mint_quote)
@@ -641,8 +641,8 @@ where
             WHERE
                 id=:id
             "#,
-        )
-        .bind(":id", quote_id.as_hyphenated().to_string())
+        )?
+        .bind("id", quote_id.as_hyphenated().to_string())
         .fetch_one(&self.inner)
         .await?
         .map(sql_row_to_melt_quote)
@@ -670,8 +670,8 @@ where
             FROM
                 mint_quote
             WHERE request = :request"#,
-        )
-        .bind(":request", request.to_owned())
+        )?
+        .bind("request", request.to_owned())
         .fetch_one(&self.inner)
         .await?
         .map(sql_row_to_mint_quote)
@@ -704,8 +704,8 @@ where
             FROM
                 mint_quote
             WHERE id = :id"#,
-        )
-        .bind(":id", quote_id.as_hyphenated().to_string())
+        )?
+        .bind("id", quote_id.as_hyphenated().to_string())
         .fetch_one(&self.db)
         .await?
         .map(sql_row_to_mint_quote)
@@ -733,8 +733,8 @@ where
             FROM
                 mint_quote
             WHERE request = :request"#,
-        )
-        .bind(":request", request.to_owned())
+        )?
+        .bind("request", request.to_owned())
         .fetch_one(&self.db)
         .await?
         .map(sql_row_to_mint_quote)
@@ -762,8 +762,8 @@ where
             FROM
                 mint_quote
             WHERE request_lookup_id = :request_lookup_id"#,
-        )
-        .bind(":request_lookup_id", request_lookup_id.to_owned())
+        )?
+        .bind("request_lookup_id", request_lookup_id.to_owned())
         .fetch_one(&self.db)
         .await?
         .map(sql_row_to_mint_quote)
@@ -788,7 +788,7 @@ where
                    FROM
                        mint_quote
                   "#,
-        )
+        )?
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -819,8 +819,8 @@ where
                     WHERE
                         state = :state
                   "#,
-        )
-        .bind(":state", state.to_string())
+        )?
+        .bind("state", state.to_string())
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -849,8 +849,8 @@ where
             WHERE
                 id=:id
             "#,
-        )
-        .bind(":id", quote_id.as_hyphenated().to_string())
+        )?
+        .bind("id", quote_id.as_hyphenated().to_string())
         .fetch_one(&self.db)
         .await?
         .map(sql_row_to_melt_quote)
@@ -876,7 +876,7 @@ where
             FROM
                 melt_quote
             "#,
-        )
+        )?
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -901,9 +901,9 @@ where
 
         // Check any previous proof, this query should return None in order to proceed storing
         // Any result here would error
-        match query(r#"SELECT state FROM proof WHERE y IN (:ys) LIMIT 1"#)
+        match query(r#"SELECT state FROM proof WHERE y IN (:ys) LIMIT 1"#)?
             .bind_vec(
-                ":ys",
+                "ys",
                 proofs
                     .iter()
                     .map(|y| y.y().map(|y| y.to_bytes().to_vec()))
@@ -927,19 +927,19 @@ where
                   VALUES
                   (:y, :amount, :keyset_id, :secret, :c, :witness, :state, :quote_id, :created_time)
                   "#,
-            )
-            .bind(":y", proof.y()?.to_bytes().to_vec())
-            .bind(":amount", u64::from(proof.amount) as i64)
-            .bind(":keyset_id", proof.keyset_id.to_string())
-            .bind(":secret", proof.secret.to_string())
-            .bind(":c", proof.c.to_bytes().to_vec())
+            )?
+            .bind("y", proof.y()?.to_bytes().to_vec())
+            .bind("amount", u64::from(proof.amount) as i64)
+            .bind("keyset_id", proof.keyset_id.to_string())
+            .bind("secret", proof.secret.to_string())
+            .bind("c", proof.c.to_bytes().to_vec())
             .bind(
-                ":witness",
+                "witness",
                 proof.witness.map(|w| serde_json::to_string(&w).unwrap()),
             )
-            .bind(":state", "UNSPENT".to_string())
-            .bind(":quote_id", quote_id.map(|q| q.hyphenated().to_string()))
-            .bind(":created_time", current_time as i64)
+            .bind("state", "UNSPENT".to_string())
+            .bind("quote_id", quote_id.map(|q| q.hyphenated().to_string()))
+            .bind("created_time", current_time as i64)
             .execute(&self.inner)
             .await?;
         }
@@ -967,9 +967,9 @@ where
             check_state_transition(*state, new_state)?;
         }
 
-        query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)
-            .bind(":new_state", new_state.to_string())
-            .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+        query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)?
+            .bind("new_state", new_state.to_string())
+            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
             .execute(&self.inner)
             .await?;
 
@@ -985,9 +985,9 @@ where
             r#"
             DELETE FROM proof WHERE y IN (:ys) AND state NOT IN (:exclude_state)
             "#,
-        )
-        .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
-        .bind_vec(":exclude_state", vec![State::Spent.to_string()])
+        )?
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+        .bind_vec("exclude_state", vec![State::Spent.to_string()])
         .execute(&self.inner)
         .await?;
 
@@ -1021,8 +1021,8 @@ where
             WHERE
                 y IN (:ys)
             "#,
-        )
-        .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+        )?
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -1055,8 +1055,8 @@ where
             WHERE
                 quote_id = :quote_id
             "#,
-        )
-        .bind(":quote_id", quote_id.as_hyphenated().to_string())
+        )?
+        .bind("quote_id", quote_id.as_hyphenated().to_string())
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -1089,8 +1089,8 @@ where
             WHERE
                 keyset_id=?
             "#,
-        )
-        .bind(":keyset_id", keyset_id.to_string())
+        )?
+        .bind("keyset_id", keyset_id.to_string())
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -1124,21 +1124,21 @@ where
                     VALUES
                     (:blinded_message, :amount, :keyset_id, :c, :quote_id, :dleq_e, :dleq_s, :created_time)
                 "#,
-            )
-            .bind(":blinded_message", message.to_bytes().to_vec())
-            .bind(":amount", u64::from(signature.amount) as i64)
-            .bind(":keyset_id", signature.keyset_id.to_string())
-            .bind(":c", signature.c.to_bytes().to_vec())
-            .bind(":quote_id", quote_id.map(|q| q.hyphenated().to_string()))
+            )?
+            .bind("blinded_message", message.to_bytes().to_vec())
+            .bind("amount", u64::from(signature.amount) as i64)
+            .bind("keyset_id", signature.keyset_id.to_string())
+            .bind("c", signature.c.to_bytes().to_vec())
+            .bind("quote_id", quote_id.map(|q| q.hyphenated().to_string()))
             .bind(
-                ":dleq_e",
+                "dleq_e",
                 signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()),
             )
             .bind(
-                ":dleq_s",
+                "dleq_s",
                 signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()),
             )
-            .bind(":created_time", current_time as i64)
+            .bind("created_time", current_time as i64)
             .execute(&self.inner)
             .await?;
         }
@@ -1162,9 +1162,9 @@ where
                 blind_signature
             WHERE blinded_message IN (:y)
             "#,
-        )
+        )?
         .bind_vec(
-            ":y",
+            "y",
             blinded_messages
                 .iter()
                 .map(|y| y.to_bytes().to_vec())
@@ -1214,9 +1214,9 @@ where
                 blind_signature
             WHERE blinded_message IN (:blinded_message)
             "#,
-        )
+        )?
         .bind_vec(
-            ":blinded_message",
+            "blinded_message",
             blinded_messages
                 .iter()
                 .map(|b_| b_.to_bytes().to_vec())
@@ -1259,8 +1259,8 @@ where
             WHERE
                 keyset_id=:keyset_id
             "#,
-        )
-        .bind(":keyset_id", keyset_id.to_string())
+        )?
+        .bind("keyset_id", keyset_id.to_string())
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -1286,8 +1286,8 @@ where
             WHERE
                 quote_id=:quote_id
             "#,
-        )
-        .bind(":quote_id", quote_id.to_string())
+        )?
+        .bind("quote_id", quote_id.to_string())
         .fetch_all(&self.db)
         .await?
         .into_iter()

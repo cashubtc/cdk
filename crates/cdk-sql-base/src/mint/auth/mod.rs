@@ -71,8 +71,8 @@ where
                 ELSE FALSE
             END;
             "#,
-        )
-        .bind(":id", id.to_string())
+        )?
+        .bind("id", id.to_string())
         .execute(&self.inner)
         .await?;
 
@@ -100,15 +100,15 @@ where
             max_order = excluded.max_order,
             derivation_path_index = excluded.derivation_path_index
         "#,
-        )
-        .bind(":id", keyset.id.to_string())
-        .bind(":unit", keyset.unit.to_string())
-        .bind(":active", keyset.active)
-        .bind(":valid_from", keyset.valid_from as i64)
-        .bind(":valid_to", keyset.final_expiry.map(|v| v as i64))
-        .bind(":derivation_path", keyset.derivation_path.to_string())
-        .bind(":max_order", keyset.max_order)
-        .bind(":derivation_path_index", keyset.derivation_path_index)
+        )?
+        .bind("id", keyset.id.to_string())
+        .bind("unit", keyset.unit.to_string())
+        .bind("active", keyset.active)
+        .bind("valid_from", keyset.valid_from as i64)
+        .bind("valid_to", keyset.final_expiry.map(|v| v as i64))
+        .bind("derivation_path", keyset.derivation_path.to_string())
+        .bind("max_order", keyset.max_order)
+        .bind("derivation_path_index", keyset.derivation_path_index)
         .execute(&self.inner)
         .await?;
 
@@ -123,12 +123,12 @@ where
                 VALUES
                 (:y, :keyset_id, :secret, :c, :state)
                 "#,
-        )
-        .bind(":y", proof.y()?.to_bytes().to_vec())
-        .bind(":keyset_id", proof.keyset_id.to_string())
-        .bind(":secret", proof.secret.to_string())
-        .bind(":c", proof.c.to_bytes().to_vec())
-        .bind(":state", "UNSPENT".to_string())
+        )?
+        .bind("y", proof.y()?.to_bytes().to_vec())
+        .bind("keyset_id", proof.keyset_id.to_string())
+        .bind("secret", proof.secret.to_string())
+        .bind("c", proof.c.to_bytes().to_vec())
+        .bind("state", "UNSPENT".to_string())
         .execute(&self.inner)
         .await
         {
@@ -142,20 +142,20 @@ where
         y: &PublicKey,
         proofs_state: State,
     ) -> Result<Option<State>, Self::Err> {
-        let current_state = query(r#"SELECT state FROM proof WHERE y = :y"#)
-            .bind(":y", y.to_bytes().to_vec())
+        let current_state = query(r#"SELECT state FROM proof WHERE y = :y"#)?
+            .bind("y", y.to_bytes().to_vec())
             .pluck(&self.inner)
             .await?
             .map(|state| Ok::<_, Error>(column_as_string!(state, State::from_str)))
             .transpose()?;
 
-        query(r#"UPDATE proof SET state = :new_state WHERE state = :state AND y = :y"#)
-            .bind(":y", y.to_bytes().to_vec())
+        query(r#"UPDATE proof SET state = :new_state WHERE state = :state AND y = :y"#)?
+            .bind("y", y.to_bytes().to_vec())
             .bind(
-                ":state",
+                "state",
                 current_state.as_ref().map(|state| state.to_string()),
             )
-            .bind(":new_state", proofs_state.to_string())
+            .bind("new_state", proofs_state.to_string())
             .execute(&self.inner)
             .await?;
 
@@ -176,11 +176,11 @@ where
                        VALUES
                        (:y, :amount, :keyset_id, :c)
                    "#,
-            )
-            .bind(":y", message.to_bytes().to_vec())
-            .bind(":amount", u64::from(signature.amount) as i64)
-            .bind(":keyset_id", signature.keyset_id.to_string())
-            .bind(":c", signature.c.to_bytes().to_vec())
+            )?
+            .bind("y", message.to_bytes().to_vec())
+            .bind("amount", u64::from(signature.amount) as i64)
+            .bind("keyset_id", signature.keyset_id.to_string())
+            .bind("c", signature.c.to_bytes().to_vec())
             .execute(&self.inner)
             .await?;
         }
@@ -199,9 +199,9 @@ where
                  (endpoint, auth)
                  VALUES (:endpoint, :auth);
                  "#,
-            )
-            .bind(":endpoint", serde_json::to_string(endpoint)?)
-            .bind(":auth", serde_json::to_string(auth)?)
+            )?
+            .bind("endpoint", serde_json::to_string(endpoint)?)
+            .bind("auth", serde_json::to_string(auth)?)
             .execute(&self.inner)
             .await
             {
@@ -218,9 +218,9 @@ where
         &mut self,
         protected_endpoints: Vec<ProtectedEndpoint>,
     ) -> Result<(), database::Error> {
-        query(r#"DELETE FROM protected_endpoints WHERE endpoint IN (:endpoints)"#)
+        query(r#"DELETE FROM protected_endpoints WHERE endpoint IN (:endpoints)"#)?
             .bind_vec(
-                ":endpoints",
+                "endpoints",
                 protected_endpoints
                     .iter()
                     .map(serde_json::to_string)
@@ -259,7 +259,7 @@ where
             WHERE
                 active = 1;
             "#,
-        )
+        )?
         .pluck(&self.db)
         .await?
         .map(|id| Ok::<_, Error>(column_as_string!(id, Id::from_str, Id::from_bytes)))
@@ -281,8 +281,8 @@ where
             FROM
                 keyset
                 WHERE id=:id"#,
-        )
-        .bind(":id", id.to_string())
+        )?
+        .bind("id", id.to_string())
         .fetch_one(&self.db)
         .await?
         .map(sql_row_to_keyset_info)
@@ -304,7 +304,7 @@ where
             FROM
                 keyset
                 WHERE id=:id"#,
-        )
+        )?
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -313,8 +313,8 @@ where
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
-        let mut current_states = query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)
-            .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+        let mut current_states = query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)?
+            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
             .fetch_all(&self.db)
             .await?
             .into_iter()
@@ -345,9 +345,9 @@ where
                 blind_signature
             WHERE y IN (:y)
             "#,
-        )
+        )?
         .bind_vec(
-            ":y",
+            "y",
             blinded_messages
                 .iter()
                 .map(|y| y.to_bytes().to_vec())
@@ -378,8 +378,8 @@ where
         protected_endpoint: ProtectedEndpoint,
     ) -> Result<Option<AuthRequired>, Self::Err> {
         Ok(
-            query(r#"SELECT auth FROM protected_endpoints WHERE endpoint = :endpoint"#)
-                .bind(":endpoint", serde_json::to_string(&protected_endpoint)?)
+            query(r#"SELECT auth FROM protected_endpoints WHERE endpoint = :endpoint"#)?
+                .bind("endpoint", serde_json::to_string(&protected_endpoint)?)
                 .pluck(&self.db)
                 .await?
                 .map(|auth| {
@@ -396,7 +396,7 @@ where
     async fn get_auth_for_endpoints(
         &self,
     ) -> Result<HashMap<ProtectedEndpoint, Option<AuthRequired>>, Self::Err> {
-        Ok(query(r#"SELECT endpoint, auth FROM protected_endpoints"#)
+        Ok(query(r#"SELECT endpoint, auth FROM protected_endpoints"#)?
             .fetch_all(&self.db)
             .await?
             .into_iter()

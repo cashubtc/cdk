@@ -147,20 +147,20 @@ ON CONFLICT(mint_url) DO UPDATE SET
     tos_url = excluded.tos_url
 ;
         "#,
-        )
-        .bind(":mint_url", mint_url.to_string())
-        .bind(":name", name)
-        .bind(":pubkey", pubkey)
-        .bind(":version", version)
-        .bind(":description", description)
-        .bind(":description_long", description_long)
-        .bind(":contact", contact)
-        .bind(":nuts", nuts)
-        .bind(":icon_url", icon_url)
-        .bind(":urls", urls)
-        .bind(":motd", motd)
-        .bind(":mint_time", time.map(|v| v as i64))
-        .bind(":tos_url", tos_url)
+        )?
+        .bind("mint_url", mint_url.to_string())
+        .bind("name", name)
+        .bind("pubkey", pubkey)
+        .bind("version", version)
+        .bind("description", description)
+        .bind("description_long", description_long)
+        .bind("contact", contact)
+        .bind("nuts", nuts)
+        .bind("icon_url", icon_url)
+        .bind("urls", urls)
+        .bind("motd", motd)
+        .bind("mint_time", time.map(|v| v as i64))
+        .bind("tos_url", tos_url)
         .execute(&self.db)
         .await?;
 
@@ -169,8 +169,8 @@ ON CONFLICT(mint_url) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
-        query(r#"DELETE FROM mint WHERE mint_url=:mint_url"#)
-            .bind(":mint_url", mint_url.to_string())
+        query(r#"DELETE FROM mint WHERE mint_url=:mint_url"#)?
+            .bind("mint_url", mint_url.to_string())
             .execute(&self.db)
             .await?;
 
@@ -198,8 +198,8 @@ ON CONFLICT(mint_url) DO UPDATE SET
                 mint
             WHERE mint_url = :mint_url
             "#,
-        )
-        .bind(":mint_url", mint_url.to_string())
+        )?
+        .bind("mint_url", mint_url.to_string())
         .fetch_one(&self.db)
         .await?
         .map(sql_row_to_mint_info)
@@ -227,7 +227,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
                 FROM
                     mint
                 "#,
-        )
+        )?
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -259,9 +259,9 @@ ON CONFLICT(mint_url) DO UPDATE SET
             "#
             );
 
-            query(&str_query)
-                .bind(":new_mint_url", new_mint_url.to_string())
-                .bind(":old_mint_url", old_mint_url.to_string())
+            query(&str_query)?
+                .bind("new_mint_url", new_mint_url.to_string())
+                .bind("old_mint_url", old_mint_url.to_string())
                 .execute(&self.db)
                 .await?;
         }
@@ -289,13 +289,13 @@ ON CONFLICT(mint_url) DO UPDATE SET
         input_fee_ppk = excluded.input_fee_ppk,
         final_expiry = excluded.final_expiry;
     "#,
-            )
-            .bind(":mint_url", mint_url.to_string())
-            .bind(":id", keyset.id.to_string())
-            .bind(":unit", keyset.unit.to_string())
-            .bind(":active", keyset.active)
-            .bind(":input_fee_ppk", keyset.input_fee_ppk as i64)
-            .bind(":final_expiry", keyset.final_expiry.map(|v| v as i64))
+            )?
+            .bind("mint_url", mint_url.to_string())
+            .bind("id", keyset.id.to_string())
+            .bind("unit", keyset.unit.to_string())
+            .bind("active", keyset.active)
+            .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
+            .bind("final_expiry", keyset.final_expiry.map(|v| v as i64))
             .execute(&self.db)
             .await?;
         }
@@ -320,8 +320,8 @@ ON CONFLICT(mint_url) DO UPDATE SET
                 keyset
             WHERE mint_url = :mint_url
             "#,
-        )
-        .bind(":mint_url", mint_url.to_string())
+        )?
+        .bind("mint_url", mint_url.to_string())
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -348,8 +348,8 @@ ON CONFLICT(mint_url) DO UPDATE SET
                 keyset
             WHERE id = :id
             "#,
-        )
-        .bind(":id", keyset_id.to_string())
+        )?
+        .bind("id", keyset_id.to_string())
         .fetch_one(&self.db)
         .await?
         .map(sql_row_to_keyset)
@@ -374,15 +374,15 @@ ON CONFLICT(id) DO UPDATE SET
     secret_key = excluded.secret_key
 ;
         "#,
-        )
-        .bind(":id", quote.id.to_string())
-        .bind(":mint_url", quote.mint_url.to_string())
-        .bind(":amount", u64::from(quote.amount) as i64)
-        .bind(":unit", quote.unit.to_string())
-        .bind(":request", quote.request)
-        .bind(":state", quote.state.to_string())
-        .bind(":expiry", quote.expiry as i64)
-        .bind(":secret_key", quote.secret_key.map(|p| p.to_string()))
+        )?
+        .bind("id", quote.id.to_string())
+        .bind("mint_url", quote.mint_url.to_string())
+        .bind("amount", u64::from(quote.amount) as i64)
+        .bind("unit", quote.unit.to_string())
+        .bind("request", quote.request)
+        .bind("state", quote.state.to_string())
+        .bind("expiry", quote.expiry as i64)
+        .bind("secret_key", quote.secret_key.map(|p| p.to_string()))
         .execute(&self.db)
         .await?;
 
@@ -407,8 +407,8 @@ ON CONFLICT(id) DO UPDATE SET
             WHERE
                 id = :id
             "#,
-        )
-        .bind(":id", quote_id.to_string())
+        )?
+        .bind("id", quote_id.to_string())
         .fetch_one(&self.db)
         .await?
         .map(sql_row_to_mint_quote)
@@ -431,7 +431,7 @@ ON CONFLICT(id) DO UPDATE SET
             FROM
                 mint_quote
             "#,
-        )
+        )?
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -441,8 +441,8 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
-        query(r#"DELETE FROM mint_quote WHERE id=:id"#)
-            .bind(":id", quote_id.to_string())
+        query(r#"DELETE FROM mint_quote WHERE id=:id"#)?
+            .bind("id", quote_id.to_string())
             .execute(&self.db)
             .await?;
 
@@ -466,14 +466,14 @@ ON CONFLICT(id) DO UPDATE SET
     expiry = excluded.expiry
 ;
         "#,
-        )
-        .bind(":id", quote.id.to_string())
-        .bind(":unit", quote.unit.to_string())
-        .bind(":amount", u64::from(quote.amount) as i64)
-        .bind(":request", quote.request)
-        .bind(":fee_reserve", u64::from(quote.fee_reserve) as i64)
-        .bind(":state", quote.state.to_string())
-        .bind(":expiry", quote.expiry as i64)
+        )?
+        .bind("id", quote.id.to_string())
+        .bind("unit", quote.unit.to_string())
+        .bind("amount", u64::from(quote.amount) as i64)
+        .bind("request", quote.request)
+        .bind("fee_reserve", u64::from(quote.fee_reserve) as i64)
+        .bind("state", quote.state.to_string())
+        .bind("expiry", quote.expiry as i64)
         .execute(&self.db)
         .await?;
 
@@ -498,8 +498,8 @@ ON CONFLICT(id) DO UPDATE SET
             WHERE
                 id=:id
             "#,
-        )
-        .bind(":id", quote_id.to_owned())
+        )?
+        .bind("id", quote_id.to_owned())
         .fetch_one(&self.db)
         .await?
         .map(sql_row_to_melt_quote)
@@ -508,8 +508,8 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
-        query(r#"DELETE FROM melt_quote WHERE id=:id"#)
-            .bind(":id", quote_id.to_owned())
+        query(r#"DELETE FROM melt_quote WHERE id=:id"#)?
+            .bind("id", quote_id.to_owned())
             .execute(&self.db)
             .await?;
 
@@ -530,10 +530,10 @@ ON CONFLICT(id) DO UPDATE SET
             ON CONFLICT(id) DO UPDATE SET
                 keys = excluded.keys
         "#,
-        )
-        .bind(":id", keyset.id.to_string())
+        )?
+        .bind("id", keyset.id.to_string())
         .bind(
-            ":keys",
+            "keys",
             serde_json::to_string(&keyset.keys).map_err(Error::from)?,
         )
         .execute(&self.db)
@@ -551,8 +551,8 @@ ON CONFLICT(id) DO UPDATE SET
             FROM key
             WHERE id = :id
             "#,
-        )
-        .bind(":id", keyset_id.to_string())
+        )?
+        .bind("id", keyset_id.to_string())
         .pluck(&self.db)
         .await?
         .map(|keys| {
@@ -564,8 +564,8 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err> {
-        query(r#"DELETE FROM key WHERE id = :id"#)
-            .bind(":id", id.to_string())
+        query(r#"DELETE FROM key WHERE id = :id"#)?
+            .bind("id", id.to_string())
             .pluck(&self.db)
             .await?;
 
@@ -600,46 +600,46 @@ ON CONFLICT(id) DO UPDATE SET
         dleq_r = excluded.dleq_r
     ;
             "#,
-            )
-            .bind(":y", proof.y.to_bytes().to_vec())
-            .bind(":mint_url", proof.mint_url.to_string())
-            .bind(":state",proof.state.to_string())
+            )?
+            .bind("y", proof.y.to_bytes().to_vec())
+            .bind("mint_url", proof.mint_url.to_string())
+            .bind("state",proof.state.to_string())
             .bind(
-                ":spending_condition",
+                "spending_condition",
                 proof
                     .spending_condition
                     .map(|s| serde_json::to_string(&s).ok()),
             )
-            .bind(":unit", proof.unit.to_string())
-            .bind(":amount", u64::from(proof.proof.amount) as i64)
-            .bind(":keyset_id", proof.proof.keyset_id.to_string())
-            .bind(":secret", proof.proof.secret.to_string())
-            .bind(":c", proof.proof.c.to_bytes().to_vec())
+            .bind("unit", proof.unit.to_string())
+            .bind("amount", u64::from(proof.proof.amount) as i64)
+            .bind("keyset_id", proof.proof.keyset_id.to_string())
+            .bind("secret", proof.proof.secret.to_string())
+            .bind("c", proof.proof.c.to_bytes().to_vec())
             .bind(
-                ":witness",
+                "witness",
                 proof
                     .proof
                     .witness
                     .map(|w| serde_json::to_string(&w).unwrap()),
             )
             .bind(
-                ":dleq_e",
+                "dleq_e",
                 proof.proof.dleq.as_ref().map(|dleq| dleq.e.to_secret_bytes().to_vec()),
             )
             .bind(
-                ":dleq_s",
+                "dleq_s",
                 proof.proof.dleq.as_ref().map(|dleq| dleq.s.to_secret_bytes().to_vec()),
             )
             .bind(
-                ":dleq_r",
+                "dleq_r",
                 proof.proof.dleq.as_ref().map(|dleq| dleq.r.to_secret_bytes().to_vec()),
             )
             .execute(&self.db).await?;
         }
 
-        query(r#"DELETE FROM proof WHERE y IN (:ys)"#)
+        query(r#"DELETE FROM proof WHERE y IN (:ys)"#)?
             .bind_vec(
-                ":ys",
+                "ys",
                 removed_ys.iter().map(|y| y.to_bytes().to_vec()).collect(),
             )
             .execute(&self.db)
@@ -674,7 +674,7 @@ ON CONFLICT(id) DO UPDATE SET
                 spending_condition
             FROM proof
         "#,
-        )
+        )?
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -691,9 +691,9 @@ ON CONFLICT(id) DO UPDATE SET
     }
 
     async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), Self::Err> {
-        query("UPDATE proof SET state = :state WHERE y IN (:ys)")
-            .bind_vec(":ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
-            .bind(":state", state.to_string())
+        query("UPDATE proof SET state = :state WHERE y IN (:ys)")?
+            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+            .bind("state", state.to_string())
             .execute(&self.db)
             .await?;
 
@@ -708,9 +708,9 @@ ON CONFLICT(id) DO UPDATE SET
             SET counter=counter+:count
             WHERE id=:id
             "#,
-        )
-        .bind(":count", count)
-        .bind(":id", keyset_id.to_string())
+        )?
+        .bind("count", count)
+        .bind("id", keyset_id.to_string())
         .execute(&self.db)
         .await?;
 
@@ -728,8 +728,8 @@ ON CONFLICT(id) DO UPDATE SET
             WHERE
                 id=:id
             "#,
-        )
-        .bind(":id", keyset_id.to_string())
+        )?
+        .bind("id", keyset_id.to_string())
         .pluck(&self.db)
         .await?
         .map(|n| Ok::<_, Error>(column_as_number!(n)))
@@ -767,18 +767,18 @@ ON CONFLICT(id) DO UPDATE SET
     metadata = excluded.metadata
 ;
         "#,
-        )
-        .bind(":id", transaction.id().as_slice().to_vec())
-        .bind(":mint_url", mint_url)
-        .bind(":direction", direction)
-        .bind(":unit", unit)
-        .bind(":amount", amount)
-        .bind(":fee", fee)
-        .bind(":ys", ys)
-        .bind(":timestamp", transaction.timestamp as i64)
-        .bind(":memo", transaction.memo)
+        )?
+        .bind("id", transaction.id().as_slice().to_vec())
+        .bind("mint_url", mint_url)
+        .bind("direction", direction)
+        .bind("unit", unit)
+        .bind("amount", amount)
+        .bind("fee", fee)
+        .bind("ys", ys)
+        .bind("timestamp", transaction.timestamp as i64)
+        .bind("memo", transaction.memo)
         .bind(
-            ":metadata",
+            "metadata",
             serde_json::to_string(&transaction.metadata).map_err(Error::from)?,
         )
         .execute(&self.db)
@@ -809,8 +809,8 @@ ON CONFLICT(id) DO UPDATE SET
             WHERE
                 id = :id
             "#,
-        )
-        .bind(":id", transaction_id.as_slice().to_vec())
+        )?
+        .bind("id", transaction_id.as_slice().to_vec())
         .fetch_one(&self.db)
         .await?
         .map(sql_row_to_transaction)
@@ -839,7 +839,7 @@ ON CONFLICT(id) DO UPDATE SET
             FROM
                 transactions
             "#,
-        )
+        )?
         .fetch_all(&self.db)
         .await?
         .into_iter()
@@ -857,8 +857,8 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), Self::Err> {
-        query(r#"DELETE FROM transactions WHERE id=:id"#)
-            .bind(":id", transaction_id.as_slice().to_vec())
+        query(r#"DELETE FROM transactions WHERE id=:id"#)?
+            .bind("id", transaction_id.as_slice().to_vec())
             .execute(&self.db)
             .await?;
 
@@ -1078,121 +1078,4 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
         })
         .unwrap_or_default(),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use cdk_common::database::WalletDatabase;
-    use cdk_common::nuts::{ProofDleq, State};
-    use cdk_common::secret::Secret;
-
-    use crate::SQLWalletDatabase;
-
-    #[tokio::test]
-    #[cfg(feature = "sqlcipher")]
-    async fn test_sqlcipher() {
-        use cdk_common::mint_url::MintUrl;
-        use cdk_common::MintInfo;
-
-        use super::*;
-        let path = std::env::temp_dir()
-            .to_path_buf()
-            .join(format!("cdk-test-{}.sqlite", uuid::Uuid::new_v4()));
-        let db = SQLWalletDatabase::new(path, "password".to_string())
-            .await
-            .unwrap();
-
-        let mint_info = MintInfo::new().description("test");
-        let mint_url = MintUrl::from_str("https://mint.xyz").unwrap();
-
-        db.add_mint(mint_url.clone(), Some(mint_info.clone()))
-            .await
-            .unwrap();
-
-        let res = db.get_mint(mint_url).await.unwrap();
-        assert_eq!(mint_info, res.clone().unwrap());
-        assert_eq!("test", &res.unwrap().description.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_proof_with_dleq() {
-        use std::str::FromStr;
-
-        use cdk_common::common::ProofInfo;
-        use cdk_common::mint_url::MintUrl;
-        use cdk_common::nuts::{CurrencyUnit, Id, Proof, PublicKey, SecretKey};
-        use cdk_common::Amount;
-
-        // Create a temporary database
-        let path = std::env::temp_dir()
-            .to_path_buf()
-            .join(format!("cdk-test-dleq-{}.sqlite", uuid::Uuid::new_v4()));
-
-        #[cfg(feature = "sqlcipher")]
-        let db = SQLWalletDatabase::new(path, "password".to_string())
-            .await
-            .unwrap();
-
-        #[cfg(not(feature = "sqlcipher"))]
-        let db = SQLWalletDatabase::new(path).await.unwrap();
-
-        // Create a proof with DLEQ
-        let keyset_id = Id::from_str("00deadbeef123456").unwrap();
-        let mint_url = MintUrl::from_str("https://example.com").unwrap();
-        let secret = Secret::new("test_secret_for_dleq");
-
-        // Create DLEQ components
-        let e = SecretKey::generate();
-        let s = SecretKey::generate();
-        let r = SecretKey::generate();
-
-        let dleq = ProofDleq::new(e.clone(), s.clone(), r.clone());
-
-        let mut proof = Proof::new(
-            Amount::from(64),
-            keyset_id,
-            secret,
-            PublicKey::from_hex(
-                "02deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-            )
-            .unwrap(),
-        );
-
-        // Add DLEQ to the proof
-        proof.dleq = Some(dleq);
-
-        // Create ProofInfo
-        let proof_info =
-            ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat).unwrap();
-
-        // Store the proof in the database
-        db.update_proofs(vec![proof_info.clone()], vec![])
-            .await
-            .unwrap();
-
-        // Retrieve the proof from the database
-        let retrieved_proofs = db
-            .get_proofs(
-                Some(mint_url),
-                Some(CurrencyUnit::Sat),
-                Some(vec![State::Unspent]),
-                None,
-            )
-            .await
-            .unwrap();
-
-        // Verify we got back exactly one proof
-        assert_eq!(retrieved_proofs.len(), 1);
-
-        // Verify the DLEQ data was preserved
-        let retrieved_proof = &retrieved_proofs[0];
-        assert!(retrieved_proof.proof.dleq.is_some());
-
-        let retrieved_dleq = retrieved_proof.proof.dleq.as_ref().unwrap();
-
-        // Verify DLEQ components match what we stored
-        assert_eq!(retrieved_dleq.e.to_string(), e.to_string());
-        assert_eq!(retrieved_dleq.s.to_string(), s.to_string());
-        assert_eq!(retrieved_dleq.r.to_string(), r.to_string());
-    }
 }

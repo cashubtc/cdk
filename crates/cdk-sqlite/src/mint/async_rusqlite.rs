@@ -97,8 +97,8 @@ enum SqliteError {
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 
-    #[error("Invalid usage")]
-    InvalidUsage,
+    #[error(transparent)]
+    Inner(#[from] Error),
 
     #[error(transparent)]
     Pool(#[from] pool::Error<rusqlite::Error>),
@@ -123,37 +123,22 @@ impl From<SqliteError> for Error {
 
 /// Process a query
 #[inline(always)]
-fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, SqliteError> {
+fn process_query(conn: &Connection, statement: InnerStatement) -> Result<DbResponse, SqliteError> {
     let start = Instant::now();
-    let mut args = sql.args;
-    let mut stmt = conn.prepare_cached(&sql.sql)?;
-    let total_parameters = stmt.parameter_count();
-    let total_args = args.len();
+    let expected_response = statement.expected_response;
+    let (sql, placeholder_values) = statement.to_sql()?;
 
-    for index in 1..=total_parameters {
-        let value = if let Some(value) = stmt.parameter_name(index).map(|name| {
-            args.remove(name)
-                .ok_or(ConversionError::MissingParameter(name.to_owned()))
-        }) {
-            value?
-        } else {
-            continue;
-        };
-
-        stmt.raw_bind_parameter(index, to_sqlite(value))?;
+    let mut stmt = conn.prepare_cached(&sql)?;
+    for (i, value) in placeholder_values.into_iter().enumerate() {
+        stmt.raw_bind_parameter(i + 1, to_sqlite(value))?;
     }
 
     let columns = stmt.column_count();
 
-    let to_return = match sql.expected_response {
+    let to_return = match expected_response {
         ExpectedSqlResponse::AffectedRows => DbResponse::AffectedRows(stmt.raw_execute()?),
         ExpectedSqlResponse::Batch => {
-            if total_args > 0 {
-                return Err(SqliteError::InvalidUsage);
-            }
-
-            conn.execute_batch(&sql.sql)?;
-
+            conn.execute_batch(&sql)?;
             DbResponse::Ok
         }
         ExpectedSqlResponse::ManyRows => {
@@ -195,7 +180,7 @@ fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, S
     let duration = start.elapsed();
 
     if duration.as_millis() > SLOW_QUERY_THRESHOLD_MS {
-        tracing::warn!("[SLOW QUERY] Took {} ms: {}", duration.as_millis(), sql.sql);
+        tracing::warn!("[SLOW QUERY] Took {} ms: {}", duration.as_millis(), sql);
     }
 
     Ok(to_return)
@@ -230,7 +215,6 @@ fn rusqlite_spawn_worker_threads(
         let inflight_requests = inflight_requests.clone();
         spawn(move || loop {
             while let Ok((conn, sql, reply_to)) = rx.lock().expect("failed to acquire").recv() {
-                tracing::trace!("Execute query: {}", sql.sql);
                 let result = process_query(&conn, sql);
                 let _ = match result {
                     Ok(ok) => reply_to.send(ok),
@@ -290,7 +274,7 @@ fn rusqlite_worker_manager(
     while let Some(request) = receiver.blocking_recv() {
         inflight_requests.fetch_add(1, Ordering::Relaxed);
         match request {
-            DbRequest::Sql(sql, reply_to) => {
+            DbRequest::Sql(statement, reply_to) => {
                 let conn = match pool.get() {
                     Ok(conn) => conn,
                     Err(err) => {
@@ -301,7 +285,7 @@ fn rusqlite_worker_manager(
                     }
                 };
 
-                let _ = send_sql_to_thread.send((conn, sql, reply_to));
+                let _ = send_sql_to_thread.send((conn, statement, reply_to));
                 continue;
             }
             DbRequest::Begin(reply_to) => {
@@ -375,9 +359,9 @@ fn rusqlite_worker_manager(
                         DbRequest::Begin(reply_to) => {
                             let _ = reply_to.send(DbResponse::Unexpected);
                         }
-                        DbRequest::Sql(sql, reply_to) => {
-                            tracing::trace!("Tx {}: SQL {}", tx_id, sql.sql);
-                            let _ = match process_query(&tx, sql) {
+                        DbRequest::Sql(statement, reply_to) => {
+                            tracing::trace!("Tx {}: SQL {:?}", tx_id, statement);
+                            let _ = match process_query(&tx, statement) {
                                 Ok(ok) => reply_to.send(ok),
                                 Err(err) => {
                                     tracing::error!(
@@ -584,7 +568,7 @@ pub struct Transaction<'conn> {
     _marker: PhantomData<&'conn ()>,
 }
 
-impl<'conn> Transaction<'conn> {
+impl Transaction<'_> {
     fn get_queue_sender(&self) -> &mpsc::Sender<DbRequest> {
         &self.db_sender
     }

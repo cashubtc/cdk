@@ -150,6 +150,9 @@ pub enum Error {
     /// Unknown Quote
     #[error("Unknown Quote")]
     UnknownQuote,
+    /// Missing Placeholder value
+    #[error("Missing placeholder value {0}")]
+    MissingPlaceholder(String),
     /// Attempt to remove spent proof
     #[error("Attempt to remove spent proof")]
     AttemptRemoveSpentProof,

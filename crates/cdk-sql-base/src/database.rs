@@ -30,7 +30,7 @@ pub trait DatabaseExecutor: Debug + Sync + Send {
 /// Database transaction trait
 #[async_trait::async_trait]
 pub trait DatabaseTransaction<'a>: Debug + DatabaseExecutor + Send + Sync {
-    /// Consumes the current transaction comitting the changes
+    /// Consumes the current transaction committing the changes
     async fn commit(self) -> Result<(), Error>;
 
     /// Consumes the transaction rolling back all changes

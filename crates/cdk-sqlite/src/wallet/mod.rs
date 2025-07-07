@@ -6,7 +6,7 @@ use std::sync::Arc;
 use cdk_common::database::Error;
 use cdk_sql_base::database::DatabaseExecutor;
 use cdk_sql_base::pool::{Pool, PooledResource};
-use cdk_sql_base::stmt::{Column, Statement};
+use cdk_sql_base::stmt::{Column, SqlPart, Statement};
 use cdk_sql_base::SQLWalletDatabase;
 use rusqlite::CachedStatement;
 
@@ -24,15 +24,15 @@ impl SimpleAsyncRusqlite {
         &self,
         conn: &'a PooledResource<SqliteConnectionManager>,
         statement: Statement,
-    ) -> rusqlite::Result<CachedStatement<'a>> {
-        let mut stmt = conn.prepare_cached(&statement.sql)?;
-        for (name, value) in statement.args {
-            let index = stmt
-                .parameter_index(&name)
-                .map_err(|_| rusqlite::Error::InvalidColumnName(name.clone()))?
-                .ok_or(rusqlite::Error::InvalidColumnName(name))?;
+    ) -> Result<CachedStatement<'a>, Error> {
+        let (sql, placeholder_values) = statement.to_sql()?;
+        let mut stmt = conn
+            .prepare_cached(&sql)
+            .map_err(|e| Error::Database(Box::new(e)))?;
 
-            stmt.raw_bind_parameter(index, to_sqlite(value))?;
+        for (i, value) in placeholder_values.into_iter().enumerate() {
+            stmt.raw_bind_parameter(i + 1, to_sqlite(value))
+                .map_err(|e| Error::Database(Box::new(e)))?;
         }
 
         Ok(stmt)
@@ -109,10 +109,28 @@ impl DatabaseExecutor for SimpleAsyncRusqlite {
             .map_err(|e| Error::Database(Box::new(e)))
     }
 
-    async fn batch(&self, statement: Statement) -> Result<(), Error> {
+    async fn batch(&self, mut statement: Statement) -> Result<(), Error> {
         let conn = self.0.get().map_err(|e| Error::Database(Box::new(e)))?;
 
-        conn.execute_batch(&statement.sql)
+        let sql = {
+            let part = statement
+                .parts
+                .pop()
+                .ok_or(Error::Internal("Empty SQL".to_owned()))?;
+
+            if !statement.parts.is_empty() || matches!(part, SqlPart::Placeholder(_, _)) {
+                return Err(Error::Internal(
+                    "Invalid usage, batch does not support placeholders".to_owned(),
+                ));
+            }
+            if let SqlPart::Raw(sql) = part {
+                sql
+            } else {
+                unreachable!()
+            }
+        };
+
+        conn.execute_batch(&sql)
             .map_err(|e| Error::Database(Box::new(e)))
     }
 }
@@ -164,6 +182,8 @@ pub type WalletSqliteDatabase = SQLWalletDatabase<SimpleAsyncRusqlite>;
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use cdk_common::database::WalletDatabase;
     use cdk_common::nuts::{ProofDleq, State};
     use cdk_common::secret::Secret;
@@ -180,7 +200,7 @@ mod tests {
         let path = std::env::temp_dir()
             .to_path_buf()
             .join(format!("cdk-test-{}.sqlite", uuid::Uuid::new_v4()));
-        let db = WalletSqliteDatabase::new(path, "password".to_string())
+        let db = WalletSqliteDatabase::new((path, "password".to_string()))
             .await
             .unwrap();
 
@@ -198,8 +218,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_proof_with_dleq() {
-        use std::str::FromStr;
-
         use cdk_common::common::ProofInfo;
         use cdk_common::mint_url::MintUrl;
         use cdk_common::nuts::{CurrencyUnit, Id, Proof, PublicKey, SecretKey};

@@ -14,7 +14,7 @@ pub async fn migrate<C: DatabaseExecutor>(
                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
            )
            "#,
-    )
+    )?
     .execute(conn)
     .await?;
 
@@ -38,16 +38,16 @@ pub async fn migrate<C: DatabaseExecutor>(
 
     // Apply each migration if it hasn’t been applied yet
     for (name, sql) in migrations {
-        let is_missing = query("SELECT name FROM migrations WHERE name = :name")
-            .bind(":name", name)
+        let is_missing = query("SELECT name FROM migrations WHERE name = :name")?
+            .bind("name", name)
             .pluck(conn)
             .await?
             .is_none();
 
         if is_missing {
-            query(sql).batch(conn).await?;
-            query(r#"INSERT INTO migrations (name) VALUES (:name)"#)
-                .bind(":name", name)
+            query(sql)?.batch(conn).await?;
+            query(r#"INSERT INTO migrations (name) VALUES (:name)"#)?
+                .bind("name", name)
                 .execute(conn)
                 .await?;
         }
