@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Helper script for interacting with CDK regtest environment
-# Run this after starting interactive_regtest.sh
+# Run this after starting interactive_regtest_mprocs.sh
 
 # Check for environment state file first, then environment variable
 ENV_FILE="/tmp/cdk_regtest_env"
@@ -17,14 +17,14 @@ elif [ ! -z "$CDK_ITESTS_DIR" ]; then
     echo "export CDK_REGTEST_PID=\"$CDK_REGTEST_PID\"" >> "$ENV_FILE"
 else
     echo "❌ CDK regtest environment not found!"
-    echo "Please run './misc/interactive_regtest.sh' or 'just regtest' first"
+    echo "Please run './misc/interactive_regtest_mprocs.sh' or 'just regtest' first"
     exit 1
 fi
 
 # Validate that the environment is actually running
 if [ -z "$CDK_ITESTS_DIR" ] || [ ! -d "$CDK_ITESTS_DIR" ]; then
     echo "❌ CDK regtest environment not found or directory missing!"
-    echo "Please run './misc/interactive_regtest.sh' or 'just regtest' first"
+    echo "Please run './misc/interactive_regtest_mprocs.sh' or 'just regtest' first"
     [ -f "$ENV_FILE" ] && rm "$ENV_FILE"  # Clean up stale state file
     exit 1
 fi

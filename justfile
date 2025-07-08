@@ -156,11 +156,6 @@ nutshell-wallet-itest:
 # Start interactive regtest environment (Bitcoin + 4 LN nodes + 2 CDK mints)
 regtest db="sqlite":
   #!/usr/bin/env bash
-  ./misc/interactive_regtest.sh {{db}}
-
-# Start regtest with direct process management via mprocs (lets you start/stop mints)
-regtest-mprocs db="sqlite":
-  #!/usr/bin/env bash
   ./misc/interactive_regtest_mprocs.sh {{db}}
 
 # Lightning Network Commands (require regtest environment to be running)
