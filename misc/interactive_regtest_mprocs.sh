@@ -287,11 +287,11 @@ procs:
     autostart: true
   
   cln-one:
-    shell: "while [ ! -f $CDK_ITESTS_DIR/cln/one/regtest/log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/cln/one/regtest/log"
+    shell: "while [ ! -f $CDK_ITESTS_DIR/cln/one/debug.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/cln/one/debug.log"
     autostart: true
   
   cln-two:
-    shell: "while [ ! -f $CDK_ITESTS_DIR/cln/two/regtest/log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/cln/two/regtest/log"
+    shell: "while [ ! -f $CDK_ITESTS_DIR/cln/two/debug.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/cln/two/debug.log"
     autostart: true
   
   lnd-one:
