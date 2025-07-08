@@ -4,7 +4,7 @@ This directory contains scripts for setting up and interacting with a CDK regtes
 
 ## Scripts
 
-### 1. `interactive_regtest.sh`
+### 1. `interactive_regtest_mprocs.sh`
 Sets up a complete regtest environment with:
 - Bitcoin regtest node
 - 2 CLN (Core Lightning) nodes with channels
@@ -52,7 +52,7 @@ Helper script providing convenient commands to interact with the running regtest
 
 1. **Start the regtest environment:**
    ```bash
-   ./misc/interactive_regtest.sh [database_type]
+   ./misc/interactive_regtest_mprocs.sh [database_type]
    ```
    - `database_type`: Optional, defaults to "sqlite". Can be "sqlite" or "redb"
    - The script will build necessary binaries and set up the full environment
@@ -67,7 +67,7 @@ Helper script providing convenient commands to interact with the running regtest
 
 The interactive regtest environment uses a state file (`/tmp/cdk_regtest_env`) to share environment information between terminal sessions:
 
-1. When you run `just regtest` or `./misc/interactive_regtest.sh`, it creates the state file with all necessary environment variables
+1. When you run `just regtest` or `./misc/interactive_regtest_mprocs.sh`, it creates the state file with all necessary environment variables
 2. When you run Lightning node commands in other terminals (e.g., `just ln-cln1 getinfo`), the helper script automatically sources the state file
 3. When the environment shuts down (Ctrl+C), it cleans up the state file automatically
 
@@ -198,7 +198,7 @@ $CDK_ITESTS_DIR/
 
 ## Cleanup
 
-- Press `Ctrl+C` in the terminal running `interactive_regtest.sh`
+- Press `Ctrl+C` in the terminal running `interactive_regtest_mprocs.sh`
 - All processes will be terminated and the temporary directory will be cleaned up automatically
 - No manual cleanup is required
 
@@ -211,7 +211,7 @@ $CDK_ITESTS_DIR/
 
 ### Helper script not working
 - Ensure the regtest environment is running first
-- The `CDK_ITESTS_DIR` environment variable must be set (done automatically by `interactive_regtest.sh`)
+- The `CDK_ITESTS_DIR` environment variable must be set (done automatically by `interactive_regtest_mprocs.sh`)
 
 ### Connection issues
 - Use `./misc/regtest_helper.sh show-status` to check component health

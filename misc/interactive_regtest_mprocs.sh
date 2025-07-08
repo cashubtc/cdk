@@ -270,14 +270,14 @@ cat > "$MPROCS_CONFIG" << EOF
 procs:
   cln-mint:
     shell: "$CDK_ITESTS_DIR/start_cln_mint.sh"
-    autostart: false
+    autostart: true
     env:
       CDK_ITESTS_DIR: "$CDK_ITESTS_DIR"
       CDK_MINTD_DATABASE: "$CDK_MINTD_DATABASE"
   
   lnd-mint:
     shell: "$CDK_ITESTS_DIR/start_lnd_mint.sh"
-    autostart: false
+    autostart: true
     env:
       CDK_ITESTS_DIR: "$CDK_ITESTS_DIR"
       CDK_MINTD_DATABASE: "$CDK_MINTD_DATABASE"
