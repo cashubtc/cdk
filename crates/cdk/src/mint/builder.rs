@@ -12,6 +12,8 @@ use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::Bolt11Settings;
 use cdk_common::{nut21, nut22};
 use cdk_signatory::signatory::Signatory;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::CdkMetrics;
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
@@ -51,6 +53,8 @@ pub struct MintBuilder {
     // protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
     openid_discovery: Option<String>,
     signatory: Option<Arc<dyn Signatory + Sync + Send + 'static>>,
+    #[cfg(feature = "prometheus")]
+    metrics: Option<Arc<CdkMetrics>>,
 }
 
 impl MintBuilder {
@@ -318,6 +322,13 @@ impl MintBuilder {
         self
     }
 
+    /// Set prometheus metrics
+    #[cfg(feature = "prometheus")]
+    pub fn with_prometheus_metrics(mut self, metrics: Arc<CdkMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
     /// Sets the input fee ppk for a given unit
     ///
     /// The unit **MUST** already have been added with a ln backend
@@ -364,6 +375,20 @@ impl MintBuilder {
                 .clone()
                 .ok_or(anyhow!("Auth localstore not set"))?;
 
+            #[cfg(feature = "prometheus")]
+            if let Some(metrics) = &self.metrics {
+                return Ok(Mint::new_internal(
+                    signatory,
+                    localstore,
+                    Some(auth_localstore),
+                    ln,
+                    Some(openid_discovery.clone()),
+                    Some(metrics.clone()),
+                )
+                .await?);
+            }
+
+            #[cfg(not(feature = "prometheus"))]
             return Ok(Mint::new_with_auth(
                 signatory,
                 localstore,
@@ -379,6 +404,21 @@ impl MintBuilder {
             return Err(anyhow!(
                 "OpenID discovery URL provided but auth feature is not enabled"
             ));
+        }
+
+        #[cfg(feature = "prometheus")]
+        if let Some(metrics) = &self.metrics {
+            return Ok(Mint::new_internal(
+                signatory,
+                localstore,
+                #[cfg(feature = "auth")]
+                None,
+                ln,
+                #[cfg(feature = "auth")]
+                None,
+                Some(metrics.clone()),
+            )
+            .await?);
         }
 
         Ok(Mint::new(signatory, localstore, ln).await?)

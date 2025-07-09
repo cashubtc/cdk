@@ -12,6 +12,7 @@ impl Mint {
         &self,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
+        self.metrics.record_wallet_operation();
         let mut tx = self.localstore.begin_transaction().await?;
 
         if let Err(err) = self

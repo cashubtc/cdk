@@ -56,6 +56,7 @@ cdk-mint-rpc = { path = "./crates/cdk-mint-rpc", version = "=0.11.0" }
 cdk-redb = { path = "./crates/cdk-redb", default-features = true, version = "=0.11.0" }
 cdk-sqlite = { path = "./crates/cdk-sqlite", default-features = true, version = "=0.11.0" }
 cdk-signatory = { path = "./crates/cdk-signatory", version = "=0.11.0", default-features = false }
+cdk-prometheus = { path = "./crates/cdk-prometheus", version = "=0.11.0", default-features = false }
 clap = { version = "4.5.31", features = ["derive"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"

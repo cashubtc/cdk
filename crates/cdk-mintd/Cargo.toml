@@ -24,6 +24,7 @@ sqlcipher = ["cdk-sqlite/sqlcipher"]
 swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
 redis = ["cdk-axum/redis"]
 auth = ["cdk/auth", "cdk-sqlite/auth"]
+prometheus = ["cdk/prometheus", "dep:cdk-prometheus"]
 
 [dependencies]
 anyhow.workspace = true
@@ -43,6 +44,8 @@ cdk-axum.workspace = true
 cdk-signatory.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
 cdk-payment-processor = { workspace = true, optional = true }
+cdk-prometheus = { workspace = true, optional = true ,features = ["system-metrics"]}
+
 config = { version = "0.15.11", features = ["toml"] }
 clap.workspace = true
 bitcoin.workspace = true

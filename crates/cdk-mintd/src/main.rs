@@ -8,7 +8,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-
+use std::time::{Duration, SystemTime};
+use tokio::time::interval;
 use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
@@ -50,9 +51,13 @@ use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::decompression::RequestDecompressionLayer;
 use tower_http::trace::TraceLayer;
+use tracing::field::Field;
+use tracing::Instrument;
 use tracing_subscriber::EnvFilter;
 #[cfg(feature = "swagger")]
 use utoipa::OpenApi;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 
@@ -128,6 +133,10 @@ async fn main() -> anyhow::Result<()> {
                 .with_keystore(db)
         }
     };
+
+    #[cfg(feature = "prometheus")]
+    let metrics = Arc::new(cdk_prometheus::CdkMetrics::new()?);
+
 
     let mut contact_info: Option<Vec<ContactInfo>> = None;
 
@@ -533,7 +542,15 @@ async fn main() -> anyhow::Result<()> {
         tx.commit().await?;
     }
 
-    let mint = mint_builder.build().await?;
+    let mint = {
+        #[cfg(feature = "prometheus")]
+        {
+            mint_builder = mint_builder.with_prometheus_metrics(metrics.clone());
+        }
+
+        mint_builder.build().await?
+    };
+
 
     tracing::debug!("Mint built from builder.");
 
@@ -568,6 +585,36 @@ async fn main() -> anyhow::Result<()> {
             );
         }
     }
+
+
+    #[cfg(feature = "prometheus")]
+    {
+        if let Some(prometheus_settings) = &settings.prometheus {
+            if prometheus_settings.enabled {
+                let addr = prometheus_settings
+                    .address
+                    .clone()
+                    .unwrap_or("127.0.0.1".to_string());
+                let port = prometheus_settings.port.unwrap_or(9000);
+
+                let address = format!("{}:{}", addr, port)
+                    .parse()
+                    .expect("Invalid prometheus address");
+
+                let server = cdk_prometheus::PrometheusBuilder::new()
+                    .bind_address(address)
+                    .build_with_cdk_metrics(&metrics)?;
+
+                tokio::spawn(async move {
+                    if let Err(e) = server.start().await {
+                        tracing::error!("Failed to start prometheus server: {}", e);
+                    }
+                });
+            }
+        }
+    }
+
+
 
     for router in ln_routers {
         mint_service = mint_service.merge(router);
