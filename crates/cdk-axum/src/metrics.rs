@@ -1,12 +1,10 @@
 use std::time::Instant;
 
-use axum::{
-    body::Body,
-    extract::{MatchedPath, State},
-    http::Request,
-    middleware::Next,
-    response::Response,
-};
+use axum::body::Body;
+use axum::extract::{MatchedPath, State};
+use axum::http::Request;
+use axum::middleware::Next;
+use axum::response::Response;
 
 use crate::MintState;
 /// This module provides middleware for collecting HTTP metrics in the CDK Axum server.

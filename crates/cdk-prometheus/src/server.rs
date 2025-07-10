@@ -1,9 +1,11 @@
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
 use prometheus::{Registry, TextEncoder};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::time;
 
 use crate::metrics::CdkMetrics;
-
 #[cfg(feature = "system-metrics")]
 use crate::process::SystemMetrics;
 

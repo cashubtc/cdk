@@ -1,7 +1,8 @@
+use std::sync::Arc;
+
 use prometheus::{
     Histogram, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry,
 };
-use std::sync::Arc;
 
 /// Custom metrics for CDK applications
 #[derive(Clone, Debug)]

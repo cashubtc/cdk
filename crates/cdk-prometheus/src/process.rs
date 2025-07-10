@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 #[cfg(feature = "system-metrics")]
 use prometheus::{Gauge, IntGauge, Registry};
-use std::sync::Arc;
 #[cfg(feature = "system-metrics")]
 use sysinfo::{Pid, System};
 

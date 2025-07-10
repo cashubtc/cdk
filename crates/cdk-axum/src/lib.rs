@@ -15,7 +15,6 @@ use axum::routing::{get, post};
 use axum::Router;
 use cache::HttpCache;
 use cdk::mint::Mint;
-
 use router_handlers::*;
 
 mod metrics;

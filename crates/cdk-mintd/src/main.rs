@@ -2,11 +2,6 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-use anyhow::{anyhow, bail, Result};
-use axum::Router;
-use bip39::Mnemonic;
-use cdk::cdk_database::{self, MintAuthDatabase};
-use cdk::mint::{MintBuilder, MintMeltLimits};
 use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
@@ -14,7 +9,12 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tokio::time::interval;
+
+use anyhow::{anyhow, bail, Result};
+use axum::Router;
+use bip39::Mnemonic;
+use cdk::cdk_database::{self, MintAuthDatabase};
+use cdk::mint::{MintBuilder, MintMeltLimits};
 // Feature-gated imports
 #[cfg(any(
     feature = "cln",
@@ -49,6 +49,7 @@ use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use tokio::sync::Notify;
+use tokio::time::interval;
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::decompression::RequestDecompressionLayer;
