@@ -24,10 +24,6 @@ use crate::MintState;
 ///
 /// To use this middleware, ensure the "prometheus" feature is enabled and the middleware
 /// is applied to your router using `from_fn(metrics_middleware)`.
-///
-/// The middleware requires a MintState with a metrics field of type Option<Arc<CdkMetrics>>.
-
-/// Middleware for recording HTTP metrics
 #[cfg(feature = "prometheus")]
 pub async fn metrics_middleware(
     State(state): State<MintState>,
@@ -44,7 +40,7 @@ pub async fn metrics_middleware(
     // otherwise fall back to empty string to reduce the memory footprint
     let endpoint_path = matched_path
         .map(|mp| mp.as_str().to_string())
-        .unwrap_or_else(|| "".to_string());
+        .unwrap_or_default();
 
     #[cfg(feature = "prometheus")]
     {

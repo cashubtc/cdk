@@ -8,7 +8,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, bail, Result};
 use axum::Router;
@@ -49,13 +48,10 @@ use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use tokio::sync::Notify;
-use tokio::time::interval;
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::decompression::RequestDecompressionLayer;
 use tower_http::trace::TraceLayer;
-use tracing::field::Field;
-use tracing::Instrument;
 use tracing_subscriber::EnvFilter;
 #[cfg(feature = "swagger")]
 use utoipa::OpenApi;

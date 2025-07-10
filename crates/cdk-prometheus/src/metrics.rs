@@ -135,7 +135,7 @@ impl CdkMetrics {
     ) -> crate::Result<(IntCounter, Histogram, Histogram)> {
         let wallet_operations_total =
             IntCounter::new("cdk_wallet_operations_total", "Total wallet operations")?;
-        registry.register(Box::new(wallet_operations_total.clone()))?;
+        registry.register(Box::new(wallet_operations_total))?;
 
         let lightning_payments_total =
             IntCounter::new("cdk_lightning_payments_total", "Total Lightning payments")?;

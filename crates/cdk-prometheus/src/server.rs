@@ -72,13 +72,65 @@ impl PrometheusServer {
 
     /// Create a new Prometheus server with custom registry
     #[must_use]
-    pub fn with_registry(config: PrometheusConfig, registry: Arc<Registry>) -> Self {
+    pub const fn with_registry(config: PrometheusConfig, registry: Arc<Registry>) -> Self {
         Self {
             config,
             registry,
             #[cfg(feature = "system-metrics")]
             system_metrics: None,
         }
+    }
+
+    /// Create a metrics handler function that gathers and encodes metrics
+    fn create_metrics_handler(
+        registry: Arc<Registry>,
+        #[cfg(feature = "system-metrics")] system_metrics: Option<SystemMetrics>,
+    ) -> impl Fn() -> String {
+        move || {
+            let encoder = TextEncoder::new();
+
+            // Collect metrics from our registry
+            #[cfg(feature = "system-metrics")]
+            let mut metric_families = registry.gather();
+            #[cfg(not(feature = "system-metrics"))]
+            let metric_families = registry.gather();
+
+            // Add system metrics if available
+            #[cfg(feature = "system-metrics")]
+            if let Some(ref sys_metrics) = system_metrics {
+                // Update system metrics before collection
+                if let Err(e) = sys_metrics.update_metrics() {
+                    tracing::warn!("Failed to update system metrics: {e}");
+                }
+
+                let sys_registry = sys_metrics.registry();
+                let mut sys_families = sys_registry.gather();
+                metric_families.append(&mut sys_families);
+            }
+
+            // Encode metrics to string
+            encoder
+                .encode_to_string(&metric_families)
+                .unwrap_or_else(|e| {
+                    tracing::error!("Failed to encode metrics: {e}");
+                    format!("Failed to encode metrics: {e}")
+                })
+        }
+    }
+
+    /// Start a background task to update system metrics
+    #[cfg(feature = "system-metrics")]
+    fn start_system_metrics_updater(system_metrics: SystemMetrics, interval_secs: u64) {
+        let interval = Duration::from_secs(interval_secs);
+        tokio::spawn(async move {
+            let mut interval_timer = time::interval(interval);
+            loop {
+                interval_timer.tick().await;
+                if let Err(e) = system_metrics.update_metrics() {
+                    tracing::warn!("Failed to update system metrics: {e}");
+                }
+            }
+        });
     }
 
     /// Start the Prometheus HTTP server
@@ -89,17 +141,10 @@ impl PrometheusServer {
         // Start system metrics update task
         #[cfg(feature = "system-metrics")]
         if let Some(ref system_metrics) = self.system_metrics {
-            let system_metrics = system_metrics.clone();
-            let interval = Duration::from_secs(self.config.system_metrics_interval);
-            tokio::spawn(async move {
-                let mut interval_timer = time::interval(interval);
-                loop {
-                    interval_timer.tick().await;
-                    if let Err(e) = system_metrics.update_metrics() {
-                        tracing::warn!("Failed to update system metrics: {}", e);
-                    }
-                }
-            });
+            Self::start_system_metrics_updater(
+                system_metrics.clone(),
+                self.config.system_metrics_interval,
+            );
         }
 
         tracing::info!(
@@ -112,38 +157,13 @@ impl PrometheusServer {
         let binding = self.config.bind_address;
         let registry_clone = Arc::<Registry>::clone(&self.registry);
 
-        #[cfg(feature = "system-metrics")]
-        let system_metrics_clone = self.system_metrics.clone();
-
         // Create a handler that exposes our registry
-        let metrics_handler = move || {
-            let encoder = TextEncoder::new();
+        #[cfg(feature = "system-metrics")]
+        let metrics_handler =
+            Self::create_metrics_handler(registry_clone, self.system_metrics.clone());
 
-            // Collect metrics from our registry
-            let mut metric_families = registry_clone.gather();
-
-            // Add system metrics if available
-            #[cfg(feature = "system-metrics")]
-            if let Some(ref system_metrics) = system_metrics_clone {
-                // Update system metrics before collection
-                if let Err(e) = system_metrics.update_metrics() {
-                    tracing::warn!("Failed to update system metrics: {}", e);
-                }
-
-                let sys_registry = system_metrics.registry();
-                let mut sys_families = sys_registry.gather();
-                metric_families.append(&mut sys_families);
-            }
-
-            // Encode metrics to string
-            match encoder.encode_to_string(&metric_families) {
-                Ok(metrics) => metrics,
-                Err(e) => {
-                    tracing::error!("Failed to encode metrics: {}", e);
-                    format!("Failed to encode metrics: {}", e)
-                }
-            }
-        };
+        #[cfg(not(feature = "system-metrics"))]
+        let metrics_handler = Self::create_metrics_handler(registry_clone);
 
         // Start the exporter in a background task
         let path = self.config.metrics_path.clone();
@@ -158,7 +178,7 @@ impl PrometheusServer {
             let listener = match TcpListener::bind(binding) {
                 Ok(listener) => listener,
                 Err(e) => {
-                    tracing::error!("Failed to bind TCP listener: {}", e);
+                    tracing::error!("Failed to bind TCP listener: {e}");
                     return;
                 }
             };
@@ -172,12 +192,13 @@ impl PrometheusServer {
                         // Read the request
                         let mut buffer = [0; 1024];
                         match stream.read(&mut buffer) {
-                            Ok(_) => {
+                            Ok(0) => {}
+                            Ok(bytes_read) => {
                                 // Convert the buffer to a string
-                                let request = String::from_utf8_lossy(&buffer[..]);
+                                let request = String::from_utf8_lossy(&buffer[..bytes_read]);
 
                                 // Check if the request is for our metrics path
-                                if request.contains(&format!("GET {} HTTP", path)) {
+                                if request.contains(&format!("GET {path} HTTP")) {
                                     // Get the metrics
                                     let metrics = metrics_handler();
 
@@ -189,46 +210,30 @@ impl PrometheusServer {
                                     );
 
                                     if let Err(e) = stream.write(response.as_bytes()) {
-                                        tracing::error!("Failed to write response: {}", e);
+                                        tracing::error!("Failed to write response: {e}");
                                     }
                                 } else {
                                     // Write a 404 response
                                     let response = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nNot Found";
                                     if let Err(e) = stream.write(response.as_bytes()) {
-                                        tracing::error!("Failed to write response: {}", e);
+                                        tracing::error!("Failed to write response: {e}");
                                     }
                                 }
                             }
                             Err(e) => {
-                                tracing::error!("Failed to read from stream: {}", e);
+                                tracing::error!("Failed to read from stream: {e}");
                             }
                         }
                     }
                     Err(e) => {
-                        tracing::error!("Failed to accept connection: {}", e);
+                        tracing::error!("Failed to accept connection: {e}");
                     }
                 }
             }
         });
 
-        // Start a background task to update system metrics
-        #[cfg(feature = "system-metrics")]
-        if let Some(ref system_metrics) = self.system_metrics {
-            let system_metrics = system_metrics.clone();
-            let interval = Duration::from_secs(self.config.system_metrics_interval);
-            tokio::spawn(async move {
-                let mut interval_timer = time::interval(interval);
-                loop {
-                    interval_timer.tick().await;
-                    if let Err(e) = system_metrics.update_metrics() {
-                        tracing::warn!("Failed to update system metrics: {}", e);
-                    }
-                }
-            });
-        }
-
         // Wait a bit to ensure the server has started
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        time::sleep(Duration::from_millis(100)).await;
 
         tracing::info!("Prometheus exporter started in background");
 

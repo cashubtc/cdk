@@ -77,21 +77,23 @@ impl SystemMetrics {
         system.refresh_all();
 
         // Update memory metrics
-        let total_memory = system.total_memory() as i64;
+        let total_memory = i64::try_from(system.total_memory()).unwrap_or(i64::MAX);
 
         // Update process metrics for the current process
         // This is a simplified approach that may not work perfectly in all cases
         if let Some(process) = system.process(Pid::from(std::process::id() as usize)) {
             // Get CPU usage if available
             let process_cpu = process.cpu_usage();
-            self.process_cpu_usage_percent.set(process_cpu as f64);
+            self.process_cpu_usage_percent.set(f64::from(process_cpu));
 
             // Get memory usage if available
-            let process_memory = process.memory() as i64;
+            let process_memory = i64::try_from(process.memory()).unwrap_or(i64::MAX);
             self.process_memory_bytes.set(process_memory);
 
             // Calculate memory percentage
             if total_memory > 0 {
+                // Precision loss is acceptable for percentage calculation
+                #[allow(clippy::cast_precision_loss)]
                 let process_memory_percent = (process_memory as f64 / total_memory as f64) * 100.0;
                 self.process_memory_percent.set(process_memory_percent);
             }
