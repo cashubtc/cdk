@@ -16,7 +16,7 @@ use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
 // internal crate modules
-use cdk::cdk_database::{self, MintAuthDatabase, MintDatabase, MintKeysDatabase};
+use cdk::cdk_database::{self, MintDatabase, MintKeysDatabase};
 use cdk::cdk_payment;
 use cdk::cdk_payment::MintPayment;
 use cdk::mint::{MintBuilder, MintMeltLimits};
@@ -90,12 +90,7 @@ async fn main() -> Result<()> {
 
     let (mint_builder, ln_routers) = configure_mint_builder(&settings, mint_builder).await?;
     #[cfg(feature = "auth")]
-    let mint_builder = setup_authentication(
-        &settings,
-        setup_sqlite_auth_database(work_dir.as_path(), CLIArgs::parse().password).await?,
-        mint_builder,
-    )
-    .await?;
+    let mint_builder = setup_authentication(&settings, &work_dir, mint_builder).await?;
     let mint_builder_info = mint_builder.mint_info.clone();
 
     let mint = mint_builder.build().await?;
@@ -202,42 +197,26 @@ async fn setup_database(
             let password = CLIArgs::parse().password;
             #[cfg(not(feature = "sqlcipher"))]
             let password = String::new();
-            let (db) = setup_sqlite_database(work_dir, password).await?;
+            let db = setup_sqlite_database(work_dir, password).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
-            let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> =
-                db.clone();
+            let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
             Ok((localstore, keystore))
         }
     }
 }
 
-#[cfg(feature = "auth")]
-async fn setup_sqlite_auth_database(
-    work_dir: &Path,
-    _password: String,
-) -> Result<(Arc<MintSqliteAuthDatabase>)> {
-    #[cfg(feature = "sqlcipher")]
-    let sql_db_auth_path = work_dir.join("cdk-mintd-auth.sqlite");
-    #[cfg(feature = "sqlcipher")]
-    let sqlite_auth_db = MintSqliteAuthDatabase::new(&sql_db_auth_path, _password).await?;
-    #[cfg(not(feature = "sqlcipher"))]
-    let sqlite_auth_db = MintSqliteAuthDatabase::new(&sql_db_auth_path).await?;
-    Ok(Arc::new(sqlite_auth_db))
-}
-
 async fn setup_sqlite_database(
     work_dir: &Path,
     _password: String,
-) -> Result<(Arc<MintSqliteDatabase>)> {
+) -> Result<Arc<MintSqliteDatabase>> {
     let sql_db_path = work_dir.join("cdk-mintd.sqlite");
     #[cfg(not(feature = "sqlcipher"))]
     let db = MintSqliteDatabase::new(&sql_db_path).await?;
     #[cfg(feature = "sqlcipher")]
     let db = {
         // Get password from command line arguments for sqlcipher
-        MintSqliteDatabase::new(&sql_db_path, _password.clone()).await?
+        MintSqliteDatabase::new(&sql_db_path, _password).await?
     };
-
     Ok(Arc::new(db))
 }
 
@@ -518,13 +497,25 @@ fn configure_cache(settings: &config::Settings, mint_builder: MintBuilder) -> Mi
 #[cfg(feature = "auth")]
 async fn setup_authentication(
     settings: &config::Settings,
-    auth_localstore: Arc<
-        dyn cdk_database::MintAuthDatabase<Err = cdk_database::Error> + Send + Sync,
-    >,
+    work_dir: &Path,
     mut mint_builder: MintBuilder,
 ) -> Result<MintBuilder> {
     if let Some(auth_settings) = settings.auth.clone() {
         tracing::info!("Auth settings are defined. {:?}", auth_settings);
+        let auth_localstore: Arc<
+            dyn cdk_database::MintAuthDatabase<Err = cdk_database::Error> + Send + Sync,
+        > = match settings.database.engine {
+            DatabaseEngine::Sqlite => {
+                let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
+                #[cfg(feature = "sqlcipher")]
+                let password = CLIArgs::parse().password;
+                #[cfg(feature = "sqlcipher")]
+                let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path, password).await?;
+                #[cfg(not(feature = "sqlcipher"))]
+                let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
+                Arc::new(sqlite_db)
+            }
+        };
 
         mint_builder = mint_builder.with_auth_localstore(auth_localstore.clone());
 
