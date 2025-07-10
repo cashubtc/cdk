@@ -147,12 +147,6 @@ impl PrometheusServer {
             );
         }
 
-        tracing::info!(
-            "Starting Prometheus server on {} at path {}",
-            self.config.bind_address,
-            self.config.metrics_path
-        );
-
         // Create and start the exporter
         let binding = self.config.bind_address;
         let registry_clone = Arc::<Registry>::clone(&self.registry);
@@ -168,7 +162,6 @@ impl PrometheusServer {
         // Start the exporter in a background task
         let path = self.config.metrics_path.clone();
 
-        tracing::info!("Prometheus exporter started in background on {}", binding);
         tokio::spawn(async move {
             // We're using a simple HTTP server to expose our metrics
             use std::io::{Read, Write};
@@ -182,8 +175,11 @@ impl PrometheusServer {
                     return;
                 }
             };
-
-            tracing::info!("Prometheus exporter started on {}", binding);
+            tracing::info!(
+                "Started Prometheus server on {} at path {}",
+                self.config.bind_address,
+                self.config.metrics_path
+            );
 
             // Accept connections
             for stream in listener.incoming() {
@@ -234,8 +230,6 @@ impl PrometheusServer {
 
         // Wait a bit to ensure the server has started
         time::sleep(Duration::from_millis(100)).await;
-
-        tracing::info!("Prometheus exporter started in background on {}", binding);
 
         Ok(())
     }
