@@ -155,7 +155,7 @@ jobs:
 
   regtest-itest:
     name: "Integration regtest tests"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
     strategy:
@@ -348,7 +348,7 @@ jobs:
 
   fake-mint-auth-itest:
     name: "Integration fake mint auth tests"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
     strategy:
