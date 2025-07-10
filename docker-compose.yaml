@@ -8,19 +8,12 @@ services:
       - "3338:3338"
     environment:
       # OpenTelemetry configuration
-      - OTEL_SERVICE_NAME=cdk-mintd
-      - OTEL_SERVICE_VERSION=1.0.0
-      - OTEL_SERVICE_NAMESPACE=production
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-      - OTEL_EXPORTER_OTLP_TIMEOUT=10000
-      - OTEL_RESOURCE_ATTRIBUTES=deployment.environment=docker,service.instance.id=mintd-01
       - RUST_LOG=info
     depends_on:
-      - otel-collector
-      - jaeger
+      - prometheus
+      - grafana
     networks:
-      - observability
+      - cdk
 
   prometheus:
     image: prom/prometheus:latest
@@ -37,7 +30,7 @@ services:
       - '--enable-feature=otlp-write-receiver'
 
     networks:
-      - observability
+      - cdk
 
   # Grafana for visualization
   grafana:
@@ -47,8 +40,8 @@ services:
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     networks:
-      - observability
+      - cdk
 
 networks:
-  observability:
+  cdk:
     driver: bridge
