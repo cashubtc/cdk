@@ -89,8 +89,13 @@ async fn main() -> Result<()> {
         .with_keystore(keystore);
 
     let (mint_builder, ln_routers) = configure_mint_builder(&settings, mint_builder).await?;
-
-    let mint_builder = setup_authentication(&settings, work_dir.as_path(), mint_builder).await?;
+    #[cfg(feature = "auth")]
+    let mint_builder = setup_authentication(
+        &settings,
+        setup_sqlite_auth_database(work_dir.as_path(), CLIArgs::parse().password).await?,
+        mint_builder,
+    )
+    .await?;
     let mint_builder_info = mint_builder.mint_info.clone();
 
     let mint = mint_builder.build().await?;
@@ -212,11 +217,11 @@ async fn setup_sqlite_auth_database(
     _password: String,
 ) -> Result<(Arc<MintSqliteAuthDatabase>)> {
     #[cfg(feature = "sqlcipher")]
-    let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
+    let sql_db_auth_path = work_dir.join("cdk-mintd-auth.sqlite");
     #[cfg(feature = "sqlcipher")]
-    let sqlite_auth_db = MintSqliteAuthDatabase::new(&sql_db_path, _password).await?;
+    let sqlite_auth_db = MintSqliteAuthDatabase::new(&sql_db_auth_path, _password).await?;
     #[cfg(not(feature = "sqlcipher"))]
-    let sqlite_auth_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
+    let sqlite_auth_db = MintSqliteAuthDatabase::new(&sql_db_auth_path).await?;
     Ok(Arc::new(sqlite_auth_db))
 }
 
@@ -513,13 +518,13 @@ fn configure_cache(settings: &config::Settings, mint_builder: MintBuilder) -> Mi
 #[cfg(feature = "auth")]
 async fn setup_authentication(
     settings: &config::Settings,
-    work_dir: &Path,
+    auth_localstore: Arc<
+        dyn cdk_database::MintAuthDatabase<Err = cdk_database::Error> + Send + Sync,
+    >,
     mut mint_builder: MintBuilder,
 ) -> Result<MintBuilder> {
     if let Some(auth_settings) = settings.auth.clone() {
         tracing::info!("Auth settings are defined. {:?}", auth_settings);
-        let auth_localstore =
-            setup_sqlite_auth_database(work_dir, CLIArgs::parse().password).await?;
 
         mint_builder = mint_builder.with_auth_localstore(auth_localstore.clone());
 
