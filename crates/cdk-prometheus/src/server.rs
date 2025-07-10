@@ -235,7 +235,7 @@ impl PrometheusServer {
         // Wait a bit to ensure the server has started
         time::sleep(Duration::from_millis(100)).await;
 
-        tracing::info!("Prometheus exporter started in background");
+        tracing::info!("Prometheus exporter started in background on {}", binding);
 
         Ok(())
     }
