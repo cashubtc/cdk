@@ -69,6 +69,29 @@ If the Nix installation is in multi-user mode, don’t forget to restart the nix
   nix develop -c $SHELL  
 ```
 
+## Regtest Environment
+
+For testing and development, CDK provides a complete regtest environment with Bitcoin, Lightning Network nodes, and CDK mints.
+
+### Quick Start
+```bash
+just regtest  # Starts full environment with mprocs TUI
+```
+
+This provides:
+- Bitcoin regtest node
+- 4 Lightning Network nodes (2 CLN + 2 LND)
+- 2 CDK mints (one connected to CLN, one to LND)
+- Real-time log monitoring via mprocs
+- Helper commands for testing Lightning payments and CDK operations
+
+### Comprehensive Guide
+See [REGTEST_GUIDE.md](REGTEST_GUIDE.md) for complete documentation including:
+- Detailed setup and usage instructions
+- Development workflows and testing scenarios
+- mprocs TUI interface guide
+- Troubleshooting and advanced usage
+
 ## Common Development Tasks
 
 ### Building the Project
