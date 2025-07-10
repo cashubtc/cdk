@@ -197,7 +197,7 @@ async fn setup_database(
             let password = CLIArgs::parse().password;
             #[cfg(not(feature = "sqlcipher"))]
             let password = String::new();
-            let db = setup_sqlite_database(work_dir, password).await?;
+            let db = setup_sqlite_database(work_dir, Some(password)).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
             Ok((localstore, keystore))
@@ -207,7 +207,7 @@ async fn setup_database(
 
 async fn setup_sqlite_database(
     work_dir: &Path,
-    _password: String,
+    password: Option<String>,
 ) -> Result<Arc<MintSqliteDatabase>> {
     let sql_db_path = work_dir.join("cdk-mintd.sqlite");
     #[cfg(not(feature = "sqlcipher"))]
@@ -215,7 +215,7 @@ async fn setup_sqlite_database(
     #[cfg(feature = "sqlcipher")]
     let db = {
         // Get password from command line arguments for sqlcipher
-        MintSqliteDatabase::new(&sql_db_path, _password).await?
+        MintSqliteDatabase::new(&sql_db_path, password.unwrap()).await?
     };
     Ok(Arc::new(db))
 }
