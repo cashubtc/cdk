@@ -17,11 +17,17 @@ pub use prometheus;
 pub use server::{PrometheusBuilder, PrometheusConfig, PrometheusServer};
 
 /// Convenience function to create a new CDK metrics instance
+///
+/// # Errors
+/// Returns an error if any of the metrics cannot be created or registered
 pub fn create_cdk_metrics() -> Result<CdkMetrics> {
     CdkMetrics::new()
 }
 
 /// Convenience function to start a Prometheus server with default configuration
+///
+/// # Errors
+/// Returns an error if the server cannot be created or started
 pub async fn start_default_server(metrics: &CdkMetrics) -> Result<()> {
     let server = PrometheusBuilder::new().build_with_cdk_metrics(metrics)?;
 
@@ -29,6 +35,9 @@ pub async fn start_default_server(metrics: &CdkMetrics) -> Result<()> {
 }
 
 /// Convenience function to start a Prometheus server in the background
+///
+/// # Errors
+/// Returns an error if the server cannot be created
 pub fn start_background_server(
     metrics: &CdkMetrics,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {

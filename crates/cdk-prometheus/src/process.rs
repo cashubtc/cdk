@@ -20,7 +20,10 @@ pub struct SystemMetrics {
 
 #[cfg(feature = "system-metrics")]
 impl SystemMetrics {
-    /// Create a new SystemMetrics instance
+    /// Create a new `SystemMetrics` instance
+    ///
+    /// # Errors
+    /// Returns an error if any of the metrics cannot be created or registered
     pub fn new() -> crate::Result<Self> {
         let registry = Arc::new(Registry::new());
         // Process metrics
@@ -57,14 +60,18 @@ impl SystemMetrics {
     }
 
     /// Get the metrics registry
+    #[must_use]
     pub fn registry(&self) -> Arc<Registry> {
-        self.registry.clone()
+        Arc::<Registry>::clone(&self.registry)
     }
 
     /// Update all system metrics
+    ///
+    /// # Errors
+    /// Returns an error if the system mutex cannot be locked
     pub fn update_metrics(&self) -> crate::Result<()> {
         let mut system = self.system.lock().map_err(|e| {
-            crate::error::PrometheusError::SystemMetrics(format!("Failed to lock system: {}", e))
+            crate::error::PrometheusError::SystemMetrics(format!("Failed to lock system: {e}"))
         })?;
         // Refresh system information
         system.refresh_all();
@@ -89,6 +96,9 @@ impl SystemMetrics {
                 self.process_memory_percent.set(process_memory_percent);
             }
         }
+
+        // Drop the system lock early to avoid resource contention
+        drop(system);
 
         Ok(())
     }

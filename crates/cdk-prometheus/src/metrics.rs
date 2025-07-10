@@ -37,9 +37,56 @@ pub struct CdkMetrics {
 
 impl CdkMetrics {
     /// Create a new instance with default metrics
+    ///
+    /// # Errors
+    /// Returns an error if any of the metrics cannot be created or registered
     pub fn new() -> crate::Result<Self> {
         let registry = Arc::new(Registry::new());
 
+        // Create and register HTTP metrics
+        let (http_requests_total, http_request_duration) = Self::create_http_metrics(&registry)?;
+
+        // Create and register authentication metrics
+        let (auth_attempts_total, auth_successes_total) = Self::create_auth_metrics(&registry)?;
+
+        // Create and register Lightning metrics
+        let (lightning_payments_total, lightning_payment_amount, lightning_payment_fees) =
+            Self::create_lightning_metrics(&registry)?;
+
+        // Create and register database metrics
+        let (db_operations_total, db_operation_duration, db_connections_active) =
+            Self::create_db_metrics(&registry)?;
+
+        // Create and register error metrics
+        let errors_total = Self::create_error_metrics(&registry)?;
+
+        // Create and register mint metrics
+        let (mint_operations_total, _, mint_in_flight_requests) =
+            Self::create_mint_metrics(&registry)?;
+
+        Ok(Self {
+            registry,
+            http_requests_total,
+            http_request_duration,
+            auth_attempts_total,
+            auth_successes_total,
+            lightning_payments_total,
+            lightning_payment_amount,
+            lightning_payment_fees,
+            db_operations_total,
+            db_operation_duration,
+            db_connections_active,
+            errors_total,
+            mint_operations_total,
+            mint_in_flight_requests,
+        })
+    }
+
+    /// Create and register HTTP metrics
+    ///
+    /// # Errors
+    /// Returns an error if any of the metrics cannot be created or registered
+    fn create_http_metrics(registry: &Registry) -> crate::Result<(IntCounterVec, HistogramVec)> {
         let http_requests_total = IntCounterVec::new(
             prometheus::Opts::new("cdk_http_requests_total", "Total number of HTTP requests"),
             &["endpoint", "status"],
@@ -58,6 +105,14 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(http_request_duration.clone()))?;
 
+        Ok((http_requests_total, http_request_duration))
+    }
+
+    /// Create and register authentication metrics
+    ///
+    /// # Errors
+    /// Returns an error if any of the metrics cannot be created or registered
+    fn create_auth_metrics(registry: &Registry) -> crate::Result<(IntCounter, IntCounter)> {
         let auth_attempts_total =
             IntCounter::new("cdk_auth_attempts_total", "Total authentication attempts")?;
         registry.register(Box::new(auth_attempts_total.clone()))?;
@@ -68,6 +123,16 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(auth_successes_total.clone()))?;
 
+        Ok((auth_attempts_total, auth_successes_total))
+    }
+
+    /// Create and register Lightning metrics
+    ///
+    /// # Errors
+    /// Returns an error if any of the metrics cannot be created or registered
+    fn create_lightning_metrics(
+        registry: &Registry,
+    ) -> crate::Result<(IntCounter, Histogram, Histogram)> {
         let wallet_operations_total =
             IntCounter::new("cdk_wallet_operations_total", "Total wallet operations")?;
         registry.register(Box::new(wallet_operations_total.clone()))?;
@@ -81,7 +146,15 @@ impl CdkMetrics {
                 "cdk_lightning_payment_amount_sats",
                 "Lightning payment amounts in satoshis",
             )
-            .buckets(vec![1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0]),
+            .buckets(vec![
+                1.0,
+                10.0,
+                100.0,
+                1000.0,
+                10_000.0,
+                100_000.0,
+                1_000_000.0,
+            ]),
         )?;
         registry.register(Box::new(lightning_payment_amount.clone()))?;
 
@@ -94,6 +167,18 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(lightning_payment_fees.clone()))?;
 
+        Ok((
+            lightning_payments_total,
+            lightning_payment_amount,
+            lightning_payment_fees,
+        ))
+    }
+
+    /// Create and register database metrics
+    ///
+    /// # Errors
+    /// Returns an error if any of the metrics cannot be created or registered
+    fn create_db_metrics(registry: &Registry) -> crate::Result<(IntCounter, Histogram, IntGauge)> {
         let db_operations_total =
             IntCounter::new("cdk_db_operations_total", "Total database operations")?;
         registry.register(Box::new(db_operations_total.clone()))?;
@@ -113,9 +198,31 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(db_connections_active.clone()))?;
 
+        Ok((
+            db_operations_total,
+            db_operation_duration,
+            db_connections_active,
+        ))
+    }
+
+    /// Create and register error metrics
+    ///
+    /// # Errors
+    /// Returns an error if any of the metrics cannot be created or registered
+    fn create_error_metrics(registry: &Registry) -> crate::Result<IntCounter> {
         let errors_total = IntCounter::new("cdk_errors_total", "Total errors")?;
         registry.register(Box::new(errors_total.clone()))?;
 
+        Ok(errors_total)
+    }
+
+    /// Create and register mint metrics
+    ///
+    /// # Errors
+    /// Returns an error if any of the metrics cannot be created or registered
+    fn create_mint_metrics(
+        registry: &Registry,
+    ) -> crate::Result<(IntCounterVec, Histogram, IntGaugeVec)> {
         let mint_operations_total = IntCounterVec::new(
             prometheus::Opts::new(
                 "cdk_mint_operations_total",
@@ -145,27 +252,17 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(mint_in_flight_requests.clone()))?;
 
-        Ok(Self {
-            registry,
-            http_requests_total,
-            http_request_duration,
-            auth_attempts_total,
-            auth_successes_total,
-            lightning_payments_total,
-            lightning_payment_amount,
-            lightning_payment_fees,
-            db_operations_total,
-            db_operation_duration,
-            db_connections_active,
-            errors_total,
+        Ok((
             mint_operations_total,
+            mint_operation_duration,
             mint_in_flight_requests,
-        })
+        ))
     }
 
     /// Get the metrics registry
+    #[must_use]
     pub fn registry(&self) -> Arc<Registry> {
-        self.registry.clone()
+        Arc::<Registry>::clone(&self.registry)
     }
 
     // HTTP metrics methods

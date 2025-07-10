@@ -48,6 +48,9 @@ pub struct PrometheusServer {
 
 impl PrometheusServer {
     /// Create a new Prometheus server with CDK metrics
+    ///
+    /// # Errors
+    /// Returns an error if system metrics cannot be created (when enabled)
     pub fn new(config: PrometheusConfig, cdk_metrics: &CdkMetrics) -> crate::Result<Self> {
         let registry = cdk_metrics.registry();
 
@@ -68,6 +71,7 @@ impl PrometheusServer {
     }
 
     /// Create a new Prometheus server with custom registry
+    #[must_use]
     pub fn with_registry(config: PrometheusConfig, registry: Arc<Registry>) -> Self {
         Self {
             config,
@@ -78,6 +82,9 @@ impl PrometheusServer {
     }
 
     /// Start the Prometheus HTTP server
+    ///
+    /// # Errors
+    /// This function always returns Ok as errors are handled internally
     pub async fn start(self) -> crate::Result<()> {
         // Start system metrics update task
         #[cfg(feature = "system-metrics")]
@@ -103,7 +110,7 @@ impl PrometheusServer {
 
         // Create and start the exporter
         let binding = self.config.bind_address;
-        let registry_clone = self.registry.clone();
+        let registry_clone = Arc::<Registry>::clone(&self.registry);
 
         #[cfg(feature = "system-metrics")]
         let system_metrics_clone = self.system_metrics.clone();
@@ -229,6 +236,7 @@ impl PrometheusServer {
     }
 
     /// Start the server in the background and return a handle
+    #[must_use]
     pub fn start_background(self) -> tokio::task::JoinHandle<crate::Result<()>> {
         tokio::spawn(async move { self.start().await })
     }
@@ -242,6 +250,7 @@ pub struct PrometheusBuilder {
 
 impl PrometheusBuilder {
     /// Create a new builder with default configuration
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: PrometheusConfig::default(),
@@ -249,12 +258,14 @@ impl PrometheusBuilder {
     }
 
     /// Set the bind address
-    pub fn bind_address(mut self, addr: SocketAddr) -> Self {
+    #[must_use]
+    pub const fn bind_address(mut self, addr: SocketAddr) -> Self {
         self.config.bind_address = addr;
         self
     }
 
     /// Set the metrics path
+    #[must_use]
     pub fn metrics_path<S: Into<String>>(mut self, path: S) -> Self {
         self.config.metrics_path = path.into();
         self
@@ -262,19 +273,24 @@ impl PrometheusBuilder {
 
     /// Enable or disable system metrics
     #[cfg(feature = "system-metrics")]
-    pub fn system_metrics(mut self, enabled: bool) -> Self {
+    #[must_use]
+    pub const fn system_metrics(mut self, enabled: bool) -> Self {
         self.config.include_system_metrics = enabled;
         self
     }
 
     /// Set system metrics update interval
     #[cfg(feature = "system-metrics")]
-    pub fn system_metrics_interval(mut self, seconds: u64) -> Self {
+    #[must_use]
+    pub const fn system_metrics_interval(mut self, seconds: u64) -> Self {
         self.config.system_metrics_interval = seconds;
         self
     }
 
     /// Build the server with CDK metrics
+    ///
+    /// # Errors
+    /// Returns an error if system metrics cannot be created (when enabled)
     pub fn build_with_cdk_metrics(
         self,
         cdk_metrics: &CdkMetrics,
@@ -283,6 +299,7 @@ impl PrometheusBuilder {
     }
 
     /// Build the server with custom registry
+    #[must_use]
     pub fn build_with_registry(self, registry: Arc<Registry>) -> PrometheusServer {
         PrometheusServer::with_registry(self.config, registry)
     }
