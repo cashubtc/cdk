@@ -1,11 +1,18 @@
+#[cfg(feature = "prometheus")]
 use std::time::Instant;
 
+#[cfg(feature = "prometheus")]
 use axum::body::Body;
+#[cfg(feature = "prometheus")]
 use axum::extract::{MatchedPath, State};
+#[cfg(feature = "prometheus")]
 use axum::http::Request;
+#[cfg(feature = "prometheus")]
 use axum::middleware::Next;
+#[cfg(feature = "prometheus")]
 use axum::response::Response;
 
+#[cfg(feature = "prometheus")]
 use crate::MintState;
 /// This module provides middleware for collecting HTTP metrics in the CDK Axum server.
 ///
