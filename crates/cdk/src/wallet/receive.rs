@@ -138,6 +138,10 @@ impl Wallet {
             }
         }
 
+        self.localstore
+            .increment_keyset_counter(&active_keyset_id, pre_swap.derived_secret_count)
+            .await?;
+
         let swap_response = self.client.post_swap(pre_swap.swap_request).await?;
 
         // Proof to keep
@@ -147,10 +151,6 @@ impl Wallet {
             pre_swap.pre_mint_secrets.secrets(),
             &keys,
         )?;
-
-        self.localstore
-            .increment_keyset_counter(&active_keyset_id, recv_proofs.len() as u32)
-            .await?;
 
         let total_amount = recv_proofs.total_amount()?;
 
