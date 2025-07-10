@@ -458,6 +458,7 @@ impl Mint {
         melt_quote: &MeltQuote,
         melt_request: &MeltRequest<Uuid>,
     ) -> Result<Option<Amount>, Error> {
+        #[cfg(feature = "prometheus")]
         self.metrics
             .inc_in_flight_requests("handle_internal_melt_mint");
         let result = async {

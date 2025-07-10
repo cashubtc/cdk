@@ -9,13 +9,16 @@ use std::sync::Arc;
 use anyhow::Result;
 #[cfg(feature = "auth")]
 use auth::create_auth_router;
-use axum::middleware::from_fn;
+use axum::middleware::{from_fn, from_fn_with_state};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
 use cache::HttpCache;
 use cdk::mint::Mint;
+
 use router_handlers::*;
+
+mod metrics;
 
 #[cfg(feature = "auth")]
 mod auth;
@@ -189,9 +192,11 @@ pub async fn create_mint_router_with_custom_cache(
     cache: HttpCache,
 ) -> Result<Router> {
     let state = MintState {
-        mint,
+        mint: mint.clone(),
         cache: Arc::new(cache),
     };
+
+
 
     let v1_router = Router::new()
         .route("/keys", get(get_keys))
@@ -223,9 +228,15 @@ pub async fn create_mint_router_with_custom_cache(
         mint_router.nest("/v1", auth_router)
     };
 
-    let mint_router = mint_router.layer(from_fn(cors_middleware));
+    let mut mint_router = mint_router.layer(from_fn(cors_middleware));
+    
+    #[cfg(feature = "prometheus")]
+    {
+        mint_router = mint_router.layer(from_fn_with_state(state.clone(), metrics::metrics_middleware));
+    }
 
     let mint_router = mint_router.with_state(state);
+
 
     Ok(mint_router)
 }

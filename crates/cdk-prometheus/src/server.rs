@@ -5,7 +5,7 @@ use tokio::time;
 use crate::{error::PrometheusError, metrics::CdkMetrics};
 
 #[cfg(feature = "system-metrics")]
-use crate::system::SystemMetrics;
+use crate::process::SystemMetrics;
 
 /// Configuration for the Prometheus server
 #[derive(Debug, Clone)]
