@@ -186,10 +186,10 @@ impl Statement {
                         }
                     }
                 }
-                SqlPart::Raw(raw) => Ok(raw.to_string()),
+                SqlPart::Raw(raw) => Ok(raw.trim().to_string()),
             })
             .collect::<Result<Vec<String>, _>>()?
-            .join("");
+            .join(" ");
 
         Ok((sql, placeholder_values))
     }

@@ -30,7 +30,7 @@ pub trait ResourceManager: Debug {
     type Resource: Debug;
 
     /// The configuration that is needed in order to create the resource
-    type Config: Debug;
+    type Config: Clone + Debug;
 
     /// The error the resource may return when creating a new instance
     type Error: Debug;
@@ -39,6 +39,7 @@ pub trait ResourceManager: Debug {
     fn new_resource(
         config: &Self::Config,
         still_valid: Arc<AtomicBool>,
+        timeout: Duration,
     ) -> Result<Self::Resource, Error<Self::Error>>;
 
     /// The object is dropped
@@ -158,7 +159,7 @@ where
                 return Ok(PooledResource {
                     resource: Some((
                         still_valid.clone(),
-                        RM::new_resource(&self.config, still_valid)?,
+                        RM::new_resource(&self.config, still_valid, timeout)?,
                     )),
                     pool: self.clone(),
                 });

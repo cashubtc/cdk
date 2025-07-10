@@ -25,6 +25,7 @@ cdk-cln = { workspace = true }
 cdk-lnd = { workspace = true }
 cdk-axum = { workspace = true }
 cdk-sqlite = { workspace = true }
+cdk-postgres = { workspace = true }
 cdk-redb = { workspace = true }
 cdk-fake-wallet = { workspace = true }
 futures = { workspace = true, default-features = false, features = [

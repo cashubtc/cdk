@@ -1,4 +1,4 @@
-//! Async and concurrent rusqlite
+//! Async, pipelined rusqlite client
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -127,6 +127,7 @@ fn process_query(conn: &Connection, statement: InnerStatement) -> Result<DbRespo
     let start = Instant::now();
     let expected_response = statement.expected_response;
     let (sql, placeholder_values) = statement.to_sql()?;
+    let sql = sql.trim_end_matches("FOR UPDATE");
 
     let mut stmt = conn.prepare_cached(&sql)?;
     for (i, value) in placeholder_values.into_iter().enumerate() {
@@ -470,6 +471,10 @@ impl DatabaseConnector for AsyncRusqlite {
 
 #[async_trait::async_trait]
 impl DatabaseExecutor for AsyncRusqlite {
+    fn name() -> &'static str {
+        "sqlite"
+    }
+
     async fn fetch_one(&self, mut statement: InnerStatement) -> Result<Option<Vec<Column>>, Error> {
         let (sender, receiver) = oneshot::channel();
         statement.expected_response = ExpectedSqlResponse::SingleRow;
@@ -620,6 +625,10 @@ impl<'a> DatabaseTransaction<'a> for Transaction<'a> {
 
 #[async_trait::async_trait]
 impl DatabaseExecutor for Transaction<'_> {
+    fn name() -> &'static str {
+        "sqlite"
+    }
+
     async fn fetch_one(&self, mut statement: InnerStatement) -> Result<Option<Vec<Column>>, Error> {
         let (sender, receiver) = oneshot::channel();
         statement.expected_response = ExpectedSqlResponse::SingleRow;

@@ -11,6 +11,9 @@ use crate::stmt::{Column, Statement};
 /// This trait defines the expectations of a database execution
 #[async_trait::async_trait]
 pub trait DatabaseExecutor: Debug + Sync + Send {
+    /// Database driver name
+    fn name() -> &'static str;
+
     /// Executes a query and returns the affected rows
     async fn execute(&self, statement: Statement) -> Result<usize, Error>;
 

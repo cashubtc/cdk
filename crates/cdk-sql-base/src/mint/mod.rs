@@ -129,7 +129,7 @@ where
     /// Migrate
     async fn migrate(conn: &DB) -> Result<(), Error> {
         let tx = conn.begin().await?;
-        migrate(&tx, MIGRATIONS).await?;
+        migrate(&tx, DB::name(), MIGRATIONS).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -472,6 +472,7 @@ where
             WHERE
                 id=:id
                 AND state != :state
+            FOR UPDATE
             "#,
         )?
         .bind("id", quote_id.as_hyphenated().to_string())
@@ -547,7 +548,9 @@ where
                 issued_time
             FROM
                 mint_quote
-            WHERE id = :id"#,
+            WHERE id = :id
+            FOR UPDATE
+            "#,
         )?
         .bind("id", quote_id.as_hyphenated().to_string())
         .fetch_one(&self.inner)
@@ -640,6 +643,7 @@ where
                 melt_quote
             WHERE
                 id=:id
+            FOR UPDATE
             "#,
         )?
         .bind("id", quote_id.as_hyphenated().to_string())
@@ -669,7 +673,9 @@ where
                 issued_time
             FROM
                 mint_quote
-            WHERE request = :request"#,
+            WHERE request = :request
+            FOR UPDATE
+            "#,
         )?
         .bind("request", request.to_owned())
         .fetch_one(&self.inner)
@@ -901,7 +907,7 @@ where
 
         // Check any previous proof, this query should return None in order to proceed storing
         // Any result here would error
-        match query(r#"SELECT state FROM proof WHERE y IN (:ys) LIMIT 1"#)?
+        match query(r#"SELECT state FROM proof WHERE y IN (:ys) LIMIT 1 FOR UPDATE"#)?
             .bind_vec(
                 "ys",
                 proofs

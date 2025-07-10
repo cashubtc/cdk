@@ -45,6 +45,7 @@ use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
+use cdk_postgres::MintPgDatabase;
 #[cfg(feature = "auth")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -198,6 +199,13 @@ async fn setup_database(
             #[cfg(not(feature = "sqlcipher"))]
             let password = String::new();
             let db = setup_sqlite_database(work_dir, Some(password)).await?;
+            let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
+            let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
+            Ok((localstore, keystore))
+        }
+        DatabaseEngine::PgSql => {
+            let conn_str = "".to_owned();
+            let db = Arc::new(MintPgDatabase::new(conn_str.as_str()).await?);
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
             Ok((localstore, keystore))
@@ -517,6 +525,9 @@ async fn setup_authentication(
                 #[cfg(not(feature = "sqlcipher"))]
                 let sqlite_db = MintSqliteAuthDatabase::new(sql_db_path).await?;
                 Arc::new(sqlite_db)
+            }
+            DatabaseEngine::PgSql => {
+                todo!()
             }
         };
 

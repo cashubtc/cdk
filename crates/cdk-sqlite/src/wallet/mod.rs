@@ -41,6 +41,10 @@ impl SimpleAsyncRusqlite {
 
 #[async_trait::async_trait]
 impl DatabaseExecutor for SimpleAsyncRusqlite {
+    fn name() -> &'static str {
+        "sqlite"
+    }
+
     async fn execute(&self, statement: Statement) -> Result<usize, Error> {
         let conn = self.0.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut stmt = self

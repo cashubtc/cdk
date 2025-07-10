@@ -7,7 +7,7 @@ use cdk_sql_base::value::Value;
 use rusqlite::Connection;
 
 /// The config need to create a new SQLite connection
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Config {
     path: Option<String>,
     password: Option<String>,
@@ -27,6 +27,7 @@ impl ResourceManager for SqliteConnectionManager {
     fn new_resource(
         config: &Self::Config,
         _still_valid: Arc<AtomicBool>,
+        _timeout: Duration,
     ) -> Result<Self::Resource, pool::Error<Self::Error>> {
         let conn = if let Some(path) = config.path.as_ref() {
             Connection::open(path)?

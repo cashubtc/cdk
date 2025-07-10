@@ -190,6 +190,7 @@ pub struct GrpcProcessor {
 pub enum DatabaseEngine {
     #[default]
     Sqlite,
+    PgSql,
 }
 
 impl std::str::FromStr for DatabaseEngine {
@@ -198,6 +199,7 @@ impl std::str::FromStr for DatabaseEngine {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "sqlite" => Ok(DatabaseEngine::Sqlite),
+            "pgsql" => Ok(DatabaseEngine::PgSql),
             _ => Err(format!("Unknown database engine: {s}")),
         }
     }

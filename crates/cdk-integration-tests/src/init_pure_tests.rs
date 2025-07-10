@@ -23,6 +23,7 @@ use cdk::util::unix_time;
 use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
 use cdk::{Amount, Error, Mint};
 use cdk_fake_wallet::FakeWallet;
+use cdk_postgres::MintPgDatabase;
 use tokio::sync::{Notify, RwLock};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
@@ -177,6 +178,15 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         "memory" => MintBuilder::new()
             .with_localstore(Arc::new(cdk_sqlite::mint::memory::empty().await?))
             .with_keystore(Arc::new(cdk_sqlite::mint::memory::empty().await?)),
+        "pgsql" => {
+            let connection_str = env::var("CDK_PGSQL").expect("Postgres connection URL");
+
+            MintBuilder::new()
+                .with_localstore(Arc::new(
+                    MintPgDatabase::new(connection_str.as_str()).await?,
+                ))
+                .with_keystore(Arc::new(cdk_sqlite::mint::memory::empty().await?))
+        }
         _ => {
             // Create a temporary directory for SQLite database
             let temp_dir = create_temp_dir("cdk-test-sqlite-mint")?;
