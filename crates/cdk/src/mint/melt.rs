@@ -149,7 +149,7 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
-        if let Err(err) = self
+        let check_result = self
             .check_melt_request_acceptable(
                 payment_quote.amount,
                 unit.clone(),
@@ -157,16 +157,12 @@ impl Mint {
                 request.to_string(),
                 *options,
             )
-            .await
-        {
+            .await;
+
+        if check_result.is_err() {
             #[cfg(feature = "prometheus")]
-            {
-                self.metrics.dec_in_flight_requests("get_melt_bolt11_quote");
-                self.metrics
-                    .record_mint_operation("get_melt_bolt11_quote", false);
-                self.metrics.record_error();
-            }
-            return Err(err);
+            self.record_melt_quote_failure("get_melt_bolt11_quote");
+            return Err(check_result.err().unwrap());
         }
 
         // We only want to set the msats_to_pay of the melt quote if the invoice is amountless
@@ -730,18 +726,14 @@ impl Mint {
 
         let input_ys = melt_request.inputs().ys()?;
 
-        if let Err(err) = proof_writer
+        let update_proof_states_result = proof_writer
             .update_proofs_states(&mut tx, &input_ys, State::Spent)
-            .await
-        {
+            .await;
+
+        if update_proof_states_result.is_err() {
             #[cfg(feature = "prometheus")]
-            {
-                self.metrics.dec_in_flight_requests("process_melt_request");
-                self.metrics
-                    .record_mint_operation("process_melt_request", false);
-                self.metrics.record_error();
-            }
-            return Err(err);
+            self.record_melt_quote_failure("process_melt_request");
+            return Err(update_proof_states_result.err().unwrap());
         }
 
         tx.update_melt_quote_state(melt_request.quote(), MeltQuoteState::Paid)
@@ -843,5 +835,12 @@ impl Mint {
         }
 
         Ok(response)
+    }
+
+    #[cfg(feature = "prometheus")]
+    fn record_melt_quote_failure(&self, operation: &str) {
+        self.metrics.dec_in_flight_requests(operation);
+        self.metrics.record_mint_operation(operation, false);
+        self.metrics.record_error();
     }
 }

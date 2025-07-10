@@ -34,18 +34,12 @@ impl Mint {
             return Err(err);
         };
 
-        if let Err(err) = self.validate_sig_flag(&swap_request).await {
+        let validate_sig_result = self.validate_sig_flag(&swap_request).await;
+        if validate_sig_result.is_err() {
             #[cfg(feature = "prometheus")]
-            {
-                self.metrics.dec_in_flight_requests("process_swap_request");
-                self.metrics
-                    .record_mint_operation("process_swap_request", false);
-                self.metrics.record_error();
-            }
-
-            return Err(err);
+            self.record_swap_failure("process_swap_request");
+            return Err(validate_sig_result.err().unwrap());
         }
-
         let mut proof_writer =
             ProofWriter::new(self.localstore.clone(), self.pubsub_manager.clone());
         let input_ys = match proof_writer
@@ -73,19 +67,14 @@ impl Mint {
             promises.push(blinded_signature);
         }
 
-        if let Err(err) = proof_writer
+        let update_proof_states_result = proof_writer
             .update_proofs_states(&mut tx, &input_ys, State::Spent)
-            .await
-        {
-            #[cfg(feature = "prometheus")]
-            {
-                self.metrics.dec_in_flight_requests("process_swap_request");
-                self.metrics
-                    .record_mint_operation("process_swap_request", false);
-                self.metrics.record_error();
-            }
+            .await;
 
-            return Err(err);
+        if update_proof_states_result.is_err() {
+            #[cfg(feature = "prometheus")]
+            self.record_swap_failure("process_swap_request");
+            return Err(update_proof_states_result.err().unwrap());
         }
 
         tx.add_blind_signatures(
@@ -132,5 +121,11 @@ impl Mint {
         }
 
         Ok(())
+    }
+    #[cfg(feature = "prometheus")]
+    fn record_swap_failure(&self, operation: &str) {
+        self.metrics.dec_in_flight_requests(operation);
+        self.metrics.record_mint_operation(operation, false);
+        self.metrics.record_error();
     }
 }
