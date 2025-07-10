@@ -15,7 +15,7 @@ default = ["auth"]
 redis = ["dep:redis"]
 swagger = ["cdk/swagger", "dep:utoipa"]
 auth = ["cdk/auth"]
-
+prometheus = ["cdk/prometheus"]
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true

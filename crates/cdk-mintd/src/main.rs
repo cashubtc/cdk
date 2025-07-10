@@ -42,6 +42,8 @@ use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus;
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
@@ -128,6 +130,9 @@ async fn main() -> anyhow::Result<()> {
                 .with_keystore(db)
         }
     };
+
+    #[cfg(feature = "prometheus")]
+    let metrics = Arc::new(cdk_prometheus::CdkMetrics::new()?);
 
     let mut contact_info: Option<Vec<ContactInfo>> = None;
 
@@ -533,7 +538,14 @@ async fn main() -> anyhow::Result<()> {
         tx.commit().await?;
     }
 
-    let mint = mint_builder.build().await?;
+    let mint = {
+        #[cfg(feature = "prometheus")]
+        {
+            mint_builder = mint_builder.with_prometheus_metrics(metrics.clone());
+        }
+
+        mint_builder.build().await?
+    };
 
     tracing::debug!("Mint built from builder.");
 
@@ -566,6 +578,33 @@ async fn main() -> anyhow::Result<()> {
                 utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
                     .url("/api-docs/openapi.json", cdk_axum::ApiDocV1::openapi()),
             );
+        }
+    }
+
+    #[cfg(feature = "prometheus")]
+    {
+        if let Some(prometheus_settings) = &settings.prometheus {
+            if prometheus_settings.enabled {
+                let addr = prometheus_settings
+                    .address
+                    .clone()
+                    .unwrap_or("127.0.0.1".to_string());
+                let port = prometheus_settings.port.unwrap_or(9000);
+
+                let address = format!("{}:{}", addr, port)
+                    .parse()
+                    .expect("Invalid prometheus address");
+
+                let server = cdk_prometheus::PrometheusBuilder::new()
+                    .bind_address(address)
+                    .build_with_cdk_metrics(&metrics)?;
+
+                tokio::spawn(async move {
+                    if let Err(e) = server.start().await {
+                        tracing::error!("Failed to start prometheus server: {}", e);
+                    }
+                });
+            }
         }
     }
 

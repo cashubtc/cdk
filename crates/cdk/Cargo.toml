@@ -19,7 +19,7 @@ auth = ["dep:jsonwebtoken", "cdk-common/auth", "cdk-common/auth"]
 swagger = ["mint", "dep:utoipa", "cdk-common/swagger"]
 bench = []
 http_subscription = []
-
+prometheus = ["dep:cdk-prometheus"]
 
 [dependencies]
 cdk-common.workspace = true
@@ -41,7 +41,7 @@ url.workspace = true
 utoipa = { workspace = true, optional = true }
 uuid.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
-
+cdk-prometheus = {workspace = true, optional = true}
 # -Z minimal-versions
 sync_wrapper = "0.1.2"
 bech32 = "0.9.1"
