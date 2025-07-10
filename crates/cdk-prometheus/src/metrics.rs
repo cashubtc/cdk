@@ -31,7 +31,6 @@ pub struct CdkMetrics {
 
     // Mint metrics
     mint_operations_total: IntCounterVec,
-    mint_operation_duration: Histogram,
     mint_in_flight_requests: IntGaugeVec,
 }
 
@@ -159,7 +158,6 @@ impl CdkMetrics {
             db_connections_active,
             errors_total,
             mint_operations_total,
-            mint_operation_duration,
             mint_in_flight_requests,
         })
     }
@@ -171,11 +169,15 @@ impl CdkMetrics {
 
     // HTTP metrics methods
     pub fn record_http_request(&self, endpoint: &str, status: &str) {
-        self.http_requests_total.with_label_values(&[endpoint, status]).inc();       
+        self.http_requests_total
+            .with_label_values(&[endpoint, status])
+            .inc();
     }
 
     pub fn record_http_request_duration(&self, duration_seconds: f64, endpoint: &str) {
-        self.http_request_duration.with_label_values(&[endpoint]).observe(duration_seconds);
+        self.http_request_duration
+            .with_label_values(&[endpoint])
+            .observe(duration_seconds);
     }
 
     // Authentication metrics methods

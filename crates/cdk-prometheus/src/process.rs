@@ -1,9 +1,8 @@
 #[cfg(feature = "system-metrics")]
-use prometheus::{Gauge, IntGauge,  Registry};
-#[cfg(feature = "system-metrics")]
-use sysinfo::{ System, Pid};
+use prometheus::{Gauge, IntGauge, Registry};
 use std::sync::Arc;
-
+#[cfg(feature = "system-metrics")]
+use sysinfo::{Pid, System};
 
 /// System metrics collector that provides CPU, memory, disk, network, and process metrics
 #[cfg(feature = "system-metrics")]
@@ -11,7 +10,6 @@ use std::sync::Arc;
 pub struct SystemMetrics {
     registry: Arc<Registry>,
     system: Arc<std::sync::Mutex<System>>,
-
 
     // Process metrics (for the CDK process)
     process_cpu_usage_percent: Gauge,
@@ -27,26 +25,24 @@ impl SystemMetrics {
         // Process metrics
         let process_cpu_usage_percent = Gauge::new(
             "process_cpu_usage_percent",
-            "CPU usage percentage of the CDK process (0-100)"
+            "CPU usage percentage of the CDK process (0-100)",
         )?;
         registry.register(Box::new(process_cpu_usage_percent.clone()))?;
 
         let process_memory_bytes = IntGauge::new(
             "process_memory_bytes",
-            "Memory usage of the CDK process in bytes"
+            "Memory usage of the CDK process in bytes",
         )?;
         registry.register(Box::new(process_memory_bytes.clone()))?;
 
         let process_memory_percent = Gauge::new(
             "process_memory_percent",
-            "Memory usage percentage of the CDK process (0-100)"
+            "Memory usage percentage of the CDK process (0-100)",
         )?;
         registry.register(Box::new(process_memory_percent.clone()))?;
 
         // Initialize system with all needed refresh kinds
-        let system = Arc::new(std::sync::Mutex::new(
-            System::new()
-        ));
+        let system = Arc::new(std::sync::Mutex::new(System::new()));
 
         let result = Self {
             registry,
@@ -66,11 +62,9 @@ impl SystemMetrics {
 
     /// Update all system metrics
     pub fn update_metrics(&self) -> crate::Result<()> {
-        let mut system = self.system.lock()
-            .map_err(|e| crate::error::PrometheusError::SystemMetrics(
-                format!("Failed to lock system: {}", e)
-            ))?;
-
+        let mut system = self.system.lock().map_err(|e| {
+            crate::error::PrometheusError::SystemMetrics(format!("Failed to lock system: {}", e))
+        })?;
         // Refresh system information
         system.refresh_all();
 
@@ -97,5 +91,4 @@ impl SystemMetrics {
 
         Ok(())
     }
-
 }

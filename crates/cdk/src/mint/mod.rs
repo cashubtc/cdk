@@ -10,6 +10,8 @@ use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase, MintTransaction};
 use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
 use cdk_common::secret;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::CdkMetrics;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
 #[cfg(feature = "auth")]
@@ -19,8 +21,6 @@ use tokio::sync::Notify;
 use tokio::task::JoinSet;
 use tracing::instrument;
 use uuid::Uuid;
-#[cfg(feature = "prometheus")]
-use cdk_prometheus::CdkMetrics;
 
 use crate::cdk_payment::{self, MintPayment};
 use crate::error::Error;
@@ -160,7 +160,9 @@ impl Mint {
             open_id_discovery.map(|openid_discovery| OidcClient::new(openid_discovery.clone()));
 
         #[cfg(feature = "prometheus")]
-        let metrics = metrics.unwrap_or_else(|| Arc::new(cdk_prometheus::CdkMetrics::new().expect("Failed to create metrics")));
+        let metrics = metrics.unwrap_or_else(|| {
+            Arc::new(cdk_prometheus::CdkMetrics::new().expect("Failed to create metrics"))
+        });
 
         let keysets = signatory.keysets().await?;
         if !keysets
@@ -384,7 +386,8 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         self.metrics.inc_in_flight_requests("blind_sign");
 
-        let result = self.signatory
+        let result = self
+            .signatory
             .blind_sign(vec![blinded_message])
             .await?
             .pop()
@@ -462,20 +465,21 @@ impl Mint {
         self.metrics
             .inc_in_flight_requests("handle_internal_melt_mint");
         let result = async {
-
             let mint_quote = match tx.get_mint_quote_by_request(&melt_quote.request).await {
-            Ok(Some(mint_quote)) => mint_quote,
-            // Not an internal melt -> mint
-            Ok(None) => return Ok(None),
-            Err(err) => {
-                tracing::debug!("Error attempting to get mint quote: {}", err);
-                return Err(Error::Internal);
-            }
-        };
-        tracing::error!("internal stuff");
+                Ok(Some(mint_quote)) => mint_quote,
+                // Not an internal melt -> mint
+                Ok(None) => return Ok(None),
+                Err(err) => {
+                    tracing::debug!("Error attempting to get mint quote: {}", err);
+                    return Err(Error::Internal);
+                }
+            };
+            tracing::error!("internal stuff");
 
             // Mint quote has already been settled, proofs should not be burned or held.
-            if mint_quote.state == MintQuoteState::Issued || mint_quote.state == MintQuoteState::Paid {
+            if mint_quote.state == MintQuoteState::Issued
+                || mint_quote.state == MintQuoteState::Paid
+            {
                 return Err(Error::RequestAlreadyPaid);
             }
 
@@ -499,7 +503,7 @@ impl Mint {
 
             let amount = melt_quote.amount;
 
-        tx.add_or_replace_mint_quote(mint_quote).await?;
+            tx.add_or_replace_mint_quote(mint_quote).await?;
 
             Ok(Some(amount))
         }
@@ -558,7 +562,8 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         {
             self.metrics.dec_in_flight_requests("restore");
-            self.metrics.record_mint_operation("restore", result.is_ok());
+            self.metrics
+                .record_mint_operation("restore", result.is_ok());
         }
 
         result

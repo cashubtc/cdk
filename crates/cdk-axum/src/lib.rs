@@ -196,8 +196,6 @@ pub async fn create_mint_router_with_custom_cache(
         cache: Arc::new(cache),
     };
 
-
-
     let v1_router = Router::new()
         .route("/keys", get(get_keys))
         .route("/keysets", get(get_keysets))
@@ -229,14 +227,16 @@ pub async fn create_mint_router_with_custom_cache(
     };
 
     let mut mint_router = mint_router.layer(from_fn(cors_middleware));
-    
+
     #[cfg(feature = "prometheus")]
     {
-        mint_router = mint_router.layer(from_fn_with_state(state.clone(), metrics::metrics_middleware));
+        mint_router = mint_router.layer(from_fn_with_state(
+            state.clone(),
+            metrics::metrics_middleware,
+        ));
     }
 
     let mint_router = mint_router.with_state(state);
-
 
     Ok(mint_router)
 }

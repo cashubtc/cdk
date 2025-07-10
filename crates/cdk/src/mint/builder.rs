@@ -11,9 +11,9 @@ use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::Bolt11Settings;
 use cdk_common::{nut21, nut22};
-use cdk_signatory::signatory::Signatory;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::CdkMetrics;
+use cdk_signatory::signatory::Signatory;
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};

@@ -3,7 +3,7 @@ use std::time::Instant;
 use axum::{
     body::Body,
     extract::{MatchedPath, State},
-    http::{Request},
+    http::Request,
     middleware::Next,
     response::Response,
 };
@@ -31,15 +31,15 @@ pub async fn metrics_middleware(
     next: Next,
 ) -> Response {
     let start_time = Instant::now();
-    
+
     let response = next.run(req).await;
 
     #[cfg(feature = "prometheus")]
-    // Use the matched route pattern if available, 
+    // Use the matched route pattern if available,
     // otherwise fall back to empty string to reduce the memory footprint
     let endpoint_path = matched_path
         .map(|mp| mp.as_str().to_string())
-        .unwrap_or_else(|| "".to_string());  
+        .unwrap_or_else(|| "".to_string());
 
     #[cfg(feature = "prometheus")]
     {
@@ -48,8 +48,7 @@ pub async fn metrics_middleware(
         let metrics = &state.mint.metrics;
         metrics.record_http_request(&endpoint_path, &status_code);
         metrics.record_http_request_duration(request_duration, &endpoint_path);
-
     }
-    
+
     response
 }

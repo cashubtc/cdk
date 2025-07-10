@@ -26,7 +26,8 @@ impl Mint {
             #[cfg(feature = "prometheus")]
             {
                 self.metrics.dec_in_flight_requests("process_swap_request");
-                self.metrics.record_mint_operation("process_swap_request", false);
+                self.metrics
+                    .record_mint_operation("process_swap_request", false);
                 self.metrics.record_error();
             }
 
@@ -37,7 +38,8 @@ impl Mint {
             #[cfg(feature = "prometheus")]
             {
                 self.metrics.dec_in_flight_requests("process_swap_request");
-                self.metrics.record_mint_operation("process_swap_request", false);
+                self.metrics
+                    .record_mint_operation("process_swap_request", false);
                 self.metrics.record_error();
             }
 
@@ -46,13 +48,17 @@ impl Mint {
 
         let mut proof_writer =
             ProofWriter::new(self.localstore.clone(), self.pubsub_manager.clone());
-        let input_ys = match proof_writer.add_proofs(&mut tx, swap_request.inputs()).await {
+        let input_ys = match proof_writer
+            .add_proofs(&mut tx, swap_request.inputs())
+            .await
+        {
             Ok(ys) => ys,
             Err(err) => {
                 #[cfg(feature = "prometheus")]
                 {
                     self.metrics.dec_in_flight_requests("process_swap_request");
-                    self.metrics.record_mint_operation("process_swap_request", false);
+                    self.metrics
+                        .record_mint_operation("process_swap_request", false);
                     self.metrics.record_error();
                 }
 
@@ -67,11 +73,15 @@ impl Mint {
             promises.push(blinded_signature);
         }
 
-        if let Err(err) = proof_writer.update_proofs_states(&mut tx, &input_ys, State::Spent).await {
+        if let Err(err) = proof_writer
+            .update_proofs_states(&mut tx, &input_ys, State::Spent)
+            .await
+        {
             #[cfg(feature = "prometheus")]
             {
                 self.metrics.dec_in_flight_requests("process_swap_request");
-                self.metrics.record_mint_operation("process_swap_request", false);
+                self.metrics
+                    .record_mint_operation("process_swap_request", false);
                 self.metrics.record_error();
             }
 
@@ -97,7 +107,8 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         {
             self.metrics.dec_in_flight_requests("process_swap_request");
-            self.metrics.record_mint_operation("process_swap_request", true);
+            self.metrics
+                .record_mint_operation("process_swap_request", true);
         }
 
         Ok(response)

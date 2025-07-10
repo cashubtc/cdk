@@ -141,25 +141,29 @@ impl Mint {
                 #[cfg(feature = "prometheus")]
                 {
                     self.metrics.dec_in_flight_requests("get_melt_bolt11_quote");
-                    self.metrics.record_mint_operation("get_melt_bolt11_quote", false);
+                    self.metrics
+                        .record_mint_operation("get_melt_bolt11_quote", false);
                     self.metrics.record_error();
                 }
 
                 Error::UnsupportedUnit
             })?;
 
-        if let Err(err) = self.check_melt_request_acceptable(
-            payment_quote.amount,
-            unit.clone(),
-            PaymentMethod::Bolt11,
-            request.to_string(),
-            *options,
-        )
-        .await {
+        if let Err(err) = self
+            .check_melt_request_acceptable(
+                payment_quote.amount,
+                unit.clone(),
+                PaymentMethod::Bolt11,
+                request.to_string(),
+                *options,
+            )
+            .await
+        {
             #[cfg(feature = "prometheus")]
             {
                 self.metrics.dec_in_flight_requests("get_melt_bolt11_quote");
-                self.metrics.record_mint_operation("get_melt_bolt11_quote", false);
+                self.metrics
+                    .record_mint_operation("get_melt_bolt11_quote", false);
                 self.metrics.record_error();
             }
             return Err(err);
@@ -208,7 +212,8 @@ impl Mint {
             #[cfg(feature = "prometheus")]
             {
                 self.metrics.dec_in_flight_requests("get_melt_bolt11_quote");
-                self.metrics.record_mint_operation("get_melt_bolt11_quote", false);
+                self.metrics
+                    .record_mint_operation("get_melt_bolt11_quote", false);
                 self.metrics.record_error();
             }
 
@@ -224,7 +229,8 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         {
             self.metrics.dec_in_flight_requests("get_melt_bolt11_quote");
-            self.metrics.record_mint_operation("get_melt_bolt11_quote", true);
+            self.metrics
+                .record_mint_operation("get_melt_bolt11_quote", true);
         }
 
         Ok(quote.into())
@@ -244,29 +250,36 @@ impl Mint {
                 #[cfg(feature = "prometheus")]
                 {
                     self.metrics.dec_in_flight_requests("check_melt_quote");
-                    self.metrics.record_mint_operation("check_melt_quote", false);
+                    self.metrics
+                        .record_mint_operation("check_melt_quote", false);
                     self.metrics.record_error();
                 }
                 return Err(Error::UnknownQuote);
-            },
+            }
             Err(err) => {
                 #[cfg(feature = "prometheus")]
                 {
                     self.metrics.dec_in_flight_requests("check_melt_quote");
-                    self.metrics.record_mint_operation("check_melt_quote", false);
+                    self.metrics
+                        .record_mint_operation("check_melt_quote", false);
                     self.metrics.record_error();
                 }
                 return Err(err.into());
             }
         };
 
-        let blind_signatures = match self.localstore.get_blind_signatures_for_quote(quote_id).await {
+        let blind_signatures = match self
+            .localstore
+            .get_blind_signatures_for_quote(quote_id)
+            .await
+        {
             Ok(signatures) => signatures,
             Err(err) => {
                 #[cfg(feature = "prometheus")]
                 {
                     self.metrics.dec_in_flight_requests("check_melt_quote");
-                    self.metrics.record_mint_operation("check_melt_quote", false);
+                    self.metrics
+                        .record_mint_operation("check_melt_quote", false);
                     self.metrics.record_error();
                 }
                 return Err(err.into());
@@ -481,7 +494,10 @@ impl Mint {
             }
         };
 
-        let settled_internally_amount = match self.handle_internal_melt_mint(&mut tx, &quote, melt_request).await {
+        let settled_internally_amount = match self
+            .handle_internal_melt_mint(&mut tx, &quote, melt_request)
+            .await
+        {
             Ok(amount) => amount,
             Err(err) => {
                 tracing::error!("Attempting to settle internally failed: {}", err);
@@ -661,15 +677,17 @@ impl Mint {
 
         // If we made it here the payment has been made.
         // We process the melt burning the inputs and returning change
-        let res = match self.process_melt_request(
-            tx,
-            proof_writer,
-            quote,
-            melt_request,
-            preimage,
-            amount_spent_quote_unit,
-        )
-        .await {
+        let res = match self
+            .process_melt_request(
+                tx,
+                proof_writer,
+                quote,
+                melt_request,
+                preimage,
+                amount_spent_quote_unit,
+            )
+            .await
+        {
             Ok(response) => response,
             Err(err) => {
                 tracing::error!("Could not process melt request: {}", err);
@@ -712,11 +730,15 @@ impl Mint {
 
         let input_ys = melt_request.inputs().ys()?;
 
-        if let Err(err) = proof_writer.update_proofs_states(&mut tx, &input_ys, State::Spent).await {
+        if let Err(err) = proof_writer
+            .update_proofs_states(&mut tx, &input_ys, State::Spent)
+            .await
+        {
             #[cfg(feature = "prometheus")]
             {
                 self.metrics.dec_in_flight_requests("process_melt_request");
-                self.metrics.record_mint_operation("process_melt_request", false);
+                self.metrics
+                    .record_mint_operation("process_melt_request", false);
                 self.metrics.record_error();
             }
             return Err(err);
@@ -816,7 +838,8 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         {
             self.metrics.dec_in_flight_requests("process_melt_request");
-            self.metrics.record_mint_operation("process_melt_request", true);
+            self.metrics
+                .record_mint_operation("process_melt_request", true);
         }
 
         Ok(response)

@@ -2,6 +2,11 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
+use anyhow::{anyhow, bail, Result};
+use axum::Router;
+use bip39::Mnemonic;
+use cdk::cdk_database::{self, MintAuthDatabase};
+use cdk::mint::{MintBuilder, MintMeltLimits};
 use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
@@ -10,11 +15,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::time::interval;
-use anyhow::{anyhow, bail, Result};
-use axum::Router;
-use bip39::Mnemonic;
-use cdk::cdk_database::{self, MintAuthDatabase};
-use cdk::mint::{MintBuilder, MintMeltLimits};
 // Feature-gated imports
 #[cfg(any(
     feature = "cln",
@@ -43,6 +43,8 @@ use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus;
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
@@ -56,8 +58,6 @@ use tracing::Instrument;
 use tracing_subscriber::EnvFilter;
 #[cfg(feature = "swagger")]
 use utoipa::OpenApi;
-#[cfg(feature = "prometheus")]
-use cdk_prometheus;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 
@@ -136,7 +136,6 @@ async fn main() -> anyhow::Result<()> {
 
     #[cfg(feature = "prometheus")]
     let metrics = Arc::new(cdk_prometheus::CdkMetrics::new()?);
-
 
     let mut contact_info: Option<Vec<ContactInfo>> = None;
 
@@ -551,7 +550,6 @@ async fn main() -> anyhow::Result<()> {
         mint_builder.build().await?
     };
 
-
     tracing::debug!("Mint built from builder.");
 
     let mint = Arc::new(mint);
@@ -586,7 +584,6 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-
     #[cfg(feature = "prometheus")]
     {
         if let Some(prometheus_settings) = &settings.prometheus {
@@ -613,8 +610,6 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-
-
 
     for router in ln_routers {
         mint_service = mint_service.merge(router);

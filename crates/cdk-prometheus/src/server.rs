@@ -2,7 +2,7 @@ use prometheus::{Registry, TextEncoder};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::time;
 
-use crate::{error::PrometheusError, metrics::CdkMetrics};
+use crate::metrics::CdkMetrics;
 
 #[cfg(feature = "system-metrics")]
 use crate::process::SystemMetrics;
@@ -138,10 +138,12 @@ impl PrometheusServer {
 
         // Start the exporter in a background task
         let path = self.config.metrics_path.clone();
+
+        tracing::info!("Prometheus exporter started in background on {}", binding);
         tokio::spawn(async move {
             // We're using a simple HTTP server to expose our metrics
-            use std::net::TcpListener;
             use std::io::{Read, Write};
+            use std::net::TcpListener;
 
             // Create a TCP listener
             let listener = match TcpListener::bind(binding) {
@@ -199,8 +201,6 @@ impl PrometheusServer {
                 }
             }
         });
-
-        tracing::info!("Prometheus exporter started in background on {}", binding);
 
         // Start a background task to update system metrics
         #[cfg(feature = "system-metrics")]
@@ -273,7 +273,10 @@ impl PrometheusBuilder {
     }
 
     /// Build the server with CDK metrics
-    pub fn build_with_cdk_metrics(self, cdk_metrics: &CdkMetrics) -> crate::Result<PrometheusServer> {
+    pub fn build_with_cdk_metrics(
+        self,
+        cdk_metrics: &CdkMetrics,
+    ) -> crate::Result<PrometheusServer> {
         PrometheusServer::new(self.config, cdk_metrics)
     }
 
