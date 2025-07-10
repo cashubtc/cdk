@@ -147,8 +147,11 @@ impl Wallet {
     pub async fn get_active_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
         let mut mint_quotes = self.localstore.get_mint_quotes().await?;
         let unix_time = unix_time();
-        mint_quotes
-            .retain(|quote| quote.state != MintQuoteState::Issued && quote.expiry > unix_time);
+        mint_quotes.retain(|quote| {
+            quote.mint_url == self.mint_url
+                && quote.state != MintQuoteState::Issued
+                && quote.expiry > unix_time
+        });
         Ok(mint_quotes)
     }
 
