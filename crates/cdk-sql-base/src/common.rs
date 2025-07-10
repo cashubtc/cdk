@@ -5,6 +5,7 @@ use crate::stmt::query;
 #[inline(always)]
 pub async fn migrate<C: DatabaseExecutor>(
     conn: &C,
+    db_prefix: &str,
     migrations: &[(&str, &str)],
 ) -> Result<(), cdk_common::database::Error> {
     query(
@@ -18,26 +19,14 @@ pub async fn migrate<C: DatabaseExecutor>(
     .execute(conn)
     .await?;
 
-    /*if query(
-        r#"select count(*) from sqlite_master where name = '_sqlx_migrations'"#,
-        [],
-        |row| row.get::<_, i32>(0),
-    )? == 1
-    {
-        tx.execute_batch(
-            r#"
-        INSERT INTO migrations
-        SELECT
-            version || '_' ||  REPLACE(description, ' ', '_') || '.sql',
-            execution_time
-        FROM _sqlx_migrations;
-        DROP TABLE _sqlx_migrations;
-        "#,
-        )?;
-    }*/
-
     // Apply each migration if it hasn’t been applied yet
     for (name, sql) in migrations {
+        if let Some((prefix, _)) = name.split_once(['/', '\\']) {
+            if prefix != db_prefix {
+                continue;
+            }
+        }
+
         let is_missing = query("SELECT name FROM migrations WHERE name = :name")?
             .bind("name", name)
             .pluck(conn)

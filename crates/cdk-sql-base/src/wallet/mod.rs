@@ -36,14 +36,14 @@ where
     db: T,
 }
 
-impl<T> SQLWalletDatabase<T>
+impl<DB> SQLWalletDatabase<DB>
 where
-    T: DatabaseExecutor,
+    DB: DatabaseExecutor,
 {
     /// Creates a new instance
     pub async fn new<X>(db: X) -> Result<Self, Error>
     where
-        X: Into<T>,
+        X: Into<DB>,
     {
         let db = db.into();
         Self::migrate(&db).await?;
@@ -51,8 +51,8 @@ where
     }
 
     /// Migrate [`WalletSqliteDatabase`]
-    async fn migrate(conn: &T) -> Result<(), Error> {
-        migrate(conn, migrations::MIGRATIONS).await?;
+    async fn migrate(conn: &DB) -> Result<(), Error> {
+        migrate(conn, DB::name(), migrations::MIGRATIONS).await?;
         Ok(())
     }
 }

@@ -1,4 +1,4 @@
-//! Async and concurrent rusqlite
+//! Async, pipelined rusqlite client
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -470,6 +470,10 @@ impl DatabaseConnector for AsyncRusqlite {
 
 #[async_trait::async_trait]
 impl DatabaseExecutor for AsyncRusqlite {
+    fn name() -> &'static str {
+        "sqlite"
+    }
+
     async fn fetch_one(&self, mut statement: InnerStatement) -> Result<Option<Vec<Column>>, Error> {
         let (sender, receiver) = oneshot::channel();
         statement.expected_response = ExpectedSqlResponse::SingleRow;
@@ -620,6 +624,10 @@ impl<'a> DatabaseTransaction<'a> for Transaction<'a> {
 
 #[async_trait::async_trait]
 impl DatabaseExecutor for Transaction<'_> {
+    fn name() -> &'static str {
+        "sqlite"
+    }
+
     async fn fetch_one(&self, mut statement: InnerStatement) -> Result<Option<Vec<Column>>, Error> {
         let (sender, receiver) = oneshot::channel();
         statement.expected_response = ExpectedSqlResponse::SingleRow;

@@ -45,7 +45,7 @@ where
     /// Migrate
     async fn migrate(conn: &DB) -> Result<(), Error> {
         let tx = conn.begin().await?;
-        migrate(&tx, MIGRATIONS).await?;
+        migrate(&tx, DB::name(), MIGRATIONS).await?;
         tx.commit().await?;
         Ok(())
     }

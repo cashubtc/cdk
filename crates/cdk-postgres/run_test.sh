@@ -6,7 +6,6 @@ DB_USER="test"
 DB_PASS="test"
 DB_NAME="testdb"
 DB_PORT="5433"
-DB_URL="postgres://${DB_USER}:${DB_PASS}@localhost:${DB_PORT}/${DB_NAME}"
 
 cleanup() {
   echo "Cleaning up..."
@@ -23,16 +22,15 @@ docker run -d --rm \
   -e POSTGRES_PASSWORD="${DB_PASS}" \
   -e POSTGRES_DB="${DB_NAME}" \
   -p ${DB_PORT}:5432 \
-  -v "${PWD}/.docker/pg-init.sql:/docker-entrypoint-initdb.d/init.sql:ro" \
   postgres:16
 
-echo "Waiting for PostgreSQL to be ready..."
-until docker exec "${CONTAINER_NAME}" pg_isready -U "${DB_USER}" >/dev/null 2>&1; do
+echo "Waiting for PostgreSQL to be ready and database '${DB_NAME}' to exist..."
+until docker exec -e PGPASSWORD="${DB_PASS}" "${CONTAINER_NAME}" \
+    psql -U "${DB_USER}" -d "${DB_NAME}" -c "SELECT 1;" >/dev/null 2>&1; do
   sleep 0.5
 done
 
-export DATABASE_URL="${DB_URL}"
+export DATABASE_URL="host=localhost user=${DB_USER} password=${DB_PASS} dbname=${DB_NAME} port=${DB_PORT}"
 
 echo "Running cargo tests..."
-cargo test
-
+cargo test -- --nocapture

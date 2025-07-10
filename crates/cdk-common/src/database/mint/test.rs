@@ -225,7 +225,7 @@ macro_rules! mint_db_test {
         mint_db_test!(test_remove_spent_proofs, $make_db_fn);
     };
     ($name:ident, $make_db_fn:ident) => {
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
         async fn $name() {
             $crate::database::mint::test::$name($make_db_fn().await).await;
         }
