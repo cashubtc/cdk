@@ -10,8 +10,6 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
-        with:
-          path: ${{ github.sha }}
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Rust Cache
@@ -29,8 +27,6 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
-        with:
-          path: ${{ github.sha }}
       - name: Pull Nutshell Docker image
         run: docker pull cashubtc/nutshell:latest
       - name: Install Nix
