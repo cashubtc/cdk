@@ -8,32 +8,6 @@ use crate::mint::{MeltQuote, MeltQuoteState, PaymentMethod};
 use crate::types::PaymentProcessorKey;
 
 impl Mint {
-    /// Check the status of all pending and unpaid mint quotes in the mint db
-    /// with all the lighting backends. This check that any payments
-    /// received while the mint was offline are accounted for, and the wallet can mint associated ecash
-    pub async fn check_pending_mint_quotes(&self) -> Result<(), Error> {
-        let pending_quotes = self.get_pending_mint_quotes().await?;
-        let unpaid_quotes = self.get_unpaid_mint_quotes().await?;
-
-        let all_quotes = [pending_quotes, unpaid_quotes].concat();
-
-        tracing::info!(
-            "There are {} pending and unpaid mint quotes.",
-            all_quotes.len()
-        );
-        for mut quote in all_quotes.into_iter() {
-            tracing::debug!("Checking status of mint quote: {}", quote.id);
-            match self
-                .check_mint_quote_paid(self.localstore.begin_transaction().await?, &mut quote)
-                .await
-            {
-                Ok(tx) => tx.commit().await?,
-                Err(err) => tracing::error!("Could not check status of {}, {}", quote.id, err),
-            }
-        }
-        Ok(())
-    }
-
     /// Checks the states of melt quotes that are **PENDING** or **UNKNOWN** to the mint with the ln node
     pub async fn check_pending_melt_quotes(&self) -> Result<(), Error> {
         let melt_quotes = self.localstore.get_melt_quotes().await?;

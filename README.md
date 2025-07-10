@@ -18,7 +18,6 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk**](./crates/cdk/): Rust implementation of Cashu protocol.
     * [**cdk-sqlite**](./crates/cdk-sqlite/): SQLite Storage backend.
     * [**cdk-redb**](./crates/cdk-redb/): Redb Storage backend.
-    * [**cdk-rexie**](./crates/cdk-rexie/): Rexie Storage backend for browsers.
     * [**cdk-axum**](./crates/cdk-axum/): Axum webserver for mint.
     * [**cdk-cln**](./crates/cdk-cln/): CLN Lightning backend for mint.
     * [**cdk-lnd**](./crates/cdk-lnd/): Lnd Lightning backend for mint.
