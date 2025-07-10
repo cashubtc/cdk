@@ -53,6 +53,7 @@ impl Mint {
                     unit: k.unit.clone(),
                     active: k.active,
                     input_fee_ppk: k.input_fee_ppk,
+                    final_expiry: k.final_expiry,
                 })
                 .collect(),
         }

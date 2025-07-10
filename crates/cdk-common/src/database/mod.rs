@@ -5,14 +5,17 @@ pub mod mint;
 #[cfg(feature = "wallet")]
 mod wallet;
 
-#[cfg(all(feature = "mint", feature = "auth"))]
-pub use mint::MintAuthDatabase;
 #[cfg(feature = "mint")]
 pub use mint::{
-    Database as MintDatabase, KeysDatabase as MintKeysDatabase,
-    ProofsDatabase as MintProofsDatabase, QuotesDatabase as MintQuotesDatabase,
+    Database as MintDatabase, DbTransactionFinalizer as MintDbWriterFinalizer,
+    KeysDatabase as MintKeysDatabase, KeysDatabaseTransaction as MintKeyDatabaseTransaction,
+    ProofsDatabase as MintProofsDatabase, ProofsTransaction as MintProofsTransaction,
+    QuotesDatabase as MintQuotesDatabase, QuotesTransaction as MintQuotesTransaction,
     SignaturesDatabase as MintSignaturesDatabase,
+    SignaturesTransaction as MintSignatureTransaction, Transaction as MintTransaction,
 };
+#[cfg(all(feature = "mint", feature = "auth"))]
+pub use mint::{MintAuthDatabase, MintAuthTransaction};
 #[cfg(feature = "wallet")]
 pub use wallet::Database as WalletDatabase;
 
@@ -22,6 +25,11 @@ pub enum Error {
     /// Database Error
     #[error(transparent)]
     Database(Box<dyn std::error::Error + Send + Sync>),
+
+    /// Duplicate entry
+    #[error("Duplicate entry")]
+    Duplicate,
+
     /// DHKE error
     #[error(transparent)]
     DHKE(#[from] crate::dhke::Error),

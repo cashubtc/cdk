@@ -127,8 +127,12 @@ impl Proof {
     /// Verify P2PK signature on [Proof]
     pub fn verify_p2pk(&self) -> Result<(), Error> {
         let secret: Nut10Secret = self.secret.clone().try_into()?;
-        let spending_conditions: Conditions =
-            secret.secret_data.tags.unwrap_or_default().try_into()?;
+        let spending_conditions: Conditions = secret
+            .secret_data()
+            .tags()
+            .cloned()
+            .unwrap_or_default()
+            .try_into()?;
         let msg: &[u8] = self.secret.as_bytes();
 
         let mut verified_pubkeys = HashSet::new();
@@ -142,8 +146,8 @@ impl Proof {
 
         let mut pubkeys = spending_conditions.pubkeys.clone().unwrap_or_default();
 
-        if secret.kind.eq(&Kind::P2PK) {
-            pubkeys.push(PublicKey::from_str(&secret.secret_data.data)?);
+        if secret.kind().eq(&Kind::P2PK) {
+            pubkeys.push(PublicKey::from_str(secret.secret_data().data())?);
         }
 
         for signature in witness_signatures.iter() {
@@ -174,15 +178,24 @@ impl Proof {
             spending_conditions.locktime,
             spending_conditions.refund_keys,
         ) {
+            let needed_refund_sigs = spending_conditions.num_sigs_refund.unwrap_or(1) as usize;
+
+            let mut valid_pubkeys = HashSet::new();
+
             // If lock time has passed check if refund witness signature is valid
             if locktime.lt(&unix_time()) {
                 for s in witness_signatures.iter() {
                     for v in &refund_keys {
                         let sig = Signature::from_str(s).map_err(|_| Error::InvalidSignature)?;
 
-                        // As long as there is one valid refund signature it can be spent
                         if v.verify(msg, &sig).is_ok() {
-                            return Ok(());
+                            if !valid_pubkeys.insert(v) {
+                                return Err(Error::DuplicateSignature);
+                            }
+
+                            if valid_pubkeys.len() >= needed_refund_sigs {
+                                return Ok(());
+                            }
                         }
                     }
                 }
@@ -394,15 +407,21 @@ impl TryFrom<&Secret> for SpendingConditions {
 impl TryFrom<Nut10Secret> for SpendingConditions {
     type Error = Error;
     fn try_from(secret: Nut10Secret) -> Result<SpendingConditions, Error> {
-        match secret.kind {
+        match secret.kind() {
             Kind::P2PK => Ok(SpendingConditions::P2PKConditions {
-                data: PublicKey::from_str(&secret.secret_data.data)?,
-                conditions: secret.secret_data.tags.and_then(|t| t.try_into().ok()),
+                data: PublicKey::from_str(secret.secret_data().data())?,
+                conditions: secret
+                    .secret_data()
+                    .tags()
+                    .and_then(|t| t.clone().try_into().ok()),
             }),
             Kind::HTLC => Ok(Self::HTLCConditions {
-                data: Sha256Hash::from_str(&secret.secret_data.data)
+                data: Sha256Hash::from_str(secret.secret_data().data())
                     .map_err(|_| Error::InvalidHash)?,
-                conditions: secret.secret_data.tags.and_then(|t| t.try_into().ok()),
+                conditions: secret
+                    .secret_data()
+                    .tags()
+                    .and_then(|t| t.clone().try_into().ok()),
             }),
         }
     }
@@ -433,7 +452,7 @@ pub struct Conditions {
     /// Refund keys
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refund_keys: Option<Vec<PublicKey>>,
-    /// Numbedr of signatures required
+    /// Number of signatures required
     ///
     /// Default is 1
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -442,6 +461,11 @@ pub struct Conditions {
     ///
     /// Default [`SigFlag::SigInputs`]
     pub sig_flag: SigFlag,
+    /// Number of refund signatures required
+    ///
+    /// Default is 1
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_sigs_refund: Option<u64>,
 }
 
 impl Conditions {
@@ -452,6 +476,7 @@ impl Conditions {
         refund_keys: Option<Vec<PublicKey>>,
         num_sigs: Option<u64>,
         sig_flag: Option<SigFlag>,
+        num_sigs_refund: Option<u64>,
     ) -> Result<Self, Error> {
         if let Some(locktime) = locktime {
             ensure_cdk!(locktime.ge(&unix_time()), Error::LocktimeInPast);
@@ -463,6 +488,7 @@ impl Conditions {
             refund_keys,
             num_sigs,
             sig_flag: sig_flag.unwrap_or_default(),
+            num_sigs_refund,
         })
     }
 }
@@ -474,6 +500,7 @@ impl From<Conditions> for Vec<Vec<String>> {
             refund_keys,
             num_sigs,
             sig_flag,
+            num_sigs_refund: _,
         } = conditions;
 
         let mut tags = Vec::new();
@@ -554,6 +581,7 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
             refund_keys,
             num_sigs,
             sig_flag,
+            num_sigs_refund: None,
         })
     }
 }
@@ -573,6 +601,9 @@ pub enum TagKind {
     Refund,
     /// Pubkey
     Pubkeys,
+    /// Number signatures required
+    #[serde(rename = "n_sigs_refund")]
+    NSigsRefund,
     /// Custom tag kind
     Custom(String),
 }
@@ -585,6 +616,7 @@ impl fmt::Display for TagKind {
             Self::Locktime => write!(f, "locktime"),
             Self::Refund => write!(f, "refund"),
             Self::Pubkeys => write!(f, "pubkeys"),
+            Self::NSigsRefund => write!(f, "n_sigs_refund"),
             Self::Custom(kind) => write!(f, "{kind}"),
         }
     }
@@ -650,14 +682,14 @@ pub fn enforce_sig_flag(proofs: Proofs) -> EnforceSigFlag {
     let mut sigs_required = 1;
     for proof in proofs {
         if let Ok(secret) = Nut10Secret::try_from(proof.secret) {
-            if secret.kind.eq(&Kind::P2PK) {
-                if let Ok(verifying_key) = PublicKey::from_str(&secret.secret_data.data) {
+            if secret.kind().eq(&Kind::P2PK) {
+                if let Ok(verifying_key) = PublicKey::from_str(secret.secret_data().data()) {
                     pubkeys.insert(verifying_key);
                 }
             }
 
-            if let Some(tags) = secret.secret_data.tags {
-                if let Ok(conditions) = Conditions::try_from(tags) {
+            if let Some(tags) = secret.secret_data().tags() {
+                if let Ok(conditions) = Conditions::try_from(tags.clone()) {
                     if conditions.sig_flag.eq(&SigFlag::SigAll) {
                         sig_flag = SigFlag::SigAll;
                     }
@@ -847,6 +879,7 @@ mod tests {
             .unwrap()]),
             num_sigs: Some(2),
             sig_flag: SigFlag::SigAll,
+            num_sigs_refund: None,
         };
 
         let secret: Nut10Secret = Nut10Secret::new(Kind::P2PK, data.to_string(), Some(conditions));
@@ -881,6 +914,7 @@ mod tests {
             refund_keys: Some(vec![v_key]),
             num_sigs: Some(2),
             sig_flag: SigFlag::SigInputs,
+            num_sigs_refund: None,
         };
 
         let secret: Secret = Nut10Secret::new(Kind::P2PK, v_key.to_string(), Some(conditions))

@@ -51,13 +51,15 @@ async fn test_correct_keyset() {
         .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
     let mint = mint_builder.build().await.unwrap();
+    let mut tx = localstore.begin_transaction().await.unwrap();
 
-    localstore
-        .set_mint_info(mint_builder.mint_info.clone())
+    tx.set_mint_info(mint_builder.mint_info.clone())
         .await
         .unwrap();
     let quote_ttl = QuoteTTL::new(10000, 10000);
-    localstore.set_quote_ttl(quote_ttl).await.unwrap();
+    tx.set_quote_ttl(quote_ttl).await.unwrap();
+
+    tx.commit().await.unwrap();
 
     let active = mint.get_active_keysets();
 

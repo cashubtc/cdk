@@ -79,6 +79,7 @@ impl From<cdk_common::payment::PaymentQuoteResponse> for PaymentQuoteResponse {
             amount: value.amount.into(),
             fee: value.fee.into(),
             state: QuoteState::from(value.state).into(),
+            unit: value.unit.to_string(),
         }
     }
 }
@@ -121,6 +122,7 @@ impl From<PaymentQuoteResponse> for cdk_common::payment::PaymentQuoteResponse {
         Self {
             request_lookup_id: value.request_lookup_id.clone(),
             amount: value.amount.into(),
+            unit: CurrencyUnit::from_str(&value.unit).unwrap_or_default(),
             fee: value.fee.into(),
             state: value.state().into(),
         }

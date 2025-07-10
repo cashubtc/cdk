@@ -109,7 +109,7 @@ export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt lugg
 export RUST_BACKTRACE=1
 
 echo "Starting cln mintd"
-cargo run --bin cdk-mintd --features "redb" &
+cargo run --bin cdk-mintd &
 export CDK_MINTD_PID=$!
 
 
@@ -160,7 +160,7 @@ export CDK_MINTD_LN_BACKEND="lnd"
 export CDK_MINTD_MNEMONIC="cattle gold bind busy sound reduce tone addict baby spend february strategy"
 
 echo "Starting lnd mintd"
-cargo run --bin cdk-mintd --features "redb" &
+cargo run --bin cdk-mintd &
 export CDK_MINTD_LND_PID=$!
 
 URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1/v1/info"
@@ -210,7 +210,7 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "Running happy_path_mint_wallet test with CLN mint"
-cargo test -p cdk-integration-tests --test happy_path_mint_wallet test_happy_mint_melt_round_trip
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 if [ $? -ne 0 ]; then
     echo "happy_path_mint_wallet test failed, exiting"
     exit 1

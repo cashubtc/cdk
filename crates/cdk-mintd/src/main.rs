@@ -45,10 +45,6 @@ use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::config::{self, DatabaseEngine, LnBackend};
 use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
-#[cfg(feature = "redb")]
-use cdk_redb::mint::MintRedbAuthDatabase;
-#[cfg(feature = "redb")]
-use cdk_redb::MintRedbDatabase;
 #[cfg(feature = "auth")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -102,12 +98,6 @@ async fn main() -> Result<()> {
     tracing::debug!("Mint built from builder.");
 
     let mint = Arc::new(mint);
-
-    // Check the status of any mint quotes that are pending
-    // In the event that the mint server is down but the ln node is not
-    // it is possible that a mint quote was paid but the mint has not been updated
-    // this will check and update the mint state of those quotes
-    mint.check_pending_mint_quotes().await?;
 
     // Checks the status of all pending melt quotes
     // Pending melt quotes where the payment has gone through inputs are burnt
@@ -212,20 +202,7 @@ async fn setup_database(
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
             Ok((localstore, keystore))
         }
-        #[cfg(feature = "redb")]
-        DatabaseEngine::Redb => {
-            let db = setup_redb_database(work_dir).await?;
-            let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
-            let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
-            Ok((localstore, keystore))
-        }
     }
-}
-
-#[cfg(feature = "redb")]
-async fn setup_redb_database(work_dir: &Path) -> Result<Arc<MintRedbDatabase>> {
-    let redb_path = work_dir.join("cdk-mintd.redb");
-    Ok(Arc::new(MintRedbDatabase::new(&redb_path)?))
 }
 
 async fn setup_sqlite_database(
@@ -531,15 +508,10 @@ async fn setup_authentication(
             DatabaseEngine::Sqlite => {
                 let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
                 let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
-
-                sqlite_db.migrate().await;
+                #[cfg(feature = "sqlcipher")]
+                let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path, args.password).await?;
 
                 Arc::new(sqlite_db)
-            }
-            #[cfg(feature = "redb")]
-            DatabaseEngine::Redb => {
-                let redb_path = work_dir.join("cdk-mintd-auth.redb");
-                Arc::new(MintRedbAuthDatabase::new(&redb_path)?)
             }
         };
 
@@ -657,12 +629,11 @@ async fn setup_authentication(
 
         mint_builder = mint_builder.set_blind_auth_settings(auth_settings.mint_max_bat);
 
-        auth_localstore
-            .remove_protected_endpoints(unprotected_endpoints)
-            .await?;
-        auth_localstore
-            .add_protected_endpoints(protected_endpoints)
-            .await?;
+        let mut tx = auth_localstore.begin_transaction().await?;
+
+        tx.remove_protected_endpoints(unprotected_endpoints).await?;
+        tx.add_protected_endpoints(protected_endpoints).await?;
+        tx.commit().await?;
     }
     Ok(mint_builder)
 }
@@ -752,6 +723,15 @@ async fn start_services(
             if mint.localstore.get_quote_ttl().await.is_err() {
                 mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
             }
+            // Add version information
+            let mint_version = MintVersion::new(
+                "cdk-mintd".to_string(),
+                CARGO_PKG_VERSION.unwrap_or("Unknown").to_string(),
+            );
+            let mut stored_mint_info = mint.mint_info().await?;
+            stored_mint_info.version = Some(mint_version);
+            mint.set_mint_info(stored_mint_info).await?;
+
             tracing::info!("Mint info already set, not using config file settings.");
         }
     } else {

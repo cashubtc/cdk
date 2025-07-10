@@ -2,35 +2,43 @@
 //!
 //! This set is generic and checks the default and expected behaviour for a mint database
 //! implementation
-use std::fmt::Debug;
 use std::str::FromStr;
 
 use cashu::secret::Secret;
 use cashu::{Amount, CurrencyUnit, SecretKey};
 
 use super::*;
+use crate::database;
 use crate::mint::MintKeySetInfo;
 
 #[inline]
-async fn setup_keyset<E: Debug, DB: Database<E> + KeysDatabase<Err = E>>(db: &DB) -> Id {
+async fn setup_keyset<DB>(db: &DB) -> Id
+where
+    DB: KeysDatabase<Err = database::Error>,
+{
     let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
     let keyset_info = MintKeySetInfo {
         id: keyset_id,
         unit: CurrencyUnit::Sat,
         active: true,
         valid_from: 0,
-        valid_to: None,
+        final_expiry: None,
         derivation_path: bitcoin::bip32::DerivationPath::from_str("m/0'/0'/0'").unwrap(),
         derivation_path_index: Some(0),
         max_order: 32,
         input_fee_ppk: 0,
     };
-    db.add_keyset_info(keyset_info).await.unwrap();
+    let mut writer = db.begin_transaction().await.expect("db.begin()");
+    writer.add_keyset_info(keyset_info).await.unwrap();
+    writer.commit().await.expect("commit()");
     keyset_id
 }
 
 /// State transition test
-pub async fn state_transition<E: Debug, DB: Database<E> + KeysDatabase<Err = E>>(db: DB) {
+pub async fn state_transition<DB>(db: DB)
+where
+    DB: Database<database::Error> + KeysDatabase<Err = database::Error>,
+{
     let keyset_id = setup_keyset(&db).await;
 
     let proofs = vec![
@@ -53,19 +61,21 @@ pub async fn state_transition<E: Debug, DB: Database<E> + KeysDatabase<Err = E>>
     ];
 
     // Add proofs to database
-    db.add_proofs(proofs.clone(), None).await.unwrap();
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(proofs.clone(), None).await.unwrap();
 
     // Mark one proof as `pending`
-    assert!(db
+    assert!(tx
         .update_proofs_states(&[proofs[0].y().unwrap()], State::Pending)
         .await
         .is_ok());
 
     // Attempt to select the `pending` proof, as `pending` again (which should fail)
-    assert!(db
+    assert!(tx
         .update_proofs_states(&[proofs[0].y().unwrap()], State::Pending)
         .await
         .is_err());
+    tx.commit().await.unwrap();
 }
 
 /// Unit test that is expected to be passed for a correct database implementation

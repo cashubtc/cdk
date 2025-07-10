@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use cdk_common::amount::SplitTarget;
 use cdk_common::wallet::{Transaction, TransactionDirection};
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
@@ -49,33 +50,35 @@ impl Wallet {
     ) -> Result<MeltQuote, Error> {
         let invoice = Bolt11Invoice::from_str(&request)?;
 
-        let amount_msat = options
-            .map(|opt| opt.amount_msat().into())
-            .or_else(|| invoice.amount_milli_satoshis())
-            .ok_or(Error::InvoiceAmountUndefined)?;
-
-        let amount_quote_unit = to_unit(amount_msat, &CurrencyUnit::Msat, &self.unit).unwrap();
-
         let quote_request = MeltQuoteBolt11Request {
             request: Bolt11Invoice::from_str(&request)?,
             unit: self.unit.clone(),
             options,
         };
 
-        let quote_res = self.client.post_melt_quote(quote_request).await.unwrap();
+        let quote_res = self.client.post_melt_quote(quote_request).await?;
 
-        if quote_res.amount != amount_quote_unit {
-            tracing::warn!(
-                "Mint returned incorrect quote amount. Expected {}, got {}",
-                amount_quote_unit,
-                quote_res.amount
-            );
-            return Err(Error::IncorrectQuoteAmount);
+        if self.unit == CurrencyUnit::Msat || self.unit == CurrencyUnit::Sat {
+            let amount_msat = options
+                .map(|opt| opt.amount_msat().into())
+                .or_else(|| invoice.amount_milli_satoshis())
+                .ok_or(Error::InvoiceAmountUndefined)?;
+
+            let amount_quote_unit = to_unit(amount_msat, &CurrencyUnit::Msat, &self.unit)?;
+
+            if quote_res.amount != amount_quote_unit {
+                tracing::warn!(
+                    "Mint returned incorrect quote amount. Expected {}, got {}",
+                    amount_quote_unit,
+                    quote_res.amount
+                );
+                return Err(Error::IncorrectQuoteAmount);
+            }
         }
 
         let quote = MeltQuote {
             id: quote_res.quote,
-            amount: amount_quote_unit,
+            amount: quote_res.amount,
             request,
             unit: self.unit.clone(),
             fee_reserve: quote_res.fee_reserve,
@@ -313,13 +316,31 @@ impl Wallet {
             .map(|k| k.id)
             .collect();
         let keyset_fees = self.get_keyset_fees().await?;
-        let input_proofs = Wallet::select_proofs(
+        let (mut input_proofs, mut exchange) = Wallet::select_exact_proofs(
             inputs_needed_amount,
             available_proofs,
             &active_keyset_ids,
             &keyset_fees,
             true,
         )?;
+
+        if let Some((proof, exact_amount)) = exchange.take() {
+            let new_proofs = self
+                .swap(
+                    Some(exact_amount),
+                    SplitTarget::None,
+                    vec![proof.clone()],
+                    None,
+                    false,
+                )
+                .await?
+                .ok_or_else(|| {
+                    tracing::error!("Received empty proofs");
+                    Error::Internal
+                })?;
+
+            input_proofs.extend_from_slice(&new_proofs);
+        }
 
         self.melt_proofs(quote_id, input_proofs).await
     }

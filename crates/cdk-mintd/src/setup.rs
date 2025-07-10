@@ -2,8 +2,6 @@
 use std::collections::HashMap;
 #[cfg(feature = "fakewallet")]
 use std::collections::HashSet;
-#[cfg(feature = "lnbits")]
-use std::sync::Arc;
 
 #[cfg(feature = "cln")]
 use anyhow::anyhow;
@@ -22,8 +20,6 @@ use cdk::nuts::CurrencyUnit;
     feature = "fakewallet"
 ))]
 use cdk::types::FeeReserve;
-#[cfg(feature = "lnbits")]
-use tokio::sync::Mutex;
 
 use crate::config::{self, Settings};
 #[cfg(feature = "cln")]
@@ -79,15 +75,25 @@ impl LnBackendSetup for config::LNbits {
         let invoice_api_key = &self.invoice_api_key;
 
         // Channel used for lnbits web hook
-        let (sender, receiver) = tokio::sync::mpsc::channel(8);
         let webhook_endpoint = "/webhook/lnbits/sat/invoice";
-
-        let mint_url: MintUrl = settings.info.url.parse()?;
-        let webhook_url = mint_url.join(webhook_endpoint)?;
 
         let fee_reserve = FeeReserve {
             min_fee_reserve: self.reserve_fee_min,
             percent_fee_reserve: self.fee_percent,
+        };
+
+        let webhook_url = if settings
+            .lnbits
+            .as_ref()
+            .expect("Lnbits must be defined")
+            .retro_api
+        {
+            let mint_url: MintUrl = settings.info.url.parse()?;
+            let webhook_url = mint_url.join(webhook_endpoint)?;
+
+            Some(webhook_url.to_string())
+        } else {
+            None
         };
 
         let lnbits = cdk_lnbits::LNbits::new(
@@ -95,16 +101,24 @@ impl LnBackendSetup for config::LNbits {
             invoice_api_key.clone(),
             self.lnbits_api.clone(),
             fee_reserve,
-            Arc::new(Mutex::new(Some(receiver))),
-            webhook_url.to_string(),
+            webhook_url,
         )
         .await?;
 
-        let router = lnbits
-            .create_invoice_webhook_router(webhook_endpoint, sender)
-            .await?;
+        if settings
+            .lnbits
+            .as_ref()
+            .expect("Lnbits must be defined")
+            .retro_api
+        {
+            let router = lnbits
+                .create_invoice_webhook_router(webhook_endpoint)
+                .await?;
 
-        routers.push(router);
+            routers.push(router);
+        } else {
+            lnbits.subscribe_ws().await?;
+        };
 
         Ok(lnbits)
     }

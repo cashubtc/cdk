@@ -76,6 +76,11 @@ impl MintRPCServer {
     pub async fn start(&mut self, tls_dir: Option<PathBuf>) -> Result<(), Error> {
         tracing::info!("Starting RPC server {}", self.socket_addr);
 
+        #[cfg(not(target_arch = "wasm32"))]
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
+
         let server = match tls_dir {
             Some(tls_dir) => {
                 tracing::info!("TLS configuration found, starting secure server");
@@ -655,8 +660,16 @@ impl CdkMint for MintRPCServer {
 
                 mint_quote.state = state;
 
-                self.mint
-                    .update_mint_quote(mint_quote)
+                let mut tx = self
+                    .mint
+                    .localstore
+                    .begin_transaction()
+                    .await
+                    .map_err(|_| Status::internal("Could not update quote".to_string()))?;
+                tx.add_or_replace_mint_quote(mint_quote)
+                    .await
+                    .map_err(|_| Status::internal("Could not update quote".to_string()))?;
+                tx.commit()
                     .await
                     .map_err(|_| Status::internal("Could not update quote".to_string()))?;
             }

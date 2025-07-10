@@ -118,6 +118,7 @@ pub struct LNbits {
     pub lnbits_api: String,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
+    pub retro_api: bool,
 }
 
 #[cfg(feature = "cln")]
@@ -189,8 +190,6 @@ pub struct GrpcProcessor {
 pub enum DatabaseEngine {
     #[default]
     Sqlite,
-    #[cfg(feature = "redb")]
-    Redb,
 }
 
 impl std::str::FromStr for DatabaseEngine {
@@ -199,8 +198,6 @@ impl std::str::FromStr for DatabaseEngine {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "sqlite" => Ok(DatabaseEngine::Sqlite),
-            #[cfg(feature = "redb")]
-            "redb" => Ok(DatabaseEngine::Redb),
             _ => Err(format!("Unknown database engine: {s}")),
         }
     }

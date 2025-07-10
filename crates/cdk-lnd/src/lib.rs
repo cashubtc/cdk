@@ -26,25 +26,26 @@ use cdk_common::payment::{
 use cdk_common::util::hex;
 use cdk_common::{mint, Bolt11Invoice};
 use error::Error;
-use fedimint_tonic_lnd::lnrpc::fee_limit::Limit;
-use fedimint_tonic_lnd::lnrpc::payment::PaymentStatus;
-use fedimint_tonic_lnd::lnrpc::{FeeLimit, Hop, MppRecord};
-use fedimint_tonic_lnd::tonic::Code;
-use fedimint_tonic_lnd::Client;
 use futures::{Stream, StreamExt};
-use tokio::sync::Mutex;
+use lnrpc::fee_limit::Limit;
+use lnrpc::payment::PaymentStatus;
+use lnrpc::{FeeLimit, Hop, MppRecord};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
+mod client;
 pub mod error;
+
+mod proto;
+pub(crate) use proto::{lnrpc, routerrpc};
 
 /// Lnd mint backend
 #[derive(Clone)]
 pub struct Lnd {
-    address: String,
-    cert_file: PathBuf,
-    macaroon_file: PathBuf,
-    client: Arc<Mutex<Client>>,
+    _address: String,
+    _cert_file: PathBuf,
+    _macaroon_file: PathBuf,
+    lnd_client: client::Client,
     fee_reserve: FeeReserve,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
@@ -86,18 +87,19 @@ impl Lnd {
             )));
         }
 
-        let client = fedimint_tonic_lnd::connect(address.to_string(), &cert_file, &macaroon_file)
+        let lnd_client = client::connect(&address, &cert_file, &macaroon_file)
             .await
             .map_err(|err| {
                 tracing::error!("Connection error: {}", err.to_string());
                 Error::Connection
-            })?;
+            })
+            .unwrap();
 
         Ok(Self {
-            address,
-            cert_file,
-            macaroon_file,
-            client: Arc::new(Mutex::new(client)),
+            _address: address,
+            _cert_file: cert_file,
+            _macaroon_file: macaroon_file,
+            lnd_client,
             fee_reserve,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
@@ -134,17 +136,14 @@ impl MintPayment for Lnd {
     async fn wait_any_incoming_payment(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
-        let mut client =
-            fedimint_tonic_lnd::connect(self.address.clone(), &self.cert_file, &self.macaroon_file)
-                .await
-                .map_err(|_| Error::Connection)?;
+        let mut lnd_client = self.lnd_client.clone();
 
-        let stream_req = fedimint_tonic_lnd::lnrpc::InvoiceSubscription {
+        let stream_req = lnrpc::InvoiceSubscription {
             add_index: 0,
             settle_index: 0,
         };
 
-        let stream = client
+        let stream = lnd_client
             .lightning()
             .subscribe_invoices(stream_req)
             .await
@@ -232,6 +231,7 @@ impl MintPayment for Lnd {
         Ok(PaymentQuoteResponse {
             request_lookup_id: bolt11.payment_hash().to_string(),
             amount,
+            unit: unit.clone(),
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
         })
@@ -283,9 +283,11 @@ impl MintPayment for Lnd {
                 let payer_addr = invoice.payment_secret().0.to_vec();
                 let payment_hash = invoice.payment_hash();
 
+                let mut lnd_client = self.lnd_client.clone();
+
                 for attempt in 0..Self::MAX_ROUTE_RETRIES {
                     // Create a request for the routes
-                    let route_req = fedimint_tonic_lnd::lnrpc::QueryRoutesRequest {
+                    let route_req = lnrpc::QueryRoutesRequest {
                         pub_key: hex::encode(pub_key.serialize()),
                         amt_msat: u64::from(partial_amount_msat) as i64,
                         fee_limit: max_fee.map(|f| {
@@ -297,10 +299,7 @@ impl MintPayment for Lnd {
                     };
 
                     // Query the routes
-                    let mut routes_response: fedimint_tonic_lnd::lnrpc::QueryRoutesResponse = self
-                        .client
-                        .lock()
-                        .await
+                    let mut routes_response = lnd_client
                         .lightning()
                         .query_routes(route_req)
                         .await
@@ -319,12 +318,9 @@ impl MintPayment for Lnd {
                     };
                     last_hop.mpp_record = Some(mpp_record);
 
-                    let payment_response = self
-                        .client
-                        .lock()
-                        .await
+                    let payment_response = lnd_client
                         .router()
-                        .send_to_route_v2(fedimint_tonic_lnd::routerrpc::SendToRouteRequest {
+                        .send_to_route_v2(routerrpc::SendToRouteRequest {
                             payment_hash: payment_hash.to_byte_array().to_vec(),
                             route: Some(routes_response.routes[0].clone()),
                             ..Default::default()
@@ -375,23 +371,21 @@ impl MintPayment for Lnd {
                 Err(Error::PaymentFailed.into())
             }
             None => {
-                let pay_req = fedimint_tonic_lnd::lnrpc::SendRequest {
+                let mut lnd_client = self.lnd_client.clone();
+
+                let pay_req = lnrpc::SendRequest {
                     payment_request,
                     fee_limit: max_fee.map(|f| {
                         let limit = Limit::Fixed(u64::from(f) as i64);
-
                         FeeLimit { limit: Some(limit) }
                     }),
                     amt_msat: amount_msat as i64,
                     ..Default::default()
                 };
 
-                let payment_response = self
-                    .client
-                    .lock()
-                    .await
+                let payment_response = lnd_client
                     .lightning()
-                    .send_payment_sync(fedimint_tonic_lnd::tonic::Request::new(pay_req))
+                    .send_payment_sync(tonic::Request::new(pay_req))
                     .await
                     .map_err(|err| {
                         tracing::warn!("Lightning payment failed: {}", err);
@@ -433,20 +427,19 @@ impl MintPayment for Lnd {
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         let amount = to_unit(amount, unit, &CurrencyUnit::Msat)?;
 
-        let invoice_request = fedimint_tonic_lnd::lnrpc::Invoice {
+        let invoice_request = lnrpc::Invoice {
             value_msat: u64::from(amount) as i64,
             memo: description,
             ..Default::default()
         };
 
-        let invoice = self
-            .client
-            .lock()
-            .await
+        let mut lnd_client = self.lnd_client.clone();
+
+        let invoice = lnd_client
             .lightning()
-            .add_invoice(fedimint_tonic_lnd::tonic::Request::new(invoice_request))
+            .add_invoice(tonic::Request::new(invoice_request))
             .await
-            .unwrap()
+            .map_err(|e| payment::Error::Anyhow(anyhow!(e)))?
             .into_inner();
 
         let bolt11 = Bolt11Invoice::from_str(&invoice.payment_request)?;
@@ -463,19 +456,18 @@ impl MintPayment for Lnd {
         &self,
         request_lookup_id: &str,
     ) -> Result<MintQuoteState, Self::Err> {
-        let invoice_request = fedimint_tonic_lnd::lnrpc::PaymentHash {
+        let mut lnd_client = self.lnd_client.clone();
+
+        let invoice_request = lnrpc::PaymentHash {
             r_hash: hex::decode(request_lookup_id).unwrap(),
             ..Default::default()
         };
 
-        let invoice = self
-            .client
-            .lock()
-            .await
+        let invoice = lnd_client
             .lightning()
-            .lookup_invoice(fedimint_tonic_lnd::tonic::Request::new(invoice_request))
+            .lookup_invoice(tonic::Request::new(invoice_request))
             .await
-            .unwrap()
+            .map_err(|e| payment::Error::Anyhow(anyhow!(e)))?
             .into_inner();
 
         match invoice.state {
@@ -496,24 +488,20 @@ impl MintPayment for Lnd {
         &self,
         payment_hash: &str,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let track_request = fedimint_tonic_lnd::routerrpc::TrackPaymentRequest {
+        let mut lnd_client = self.lnd_client.clone();
+
+        let track_request = routerrpc::TrackPaymentRequest {
             payment_hash: hex::decode(payment_hash).map_err(|_| Error::InvalidHash)?,
             no_inflight_updates: true,
         };
 
-        let payment_response = self
-            .client
-            .lock()
-            .await
-            .router()
-            .track_payment_v2(track_request)
-            .await;
+        let payment_response = lnd_client.router().track_payment_v2(track_request).await;
 
         let mut payment_stream = match payment_response {
             Ok(stream) => stream.into_inner(),
             Err(err) => {
                 let err_code = err.code();
-                if err_code == Code::NotFound {
+                if err_code == tonic::Code::NotFound {
                     return Ok(MakePaymentResponse {
                         payment_lookup_id: payment_hash.to_string(),
                         payment_proof: None,
@@ -540,7 +528,7 @@ impl MintPayment for Lnd {
                             total_spent: Amount::ZERO,
                             unit: self.settings.unit.clone(),
                         },
-                        PaymentStatus::InFlight => {
+                        PaymentStatus::InFlight | PaymentStatus::Initiated => {
                             // Continue waiting for the next update
                             continue;
                         }

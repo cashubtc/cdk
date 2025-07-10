@@ -134,13 +134,12 @@ impl Wallet {
     /// Create new [`Wallet`] using the builder pattern
     /// # Synopsis
     /// ```rust
-    /// use std::sync::Arc;
-    /// use bitcoin::Network;
     /// use bitcoin::bip32::Xpriv;
+    /// use std::sync::Arc;
     ///
-    /// use cdk_sqlite::wallet::memory;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::{Wallet, WalletBuilder};
+    /// use cdk_sqlite::wallet::memory;
     /// use rand::random;
     ///
     /// async fn test() -> anyhow::Result<()> {
@@ -150,11 +149,11 @@ impl Wallet {
     ///
     ///     let localstore = memory::empty().await?;
     ///     let wallet = WalletBuilder::new()
-    ///        .mint_url(mint_url.parse().unwrap())
-    ///        .unit(unit)
-    ///        .localstore(Arc::new(localstore))
-    ///        .seed(&seed)
-    ///        .build();
+    ///         .mint_url(mint_url.parse().unwrap())
+    ///         .unit(unit)
+    ///         .localstore(Arc::new(localstore))
+    ///         .seed(&seed)
+    ///         .build();
     ///     Ok(())
     /// }
     /// ```
@@ -480,7 +479,7 @@ impl Wallet {
     /// Can be used to allow a wallet to accept payments offline while reducing
     /// the risk of claiming back to the limits let by the spending_conditions
     #[instrument(skip(self, token))]
-    pub fn verify_token_p2pk(
+    pub async fn verify_token_p2pk(
         &self,
         token: &Token,
         spending_conditions: SpendingConditions,
@@ -532,8 +531,10 @@ impl Wallet {
                 token.mint_url()?
             )));
         }
+        // We need the keysets information to properly convert from token proof to proof
+        let keysets_info = self.load_mint_keysets().await?;
+        let proofs = token.proofs(&keysets_info)?;
 
-        let proofs = token.proofs();
         for proof in proofs {
             let secret: nut10::Secret = (&proof.secret).try_into()?;
 
@@ -626,7 +627,9 @@ impl Wallet {
         //     )));
         // }
 
-        let proofs = token.proofs();
+        // We need the keysets information to properly convert from token proof to proof
+        let keysets_info = self.load_mint_keysets().await?;
+        let proofs = token.proofs(&keysets_info)?;
         for proof in proofs {
             let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
                 Some(keys) => keys.amount_key(proof.amount),

@@ -4,13 +4,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use bitcoin::bip32::{DerivationPath, Xpriv};
-use bitcoin::secp256k1;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
-use cdk_common::database::{self, MintDatabase};
-use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind, MintKeySet};
+use cdk_common::database::{self, MintDatabase, MintTransaction};
+use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
 use cdk_common::secret;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
@@ -26,10 +24,9 @@ use crate::cdk_payment::{self, MintPayment};
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::nuts::*;
-use crate::util::unix_time;
-use crate::Amount;
 #[cfg(feature = "auth")]
 use crate::OidcClient;
+use crate::{cdk_database, Amount};
 
 #[cfg(feature = "auth")]
 pub(crate) mod auth;
@@ -39,6 +36,7 @@ mod issue;
 mod keysets;
 mod ln;
 mod melt;
+mod proof_writer;
 mod start_up_check;
 pub mod subscription;
 mod swap;
@@ -228,7 +226,9 @@ impl Mint {
     /// Set mint info
     #[instrument(skip_all)]
     pub async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error> {
-        Ok(self.localstore.set_mint_info(mint_info).await?)
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.set_mint_info(mint_info).await?;
+        Ok(tx.commit().await?)
     }
 
     /// Get quote ttl
@@ -240,7 +240,9 @@ impl Mint {
     /// Set quote ttl
     #[instrument(skip_all)]
     pub async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Error> {
-        Ok(self.localstore.set_quote_ttl(quote_ttl).await?)
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.set_quote_ttl(quote_ttl).await?;
+        Ok(tx.commit().await?)
     }
 
     /// Wait for any invoice to be paid
@@ -387,7 +389,7 @@ impl Mint {
                     // only supported secret kinds are used as there is no way for the mint to
                     // enforce only signing supported secrets as they are blinded at
                     // that point.
-                    match secret.kind {
+                    match secret.kind() {
                         Kind::P2PK => {
                             proof.verify_p2pk()?;
                         }
@@ -410,14 +412,11 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn handle_internal_melt_mint(
         &self,
+        tx: &mut Box<dyn MintTransaction<'_, cdk_database::Error> + Send + Sync + '_>,
         melt_quote: &MeltQuote,
         melt_request: &MeltRequest<Uuid>,
     ) -> Result<Option<Amount>, Error> {
-        let mint_quote = match self
-            .localstore
-            .get_mint_quote_by_request(&melt_quote.request)
-            .await
-        {
+        let mint_quote = match tx.get_mint_quote_by_request(&melt_quote.request).await {
             Ok(Some(mint_quote)) => mint_quote,
             // Not an internal melt -> mint
             Ok(None) => return Ok(None),
@@ -426,6 +425,7 @@ impl Mint {
                 return Err(Error::Internal);
             }
         };
+        tracing::error!("internal stuff");
 
         // Mint quote has already been settled, proofs should not be burned or held.
         if mint_quote.state == MintQuoteState::Issued || mint_quote.state == MintQuoteState::Paid {
@@ -452,7 +452,7 @@ impl Mint {
 
         let amount = melt_quote.amount;
 
-        self.update_mint_quote(mint_quote).await?;
+        tx.add_or_replace_mint_quote(mint_quote).await?;
 
         Ok(Some(amount))
     }
@@ -537,46 +537,11 @@ impl Mint {
     }
 }
 
-/// Generate new [`MintKeySetInfo`] from path
-#[instrument(skip_all)]
-fn create_new_keyset<C: secp256k1::Signing>(
-    secp: &secp256k1::Secp256k1<C>,
-    xpriv: Xpriv,
-    derivation_path: DerivationPath,
-    derivation_path_index: Option<u32>,
-    unit: CurrencyUnit,
-    max_order: u8,
-    input_fee_ppk: u64,
-) -> (MintKeySet, MintKeySetInfo) {
-    let keyset = MintKeySet::generate(
-        secp,
-        xpriv
-            .derive_priv(secp, &derivation_path)
-            .expect("RNG busted"),
-        unit,
-        max_order,
-    );
-    let keyset_info = MintKeySetInfo {
-        id: keyset.id,
-        unit: keyset.unit.clone(),
-        active: true,
-        valid_from: unix_time(),
-        valid_to: None,
-        derivation_path,
-        derivation_path_index,
-        max_order,
-        input_fee_ppk,
-    };
-    (keyset, keyset_info)
-}
-
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
 
-    use cdk_common::common::PaymentProcessorKey;
     use cdk_sqlite::mint::memory::new_with_state;
-    use uuid::Uuid;
 
     use super::*;
 
@@ -591,7 +556,6 @@ mod tests {
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, u8)>,
-        melt_requests: Vec<(MeltRequest<Uuid>, PaymentProcessorKey)>,
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Mint {
@@ -603,7 +567,6 @@ mod tests {
                 config.melt_quotes,
                 config.pending_proofs,
                 config.spent_proofs,
-                config.melt_requests,
                 config.mint_info,
             )
             .await

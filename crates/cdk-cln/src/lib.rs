@@ -32,7 +32,6 @@ use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny};
 use error::Error;
 use futures::{Stream, StreamExt};
 use serde_json::Value;
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -42,7 +41,6 @@ pub mod error;
 #[derive(Clone)]
 pub struct Cln {
     rpc_socket: PathBuf,
-    cln_client: Arc<Mutex<cln_rpc::ClnRpc>>,
     fee_reserve: FeeReserve,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
@@ -51,11 +49,8 @@ pub struct Cln {
 impl Cln {
     /// Create new [`Cln`]
     pub async fn new(rpc_socket: PathBuf, fee_reserve: FeeReserve) -> Result<Self, Error> {
-        let cln_client = cln_rpc::ClnRpc::new(&rpc_socket).await?;
-
         Ok(Self {
             rpc_socket,
-            cln_client: Arc::new(Mutex::new(cln_client)),
             fee_reserve,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
@@ -206,6 +201,7 @@ impl MintPayment for Cln {
         Ok(PaymentQuoteResponse {
             request_lookup_id: bolt11.payment_hash().to_string(),
             amount,
+            unit: unit.clone(),
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
         })
@@ -243,7 +239,7 @@ impl MintPayment for Cln {
             })
             .flatten();
 
-        let mut cln_client = self.cln_client.lock().await;
+        let mut cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
         let cln_response = cln_client
             .call_typed(&PayRequest {
                 bolt11: melt_quote.request.to_string(),
@@ -313,7 +309,7 @@ impl MintPayment for Cln {
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         let time_now = unix_time();
 
-        let mut cln_client = self.cln_client.lock().await;
+        let mut cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
 
         let label = Uuid::new_v4().to_string();
 
@@ -350,7 +346,7 @@ impl MintPayment for Cln {
         &self,
         payment_hash: &str,
     ) -> Result<MintQuoteState, Self::Err> {
-        let mut cln_client = self.cln_client.lock().await;
+        let mut cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
 
         let listinvoices_response = cln_client
             .call_typed(&ListinvoicesRequest {
@@ -383,7 +379,7 @@ impl MintPayment for Cln {
         &self,
         payment_hash: &str,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let mut cln_client = self.cln_client.lock().await;
+        let mut cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
 
         let listpays_response = cln_client
             .call_typed(&ListpaysRequest {
@@ -425,7 +421,7 @@ impl MintPayment for Cln {
 impl Cln {
     /// Get last pay index for cln
     async fn get_last_pay_index(&self) -> Result<Option<u64>, Error> {
-        let mut cln_client = self.cln_client.lock().await;
+        let mut cln_client = cln_rpc::ClnRpc::new(&self.rpc_socket).await?;
         let listinvoices_response = cln_client
             .call_typed(&ListinvoicesRequest {
                 index: None,
