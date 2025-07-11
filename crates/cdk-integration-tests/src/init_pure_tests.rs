@@ -9,7 +9,7 @@ use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::{self, WalletDatabase};
+use cdk::cdk_database::{self, MintDatabase, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
@@ -173,24 +173,21 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
     // Read environment variable to determine database type
     let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
 
-    let mut mint_builder = match db_type.to_lowercase().as_str() {
-        "memory" => MintBuilder::new()
-            .with_localstore(Arc::new(cdk_sqlite::mint::memory::empty().await?))
-            .with_keystore(Arc::new(cdk_sqlite::mint::memory::empty().await?)),
+    let localstore = match db_type.to_lowercase().as_str() {
+        "memory" => Arc::new(cdk_sqlite::mint::memory::empty().await?),
         _ => {
             // Create a temporary directory for SQLite database
             let temp_dir = create_temp_dir("cdk-test-sqlite-mint")?;
             let path = temp_dir.join("mint.db").to_str().unwrap().to_string();
-            let database = Arc::new(
+            Arc::new(
                 cdk_sqlite::MintSqliteDatabase::new(&path)
                     .await
                     .expect("Could not create sqlite db"),
-            );
-            MintBuilder::new()
-                .with_localstore(database.clone())
-                .with_keystore(database)
+            )
         }
     };
+
+    let mut mint_builder = MintBuilder::new(localstore.clone());
 
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
@@ -204,8 +201,8 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         0,
     );
 
-    mint_builder = mint_builder
-        .add_ln_backend(
+    mint_builder
+        .add_payment_processor(
             CurrencyUnit::Sat,
             PaymentMethod::Bolt11,
             MintMeltLimits::new(1, 10_000),
@@ -218,23 +215,18 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
     mint_builder = mint_builder
         .with_name("pure test mint".to_string())
         .with_description("pure test mint".to_string())
-        .with_urls(vec!["https://aaa".to_string()])
-        .with_seed(mnemonic.to_seed_normalized("").to_vec());
+        .with_urls(vec!["https://aaa".to_string()]);
 
-    let localstore = mint_builder
-        .localstore
-        .as_ref()
-        .map(|x| x.clone())
-        .expect("localstore");
-
-    let mut tx = localstore.begin_transaction().await?;
-    tx.set_mint_info(mint_builder.mint_info.clone()).await?;
+    let tx_localstore = localstore.clone();
+    let mut tx = tx_localstore.begin_transaction().await?;
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
     tx.set_quote_ttl(quote_ttl).await?;
     tx.commit().await?;
 
-    let mint = mint_builder.build().await?;
+    let mint = mint_builder
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await?;
 
     let mint_clone = mint.clone();
     let shutdown = Arc::new(Notify::new());

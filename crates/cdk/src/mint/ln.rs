@@ -13,7 +13,7 @@ impl Mint {
         tx: Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
         quote: &mut MintQuote,
     ) -> Result<Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>, Error> {
-        let ln = match self.ln.get(&PaymentProcessorKey::new(
+        let ln = match self.payment_processors.get(&PaymentProcessorKey::new(
             quote.unit.clone(),
             cdk_common::PaymentMethod::Bolt11,
         )) {

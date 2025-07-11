@@ -642,7 +642,7 @@ impl CdkMint for MintRPCServer {
 
         let mint_quote = self
             .mint
-            .localstore
+            .localstore()
             .get_mint_quote(&quote_id)
             .await
             .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
@@ -660,9 +660,8 @@ impl CdkMint for MintRPCServer {
 
                 mint_quote.state = state;
 
-                let mut tx = self
-                    .mint
-                    .localstore
+                let mint_store = self.mint.localstore();
+                let mut tx = mint_store
                     .begin_transaction()
                     .await
                     .map_err(|_| Status::internal("Could not update quote".to_string()))?;
@@ -677,7 +676,7 @@ impl CdkMint for MintRPCServer {
 
         let mint_quote = self
             .mint
-            .localstore
+            .localstore()
             .get_mint_quote(&quote_id)
             .await
             .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?

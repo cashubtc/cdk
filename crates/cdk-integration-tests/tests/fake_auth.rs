@@ -753,7 +753,7 @@ async fn get_access_token(mint_info: &MintInfo) -> (String, String) {
         .expect("Nutxx defined")
         .openid_discovery;
 
-    let oidc_client = OidcClient::new(openid_discovery);
+    let oidc_client = OidcClient::new(openid_discovery, None);
 
     // Get the token endpoint from the OIDC configuration
     let token_url = oidc_client
@@ -811,7 +811,7 @@ async fn get_custom_access_token(
         .expect("Nutxx defined")
         .openid_discovery;
 
-    let oidc_client = OidcClient::new(openid_discovery);
+    let oidc_client = OidcClient::new(openid_discovery, None);
 
     // Get the token endpoint from the OIDC configuration
     let token_url = oidc_client
