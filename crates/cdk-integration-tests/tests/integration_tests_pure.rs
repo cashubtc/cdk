@@ -443,7 +443,7 @@ pub async fn test_p2pk_swap() {
         .collect();
 
     let mut listener = mint_bob
-        .pubsub_manager
+        .pubsub_manager()
         .try_subscribe::<IndexableParams>(
             Params {
                 kind: cdk::nuts::nut17::Kind::ProofState,
@@ -773,7 +773,7 @@ async fn test_concurrent_double_spend_swap() {
 
     // Verify that all proofs are marked as spent in the mint
     let states = mint_bob
-        .localstore
+        .localstore()
         .get_proofs_states(&proofs.iter().map(|p| p.y().unwrap()).collect::<Vec<_>>())
         .await
         .expect("Failed to get proof state");
@@ -870,7 +870,7 @@ async fn test_concurrent_double_spend_melt() {
 
     // Verify that all proofs are marked as spent in the mint
     let states = mint_bob
-        .localstore
+        .localstore()
         .get_proofs_states(&proofs.iter().map(|p| p.y().unwrap()).collect::<Vec<_>>())
         .await
         .expect("Failed to get proof state");

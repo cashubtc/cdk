@@ -82,7 +82,7 @@ async fn get_device_code_token(mint_info: &MintInfo, client_id: &str) -> (String
         .expect("Nut21 defined")
         .openid_discovery;
 
-    let oidc_client = OidcClient::new(openid_discovery);
+    let oidc_client = OidcClient::new(openid_discovery, None);
 
     // Get the OIDC configuration
     let oidc_config = oidc_client

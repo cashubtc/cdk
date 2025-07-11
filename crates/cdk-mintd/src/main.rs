@@ -19,7 +19,7 @@ use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase, MintKeysDatabase};
 use cdk::cdk_payment;
 use cdk::cdk_payment::MintPayment;
-use cdk::mint::{MintBuilder, MintMeltLimits};
+use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 #[cfg(any(
     feature = "cln",
     feature = "lnbits",
@@ -84,16 +84,13 @@ compile_error!(
 async fn main() -> Result<()> {
     let (work_dir, settings, localstore, keystore) = initial_setup().await?;
 
-    let mint_builder = MintBuilder::new()
-        .with_localstore(localstore)
-        .with_keystore(keystore);
+    let mint_builder = MintBuilder::new(localstore);
 
     let (mint_builder, ln_routers) = configure_mint_builder(&settings, mint_builder).await?;
     #[cfg(feature = "auth")]
     let mint_builder = setup_authentication(&settings, &work_dir, mint_builder).await?;
-    let mint_builder_info = mint_builder.mint_info.clone();
 
-    let mint = mint_builder.build().await?;
+    let mint = build_mint(&settings, keystore, mint_builder).await?;
 
     tracing::debug!("Mint built from builder.");
 
@@ -109,7 +106,7 @@ async fn main() -> Result<()> {
         &settings,
         ln_routers,
         &work_dir,
-        mint_builder_info,
+        mint.mint_info().await?,
     )
     .await?;
 
@@ -237,7 +234,7 @@ async fn configure_mint_builder(
     let mint_builder = configure_lightning_backend(settings, mint_builder, &mut ln_routers).await?;
 
     // Configure signatory or seed
-    let mint_builder = configure_signing_method(settings, mint_builder).await?;
+    // let mint_builder = configure_signing_method(settings, mint_builder).await?;
 
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
@@ -274,7 +271,7 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
     }
 
     for contact in contacts {
-        builder = builder.add_contact_info(contact);
+        builder = builder.with_contact_info(contact);
     }
 
     if let Some(pubkey) = settings.mint_info.pubkey {
@@ -431,8 +428,8 @@ async fn configure_backend_for_unit(
     mint_melt_limits: MintMeltLimits,
     backend: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
 ) -> Result<MintBuilder> {
-    mint_builder = mint_builder
-        .add_ln_backend(
+    mint_builder
+        .add_payment_processor(
             unit.clone(),
             PaymentMethod::Bolt11,
             mint_melt_limits,
@@ -441,45 +438,13 @@ async fn configure_backend_for_unit(
         .await?;
 
     if let Some(input_fee) = settings.info.input_fee_ppk {
-        mint_builder = mint_builder.set_unit_fee(&unit, input_fee)?;
+        mint_builder.set_unit_fee(&unit, input_fee)?;
     }
 
     let nut17_supported = SupportedMethods::default_bolt11(unit);
-    mint_builder = mint_builder.add_supported_websockets(nut17_supported);
+    mint_builder = mint_builder.with_supported_websockets(nut17_supported);
 
     Ok(mint_builder)
-}
-
-/// Configures the signing method (remote signatory or local seed)
-async fn configure_signing_method(
-    settings: &config::Settings,
-    mint_builder: MintBuilder,
-) -> Result<MintBuilder> {
-    if let Some(signatory_url) = settings.info.signatory_url.clone() {
-        tracing::info!(
-            "Connecting to remote signatory to {} with certs {:?}",
-            signatory_url,
-            settings.info.signatory_certs.clone()
-        );
-
-        Ok(mint_builder.with_signatory(Arc::new(
-            cdk_signatory::SignatoryRpcClient::new(
-                signatory_url,
-                settings.info.signatory_certs.clone(),
-            )
-            .await?,
-        )))
-    } else if let Some(mnemonic) = settings
-        .info
-        .mnemonic
-        .clone()
-        .map(|s| Mnemonic::from_str(&s))
-        .transpose()?
-    {
-        Ok(mint_builder.with_seed(mnemonic.to_seed_normalized("").to_vec()))
-    } else {
-        bail!("No seed nor remote signatory set");
-    }
 }
 
 /// Configures cache settings
@@ -491,7 +456,7 @@ fn configure_cache(settings: &config::Settings, mint_builder: MintBuilder) -> Mi
     ];
 
     let cache: HttpCache = settings.info.http_cache.clone().into();
-    mint_builder.add_cache(Some(cache.ttl.as_secs()), cached_endpoints)
+    mint_builder.with_cache(Some(cache.ttl.as_secs()), cached_endpoints)
 }
 
 #[cfg(feature = "auth")]
@@ -517,15 +482,8 @@ async fn setup_authentication(
             }
         };
 
-        mint_builder = mint_builder.with_auth_localstore(auth_localstore.clone());
-
         let mint_blind_auth_endpoint =
             ProtectedEndpoint::new(Method::Post, RoutePath::MintBlindAuth);
-
-        mint_builder = mint_builder.set_clear_auth_settings(
-            auth_settings.openid_discovery,
-            auth_settings.openid_client_id,
-        );
 
         let mut protected_endpoints = HashMap::new();
 
@@ -629,7 +587,14 @@ async fn setup_authentication(
             }
         }
 
-        mint_builder = mint_builder.set_blind_auth_settings(auth_settings.mint_max_bat);
+        mint_builder = mint_builder.with_auth(
+            auth_localstore.clone(),
+            auth_settings.openid_discovery,
+            auth_settings.openid_client_id,
+            vec![mint_blind_auth_endpoint],
+        );
+        mint_builder =
+            mint_builder.with_blind_auth(auth_settings.mint_max_bat, blind_auth_endpoints);
 
         let mut tx = auth_localstore.begin_transaction().await?;
 
@@ -638,6 +603,43 @@ async fn setup_authentication(
         tx.commit().await?;
     }
     Ok(mint_builder)
+}
+
+/// Build mints with the configured the signing method (remote signatory or local seed)
+async fn build_mint(
+    settings: &config::Settings,
+    keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
+    mint_builder: MintBuilder,
+) -> Result<Mint> {
+    if let Some(signatory_url) = settings.info.signatory_url.clone() {
+        tracing::info!(
+            "Connecting to remote signatory to {} with certs {:?}",
+            signatory_url,
+            settings.info.signatory_certs.clone()
+        );
+
+        Ok(mint_builder
+            .build_with_signatory(Arc::new(
+                cdk_signatory::SignatoryRpcClient::new(
+                    signatory_url,
+                    settings.info.signatory_certs.clone(),
+                )
+                .await?,
+            ))
+            .await?)
+    } else if let Some(mnemonic) = settings
+        .info
+        .mnemonic
+        .clone()
+        .map(|s| Mnemonic::from_str(&s))
+        .transpose()?
+    {
+        Ok(mint_builder
+            .build_with_seed(keystore, &mnemonic.to_seed_normalized(""))
+            .await?)
+    } else {
+        bail!("No seed nor remote signatory set");
+    }
 }
 
 async fn start_services(
@@ -722,7 +724,7 @@ async fn start_services(
             mint.set_mint_info(mint_builder_info).await?;
             mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
         } else {
-            if mint.localstore.get_quote_ttl().await.is_err() {
+            if mint.localstore().get_quote_ttl().await.is_err() {
                 mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
             }
             // Add version information
