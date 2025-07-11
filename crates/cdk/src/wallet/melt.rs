@@ -161,6 +161,11 @@ impl Wallet {
             Some(premint_secrets.blinded_messages()),
         );
 
+        // Update counter for keyset
+        self.localstore
+            .increment_keyset_counter(&active_keyset_id, premint_secrets.len() as u32)
+            .await?;
+
         let melt_response = self.client.post_melt(request).await;
 
         let melt_response = match melt_response {
@@ -220,11 +225,6 @@ impl Wallet {
                     "Change amount returned from melt: {}",
                     change_proofs.total_amount()?
                 );
-
-                // Update counter for keyset
-                self.localstore
-                    .increment_keyset_counter(&active_keyset_id, change_proofs.len() as u32)
-                    .await?;
 
                 change_proofs
                     .into_iter()
