@@ -112,7 +112,11 @@ impl MintAuthTransaction<database::Error> for SqliteTransaction<'_> {
         Ok(())
     }
 
-    async fn add_proof(&mut self, proof: AuthProof) -> Result<(), database::Error> {
+    async fn add_proof(
+        &mut self,
+        proof: AuthProof,
+        state: State,
+    ) -> Result<Option<State>, Self::Err> {
         if let Err(err) = query(
             r#"
                 INSERT INTO proof
@@ -125,13 +129,20 @@ impl MintAuthTransaction<database::Error> for SqliteTransaction<'_> {
         .bind(":keyset_id", proof.keyset_id.to_string())
         .bind(":secret", proof.secret.to_string())
         .bind(":c", proof.c.to_bytes().to_vec())
-        .bind(":state", "UNSPENT".to_string())
+        .bind(":state", state.to_string())
         .execute(&self.inner)
         .await
         {
             tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
         }
-        Ok(())
+
+        let current_state = query(r#"SELECT state FROM proof WHERE y = :y"#)
+            .bind(":y", proof.y()?.to_bytes().to_vec())
+            .pluck(&self.inner)
+            .await?
+            .map(|state| Ok::<_, Error>(column_as_string!(state, State::from_str)))
+            .transpose()?;
+        Ok(current_state)
     }
 
     async fn update_proof_state(
