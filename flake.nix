@@ -81,6 +81,7 @@
           bitcoind
           sqlx-cli
           cargo-outdated
+          mprocs
 
           # Needed for github ci
           libz
@@ -274,7 +275,7 @@
                 echo "Docker is available at $(which docker)"
                 echo "Docker version: $(docker --version)"
               '';
-              buildInputs = buildInputs ++ [ 
+              buildInputs = buildInputs ++ [
                 stable_toolchain
                 pkgs.docker-client
               ];
