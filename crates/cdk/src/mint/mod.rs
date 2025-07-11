@@ -4,6 +4,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use bitcoin::base64::engine::general_purpose;
+use bitcoin::base64::Engine;
+use cashu::nut24::GetFilterResponse;
+use cashu::util::unix_time;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
@@ -23,6 +27,7 @@ use uuid::Uuid;
 use crate::cdk_payment::{self, MintPayment};
 use crate::error::Error;
 use crate::fees::calculate_fee;
+use crate::gcs::GCSFilter;
 use crate::nuts::*;
 #[cfg(feature = "auth")]
 use crate::OidcClient;
@@ -303,6 +308,141 @@ impl Mint {
         Ok(())
     }
 
+    /// Recomputes the GCS filters for the Mint's keysets.
+    // TODO: Mechanism to only recompute GCS filter when necessary (when new entries in a keyset)
+    pub async fn gcs_filters_background_task(
+        &self,
+        shutdown: Arc<Notify>,
+        m: u32,
+        p: u32,
+        wakeup_delay: u64,
+    ) {
+        tokio::select! {
+            _ = shutdown.notified() => {
+                tracing::info!("Shutdown signal received, stopping GCS recompute task");
+
+            }
+            _ = async {
+                loop {
+                    let keysets = self.keysets.load();
+                    for keyset in (*keysets).iter() {
+
+                        // *** UPDATE SPENT FILTERS ***
+                        let spent_filter = self.localstore.get_spent_filter(&keyset.id).await;
+
+                        if let Err(e) = spent_filter {
+                            tracing::warn!("Failed to get spent filter for keyset {:?}: {:?}", &keyset.id, e);
+                            continue;
+                        }
+
+                        let proofs = self.localstore.get_proofs_by_keyset_id(&keyset.id).await;
+                        match proofs {
+                            Err(e) => {
+                                tracing::warn!("Failed to get ecash notes for keyset {:?}: {:?}", &keyset.id, e);
+                                continue;
+                            },
+                            Ok((proofs, states)) => {
+                                let spent_proofs: Vec<Vec<u8>> = proofs
+                                    .iter()
+                                    .zip(states.iter())
+                                    .filter_map(|(proof, state)| {
+                                        if let Some(state) = state {
+                                            if *state == State::Spent {
+                                                Some(proof.y().unwrap().serialize().to_vec()) // Include the proof if the state is Spent
+                                            } else {
+                                                None // Exclude otherwise
+                                            }
+                                        } else {
+                                            None // Exclude if state is None
+                                        }
+                                    })
+                                    .collect();
+
+                                match GCSFilter::create(&spent_proofs, p, m) {
+                                    Err(e) => {
+                                        tracing::warn!("Failed to compute spent filter for keyset {:?}: {:?}", &keyset.id, e);
+                                    },
+                                    Ok(compressed_set) => {
+                                        let gcs_filter = cdk_common::common::GCSFilter {
+                                            num_items: spent_proofs.len() as u32,
+                                            content: compressed_set,
+                                            m,
+                                            p,
+                                            time: unix_time() as i64,
+                                        };
+                                        if spent_filter.expect("a spent filter is expected at this point").is_some() {
+                                            let res = self.localstore.update_spent_filter(&keyset.id, gcs_filter).await;
+                                            if let Err(e) = res {
+                                                tracing::warn!("Failed to update spent filter for keyset {:?}: {:?}", &keyset.id, e);
+                                            }
+                                        } else {
+                                            let res = self.localstore.store_spent_filter(&keyset.id, gcs_filter).await;
+                                            if let Err(e) = res {
+                                                tracing::warn!("Failed to store spent filter for keyset {:?}: {:?}", &keyset.id, e);
+                                            }
+                                        }
+                                        tracing::debug!("Successfully recomputed GCS spent filter for keyset {:?}", &keyset.id);
+                                    }
+                                }
+                            }
+                        }
+
+                        // *** UPDATE ISSUED FILTERS ***
+                        let issued_filter = self.localstore.get_issued_filter(&keyset.id).await;
+
+                        if let Err(e) = issued_filter {
+                            tracing::warn!("Failed to get issued filter for keyset {:?}: {:?}", &keyset.id, e);
+                            continue;
+                        }
+
+                        let blind_signatures = self.localstore.get_blind_signatures_for_keyset(&keyset.id).await;
+                        match blind_signatures {
+                            Err(e) => {
+                                tracing::warn!("Failed to get blind signatures for keyset {:?}: {:?}", &keyset.id, e);
+                                continue;
+                            },
+                            Ok(blind_signatures) => {
+                                let blind_messages: Vec<Vec<u8>> = blind_signatures
+                                    .iter()
+                                    .map(|(blind_message, _)| blind_message.serialize().to_vec())
+                                    .collect();
+
+                                match GCSFilter::create(&blind_messages, p, m) {
+                                    Err(e) => {
+                                        tracing::warn!("Failed to compute spent filter for keyset {:?}: {:?}", &keyset.id, e);
+                                    },
+                                    Ok(compressed_set) => {
+                                        let gcs_filter = cdk_common::common::GCSFilter {
+                                            num_items: blind_messages.len() as u32,
+                                            content: compressed_set,
+                                            m,
+                                            p,
+                                            time: unix_time() as i64,
+                                        };
+                                        if issued_filter.expect("a issued filter is expected at this point").is_some() {
+                                            let res = self.localstore.update_issued_filter(&keyset.id, gcs_filter).await;
+                                            if let Err(e) = res {
+                                                tracing::warn!("Failed to update issued filter for keyset {:?}: {:?}", &keyset.id, e);
+                                            }
+                                        } else {
+                                            let res = self.localstore.store_issued_filter(&keyset.id, gcs_filter).await;
+                                            if let Err(e) = res {
+                                                tracing::warn!("Failed to store issued filter for keyset {:?}: {:?}", &keyset.id, e);
+                                            }
+                                        }
+                                        tracing::debug!("Successfully recomputed GCS issued filter for keyset {:?}", &keyset.id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    tokio::time::sleep(std::time::Duration::from_secs(wakeup_delay)).await;
+                }
+            } => {}
+        }
+    }
+
     /// Fee required for proof set
     #[instrument(skip_all)]
     pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
@@ -504,7 +644,7 @@ impl Mint {
                 .get_blind_signatures_for_keyset(&keyset.id)
                 .await?;
 
-            let total = Amount::try_sum(blinded.iter().map(|b| b.amount))?;
+            let total = Amount::try_sum(blinded.iter().map(|(_m, b)| b.amount))?;
 
             total_issued.insert(keyset.id, total);
         }
@@ -534,6 +674,38 @@ impl Mint {
         }
 
         Ok(total_redeemed)
+    }
+
+    /// Spent ecash GCS filter
+    pub async fn get_spent_filter(&self, keyset_id: &Id) -> Result<GetFilterResponse, Error> {
+        let spent_filter = self.localstore.get_spent_filter(keyset_id).await?;
+
+        match spent_filter {
+            Some(spent_filter) => Ok(GetFilterResponse {
+                n: spent_filter.num_items,
+                m: spent_filter.m,
+                p: spent_filter.p,
+                content: general_purpose::STANDARD.encode(spent_filter.content),
+                timestamp: spent_filter.time,
+            }),
+            None => Err(Error::NoSuchFilter(keyset_id.to_string())),
+        }
+    }
+
+    /// Issued blind signatures GCS filter
+    pub async fn get_issued_filter(&self, keyset_id: &Id) -> Result<GetFilterResponse, Error> {
+        let issued_filter = self.localstore.get_issued_filter(keyset_id).await?;
+
+        match issued_filter {
+            Some(issued_filter) => Ok(GetFilterResponse {
+                n: issued_filter.num_items,
+                m: issued_filter.m,
+                p: issued_filter.p,
+                content: general_purpose::STANDARD.encode(issued_filter.content),
+                timestamp: issued_filter.time,
+            }),
+            None => Err(Error::NoSuchFilter(keyset_id.to_string())),
+        }
     }
 }
 
