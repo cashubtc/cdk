@@ -130,7 +130,11 @@ impl MintSqliteDatabase {
             .bind(":id", id.to_owned())
             .pluck(&self.pool)
             .await?
-            .ok_or::<Error>(Error::UnknownQuoteTTL)?);
+            .ok_or_else(|| match id {
+                "mint_info" => Error::UnknownMintInfo,
+                "quote_ttl" => Error::UnknownQuoteTTL,
+                unknown => Error::UnknownConfigKey(unknown.to_string()),
+            })?);
 
         Ok(serde_json::from_str(&value)?)
     }
@@ -1650,5 +1654,97 @@ mod tests {
         assert!(conn.is_ok(), "Failed with {:?}", conn.unwrap_err());
 
         let _ = remove_file(&file);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_from_config_error_handling() {
+        use cdk_common::common::QuoteTTL;
+        use cdk_common::MintInfo;
+
+        let db = memory::empty().await.unwrap();
+
+        // Test 1: Unknown mint_info should return UnknownMintInfo error
+        let result: Result<MintInfo, Error> = db.fetch_from_config("mint_info").await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::UnknownMintInfo));
+
+        // Test 2: Unknown quote_ttl should return UnknownQuoteTTL error
+        let result: Result<QuoteTTL, Error> = db.fetch_from_config("quote_ttl").await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::UnknownQuoteTTL));
+
+        // Test 3: Unknown config key should return UnknownConfigKey error
+        let result: Result<String, Error> = db.fetch_from_config("unknown_config_key").await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::UnknownConfigKey(key) => {
+                assert_eq!(key, "unknown_config_key");
+            }
+            other => panic!("Expected UnknownConfigKey error, got: {:?}", other),
+        }
+
+        // Test 4: Another unknown config key with different name
+        let result: Result<String, Error> = db.fetch_from_config("some_other_key").await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::UnknownConfigKey(key) => {
+                assert_eq!(key, "some_other_key");
+            }
+            other => panic!("Expected UnknownConfigKey error, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_config_round_trip() {
+        use cdk_common::common::QuoteTTL;
+        use cdk_common::{MintInfo, Nuts};
+
+        let db = memory::empty().await.unwrap();
+
+        // Test mint_info round trip
+        let mint_info = MintInfo {
+            name: Some("Test Mint".to_string()),
+            description: Some("A test mint".to_string()),
+            pubkey: None,
+            version: None,
+            description_long: None,
+            contact: None,
+            nuts: Nuts::default(),
+            icon_url: None,
+            urls: None,
+            motd: None,
+            time: None,
+            tos_url: None,
+        };
+
+        // Store mint_info
+        let mut tx = cdk_common::database::MintDatabase::begin_transaction(&db)
+            .await
+            .unwrap();
+        tx.set_mint_info(mint_info.clone()).await.unwrap();
+        tx.commit().await.unwrap();
+
+        // Retrieve mint_info
+        let retrieved_mint_info: MintInfo = db.fetch_from_config("mint_info").await.unwrap();
+        assert_eq!(mint_info.name, retrieved_mint_info.name);
+        assert_eq!(mint_info.description, retrieved_mint_info.description);
+
+        // Test quote_ttl round trip
+        let quote_ttl = QuoteTTL {
+            mint_ttl: 3600,
+            melt_ttl: 1800,
+        };
+
+        // Store quote_ttl
+        let mut tx = cdk_common::database::MintDatabase::begin_transaction(&db)
+            .await
+            .unwrap();
+        tx.set_quote_ttl(quote_ttl.clone()).await.unwrap();
+        tx.commit().await.unwrap();
+
+        // Retrieve quote_ttl
+        let retrieved_quote_ttl: QuoteTTL = db.fetch_from_config("quote_ttl").await.unwrap();
+        assert_eq!(quote_ttl.mint_ttl, retrieved_quote_ttl.mint_ttl);
+        assert_eq!(quote_ttl.melt_ttl, retrieved_quote_ttl.melt_ttl);
     }
 }
