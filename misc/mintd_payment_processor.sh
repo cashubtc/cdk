@@ -174,10 +174,10 @@ while true; do
 done
 
 
-# cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 
-# Capture the exit status of cargo test
-# test_status=$?
+Capture the exit status of cargo test
+test_status=$?
 
 if [ "$LN_BACKEND" = "CLN" ]; then
     echo "Running bolt12 tests for CLN backend"
