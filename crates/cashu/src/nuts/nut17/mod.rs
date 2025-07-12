@@ -9,6 +9,7 @@ use super::PublicKey;
 use crate::nuts::{
     CurrencyUnit, MeltQuoteBolt11Response, MintQuoteBolt11Response, PaymentMethod, ProofState,
 };
+use crate::MintQuoteBolt12Response;
 
 pub mod ws;
 
@@ -69,6 +70,21 @@ impl SupportedMethods {
             commands,
         }
     }
+
+    /// Create [`SupportedMethods`] for Bolt12 with all supported commands
+    pub fn default_bolt12(unit: CurrencyUnit) -> Self {
+        let commands = vec![
+            WsCommand::Bolt12MintQuote,
+            WsCommand::Bolt12MeltQuote,
+            WsCommand::ProofState,
+        ];
+
+        Self {
+            method: PaymentMethod::Bolt12,
+            unit,
+            commands,
+        }
+    }
 }
 
 /// WebSocket commands supported by the Cashu mint
@@ -82,9 +98,21 @@ pub enum WsCommand {
     /// Command to request a Lightning payment for melting tokens
     #[serde(rename = "bolt11_melt_quote")]
     Bolt11MeltQuote,
+    /// Websocket support for Bolt12 Mint Quote
+    #[serde(rename = "bolt12_mint_quote")]
+    Bolt12MintQuote,
+    /// Websocket support for Bolt12 Melt Quote
+    #[serde(rename = "bolt12_melt_quote")]
+    Bolt12MeltQuote,
     /// Command to check the state of a proof
     #[serde(rename = "proof_state")]
     ProofState,
+}
+
+impl<T> From<MintQuoteBolt12Response<T>> for NotificationPayload<T> {
+    fn from(mint_quote: MintQuoteBolt12Response<T>) -> NotificationPayload<T> {
+        NotificationPayload::MintQuoteBolt12Response(mint_quote)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +126,8 @@ pub enum NotificationPayload<T> {
     MeltQuoteBolt11Response(MeltQuoteBolt11Response<T>),
     /// Mint Quote Bolt11 Response
     MintQuoteBolt11Response(MintQuoteBolt11Response<T>),
+    /// Mint Quote Bolt12 Response
+    MintQuoteBolt12Response(MintQuoteBolt12Response<T>),
 }
 
 impl<T> From<ProofState> for NotificationPayload<T> {
@@ -128,6 +158,10 @@ pub enum Notification {
     MeltQuoteBolt11(Uuid),
     /// MintQuote id is an Uuid
     MintQuoteBolt11(Uuid),
+    /// MintQuote id is an Uuid
+    MintQuoteBolt12(Uuid),
+    /// MintQuote id is an Uuid
+    MeltQuoteBolt12(Uuid),
 }
 
 /// Kind

@@ -12,6 +12,8 @@ pub mod common;
 pub mod database;
 pub mod error;
 #[cfg(feature = "mint")]
+pub mod melt;
+#[cfg(feature = "mint")]
 pub mod mint;
 #[cfg(feature = "mint")]
 pub mod payment;

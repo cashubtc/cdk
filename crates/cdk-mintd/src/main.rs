@@ -431,6 +431,21 @@ async fn configure_backend_for_unit(
     mint_melt_limits: MintMeltLimits,
     backend: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
 ) -> Result<MintBuilder> {
+    let payment_settings = backend.get_settings().await?;
+
+    if let Some(bolt12) = payment_settings.get("bolt12") {
+        if bolt12.as_bool().unwrap_or_default() {
+            mint_builder = mint_builder
+                .add_ln_backend(
+                    unit.clone(),
+                    PaymentMethod::Bolt12,
+                    mint_melt_limits,
+                    Arc::clone(&backend),
+                )
+                .await?;
+        }
+    }
+
     mint_builder = mint_builder
         .add_ln_backend(
             unit.clone(),
@@ -651,39 +666,6 @@ async fn start_services(
     let listen_port = settings.info.listen_port;
     let cache: HttpCache = settings.info.http_cache.clone().into();
 
-    let v1_service =
-        cdk_axum::create_mint_router_with_custom_cache(Arc::clone(&mint), cache).await?;
-
-    let mut mint_service = Router::new()
-        .merge(v1_service)
-        .layer(
-            ServiceBuilder::new()
-                .layer(RequestDecompressionLayer::new())
-                .layer(CompressionLayer::new()),
-        )
-        .layer(TraceLayer::new_for_http());
-
-    #[cfg(feature = "swagger")]
-    {
-        if settings.info.enable_swagger_ui.unwrap_or(false) {
-            mint_service = mint_service.merge(
-                utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
-                    .url("/api-docs/openapi.json", cdk_axum::ApiDocV1::openapi()),
-            );
-        }
-    }
-
-    for router in ln_routers {
-        mint_service = mint_service.merge(router);
-    }
-
-    let shutdown = Arc::new(Notify::new());
-    let mint_clone = Arc::clone(&mint);
-    tokio::spawn({
-        let shutdown = Arc::clone(&shutdown);
-        async move { mint_clone.wait_for_paid_invoices(shutdown).await }
-    });
-
     #[cfg(feature = "management-rpc")]
     let mut rpc_enabled = false;
     #[cfg(not(feature = "management-rpc"))]
@@ -741,6 +723,47 @@ async fn start_services(
         mint.set_mint_info(mint_builder_info).await?;
         mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
     }
+
+    let mint_info = mint.mint_info().await?;
+    let nut04_methods = mint_info.nuts.nut04.supported_methods();
+    let nut05_methods = mint_info.nuts.nut05.supported_methods();
+
+    let bolt12_supported = nut04_methods.contains(&&PaymentMethod::Bolt12)
+        || nut05_methods.contains(&&PaymentMethod::Bolt12);
+
+    let v1_service =
+        cdk_axum::create_mint_router_with_custom_cache(Arc::clone(&mint), cache, bolt12_supported)
+            .await?;
+
+    let mut mint_service = Router::new()
+        .merge(v1_service)
+        .layer(
+            ServiceBuilder::new()
+                .layer(RequestDecompressionLayer::new())
+                .layer(CompressionLayer::new()),
+        )
+        .layer(TraceLayer::new_for_http());
+
+    #[cfg(feature = "swagger")]
+    {
+        if settings.info.enable_swagger_ui.unwrap_or(false) {
+            mint_service = mint_service.merge(
+                utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
+                    .url("/api-docs/openapi.json", cdk_axum::ApiDocV1::openapi()),
+            );
+        }
+    }
+
+    for router in ln_routers {
+        mint_service = mint_service.merge(router);
+    }
+
+    let shutdown = Arc::new(Notify::new());
+    let mint_clone = Arc::clone(&mint);
+    tokio::spawn({
+        let shutdown = Arc::clone(&shutdown);
+        async move { mint_clone.wait_for_paid_invoices(shutdown).await }
+    });
 
     let socket_addr = SocketAddr::from_str(&format!("{listen_addr}:{listen_port}"))?;
 

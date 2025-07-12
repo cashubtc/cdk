@@ -2,6 +2,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use cdk_common::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
 #[cfg(feature = "auth")]
 use cdk_common::{Method, ProtectedEndpoint, RoutePath};
 use reqwest::{Client, IntoUrl};
@@ -91,7 +92,9 @@ impl HttpClientCore {
         let response = request
             .send()
             .await
-            .map_err(|e| Error::HttpError(e.to_string()))?
+            .map_err(|e| Error::HttpError(e.to_string()))?;
+
+        let response = response
             .text()
             .await
             .map_err(|e| Error::HttpError(e.to_string()))?;
@@ -389,6 +392,103 @@ impl MintConnector for HttpClient {
         #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::Restore)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.core.http_post(url, auth_token, &request).await
+    }
+
+    /// Mint Quote Bolt12 [NUT-23]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn post_mint_bolt12_quote(
+        &self,
+        request: MintQuoteBolt12Request,
+    ) -> Result<MintQuoteBolt12Response<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", "bolt12"])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MintQuoteBolt12)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+
+        self.core.http_post(url, auth_token, &request).await
+    }
+
+    /// Mint Quote Bolt12 status
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_quote_bolt12_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt12Response<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", "bolt12", quote_id])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Get, RoutePath::MintQuoteBolt12)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.core.http_get(url, auth_token).await
+    }
+
+    /// Melt Quote Bolt12 [NUT-23]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_melt_bolt12_quote(
+        &self,
+        request: MeltQuoteBolt12Request,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "melt", "quote", "bolt12"])?;
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MeltQuoteBolt12)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.core.http_post(url, auth_token, &request).await
+    }
+
+    /// Melt Quote Bolt12 Status [NUT-23]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_melt_bolt12_quote_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "melt", "quote", "bolt12", quote_id])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Get, RoutePath::MeltQuoteBolt12)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.core.http_get(url, auth_token).await
+    }
+
+    /// Melt Bolt12 [NUT-23]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_melt_bolt12(
+        &self,
+        request: MeltRequest<String>,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        let url = self.mint_url.join_paths(&["v1", "melt", "bolt12"])?;
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MeltBolt12)
             .await?;
 
         #[cfg(not(feature = "auth"))]

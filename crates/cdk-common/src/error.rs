@@ -91,6 +91,24 @@ pub enum Error {
     /// Multi-Part Payment not supported for unit and method
     #[error("Amountless invoices are not supported for unit `{0}` and method `{1}`")]
     AmountlessInvoiceNotSupported(CurrencyUnit, PaymentMethod),
+    /// Duplicate Payment id
+    #[error("Payment id seen for mint")]
+    DuplicatePaymentId,
+    /// Pubkey required
+    #[error("Pubkey required")]
+    PubkeyRequired,
+    /// Invalid payment method
+    #[error("Invalid payment method")]
+    InvalidPaymentMethod,
+    /// Amount undefined
+    #[error("Amount undefined")]
+    AmountUndefined,
+    /// Unsupported payment method
+    #[error("Payment method unsupported")]
+    UnsupportedPaymentMethod,
+    /// Could not parse bolt12
+    #[error("Could not parse bolt12")]
+    Bolt12parse,
 
     /// Internal Error - Send error
     #[error("Internal send error: {0}")]
