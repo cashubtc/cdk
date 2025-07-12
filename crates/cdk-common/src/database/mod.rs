@@ -19,6 +19,80 @@ pub use mint::{MintAuthDatabase, MintAuthTransaction};
 #[cfg(feature = "wallet")]
 pub use wallet::Database as WalletDatabase;
 
+/// Data conversion error
+#[derive(thiserror::Error, Debug)]
+pub enum ConversionError {
+    /// Missing columns
+    #[error("Not enough elements: expected {0}, got {1}")]
+    MissingColumn(usize, usize),
+
+    /// Missing parameter
+    #[error("Missing parameter {0}")]
+    MissingParameter(String),
+
+    /// Invalid db type
+    #[error("Invalid type from db, expected {0} got {1}")]
+    InvalidType(String, String),
+
+    /// Invalid data conversion in column
+    #[error("Error converting {1}, expecting type {0}")]
+    InvalidConversion(String, String),
+
+    /// Mint Url Error
+    #[error(transparent)]
+    MintUrl(#[from] crate::mint_url::Error),
+
+    /// NUT00 Error
+    #[error(transparent)]
+    CDKNUT00(#[from] crate::nuts::nut00::Error),
+
+    /// NUT01 Error
+    #[error(transparent)]
+    CDKNUT01(#[from] crate::nuts::nut01::Error),
+
+    /// NUT02 Error
+    #[error(transparent)]
+    CDKNUT02(#[from] crate::nuts::nut02::Error),
+
+    /// NUT04 Error
+    #[error(transparent)]
+    CDKNUT04(#[from] crate::nuts::nut04::Error),
+
+    /// NUT05 Error
+    #[error(transparent)]
+    CDKNUT05(#[from] crate::nuts::nut05::Error),
+
+    /// NUT07 Error
+    #[error(transparent)]
+    CDKNUT07(#[from] crate::nuts::nut07::Error),
+
+    /// NUT23 Error
+    #[error(transparent)]
+    CDKNUT23(#[from] crate::nuts::nut23::Error),
+
+    /// Secret Error
+    #[error(transparent)]
+    CDKSECRET(#[from] crate::secret::Error),
+
+    /// Serde Error
+    #[error(transparent)]
+    Serde(#[from] serde_json::Error),
+
+    /// BIP32 Error
+    #[error(transparent)]
+    BIP32(#[from] bitcoin::bip32::Error),
+
+    /// Generic error
+    #[error(transparent)]
+    Generic(#[from] Box<crate::Error>),
+}
+
+impl From<crate::Error> for ConversionError {
+    fn from(err: crate::Error) -> Self {
+        ConversionError::Generic(Box::new(err))
+    }
+}
+
 /// CDK_database error
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -26,9 +100,33 @@ pub enum Error {
     #[error(transparent)]
     Database(Box<dyn std::error::Error + Send + Sync>),
 
+    /// Invalid connection settings
+    #[error("Invalid credentials {0}")]
+    InvalidConnectionSettings(String),
+
+    /// Unexpected database response
+    #[error("Invalid database response")]
+    InvalidDbResponse,
+
+    /// Internal error
+    #[error("Internal {0}")]
+    Internal(String),
+
+    /// Data conversion error
+    #[error(transparent)]
+    Conversion(#[from] ConversionError),
+
     /// Duplicate entry
     #[error("Duplicate entry")]
     Duplicate,
+
+    /// Invalid UUID
+    #[error("Invalid UUID: {0}")]
+    InvalidUuid(String),
+
+    /// QuoteNotFound
+    #[error("Quote not found")]
+    QuoteNotFound,
 
     /// DHKE error
     #[error(transparent)]
@@ -36,6 +134,9 @@ pub enum Error {
     /// NUT00 Error
     #[error(transparent)]
     NUT00(#[from] crate::nuts::nut00::Error),
+    /// NUT02 Error
+    #[error(transparent)]
+    NUT01(#[from] crate::nuts::nut01::Error),
     /// NUT02 Error
     #[error(transparent)]
     NUT02(#[from] crate::nuts::nut02::Error),
@@ -49,6 +150,9 @@ pub enum Error {
     /// Unknown Quote
     #[error("Unknown Quote")]
     UnknownQuote,
+    /// Missing Placeholder value
+    #[error("Missing placeholder value {0}")]
+    MissingPlaceholder(String),
     /// Attempt to remove spent proof
     #[error("Attempt to remove spent proof")]
     AttemptRemoveSpentProof,
@@ -65,6 +169,9 @@ pub enum Error {
     /// Invalid state transition
     #[error("Invalid state transition")]
     InvalidStateTransition(crate::state::Error),
+    /// Unknown quote ttl
+    #[error("Unknown quote ttl")]
+    UnknownQuoteTTL,
 }
 
 #[cfg(feature = "mint")]

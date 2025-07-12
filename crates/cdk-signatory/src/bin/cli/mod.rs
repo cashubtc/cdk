@@ -104,7 +104,7 @@ pub async fn cli_main() -> Result<()> {
                 {
                     let sql_path = work_dir.join("cdk-cli.sqlite");
                     #[cfg(not(feature = "sqlcipher"))]
-                    let db = MintSqliteDatabase::new(&sql_path).await?;
+                    let db = MintSqliteDatabase::new(sql_path).await?;
                     #[cfg(feature = "sqlcipher")]
                     let db = {
                         match args.password {

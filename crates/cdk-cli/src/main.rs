@@ -122,11 +122,11 @@ async fn main() -> Result<()> {
             "sqlite" => {
                 let sql_path = work_dir.join("cdk-cli.sqlite");
                 #[cfg(not(feature = "sqlcipher"))]
-                let sql = WalletSqliteDatabase::new(&sql_path).await?;
+                let sql = WalletSqliteDatabase::new(sql_path).await?;
                 #[cfg(feature = "sqlcipher")]
                 let sql = {
                     match args.password {
-                        Some(pass) => WalletSqliteDatabase::new(&sql_path, pass).await?,
+                        Some(pass) => WalletSqliteDatabase::new((sql_path, pass)).await?,
                         None => bail!("Missing database password"),
                     }
                 };
