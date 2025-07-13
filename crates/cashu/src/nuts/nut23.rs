@@ -54,10 +54,6 @@ pub enum QuoteState {
     Unpaid,
     /// Quote has been paid and wallet can mint
     Paid,
-    /// Minting is in progress
-    /// **Note:** This state is to be used internally but is not part of the
-    /// nut.
-    Pending,
     /// ecash issued for quote
     Issued,
 }
@@ -67,7 +63,6 @@ impl fmt::Display for QuoteState {
         match self {
             Self::Unpaid => write!(f, "UNPAID"),
             Self::Paid => write!(f, "PAID"),
-            Self::Pending => write!(f, "PENDING"),
             Self::Issued => write!(f, "ISSUED"),
         }
     }
@@ -78,7 +73,6 @@ impl FromStr for QuoteState {
 
     fn from_str(state: &str) -> Result<Self, Self::Err> {
         match state {
-            "PENDING" => Ok(Self::Pending),
             "PAID" => Ok(Self::Paid),
             "UNPAID" => Ok(Self::Unpaid),
             "ISSUED" => Ok(Self::Issued),
