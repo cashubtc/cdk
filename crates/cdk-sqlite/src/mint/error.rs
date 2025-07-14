@@ -92,12 +92,18 @@ pub enum Error {
     /// Unknown quote TTL
     #[error("Unknown quote TTL")]
     UnknownQuoteTTL,
+    /// Unknown config key
+    #[error("Unknown config key: {0}")]
+    UnknownConfigKey(String),
     /// Proof not found
     #[error("Proof not found")]
     ProofNotFound,
     /// Invalid keyset ID
     #[error("Invalid keyset ID")]
     InvalidKeysetId,
+    /// Invalid melt payment request
+    #[error("Invalid melt payment request")]
+    InvalidMeltPaymentRequest,
 }
 
 impl From<Error> for cdk_common::database::Error {

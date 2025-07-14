@@ -263,11 +263,32 @@ impl Mint {
 
         let mut join_set = JoinSet::new();
 
+        let mut processor_groups: Vec<(
+            Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+            Vec<PaymentProcessorKey>,
+        )> = Vec::new();
+
         for (key, ln) in self.payment_processors.iter() {
+            // Check if we already have this processor
+            let found = processor_groups.iter_mut().find(|(proc_ref, _)| {
+                // Compare Arc pointer equality using ptr_eq
+                Arc::ptr_eq(proc_ref, ln)
+            });
+
+            if let Some((_, keys)) = found {
+                // We found this processor, add the key to its group
+                keys.push(key.clone());
+            } else {
+                // New processor, create a new group
+                processor_groups.push((Arc::clone(ln), vec![key.clone()]));
+            }
+        }
+
+        for (ln, key) in processor_groups {
             if !ln.is_wait_invoice_active() {
                 tracing::info!("Wait payment for {:?} inactive starting.", key);
                 let mint = Arc::clone(&mint_arc);
-                let ln = Arc::clone(ln);
+                let ln = Arc::clone(&ln);
                 let shutdown = Arc::clone(&shutdown);
                 let key = key.clone();
                 join_set.spawn(async move {
@@ -283,7 +304,7 @@ impl Mint {
                         match result {
                             Ok(mut stream) => {
                                 while let Some(request_lookup_id) = stream.next().await {
-                                    if let Err(err) = mint.pay_mint_quote_for_request_id(&request_lookup_id).await {
+                                    if let Err(err) = mint.pay_mint_quote_for_request_id(request_lookup_id).await {
                                         tracing::warn!("{:?}", err);
                                     }
                                 }
@@ -425,7 +446,10 @@ impl Mint {
         melt_quote: &MeltQuote,
         melt_request: &MeltRequest<Uuid>,
     ) -> Result<Option<Amount>, Error> {
-        let mint_quote = match tx.get_mint_quote_by_request(&melt_quote.request).await {
+        let mint_quote = match tx
+            .get_mint_quote_by_request(&melt_quote.request.to_string())
+            .await
+        {
             Ok(Some(mint_quote)) => mint_quote,
             // Not an internal melt -> mint
             Ok(None) => return Ok(None),
@@ -437,31 +461,32 @@ impl Mint {
         tracing::error!("internal stuff");
 
         // Mint quote has already been settled, proofs should not be burned or held.
-        if mint_quote.state == MintQuoteState::Issued || mint_quote.state == MintQuoteState::Paid {
+        if mint_quote.state() == MintQuoteState::Issued
+            || mint_quote.state() == MintQuoteState::Paid
+        {
             return Err(Error::RequestAlreadyPaid);
         }
 
-        let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
+        let inputs_amount_quote_unit = melt_request.inputs_amount().map_err(|_| {
             tracing::error!("Proof inputs in melt quote overflowed");
             Error::AmountOverflow
         })?;
 
-        let mut mint_quote = mint_quote;
-
-        if mint_quote.amount > inputs_amount_quote_unit {
-            tracing::debug!(
-                "Not enough inuts provided: {} needed {}",
-                inputs_amount_quote_unit,
-                mint_quote.amount
-            );
-            return Err(Error::InsufficientFunds);
+        if let Some(amount) = mint_quote.amount {
+            if amount > inputs_amount_quote_unit {
+                tracing::debug!(
+                    "Not enough inuts provided: {} needed {}",
+                    inputs_amount_quote_unit,
+                    amount
+                );
+                return Err(Error::InsufficientFunds);
+            }
         }
-
-        mint_quote.state = MintQuoteState::Paid;
 
         let amount = melt_quote.amount;
 
-        tx.add_or_replace_mint_quote(mint_quote).await?;
+        tx.increment_mint_quote_amount_paid(&mint_quote.id, amount, melt_quote.id.to_string())
+            .await?;
 
         Ok(Some(amount))
     }

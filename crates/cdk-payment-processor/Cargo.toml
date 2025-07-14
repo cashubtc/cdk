@@ -25,6 +25,7 @@ lnd = ["dep:cdk-lnd"]
 anyhow.workspace = true
 async-trait.workspace = true
 bitcoin.workspace = true
+cashu.workspace = true
 cdk-common = { workspace = true, features = ["mint"] }
 cdk-cln = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }
@@ -34,7 +35,7 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 lightning-invoice.workspace = true
-uuid = { workspace = true, optional = true }
+uuid = { workspace = true }
 utoipa = { workspace = true, optional = true }
 futures.workspace = true
 serde_json.workspace = true
@@ -43,6 +44,8 @@ tonic = { workspace = true, features = ["router"] }
 prost.workspace = true
 tokio-stream.workspace = true
 tokio-util = { workspace = true, default-features = false }
+hex = "0.4"
+lightning = { workspace = true }
 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
