@@ -43,14 +43,16 @@ pub struct MintBuilder {
 impl MintBuilder {
     /// New [`MintBuilder`]
     pub fn new(localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>) -> MintBuilder {
-        let mut mint_info = MintInfo::default();
-        mint_info.nuts = Nuts::new()
-            .nut07(true)
-            .nut08(true)
-            .nut09(true)
-            .nut10(true)
-            .nut11(true)
-            .nut12(true);
+        let mint_info = MintInfo {
+            nuts: Nuts::new()
+                .nut07(true)
+                .nut08(true)
+                .nut09(true)
+                .nut10(true)
+                .nut11(true)
+                .nut12(true),
+            ..Default::default()
+        };
 
         MintBuilder {
             mint_info,
@@ -294,13 +296,13 @@ impl MintBuilder {
             )
             .await;
         }
-        Ok(Mint::new(
+        Mint::new(
             self.mint_info,
             signatory,
             self.localstore,
             self.payment_processors,
         )
-        .await?)
+        .await
     }
 
     /// Build the mint with the provided keystore and seed
