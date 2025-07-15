@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
                 #[cfg(feature = "sqlcipher")]
                 let sql = {
                     match args.password {
-                        Some(pass) => WalletSqliteDatabase::new(&sql_path, pass).await?,
+                        Some(pass) => WalletSqliteDatabase::new((sql_path, pass)).await?,
                         None => bail!("Missing database password"),
                     }
                 };

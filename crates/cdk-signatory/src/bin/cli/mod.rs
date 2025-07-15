@@ -108,7 +108,7 @@ pub async fn cli_main() -> Result<()> {
                     #[cfg(feature = "sqlcipher")]
                     let db = {
                         match args.password {
-                            Some(pass) => MintSqliteDatabase::new(&sql_path, pass).await?,
+                            Some(pass) => MintSqliteDatabase::new((&sql_path, pass)).await?,
                             None => bail!("Missing database password"),
                         }
                     };

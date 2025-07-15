@@ -5,7 +5,7 @@ CREATE TABLE _sqlx_migrations (
     description TEXT NOT NULL,
     installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     success BOOLEAN NOT NULL,
-    checksum BLOB NOT NULL,
+    checksum BYTEA NOT NULL,
     execution_time BIGINT NOT NULL
 );
 INSERT INTO _sqlx_migrations VALUES(20240612124932,'init','2025-06-13 20:01:04',1,X'42664ceda25b07bca420c2f7480c90334cb8a720203c1b4b8971181d5d3afabda3171aa89c1c0c8a26421eded94b77fa',921834);
@@ -66,21 +66,21 @@ CREATE TABLE config (
     value TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS "proof" (
-    y BLOB PRIMARY KEY,
+    y BYTEA PRIMARY KEY,
     amount INTEGER NOT NULL,
     keyset_id TEXT NOT NULL, -- no FK constraint here
     secret TEXT NOT NULL,
-    c BLOBNOT NULL,
+    c BYTEA NOT NULL,
     witness TEXT,
     state TEXT CHECK (state IN ('SPENT', 'PENDING', 'UNSPENT', 'RESERVED', 'UNKNOWN')) NOT NULL,
     quote_id TEXT,
     created_time INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS "blind_signature" (
-    y BLOB PRIMARY KEY,
+    y BYTEA PRIMARY KEY,
     amount INTEGER NOT NULL,
     keyset_id TEXT NOT NULL,  -- FK removed
-    c BLOB NOT NULL,
+    c BYTEA NOT NULL,
     dleq_e TEXT,
     dleq_s TEXT,
     quote_id TEXT,
