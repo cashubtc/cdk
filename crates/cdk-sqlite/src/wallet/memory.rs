@@ -7,8 +7,10 @@ use super::WalletSqliteDatabase;
 /// Creates a new in-memory [`WalletSqliteDatabase`] instance
 pub async fn empty() -> Result<WalletSqliteDatabase, Error> {
     #[cfg(not(feature = "sqlcipher"))]
-    let db = WalletSqliteDatabase::new(":memory:").await?;
+    let path = ":memory:";
+
     #[cfg(feature = "sqlcipher")]
-    let db = WalletSqliteDatabase::new(":memory:", "memory".to_owned()).await?;
-    Ok(db)
+    let path = (":memory:", "memory");
+
+    WalletSqliteDatabase::new(path).await
 }
