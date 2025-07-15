@@ -4,6 +4,13 @@
 #![warn(rustdoc::bare_urls)]
 
 mod common;
+pub mod database;
+mod macros;
+pub mod pool;
+pub mod stmt;
+pub mod value;
+
+pub use cdk_common::database::ConversionError;
 
 #[cfg(feature = "mint")]
 pub mod mint;
@@ -11,6 +18,6 @@ pub mod mint;
 pub mod wallet;
 
 #[cfg(feature = "mint")]
-pub use mint::MintSqliteDatabase;
+pub use mint::SQLMintDatabase;
 #[cfg(feature = "wallet")]
-pub use wallet::WalletSqliteDatabase;
+pub use wallet::SQLWalletDatabase;
