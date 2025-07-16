@@ -178,9 +178,8 @@ impl QuoteTTL {
     }
 }
 
-impl QuoteTTL {
-    /// Default quote TTL
-    pub fn default() -> Self {
+impl Default for QuoteTTL {
+    fn default() -> Self {
         Self {
             mint_ttl: 60 * 60, // 1 hour
             melt_ttl: 60,      // 1 minute
