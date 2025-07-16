@@ -3,6 +3,7 @@
 use std::fmt::Debug;
 
 use async_trait::async_trait;
+use cdk_common::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
 
 use super::Error;
 use crate::nuts::{
@@ -77,4 +78,29 @@ pub trait MintConnector: Debug {
     /// Set auth wallet on client
     #[cfg(feature = "auth")]
     async fn set_auth_wallet(&self, wallet: Option<AuthWallet>);
+    /// Mint Quote [NUT-04]
+    async fn post_mint_bolt12_quote(
+        &self,
+        request: MintQuoteBolt12Request,
+    ) -> Result<MintQuoteBolt12Response<String>, Error>;
+    /// Mint Quote status
+    async fn get_mint_quote_bolt12_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt12Response<String>, Error>;
+    /// Melt Quote [NUT-23]
+    async fn post_melt_bolt12_quote(
+        &self,
+        request: MeltQuoteBolt12Request,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+    /// Melt Quote Status [NUT-23]
+    async fn get_melt_bolt12_quote_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+    /// Melt [NUT-23]
+    async fn post_melt_bolt12(
+        &self,
+        request: MeltRequest<String>,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error>;
 }
