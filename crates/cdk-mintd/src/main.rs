@@ -432,8 +432,8 @@ async fn configure_backend_for_unit(
 
     if let Some(bolt12) = payment_settings.get("bolt12") {
         if bolt12.as_bool().unwrap_or_default() {
-            mint_builder = mint_builder
-                .add_ln_backend(
+            mint_builder
+                .add_payment_processor(
                     unit.clone(),
                     PaymentMethod::Bolt12,
                     mint_melt_limits,

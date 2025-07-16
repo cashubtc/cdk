@@ -250,7 +250,7 @@ impl Mint {
         .await?;
 
         let ln = self
-            .ln
+            .payment_processors
             .get(&PaymentProcessorKey::new(
                 unit.clone(),
                 PaymentMethod::Bolt12,

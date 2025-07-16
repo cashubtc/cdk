@@ -659,9 +659,8 @@ impl CdkMint for MintRPCServer {
                     payment_identifier: mint_quote.request_lookup_id.clone(),
                 };
 
-                let mut tx = self
-                    .mint
-                    .localstore
+                let localstore = self.mint.localstore();
+                let mut tx = localstore
                     .begin_transaction()
                     .await
                     .map_err(|_| Status::internal("Could not start db transaction".to_string()))?;
