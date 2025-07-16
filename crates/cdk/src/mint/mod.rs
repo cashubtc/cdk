@@ -151,6 +151,7 @@ impl Mint {
         let mut tx = mint_store.begin_transaction().await?;
         tx.set_mint_info(mint_info.clone()).await?;
         tx.set_quote_ttl(QuoteTTL::default()).await?;
+        tx.commit().await?;
 
         Ok(Self {
             signatory,
