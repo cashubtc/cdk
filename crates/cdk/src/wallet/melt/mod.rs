@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 
-use cdk_common::{
-    util::unix_time,
-    wallet::{MeltQuote, Transaction, TransactionDirection},
-    Error, MeltQuoteBolt11Response, MeltQuoteState, ProofsMethods,
-};
+use cdk_common::util::unix_time;
+use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection};
+use cdk_common::{Error, MeltQuoteBolt11Response, MeltQuoteState, ProofsMethods};
 use tracing::instrument;
 
 use crate::Wallet;
