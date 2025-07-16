@@ -6,7 +6,6 @@ use cdk_common::wallet::{Transaction, TransactionDirection};
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
-use super::MeltQuote;
 use crate::amount::to_unit;
 use crate::dhke::construct_proofs;
 use crate::nuts::{
@@ -15,6 +14,7 @@ use crate::nuts::{
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
+use crate::wallet::MeltQuote;
 use crate::{ensure_cdk, Error, Wallet};
 
 impl Wallet {

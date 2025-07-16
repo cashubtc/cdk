@@ -17,4 +17,5 @@ pub static MIGRATIONS: &[(&str, &str)] = &[
     ("20250323152040_wallet_dleq_proofs.sql", include_str!(r#"./migrations/20250323152040_wallet_dleq_proofs.sql"#)),
     ("20250401120000_add_transactions_table.sql", include_str!(r#"./migrations/20250401120000_add_transactions_table.sql"#)),
     ("20250616144830_add_keyset_expiry.sql", include_str!(r#"./migrations/20250616144830_add_keyset_expiry.sql"#)),
+    ("20250707093445_bolt12.sql", include_str!(r#"./migrations/20250707093445_bolt12.sql"#)),
 ];

@@ -224,6 +224,13 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+echo "Running regtest test with cln mint for bolt12"
+cargo test -p cdk-integration-tests --test bolt12
+if [ $? -ne 0 ]; then
+    echo "regtest test failed, exiting"
+    exit 1
+fi
+
 # Switch Mints: Run tests with LND mint
 echo "Switching to LND mint for tests"
 export CDK_ITESTS_MINT_PORT_0=8087
