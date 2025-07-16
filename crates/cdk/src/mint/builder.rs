@@ -9,6 +9,7 @@ use cdk_common::error::Error;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::Bolt11Settings;
+#[cfg(feature = "auth")]
 use cdk_common::{nut21, nut22};
 use cdk_signatory::signatory::Signatory;
 
@@ -18,13 +19,14 @@ use super::nut19::{self, CachedEndpoint};
 use super::MintAuthDatabase;
 use super::Nuts;
 use crate::amount::Amount;
-#[cfg(feature = "auth")]
 use crate::cdk_database;
 use crate::cdk_payment::{self, MintPayment};
 use crate::mint::Mint;
+#[cfg(feature = "auth")]
+use crate::nuts::ProtectedEndpoint;
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
-    MppMethodSettings, PaymentMethod, ProtectedEndpoint,
+    MppMethodSettings, PaymentMethod,
 };
 use crate::types::PaymentProcessorKey;
 
@@ -84,6 +86,7 @@ impl MintBuilder {
     }
 
     /// Set blind auth settings
+    #[cfg(feature = "auth")]
     pub fn with_blind_auth(
         mut self,
         bat_max_mint: u64,
@@ -284,6 +287,7 @@ impl MintBuilder {
         self,
         signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<Mint, Error> {
+        #[cfg(feature = "auth")]
         if let Some(auth_localstore) = self.auth_localstore {
             return Mint::new_with_auth(
                 self.mint_info,

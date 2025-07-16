@@ -81,7 +81,15 @@ impl Mint {
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
         >,
     ) -> Result<Self, Error> {
-        Self::new_internal(mint_info, signatory, localstore, None, payment_processors).await
+        Self::new_internal(
+            mint_info,
+            signatory,
+            localstore,
+            #[cfg(feature = "auth")]
+            None,
+            payment_processors,
+        )
+        .await
     }
 
     /// Create new [`Mint`] with authentication support
@@ -112,7 +120,7 @@ impl Mint {
         mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
-        auth_localstore: Option<
+        #[cfg(feature = "auth")] auth_localstore: Option<
             Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>,
         >,
         payment_processors: HashMap<
@@ -120,13 +128,6 @@ impl Mint {
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
         >,
     ) -> Result<Self, Error> {
-        let oidc_client = mint_info.nuts.nut21.as_ref().map(|nut21| {
-            OidcClient::new(
-                nut21.openid_discovery.clone(),
-                Some(nut21.client_id.clone()),
-            )
-        });
-
         let keysets = signatory.keysets().await?;
         if !keysets
             .keysets
@@ -148,14 +149,20 @@ impl Mint {
 
         let mint_store = localstore.clone();
         let mut tx = mint_store.begin_transaction().await?;
-        tx.set_mint_info(mint_info).await?;
+        tx.set_mint_info(mint_info.clone()).await?;
+        tx.set_quote_ttl(QuoteTTL::default()).await?;
 
         Ok(Self {
             signatory,
             pubsub_manager: Arc::new(localstore.clone().into()),
             localstore,
             #[cfg(feature = "auth")]
-            oidc_client,
+            oidc_client: mint_info.nuts.nut21.as_ref().map(|nut21| {
+                OidcClient::new(
+                    nut21.openid_discovery.clone(),
+                    Some(nut21.client_id.clone()),
+                )
+            }),
             payment_processors,
             #[cfg(feature = "auth")]
             auth_localstore,
