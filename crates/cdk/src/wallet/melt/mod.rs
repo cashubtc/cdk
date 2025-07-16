@@ -5,6 +5,7 @@ use cdk_common::{
     wallet::{MeltQuote, Transaction, TransactionDirection},
     Error, MeltQuoteBolt11Response, MeltQuoteState, ProofsMethods,
 };
+use tracing::instrument;
 
 use crate::Wallet;
 
@@ -12,9 +13,35 @@ mod melt_bolt11;
 mod melt_bolt12;
 
 impl Wallet {
+    /// Check pending melt quotes
+    #[instrument(skip_all)]
+    pub async fn check_pending_melt_quotes(&self) -> Result<(), Error> {
+        let quotes = self.get_pending_melt_quotes().await?;
+        for quote in quotes {
+            self.melt_quote_status(&quote.id).await?;
+        }
+        Ok(())
+    }
+
     /// Get all active melt quotes from the wallet
     pub async fn get_active_melt_quotes(&self) -> Result<Vec<MeltQuote>, Error> {
-        todo!()
+        let quotes = self.localstore.get_melt_quotes().await?;
+        Ok(quotes
+            .into_iter()
+            .filter(|q| {
+                q.state == MeltQuoteState::Pending
+                    || (q.state == MeltQuoteState::Unpaid && q.expiry > unix_time())
+            })
+            .collect())
+    }
+
+    /// Get pending melt quotes
+    pub async fn get_pending_melt_quotes(&self) -> Result<Vec<MeltQuote>, Error> {
+        let quotes = self.localstore.get_melt_quotes().await?;
+        Ok(quotes
+            .into_iter()
+            .filter(|q| q.state == MeltQuoteState::Pending)
+            .collect())
     }
 
     pub(crate) async fn add_transaction_for_pending_melt(
