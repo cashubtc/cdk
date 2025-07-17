@@ -69,6 +69,8 @@ pub trait Database: Debug {
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Self::Err>;
     /// Get melt quote from storage
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err>;
+    /// Get melt quotes from storage
+    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, Self::Err>;
     /// Remove melt quote from storage
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 

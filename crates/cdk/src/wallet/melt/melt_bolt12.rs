@@ -76,6 +76,13 @@ impl Wallet {
             Some(quote) => {
                 let mut quote = quote;
 
+                if let Err(e) = self
+                    .add_transaction_for_pending_melt(&quote, &response)
+                    .await
+                {
+                    tracing::error!("Failed to add transaction for pending melt: {}", e);
+                }
+
                 quote.state = response.state;
                 self.localstore.add_melt_quote(quote).await?;
             }
