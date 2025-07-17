@@ -531,6 +531,30 @@ ON CONFLICT(id) DO UPDATE SET
     }
 
     #[instrument(skip(self))]
+    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, Self::Err> {
+        Ok(Statement::new(
+            r#"
+            SELECT
+                id,
+                unit,
+                amount,
+                request,
+                fee_reserve,
+                state,
+                expiry,
+                payment_preimage
+            FROM
+                melt_quote
+            "#,
+        )
+        .fetch_all(&self.pool.get().map_err(Error::Pool)?)
+        .map_err(Error::Sqlite)?
+        .into_iter()
+        .map(sqlite_row_to_melt_quote)
+        .collect::<Result<_, _>>()?)
+    }
+
+    #[instrument(skip(self))]
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         Statement::new(r#"DELETE FROM melt_quote WHERE id=:id"#)
             .bind(":id", quote_id.to_owned())
