@@ -55,6 +55,7 @@ tokio.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 getrandom = { version = "0.2", features = ["js"] }
 instant = { workspace = true, features = ["wasm-bindgen", "inaccurate"] }
+uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 bip39 = { workspace = true, features = ["rand"] }
