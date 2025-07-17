@@ -18,9 +18,9 @@ impl Wallet {
     /// By doing so, it ensures that the wallet user is able to view the fees associated with the send transaction.
     ///
     /// ```no_compile
-    /// let send = wallet.prepare_send(Amount::from(10), SendOptions::default()).await?;
-    /// assert!(send.fee() <= Amount::from(1));
-    /// let token = wallet.send(send, None).await?;
+    /// let prepared_send = wallet.prepare_send(Amount::from(10), SendOptions::default()).await?;
+    /// assert!(prepared_send.fee() <= Amount::from(1));
+    /// let token = prepared_send.confirm(&wallet, None).await?;
     /// ```
     #[instrument(skip(self), err)]
     pub async fn prepare_send(
@@ -253,6 +253,13 @@ impl PreparedSend {
     }
 
     /// Cancel the prepared send, releasing reserved proofs
+    ///
+    /// # Example
+    /// ```no_compile
+    /// let prepared_send = wallet.prepare_send(amount, SendOptions::default()).await?;
+    /// // User decides not to send
+    /// prepared_send.cancel(&wallet).await?;
+    /// ```
     pub async fn cancel(self, wallet: &Wallet) -> Result<(), Error> {
         tracing::info!("Cancelling prepared send");
 
@@ -276,6 +283,12 @@ impl PreparedSend {
     }
 
     /// Confirm
+    ///
+    /// # Example
+    /// ```no_compile
+    /// let prepared_send = wallet.prepare_send(amount, SendOptions::default()).await?;
+    /// let token = prepared_send.confirm(&wallet, None).await?;
+    /// ```
     pub async fn confirm(self, wallet: &Wallet, memo: Option<SendMemo>) -> Result<Token, Error> {
         tracing::info!("Sending prepared send");
         let total_send_fee = self.fee();
