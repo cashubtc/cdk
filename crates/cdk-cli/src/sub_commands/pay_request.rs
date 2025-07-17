@@ -92,10 +92,12 @@ pub async fn pay_request(
         )
         .await?;
 
-    let token = matching_wallet.send(prepared_send, None).await?;
+    let wallet = matching_wallet.to_owned().clone();
+
+    let token = prepared_send.confirm(&wallet, None).await?;
 
     // We need the keysets information to properly convert from token proof to proof
-    let keysets_info = match matching_wallet
+    let keysets_info = match wallet
         .localstore
         .get_mint_keysets(token.mint_url()?)
         .await?

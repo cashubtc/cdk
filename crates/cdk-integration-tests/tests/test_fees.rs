@@ -64,7 +64,7 @@ async fn test_swap() {
 
     assert_eq!(fee, 1.into());
 
-    let send = wallet.send(send, None).await.unwrap();
+    let send = send.confirm(&wallet, None).await.unwrap();
 
     let rec_amount = wallet
         .receive(&send.to_string(), ReceiveOptions::default())

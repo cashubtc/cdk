@@ -197,131 +197,6 @@ impl Wallet {
             send_fee,
         })
     }
-
-    /// Finalize A Send Transaction
-    ///
-    /// This function finalizes a send transaction by constructing a token the [`PreparedSend`].
-    /// See [`Wallet::prepare_send`] for more information.
-    #[instrument(skip(self), err)]
-    pub async fn send(&self, send: PreparedSend, memo: Option<SendMemo>) -> Result<Token, Error> {
-        tracing::info!("Sending prepared send");
-        let total_send_fee = send.fee();
-        let mut proofs_to_send = send.proofs_to_send;
-
-        // Get active keyset ID
-        let active_keyset_id = self.get_active_mint_keyset().await?.id;
-        tracing::debug!("Active keyset ID: {:?}", active_keyset_id);
-
-        // Get keyset fees
-        let keyset_fee_ppk = self.get_keyset_fees_by_id(active_keyset_id).await?;
-        tracing::debug!("Keyset fees: {:?}", keyset_fee_ppk);
-
-        // Calculate total send amount
-        let total_send_amount = send.amount + send.send_fee;
-        tracing::debug!("Total send amount: {}", total_send_amount);
-
-        // Swap proofs if necessary
-        if !send.proofs_to_swap.is_empty() {
-            let swap_amount = total_send_amount - proofs_to_send.total_amount()?;
-            tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
-            if let Some(proofs) = self
-                .swap(
-                    Some(swap_amount),
-                    SplitTarget::None,
-                    send.proofs_to_swap,
-                    send.options.conditions.clone(),
-                    false, // already included in swap_amount
-                )
-                .await?
-            {
-                proofs_to_send.extend(proofs);
-            }
-        }
-        tracing::debug!(
-            "Proofs to send: {:?}",
-            proofs_to_send.iter().map(|p| p.amount).collect::<Vec<_>>()
-        );
-
-        // Check if sufficient proofs are available
-        if send.amount > proofs_to_send.total_amount()? {
-            return Err(Error::InsufficientFunds);
-        }
-
-        // Check if proofs are reserved or unspent
-        let sendable_proof_ys = self
-            .get_proofs_with(
-                Some(vec![State::Reserved, State::Unspent]),
-                send.options.conditions.clone().map(|c| vec![c]),
-            )
-            .await?
-            .ys()?;
-        if proofs_to_send
-            .ys()?
-            .iter()
-            .any(|y| !sendable_proof_ys.contains(y))
-        {
-            tracing::warn!("Proofs to send are not reserved or unspent");
-            return Err(Error::UnexpectedProofState);
-        }
-
-        // Update proofs state to pending spent
-        tracing::debug!(
-            "Updating proofs state to pending spent: {:?}",
-            proofs_to_send.ys()?
-        );
-        self.localstore
-            .update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
-            .await?;
-
-        // Include token memo
-        let send_memo = send.options.memo.or(memo);
-        let memo = send_memo.and_then(|m| if m.include_memo { Some(m.memo) } else { None });
-
-        // Add transaction to store
-        self.localstore
-            .add_transaction(Transaction {
-                mint_url: self.mint_url.clone(),
-                direction: TransactionDirection::Outgoing,
-                amount: send.amount,
-                fee: total_send_fee,
-                unit: self.unit.clone(),
-                ys: proofs_to_send.ys()?,
-                timestamp: unix_time(),
-                memo: memo.clone(),
-                metadata: send.options.metadata,
-            })
-            .await?;
-
-        // Create and return token
-        Ok(Token::new(
-            self.mint_url.clone(),
-            proofs_to_send,
-            memo,
-            self.unit.clone(),
-        ))
-    }
-
-    /// Cancel prepared send
-    pub async fn cancel_send(&self, send: PreparedSend) -> Result<(), Error> {
-        tracing::info!("Cancelling prepared send");
-
-        // Double-check proofs state
-        let reserved_proofs = self.get_reserved_proofs().await?.ys()?;
-        if !send
-            .proofs()
-            .ys()?
-            .iter()
-            .all(|y| reserved_proofs.contains(y))
-        {
-            return Err(Error::UnexpectedProofState);
-        }
-
-        self.localstore
-            .update_proofs_state(send.proofs().ys()?, State::Unspent)
-            .await?;
-
-        Ok(())
-    }
 }
 
 /// Prepared send
@@ -375,6 +250,130 @@ impl PreparedSend {
     /// Total fee
     pub fn fee(&self) -> Amount {
         self.swap_fee + self.send_fee
+    }
+
+    /// Cancel the prepared send, releasing reserved proofs
+    pub async fn cancel(self, wallet: &Wallet) -> Result<(), Error> {
+        tracing::info!("Cancelling prepared send");
+
+        // Double-check proofs state
+        let reserved_proofs = wallet.get_reserved_proofs().await?.ys()?;
+        if !self
+            .proofs()
+            .ys()?
+            .iter()
+            .all(|y| reserved_proofs.contains(y))
+        {
+            return Err(Error::UnexpectedProofState);
+        }
+
+        wallet
+            .localstore
+            .update_proofs_state(self.proofs().ys()?, State::Unspent)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Confirm
+    pub async fn confirm(self, wallet: &Wallet, memo: Option<SendMemo>) -> Result<Token, Error> {
+        tracing::info!("Sending prepared send");
+        let total_send_fee = self.fee();
+        let mut proofs_to_send = self.proofs_to_send.clone();
+
+        // Get active keyset ID
+        let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+        tracing::debug!("Active keyset ID: {:?}", active_keyset_id);
+
+        // Get keyset fees
+        let keyset_fee_ppk = wallet.get_keyset_fees_by_id(active_keyset_id).await?;
+        tracing::debug!("Keyset fees: {:?}", keyset_fee_ppk);
+
+        // Calculate total send amount
+        let total_send_amount = self.amount + self.send_fee;
+        tracing::debug!("Total send amount: {}", total_send_amount);
+
+        // Swap proofs if necessary
+        if !self.proofs_to_swap.is_empty() {
+            let swap_amount = total_send_amount - proofs_to_send.total_amount()?;
+            tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
+            if let Some(proofs) = wallet
+                .swap(
+                    Some(swap_amount),
+                    SplitTarget::None,
+                    self.proofs_to_swap.clone(),
+                    self.options.conditions.clone(),
+                    false, // already included in swap_amount
+                )
+                .await?
+            {
+                proofs_to_send.extend(proofs);
+            }
+        }
+        tracing::debug!(
+            "Proofs to send: {:?}",
+            proofs_to_send.iter().map(|p| p.amount).collect::<Vec<_>>()
+        );
+
+        // Check if sufficient proofs are available
+        if self.amount > proofs_to_send.total_amount()? {
+            return Err(Error::InsufficientFunds);
+        }
+
+        // Check if proofs are reserved or unspent
+        let sendable_proof_ys = wallet
+            .get_proofs_with(
+                Some(vec![State::Reserved, State::Unspent]),
+                self.options.clone().conditions.map(|c| vec![c]),
+            )
+            .await?
+            .ys()?;
+        if proofs_to_send
+            .ys()?
+            .iter()
+            .any(|y| !sendable_proof_ys.contains(y))
+        {
+            tracing::warn!("Proofs to send are not reserved or unspent");
+            return Err(Error::UnexpectedProofState);
+        }
+
+        // Update proofs state to pending spent
+        tracing::debug!(
+            "Updating proofs state to pending spent: {:?}",
+            proofs_to_send.ys()?
+        );
+        wallet
+            .localstore
+            .update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
+            .await?;
+
+        // Include token memo
+        let send_memo = self.options.clone().memo.or(memo);
+        let memo = send_memo.and_then(|m| if m.include_memo { Some(m.memo) } else { None });
+
+        // Add transaction to store
+        wallet
+            .localstore
+            .add_transaction(Transaction {
+                mint_url: wallet.mint_url.clone(),
+                direction: TransactionDirection::Outgoing,
+                amount: self.amount,
+                fee: total_send_fee,
+                unit: wallet.unit.clone(),
+                ys: proofs_to_send.ys()?,
+                timestamp: unix_time(),
+                memo: memo.clone(),
+                metadata: self.options.metadata.clone(),
+            })
+            .await?;
+
+        // Create and return token
+        Ok(Token::new(
+            wallet.mint_url.clone(),
+            proofs_to_send.clone(),
+            memo,
+            wallet.unit.clone(),
+        ))
     }
 }
 

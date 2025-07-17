@@ -221,7 +221,8 @@ pub async fn send(
             },
         )
         .await?;
-    let token = wallet.send(prepared_send, None).await?;
+
+    let token = prepared_send.confirm(&wallet, None).await?;
 
     match sub_command_args.v3 {
         true => {
