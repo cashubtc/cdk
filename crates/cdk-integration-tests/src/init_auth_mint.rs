@@ -47,7 +47,7 @@ where
     mint_builder = mint_builder.with_auth(
         auth_database.clone(),
         openid_discovery,
-        "account".to_string(),
+        "cashu-client".to_string(),
         vec![],
     );
 

@@ -210,13 +210,13 @@ impl OidcClient {
                                 return Err(Error::InvalidClientId);
                             }
                         }
-                    } else if let Some(aud) = claims.claims.get("aud") {
-                        if let Some(aud_value) = aud.as_str() {
-                            if aud_value != client_id {
+                    } else if let Some(azp) = claims.claims.get("azp") {
+                        if let Some(azp_value) = azp.as_str() {
+                            if azp_value != client_id {
                                 tracing::warn!(
-                                    "Client ID mismatch: expected {}, got {}",
+                                    "Client ID (azp) mismatch: expected {}, got {}",
                                     client_id,
-                                    aud_value
+                                    azp_value
                                 );
                                 return Err(Error::InvalidClientId);
                             }
