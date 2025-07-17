@@ -233,9 +233,6 @@ async fn configure_mint_builder(
     // Configure lightning backend
     let mint_builder = configure_lightning_backend(settings, mint_builder, &mut ln_routers).await?;
 
-    // Configure signatory or seed
-    // let mint_builder = configure_signing_method(settings, mint_builder).await?;
-
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
 
