@@ -15,7 +15,7 @@ use crate::nuts::{
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
 use crate::wallet::MeltQuote;
-use crate::{ensure_cdk, Error, Wallet};
+use crate::{ensure_cdk, Amount, Error, Wallet};
 
 impl Wallet {
     /// Melt Quote
@@ -148,19 +148,33 @@ impl Wallet {
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
-        let count = self
-            .localstore
-            .get_keyset_counter(&active_keyset_id)
-            .await?;
+        let change_amount = proofs_total - quote_info.amount;
 
-        let count = count.map_or(0, |c| c + 1);
+        // Calculate how many secrets we'll need for change
+        let num_secrets = if change_amount > Amount::ZERO {
+            change_amount
+                .split_targeted(&SplitTarget::default())
+                .unwrap_or_default()
+                .len() as u32
+        } else {
+            0
+        };
 
-        let premint_secrets = PreMintSecrets::from_xpriv_blank(
-            active_keyset_id,
-            count,
-            self.xpriv,
-            proofs_total - quote_info.amount,
-        )?;
+        let count = if num_secrets > 0 {
+            // Atomically increment counter and get the new value
+            let new_count = self
+                .localstore
+                .increment_keyset_counter(&active_keyset_id, num_secrets)
+                .await?;
+
+            // Calculate the starting counter value for this batch (before our increment)
+            new_count - num_secrets
+        } else {
+            0
+        };
+
+        let premint_secrets =
+            PreMintSecrets::from_xpriv_blank(active_keyset_id, count, self.xpriv, change_amount)?;
 
         let request = MeltRequest::new(
             quote_id.to_string(),
@@ -227,11 +241,6 @@ impl Wallet {
                     "Change amount returned from melt: {}",
                     change_proofs.total_amount()?
                 );
-
-                // Update counter for keyset
-                self.localstore
-                    .increment_keyset_counter(&active_keyset_id, change_proofs.len() as u32)
-                    .await?;
 
                 change_proofs
                     .into_iter()

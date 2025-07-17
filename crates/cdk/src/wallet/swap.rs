@@ -51,10 +51,6 @@ impl Wallet {
             &active_keys,
         )?;
 
-        self.localstore
-            .increment_keyset_counter(&active_keyset_id, pre_swap.derived_secret_count)
-            .await?;
-
         let mut added_proofs = Vec::new();
         let change_proofs;
         let send_proofs;
@@ -246,12 +242,31 @@ impl Wallet {
 
         let derived_secret_count;
 
-        let count = self
+        // Calculate how many secrets we'll need total for both send and change amounts
+        let send_secrets_count = send_amount
+            .unwrap_or(Amount::ZERO)
+            .split_targeted(&SplitTarget::default())
+            .unwrap_or_default()
+            .len() as u32;
+
+        let change_secrets_count = change_amount
+            .split_targeted(&change_split_target)
+            .unwrap_or_default()
+            .len() as u32;
+
+        let total_secrets_needed = match spending_conditions {
+            Some(_) => change_secrets_count, // Only change secrets when using conditions
+            None => send_secrets_count + change_secrets_count,
+        };
+
+        // Atomically increment counter and get the new value
+        let new_count = self
             .localstore
-            .get_keyset_counter(&active_keyset_id)
+            .increment_keyset_counter(&active_keyset_id, total_secrets_needed)
             .await?;
 
-        let mut count = count.map_or(0, |c| c + 1);
+        // Calculate the starting counter value for this batch (before our increment)
+        let mut count = new_count - total_secrets_needed;
 
         let (mut desired_messages, change_messages) = match spending_conditions {
             Some(conditions) => {
