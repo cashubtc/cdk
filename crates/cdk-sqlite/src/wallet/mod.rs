@@ -751,21 +751,36 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<u32, Self::Err> {
-        let new_counter_value = Statement::new(
-            r#"
-            UPDATE keyset
-            SET counter=counter+:count
-            WHERE id=:id
-            RETURNING counter
-            "#,
-        )
-        .bind(":count", count)
-        .bind(":id", keyset_id.to_string())
-        .plunk(&self.pool.get().map_err(Error::Pool)?)
-        .map_err(Error::Sqlite)?
-        .ok_or_else(|| Error::Sqlite(rusqlite::Error::QueryReturnedNoRows))?;
+        let query = format!(
+            "UPDATE keyset SET counter = counter + {} WHERE id = '{}'",
+            count,
+            keyset_id.to_string()
+        );
 
-        let new_counter: u32 = column_as_number!(new_counter_value);
+        let conn = self.pool.get().map_err(Error::Pool)?;
+
+        // Start transaction for atomicity
+        conn.execute("BEGIN TRANSACTION", [])
+            .map_err(Error::Sqlite)?;
+
+        // Execute the UPDATE
+        conn.execute(&query, []).map_err(Error::Sqlite)?;
+
+        // Get the updated value
+        let counter_query = format!(
+            "SELECT counter FROM keyset WHERE id = '{}'",
+            keyset_id.to_string()
+        );
+
+        let mut stmt = conn.prepare(&counter_query).map_err(Error::Sqlite)?;
+        let new_counter_value = stmt
+            .query_row([], |row| row.get::<_, u32>(0))
+            .map_err(Error::Sqlite)?;
+
+        // Commit transaction
+        conn.execute("COMMIT", []).map_err(Error::Sqlite)?;
+
+        let new_counter: u32 = new_counter_value;
 
         Ok(new_counter)
     }
