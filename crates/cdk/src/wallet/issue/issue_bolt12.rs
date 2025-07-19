@@ -107,13 +107,6 @@ impl Wallet {
 
         let active_keyset_id = self.get_active_mint_keyset().await?.id;
 
-        let count = self
-            .localstore
-            .get_keyset_counter(&active_keyset_id)
-            .await?;
-
-        let count = count.map_or(0, |c| c + 1);
-
         let amount = match amount {
             Some(amount) => amount,
             None => {
@@ -129,6 +122,31 @@ impl Wallet {
             tracing::error!("Cannot mint zero amount.");
             return Err(Error::InvoiceAmountUndefined);
         }
+
+        // Calculate how many secrets we'll need
+        let num_secrets = match &spending_conditions {
+            Some(_) => {
+                // For spending conditions, we don't increment the counter
+                0
+            }
+            None => amount
+                .split_targeted(&amount_split_target)
+                .unwrap_or_default()
+                .len() as u32,
+        };
+
+        let count = if num_secrets > 0 {
+            // Atomically increment counter and get the new value
+            let new_count = self
+                .localstore
+                .increment_keyset_counter(&active_keyset_id, num_secrets)
+                .await?;
+
+            // Calculate the starting counter value for this batch (before our increment)
+            new_count - num_secrets
+        } else {
+            0
+        };
 
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
@@ -191,13 +209,6 @@ impl Wallet {
         quote_info.amount_issued += proofs.total_amount()?;
 
         self.localstore.add_mint_quote(quote_info.clone()).await?;
-
-        if spending_conditions.is_none() {
-            // Update counter for keyset
-            self.localstore
-                .increment_keyset_counter(&active_keyset_id, proofs.len() as u32)
-                .await?;
-        }
 
         let proof_infos = proofs
             .iter()
