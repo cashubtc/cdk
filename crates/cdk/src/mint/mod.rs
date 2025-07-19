@@ -53,17 +53,17 @@ pub struct Mint {
     ///
     /// It is implemented in the cdk-signatory crate, and it can be embedded in the mint or it can
     /// be a gRPC client to a remote signatory server.
-    pub signatory: Arc<dyn Signatory + Send + Sync>,
+    signatory: Arc<dyn Signatory + Send + Sync>,
     /// Mint Storage backend
-    pub localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+    localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
     /// Auth Storage backend (only available with auth feature)
     #[cfg(feature = "auth")]
-    pub auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>>,
-    /// Ln backends for mint
-    pub ln:
+    auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>>,
+    /// Payment processors for mint
+    payment_processors:
         HashMap<PaymentProcessorKey, Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>>,
     /// Subscription manager
-    pub pubsub_manager: Arc<PubSubManager>,
+    pubsub_manager: Arc<PubSubManager>,
     #[cfg(feature = "auth")]
     oidc_client: Option<OidcClient>,
     /// In-memory keyset
@@ -71,40 +71,23 @@ pub struct Mint {
 }
 
 impl Mint {
-    /// Get the payment processor for the given unit and payment method
-    pub fn get_payment_processor(
-        &self,
-        unit: CurrencyUnit,
-        payment_method: PaymentMethod,
-    ) -> Result<Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>, Error> {
-        let key = PaymentProcessorKey::new(unit.clone(), payment_method.clone());
-        self.ln.get(&key).cloned().ok_or_else(|| {
-            tracing::info!(
-                "No payment processor set for pair {}, {}",
-                unit,
-                payment_method
-            );
-            Error::UnsupportedUnit
-        })
-    }
-
     /// Create new [`Mint`] without authentication
     pub async fn new(
+        mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
-        ln: HashMap<
+        payment_processors: HashMap<
             PaymentProcessorKey,
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
         >,
     ) -> Result<Self, Error> {
         Self::new_internal(
+            mint_info,
             signatory,
             localstore,
             #[cfg(feature = "auth")]
             None,
-            ln,
-            #[cfg(feature = "auth")]
-            None,
+            payment_processors,
         )
         .await
     }
@@ -112,21 +95,21 @@ impl Mint {
     /// Create new [`Mint`] with authentication support
     #[cfg(feature = "auth")]
     pub async fn new_with_auth(
+        mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
         auth_localstore: Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>,
-        ln: HashMap<
+        payment_processors: HashMap<
             PaymentProcessorKey,
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
         >,
-        open_id_discovery: String,
     ) -> Result<Self, Error> {
         Self::new_internal(
+            mint_info,
             signatory,
             localstore,
             Some(auth_localstore),
-            ln,
-            Some(open_id_discovery),
+            payment_processors,
         )
         .await
     }
@@ -134,21 +117,17 @@ impl Mint {
     /// Internal function to create a new [`Mint`] with shared logic
     #[inline]
     async fn new_internal(
+        mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
         #[cfg(feature = "auth")] auth_localstore: Option<
             Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>,
         >,
-        ln: HashMap<
+        payment_processors: HashMap<
             PaymentProcessorKey,
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
         >,
-        #[cfg(feature = "auth")] open_id_discovery: Option<String>,
     ) -> Result<Self, Error> {
-        #[cfg(feature = "auth")]
-        let oidc_client =
-            open_id_discovery.map(|openid_discovery| OidcClient::new(openid_discovery.clone()));
-
         let keysets = signatory.keysets().await?;
         if !keysets
             .keysets
@@ -168,17 +147,55 @@ impl Mint {
                 .count()
         );
 
+        let mint_store = localstore.clone();
+        let mut tx = mint_store.begin_transaction().await?;
+        tx.set_mint_info(mint_info.clone()).await?;
+        tx.set_quote_ttl(QuoteTTL::default()).await?;
+        tx.commit().await?;
+
         Ok(Self {
             signatory,
             pubsub_manager: Arc::new(localstore.clone().into()),
             localstore,
             #[cfg(feature = "auth")]
-            oidc_client,
-            ln,
+            oidc_client: mint_info.nuts.nut21.as_ref().map(|nut21| {
+                OidcClient::new(
+                    nut21.openid_discovery.clone(),
+                    Some(nut21.client_id.clone()),
+                )
+            }),
+            payment_processors,
             #[cfg(feature = "auth")]
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
         })
+    }
+
+    /// Get the payment processor for the given unit and payment method
+    pub fn get_payment_processor(
+        &self,
+        unit: CurrencyUnit,
+        payment_method: PaymentMethod,
+    ) -> Result<Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>, Error> {
+        let key = PaymentProcessorKey::new(unit.clone(), payment_method.clone());
+        self.payment_processors.get(&key).cloned().ok_or_else(|| {
+            tracing::info!(
+                "No payment processor set for pair {}, {}",
+                unit,
+                payment_method
+            );
+            Error::UnsupportedUnit
+        })
+    }
+
+    /// Localstore
+    pub fn localstore(&self) -> Arc<dyn MintDatabase<database::Error> + Send + Sync> {
+        Arc::clone(&self.localstore)
+    }
+
+    /// Pub Sub manager
+    pub fn pubsub_manager(&self) -> Arc<PubSubManager> {
+        Arc::clone(&self.pubsub_manager)
     }
 
     /// Get mint info
@@ -259,7 +276,7 @@ impl Mint {
             Vec<PaymentProcessorKey>,
         )> = Vec::new();
 
-        for (key, ln) in self.ln.iter() {
+        for (key, ln) in self.payment_processors.iter() {
             // Check if we already have this processor
             let found = processor_groups.iter_mut().find(|(proc_ref, _)| {
                 // Compare Arc pointer equality using ptr_eq
@@ -609,7 +626,7 @@ mod tests {
             .expect("Failed to create signatory"),
         );
 
-        Mint::new(signatory, localstore, HashMap::new())
+        Mint::new(MintInfo::default(), signatory, localstore, HashMap::new())
             .await
             .unwrap()
     }

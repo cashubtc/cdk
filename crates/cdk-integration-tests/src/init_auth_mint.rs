@@ -31,14 +31,10 @@ where
 
     let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
 
-    let mut mint_builder = MintBuilder::new();
+    let mut mint_builder = MintBuilder::new(Arc::new(database));
 
-    mint_builder = mint_builder
-        .with_localstore(Arc::new(database))
-        .with_keystore(Arc::new(key_store));
-
-    mint_builder = mint_builder
-        .add_ln_backend(
+    mint_builder
+        .add_payment_processor(
             CurrencyUnit::Sat,
             PaymentMethod::Bolt11,
             MintMeltLimits::new(1, 300),
@@ -46,10 +42,14 @@ where
         )
         .await?;
 
-    mint_builder =
-        mint_builder.set_clear_auth_settings(openid_discovery, "cashu-client".to_string());
+    let auth_database = Arc::new(auth_database);
 
-    mint_builder = mint_builder.set_blind_auth_settings(50);
+    mint_builder = mint_builder.with_auth(
+        auth_database.clone(),
+        openid_discovery,
+        "cashu-client".to_string(),
+        vec![],
+    );
 
     let blind_auth_endpoints = vec![
         ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt11),
@@ -71,6 +71,8 @@ where
                 acc
             });
 
+    mint_builder = mint_builder.with_blind_auth(50, blind_auth_endpoints.keys().cloned().collect());
+
     let mut tx = auth_database.begin_transaction().await?;
 
     tx.add_protected_endpoints(blind_auth_endpoints).await?;
@@ -85,15 +87,13 @@ where
 
     tx.commit().await?;
 
-    mint_builder = mint_builder.with_auth_localstore(Arc::new(auth_database));
-
     let mnemonic = Mnemonic::generate(12)?;
 
-    mint_builder = mint_builder
-        .with_description("fake test mint".to_string())
-        .with_seed(mnemonic.to_seed_normalized("").to_vec());
+    mint_builder = mint_builder.with_description("fake test mint".to_string());
 
-    let _mint = mint_builder.build().await?;
+    let _mint = mint_builder
+        .build_with_seed(Arc::new(key_store), &mnemonic.to_seed_normalized(""))
+        .await?;
 
     todo!("Need to start this a cdk mintd keeping as ref for now");
 }
