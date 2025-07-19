@@ -268,8 +268,9 @@ impl Wallet {
                                 auth_wallet.protected_endpoints.write().await;
                             *protected_endpoints = mint_info.protected_endpoints();
 
-                            if let Some(oidc_client) =
-                                mint_info.openid_discovery().map(OidcClient::new)
+                            if let Some(oidc_client) = mint_info
+                                .openid_discovery()
+                                .map(|url| OidcClient::new(url, None))
                             {
                                 auth_wallet.set_oidc_client(Some(oidc_client)).await;
                             }
@@ -277,7 +278,9 @@ impl Wallet {
                         None => {
                             tracing::info!("Mint has auth enabled creating auth wallet");
 
-                            let oidc_client = mint_info.openid_discovery().map(OidcClient::new);
+                            let oidc_client = mint_info
+                                .openid_discovery()
+                                .map(|url| OidcClient::new(url, None));
                             let new_auth_wallet = AuthWallet::new(
                                 self.mint_url.clone(),
                                 None,
