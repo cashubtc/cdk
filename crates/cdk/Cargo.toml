@@ -43,7 +43,6 @@ utoipa = { workspace = true, optional = true }
 uuid.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
 bitvec = "1.0.1"
-hex = "0.4.3"
 murmur3 = "0.5.2"
 
 # -Z minimal-versions

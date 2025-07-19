@@ -33,8 +33,10 @@ impl Error for GCSError {}
 /// Hashes an item to a range using SipHash.
 fn hash_to_range(item: &[u8], f: u64) -> u64 {
     let mut item = item;
-    let hash = murmur3::murmur3_x64_128(&mut item, 0).expect("Can hash bytes vector");
-    ((f as u128 * (hash & 0xFFFFFFFFFFFFFFFF)) >> 64) as u64
+    let h1 = murmur3::murmur3_32(&mut item, 0).expect("Can hash bytes vector");
+    let h2 = murmur3::murmur3_32(&mut item, h1).expect("Can hash bytes vector");
+    let hash = ((h1 as u64) << 32) | (h2 as u64);
+    ((f as u128) * (hash as u128) >> 64) as u64
 }
 
 /// Creates a hashed set of items using a key and a multiplier.
@@ -265,7 +267,7 @@ mod tests {
         ];
 
         // Expected output in base64
-        let target_filter = "z4fUCDVqdnxWR7Y9+YdT5o0IC9GxiSA2BGyg";
+        let target_filter = "7sdQJ7OweaujLCqS7KDHzu/3pySZrDsatjQA";
 
         // Create a GCS filter with default parameters (p=19, m=784931)
         let p = 19;
@@ -286,6 +288,6 @@ mod tests {
         let test_item: [u8; 4] = [0u8; 4];
         let test_range: u64 = 784931 * 1000;
         let hashed = hash_to_range(&test_item, test_range);
-        assert_eq!(hashed, 636618232u64);
+        assert_eq!(hashed, 108500230u64);
     }
 }
