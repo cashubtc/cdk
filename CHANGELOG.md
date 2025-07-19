@@ -4,9 +4,57 @@
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
-[Unreleased]
+
+
+## [0.11.0](https://github.com/cashubtc/cdk/releases/tag/v0.11.0)
+
+### Summary
+
+Version 0.11.0 brings significant architectural changes to enhance database reliability and performance. The major changes include:
+
+1. **Database Engine Change**: Replaced `sqlx` with `rusqlite` as the SQLite database driver and removed support for `redb`. This change provides better performance and reliability for database operations.
+
+2. **Transaction Management**: Introduced robust database transaction support that encapsulates all database changes. The new Transaction trait implements a rollback operation on Drop unless explicitly committed, ensuring data integrity.
+
+3. **Race Condition Prevention**: Added READ-and-lock operations to securely read and lock records from the database for exclusive access, preventing race conditions in concurrent operations.
+
+### ⚠️ Important Migration Note for redb Users
+If you are currently running a mint with redb, you must migrate to SQLite before upgrading to v0.11. Follow these steps:
+
+1. Stop your current mint
+2. Back up your database
+3. Use the migration script available at: https://github.com/cashubtc/cdk/blob/main/misc/convert_redb_to_sqlite.sh
+4. Update your config file to target the SQLite database engine
+5. Start your mint with v0.11
+
+
+### Added
+- cdk-lnbits: Support lnbits v1 and pre-v1 [PR](https://github.com/cashubtc/cdk/pull/802) ([thesimplekid]).
+- Support for Keyset v2 [PR](https://github.com/cashubtc/cdk/pull/702) ([lollerfirst]).
+- Add option to limit the token size of a send [PR](https://github.com/cashubtc/cdk/pull/855) ([davidcaseria]).
+- Database transaction support [PR](https://github.com/cashubtc/cdk/pull/826) ([crodas]).
+- Support for multsig refund [PR](https://github.com/cashubtc/cdk/pull/860) ([thesimplekid]).
+- Convert unit helper fn [PR](https://github.com/cashubtc/cdk/pull/856) ([davidcaseria]).
+
+### Changed
+- cdk-sqlite: remove sqlx in favor of rusqlite ([crodas]).
+- cdk-lnd: use custom tonic gRPC instead of fedimint-tonic-grpc [PR](https://github.com/cashubtc/cdk/pull/831) ([thesimplekid]).
+- cdk-cln: remove the us of mutex on cln client [PR](https://github.com/cashubtc/cdk/pull/832) ([thesimplekid]).
+
 ### Fixed
-- Mintd version updated when grpc is enabled [PR](https://github.com/cashubtc/cdk/pull/803) ([thesimplekid]).
+- mint start up check was not checking unpaid quotes [PR](https://github.com/cashubtc/cdk/pull/844) ([gudnuf]).
+- Naming of blinded_message column on blind_signatures was y [PR](https://github.com/cashubtc/cdk/pull/845) ([thesimplekid]).
+- cdk-cli: Create wallets for non sat units if supported [PR](https://github.com/cashubtc/cdk/pull/841) ([thesimplekid]).
+
+### Removed
+- cdk-redb support for the mint [PR](https://github.com/cashubtc/cdk/pull/787) ([thesimplekid]).
+- cdk-sqlite remove unused melt_request table [PR](https://github.com/cashubtc/cdk/pull/819) ([crodas])
+
+
+## [0.10.1](https://github.com/cashubtc/cdk/releases/tag/v0.10.1)
+### Fix
+- Set mint version when mint rpc is enabled [PR](https://github.com/cashubtc/cdk/pull/803) ([thesimplekid]).
+- `cdk-signatory` is optional for wallet [PR](https://github.com/cashubtc/cdk/pull/815) ([thesimplekid]).
 
 ## [0.10.0](https://github.com/cashubtc/cdk/releases/tag/v0.10.0)
 ### Added
@@ -379,3 +427,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [benthecarman]: https://github.com/benthecarman
 [Darrell]: https://github.com/Darrellbor
 [asmo]: https://github.com/asmogo
+[gudnuf]: https://github.com/gudnuf

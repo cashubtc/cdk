@@ -478,6 +478,21 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip_all)]
+    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(MELT_QUOTES_TABLE)
+            .map_err(Error::from)?;
+
+        Ok(table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .flat_map(|(_id, quote)| serde_json::from_str(quote.value()))
+            .collect())
+    }
+
+    #[instrument(skip_all)]
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 

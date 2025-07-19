@@ -1,11 +1,18 @@
 use std::str::FromStr;
 
 use anyhow::bail;
+use cdk_common::amount::amount_for_offer;
 use cdk_common::database::{self, MintTransaction};
+use cdk_common::melt::MeltQuoteRequest;
+use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::nut05::MeltMethodOptions;
-use cdk_common::MeltOptions;
-use lightning_invoice::Bolt11Invoice;
+use cdk_common::payment::{
+    Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, OutgoingPaymentOptions,
+    PaymentQuoteOptions,
+};
+use cdk_common::{MeltOptions, MeltQuoteBolt12Request};
+use lightning::offers::offer::Offer;
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -65,10 +72,12 @@ impl Mint {
                 amount
             }
             Some(MeltOptions::Amountless { amountless: _ }) => {
-                if !matches!(
-                    settings.options,
-                    Some(MeltMethodOptions::Bolt11 { amountless: true })
-                ) {
+                if method == PaymentMethod::Bolt11
+                    && !matches!(
+                        settings.options,
+                        Some(MeltMethodOptions::Bolt11 { amountless: true })
+                    )
+                {
                     return Err(Error::AmountlessInvoiceNotSupported(unit, method));
                 }
 
@@ -97,9 +106,28 @@ impl Mint {
         }
     }
 
-    /// Get melt bolt11 quote
+    /// Get melt quote for either BOLT11 or BOLT12
+    ///
+    /// This function accepts a `MeltQuoteRequest` enum and delegates to the
+    /// appropriate handler based on the request type.
     #[instrument(skip_all)]
-    pub async fn get_melt_bolt11_quote(
+    pub async fn get_melt_quote(
+        &self,
+        melt_quote_request: MeltQuoteRequest,
+    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+        match melt_quote_request {
+            MeltQuoteRequest::Bolt11(bolt11_request) => {
+                self.get_melt_bolt11_quote_impl(&bolt11_request).await
+            }
+            MeltQuoteRequest::Bolt12(bolt12_request) => {
+                self.get_melt_bolt12_quote_impl(&bolt12_request).await
+            }
+        }
+    }
+
+    /// Implementation of get_melt_bolt11_quote
+    #[instrument(skip_all)]
+    async fn get_melt_bolt11_quote_impl(
         &self,
         melt_request: &MeltQuoteBolt11Request,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
@@ -109,6 +137,19 @@ impl Mint {
             options,
             ..
         } = melt_request;
+
+        let amount_msats = melt_request.amount_msat()?;
+
+        let amount_quote_unit = to_unit(amount_msats, &CurrencyUnit::Msat, unit)?;
+
+        self.check_melt_request_acceptable(
+            amount_quote_unit,
+            unit.clone(),
+            PaymentMethod::Bolt11,
+            request.to_string(),
+            *options,
+        )
+        .await?;
 
         let ln = self
             .ln
@@ -122,11 +163,17 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
+        let bolt11 = Bolt11OutgoingPaymentOptions {
+            bolt11: melt_request.request.clone(),
+            max_fee_amount: None,
+            timeout_secs: None,
+            melt_options: melt_request.options,
+        };
+
         let payment_quote = ln
             .get_payment_quote(
-                &melt_request.request.to_string(),
                 &melt_request.unit,
-                melt_request.options,
+                OutgoingPaymentOptions::Bolt11(Box::new(bolt11)),
             )
             .await
             .map_err(|err| {
@@ -139,62 +186,137 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
-        self.check_melt_request_acceptable(
-            payment_quote.amount,
-            unit.clone(),
-            PaymentMethod::Bolt11,
-            request.to_string(),
-            *options,
-        )
-        .await?;
-
-        // We only want to set the msats_to_pay of the melt quote if the invoice is amountless
-        // or we want to ignore the amount and do an mpp payment
-        let msats_to_pay = options.map(|opt| opt.amount_msat());
-
         let melt_ttl = self.localstore.get_quote_ttl().await?.melt_ttl;
 
         let quote = MeltQuote::new(
-            request.to_string(),
+            MeltPaymentRequest::Bolt11 {
+                bolt11: request.clone(),
+            },
             unit.clone(),
             payment_quote.amount,
             payment_quote.fee,
             unix_time() + melt_ttl,
             payment_quote.request_lookup_id.clone(),
-            msats_to_pay,
+            *options,
+            PaymentMethod::Bolt11,
         );
 
         tracing::debug!(
             "New melt quote {} for {} {} with request id {}",
             quote.id,
-            payment_quote.amount,
+            amount_quote_unit,
             unit,
             payment_quote.request_lookup_id
         );
 
         let mut tx = self.localstore.begin_transaction().await?;
-        if let Some(mut from_db_quote) = tx.get_melt_quote(&quote.id).await? {
-            if from_db_quote.state != quote.state {
-                tx.update_melt_quote_state(&quote.id, from_db_quote.state)
-                    .await?;
-                from_db_quote.state = quote.state;
-            }
-            if from_db_quote.request_lookup_id != quote.request_lookup_id {
-                tx.update_melt_quote_request_lookup_id(&quote.id, &quote.request_lookup_id)
-                    .await?;
-                from_db_quote.request_lookup_id = quote.request_lookup_id.clone();
-            }
-            if from_db_quote != quote {
-                return Err(Error::Internal);
-            }
-        } else if let Err(err) = tx.add_melt_quote(quote.clone()).await {
-            match err {
-                database::Error::Duplicate => {
-                    return Err(Error::RequestAlreadyPaid);
+        tx.add_melt_quote(quote.clone()).await?;
+        tx.commit().await?;
+
+        Ok(quote.into())
+    }
+
+    /// Implementation of get_melt_bolt12_quote
+    #[instrument(skip_all)]
+    async fn get_melt_bolt12_quote_impl(
+        &self,
+        melt_request: &MeltQuoteBolt12Request,
+    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+        let MeltQuoteBolt12Request {
+            request,
+            unit,
+            options,
+        } = melt_request;
+
+        let offer = Offer::from_str(request).map_err(|_| Error::InvalidPaymentRequest)?;
+
+        let amount = match options {
+            Some(options) => match options {
+                MeltOptions::Amountless { amountless } => {
+                    to_unit(amountless.amount_msat, &CurrencyUnit::Msat, unit)?
                 }
-                _ => return Err(Error::from(err)),
-            }
-        }
+                _ => return Err(Error::UnsupportedUnit),
+            },
+            None => amount_for_offer(&offer, unit).map_err(|_| Error::UnsupportedUnit)?,
+        };
+
+        self.check_melt_request_acceptable(
+            amount,
+            unit.clone(),
+            PaymentMethod::Bolt12,
+            request.clone(),
+            *options,
+        )
+        .await?;
+
+        let ln = self
+            .ln
+            .get(&PaymentProcessorKey::new(
+                unit.clone(),
+                PaymentMethod::Bolt12,
+            ))
+            .ok_or_else(|| {
+                tracing::info!("Could not get ln backend for {}, bolt12 ", unit);
+
+                Error::UnsupportedUnit
+            })?;
+
+        let offer = Offer::from_str(&melt_request.request).map_err(|_| Error::Bolt12parse)?;
+
+        let outgoing_payment_options = Bolt12OutgoingPaymentOptions {
+            offer: offer.clone(),
+            max_fee_amount: None,
+            timeout_secs: None,
+            melt_options: *options,
+            invoice: None,
+        };
+
+        let payment_quote = ln
+            .get_payment_quote(
+                &melt_request.unit,
+                OutgoingPaymentOptions::Bolt12(Box::new(outgoing_payment_options)),
+            )
+            .await
+            .map_err(|err| {
+                tracing::error!(
+                    "Could not get payment quote for mint quote, {} bolt12, {}",
+                    unit,
+                    err
+                );
+
+                Error::UnsupportedUnit
+            })?;
+
+        let invoice = payment_quote.options.and_then(|options| match options {
+            PaymentQuoteOptions::Bolt12 { invoice } => invoice,
+        });
+
+        let payment_request = MeltPaymentRequest::Bolt12 {
+            offer: Box::new(offer),
+            invoice,
+        };
+
+        let quote = MeltQuote::new(
+            payment_request,
+            unit.clone(),
+            payment_quote.amount,
+            payment_quote.fee,
+            unix_time() + self.quote_ttl().await?.melt_ttl,
+            payment_quote.request_lookup_id.clone(),
+            *options,
+            PaymentMethod::Bolt12,
+        );
+
+        tracing::debug!(
+            "New melt quote {} for {} {} with request id {}",
+            quote.id,
+            amount,
+            unit,
+            payment_quote.request_lookup_id
+        );
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.add_melt_quote(quote.clone()).await?;
         tx.commit().await?;
 
         Ok(quote.into())
@@ -228,7 +350,7 @@ impl Mint {
             fee_reserve: quote.fee_reserve,
             payment_preimage: quote.payment_preimage,
             change,
-            request: Some(quote.request.clone()),
+            request: Some(quote.request.to_string()),
             unit: Some(quote.unit.clone()),
         })
     }
@@ -247,16 +369,40 @@ impl Mint {
         melt_quote: &MeltQuote,
         melt_request: &MeltRequest<Uuid>,
     ) -> Result<Option<Amount>, Error> {
-        let invoice = Bolt11Invoice::from_str(&melt_quote.request)?;
-
         let quote_msats = to_unit(melt_quote.amount, &melt_quote.unit, &CurrencyUnit::Msat)
             .expect("Quote unit is checked above that it can convert to msat");
 
-        let invoice_amount_msats: Amount = match invoice.amount_milli_satoshis() {
-            Some(amt) => amt.into(),
-            None => melt_quote
-                .msat_to_pay
-                .ok_or(Error::InvoiceAmountUndefined)?,
+        let invoice_amount_msats = match &melt_quote.request {
+            MeltPaymentRequest::Bolt11 { bolt11 } => match bolt11.amount_milli_satoshis() {
+                Some(amount) => amount.into(),
+                None => melt_quote
+                    .options
+                    .ok_or(Error::InvoiceAmountUndefined)?
+                    .amount_msat(),
+            },
+            MeltPaymentRequest::Bolt12 { offer, invoice: _ } => match offer.amount() {
+                Some(amount) => {
+                    let (amount, currency) = match amount {
+                        lightning::offers::offer::Amount::Bitcoin { amount_msats } => {
+                            (amount_msats, CurrencyUnit::Msat)
+                        }
+                        lightning::offers::offer::Amount::Currency {
+                            iso4217_code,
+                            amount,
+                        } => (
+                            amount,
+                            CurrencyUnit::from_str(&String::from_utf8(iso4217_code.to_vec())?)?,
+                        ),
+                    };
+
+                    to_unit(amount, &currency, &CurrencyUnit::Msat)
+                        .map_err(|_err| Error::UnsupportedUnit)?
+                }
+                None => melt_quote
+                    .options
+                    .ok_or(Error::InvoiceAmountUndefined)?
+                    .amount_msat(),
+            },
         };
 
         let partial_amount = match invoice_amount_msats > quote_msats {
@@ -273,7 +419,7 @@ impl Mint {
                 .map_err(|_| Error::UnsupportedUnit)?,
         };
 
-        let inputs_amount_quote_unit = melt_request.proofs_amount().map_err(|_| {
+        let inputs_amount_quote_unit = melt_request.inputs_amount().map_err(|_| {
             tracing::error!("Proof inputs in melt quote overflowed");
             Error::AmountOverflow
         })?;
@@ -305,7 +451,7 @@ impl Mint {
         melt_request: &MeltRequest<Uuid>,
     ) -> Result<(ProofWriter, MeltQuote), Error> {
         let (state, quote) = tx
-            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending)
+            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending, None)
             .await?;
 
         match state {
@@ -371,7 +517,7 @@ impl Mint {
 
     /// Melt Bolt11
     #[instrument(skip_all)]
-    pub async fn melt_bolt11(
+    pub async fn melt(
         &self,
         melt_request: &MeltRequest<Uuid>,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
@@ -455,7 +601,7 @@ impl Mint {
                 tx.commit().await?;
 
                 let pre = match ln
-                    .make_payment(quote.clone(), partial_amount, Some(quote.fee_reserve))
+                    .make_payment(&quote.unit, quote.clone().try_into()?)
                     .await
                 {
                     Ok(pay)
@@ -602,8 +748,12 @@ impl Mint {
             .update_proofs_states(&mut tx, &input_ys, State::Spent)
             .await?;
 
-        tx.update_melt_quote_state(melt_request.quote(), MeltQuoteState::Paid)
-            .await?;
+        tx.update_melt_quote_state(
+            melt_request.quote(),
+            MeltQuoteState::Paid,
+            payment_preimage.clone(),
+        )
+        .await?;
 
         self.pubsub_manager.melt_quote_status(
             &quote,
@@ -615,7 +765,7 @@ impl Mint {
         let mut change = None;
 
         // Check if there is change to return
-        if melt_request.proofs_amount()? > total_spent {
+        if melt_request.inputs_amount()? > total_spent {
             // Check if wallet provided change outputs
             if let Some(outputs) = melt_request.outputs().clone() {
                 let blinded_messages: Vec<PublicKey> =
@@ -636,7 +786,7 @@ impl Mint {
 
                 let fee = self.get_proofs_fee(melt_request.inputs()).await?;
 
-                let change_target = melt_request.proofs_amount()? - total_spent - fee;
+                let change_target = melt_request.inputs_amount()? - total_spent - fee;
 
                 let mut amounts = change_target.split();
                 let mut change_sigs = Vec::with_capacity(amounts.len());
@@ -689,7 +839,7 @@ impl Mint {
             fee_reserve: quote.fee_reserve,
             state: MeltQuoteState::Paid,
             expiry: quote.expiry,
-            request: Some(quote.request.clone()),
+            request: Some(quote.request.to_string()),
             unit: Some(quote.unit.clone()),
         })
     }

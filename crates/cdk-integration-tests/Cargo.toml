@@ -35,7 +35,7 @@ uuid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # ln-regtest-rs = { path = "../../../../ln-regtest-rs" }
-ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "ed24716" }
+ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "df81424" }
 lightning-invoice.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

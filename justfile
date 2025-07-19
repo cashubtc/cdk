@@ -153,6 +153,68 @@ nutshell-wallet-itest:
   #!/usr/bin/env bash
   ./misc/nutshell_wallet_itest.sh
 
+# Start interactive regtest environment (Bitcoin + 4 LN nodes + 2 CDK mints)
+regtest db="sqlite":
+  #!/usr/bin/env bash
+  ./misc/interactive_regtest_mprocs.sh {{db}}
+
+# Lightning Network Commands (require regtest environment to be running)
+
+# Get CLN node 1 info
+ln-cln1 *ARGS:
+  #!/usr/bin/env bash
+  ./misc/regtest_helper.sh ln-cln1 {{ARGS}}
+
+# Get CLN node 2 info  
+ln-cln2 *ARGS:
+  #!/usr/bin/env bash
+  ./misc/regtest_helper.sh ln-cln2 {{ARGS}}
+
+# Get LND node 1 info
+ln-lnd1 *ARGS:
+  #!/usr/bin/env bash
+  ./misc/regtest_helper.sh ln-lnd1 {{ARGS}}
+
+# Get LND node 2 info
+ln-lnd2 *ARGS:
+  #!/usr/bin/env bash
+  ./misc/regtest_helper.sh ln-lnd2 {{ARGS}}
+
+# Bitcoin regtest commands
+btc *ARGS:
+  #!/usr/bin/env bash
+  ./misc/regtest_helper.sh btc {{ARGS}}
+
+# Mine blocks in regtest
+btc-mine blocks="10":
+  #!/usr/bin/env bash
+  ./misc/regtest_helper.sh btc-mine {{blocks}}
+
+# Show mint information
+mint-info:
+  #!/usr/bin/env bash
+  ./misc/regtest_helper.sh mint-info
+
+# Run integration tests against regtest environment
+mint-test:
+  #!/usr/bin/env bash
+  ./misc/regtest_helper.sh mint-test
+
+# Restart mints after recompiling (useful for development)
+restart-mints:
+  #!/usr/bin/env bash
+  ./misc/regtest_helper.sh restart-mints
+
+# Show regtest environment status
+regtest-status:
+  #!/usr/bin/env bash
+  ./misc/regtest_helper.sh show-status
+
+# Show regtest environment logs
+regtest-logs:
+  #!/usr/bin/env bash
+  ./misc/regtest_helper.sh show-logs
+
 run-examples:
   cargo r --example p2pk
   cargo r --example mint-token
@@ -192,7 +254,6 @@ release m="":
     "-p cdk-redb"
     "-p cdk-signatory"
     "-p cdk"
-    "-p cdk-rexie"
     "-p cdk-axum"
     "-p cdk-mint-rpc"
     "-p cdk-cln"
@@ -221,7 +282,6 @@ check-docs:
     "-p cdk-redb"
     "-p cdk-sqlite"
     "-p cdk-axum"
-    "-p cdk-rexie"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
@@ -249,7 +309,6 @@ docs-strict:
     "-p cdk-redb"
     "-p cdk-sqlite"
     "-p cdk-axum"
-    "-p cdk-rexie"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"

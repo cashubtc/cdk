@@ -92,3 +92,4 @@ reserve_fee_min = 4
 # enabled_check_mint_quote=true
 # enabled_check_melt_quote=true
 # enabled_restore=true
+# enabled_check_proof_state=true

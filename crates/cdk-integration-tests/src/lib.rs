@@ -2,7 +2,7 @@ use std::env;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
-use cashu::Bolt11Invoice;
+use cashu::{Bolt11Invoice, PaymentMethod};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::{MintQuoteState, NotificationPayload, State};
 use cdk::wallet::WalletSubscription;
@@ -86,6 +86,10 @@ pub async fn wait_for_mint_to_be_paid(
                 if response.state == MintQuoteState::Paid {
                     return Ok(());
                 }
+            } else if let NotificationPayload::MintQuoteBolt12Response(response) = msg {
+                if response.amount_paid > Amount::ZERO {
+                    return Ok(());
+                }
             }
         }
         Err(anyhow!("Subscription ended without quote being paid"))
@@ -95,18 +99,40 @@ pub async fn wait_for_mint_to_be_paid(
 
     let check_interval = Duration::from_secs(5);
 
+    let method = wallet
+        .localstore
+        .get_mint_quote(mint_quote_id)
+        .await?
+        .map(|q| q.payment_method)
+        .unwrap_or_default();
+
     let periodic_task = async {
         loop {
-            match wallet.mint_quote_state(mint_quote_id).await {
-                Ok(result) => {
-                    if result.state == MintQuoteState::Paid {
-                        tracing::info!("mint quote paid via poll");
-                        return Ok(());
+            match method {
+                PaymentMethod::Bolt11 => match wallet.mint_quote_state(mint_quote_id).await {
+                    Ok(result) => {
+                        if result.state == MintQuoteState::Paid {
+                            tracing::info!("mint quote paid via poll");
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Could not check mint quote status: {:?}", e);
+                    }
+                },
+                PaymentMethod::Bolt12 => {
+                    match wallet.mint_bolt12_quote_state(mint_quote_id).await {
+                        Ok(result) => {
+                            if result.amount_paid > Amount::ZERO {
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Could not check mint quote status: {:?}", e);
+                        }
                     }
                 }
-                Err(e) => {
-                    tracing::error!("Could not check mint quote status: {:?}", e);
-                }
+                PaymentMethod::Custom(_) => (),
             }
             sleep(check_interval).await;
         }
@@ -166,7 +192,6 @@ pub async fn init_lnd_client() -> LndClient {
 pub async fn pay_if_regtest(invoice: &Bolt11Invoice) -> Result<()> {
     // Check if the invoice is for the regtest network
     if invoice.network() == bitcoin::Network::Regtest {
-        println!("Regtest invoice");
         let lnd_client = init_lnd_client().await;
         lnd_client.pay_invoice(invoice.to_string()).await?;
         Ok(())

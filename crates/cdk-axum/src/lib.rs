@@ -19,6 +19,7 @@ use router_handlers::*;
 
 #[cfg(feature = "auth")]
 mod auth;
+mod bolt12_router;
 pub mod cache;
 mod router_handlers;
 mod ws;
@@ -51,6 +52,11 @@ mod swagger_imports {
 
 #[cfg(feature = "swagger")]
 use swagger_imports::*;
+
+use crate::bolt12_router::{
+    cache_post_melt_bolt12, cache_post_mint_bolt12, get_check_mint_bolt12_quote,
+    post_melt_bolt12_quote, post_mint_bolt12_quote,
+};
 
 /// CDK Mint State
 #[derive(Clone)]
@@ -134,14 +140,19 @@ pub struct MintState {
 pub struct ApiDocV1;
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
-pub async fn create_mint_router(mint: Arc<Mint>) -> Result<Router> {
-    create_mint_router_with_custom_cache(mint, Default::default()).await
+pub async fn create_mint_router(mint: Arc<Mint>, include_bolt12: bool) -> Result<Router> {
+    create_mint_router_with_custom_cache(mint, Default::default(), include_bolt12).await
 }
 
 async fn cors_middleware(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> Response {
+    #[cfg(feature = "auth")]
+    let allowed_headers = "Content-Type, Clear-auth, Blind-auth";
+    #[cfg(not(feature = "auth"))]
+    let allowed_headers = "Content-Type";
+
     // Handle preflight requests
     if req.method() == axum::http::Method::OPTIONS {
         let mut response = Response::new("".into());
@@ -154,7 +165,7 @@ async fn cors_middleware(
         );
         response.headers_mut().insert(
             "Access-Control-Allow-Headers",
-            "Content-Type".parse().unwrap(),
+            allowed_headers.parse().unwrap(),
         );
         return response;
     }
@@ -171,7 +182,7 @@ async fn cors_middleware(
     );
     response.headers_mut().insert(
         "Access-Control-Allow-Headers",
-        "Content-Type".parse().unwrap(),
+        allowed_headers.parse().unwrap(),
     );
 
     response
@@ -182,6 +193,7 @@ async fn cors_middleware(
 pub async fn create_mint_router_with_custom_cache(
     mint: Arc<Mint>,
     cache: HttpCache,
+    include_bolt12: bool,
 ) -> Result<Router> {
     let state = MintState {
         mint,
@@ -212,9 +224,7 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/filter/spent/{keyset_id}", get(get_spent_filter))
         .route("/filter/issued/{keyset_id}", get(get_issued_filter));
 
-    let mint_router = Router::new()
-        .nest("/v1", v1_router)
-        .layer(from_fn(cors_middleware));
+    let mint_router = Router::new().nest("/v1", v1_router);
 
     #[cfg(feature = "auth")]
     let mint_router = {
@@ -222,7 +232,34 @@ pub async fn create_mint_router_with_custom_cache(
         mint_router.nest("/v1", auth_router)
     };
 
-    let mint_router = mint_router.with_state(state);
+    // Conditionally create and merge bolt12_router
+    let mint_router = if include_bolt12 {
+        let bolt12_router = create_bolt12_router(state.clone());
+        mint_router.nest("/v1", bolt12_router)
+    } else {
+        mint_router
+    };
+
+    let mint_router = mint_router
+        .layer(from_fn(cors_middleware))
+        .with_state(state);
 
     Ok(mint_router)
+}
+
+fn create_bolt12_router(state: MintState) -> Router<MintState> {
+    Router::new()
+        .route("/melt/quote/bolt12", post(post_melt_bolt12_quote))
+        .route(
+            "/melt/quote/bolt12/{quote_id}",
+            get(get_check_melt_bolt11_quote),
+        )
+        .route("/melt/bolt12", post(cache_post_melt_bolt12))
+        .route("/mint/quote/bolt12", post(post_mint_bolt12_quote))
+        .route(
+            "/mint/quote/bolt12/{quote_id}",
+            get(get_check_mint_bolt12_quote),
+        )
+        .route("/mint/bolt12", post(cache_post_mint_bolt12))
+        .with_state(state)
 }

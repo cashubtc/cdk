@@ -22,4 +22,5 @@ pub static MIGRATIONS: &[(&str, &str)] = &[
     ("20250415093121_drop_keystore_foreign.sql", include_str!(r#"./migrations/20250415093121_drop_keystore_foreign.sql"#)),
     ("20250626120251_rename_blind_message_y_to_b.sql", include_str!(r#"./migrations/20250626120251_rename_blind_message_y_to_b.sql"#)),
     ("20250628111513_add_gcs_filters.sql", include_str!(r#"./migrations/20250628111513_add_gcs_filters.sql"#)),
+    ("20250706101057_bolt12.sql", include_str!(r#"./migrations/20250706101057_bolt12.sql"#)),
 ];

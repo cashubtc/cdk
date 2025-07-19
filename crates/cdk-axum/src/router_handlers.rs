@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use cdk::error::{ErrorCode, ErrorResponse};
 #[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
-use cdk::nuts::nut24::GetFilterResponse;
+use cdk::nuts::nut25::GetFilterResponse;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
@@ -23,6 +23,8 @@ use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
 use crate::MintState;
 
+/// Macro to add cache to endpoint
+#[macro_export]
 macro_rules! post_cache_wrapper {
     ($handler:ident, $request_type:ty, $response_type:ty) => {
         paste! {
@@ -164,11 +166,11 @@ pub(crate) async fn post_mint_bolt11_quote(
 
     let quote = state
         .mint
-        .get_mint_bolt11_quote(payload)
+        .get_mint_quote(payload.into())
         .await
         .map_err(into_response)?;
 
-    Ok(Json(quote))
+    Ok(Json(quote.try_into().map_err(into_response)?))
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -213,7 +215,7 @@ pub(crate) async fn get_check_mint_bolt11_quote(
             into_response(err)
         })?;
 
-    Ok(Json(quote))
+    Ok(Json(quote.try_into().map_err(into_response)?))
 }
 
 #[instrument(skip_all)]
@@ -300,7 +302,7 @@ pub(crate) async fn post_melt_bolt11_quote(
 
     let quote = state
         .mint
-        .get_melt_bolt11_quote(&payload)
+        .get_melt_quote(payload.into())
         .await
         .map_err(into_response)?;
 
@@ -383,11 +385,7 @@ pub(crate) async fn post_melt_bolt11(
             .map_err(into_response)?;
     }
 
-    let res = state
-        .mint
-        .melt_bolt11(&payload)
-        .await
-        .map_err(into_response)?;
+    let res = state.mint.melt(&payload).await.map_err(into_response)?;
 
     Ok(Json(res))
 }
