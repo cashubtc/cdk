@@ -759,11 +759,32 @@ async fn start_services(
     }
 
     let shutdown = Arc::new(Notify::new());
-    let mint_clone = Arc::clone(&mint);
     tokio::spawn({
         let shutdown = Arc::clone(&shutdown);
+        let mint_clone = Arc::clone(&mint);
         async move { mint_clone.wait_for_paid_invoices(shutdown).await }
     });
+    if settings.gcs_settings.enabled {
+        // Clone the required settings values before moving into the async block
+        let inverse_false_positive_rate = settings.gcs_settings.inverse_false_positive_rate;
+        let remainder_bitlegth = settings.gcs_settings.remainder_bitlegth;
+        let wake_up_delay = settings.gcs_settings.wake_up_delay;
+
+        tokio::spawn({
+            let shutdown = Arc::clone(&shutdown);
+            let mint_clone = Arc::clone(&mint);
+            async move {
+                mint_clone
+                    .gcs_filters_background_task(
+                        shutdown,
+                        inverse_false_positive_rate,
+                        remainder_bitlegth,
+                        wake_up_delay,
+                    )
+                    .await
+            }
+        });
+    }
 
     let socket_addr = SocketAddr::from_str(&format!("{listen_addr}:{listen_port}"))?;
 

@@ -8,11 +8,11 @@ use std::str::FromStr;
 use async_rusqlite::{query, DatabaseExecutor, Transaction};
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::common::QuoteTTL;
+use cdk_common::common::{GCSFilter, QuoteTTL};
 use cdk_common::database::{
-    self, MintDatabase, MintDbWriterFinalizer, MintKeyDatabaseTransaction, MintKeysDatabase,
-    MintProofsDatabase, MintProofsTransaction, MintQuotesDatabase, MintQuotesTransaction,
-    MintSignatureTransaction, MintSignaturesDatabase,
+    self, MintDatabase, MintDbWriterFinalizer, MintFiltersDatabase, MintKeyDatabaseTransaction,
+    MintKeysDatabase, MintProofsDatabase, MintProofsTransaction, MintQuotesDatabase,
+    MintQuotesTransaction, MintSignatureTransaction, MintSignaturesDatabase,
 };
 use cdk_common::mint::{
     self, IncomingPayment, Issuance, MeltPaymentRequest, MeltQuote, MintKeySetInfo, MintQuote,
@@ -34,8 +34,8 @@ use uuid::Uuid;
 use crate::common::{create_sqlite_pool, migrate};
 use crate::stmt::Column;
 use crate::{
-    column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
-    unpack_into,
+    column_as_binary, column_as_nullable_number, column_as_nullable_string, column_as_number,
+    column_as_string, unpack_into,
 };
 
 mod async_rusqlite;
@@ -1459,7 +1459,7 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
     async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
-    ) -> Result<Vec<BlindSignature>, Self::Err> {
+    ) -> Result<Vec<(PublicKey, BlindSignature)>, Self::Err> {
         Ok(query(
             r#"
             SELECT
@@ -1467,7 +1467,8 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
                 amount,
                 c,
                 dleq_e,
-                dleq_s
+                dleq_s,
+                blinded_message
             FROM
                 blind_signature
             WHERE
@@ -1478,8 +1479,17 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
         .fetch_all(&self.pool)
         .await?
         .into_iter()
-        .map(sqlite_row_to_blind_signature)
-        .collect::<Result<Vec<BlindSignature>, _>>()?)
+        .map(|mut row| {
+            Ok((
+                column_as_string!(
+                    &row.pop().ok_or(Error::InvalidDbResponse)?,
+                    PublicKey::from_hex,
+                    PublicKey::from_slice
+                ),
+                sqlite_row_to_blind_signature(row)?,
+            ))
+        })
+        .collect::<Result<Vec<(PublicKey, BlindSignature)>, Error>>()?)
     }
 
     /// Get [`BlindSignature`]s for quote
@@ -1507,6 +1517,149 @@ impl MintSignaturesDatabase for MintSqliteDatabase {
         .into_iter()
         .map(sqlite_row_to_blind_signature)
         .collect::<Result<Vec<BlindSignature>, _>>()?)
+    }
+}
+
+#[async_trait]
+impl MintFiltersDatabase for MintSqliteDatabase {
+    type Err = database::Error;
+
+    async fn store_spent_filter(&self, keyset_id: &Id, filter: GCSFilter) -> Result<(), Self::Err> {
+        query(
+            r#"
+            INSERT INTO spent_filters
+            (keyset_id, content, num_items, inv_false_positive_rate, remainder_bitlength, time)
+            VALUES (:keyset_id, :content, :num_items, :inv_false_positive_rate, :remainder_bitlength, :time)
+            ON CONFLICT(keyset_id) DO UPDATE SET
+            content = excluded.content,
+            num_items = excluded.num_items,
+            inv_false_positive_rate = excluded.inv_false_positive_rate,
+            remainder_bitlength = excluded.remainder_bitlength,
+            time = excluded.time
+            "#,
+        )
+        .bind(":keyset_id", keyset_id.to_string())
+        .bind(":content", filter.content)
+        .bind(":num_items", filter.num_items as i64)
+        .bind(":inv_false_positive_rate", filter.m as i64)
+        .bind(":remainder_bitlength", filter.p as i64)
+        .bind(":time", filter.time)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_spent_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err> {
+        let result = query(
+            r#"
+            SELECT content, num_items, inv_false_positive_rate, remainder_bitlength, time
+            FROM spent_filters WHERE keyset_id = :keyset_id
+            "#,
+        )
+        .bind(":keyset_id", keyset_id.to_string())
+        .fetch_one(&self.pool)
+        .await?
+        .map(sqlite_row_to_gcs_filter)
+        .transpose()?;
+        Ok(result)
+    }
+
+    async fn update_spent_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            UPDATE spent_filters
+            SET content = :content,
+                num_items = :num_items,
+                inv_false_positive_rate = :inv_false_positive_rate,
+                remainder_bitlength = :remainder_bitlength,
+                time = :time
+            WHERE keyset_id = :keyset_id
+            "#,
+        )
+        .bind(":keyset_id", keyset_id.to_string())
+        .bind(":content", filter.content)
+        .bind(":num_items", filter.num_items as i64)
+        .bind(":inv_false_positive_rate", filter.m as i64)
+        .bind(":remainder_bitlength", filter.p as i64)
+        .bind(":time", filter.time)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn store_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            INSERT INTO issued_filters
+            (keyset_id, content, num_items, inv_false_positive_rate, remainder_bitlength, time)
+            VALUES (:keyset_id, :content, :num_items, :inv_false_positive_rate, :remainder_bitlength, :time)
+            ON CONFLICT(keyset_id) DO UPDATE SET
+            content = excluded.content,
+            num_items = excluded.num_items,
+            inv_false_positive_rate = excluded.inv_false_positive_rate,
+            remainder_bitlength = excluded.remainder_bitlength,
+            time = excluded.time
+            "#,
+        )
+        .bind(":keyset_id", keyset_id.to_string())
+        .bind(":content", filter.content)
+        .bind(":num_items", filter.num_items as i64)
+        .bind(":inv_false_positive_rate", filter.m as i64)
+        .bind(":remainder_bitlength", filter.p as i64)
+        .bind(":time", filter.time)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_issued_filter(&self, keyset_id: &Id) -> Result<Option<GCSFilter>, Self::Err> {
+        let result = query(
+            r#"
+            SELECT content, num_items, inv_false_positive_rate, remainder_bitlength, time
+            FROM issued_filters WHERE keyset_id = :keyset_id
+            "#,
+        )
+        .bind(":keyset_id", keyset_id.to_string())
+        .fetch_one(&self.pool)
+        .await?
+        .map(sqlite_row_to_gcs_filter)
+        .transpose()?;
+        Ok(result)
+    }
+
+    async fn update_issued_filter(
+        &self,
+        keyset_id: &Id,
+        filter: GCSFilter,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            UPDATE issued_filters
+            SET content = :content,
+                num_items = :num_items,
+                inv_false_positive_rate = :inv_false_positive_rate,
+                remainder_bitlength = :remainder_bitlength,
+                time = :time
+            WHERE keyset_id = :keyset_id
+            "#,
+        )
+        .bind(":keyset_id", keyset_id.to_string())
+        .bind(":content", filter.content)
+        .bind(":num_items", filter.num_items as i64)
+        .bind(":inv_false_positive_rate", filter.m as i64)
+        .bind(":remainder_bitlength", filter.p as i64)
+        .bind(":time", filter.time)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 }
 
@@ -1760,6 +1913,26 @@ fn sqlite_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Err
         keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
         c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
         dleq,
+    })
+}
+
+fn sqlite_row_to_gcs_filter(row: Vec<Column>) -> Result<GCSFilter, Error> {
+    unpack_into!(
+        let (content, num_items, inv_false_positive_rate, remainder_bitlength, time) = row
+    );
+
+    let content: Vec<u8> = column_as_binary!(content);
+    let num_items: i64 = column_as_number!(num_items);
+    let inv_false_positive_rate: i64 = column_as_number!(inv_false_positive_rate);
+    let remainder_bitlength: i64 = column_as_number!(remainder_bitlength);
+    let time: i64 = column_as_number!(time);
+
+    Ok(GCSFilter {
+        content,
+        num_items: num_items as u32,
+        m: inv_false_positive_rate as u32,
+        p: remainder_bitlength as u32,
+        time,
     })
 }
 

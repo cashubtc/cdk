@@ -238,6 +238,7 @@ pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
     pub ln: Ln,
+    pub gcs_settings: GcsFilterSettings,
     #[cfg(feature = "cln")]
     pub cln: Option<Cln>,
     #[cfg(feature = "lnbits")]
@@ -284,6 +285,30 @@ pub struct MintManagementRpc {
     pub address: Option<String>,
     pub port: Option<u16>,
     pub tls_dir_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GcsFilterSettings {
+    /// Inverse of False Positive Rate
+    pub inverse_false_positive_rate: u32,
+    /// Bit-length for the remainder in Golomb-Rice encoding
+    pub remainder_bitlegth: u32,
+    /// Delay in seconds between successive wake-ups of the background task
+    /// that recomputes the filters
+    pub wake_up_delay: u64,
+    /// Enable recompute task
+    pub enabled: bool,
+}
+
+impl Default for GcsFilterSettings {
+    fn default() -> Self {
+        GcsFilterSettings {
+            inverse_false_positive_rate: 784931,
+            remainder_bitlegth: 19,
+            wake_up_delay: 3600,
+            enabled: true,
+        }
+    }
 }
 
 impl Settings {
