@@ -118,6 +118,10 @@ pub enum Error {
     #[error("Internal receive error: {0}")]
     RecvError(String),
 
+    /// Not supported
+    #[error("Functionality not supported")]
+    NotSupported,
+
     // Mint Errors
     /// Minting is disabled
     #[error("Minting is disabled")]

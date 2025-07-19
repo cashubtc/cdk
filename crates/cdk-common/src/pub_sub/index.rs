@@ -10,10 +10,10 @@ use super::SubId;
 pub trait Indexable {
     /// The type of the index, it is unknown and it is up to the Manager's
     /// generic type
-    type Type: PartialOrd + Ord + Send + Sync + Debug;
+    type Index: Clone + PartialOrd + Ord + Send + Sync + Debug;
 
     /// To indexes
-    fn to_indexes(&self) -> Vec<Index<Self::Type>>;
+    fn to_indexes(&self) -> Vec<Index<Self::Index>>;
 }
 
 #[derive(Debug, Ord, PartialOrd, PartialEq, Eq, Clone)]
