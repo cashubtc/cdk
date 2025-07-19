@@ -23,7 +23,7 @@ impl Mint {
             return Ok(());
         }
 
-        let ln = match self.ln.get(&PaymentProcessorKey::new(
+        let ln = match self.payment_processors.get(&PaymentProcessorKey::new(
             quote.unit.clone(),
             quote.payment_method.clone(),
         )) {

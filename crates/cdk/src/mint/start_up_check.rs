@@ -27,7 +27,7 @@ impl Mint {
                 method: PaymentMethod::Bolt11,
             };
 
-            let ln_backend = match self.ln.get(&ln_key) {
+            let ln_backend = match self.payment_processors.get(&ln_key) {
                 Some(ln_backend) => ln_backend,
                 None => {
                     tracing::warn!("No backend for ln key: {:?}", ln_key);

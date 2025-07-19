@@ -20,7 +20,7 @@ pub(crate) async fn handle(
     let mut subscription = context
         .state
         .mint
-        .pubsub_manager
+        .pubsub_manager()
         .try_subscribe(params)
         .await
         .map_err(|_| WsError::ParseError)?;
