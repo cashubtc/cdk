@@ -352,7 +352,12 @@ impl MintPayment for FakeWallet {
             }
             IncomingPaymentOptions::Bolt11(bolt11_options) => {
                 let description = bolt11_options.description.unwrap_or_default();
-                let amount = bolt11_options.amount;
+                let amount = if unit == &CurrencyUnit::Sat {
+                    to_unit(bolt11_options.amount, unit, &CurrencyUnit::Msat)
+                        .unwrap_or(bolt11_options.amount * Amount::from(1000))
+                } else {
+                    bolt11_options.amount
+                };
                 let expiry = bolt11_options.unix_expiry;
 
                 // Since this is fake we just use the amount no matter the unit to create an invoice
