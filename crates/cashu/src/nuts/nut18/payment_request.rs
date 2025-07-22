@@ -358,14 +358,8 @@ mod tests {
 
         // Check round-trip conversion
         assert_eq!(converted_back.kind, secret_request.kind);
-        assert_eq!(
-            converted_back.secret_data.data,
-            secret_request.secret_data.data
-        );
-        assert_eq!(
-            converted_back.secret_data.tags,
-            secret_request.secret_data.tags
-        );
+        assert_eq!(converted_back.data, secret_request.data);
+        assert_eq!(converted_back.tags, secret_request.tags);
 
         // Test in PaymentRequest builder
         let payment_request = PaymentRequest::builder()
@@ -458,7 +452,7 @@ mod tests {
         // Verify the P2PK data was preserved correctly
         if let Some(nut10_secret) = decoded_request.nut10 {
             assert_eq!(nut10_secret.kind, Kind::P2PK);
-            assert_eq!(nut10_secret.secret_data.data, pubkey_hex);
+            assert_eq!(nut10_secret.data, pubkey_hex);
         } else {
             panic!("NUT10 secret data missing in decoded payment request");
         }
