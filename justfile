@@ -129,6 +129,18 @@ typos:
 typos-fix:
   just typos -w
 
+# Goose AI Recipe Commands
+
+# Create git message from staged changes using Goose AI
+goose-changelog-update:
+  #!/usr/bin/env bash
+  goose run --recipe ./misc/recipes/changelog-update.yaml --interactive
+  
+# Update changelog from staged changes using Goose AI  
+goose-git-msg:
+  #!/usr/bin/env bash
+  goose run --recipe ./misc/recipes/git-commit-message.yaml --interactive
+
 itest db:
   #!/usr/bin/env bash
   ./misc/itests.sh "{{db}}"

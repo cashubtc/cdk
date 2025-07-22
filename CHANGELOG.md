@@ -4,6 +4,20 @@
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
+## [Unreleased]
+
+### Added
+- cashu: `KeySetInfos` type alias and `KeySetInfosMethods` trait for filtering keysets ([thesimplekid]).
+
+### Changed
+- cdk: Refactored wallet keyset management methods for better clarity and separation of concerns ([thesimplekid]).
+- cdk: Renamed `get_keyset_keys` to `fetch_keyset_keys` to indicate network operation ([thesimplekid]).
+- cdk: Renamed `get_active_mint_keyset` to `fetch_active_keyset` for consistency ([thesimplekid]).
+- cdk: Updated `get_active_mint_keysets` to `refresh_keysets` with improved keyset refresh logic ([thesimplekid]).
+- cdk: Improved `load_mint_keysets` method to be the primary method for getting keysets for token operations ([thesimplekid]).
+- cdk: Enhanced keyset management with better offline/online operation separation ([thesimplekid]).
+- cdk: Updated method documentation to clarify storage vs network operations ([thesimplekid]).
+
 
 
 ## [0.11.0](https://github.com/cashubtc/cdk/releases/tag/v0.11.0)
