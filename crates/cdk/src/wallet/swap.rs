@@ -1,3 +1,4 @@
+use cdk_common::nut02::KeySetInfosMethods;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
@@ -167,11 +168,12 @@ impl Wallet {
         ensure_cdk!(proofs_sum >= amount, Error::InsufficientFunds);
 
         let active_keyset_ids = self
-            .get_active_mint_keysets()
+            .refresh_keysets()
             .await?
-            .into_iter()
+            .active()
             .map(|k| k.id)
             .collect();
+
         let keyset_fees = self.get_keyset_fees().await?;
         let proofs = Wallet::select_proofs(
             amount,
@@ -203,7 +205,7 @@ impl Wallet {
         include_fees: bool,
     ) -> Result<PreSwap, Error> {
         tracing::info!("Creating swap");
-        let active_keyset_id = self.get_active_mint_keyset().await?.id;
+        let active_keyset_id = self.fetch_active_keyset().await?.id;
 
         // Desired amount is either amount passed or value of all proof
         let proofs_total = proofs.total_amount()?;

@@ -167,12 +167,12 @@ impl AuthWallet {
         self.client.get_mint_info().await.map(Some).or(Ok(None))
     }
 
-    /// Get keys for mint keyset
+    /// Fetch keys for mint keyset
     ///
     /// Selected keys from localstore if they are already known
     /// If they are not known queries mint for keyset id and stores the [`Keys`]
     #[instrument(skip(self))]
-    pub async fn get_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
+    pub async fn fetch_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
         let keys = if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
             keys
         } else {
@@ -188,56 +188,45 @@ impl AuthWallet {
         Ok(keys)
     }
 
-    /// Get active keyset for mint
+    /// Fetch active keyset for mint and ensure we have their keys
     ///
     /// Queries mint for current keysets then gets [`Keys`] for any unknown
     /// keysets
     #[instrument(skip(self))]
-    pub async fn get_active_mint_blind_auth_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
-        let keysets = self.client.get_mint_blind_auth_keysets().await?;
-        let keysets = keysets.keysets;
+    pub async fn fetch_active_mint_blind_auth_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
+        let keysets_response = self.client.get_mint_blind_auth_keysets().await?;
+        let keysets = keysets_response.keysets;
 
+        // Update local store with keysets
         self.localstore
             .add_mint_keysets(self.mint_url.clone(), keysets.clone())
             .await?;
 
+        // Filter for auth keysets
         let active_keysets = keysets
             .clone()
             .into_iter()
             .filter(|k| k.unit == CurrencyUnit::Auth)
             .collect::<Vec<KeySetInfo>>();
 
-        match self
-            .localstore
-            .get_mint_keysets(self.mint_url.clone())
-            .await?
-        {
-            Some(known_keysets) => {
-                let unknown_keysets: Vec<&KeySetInfo> = keysets
-                    .iter()
-                    .filter(|k| known_keysets.contains(k))
-                    .collect();
-
-                for keyset in unknown_keysets {
-                    self.get_keyset_keys(keyset.id).await?;
-                }
-            }
-            None => {
-                for keyset in keysets {
-                    self.get_keyset_keys(keyset.id).await?;
-                }
+        // Ensure we have keys for all these keysets
+        for keyset in &keysets {
+            if self.localstore.get_keys(&keyset.id).await?.is_none() {
+                tracing::debug!("Fetching missing keys for auth keyset {}", keyset.id);
+                self.fetch_keyset_keys(keyset.id).await?;
             }
         }
+
         Ok(active_keysets)
     }
 
-    /// Get active keyset for mint
+    /// Fetch active keyset for mint
     ///
     /// Queries mint for current keysets then gets [`Keys`] for any unknown
     /// keysets
     #[instrument(skip(self))]
-    pub async fn get_active_mint_blind_auth_keyset(&self) -> Result<KeySetInfo, Error> {
-        let active_keysets = self.get_active_mint_blind_auth_keysets().await?;
+    pub async fn fetch_active_mint_blind_auth_keyset(&self) -> Result<KeySetInfo, Error> {
+        let active_keysets = self.fetch_active_mint_blind_auth_keysets().await?;
 
         let keyset = active_keysets.first().ok_or(Error::NoActiveKeyset)?;
         Ok(keyset.clone())
@@ -334,7 +323,7 @@ impl AuthWallet {
 
         let auth_token = self.client.get_auth_token().await?;
 
-        let active_keyset_id = self.get_active_mint_blind_auth_keysets().await?;
+        let active_keyset_id = self.fetch_active_mint_blind_auth_keysets().await?;
         tracing::debug!("Active ketset: {:?}", active_keyset_id);
 
         match &auth_token {
@@ -369,7 +358,7 @@ impl AuthWallet {
             }
         }
 
-        let active_keyset_id = self.get_active_mint_blind_auth_keyset().await?.id;
+        let active_keyset_id = self.fetch_active_mint_blind_auth_keyset().await?.id;
 
         let premint_secrets =
             PreMintSecrets::random(active_keyset_id, amount, &SplitTarget::Value(1.into()))?;
@@ -380,13 +369,13 @@ impl AuthWallet {
 
         let mint_res = self.client.post_mint_blind_auth(request).await?;
 
-        let keys = self.get_keyset_keys(active_keyset_id).await?;
+        let keys = self.fetch_keyset_keys(active_keyset_id).await?;
 
         // Verify the signature DLEQ is valid
         {
             assert!(mint_res.signatures.len() == premint_secrets.secrets.len());
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
-                let keys = self.get_keyset_keys(sig.keyset_id).await?;
+                let keys = self.fetch_keyset_keys(sig.keyset_id).await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
                 match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
                     Ok(_) => (),

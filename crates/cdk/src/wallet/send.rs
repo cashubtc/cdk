@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 
+use cdk_common::nut02::KeySetInfosMethods;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{Transaction, TransactionDirection};
 use tracing::instrument;
@@ -32,11 +33,8 @@ impl Wallet {
 
         // If online send check mint for current keysets fees
         if opts.send_kind.is_online() {
-            if let Err(e) = self.get_active_mint_keyset().await {
-                tracing::error!(
-                    "Error fetching active mint keyset: {:?}. Using stored keysets",
-                    e
-                );
+            if let Err(e) = self.refresh_keysets().await {
+                tracing::error!("Error refreshing keysets: {:?}. Using stored keysets", e);
             }
         }
 
@@ -78,11 +76,12 @@ impl Wallet {
 
         // Select proofs
         let active_keyset_ids = self
-            .get_active_mint_keysets()
+            .get_mint_keysets()
             .await?
-            .into_iter()
+            .active()
             .map(|k| k.id)
             .collect();
+
         let selected_proofs = Wallet::select_proofs(
             amount,
             available_proofs,
@@ -131,7 +130,7 @@ impl Wallet {
     ) -> Result<PreparedSend, Error> {
         // Split amount with fee if necessary
         let (send_amounts, send_fee) = if opts.include_fee {
-            let active_keyset_id = self.get_active_mint_keyset().await?.id;
+            let active_keyset_id = self.get_active_keyset().await?.id;
             let keyset_fee_ppk = self.get_keyset_fees_by_id(active_keyset_id).await?;
             tracing::debug!("Keyset fee per proof: {:?}", keyset_fee_ppk);
             let send_split = amount.split_with_fee(keyset_fee_ppk)?;
@@ -209,7 +208,7 @@ impl Wallet {
         let mut proofs_to_send = send.proofs_to_send;
 
         // Get active keyset ID
-        let active_keyset_id = self.get_active_mint_keyset().await?.id;
+        let active_keyset_id = self.fetch_active_keyset().await?.id;
         tracing::debug!("Active keyset ID: {:?}", active_keyset_id);
 
         // Get keyset fees
