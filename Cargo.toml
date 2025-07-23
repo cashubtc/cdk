@@ -50,6 +50,7 @@ cdk-axum = { path = "./crates/cdk-axum", default-features = false, version = "=0
 cdk-cln = { path = "./crates/cdk-cln", version = "=0.11.0" }
 cdk-lnbits = { path = "./crates/cdk-lnbits", version = "=0.11.0" }
 cdk-lnd = { path = "./crates/cdk-lnd", version = "=0.11.0" }
+cdk-ldk-node = { path = "./crates/cdk-ldk-node", version = "=0.11.0" }
 cdk-fake-wallet = { path = "./crates/cdk-fake-wallet", version = "=0.11.0" }
 cdk-payment-processor = { path = "./crates/cdk-payment-processor", default-features = true, version = "=0.11.0" }
 cdk-mint-rpc = { path = "./crates/cdk-mint-rpc", version = "=0.11.0" }
@@ -62,15 +63,18 @@ cdk-mintd = { path = "./crates/cdk-mintd", version = "=0.11.0", default-features
 clap = { version = "4.5.31", features = ["derive"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"
+config = { version = "0.15.11", features = ["toml"] }
 futures = { version = "0.3.28", default-features = false, features = ["async-await"] }
 lightning-invoice = { version = "0.33.0", features = ["serde", "std"] }
 lightning = { version = "0.1.2", default-features = false, features = ["std"]}
+ldk-node = { git = "https://github.com/lightningdevkit/ldk-node.git", branch = "release/0.6" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = { version = "2" }
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "test-util", "sync"] }
 tokio-util = { version = "0.7.11", default-features = false }
-tower-http = { version = "0.6.1", features = ["compression-full", "decompression-full", "cors", "trace"] }
+tower = "0.5.2"
+tower-http = { version = "0.6.1", features = ["compression-full", "decompression-full", "cors", "trace", "fs"] }
 tokio-tungstenite = { version = "0.26.0", default-features = false }
 tokio-stream = "0.1.15"
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }

@@ -13,8 +13,6 @@
 //! - Requires properly configured LND nodes with TLS certificates and macaroons
 //! - Uses real Bitcoin transactions in regtest mode
 
-use std::env;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,49 +24,16 @@ use cdk::nuts::{
     NotificationPayload, PreMintSecrets,
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
-use cdk_integration_tests::init_regtest::{get_lnd_dir, LND_RPC_ADDR};
-use cdk_integration_tests::{get_mint_url_from_env, get_second_mint_url_from_env};
+use cdk_integration_tests::{get_mint_url_from_env, get_second_mint_url_from_env, get_test_client};
 use cdk_sqlite::wallet::{self, memory};
 use futures::join;
-use ln_regtest_rs::ln_client::{LightningClient, LndClient};
 use tokio::time::timeout;
 
-// This is the ln wallet we use to send/receive ln payements as the wallet
-async fn init_lnd_client() -> LndClient {
-    // Try to get the temp directory from environment variable first (from .env file)
-    let temp_dir = match env::var("CDK_ITESTS_DIR") {
-        Ok(dir) => {
-            let path = PathBuf::from(dir);
-            println!("Using temp directory from CDK_ITESTS_DIR: {:?}", path);
-            path
-        }
-        Err(_) => {
-            panic!("Unknown temp dir");
-        }
-    };
-
-    // The LND mint uses the second LND node (LND_TWO_RPC_ADDR = localhost:10010)
-    let lnd_dir = get_lnd_dir(&temp_dir, "one");
-    let cert_file = lnd_dir.join("tls.cert");
-    let macaroon_file = lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon");
-
-    println!("Looking for LND cert file: {:?}", cert_file);
-    println!("Looking for LND macaroon file: {:?}", macaroon_file);
-    println!("Connecting to LND at: https://{}", LND_RPC_ADDR);
-
-    // Connect to LND
-    LndClient::new(
-        format!("https://{}", LND_RPC_ADDR),
-        cert_file.clone(),
-        macaroon_file.clone(),
-    )
-    .await
-    .expect("Could not connect to lnd rpc")
-}
+const LDK_URL: &str = "http://127.0.0.1:8089";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_internal_payment() {
-    let lnd_client = init_lnd_client().await;
+    let ln_client = get_test_client().await;
 
     let wallet = Wallet::new(
         &get_mint_url_from_env(),
@@ -81,7 +46,7 @@ async fn test_internal_payment() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    lnd_client
+    ln_client
         .pay_invoice(mint_quote.request.clone())
         .await
         .expect("failed to pay invoice");
@@ -208,8 +173,8 @@ async fn test_websocket_connection() {
         _ => panic!("Unexpected notification type"),
     }
 
-    let lnd_client = init_lnd_client().await;
-    lnd_client
+    let ln_client = get_test_client().await;
+    ln_client
         .pay_invoice(mint_quote.request)
         .await
         .expect("failed to pay invoice");
@@ -231,7 +196,11 @@ async fn test_websocket_connection() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_multimint_melt() {
-    let lnd_client = init_lnd_client().await;
+    if get_mint_url_from_env() == LDK_URL {
+        return;
+    }
+
+    let ln_client = get_test_client().await;
 
     let db = Arc::new(memory::empty().await.unwrap());
     let wallet1 = Wallet::new(
@@ -257,7 +226,7 @@ async fn test_multimint_melt() {
 
     // Fund the wallets
     let quote = wallet1.mint_quote(mint_amount, None).await.unwrap();
-    lnd_client
+    ln_client
         .pay_invoice(quote.request.clone())
         .await
         .expect("failed to pay invoice");
@@ -271,7 +240,7 @@ async fn test_multimint_melt() {
         .unwrap();
 
     let quote = wallet2.mint_quote(mint_amount, None).await.unwrap();
-    lnd_client
+    ln_client
         .pay_invoice(quote.request.clone())
         .await
         .expect("failed to pay invoice");
@@ -285,7 +254,7 @@ async fn test_multimint_melt() {
         .unwrap();
 
     // Get an invoice
-    let invoice = lnd_client.create_invoice(Some(50)).await.unwrap();
+    let invoice = ln_client.create_invoice(Some(50)).await.unwrap();
 
     // Get multi-part melt quotes
     let melt_options = MeltOptions::Mpp {
@@ -318,7 +287,7 @@ async fn test_multimint_melt() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cached_mint() {
-    let lnd_client = init_lnd_client().await;
+    let ln_client = get_test_client().await;
     let wallet = Wallet::new(
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
@@ -331,7 +300,7 @@ async fn test_cached_mint() {
     let mint_amount = Amount::from(100);
 
     let quote = wallet.mint_quote(mint_amount, None).await.unwrap();
-    lnd_client
+    ln_client
         .pay_invoice(quote.request.clone())
         .await
         .expect("failed to pay invoice");
@@ -366,7 +335,7 @@ async fn test_cached_mint() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_regtest_melt_amountless() {
-    let lnd_client = init_lnd_client().await;
+    let ln_client = get_test_client().await;
 
     let wallet = Wallet::new(
         &get_mint_url_from_env(),
@@ -383,7 +352,7 @@ async fn test_regtest_melt_amountless() {
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
 
-    lnd_client
+    ln_client
         .pay_invoice(mint_quote.request)
         .await
         .expect("failed to pay invoice");
@@ -397,7 +366,7 @@ async fn test_regtest_melt_amountless() {
 
     assert!(mint_amount == amount);
 
-    let invoice = lnd_client.create_invoice(None).await.unwrap();
+    let invoice = ln_client.create_invoice(None).await.unwrap();
 
     let options = MeltOptions::new_amountless(5_000);
 

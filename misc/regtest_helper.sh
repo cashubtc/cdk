@@ -12,6 +12,7 @@ elif [ ! -z "$CDK_ITESTS_DIR" ]; then
     echo "export CDK_ITESTS_DIR=\"$CDK_ITESTS_DIR\"" > "$ENV_FILE"
     echo "export CDK_TEST_MINT_URL=\"$CDK_TEST_MINT_URL\"" >> "$ENV_FILE"
     echo "export CDK_TEST_MINT_URL_2=\"$CDK_TEST_MINT_URL_2\"" >> "$ENV_FILE"
+    echo "export CDK_TEST_MINT_URL_3=\"$CDK_TEST_MINT_URL_3\"" >> "$ENV_FILE"
     echo "export CDK_MINTD_PID=\"$CDK_MINTD_PID\"" >> "$ENV_FILE"
     echo "export CDK_MINTD_LND_PID=\"$CDK_MINTD_LND_PID\"" >> "$ENV_FILE"
     echo "export CDK_REGTEST_PID=\"$CDK_REGTEST_PID\"" >> "$ENV_FILE"
@@ -111,6 +112,11 @@ mint_info() {
     echo
     echo "LND Mint (Port 8087):"
     curl -s "$CDK_TEST_MINT_URL_2/v1/info" | jq . 2>/dev/null || curl -s "$CDK_TEST_MINT_URL_2/v1/info"
+    echo
+    if [ ! -z "$CDK_TEST_MINT_URL_3" ]; then
+        echo "LDK Node Mint (Port 8089):"
+        curl -s "$CDK_TEST_MINT_URL_3/v1/info" | jq . 2>/dev/null || curl -s "$CDK_TEST_MINT_URL_3/v1/info"
+    fi
 }
 
 mint_test() {
@@ -125,6 +131,9 @@ show_env() {
     echo "CDK_ITESTS_DIR=$CDK_ITESTS_DIR"
     echo "CDK_TEST_MINT_URL=$CDK_TEST_MINT_URL"
     echo "CDK_TEST_MINT_URL_2=$CDK_TEST_MINT_URL_2"
+    if [ ! -z "$CDK_TEST_MINT_URL_3" ]; then
+        echo "CDK_TEST_MINT_URL_3=$CDK_TEST_MINT_URL_3"
+    fi
     echo "CDK_MINTD_PID=$CDK_MINTD_PID"
     echo "CDK_MINTD_LND_PID=$CDK_MINTD_LND_PID"
     echo "CDK_REGTEST_PID=$CDK_REGTEST_PID"
@@ -143,6 +152,15 @@ show_logs() {
         tail -10 "$CDK_ITESTS_DIR/lnd_mint/mintd.log"
     else
         echo "Log file not found"
+    fi
+    echo
+    if [ ! -z "$CDK_TEST_MINT_URL_3" ]; then
+        echo "=== Recent LDK Node Mint Logs ==="
+        if [ -f "$CDK_ITESTS_DIR/ldk_node_mint/mintd.log" ]; then
+            tail -10 "$CDK_ITESTS_DIR/ldk_node_mint/mintd.log"
+        else
+            echo "Log file not found"
+        fi
     fi
 }
 
@@ -179,6 +197,10 @@ procs:
     shell: "touch $CDK_ITESTS_DIR/lnd_mint/mintd.log && tail -f $CDK_ITESTS_DIR/lnd_mint/mintd.log"
     autostart: true
   
+  ldk-node-mint:
+    shell: "touch $CDK_ITESTS_DIR/ldk_node_mint/mintd.log && tail -f $CDK_ITESTS_DIR/ldk_node_mint/mintd.log"
+    autostart: true
+  
   bitcoind:
     shell: "touch $CDK_ITESTS_DIR/bitcoin/regtest/debug.log && tail -f $CDK_ITESTS_DIR/bitcoin/regtest/debug.log"
     autostart: true
@@ -197,6 +219,10 @@ procs:
   
   lnd-two:
     shell: "while [ ! -f $CDK_ITESTS_DIR/lnd/two/logs/bitcoin/regtest/lnd.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/lnd/two/logs/bitcoin/regtest/lnd.log"
+    autostart: true
+  
+  ldk-node:
+    shell: "while [ ! -f $CDK_ITESTS_DIR/ldk_node_mint/ldk_storage/ldk_node.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/ldk_node_mint/ldk_storage/ldk_node.log"
     autostart: true
 
 settings:
@@ -247,6 +273,14 @@ show_status() {
         echo "  ✓ LND Mint responding"
     else
         echo "  ❌ LND Mint not responding"
+    fi
+    
+    if [ ! -z "$CDK_TEST_MINT_URL_3" ]; then
+        if curl -s "$CDK_TEST_MINT_URL_3/v1/info" >/dev/null 2>&1; then
+            echo "  ✓ LDK Node Mint responding"
+        else
+            echo "  ❌ LDK Node Mint not responding"
+        fi
     fi
 }
 

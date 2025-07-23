@@ -91,7 +91,7 @@ impl Wallet {
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) && quote.expiry.ne(&0) {
-                tracing::info!("Minting after expiry");
+                tracing::info!("Attempting to mint expired quote.");
             }
 
             quote.clone()
