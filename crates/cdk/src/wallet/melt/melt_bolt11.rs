@@ -146,7 +146,7 @@ impl Wallet {
             .update_proofs_state(ys, State::Pending)
             .await?;
 
-        let active_keyset_id = self.get_active_mint_keyset().await?.id;
+        let active_keyset_id = self.fetch_active_keyset().await?.id;
 
         let count = self
             .localstore
@@ -317,7 +317,7 @@ impl Wallet {
         let available_proofs = self.get_unspent_proofs().await?;
 
         let active_keyset_ids = self
-            .get_active_mint_keysets()
+            .refresh_keysets()
             .await?
             .into_iter()
             .map(|k| k.id)

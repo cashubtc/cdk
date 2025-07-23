@@ -358,7 +358,7 @@ async fn test_fake_melt_change_in_quote() {
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
-    let keyset = wallet.get_active_mint_keyset().await.unwrap();
+    let keyset = wallet.fetch_active_keyset().await.unwrap();
 
     let premint_secrets =
         PreMintSecrets::random(keyset.id, 100.into(), &SplitTarget::default()).unwrap();

@@ -277,7 +277,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
     assert_eq!(state.amount_paid, Amount::ZERO);
     assert_eq!(state.amount_issued, Amount::ZERO);
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await?.id;
+    let active_keyset_id = wallet.fetch_active_keyset().await?.id;
 
     let pay_amount_msats = 10_000;
 

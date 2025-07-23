@@ -308,7 +308,7 @@ async fn test_cached_mint() {
         .await
         .unwrap();
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
     let http_client = HttpClient::new(get_mint_url_from_env().parse().unwrap(), None);
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
