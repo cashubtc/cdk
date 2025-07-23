@@ -2,41 +2,42 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-// Ensure at least one lightning backend is enabled at compile time
-#[cfg(not(any(
-    feature = "cln",
-    feature = "lnbits",
-    feature = "lnd",
-    feature = "fakewallet",
-    feature = "grpc-processor"
-)))]
-compile_error!(
-    "At least one lightning backend feature must be enabled: cln, lnbits, lnd, fakewallet, or grpc-processor"
-);
-
-// Ensure at least one database backend is enabled at compile time
-#[cfg(not(any(feature = "sqlite", feature = "postgres")))]
-compile_error!("At least one database backend feature must be enabled: sqlite or postgres");
+use std::sync::Arc;
 
 use anyhow::Result;
 use cdk_mintd::cli::CLIArgs;
-use cdk_mintd::{get_work_directory, load_settings};
+use cdk_mintd::config::LoggingConfig;
+use cdk_mintd::{get_work_directory, load_settings, setup_tracing};
 use clap::Parser;
-use tokio::main;
+use tokio::runtime::Runtime;
 
-#[main]
-async fn main() -> Result<()> {
-    let args = CLIArgs::parse();
+fn main() -> Result<()> {
+    let rt = Arc::new(Runtime::new()?);
 
-    let work_dir = get_work_directory(&args).await?;
-    let settings = load_settings(&work_dir, args.config)?;
+    let rt_clone = Arc::clone(&rt);
 
-    #[cfg(feature = "sqlcipher")]
-    let password = Some(CLIArgs::parse().password);
+    rt.block_on(async {
+        let args = CLIArgs::parse();
+        let work_dir = get_work_directory(&args).await?;
+        let settings = load_settings(&work_dir, args.config)?;
 
-    #[cfg(not(feature = "sqlcipher"))]
-    let password = None;
+        if args.enable_logging {
+            setup_tracing(&work_dir, &LoggingConfig::default())?;
+        }
 
-    // Use the main function that handles logging setup and cleanup
-    cdk_mintd::run_mintd(&work_dir, &settings, password, args.enable_logging).await
+        #[cfg(feature = "sqlcipher")]
+        let password = Some(CLIArgs::parse().password);
+
+        #[cfg(not(feature = "sqlcipher"))]
+        let password = None;
+
+        cdk_mintd::run_mintd(
+            &work_dir,
+            &settings,
+            password,
+            args.enable_logging,
+            Some(rt_clone),
+        )
+        .await
+    })
 }

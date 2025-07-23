@@ -101,6 +101,7 @@ export CDK_ITESTS_DIR=$(mktemp -d)
 export CDK_ITESTS_MINT_ADDR="127.0.0.1"
 export CDK_ITESTS_MINT_PORT_0=8085
 export CDK_ITESTS_MINT_PORT_1=8087
+export CDK_ITESTS_MINT_PORT_2=8089
 
 # Check if the temporary directory was created successfully
 if [[ ! -d "$CDK_ITESTS_DIR" ]]; then
@@ -158,16 +159,19 @@ fi
 # Create work directories for mints
 mkdir -p "$CDK_ITESTS_DIR/cln_mint"
 mkdir -p "$CDK_ITESTS_DIR/lnd_mint"
+mkdir -p "$CDK_ITESTS_DIR/ldk_node_mint"
 
 # Set environment variables for easy access
 export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
 export CDK_TEST_MINT_URL_2="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1"
+export CDK_TEST_MINT_URL_3="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_2"
 
 # Create state file for other terminal sessions
 ENV_FILE="/tmp/cdk_regtest_env"
 echo "export CDK_ITESTS_DIR=\"$CDK_ITESTS_DIR\"" > "$ENV_FILE"
 echo "export CDK_TEST_MINT_URL=\"$CDK_TEST_MINT_URL\"" >> "$ENV_FILE"
 echo "export CDK_TEST_MINT_URL_2=\"$CDK_TEST_MINT_URL_2\"" >> "$ENV_FILE"
+echo "export CDK_TEST_MINT_URL_3=\"$CDK_TEST_MINT_URL_3\"" >> "$ENV_FILE"
 echo "export CDK_REGTEST_PID=\"$CDK_REGTEST_PID\"" >> "$ENV_FILE"
 
 # Get the project root directory (where justfile is located)
@@ -230,9 +234,48 @@ echo "---"
 exec cargo run --bin cdk-mintd
 EOF
 
+cat > "$CDK_ITESTS_DIR/start_ldk_node_mint.sh" << EOF
+#!/usr/bin/env bash
+cd "$PROJECT_ROOT"
+export CDK_MINTD_URL="http://127.0.0.1:8089"
+export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR/ldk_node_mint"
+export CDK_MINTD_LISTEN_HOST="127.0.0.1"
+export CDK_MINTD_LISTEN_PORT=8089
+export CDK_MINTD_LN_BACKEND="ldk-node"
+export CDK_MINTD_MNEMONIC="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+export RUST_BACKTRACE=1
+export CDK_MINTD_DATABASE="$CDK_MINTD_DATABASE"
+
+# LDK Node specific environment variables
+export CDK_MINTD_LDK_NODE_BITCOIN_NETWORK="regtest"
+export CDK_MINTD_LDK_NODE_CHAIN_SOURCE_TYPE="bitcoinrpc"
+export CDK_MINTD_LDK_NODE_BITCOIND_RPC_HOST="127.0.0.1"
+export CDK_MINTD_LDK_NODE_BITCOIND_RPC_PORT=18443
+export CDK_MINTD_LDK_NODE_BITCOIND_RPC_USER="testuser"
+export CDK_MINTD_LDK_NODE_BITCOIND_RPC_PASSWORD="testpass"
+export CDK_MINTD_LDK_NODE_STORAGE_DIR_PATH="$CDK_ITESTS_DIR/ldk_mint"
+export CDK_MINTD_LDK_NODE_LDK_NODE_HOST="127.0.0.1"
+export CDK_MINTD_LDK_NODE_LDK_NODE_PORT=8090
+export CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE="p2p"
+export CDK_MINTD_LDK_NODE_FEE_PERCENT=0.02
+export CDK_MINTD_LDK_NODE_RESERVE_FEE_MIN=2
+
+echo "Starting LDK Node Mint on port 8089..."
+echo "Project root: $PROJECT_ROOT"
+echo "Working directory: \$CDK_MINTD_WORK_DIR"
+echo "Bitcoin RPC: 127.0.0.1:18443 (testuser/testpass)"
+echo "LDK Node listen: 127.0.0.1:8090"
+echo "Storage directory: \$CDK_MINTD_LDK_NODE_STORAGE_DIR_PATH"
+echo "Database type: \$CDK_MINTD_DATABASE"
+echo "---"
+
+exec cargo run --bin cdk-mintd --features ldk-node
+EOF
+
 # Make scripts executable
 chmod +x "$CDK_ITESTS_DIR/start_cln_mint.sh"
 chmod +x "$CDK_ITESTS_DIR/start_lnd_mint.sh"
+chmod +x "$CDK_ITESTS_DIR/start_ldk_node_mint.sh"
 
 echo
 echo "=============================================="
@@ -247,16 +290,18 @@ echo "  • LND Node 1: https://localhost:10009"
 echo "  • LND Node 2: https://localhost:10010"
 echo
 echo "CDK Mints (will be managed by mprocs):"
-echo "  • CLN Mint:   $CDK_TEST_MINT_URL"
-echo "  • LND Mint:   $CDK_TEST_MINT_URL_2"
+echo "  • CLN Mint:       $CDK_TEST_MINT_URL"
+echo "  • LND Mint:       $CDK_TEST_MINT_URL_2"
+echo "  • LDK Node Mint:  $CDK_TEST_MINT_URL_3"
 echo
 echo "Files and Directories:"
 echo "  • Working Directory:  $CDK_ITESTS_DIR"
-echo "  • Start Scripts:      $CDK_ITESTS_DIR/start_{cln,lnd}_mint.sh"
+echo "  • Start Scripts:      $CDK_ITESTS_DIR/start_{cln,lnd,ldk_node}_mint.sh"
 echo
 echo "Environment Variables (available in other terminals):"
 echo "  • CDK_TEST_MINT_URL=\"$CDK_TEST_MINT_URL\""
 echo "  • CDK_TEST_MINT_URL_2=\"$CDK_TEST_MINT_URL_2\""
+echo "  • CDK_TEST_MINT_URL_3=\"$CDK_TEST_MINT_URL_3\""
 echo "  • CDK_ITESTS_DIR=\"$CDK_ITESTS_DIR\""
 echo
 echo "Starting mprocs with direct process management..."
@@ -290,6 +335,13 @@ procs:
       CDK_ITESTS_DIR: "$CDK_ITESTS_DIR"
       CDK_MINTD_DATABASE: "$CDK_MINTD_DATABASE"
   
+  ldk-node-mint:
+    shell: "$CDK_ITESTS_DIR/start_ldk_node_mint.sh"
+    autostart: true
+    env:
+      CDK_ITESTS_DIR: "$CDK_ITESTS_DIR"
+      CDK_MINTD_DATABASE: "$CDK_MINTD_DATABASE"
+  
   bitcoind:
     shell: "while [ ! -f $CDK_ITESTS_DIR/bitcoin/regtest/debug.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/bitcoin/regtest/debug.log"
     autostart: true
@@ -308,6 +360,10 @@ procs:
   
   lnd-two:
     shell: "while [ ! -f $CDK_ITESTS_DIR/lnd/two/logs/bitcoin/regtest/lnd.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/lnd/two/logs/bitcoin/regtest/lnd.log"
+    autostart: true
+  
+  ldk-node:
+    shell: "while [ ! -f $CDK_ITESTS_DIR/ldk_mint/ldk_node.log ]; do sleep 1; done && $PROJECT_ROOT/misc/scripts/filtered_ldk_node_log.sh $CDK_ITESTS_DIR/ldk_mint/ldk_node.log"
     autostart: true
 
 settings:
