@@ -17,7 +17,7 @@ pub enum TransportType {
     Nostr,
     /// Http post
     #[serde(rename = "post")]
-    HttpPost
+    HttpPost,
 }
 
 impl fmt::Display for TransportType {
