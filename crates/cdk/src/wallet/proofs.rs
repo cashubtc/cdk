@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use cdk_common::wallet::TransactionId;
 use cdk_common::Id;
+use rustls::crypto::ActiveKeyExchange;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
@@ -232,7 +233,7 @@ impl Wallet {
         Ok((input_proofs, exchange))
     }
 
-    /// Select proofs using RGLI (Randomized Greedy Lazy Improvement) algorithm
+    /// Select proofs using RGLI (Randomized Greedy with Local Improvements) algorithm
     /// Ported from cashu-ts selectProofsToSend implementation
     #[instrument(skip_all)]
     pub fn select_proofs(
@@ -243,6 +244,7 @@ impl Wallet {
         include_fees: bool,
     ) -> Result<Proofs, Error> {
         use std::collections::HashSet;
+
         use rand::seq::SliceRandom;
 
         tracing::debug!(
@@ -277,7 +279,9 @@ impl Wallet {
         // Helper function to calculate net amount after fees
         let sum_ex_fees = |amount: Amount, fee_ppk: u64| -> Amount {
             if include_fees {
-                amount.checked_sub(Amount::from((fee_ppk + 999) / 1000)).unwrap_or(Amount::ZERO) // Ceiling division
+                amount
+                    .checked_sub(Amount::from((fee_ppk + 999) / 1000))
+                    .unwrap_or(Amount::ZERO) // Ceiling division
             } else {
                 amount
             }
@@ -289,7 +293,8 @@ impl Wallet {
             if net_sum < amount {
                 f64::INFINITY // Invalid solution
             } else {
-                let excess = amount.checked_add(Amount::from(fee_ppk / 1000))
+                let excess = amount
+                    .checked_add(Amount::from(fee_ppk / 1000))
                     .and_then(|total| total.checked_sub(amount))
                     .unwrap_or(Amount::ZERO);
                 let excess_u64: u64 = excess.into();
@@ -298,9 +303,8 @@ impl Wallet {
         };
 
         // Get fee for proof
-        let get_proof_fee_ppk = |proof: &Proof| -> u64 {
-            keyset_fees.get(&proof.keyset_id).copied().unwrap_or(0)
-        };
+        let get_proof_fee_ppk =
+            |proof: &Proof| -> u64 { keyset_fees.get(&proof.keyset_id).copied().unwrap_or(0) };
 
         // Pre-processing: create ProofWithFee objects and calculate totals
         let mut total_amount = Amount::ZERO;
@@ -310,14 +314,19 @@ impl Wallet {
         for proof in proofs {
             let ppk_fee = get_proof_fee_ppk(&proof);
             let ex_fee = if include_fees {
-                proof.amount.checked_sub(Amount::from(ppk_fee / 1000)).unwrap_or(Amount::ZERO)
+                proof
+                    .amount
+                    .checked_sub(Amount::from(ppk_fee / 1000))
+                    .unwrap_or(Amount::ZERO)
             } else {
                 proof.amount
             };
 
             // Sum all economical proofs (filtered below)
             if !include_fees || ex_fee > Amount::ZERO {
-                total_amount = total_amount.checked_add(proof.amount).ok_or(Error::AmountOverflow)?;
+                total_amount = total_amount
+                    .checked_add(proof.amount)
+                    .ok_or(Error::AmountOverflow)?;
                 total_fee_ppk += ppk_fee;
             }
 
@@ -330,7 +339,10 @@ impl Wallet {
 
         // Filter uneconomical proofs
         let mut spendable_proofs: Vec<ProofWithFee> = if include_fees {
-            proof_with_fees.into_iter().filter(|p| p.ex_fee > Amount::ZERO).collect()
+            proof_with_fees
+                .into_iter()
+                .filter(|p| p.ex_fee > Amount::ZERO)
+                .collect()
         } else {
             proof_with_fees
         };
@@ -342,13 +354,18 @@ impl Wallet {
         if !spendable_proofs.is_empty() {
             let end_index = if EXACT_MATCH {
                 // Keep proofs where ex_fee <= amount
-                spendable_proofs.iter().position(|p| p.ex_fee > amount).unwrap_or(spendable_proofs.len())
+                spendable_proofs
+                    .iter()
+                    .position(|p| p.ex_fee > amount)
+                    .unwrap_or(spendable_proofs.len())
             } else {
                 // Find next bigger proof and keep all up to that amount
                 match spendable_proofs.iter().position(|p| p.ex_fee >= amount) {
                     Some(bigger_index) => {
                         let next_bigger_ex_fee = spendable_proofs[bigger_index].ex_fee;
-                        spendable_proofs.iter().position(|p| p.ex_fee > next_bigger_ex_fee)
+                        spendable_proofs
+                            .iter()
+                            .position(|p| p.ex_fee > next_bigger_ex_fee)
                             .unwrap_or(spendable_proofs.len())
                     }
                     None => spendable_proofs.len(),
@@ -357,7 +374,9 @@ impl Wallet {
 
             // Adjust totals for removed proofs
             for removed_proof in &spendable_proofs[end_index..] {
-                total_amount = total_amount.checked_sub(removed_proof.proof.amount).unwrap_or(Amount::ZERO);
+                total_amount = total_amount
+                    .checked_sub(removed_proof.proof.amount)
+                    .unwrap_or(Amount::ZERO);
                 total_fee_ppk = total_fee_ppk.saturating_sub(removed_proof.ppk_fee);
             }
             spendable_proofs.truncate(end_index);
@@ -376,39 +395,48 @@ impl Wallet {
         let amount_val: u64 = amount.into();
         let max_over_amount = std::cmp::min(
             Amount::from((amount_val as f64 * (1.0 + MAX_OVRPCT / 100.0)).ceil() as u64),
-            amount.checked_add(Amount::from(MAX_OVRAMT)).unwrap_or(amount),
+            amount
+                .checked_add(Amount::from(MAX_OVRAMT))
+                .unwrap_or(amount),
         );
         let max_over_amount = std::cmp::min(max_over_amount, total_net_sum);
 
         // Binary search helper for sorted array
-        let binary_search_index = |arr: &[ProofWithFee], value: Amount, less_or_equal: bool| -> Option<usize> {
-            let mut left = 0;
-            let mut right = arr.len();
-            let mut result: Option<usize> = None;
+        let binary_search_index =
+            |arr: &[ProofWithFee], value: Amount, less_or_equal: bool| -> Option<usize> {
+                let mut left = 0;
+                let mut right = arr.len();
+                let mut result: Option<usize> = None;
 
-            while left < right {
-                let mid = left + (right - left) / 2;
-                let mid_value = arr[mid].ex_fee;
+                while left < right {
+                    let mid = left + (right - left) / 2;
+                    let mid_value = arr[mid].ex_fee;
 
-                if less_or_equal {
-                    if mid_value <= value {
-                        result = Some(mid);
-                        left = mid + 1;
+                    if less_or_equal {
+                        if mid_value <= value {
+                            result = Some(mid);
+                            left = mid + 1;
+                        } else {
+                            right = mid;
+                        }
                     } else {
-                        right = mid;
-                    }
-                } else {
-                    if mid_value >= value {
-                        result = Some(mid);
-                        right = mid;
-                    } else {
-                        left = mid + 1;
+                        if mid_value >= value {
+                            result = Some(mid);
+                            right = mid;
+                        } else {
+                            left = mid + 1;
+                        }
                     }
                 }
-            }
 
-            if less_or_equal { result } else if left < arr.len() { Some(left) } else { None }
-        };
+                if less_or_equal {
+                    result
+                } else if left < arr.len() {
+                    Some(left)
+                } else {
+                    None
+                }
+            };
 
         // Insert into sorted array
         let insert_sorted = |arr: &mut Vec<ProofWithFee>, obj: ProofWithFee| {
@@ -439,7 +467,9 @@ impl Wallet {
             shuffled_proofs.shuffle(&mut rng);
 
             for obj in shuffled_proofs {
-                let new_amount = current_amount.checked_add(obj.proof.amount).ok_or(Error::AmountOverflow)?;
+                let new_amount = current_amount
+                    .checked_add(obj.proof.amount)
+                    .ok_or(Error::AmountOverflow)?;
                 let new_fee_ppk = current_fee_ppk + obj.ppk_fee;
                 let net_sum = sum_ex_fees(new_amount, new_fee_ppk);
 
@@ -458,7 +488,8 @@ impl Wallet {
 
             // PHASE 2: Local Improvement
             let s_set: HashSet<_> = s.iter().map(|p| &p.proof).collect();
-            let mut others: Vec<ProofWithFee> = spendable_proofs.iter()
+            let mut others: Vec<ProofWithFee> = spendable_proofs
+                .iter()
                 .filter(|p| !s_set.contains(&p.proof))
                 .cloned()
                 .collect();
@@ -469,12 +500,16 @@ impl Wallet {
 
             for &i in &indices {
                 let net_sum = sum_ex_fees(current_amount, current_fee_ppk);
-                if net_sum == amount || (!EXACT_MATCH && net_sum >= amount && net_sum <= max_over_amount) {
+                if net_sum == amount
+                    || (!EXACT_MATCH && net_sum >= amount && net_sum <= max_over_amount)
+                {
                     break;
                 }
 
-                let obj_p = s[i].clone();  // Clone to avoid borrowing issues
-                let temp_amount = current_amount.checked_sub(obj_p.proof.amount).unwrap_or(Amount::ZERO);
+                let obj_p = s[i].clone(); // Clone to avoid borrowing issues
+                let temp_amount = current_amount
+                    .checked_sub(obj_p.proof.amount)
+                    .unwrap_or(Amount::ZERO);
                 let temp_fee_ppk = current_fee_ppk.saturating_sub(obj_p.ppk_fee);
                 let temp_net_sum = sum_ex_fees(temp_amount, temp_fee_ppk);
                 let target = amount.checked_sub(temp_net_sum).unwrap_or(Amount::ZERO);
@@ -485,9 +520,11 @@ impl Wallet {
                         if target <= Amount::ZERO || obj_q.ex_fee <= obj_p.ex_fee {
                             // Perform the swap
                             s[i] = obj_q.clone();
-                            current_amount = temp_amount.checked_add(obj_q.proof.amount).ok_or(Error::AmountOverflow)?;
+                            current_amount = temp_amount
+                                .checked_add(obj_q.proof.amount)
+                                .ok_or(Error::AmountOverflow)?;
                             current_fee_ppk = temp_fee_ppk + obj_q.ppk_fee;
-                            
+
                             others.remove(q_index);
                             insert_sorted(&mut others, obj_p.clone());
                         }
@@ -500,9 +537,11 @@ impl Wallet {
             if delta < best_delta {
                 tracing::debug!(
                     "Best solution found in trial {} - amount: {}, delta: {}",
-                    trial, current_amount, delta
+                    trial,
+                    current_amount,
+                    delta
                 );
-                
+
                 let mut sorted_s = s.clone();
                 sorted_s.sort_by(|a, b| b.ex_fee.cmp(&a.ex_fee));
                 best_subset = Some(sorted_s);
@@ -514,15 +553,17 @@ impl Wallet {
                 if let Some(ref mut temp_s) = best_subset {
                     while temp_s.len() > 1 && best_delta > 0.0 {
                         if let Some(obj_p) = temp_s.pop() {
-                            let temp_amount = best_amount.checked_sub(obj_p.proof.amount).unwrap_or(Amount::ZERO);
+                            let temp_amount = best_amount
+                                .checked_sub(obj_p.proof.amount)
+                                .unwrap_or(Amount::ZERO);
                             let temp_fee_ppk = best_fee_ppk.saturating_sub(obj_p.ppk_fee);
                             let temp_delta = calculate_delta(temp_amount, temp_fee_ppk);
-                            
+
                             if temp_delta == f64::INFINITY {
                                 temp_s.push(obj_p); // Put it back
                                 break;
                             }
-                            
+
                             if temp_delta < best_delta {
                                 best_delta = temp_delta;
                                 best_amount = temp_amount;
@@ -540,7 +581,9 @@ impl Wallet {
             if let Some(ref _subset) = best_subset {
                 if best_delta < f64::INFINITY {
                     let best_sum = sum_ex_fees(best_amount, best_fee_ppk);
-                    if best_sum == amount || (!EXACT_MATCH && best_sum >= amount && best_sum <= max_over_amount) {
+                    if best_sum == amount
+                        || (!EXACT_MATCH && best_sum >= amount && best_sum <= max_over_amount)
+                    {
                         break;
                     }
                 }
@@ -614,9 +657,12 @@ mod tests {
         ];
         let selected_proofs =
             Wallet::select_proofs(77.into(), proofs, &vec![id()], &HashMap::new(), false).unwrap();
-        
+
         // Should select proofs that sum to at least 77
-        let total: u64 = selected_proofs.iter().map(|p| p.amount.to_i64().unwrap() as u64).sum();
+        let total: u64 = selected_proofs
+            .iter()
+            .map(|p| p.amount.to_i64().unwrap() as u64)
+            .sum();
         assert!(total >= 77);
         assert!(!selected_proofs.is_empty());
     }
@@ -626,9 +672,12 @@ mod tests {
         let proofs = vec![proof(1), proof(2), proof(4), proof(8), proof(32), proof(64)];
         let selected_proofs =
             Wallet::select_proofs(31.into(), proofs, &vec![id()], &HashMap::new(), false).unwrap();
-        
+
         // Should find a valid solution (likely the 32 proof or combination)
-        let total: u64 = selected_proofs.iter().map(|p| p.amount.to_i64().unwrap() as u64).sum();
+        let total: u64 = selected_proofs
+            .iter()
+            .map(|p| p.amount.to_i64().unwrap() as u64)
+            .sum();
         assert!(total >= 31);
         assert!(!selected_proofs.is_empty());
     }
@@ -638,9 +687,12 @@ mod tests {
         let proofs = vec![proof(8), proof(16), proof(32)];
         let selected_proofs =
             Wallet::select_proofs(23.into(), proofs, &vec![id()], &HashMap::new(), false).unwrap();
-        
+
         // Should find a combination that covers 23
-        let total: u64 = selected_proofs.iter().map(|p| p.amount.to_i64().unwrap() as u64).sum();
+        let total: u64 = selected_proofs
+            .iter()
+            .map(|p| p.amount.to_i64().unwrap() as u64)
+            .sum();
         assert!(total >= 23);
         assert!(!selected_proofs.is_empty());
     }
@@ -684,9 +736,12 @@ mod tests {
             false,
         )
         .unwrap();
-        
+
         // Should find a solution close to optimal (powers of 2)
-        let total: u64 = selected_proofs.iter().map(|p| p.amount.to_i64().unwrap() as u64).sum();
+        let total: u64 = selected_proofs
+            .iter()
+            .map(|p| p.amount.to_i64().unwrap() as u64)
+            .sum();
         assert!(total >= (1u64 << 32) - 1);
         // The RGLI algorithm should find an efficient solution
         assert!(selected_proofs.len() <= 40); // Should be reasonably efficient
@@ -699,9 +754,12 @@ mod tests {
         keyset_fees.insert(id(), 100);
         let selected_proofs =
             Wallet::select_proofs(10.into(), proofs, &vec![id()], &keyset_fees, false).unwrap();
-        
+
         // Should find a valid solution
-        let total: u64 = selected_proofs.iter().map(|p| p.amount.to_i64().unwrap() as u64).sum();
+        let total: u64 = selected_proofs
+            .iter()
+            .map(|p| p.amount.to_i64().unwrap() as u64)
+            .sum();
         assert!(total >= 10);
         assert!(!selected_proofs.is_empty());
     }
