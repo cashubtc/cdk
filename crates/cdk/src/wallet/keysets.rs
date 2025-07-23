@@ -9,8 +9,8 @@ use crate::{Error, Wallet};
 impl Wallet {
     /// Fetch keys for mint keyset
     ///
-    /// Selected keys from localstore if they are already known
-    /// If they are not known queries mint for keyset id and stores the [`Keys`]
+    /// Returns keys from local database if they are already stored.
+    /// If keys are not found locally, goes online to query the mint for the keyset and stores the [`Keys`] in local database.
     #[instrument(skip(self))]
     pub async fn fetch_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
         let keys = if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
@@ -28,10 +28,12 @@ impl Wallet {
         Ok(keys)
     }
 
-    /// Get keysets from local storage or fetch if missing
+    /// Get keysets from local database or go online if missing
     ///
-    /// Checks the database for keysets and queries the Mint if not found.
-    /// This is the main method for getting keysets for token operations.
+    /// First checks the local database for cached keysets. If keysets are not found locally,
+    /// goes online to refresh keysets from the mint and updates the local database.
+    /// This is the main method for getting keysets in token operations that can work offline
+    /// but will fall back to online if needed.
     #[instrument(skip(self))]
     pub async fn load_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
         match self
@@ -48,9 +50,11 @@ impl Wallet {
         }
     }
 
-    /// Get keysets from local storage or error if missing
+    /// Get keysets from local database only - pure offline operation
     ///
-    /// Checks the database for keysets if unknown we error wallet must go online.
+    /// Only checks the local database for cached keysets. If keysets are not found locally,
+    /// returns an error without going online. This is used for operations that must remain
+    /// offline and rely on previously cached keyset data.
     #[instrument(skip(self))]
     pub async fn get_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
         match self
@@ -63,13 +67,12 @@ impl Wallet {
         }
     }
 
-    /// Refresh keysets and ensure we have keys for active ones
+    /// Refresh keysets by fetching the latest from mint - always goes online
     ///
-    /// This is the main method for operations that need up-to-date keyset info.
-    /// - Fetches current keysets from mint
-    /// - Updates local storage  
-    /// - Ensures we have keys for all active keysets
-    /// - Returns filtered active keysets for this unit
+    /// This method always goes online to fetch the latest keyset information from the mint.
+    /// It updates the local database with the fetched keysets and ensures we have keys
+    /// for all active keysets. This is used when operations need the most up-to-date
+    /// keyset information and are willing to go online.
     #[instrument(skip(self))]
     pub async fn refresh_keysets(&self) -> Result<KeySetInfos, Error> {
         tracing::debug!("Refreshing keysets and ensuring we have keys");
@@ -98,9 +101,11 @@ impl Wallet {
         Ok(keysets)
     }
 
-    /// Fetch the active keyset with the lowest fees
+    /// Get the active keyset with the lowest fees - always goes online
     ///
-    /// Refreshes keysets and returns the one with minimum input fees
+    /// This method always goes online to refresh keysets from the mint and then returns
+    /// the active keyset with the minimum input fees. Use this when you need the most
+    /// up-to-date keyset information for operations.
     #[instrument(skip(self))]
     pub async fn fetch_active_keyset(&self) -> Result<KeySetInfo, Error> {
         self.refresh_keysets()
@@ -111,9 +116,11 @@ impl Wallet {
             .ok_or(Error::NoActiveKeyset)
     }
 
-    /// Get the active keyset with the lowest fees
+    /// Get the active keyset with the lowest fees from local database only - offline operation
     ///
-    /// Refreshes keysets and returns the one with minimum input fees
+    /// Returns the active keyset with minimum input fees from cached keysets in the local database.
+    /// This is an offline operation that does not contact the mint. If no keysets are found locally,
+    /// returns an error. Use this for offline operations or when you want to avoid network calls.
     #[instrument(skip(self))]
     pub async fn get_active_keyset(&self) -> Result<KeySetInfo, Error> {
         match self
@@ -129,7 +136,11 @@ impl Wallet {
         }
     }
 
-    /// Get keyset fees for mint
+    /// Get keyset fees for mint from local database only - offline operation
+    ///
+    /// Returns a HashMap of keyset IDs to their input fee rates (per-proof-per-thousand)
+    /// from cached keysets in the local database. This is an offline operation that does
+    /// not contact the mint. If no keysets are found locally, returns an error.
     pub async fn get_keyset_fees(&self) -> Result<HashMap<Id, u64>, Error> {
         let keysets = self
             .localstore
@@ -145,7 +156,11 @@ impl Wallet {
         Ok(fees)
     }
 
-    /// Get keyset fees for mint by keyset id
+    /// Get keyset fees for mint by keyset id from local database only - offline operation
+    ///
+    /// Returns the input fee rate (per-proof-per-thousand) for a specific keyset ID from
+    /// cached keysets in the local database. This is an offline operation that does not
+    /// contact the mint. If the keyset is not found locally, returns an error.
     pub async fn get_keyset_fees_by_id(&self, keyset_id: Id) -> Result<u64, Error> {
         self.get_keyset_fees()
             .await?
