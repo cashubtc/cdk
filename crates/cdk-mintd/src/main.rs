@@ -49,7 +49,6 @@ use cdk_mintd::setup::LnBackendSetup;
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
-use tokio::sync::Notify;
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::decompression::RequestDecompressionLayer;
@@ -757,12 +756,7 @@ async fn start_services(
         mint_service = mint_service.merge(router);
     }
 
-    let shutdown = Arc::new(Notify::new());
-    let mint_clone = Arc::clone(&mint);
-    tokio::spawn({
-        let shutdown = Arc::clone(&shutdown);
-        async move { mint_clone.wait_for_paid_invoices(shutdown).await }
-    });
+    mint.start().await?;
 
     let socket_addr = SocketAddr::from_str(&format!("{listen_addr}:{listen_port}"))?;
 
@@ -784,8 +778,7 @@ async fn start_services(
         }
     }
 
-    // Notify all waiting tasks to shutdown
-    shutdown.notify_waiters();
+    mint.stop().await?;
 
     #[cfg(feature = "management-rpc")]
     {
