@@ -1,31 +1,21 @@
 //! Secret types for NUT-18: Payment Requests
-
-use std::fmt;
-
-use serde::de::{self, Deserializer, SeqAccess, Visitor};
-use serde::ser::{SerializeTuple, Serializer};
 use serde::{Deserialize, Serialize};
 
 use crate::nuts::nut10::Kind;
 use crate::nuts::{Nut10Secret, SpendingConditions};
 
-/// Secret Data without nonce for payment requests
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SecretDataRequest {
-    /// Expresses the spending condition specific to each kind
-    pub data: String,
-    /// Additional data committed to and can be used for feature extensions
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<Vec<String>>>,
-}
-
 /// Nut10Secret without nonce for payment requests
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nut10SecretRequest {
     /// Kind of the spending condition
+    #[serde(rename = "k")]
     pub kind: Kind,
-    /// Secret Data without nonce
-    pub secret_data: SecretDataRequest,
+    /// Secret data
+    #[serde(rename = "d")]
+    pub data: String,
+    /// Additional data committed to and can be used for feature extensions
+    #[serde(rename = "t", skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<Vec<String>>>,
 }
 
 impl Nut10SecretRequest {
@@ -35,32 +25,27 @@ impl Nut10SecretRequest {
         S: Into<String>,
         V: Into<Vec<Vec<String>>>,
     {
-        let secret_data = SecretDataRequest {
+        Self {
+            kind,
             data: data.into(),
             tags: tags.map(|v| v.into()),
-        };
-
-        Self { kind, secret_data }
+        }
     }
 }
 
 impl From<Nut10Secret> for Nut10SecretRequest {
     fn from(secret: Nut10Secret) -> Self {
-        let secret_data = SecretDataRequest {
-            data: secret.secret_data().data().to_string(),
-            tags: secret.secret_data().tags().cloned(),
-        };
-
         Self {
             kind: secret.kind(),
-            secret_data,
+            data: secret.secret_data().data().to_string(),
+            tags: secret.secret_data().tags().cloned(),
         }
     }
 }
 
 impl From<Nut10SecretRequest> for Nut10Secret {
     fn from(value: Nut10SecretRequest) -> Self {
-        Self::new(value.kind, value.secret_data.data, value.secret_data.tags)
+        Self::new(value.kind, value.data, value.tags)
     }
 }
 
@@ -77,61 +62,67 @@ impl From<SpendingConditions> for Nut10SecretRequest {
     }
 }
 
-impl Serialize for Nut10SecretRequest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        // Create a tuple representing the struct fields
-        let secret_tuple = (&self.kind, &self.secret_data);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        // Serialize the tuple as a JSON array
-        let mut s = serializer.serialize_tuple(2)?;
+    #[test]
+    fn test_nut10_secret_request_serialization() {
+        let request = Nut10SecretRequest::new(
+            Kind::P2PK,
+            "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198",
+            Some(vec![vec!["key".to_string(), "value".to_string()]]),
+        );
 
-        s.serialize_element(&secret_tuple.0)?;
-        s.serialize_element(&secret_tuple.1)?;
-        s.end()
-    }
-}
+        let json = serde_json::to_string(&request).unwrap();
 
-// Custom visitor for deserializing Secret
-struct SecretVisitor;
-
-impl<'de> Visitor<'de> for SecretVisitor {
-    type Value = Nut10SecretRequest;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a tuple with two elements: [Kind, SecretData]")
+        // Verify json has abbreviated field names
+        assert!(json.contains(r#""k":"P2PK""#));
+        assert!(json.contains(r#""d":"026562"#));
+        assert!(json.contains(r#""t":[["key","#));
     }
 
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        // Deserialize the kind (first element)
-        let kind = seq
-            .next_element()?
-            .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+    #[test]
+    fn test_roundtrip_serialization() {
+        let original = Nut10SecretRequest {
+            kind: Kind::P2PK,
+            data: "test_data".into(),
+            tags: Some(vec![vec!["key".to_string(), "value".to_string()]]),
+        };
 
-        // Deserialize the secret_data (second element)
-        let secret_data = seq
-            .next_element()?
-            .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: Nut10SecretRequest = serde_json::from_str(&json).unwrap();
 
-        // Make sure there are no additional elements
-        if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
-            return Err(de::Error::invalid_length(3, &self));
-        }
-
-        Ok(Nut10SecretRequest { kind, secret_data })
+        assert_eq!(original, decoded);
     }
-}
 
-impl<'de> Deserialize<'de> for Nut10SecretRequest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_seq(SecretVisitor)
+    #[test]
+    fn test_from_nut10_secret() {
+        let secret = Nut10Secret::new(
+            Kind::P2PK,
+            "test_data",
+            Some(vec![vec!["key".to_string(), "value".to_string()]]),
+        );
+
+        let request: Nut10SecretRequest = secret.clone().into();
+
+        assert_eq!(request.kind, secret.kind());
+        assert_eq!(request.data, secret.secret_data().data());
+        assert_eq!(request.tags, secret.secret_data().tags().cloned());
+    }
+
+    #[test]
+    fn test_into_nut10_secret() {
+        let request = Nut10SecretRequest {
+            kind: Kind::HTLC,
+            data: "test_hash".into(),
+            tags: None,
+        };
+
+        let secret: Nut10Secret = request.clone().into();
+
+        assert_eq!(secret.kind(), request.kind);
+        assert_eq!(secret.secret_data().data(), request.data);
+        assert_eq!(secret.secret_data().tags(), request.tags.as_ref());
     }
 }

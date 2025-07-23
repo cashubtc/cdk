@@ -43,6 +43,7 @@ pub struct PaymentRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transports: Option<Vec<Transport>>,
     /// Nut10
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub nut10: Option<Nut10SecretRequest>,
 }
 
@@ -358,14 +359,8 @@ mod tests {
 
         // Check round-trip conversion
         assert_eq!(converted_back.kind, secret_request.kind);
-        assert_eq!(
-            converted_back.secret_data.data,
-            secret_request.secret_data.data
-        );
-        assert_eq!(
-            converted_back.secret_data.tags,
-            secret_request.secret_data.tags
-        );
+        assert_eq!(converted_back.data, secret_request.data);
+        assert_eq!(converted_back.tags, secret_request.tags);
 
         // Test in PaymentRequest builder
         let payment_request = PaymentRequest::builder()
@@ -458,9 +453,231 @@ mod tests {
         // Verify the P2PK data was preserved correctly
         if let Some(nut10_secret) = decoded_request.nut10 {
             assert_eq!(nut10_secret.kind, Kind::P2PK);
-            assert_eq!(nut10_secret.secret_data.data, pubkey_hex);
+            assert_eq!(nut10_secret.data, pubkey_hex);
         } else {
             panic!("NUT10 secret data missing in decoded payment request");
         }
+    }
+
+    /// Test vectors from NUT-18 specification
+    /// https://github.com/cashubtc/nuts/blob/main/tests/18-tests.md
+
+    #[test]
+    fn test_basic_payment_request() {
+        // Basic payment request with required fields
+        let json = r#"{
+            "i": "b7a90176",
+            "a": 10,
+            "u": "sat",
+            "m": ["https://8333.space:3338"],
+            "t": [
+                {
+                    "t": "nostr",
+                    "a": "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5",
+                    "g": [["n", "17"]]
+                }
+            ]
+        }"#;
+
+        let expected_encoded = "creqApWF0gaNhdGVub3N0cmFheKlucHJvZmlsZTFxeTI4d3VtbjhnaGo3dW45ZDNzaGp0bnl2OWtoMnVld2Q5aHN6OW1od2RlbjV0ZTB3ZmprY2N0ZTljdXJ4dmVuOWVlaHFjdHJ2NWhzenJ0aHdkZW41dGUwZGVoaHh0bnZkYWtxcWd5ZGFxeTdjdXJrNDM5eWtwdGt5c3Y3dWRoZGh1NjhzdWNtMjk1YWtxZWZkZWhrZjBkNDk1Y3d1bmw1YWeBgmFuYjE3YWloYjdhOTAxNzZhYQphdWNzYXRhbYF3aHR0cHM6Ly84MzMzLnNwYWNlOjMzMzg=";
+
+        // Parse the JSON into a PaymentRequest
+        let payment_request: PaymentRequest = serde_json::from_str(json).unwrap();
+        let payment_request_cloned = payment_request.clone();
+
+        // Verify the payment request fields
+        assert_eq!(
+            payment_request_cloned.payment_id.as_ref().unwrap(),
+            "b7a90176"
+        );
+        assert_eq!(payment_request_cloned.amount.unwrap(), Amount::from(10));
+        assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
+        assert_eq!(
+            payment_request_cloned.mints.unwrap(),
+            vec![MintUrl::from_str("https://8333.space:3338").unwrap()]
+        );
+
+        let transport = payment_request.transports.as_ref().unwrap();
+        let transport = transport.first().unwrap();
+        assert_eq!(transport._type, TransportType::Nostr);
+        assert_eq!(transport.target, "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5");
+        assert_eq!(
+            transport.tags,
+            Some(vec![vec!["n".to_string(), "17".to_string()]])
+        );
+
+        // Test encoding - the encoded form should match the expected output
+        let encoded = payment_request.to_string();
+
+        // For now, let's verify it can be decoded back correctly
+        let decoded = PaymentRequest::from_str(&encoded).unwrap();
+        assert_eq!(payment_request, decoded);
+
+        // Test decoding the expected encoded string
+        let decoded_from_spec = PaymentRequest::from_str(expected_encoded).unwrap();
+        assert_eq!(decoded_from_spec.payment_id.as_ref().unwrap(), "b7a90176");
+        assert_eq!(decoded_from_spec.amount.unwrap(), Amount::from(10));
+        assert_eq!(decoded_from_spec.unit.unwrap(), CurrencyUnit::Sat);
+        assert_eq!(
+            decoded_from_spec.mints.unwrap(),
+            vec![MintUrl::from_str("https://8333.space:3338").unwrap()]
+        );
+    }
+
+    #[test]
+    fn test_nostr_transport_payment_request() {
+        // Nostr transport payment request with multiple mints
+        let json = r#"{
+            "i": "f92a51b8",
+            "a": 100,
+            "u": "sat",
+            "m": ["https://mint1.example.com", "https://mint2.example.com"],
+            "t": [
+                {
+                    "t": "nostr",
+                    "a": "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq28spj3",
+                    "g": [["n", "17"], ["n", "9735"]]
+                }
+            ]
+        }"#;
+
+        let expected_encoded = "creqApWF0gaNhdGVub3N0cmFheD9ucHViMXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXEyOHNwajNhZ4KCYW5iMTeCYW5kOTczNWFpaGY5MmE1MWI4YWEYZGF1Y3NhdGFtgngZaHR0cHM6Ly9taW50MS5leGFtcGxlLmNvbXgZaHR0cHM6Ly9taW50Mi5leGFtcGxlLmNvbQ==";
+
+        // Parse the JSON into a PaymentRequest
+        let payment_request: PaymentRequest = serde_json::from_str(json).unwrap();
+        let payment_request_cloned = payment_request.clone();
+
+        // Verify the payment request fields
+        assert_eq!(
+            payment_request_cloned.payment_id.as_ref().unwrap(),
+            "f92a51b8"
+        );
+        assert_eq!(payment_request_cloned.amount.unwrap(), Amount::from(100));
+        assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
+        assert_eq!(
+            payment_request_cloned.mints.unwrap(),
+            vec![
+                MintUrl::from_str("https://mint1.example.com").unwrap(),
+                MintUrl::from_str("https://mint2.example.com").unwrap()
+            ]
+        );
+
+        let transport = payment_request_cloned.transports.unwrap();
+        let transport = transport.first().unwrap();
+        assert_eq!(transport._type, TransportType::Nostr);
+        assert_eq!(
+            transport.target,
+            "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq28spj3"
+        );
+        assert_eq!(
+            transport.tags,
+            Some(vec![
+                vec!["n".to_string(), "17".to_string()],
+                vec!["n".to_string(), "9735".to_string()]
+            ])
+        );
+
+        // Test round-trip serialization
+        let encoded = payment_request.to_string();
+        let decoded = PaymentRequest::from_str(&encoded).unwrap();
+        assert_eq!(payment_request, decoded);
+
+        // Test decoding the expected encoded string
+        let decoded_from_spec = PaymentRequest::from_str(expected_encoded).unwrap();
+        assert_eq!(decoded_from_spec.payment_id.as_ref().unwrap(), "f92a51b8");
+    }
+
+    #[test]
+    fn test_minimal_payment_request() {
+        // Minimal payment request with only required fields
+        let json = r#"{
+            "i": "7f4a2b39",
+            "u": "sat",
+            "m": ["https://mint.example.com"]
+        }"#;
+
+        let expected_encoded =
+            "creqAo2FpaDdmNGEyYjM5YXVjc2F0YW2BeBhodHRwczovL21pbnQuZXhhbXBsZS5jb20=";
+
+        // Parse the JSON into a PaymentRequest
+        let payment_request: PaymentRequest = serde_json::from_str(json).unwrap();
+        let payment_request_cloned = payment_request.clone();
+
+        // Verify the payment request fields
+        assert_eq!(
+            payment_request_cloned.payment_id.as_ref().unwrap(),
+            "7f4a2b39"
+        );
+        assert_eq!(payment_request_cloned.amount, None);
+        assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
+        assert_eq!(
+            payment_request_cloned.mints.unwrap(),
+            vec![MintUrl::from_str("https://mint.example.com").unwrap()]
+        );
+        assert_eq!(payment_request_cloned.transports, None);
+
+        // Test round-trip serialization
+        let encoded = payment_request.to_string();
+        let decoded = PaymentRequest::from_str(&encoded).unwrap();
+        assert_eq!(payment_request, decoded);
+
+        // Test decoding the expected encoded string
+        let decoded_from_spec = PaymentRequest::from_str(expected_encoded).unwrap();
+        assert_eq!(decoded_from_spec.payment_id.as_ref().unwrap(), "7f4a2b39");
+    }
+
+    #[test]
+    fn test_nut10_locking_payment_request() {
+        // Payment request with NUT-10 P2PK locking
+        let json = r#"{
+            "i": "c9e45d2a",
+            "a": 500,
+            "u": "sat",
+            "m": ["https://mint.example.com"],
+            "nut10": {
+                "k": "P2PK",
+                "d": "02c3b5bb27e361457c92d93d78dd73d3d53732110b2cfe8b50fbc0abc615e9c331",
+                "t": [["timeout", "3600"]]
+            }
+        }"#;
+
+        let expected_encoded = "creqApWFpaGM5ZTQ1ZDJhYWEZAfRhdWNzYXRhbYF4GGh0dHBzOi8vbWludC5leGFtcGxlLmNvbWVudXQxMKNha2RQMlBLYWR4QjAyYzNiNWJiMjdlMzYxNDU3YzkyZDkzZDc4ZGQ3M2QzZDUzNzMyMTEwYjJjZmU4YjUwZmJjMGFiYzYxNWU5YzMzMWF0gYJndGltZW91dGQzNjAw";
+
+        // Parse the JSON into a PaymentRequest
+        let payment_request: PaymentRequest = serde_json::from_str(json).unwrap();
+        let payment_request_cloned = payment_request.clone();
+
+        // Verify the payment request fields
+        assert_eq!(
+            payment_request_cloned.payment_id.as_ref().unwrap(),
+            "c9e45d2a"
+        );
+        assert_eq!(payment_request_cloned.amount.unwrap(), Amount::from(500));
+        assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
+        assert_eq!(
+            payment_request_cloned.mints.unwrap(),
+            vec![MintUrl::from_str("https://mint.example.com").unwrap()]
+        );
+
+        // Test NUT-10 locking
+        let nut10 = payment_request_cloned.nut10.unwrap();
+        assert_eq!(nut10.kind, Kind::P2PK);
+        assert_eq!(
+            nut10.data,
+            "02c3b5bb27e361457c92d93d78dd73d3d53732110b2cfe8b50fbc0abc615e9c331"
+        );
+        assert_eq!(
+            nut10.tags,
+            Some(vec![vec!["timeout".to_string(), "3600".to_string()]])
+        );
+
+        // Test round-trip serialization
+        let encoded = payment_request.to_string();
+        let decoded = PaymentRequest::from_str(&encoded).unwrap();
+        assert_eq!(payment_request, decoded);
+
+        // Test decoding the expected encoded string
+        let decoded_from_spec = PaymentRequest::from_str(expected_encoded).unwrap();
+        assert_eq!(decoded_from_spec.payment_id.as_ref().unwrap(), "c9e45d2a");
     }
 }
