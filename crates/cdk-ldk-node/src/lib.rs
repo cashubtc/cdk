@@ -8,10 +8,10 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use anyhow::anyhow;
 use async_trait::async_trait;
 use cdk_common::amount::to_unit;
 use cdk_common::common::FeeReserve;
+use cdk_common::payment::{self, *};
 use cdk_common::util::{hex, unix_time};
 use cdk_common::{Amount, CurrencyUnit, MeltOptions, MeltQuoteState};
 use futures::{Stream, StreamExt};
@@ -28,9 +28,9 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
-pub mod utils;
-// pub mod web;
-pub use cdk_common::payment::{self, *};
+use crate::error::Error;
+
+mod error;
 
 /// CDK Lightning backend using LDK Node
 ///
@@ -118,7 +118,7 @@ impl CdkLdkNode {
         storage_dir_path: String,
         fee_reserve: FeeReserve,
         listening_address: Vec<SocketAddress>,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, Error> {
         let mut builder = Builder::new();
         builder.set_network(network);
         builder.set_storage_dir_path(storage_dir_path);
@@ -188,7 +188,7 @@ impl CdkLdkNode {
     ///
     /// # Errors
     /// Returns an error if the LDK node fails to start or event handling setup fails
-    pub fn start(&self) -> anyhow::Result<()> {
+    pub fn start(&self) -> Result<(), Error> {
         match &self.runtime {
             Some(runtime) => {
                 tracing::info!("Starting cdk-ldk node with existing runtime");
@@ -218,18 +218,6 @@ impl CdkLdkNode {
         self.runtime = Some(runtime);
     }
 
-    // pub fn start_web_server(&self, web_addr: SocketAddr) -> anyhow::Result<()> {
-    //     let web_server = crate::web::WebServer::new(Arc::new(self.clone()));
-
-    //     tokio::spawn(async move {
-    //         if let Err(e) = web_server.serve(web_addr).await {
-    //             tracing::error!("Web server error: {}", e);
-    //         }
-    //     });
-
-    //     Ok(())
-    // }
-
     /// Stop the CDK LDK Node
     ///
     /// Gracefully stops the node by cancelling all active tasks and event handlers.
@@ -243,7 +231,7 @@ impl CdkLdkNode {
     ///
     /// # Errors
     /// Returns an error if the underlying LDK node fails to stop
-    pub fn stop(&self) -> anyhow::Result<()> {
+    pub fn stop(&self) -> Result<(), Error> {
         tracing::info!("Stopping CdkLdkNode");
         // Cancel all tokio tasks
         tracing::info!("Cancelling event handler");
@@ -339,7 +327,7 @@ impl CdkLdkNode {
     }
 
     /// Set up event handling for the node
-    pub fn handle_events(&self) -> anyhow::Result<()> {
+    pub fn handle_events(&self) -> Result<(), Error> {
         let node = self.inner.clone();
         let sender = self.sender.clone();
         let cancel_token = self.events_cancel_token.clone();
@@ -407,7 +395,7 @@ impl MintPayment for CdkLdkNode {
             }
             Err(e) => {
                 tracing::error!("Failed to start CdkLdkNode: {}", e);
-                Err(payment::Error::Anyhow(e))
+                Err(e.into())
             }
         }
     }
@@ -422,7 +410,7 @@ impl MintPayment for CdkLdkNode {
             }
             Err(e) => {
                 tracing::error!("Failed to stop CdkLdkNode: {}", e);
-                Err(payment::Error::Anyhow(e))
+                Err(e.into())
             }
         }
     }
@@ -456,20 +444,20 @@ impl MintPayment for CdkLdkNode {
                     .unwrap_or(36000);
 
                 let description = Bolt11InvoiceDescription::Direct(
-                    Description::new(description).map_err(|_| anyhow!("Invalid description"))?,
+                    Description::new(description).map_err(|_| Error::InvalidDescription)?,
                 );
 
                 let payment = self
                     .inner
                     .bolt11_payment()
                     .receive(amount_msat.into(), &description, time as u32)
-                    .unwrap();
+                    .map_err(Error::LdkNode)?;
 
                 let payment_hash = payment.payment_hash().to_string();
                 let payment_identifier = PaymentIdentifier::PaymentHash(
                     hex::decode(&payment_hash)?
                         .try_into()
-                        .map_err(|_| anyhow!("Invalid payment hash length"))?,
+                        .map_err(|_| Error::InvalidPaymentHashLength)?,
                 );
 
                 Ok(CreateIncomingPaymentResponse {
@@ -482,7 +470,6 @@ impl MintPayment for CdkLdkNode {
                 let Bolt12IncomingPaymentOptions {
                     description,
                     amount,
-
                     unix_expiry,
                 } = *bolt12_options;
 
@@ -500,7 +487,7 @@ impl MintPayment for CdkLdkNode {
                                 Some(time as u32),
                                 None,
                             )
-                            .unwrap()
+                            .map_err(Error::LdkNode)?
                     }
                     None => self
                         .inner
@@ -509,7 +496,7 @@ impl MintPayment for CdkLdkNode {
                             &description.unwrap_or("".to_string()),
                             Some(time as u32),
                         )
-                        .unwrap(),
+                        .map_err(Error::LdkNode)?,
                 };
                 let payment_identifier = PaymentIdentifier::OfferId(offer.id().to_string());
 
@@ -538,7 +525,7 @@ impl MintPayment for CdkLdkNode {
                     Some(melt_options) => melt_options.amount_msat(),
                     None => bolt11
                         .amount_milli_satoshis()
-                        .ok_or(anyhow!("Unknown invoice amount"))?
+                        .ok_or(Error::UnknownInvoiceAmount)?
                         .into(),
                 };
 
@@ -557,7 +544,7 @@ impl MintPayment for CdkLdkNode {
                 let payment_hash = bolt11.payment_hash().to_string();
                 let payment_hash_bytes = hex::decode(&payment_hash)?
                     .try_into()
-                    .map_err(|_| anyhow!("Invalid payment hash length"))?;
+                    .map_err(|_| Error::InvalidPaymentHashLength)?;
 
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: PaymentIdentifier::PaymentHash(payment_hash_bytes),
@@ -645,7 +632,7 @@ impl MintPayment for CdkLdkNode {
                         .send_using_amount(&bolt11, amountless.amount_msat.into(), send_params)
                         .map_err(|err| {
                             tracing::error!("Could not send send amountless bolt11: {}", err);
-                            anyhow!("Could not send bolt11 without amount")
+                            Error::CouldNotSendBolt11WithoutAmount
                         })?,
                     None => self
                         .inner
@@ -653,7 +640,7 @@ impl MintPayment for CdkLdkNode {
                         .send(&bolt11, send_params)
                         .map_err(|err| {
                             tracing::error!("Could not send bolt11 {}", err);
-                            anyhow!("Could not send bolt11")
+                            Error::CouldNotSendBolt11
                         })?,
                     _ => return Err(payment::Error::UnsupportedPaymentOption),
                 };
@@ -666,7 +653,7 @@ impl MintPayment for CdkLdkNode {
                     let details = self
                         .inner
                         .payment(&payment_id)
-                        .ok_or(anyhow!("Payment not found"))?;
+                        .ok_or(Error::PaymentNotFound)?;
 
                     match details.status {
                         PaymentStatus::Succeeded => break (MeltQuoteState::Paid, details),
@@ -694,12 +681,12 @@ impl MintPayment for CdkLdkNode {
                         preimage,
                         secret: _,
                     } => preimage.map(|p| p.to_string()),
-                    _ => return Err(anyhow!("Unexpected payment kind").into()),
+                    _ => return Err(Error::UnexpectedPaymentKind.into()),
                 };
 
                 let total_spent = payment_details
                     .amount_msat
-                    .ok_or(anyhow!("Could not get amount spent"))?;
+                    .ok_or(Error::CouldNotGetAmountSpent)?;
 
                 let total_spent = to_unit(total_spent, &CurrencyUnit::Msat, unit)?;
 
@@ -721,12 +708,12 @@ impl MintPayment for CdkLdkNode {
                         .inner
                         .bolt12_payment()
                         .send_using_amount(&offer, amountless.amount_msat.into(), None, None)
-                        .unwrap(),
+                        .map_err(Error::LdkNode)?,
                     None => self
                         .inner
                         .bolt12_payment()
                         .send(&offer, None, None)
-                        .unwrap(),
+                        .map_err(Error::LdkNode)?,
                     _ => return Err(payment::Error::UnsupportedPaymentOption),
                 };
 
@@ -738,7 +725,7 @@ impl MintPayment for CdkLdkNode {
                     let details = self
                         .inner
                         .payment(&payment_id)
-                        .ok_or(anyhow!("Payment not found"))?;
+                        .ok_or(Error::PaymentNotFound)?;
 
                     match details.status {
                         PaymentStatus::Succeeded => break (MeltQuoteState::Paid, details),
@@ -768,12 +755,12 @@ impl MintPayment for CdkLdkNode {
                         payer_note: _,
                         quantity: _,
                     } => preimage.map(|p| p.to_string()),
-                    _ => return Err(anyhow!("Unexpected payment kind").into()),
+                    _ => return Err(Error::UnexpectedPaymentKind.into()),
                 };
 
                 let total_spent = payment_details
                     .amount_msat
-                    .ok_or(anyhow!("Could not get amount spent"))?;
+                    .ok_or(Error::CouldNotGetAmountSpent)?;
 
                 let total_spent = to_unit(total_spent, &CurrencyUnit::Msat, unit)?;
 
@@ -853,28 +840,28 @@ impl MintPayment for CdkLdkNode {
         let payment_id_str = match payment_identifier {
             PaymentIdentifier::PaymentHash(hash) => hex::encode(hash),
             PaymentIdentifier::CustomId(id) => id.clone(),
-            _ => return Err(anyhow!("Unsupported payment identifier type").into()),
+            _ => return Err(Error::UnsupportedPaymentIdentifierType.into()),
         };
 
         let payment_id = PaymentId(
             hex::decode(&payment_id_str)?
                 .try_into()
-                .map_err(|_| anyhow!("Invalid payment ID length"))?,
+                .map_err(|_| Error::InvalidPaymentIdLength)?,
         );
 
         let payment_details = self
             .inner
             .payment(&payment_id)
-            .ok_or(anyhow!("Payment not found"))?;
+            .ok_or(Error::PaymentNotFound)?;
 
         if payment_details.direction == PaymentDirection::Outbound {
-            return Err(anyhow!("Invalid payment direction").into());
+            return Err(Error::InvalidPaymentDirection.into());
         }
 
         let amount = if payment_details.status == PaymentStatus::Succeeded {
             payment_details
                 .amount_msat
-                .ok_or(anyhow!("Could not get payment amount"))?
+                .ok_or(Error::CouldNotGetPaymentAmount)?
         } else {
             0
         };
@@ -917,11 +904,11 @@ impl MintPayment for CdkLdkNode {
                 });
             }
         }
-        .ok_or(anyhow!("Payment not found"))?;
+        .ok_or(Error::PaymentNotFound)?;
 
         // This check seems reversed in the original code, so I'm fixing it here
         if payment_details.direction != PaymentDirection::Outbound {
-            return Err(anyhow!("Invalid payment direction").into());
+            return Err(Error::InvalidPaymentDirection.into());
         }
 
         let status = match payment_details.status {
@@ -936,12 +923,12 @@ impl MintPayment for CdkLdkNode {
                 preimage,
                 secret: _,
             } => preimage.map(|p| p.to_string()),
-            _ => return Err(anyhow!("Unexpected payment kind").into()),
+            _ => return Err(Error::UnexpectedPaymentKind.into()),
         };
 
         let total_spent = payment_details
             .amount_msat
-            .ok_or(anyhow!("Could not get amount spent"))?;
+            .ok_or(Error::CouldNotGetAmountSpent)?;
 
         Ok(MakePaymentResponse {
             payment_lookup_id: request_lookup_id.clone(),
