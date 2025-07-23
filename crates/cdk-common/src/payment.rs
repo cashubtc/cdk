@@ -248,6 +248,20 @@ pub trait MintPayment {
     /// Mint Lightning Error
     type Err: Into<Error> + From<Error>;
 
+    /// Start the payment processor
+    /// Called when the mint starts up to initialize the payment processor
+    async fn start(&self) -> Result<(), Self::Err> {
+        // Default implementation - do nothing
+        Ok(())
+    }
+
+    /// Stop the payment processor
+    /// Called when the mint shuts down to gracefully stop the payment processor
+    async fn stop(&self) -> Result<(), Self::Err> {
+        // Default implementation - do nothing
+        Ok(())
+    }
+
     /// Base Settings
     async fn get_settings(&self) -> Result<serde_json::Value, Self::Err>;
 

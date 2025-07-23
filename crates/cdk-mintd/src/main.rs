@@ -24,6 +24,7 @@ use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
+    feature = "ldk-node",
     feature = "fakewallet",
     feature = "grpc-processor"
 ))]
@@ -33,6 +34,7 @@ use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path}
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
+    feature = "ldk-node",
     feature = "fakewallet"
 ))]
 use cdk::nuts::CurrencyUnit;
@@ -64,11 +66,12 @@ const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION")
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
+    feature = "ldk-node",
     feature = "fakewallet",
     feature = "grpc-processor"
 )))]
 compile_error!(
-    "At least one lightning backend feature must be enabled: cln, lnbits, lnd, fakewallet, or grpc-processor"
+    "At least one lightning backend feature must be enabled: cln, lnbits, lnd, ldk-node, fakewallet, or grpc-processor"
 );
 
 /// The main entry point for the application.
@@ -352,6 +355,24 @@ async fn configure_lightning_backend(
                 CurrencyUnit::Sat,
                 mint_melt_limits,
                 Arc::new(lnd),
+            )
+            .await?;
+        }
+        #[cfg(feature = "ldk-node")]
+        LnBackend::LdkNode => {
+            let ldk_node_settings = settings.clone().ldk_node.expect("Checked at config load");
+            tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
+
+            let ldk_node = ldk_node_settings
+                .setup(ln_routers, settings, CurrencyUnit::Sat)
+                .await?;
+
+            mint_builder = configure_backend_for_unit(
+                settings,
+                mint_builder,
+                CurrencyUnit::Sat,
+                mint_melt_limits,
+                Arc::new(ldk_node),
             )
             .await?;
         }

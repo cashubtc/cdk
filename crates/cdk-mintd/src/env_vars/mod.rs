@@ -16,6 +16,8 @@ mod cln;
 mod fake_wallet;
 #[cfg(feature = "grpc-processor")]
 mod grpc_processor;
+#[cfg(feature = "ldk-node")]
+mod ldk_node;
 #[cfg(feature = "lnbits")]
 mod lnbits;
 #[cfg(feature = "lnd")]
@@ -36,6 +38,8 @@ pub use common::*;
 pub use fake_wallet::*;
 #[cfg(feature = "grpc-processor")]
 pub use grpc_processor::*;
+#[cfg(feature = "ldk-node")]
+pub use ldk_node::*;
 pub use ln::*;
 #[cfg(feature = "lnbits")]
 pub use lnbits::*;
@@ -103,6 +107,10 @@ impl Settings {
             #[cfg(feature = "lnd")]
             LnBackend::Lnd => {
                 self.lnd = Some(self.lnd.clone().unwrap_or_default().from_env());
+            }
+            #[cfg(feature = "ldk-node")]
+            LnBackend::LdkNode => {
+                self.ldk_node = Some(self.ldk_node.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "grpc-processor")]
             LnBackend::GrpcProcessor => {

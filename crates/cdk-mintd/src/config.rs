@@ -63,6 +63,8 @@ pub enum LnBackend {
     FakeWallet,
     #[cfg(feature = "lnd")]
     Lnd,
+    #[cfg(feature = "ldk-node")]
+    LdkNode,
     #[cfg(feature = "grpc-processor")]
     GrpcProcessor,
 }
@@ -80,6 +82,8 @@ impl std::str::FromStr for LnBackend {
             "fakewallet" => Ok(LnBackend::FakeWallet),
             #[cfg(feature = "lnd")]
             "lnd" => Ok(LnBackend::Lnd),
+            #[cfg(feature = "ldk-node")]
+            "ldk-node" | "ldknode" => Ok(LnBackend::LdkNode),
             #[cfg(feature = "grpc-processor")]
             "grpcprocessor" => Ok(LnBackend::GrpcProcessor),
             _ => Err(format!("Unknown Lightning backend: {s}")),
@@ -139,6 +143,36 @@ pub struct Lnd {
     pub macaroon_file: PathBuf,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
+}
+
+#[cfg(feature = "ldk-node")]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LdkNode {
+    /// Fee percentage (e.g., 0.02 for 2%)
+    pub fee_percent: f32,
+    /// Minimum reserve fee
+    pub reserve_fee_min: Amount,
+    /// Bitcoin network (mainnet, testnet, signet, regtest)
+    pub bitcoin_network: Option<String>,
+    /// Chain source type (esplora or bitcoinrpc)
+    pub chain_source_type: Option<String>,
+    /// Esplora URL (when chain_source_type = "esplora")
+    pub esplora_url: Option<String>,
+    /// Bitcoin RPC configuration (when chain_source_type = "bitcoinrpc")
+    pub bitcoind_rpc_host: Option<String>,
+    pub bitcoind_rpc_port: Option<u16>,
+    pub bitcoind_rpc_user: Option<String>,
+    pub bitcoind_rpc_password: Option<String>,
+    /// Storage directory path
+    pub storage_dir_path: Option<String>,
+    /// LDK node listening host
+    pub ldk_node_host: Option<String>,
+    /// LDK node listening port
+    pub ldk_node_port: Option<u16>,
+    /// Gossip source type (p2p or rgs)
+    pub gossip_source_type: Option<String>,
+    /// Rapid Gossip Sync URL (when gossip_source_type = "rgs")
+    pub rgs_url: Option<String>,
 }
 
 #[cfg(feature = "fakewallet")]
@@ -244,6 +278,8 @@ pub struct Settings {
     pub lnbits: Option<LNbits>,
     #[cfg(feature = "lnd")]
     pub lnd: Option<Lnd>,
+    #[cfg(feature = "ldk-node")]
+    pub ldk_node: Option<LdkNode>,
     #[cfg(feature = "fakewallet")]
     pub fake_wallet: Option<FakeWallet>,
     pub grpc_processor: Option<GrpcProcessor>,
@@ -348,6 +384,13 @@ impl Settings {
                 assert!(
                     settings.lnd.is_some(),
                     "LND backend requires a valid config."
+                )
+            }
+            #[cfg(feature = "ldk-node")]
+            LnBackend::LdkNode => {
+                assert!(
+                    settings.ldk_node.is_some(),
+                    "LDK Node backend requires a valid config."
                 )
             }
             #[cfg(feature = "fakewallet")]
