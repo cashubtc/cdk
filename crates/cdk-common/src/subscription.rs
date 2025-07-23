@@ -68,9 +68,9 @@ impl AsRef<SubId> for IndexableParams {
 
 #[cfg(feature = "mint")]
 impl Indexable for NotificationPayload<Uuid> {
-    type Type = Notification;
+    type Index = Notification;
 
-    fn to_indexes(&self) -> Vec<Index<Self::Type>> {
+    fn to_indexes(&self) -> Vec<Index<Self::Index>> {
         match self {
             NotificationPayload::ProofState(proof_state) => {
                 vec![Index::from(Notification::ProofState(proof_state.y))]

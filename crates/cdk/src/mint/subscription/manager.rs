@@ -3,7 +3,6 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use cdk_common::database::{self, MintDatabase};
-use cdk_common::nut17::Notification;
 use cdk_common::NotificationPayload;
 use uuid::Uuid;
 
@@ -19,7 +18,7 @@ use crate::pub_sub;
 ///
 /// Nut-17 implementation is system-wide and not only through the WebSocket, so
 /// it is possible for another part of the system to subscribe to events.
-pub struct PubSubManager(pub_sub::Manager<NotificationPayload<Uuid>, Notification, OnSubscription>);
+pub struct PubSubManager(pub_sub::Manager<NotificationPayload<Uuid>, OnSubscription>);
 
 #[allow(clippy::default_constructed_unit_structs)]
 impl Default for PubSubManager {
@@ -35,7 +34,7 @@ impl From<Arc<dyn MintDatabase<database::Error> + Send + Sync>> for PubSubManage
 }
 
 impl Deref for PubSubManager {
-    type Target = pub_sub::Manager<NotificationPayload<Uuid>, Notification, OnSubscription>;
+    type Target = pub_sub::Manager<NotificationPayload<Uuid>, OnSubscription>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
