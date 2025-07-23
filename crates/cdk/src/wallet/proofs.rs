@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 
 use cdk_common::wallet::TransactionId;
 use cdk_common::Id;
-use rustls::crypto::ActiveKeyExchange;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
