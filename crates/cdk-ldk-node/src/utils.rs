@@ -6,9 +6,9 @@ use anyhow::Result;
 
 /// Expand tilde paths to home directory
 pub fn expand_path(path: &str) -> Result<PathBuf> {
-    if path.starts_with('~') {
+    if let Some(stripped) = path.strip_prefix('~') {
         let home = home::home_dir().ok_or(anyhow::anyhow!("Could not find home directory"))?;
-        Ok(home.join(path.strip_prefix("~/").unwrap_or(&path[1..])))
+        Ok(home.join(path.strip_prefix("~/").unwrap_or(stripped)))
     } else {
         Ok(PathBuf::from(path))
     }
