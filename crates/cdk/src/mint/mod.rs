@@ -237,6 +237,9 @@ impl Mint {
         task_state.shutdown_notify = Some(shutdown_notify);
         task_state.supervisor_handle = Some(supervisor_handle);
 
+        // Give the background task a tiny bit of time to start waiting
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
         tracing::info!("Mint background services started");
         Ok(())
     }
@@ -430,19 +433,24 @@ impl Mint {
             });
         }
 
-        // Wait for shutdown or all tasks to complete
-        loop {
-            tokio::select! {
-                _ = shutdown.notified() => {
-                    tracing::info!("Shutting down payment processors");
-                    break;
-                }
-                Some(result) = join_set.join_next() => {
-                    if let Err(e) = result {
-                        tracing::warn!("Task panicked: {:?}", e);
+        // If no payment processors, just wait for shutdown
+        if join_set.is_empty() {
+            shutdown.notified().await;
+        } else {
+            // Wait for shutdown or all tasks to complete
+            loop {
+                tokio::select! {
+                    _ = shutdown.notified() => {
+                        println!("Shutting down payment processors");
+                        break;
                     }
+                    Some(result) = join_set.join_next() => {
+                        if let Err(e) = result {
+                            tracing::warn!("Task panicked: {:?}", e);
+                        }
+                    }
+                    else => break, // All tasks completed
                 }
-                else => break, // All tasks completed
             }
         }
 
@@ -782,11 +790,11 @@ impl Mint {
     /// Total redeemed for keyset
     #[instrument(skip_all)]
     pub async fn total_redeemed(&self) -> Result<HashMap<Id, Amount>, Error> {
-        let keysets = self.keysets().keysets;
+        let keysets = self.signatory.keysets().await?;
 
         let mut total_redeemed = HashMap::new();
 
-        for keyset in keysets {
+        for keyset in keysets.keysets {
             let (proofs, state) = self.localstore.get_proofs_by_keyset_id(&keyset.id).await?;
 
             let total_spent =
@@ -806,6 +814,7 @@ impl Mint {
 
 #[cfg(test)]
 mod tests {
+
     use std::str::FromStr;
 
     use cdk_sqlite::mint::memory::new_with_state;
