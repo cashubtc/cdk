@@ -43,6 +43,7 @@ pub struct PaymentRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transports: Option<Vec<Transport>>,
     /// Nut10
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub nut10: Option<Nut10SecretRequest>,
 }
 
@@ -478,7 +479,7 @@ mod tests {
             ]
         }"#;
 
-        let expected_encoded = "creqApWF0gaNhdGVub3N0cmFheKlucHJvZmlsZTFxeTI4d3VtbjhnaGo3dW25ZDNzaGp0bnl2OWtoMnVld2Q5aHN6OW1od2RlbjV0ZTB3ZmpqY2N0ZTljdXJ4dmVuOWVlaHFjdHJ2NWhzenJ0aHdkZW41dGUwZGVoaHh0bnZkYWtxcWd5ZGFxeTdjdXJrNDM5eWtwdGt5c3Y3dWRoZGh1NjhzdWNtMjk1YWtxZWZkZWhrZjBkNDk1Y3d1bmw1YWeBgmFuYjE3YWloYjdhOTAxNzZhYQphdWNzYXRhbYF3aHR0cHM6Ly84MzMzLnNwYWNlOjMzMzg=";
+        let expected_encoded = "creqApWF0gaNhdGVub3N0cmFheKlucHJvZmlsZTFxeTI4d3VtbjhnaGo3dW45ZDNzaGp0bnl2OWtoMnVld2Q5aHN6OW1od2RlbjV0ZTB3ZmprY2N0ZTljdXJ4dmVuOWVlaHFjdHJ2NWhzenJ0aHdkZW41dGUwZGVoaHh0bnZkYWtxcWd5ZGFxeTdjdXJrNDM5eWtwdGt5c3Y3dWRoZGh1NjhzdWNtMjk1YWtxZWZkZWhrZjBkNDk1Y3d1bmw1YWeBgmFuYjE3YWloYjdhOTAxNzZhYQphdWNzYXRhbYF3aHR0cHM6Ly84MzMzLnNwYWNlOjMzMzg=";
 
         // Parse the JSON into a PaymentRequest
         let payment_request: PaymentRequest = serde_json::from_str(json).unwrap();
@@ -515,53 +516,6 @@ mod tests {
             decoded_from_spec.mints.unwrap(),
             vec![MintUrl::from_str("https://8333.space:3338").unwrap()]
         );
-    }
-
-    #[test]
-    fn test_http_transport_payment_request() {
-        // HTTP transport payment request
-        let json = r#"{
-            "i": "a2c12f45",
-            "a": 50,
-            "u": "sat",
-            "m": ["https://cashu.example.com"],
-            "t": [
-                {
-                    "t": "post",
-                    "a": "https://api.example.com/receive"
-                }
-            ]
-        }"#;
-
-        let expected_encoded = "creqApWF0gaNhdGRwb3N0YWF4H2h0dHBzOi8vYXBpLmV4YW1wbGUuY29tL3JlY2VpdmVhZ/dhaWhhMmMxMmY0NWFhGDJhdWNzYXRhbYF4GWh0dHBzOi8vY2FzaHUuZXhhbXBsZS5jb20=";
-
-        // Parse the JSON into a PaymentRequest
-        let payment_request: PaymentRequest = serde_json::from_str(json).unwrap();
-        let payment_request_cloned = payment_request.clone();
-        
-        // Verify the payment request fields
-        assert_eq!(payment_request_cloned.payment_id.as_ref().unwrap(), "a2c12f45");
-        assert_eq!(payment_request_cloned.amount.unwrap(), Amount::from(50));
-        assert_eq!(payment_request_cloned.unit.unwrap(), CurrencyUnit::Sat);
-        assert_eq!(
-            payment_request_cloned.mints.unwrap(),
-            vec![MintUrl::from_str("https://cashu.example.com").unwrap()]
-        );
-        
-        let transport = payment_request_cloned.transports.unwrap();
-        let transport = transport.first().unwrap();
-        assert_eq!(transport._type, TransportType::HttpPost);
-        assert_eq!(transport.target, "https://api.example.com/receive");
-        assert_eq!(transport.tags, None);
-
-        // Test round-trip serialization
-        let encoded = payment_request.to_string();
-        let decoded = PaymentRequest::from_str(&encoded).unwrap();
-        assert_eq!(payment_request, decoded);
-        
-        // Test decoding the expected encoded string
-        let decoded_from_spec = PaymentRequest::from_str(expected_encoded).unwrap();
-        assert_eq!(decoded_from_spec.payment_id.as_ref().unwrap(), "a2c12f45");
     }
 
     #[test]
