@@ -24,7 +24,7 @@ use cdk::util::unix_time;
 use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
 use cdk::{Amount, Error, Mint};
 use cdk_fake_wallet::FakeWallet;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
@@ -282,12 +282,7 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
         .await?;
 
-    let mint_clone = mint.clone();
-    let shutdown = Arc::new(Notify::new());
-    tokio::spawn({
-        let shutdown = Arc::clone(&shutdown);
-        async move { mint_clone.wait_for_paid_invoices(shutdown).await }
-    });
+    mint.start().await?;
 
     Ok(mint)
 }
