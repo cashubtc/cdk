@@ -112,8 +112,10 @@ jobs:
             -p cdk-lnbits,
             -p cdk-fake-wallet,
             -p cdk-payment-processor,
-            -p cdk-mint-rpc,
+            -p cdk-ldk-node,
+            
             -p cdk-signatory,
+            -p cdk-mint-rpc,
             
             # Binaries
             --bin cdk-cli,

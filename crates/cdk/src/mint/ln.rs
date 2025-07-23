@@ -43,8 +43,14 @@ impl Mint {
 
         for payment in ln_status {
             if !quote.payment_ids().contains(&&payment.payment_id) {
-                tracing::debug!("Found payment for quote {} when checking.", quote.id);
                 let amount_paid = to_unit(payment.payment_amount, &payment.unit, &quote.unit)?;
+
+                tracing::debug!(
+                    "Found payment for quote {} when checking of {} {}.",
+                    quote.id,
+                    payment.payment_amount,
+                    payment.unit
+                );
 
                 quote.increment_amount_paid(amount_paid)?;
                 quote.add_payment(amount_paid, payment.payment_id.clone(), unix_time())?;
