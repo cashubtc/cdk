@@ -190,7 +190,7 @@ impl MultiMintWallet {
             .get(wallet_key)
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
-        wallet.send(send, memo).await
+        send.confirm(wallet, memo).await
     }
 
     /// Mint quote for wallet
