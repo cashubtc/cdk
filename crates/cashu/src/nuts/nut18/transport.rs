@@ -17,10 +17,7 @@ pub enum TransportType {
     Nostr,
     /// Http post
     #[serde(rename = "post")]
-    HttpPost,
-    /// Http
-    #[serde(rename = "http")]
-    Http,
+    HttpPost
 }
 
 impl fmt::Display for TransportType {
@@ -37,7 +34,6 @@ impl FromStr for TransportType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "nostr" => Ok(Self::Nostr),
-            "http" => Ok(Self::Http),
             "post" => Ok(Self::HttpPost),
             _ => Err(Error::InvalidPrefix),
         }
