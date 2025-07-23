@@ -497,6 +497,28 @@ pub struct KeySetInfo {
     pub final_expiry: Option<u64>,
 }
 
+/// List of [KeySetInfo]
+pub type KeySetInfos = Vec<KeySetInfo>;
+
+/// Utility methods for [KeySetInfos]
+pub trait KeySetInfosMethods {
+    /// Filter for active keysets
+    fn active(&self) -> impl Iterator<Item = &KeySetInfo> + '_;
+
+    /// Filter keysets for specific unit
+    fn unit(&self, unit: CurrencyUnit) -> impl Iterator<Item = &KeySetInfo> + '_;
+}
+
+impl KeySetInfosMethods for KeySetInfos {
+    fn active(&self) -> impl Iterator<Item = &KeySetInfo> + '_ {
+        self.iter().filter(|k| k.active)
+    }
+
+    fn unit(&self, unit: CurrencyUnit) -> impl Iterator<Item = &KeySetInfo> + '_ {
+        self.iter().filter(move |k| k.unit == unit)
+    }
+}
+
 fn deserialize_input_fee_ppk<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,

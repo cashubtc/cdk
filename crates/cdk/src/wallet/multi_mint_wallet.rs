@@ -293,7 +293,7 @@ impl MultiMintWallet {
         {
             Some(keysets_info) => keysets_info,
             // Hit the keysets endpoint if we don't have the keysets for this Mint
-            None => wallet.get_mint_keysets().await?,
+            None => wallet.load_mint_keysets().await?,
         };
         let proofs = token_data.proofs(&keysets_info)?;
 

@@ -105,7 +105,7 @@ impl Wallet {
             return Err(Error::UnknownQuote);
         };
 
-        let active_keyset_id = self.get_active_mint_keyset().await?.id;
+        let active_keyset_id = self.fetch_active_keyset().await?.id;
 
         let count = self
             .localstore
@@ -161,12 +161,12 @@ impl Wallet {
 
         let mint_res = self.client.post_mint(request).await?;
 
-        let keys = self.get_keyset_keys(active_keyset_id).await?;
+        let keys = self.fetch_keyset_keys(active_keyset_id).await?;
 
         // Verify the signature DLEQ is valid
         {
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
-                let keys = self.get_keyset_keys(sig.keyset_id).await?;
+                let keys = self.fetch_keyset_keys(sig.keyset_id).await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
                 match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
                     Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
