@@ -45,6 +45,7 @@ pub struct CdkLdkNode {
     sender: tokio::sync::broadcast::Sender<WaitPaymentResponse>,
     receiver: Arc<tokio::sync::broadcast::Receiver<WaitPaymentResponse>>,
     events_cancel_token: CancellationToken,
+    runtime: Option<Arc<Runtime>>,
 }
 
 /// Configuration for connecting to Bitcoin RPC
@@ -169,6 +170,7 @@ impl CdkLdkNode {
             sender,
             receiver: Arc::new(receiver),
             events_cancel_token: CancellationToken::new(),
+            runtime: None,
         })
     }
 
@@ -186,10 +188,16 @@ impl CdkLdkNode {
     ///
     /// # Errors
     /// Returns an error if the LDK node fails to start or event handling setup fails
-    pub fn start(&self, runtime: Option<Arc<Runtime>>) -> anyhow::Result<()> {
-        match runtime {
-            Some(runtime) => self.inner.start_with_runtime(runtime)?,
-            None => self.inner.start()?,
+    pub fn start(&self) -> anyhow::Result<()> {
+        match &self.runtime {
+            Some(runtime) => {
+                tracing::info!("Starting cdk-ldk node with existing runtime");
+                self.inner.start_with_runtime(Arc::clone(runtime))?
+            }
+            None => {
+                tracing::info!("Starting cdk-ldk-node with new runtime");
+                self.inner.start()?
+            }
         };
         let node_config = self.inner.config();
 
@@ -200,6 +208,14 @@ impl CdkLdkNode {
         self.handle_events()?;
 
         Ok(())
+    }
+
+    /// Set the runtime for this LDK node
+    ///
+    /// # Arguments
+    /// * `runtime` - Tokio runtime to use for starting the node
+    pub fn set_runtime(&mut self, runtime: Arc<Runtime>) {
+        self.runtime = Some(runtime);
     }
 
     // pub fn start_web_server(&self, web_addr: SocketAddr) -> anyhow::Result<()> {
@@ -383,20 +399,15 @@ impl MintPayment for CdkLdkNode {
     /// Start the payment processor
     /// Starts the LDK node and begins event processing
     async fn start(&self) -> Result<(), Self::Err> {
-        // Start the LDK node (synchronous operation)
-        match self.inner.start() {
+        // Start the LDK node using the stored runtime if available
+        match self.start() {
             Ok(()) => {
-                tracing::info!("LDK node started successfully");
-
                 tracing::info!("CdkLdkNode payment processor started successfully");
                 Ok(())
             }
             Err(e) => {
-                tracing::error!("Failed to start LDK node: {}", e);
-                Err(payment::Error::Anyhow(anyhow!(
-                    "Failed to start LDK node: {}",
-                    e
-                )))
+                tracing::error!("Failed to start CdkLdkNode: {}", e);
+                Err(payment::Error::Anyhow(e))
             }
         }
     }

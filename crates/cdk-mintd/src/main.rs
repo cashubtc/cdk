@@ -78,41 +78,50 @@ compile_error!(
 ///
 /// This asynchronous function performs the following steps:
 /// 1. Executes the initial setup, including loading configurations and initializing the database.
-/// 2. Configures a `MintBuilder` instance with the local store and keystore based on the database.
-/// 3. Applies additional custom configurations and authentication setup for the `MintBuilder`.
-/// 4. Constructs a `Mint` instance from the configured `MintBuilder`.
-/// 5. Checks and resolves the status of any pending mint and melt quotes.
-#[tokio::main]
-async fn main() -> Result<()> {
-    let (work_dir, settings, localstore, keystore) = initial_setup().await?;
+/// 2. Creates a manual Tokio runtime if using the LDK Node backend.
+/// 3. Configures a `MintBuilder` instance with the local store and keystore based on the database.
+/// 4. Applies additional custom configurations and authentication setup for the `MintBuilder`.
+/// 5. Constructs a `Mint` instance from the configured `MintBuilder`.
+/// 6. Checks and resolves the status of any pending mint and melt quotes.
+fn main() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
 
-    let mint_builder = MintBuilder::new(localstore);
+    let runtime = Arc::new(runtime);
 
-    let (mint_builder, ln_routers) = configure_mint_builder(&settings, mint_builder).await?;
-    #[cfg(feature = "auth")]
-    let mint_builder = setup_authentication(&settings, &work_dir, mint_builder).await?;
+    runtime.block_on(async {
+        let (work_dir, settings, localstore, keystore) = initial_setup().await?;
 
-    let mint = build_mint(&settings, keystore, mint_builder).await?;
+        let mint_builder = MintBuilder::new(localstore);
 
-    tracing::debug!("Mint built from builder.");
+        let (mint_builder, ln_routers) =
+            configure_mint_builder(&settings, mint_builder, Arc::clone(&runtime)).await?;
+        #[cfg(feature = "auth")]
+        let mint_builder = setup_authentication(&settings, &work_dir, mint_builder).await?;
 
-    let mint = Arc::new(mint);
+        let mint = build_mint(&settings, keystore, mint_builder).await?;
 
-    // Checks the status of all pending melt quotes
-    // Pending melt quotes where the payment has gone through inputs are burnt
-    // Pending melt quotes where the payment has **failed** inputs are reset to unspent
-    mint.check_pending_melt_quotes().await?;
+        tracing::debug!("Mint built from builder.");
 
-    start_services(
-        mint.clone(),
-        &settings,
-        ln_routers,
-        &work_dir,
-        mint.mint_info().await?,
-    )
-    .await?;
+        let mint = Arc::new(mint);
 
-    Ok(())
+        // Checks the status of all pending melt quotes
+        // Pending melt quotes where the payment has gone through inputs are burnt
+        // Pending melt quotes where the payment has **failed** inputs are reset to unspent
+        mint.check_pending_melt_quotes().await?;
+
+        start_services(
+            Arc::clone(&mint),
+            &settings,
+            ln_routers,
+            &work_dir,
+            mint.mint_info().await?,
+        )
+        .await?;
+
+        Ok(())
+    })
 }
 
 /// Performs the initial setup for the application, including configuring tracing,
@@ -226,6 +235,7 @@ async fn setup_sqlite_database(
 async fn configure_mint_builder(
     settings: &config::Settings,
     mint_builder: MintBuilder,
+    runtime: Arc<tokio::runtime::Runtime>,
 ) -> Result<(MintBuilder, Vec<Router>)> {
     let mut ln_routers = vec![];
 
@@ -233,7 +243,8 @@ async fn configure_mint_builder(
     let mint_builder = configure_basic_info(settings, mint_builder);
 
     // Configure lightning backend
-    let mint_builder = configure_lightning_backend(settings, mint_builder, &mut ln_routers).await?;
+    let mint_builder =
+        configure_lightning_backend(settings, mint_builder, &mut ln_routers, runtime).await?;
 
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
@@ -296,6 +307,7 @@ async fn configure_lightning_backend(
     settings: &config::Settings,
     mut mint_builder: MintBuilder,
     ln_routers: &mut Vec<Router>,
+    runtime: Arc<tokio::runtime::Runtime>,
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
         mint_min: settings.ln.min_mint,
@@ -363,9 +375,11 @@ async fn configure_lightning_backend(
             let ldk_node_settings = settings.clone().ldk_node.expect("Checked at config load");
             tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
 
-            let ldk_node = ldk_node_settings
+            let mut ldk_node = ldk_node_settings
                 .setup(ln_routers, settings, CurrencyUnit::Sat)
                 .await?;
+
+            ldk_node.set_runtime(runtime);
 
             mint_builder = configure_backend_for_unit(
                 settings,
