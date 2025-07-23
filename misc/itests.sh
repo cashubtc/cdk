@@ -115,7 +115,7 @@ export CDK_TEST_MINT_URL_2
 URL="$CDK_TEST_MINT_URL/v1/info"
 
 
-TIMEOUT=100
+TIMEOUT=500
 START_TIME=$(date +%s)
 # Loop until the endpoint returns a 200 OK status or timeout is reached
 while true; do
@@ -215,16 +215,26 @@ CDK_TEST_MINT_URL_2_SWITCHED=$CDK_TEST_MINT_URL
 export CDK_TEST_MINT_URL=$CDK_TEST_MINT_URL_SWITCHED
 export CDK_TEST_MINT_URL_2=$CDK_TEST_MINT_URL_2_SWITCHED
 
+ cargo test -p cdk-integration-tests --test regtest
+ if [ $? -ne 0 ]; then
+     echo "regtest test with LND mint failed, exiting"
+     exit 1
+ fi
+
+ echo "Running happy_path_mint_wallet test with LND mint"
+ cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+ if [ $? -ne 0 ]; then
+     echo "happy_path_mint_wallet test with LND mint failed, exiting"
+     exit 1
+ fi
+
+
+export CDK_TEST_MINT_URL="http://127.0.0.1:8089"
+ 
+echo "Running regtest test with LDK mint"
 cargo test -p cdk-integration-tests --test regtest
 if [ $? -ne 0 ]; then
-    echo "regtest test with LND mint failed, exiting"
-    exit 1
-fi
-
-echo "Running happy_path_mint_wallet test with LND mint"
-cargo test -p cdk-integration-tests --test happy_path_mint_wallet
-if [ $? -ne 0 ]; then
-    echo "happy_path_mint_wallet test with LND mint failed, exiting"
+    echo "regtest test failed, exiting"
     exit 1
 fi
 

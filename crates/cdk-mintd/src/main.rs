@@ -2,23 +2,24 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-// Ensure at least one lightning backend is enabled at compile time
-#[cfg(not(any(
-    feature = "cln",
-    feature = "lnbits",
-    feature = "lnd",
-    feature = "fakewallet",
-    feature = "grpc-processor"
-)))]
-compile_error!(
-    "At least one lightning backend feature must be enabled: cln, lnbits, lnd, fakewallet, or grpc-processor"
-);
-
 use anyhow::Result;
 use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::{get_work_directory, load_settings, setup_tracing};
 use clap::Parser;
 use tokio::main;
+
+// Ensure at least one lightning backend is enabled at compile time
+#[cfg(not(any(
+    feature = "cln",
+    feature = "lnbits",
+    feature = "lnd",
+    feature = "ldk-node",
+    feature = "fakewallet",
+    feature = "grpc-processor"
+)))]
+compile_error!(
+    "At least one lightning backend feature must be enabled: cln, lnbits, lnd, ldk-node, fakewallet, or grpc-processor"
+);
 
 #[main]
 async fn main() -> Result<()> {

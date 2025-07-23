@@ -22,6 +22,7 @@ use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
+    feature = "ldk-node",
     feature = "fakewallet",
     feature = "grpc-processor"
 ))]
@@ -31,6 +32,7 @@ use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path}
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
+    feature = "ldk-node",
     feature = "fakewallet"
 ))]
 use cdk::nuts::CurrencyUnit;
@@ -364,6 +366,24 @@ async fn configure_lightning_backend(
                 .await?;
             }
         }
+        #[cfg(feature = "ldk-node")]
+        LnBackend::LdkNode => {
+            let ldk_node_settings = settings.clone().ldk_node.expect("Checked at config load");
+            tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
+
+            let ldk_node = ldk_node_settings
+                .setup(ln_routers, settings, CurrencyUnit::Sat)
+                .await?;
+
+            mint_builder = configure_backend_for_unit(
+                settings,
+                mint_builder,
+                CurrencyUnit::Sat,
+                mint_melt_limits,
+                Arc::new(ldk_node),
+            )
+            .await?;
+        }
         LnBackend::None => {
             tracing::error!(
                 "Payment backend was not set or feature disabled. {:?}",
@@ -444,6 +464,7 @@ async fn setup_authentication(
         > = match settings.database.engine {
             DatabaseEngine::Sqlite => {
                 let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
+
                 #[cfg(not(feature = "sqlcipher"))]
                 let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
                 #[cfg(feature = "sqlcipher")]
