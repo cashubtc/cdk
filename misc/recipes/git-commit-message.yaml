@@ -1,0 +1,83 @@
+version: 1.0.0
+title: Create git commit message from staged changes
+description: Generate meaningful git commit messages by analyzing staged changes
+prompt: |
+  You are tasked with creating a clear and descriptive git commit message based on staged Git changes. Follow these instructions:
+
+  ## Analysis Process:
+  1. **Read staged changes**: Use `git diff --staged` to analyze what files and code changes are currently staged for commit
+  2. **Analyze change scope**: Identify which components/modules are affected (e.g., cdk, cashu, cdk-cli, etc.)
+  3. **Determine change type**: Categorize the primary change as:
+     - **feat**: New features or functionality
+     - **fix**: Bug fixes
+     - **refactor**: Code refactoring without functional changes
+     - **docs**: Documentation changes
+     - **style**: Code style/formatting changes
+     - **test**: Adding or updating tests
+     - **chore**: Maintenance tasks, dependency updates, build changes
+
+  ## Commit Message Format:
+  Follow conventional commit format:
+  ```
+  type(scope): description
+
+  Optional body with more details if needed
+  ```
+
+  ### Examples:
+  ```
+  feat(cdk): add keyset refresh functionality with improved error handling
+
+  refactor(wallet): improve keyset management for better performance
+
+  fix(cdk-cli): resolve token parsing error for malformed inputs
+
+  docs(README): update installation instructions
+
+  chore(deps): update rust dependencies to latest versions
+  ```
+
+  ## Commit Message Guidelines:
+  1. **Subject line (first line)**:
+     - Start with conventional commit type and scope
+     - Use imperative mood ("add", "fix", "update", not "added", "fixed", "updated")
+     - Keep under 72 characters
+     - Don't end with a period
+     - Be specific and descriptive
+
+  2. **Body (optional)**:
+     - Add if the change needs more explanation
+     - Wrap at 72 characters
+     - Explain **what** and **why**, not **how**
+     - Separate from subject with blank line
+
+  3. **Scope identification**:
+     - Use component names from file paths (cdk, cashu, cdk-cli, etc.)
+     - Use general scopes like "deps", "ci", "docs" for broad changes
+     - Omit scope if change affects multiple unrelated areas
+
+  ## Analysis Priority:
+  1. **Focus on the main change**: If multiple types of changes, pick the most significant one
+  2. **Combine related changes**: Group similar modifications into one cohesive message
+  3. **Ignore trivial changes**: Don't mention minor formatting, whitespace, or comment changes unless that's the primary purpose
+  4. **Be user/developer focused**: Describe impact rather than implementation details
+
+  ## Steps to Execute:
+  1. Analyze staged changes with `git diff --staged`
+  2. Identify primary change type and affected components
+  3. Write a clear, descriptive commit message following conventional format
+  4. Output ONLY the commit message (no additional explanation unless asked)
+extensions:
+- type: builtin
+  name: developer
+  display_name: Developer
+  timeout: 300
+  bundled: true
+activities:
+- Analyze staged git changes
+- Generate conventional commit messages
+- Identify change types and scopes
+- Create clear and descriptive commit subjects
+- Format commit messages properly
+author:
+  contact: thesimplekid
