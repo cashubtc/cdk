@@ -433,7 +433,7 @@ impl MintPayment for CdkLdkNode {
             mpp: false,
             unit: CurrencyUnit::Sat,
             invoice_description: true,
-            amountless: false,
+            amountless: true,
             bolt12: true,
         };
         Ok(serde_json::to_value(settings)?)
