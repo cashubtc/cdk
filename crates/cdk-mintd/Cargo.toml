@@ -11,13 +11,14 @@ rust-version.workspace = true
 readme = "README.md"
 
 [features]
-default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet", "grpc-processor", "auth"]
+default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet", "grpc-processor", "auth", "ldk-node"]
 # Ensure at least one lightning backend is enabled
 management-rpc = ["cdk-mint-rpc"]
 cln = ["dep:cdk-cln"]
 lnd = ["dep:cdk-lnd"]
 lnbits = ["dep:cdk-lnbits"]
 fakewallet = ["dep:cdk-fake-wallet"]
+ldk-node = ["dep:cdk-ldk-node"]
 grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
 sqlcipher = ["cdk-sqlite/sqlcipher"]
 # MSRV is not committed to with swagger enabled
@@ -38,12 +39,13 @@ cdk-sqlite = { workspace = true, features = [
 cdk-cln = { workspace = true, optional = true }
 cdk-lnbits = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }
+cdk-ldk-node = { workspace = true, optional = true }
 cdk-fake-wallet = { workspace = true, optional = true }
 cdk-axum.workspace = true
 cdk-signatory.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
 cdk-payment-processor = { workspace = true, optional = true }
-config = { version = "0.15.11", features = ["toml"] }
+config.workspace = true
 clap.workspace = true
 bitcoin.workspace = true
 tokio = { workspace = true, default-features = false, features = ["signal"] }
@@ -53,7 +55,7 @@ futures.workspace = true
 serde.workspace = true
 bip39.workspace = true
 tower-http = { workspace = true, features = ["compression-full", "decompression-full"] }
-tower = "0.5.2"
+tower.workspace = true
 lightning-invoice.workspace = true
 home.workspace = true
 url.workspace = true
