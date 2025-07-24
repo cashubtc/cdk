@@ -181,6 +181,7 @@ fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<config
     };
 
     let mut settings = if config_file_arg.exists() {
+        tracing::info!("Loading configuration from: {}", config_file_arg.display());
         config::Settings::new(Some(config_file_arg))
     } else {
         tracing::info!("Config file does not exist. Attempting to read env vars");
@@ -189,6 +190,7 @@ fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<config
 
     // This check for any settings defined in ENV VARs
     // ENV VARS will take **priority** over those in the config
+    tracing::debug!("Checking for environment variable overrides...");
     settings.from_env()
 }
 
@@ -795,9 +797,15 @@ async fn start_services(
 
     let socket_addr = SocketAddr::from_str(&format!("{listen_addr}:{listen_port}"))?;
 
+    tracing::info!("Starting mint server on {}:{}", listen_addr, listen_port);
+
     let listener = tokio::net::TcpListener::bind(socket_addr).await?;
 
-    tracing::debug!("listening on {}", listener.local_addr().unwrap());
+    let actual_addr = listener.local_addr().unwrap();
+    tracing::info!(
+        "🚀 Mint server successfully started and listening on {}",
+        actual_addr
+    );
 
     // Wait for axum server to complete
     let axum_result = axum::serve(listener, mint_service).with_graceful_shutdown(shutdown_signal());

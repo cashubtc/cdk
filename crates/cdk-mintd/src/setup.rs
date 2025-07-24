@@ -306,7 +306,7 @@ impl LnBackendSetup for config::LdkNode {
         // For now, let's construct it manually based on the cdk-ldk-node implementation
         let listen_address = vec![socket_addr.into()];
 
-        let ldk_node = cdk_ldk_node::CdkLdkNode::new(
+        let mut ldk_node = cdk_ldk_node::CdkLdkNode::new(
             network,
             chain_source,
             gossip_source,
@@ -314,6 +314,25 @@ impl LnBackendSetup for config::LdkNode {
             fee_reserve,
             listen_address,
         )?;
+
+        // Configure webserver address if specified
+        let webserver_addr = if let Some(host) = &self.webserver_host {
+            let port = self.webserver_port.unwrap_or(8091);
+            let socket_addr: SocketAddr = format!("{}:{}", host, port).parse()?;
+            Some(socket_addr)
+        } else if self.webserver_port.is_some() {
+            // If only port is specified, use default host
+            let port = self.webserver_port.unwrap_or(8091);
+            let socket_addr: SocketAddr = format!("127.0.0.1:{}", port).parse()?;
+            Some(socket_addr)
+        } else {
+            // Use default webserver address if nothing is configured
+            Some(cdk_ldk_node::CdkLdkNode::default_web_addr())
+        };
+
+        println!("webserver: {:?}", webserver_addr);
+
+        ldk_node.set_web_addr(webserver_addr);
 
         Ok(ldk_node)
     }

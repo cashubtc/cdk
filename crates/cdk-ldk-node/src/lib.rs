@@ -4,6 +4,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -31,6 +32,7 @@ use tracing::instrument;
 use crate::error::Error;
 
 mod error;
+mod web;
 
 /// CDK Lightning backend using LDK Node
 ///
@@ -46,6 +48,7 @@ pub struct CdkLdkNode {
     receiver: Arc<tokio::sync::broadcast::Receiver<WaitPaymentResponse>>,
     events_cancel_token: CancellationToken,
     runtime: Option<Arc<Runtime>>,
+    web_addr: Option<SocketAddr>,
 }
 
 /// Configuration for connecting to Bitcoin RPC
@@ -171,7 +174,32 @@ impl CdkLdkNode {
             receiver: Arc::new(receiver),
             events_cancel_token: CancellationToken::new(),
             runtime: None,
+            web_addr: None,
         })
+    }
+
+    /// Set the runtime for this LDK node
+    ///
+    /// # Arguments
+    /// * `runtime` - Tokio runtime to use for starting the node
+    pub fn set_runtime(&mut self, runtime: Arc<Runtime>) {
+        self.runtime = Some(runtime);
+    }
+
+    /// Set the web server address for the LDK node management interface
+    ///
+    /// # Arguments
+    /// * `addr` - Socket address for the web server. If None, no web server will be started.
+    pub fn set_web_addr(&mut self, addr: Option<SocketAddr>) {
+        self.web_addr = addr;
+    }
+
+    /// Get a default web server address using an unused port
+    ///
+    /// Returns a SocketAddr with localhost and port 0, which will cause
+    /// the system to automatically assign an available port
+    pub fn default_web_addr() -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], 8091))
     }
 
     /// Start the CDK LDK Node
@@ -210,12 +238,30 @@ impl CdkLdkNode {
         Ok(())
     }
 
-    /// Set the runtime for this LDK node
+    /// Start the web server for the LDK node management interface
+    ///
+    /// Starts a web server that provides a user interface for managing the LDK node.
+    /// The web interface allows users to view balances, manage channels, create invoices,
+    /// and send payments.
     ///
     /// # Arguments
-    /// * `runtime` - Tokio runtime to use for starting the node
-    pub fn set_runtime(&mut self, runtime: Arc<Runtime>) {
-        self.runtime = Some(runtime);
+    /// * `web_addr` - The socket address to bind the web server to
+    ///
+    /// # Returns
+    /// Returns `Ok(())` on successful start, error otherwise
+    ///
+    /// # Errors
+    /// Returns an error if the web server fails to start
+    pub fn start_web_server(&self, web_addr: SocketAddr) -> Result<(), Error> {
+        let web_server = crate::web::WebServer::new(Arc::new(self.clone()));
+
+        tokio::spawn(async move {
+            if let Err(e) = web_server.serve(web_addr).await {
+                tracing::error!("Web server error: {}", e);
+            }
+        });
+
+        Ok(())
     }
 
     /// Stop the CDK LDK Node
@@ -387,17 +433,25 @@ impl MintPayment for CdkLdkNode {
     /// Start the payment processor
     /// Starts the LDK node and begins event processing
     async fn start(&self) -> Result<(), Self::Err> {
-        // Start the LDK node using the stored runtime if available
-        match self.start() {
-            Ok(()) => {
-                tracing::info!("CdkLdkNode payment processor started successfully");
-                Ok(())
-            }
-            Err(e) => {
-                tracing::error!("Failed to start CdkLdkNode: {}", e);
-                Err(e.into())
-            }
+        self.start().map_err(|e| {
+            tracing::error!("Failed to start CdkLdkNode: {}", e);
+            e
+        })?;
+
+        tracing::info!("CdkLdkNode payment processor started successfully");
+
+        // Start web server if configured
+        if let Some(web_addr) = self.web_addr {
+            tracing::info!("Starting LDK Node web interface on {}", web_addr);
+            self.start_web_server(web_addr).map_err(|e| {
+                tracing::error!("Failed to start web server: {}", e);
+                e
+            })?;
+        } else {
+            tracing::info!("No web server address configured, skipping web interface");
         }
+
+        Ok(())
     }
 
     /// Stop the payment processor

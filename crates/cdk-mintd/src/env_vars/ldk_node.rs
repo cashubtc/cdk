@@ -19,6 +19,8 @@ pub const LDK_NODE_LDK_NODE_HOST_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_LDK_NODE_HO
 pub const LDK_NODE_LDK_NODE_PORT_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_LDK_NODE_PORT";
 pub const LDK_NODE_GOSSIP_SOURCE_TYPE_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE";
 pub const LDK_NODE_RGS_URL_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_RGS_URL";
+pub const LDK_NODE_WEBSERVER_HOST_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_WEBSERVER_HOST";
+pub const LDK_NODE_WEBSERVER_PORT_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_WEBSERVER_PORT";
 
 impl LdkNode {
     pub fn from_env(mut self) -> Self {
@@ -84,6 +86,16 @@ impl LdkNode {
 
         if let Ok(rgs_url) = env::var(LDK_NODE_RGS_URL_ENV_VAR) {
             self.rgs_url = Some(rgs_url);
+        }
+
+        if let Ok(webserver_host) = env::var(LDK_NODE_WEBSERVER_HOST_ENV_VAR) {
+            self.webserver_host = Some(webserver_host);
+        }
+
+        if let Ok(webserver_port) = env::var(LDK_NODE_WEBSERVER_PORT_ENV_VAR) {
+            if let Ok(webserver_port) = webserver_port.parse::<u16>() {
+                self.webserver_port = Some(webserver_port);
+            }
         }
 
         self
