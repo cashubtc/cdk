@@ -750,39 +750,39 @@ ON CONFLICT(id) DO UPDATE SET
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
-        Statement::new(
-            r#"
-            UPDATE keyset
-            SET counter=counter+:count
-            WHERE id=:id
-            "#,
-        )
-        .bind(":count", count)
-        .bind(":id", keyset_id.to_string())
-        .execute(&self.pool.get().map_err(Error::Pool)?)
-        .map_err(Error::Sqlite)?;
+    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<u32, Self::Err> {
+        let query = format!(
+            "UPDATE keyset SET counter = counter + {} WHERE id = '{}'",
+            count,
+            keyset_id.to_string()
+        );
 
-        Ok(())
-    }
+        let conn = self.pool.get().map_err(Error::Pool)?;
 
-    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
-        Ok(Statement::new(
-            r#"
-            SELECT
-                counter
-            FROM
-                keyset
-            WHERE
-                id=:id
-            "#,
-        )
-        .bind(":id", keyset_id.to_string())
-        .plunk(&self.pool.get().map_err(Error::Pool)?)
-        .map_err(Error::Sqlite)?
-        .map(|n| Ok::<_, Error>(column_as_number!(n)))
-        .transpose()?)
+        // Start transaction for atomicity
+        conn.execute("BEGIN TRANSACTION", [])
+            .map_err(Error::Sqlite)?;
+
+        // Execute the UPDATE
+        conn.execute(&query, []).map_err(Error::Sqlite)?;
+
+        // Get the updated value
+        let counter_query = format!(
+            "SELECT counter FROM keyset WHERE id = '{}'",
+            keyset_id.to_string()
+        );
+
+        let mut stmt = conn.prepare(&counter_query).map_err(Error::Sqlite)?;
+        let new_counter_value = stmt
+            .query_row([], |row| row.get::<_, u32>(0))
+            .map_err(Error::Sqlite)?;
+
+        // Commit transaction
+        conn.execute("COMMIT", []).map_err(Error::Sqlite)?;
+
+        let new_counter: u32 = new_counter_value;
+
+        Ok(new_counter)
     }
 
     #[instrument(skip(self))]
