@@ -423,6 +423,7 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
                     .tags()
                     .and_then(|t| t.clone().try_into().ok()),
             }),
+            Kind::CC => Err(Error::KindNotFound), // TODO: Implement CC conditions
         }
     }
 }

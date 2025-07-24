@@ -25,6 +25,7 @@ pub mod nut19;
 pub mod nut20;
 pub mod nut23;
 pub mod nut24;
+pub mod nutxx;
 
 #[cfg(feature = "auth")]
 mod auth;

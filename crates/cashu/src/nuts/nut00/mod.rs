@@ -28,6 +28,7 @@ use crate::nuts::nut01::SecretKey;
 use crate::nuts::nut11::{serde_p2pk_witness, P2PKWitness};
 use crate::nuts::nut12::BlindSignatureDleq;
 use crate::nuts::nut14::{serde_htlc_witness, HTLCWitness};
+use crate::nuts::nutxx::{serde_cc_witness, CCWitness};
 use crate::nuts::{Id, ProofDleq};
 use crate::secret::Secret;
 use crate::Amount;
@@ -285,6 +286,9 @@ pub enum Witness {
     /// HTLC Witness
     #[serde(with = "serde_htlc_witness")]
     HTLCWitness(HTLCWitness),
+    /// CC Witness
+    #[serde(with = "serde_cc_witness")]
+    CCWitness(CCWitness),
 }
 
 impl From<P2PKWitness> for Witness {
@@ -311,6 +315,7 @@ impl Witness {
                     sigs
                 });
             }
+            Self::CCWitness(cc_witness) => {} // TODO
         }
     }
 
@@ -319,6 +324,7 @@ impl Witness {
         match self {
             Self::P2PKWitness(witness) => Some(witness.signatures.clone()),
             Self::HTLCWitness(witness) => witness.signatures.clone(),
+            Self::CCWitness(witness) => None, // TODO
         }
     }
 
@@ -327,6 +333,7 @@ impl Witness {
         match self {
             Self::P2PKWitness(_witness) => None,
             Self::HTLCWitness(witness) => Some(witness.preimage.clone()),
+            Self::CCWitness(witness) => None, // TODO
         }
     }
 }
