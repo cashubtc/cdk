@@ -23,6 +23,8 @@
 - cdk-mintd: Updated to use new mint lifecycle methods for improved service management ([thesimplekid]).
 - cdk-integration-tests: Updated test utilities to use new mint lifecycle management ([thesimplekid]).
 
+### Fixed
+- cashu: Fixed CurrencyUnit custom units preserving original case instead of being converted to uppercase ([thesimplekid]).
 
 
 ## [0.11.0](https://github.com/cashubtc/cdk/releases/tag/v0.11.0)
