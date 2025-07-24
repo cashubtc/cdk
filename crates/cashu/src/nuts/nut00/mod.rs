@@ -591,14 +591,14 @@ impl CurrencyUnit {
 impl FromStr for CurrencyUnit {
     type Err = Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let value = &value.to_uppercase();
-        match value.as_str() {
+        let upper_value = value.to_uppercase();
+        match upper_value.as_str() {
             "SAT" => Ok(Self::Sat),
             "MSAT" => Ok(Self::Msat),
             "USD" => Ok(Self::Usd),
             "EUR" => Ok(Self::Eur),
             "AUTH" => Ok(Self::Auth),
-            c => Ok(Self::Custom(c.to_string())),
+            _ => Ok(Self::Custom(value.to_string())),
         }
     }
 }
@@ -976,5 +976,13 @@ mod tests {
         let b = PreMintSecrets::blank(Id::from_str("009a1f293253e41e").unwrap(), Amount::from(1))
             .unwrap();
         assert_eq!(b.len(), 1);
+    }
+
+    #[test]
+    fn custom_unit_ser_der() {
+        let unit = CurrencyUnit::Custom(String::from("test"));
+        let serialized = serde_json::to_string(&unit).unwrap();
+        let deserialized: CurrencyUnit = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(unit, deserialized)
     }
 }
