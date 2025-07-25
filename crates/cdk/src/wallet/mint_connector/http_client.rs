@@ -1,8 +1,11 @@
+use std::collections::HashSet;
 #[cfg(feature = "auth")]
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use cdk_common::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
+use cdk_common::{nut19, MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
 #[cfg(feature = "auth")]
 use cdk_common::{Method, ProtectedEndpoint, RoutePath};
 use reqwest::{Client, IntoUrl};
@@ -114,6 +117,7 @@ impl HttpClientCore {
 pub struct HttpClient {
     core: HttpClientCore,
     mint_url: MintUrl,
+    cache_support: OnceLock<(u64, HashSet<(nut19::Method, nut19::Path)>)>,
     #[cfg(feature = "auth")]
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
 }
@@ -126,6 +130,7 @@ impl HttpClient {
             core: HttpClientCore::new(),
             mint_url,
             auth_wallet: Arc::new(RwLock::new(auth_wallet)),
+            cache_support: Default::default(),
         }
     }
 
@@ -134,6 +139,7 @@ impl HttpClient {
     pub fn new(mint_url: MintUrl) -> Self {
         Self {
             core: HttpClientCore::new(),
+            cache_support: Default::default(),
             mint_url,
         }
     }
@@ -190,7 +196,66 @@ impl HttpClient {
             mint_url,
             #[cfg(feature = "auth")]
             auth_wallet: Arc::new(RwLock::new(None)),
+            cache_support: Default::default(),
         })
+    }
+
+    /// Generic implementation of a retriable http request
+    ///
+    /// The retry only happens if the mint supports replay through the Caching of NUT-19.
+    #[inline(always)]
+    async fn retriable_http_request<P, R>(
+        &self,
+        method: nut19::Method,
+        path: nut19::Path,
+        auth_token: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<R, Error>
+    where
+        P: Serialize + ?Sized,
+        R: DeserializeOwned,
+    {
+        let started = Instant::now();
+
+        let retriable_window = self
+            .cache_support
+            .get()
+            .and_then(|(ttl, cached_endpoints)| cached_endpoints.get(&(method, path)).map(|_| *ttl))
+            .map(Duration::from_secs)
+            .unwrap_or_default();
+
+        loop {
+            let url = self.mint_url.join_paths(&match path {
+                nut19::Path::MintBolt11 => vec!["v1", "mint", "bolt11"],
+                nut19::Path::MeltBolt11 => vec!["v1", "melt", "bolt11"],
+                nut19::Path::MintBolt12 => vec!["v1", "mint", "bolt12"],
+                nut19::Path::MeltBolt12 => vec!["v1", "melt", "bolt12"],
+                nut19::Path::Swap => vec!["v1", "swap"],
+            })?;
+
+            let result = match method {
+                nut19::Method::Get => self.core.http_get(url, auth_token.clone()).await,
+                nut19::Method::Post => self.core.http_post(url, auth_token.clone(), payload).await,
+            };
+
+            if result.is_ok() {
+                return result;
+            }
+
+            match result.as_ref() {
+                Err(
+                    Error::Database(_) | Error::HttpError(_) | Error::Custom(_) | Error::Payment(_),
+                ) => {
+                    // retry request, if possible
+
+                    if retriable_window < started.elapsed() {
+                        return result;
+                    }
+                }
+                Err(_) => return result,
+                _ => unreachable!(),
+            };
+        }
     }
 }
 
@@ -272,7 +337,6 @@ impl MintConnector for HttpClient {
     /// Mint Tokens [NUT-04]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_mint(&self, request: MintRequest<String>) -> Result<MintResponse, Error> {
-        let url = self.mint_url.join_paths(&["v1", "mint", "bolt11"])?;
         #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::MintBolt11)
@@ -280,7 +344,13 @@ impl MintConnector for HttpClient {
 
         #[cfg(not(feature = "auth"))]
         let auth_token = None;
-        self.core.http_post(url, auth_token, &request).await
+        self.retriable_http_request(
+            nut19::Method::Post,
+            nut19::Path::MintBolt11,
+            auth_token,
+            &request,
+        )
+        .await
     }
 
     /// Melt Quote [NUT-05]
@@ -329,7 +399,6 @@ impl MintConnector for HttpClient {
         &self,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        let url = self.mint_url.join_paths(&["v1", "melt", "bolt11"])?;
         #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::MeltBolt11)
@@ -337,25 +406,53 @@ impl MintConnector for HttpClient {
 
         #[cfg(not(feature = "auth"))]
         let auth_token = None;
-        self.core.http_post(url, auth_token, &request).await
+
+        self.retriable_http_request(
+            nut19::Method::Post,
+            nut19::Path::MeltBolt11,
+            auth_token,
+            &request,
+        )
+        .await
     }
 
     /// Swap Token [NUT-03]
     #[instrument(skip(self, swap_request), fields(mint_url = %self.mint_url))]
     async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
-        let url = self.mint_url.join_paths(&["v1", "swap"])?;
         #[cfg(feature = "auth")]
         let auth_token = self.get_auth_token(Method::Post, RoutePath::Swap).await?;
 
         #[cfg(not(feature = "auth"))]
         let auth_token = None;
-        self.core.http_post(url, auth_token, &swap_request).await
+
+        self.retriable_http_request(
+            nut19::Method::Post,
+            nut19::Path::Swap,
+            auth_token,
+            &swap_request,
+        )
+        .await
     }
 
     /// Helper to get mint info
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
         let url = self.mint_url.join_paths(&["v1", "info"])?;
-        self.core.http_get(url, None).await
+        let info: MintInfo = self.core.http_get(url, None).await?;
+
+        if self.cache_support.get().is_none() {
+            let _ = self.cache_support.set((
+                info.nuts.nut19.ttl.unwrap_or(300),
+                info.nuts
+                    .nut19
+                    .cached_endpoints
+                    .clone()
+                    .into_iter()
+                    .map(|cached_endpoint| (cached_endpoint.method, cached_endpoint.path))
+                    .collect(),
+            ));
+        }
+
+        Ok(info)
     }
 
     #[cfg(feature = "auth")]
@@ -485,7 +582,6 @@ impl MintConnector for HttpClient {
         &self,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        let url = self.mint_url.join_paths(&["v1", "melt", "bolt12"])?;
         #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::MeltBolt12)
@@ -493,7 +589,13 @@ impl MintConnector for HttpClient {
 
         #[cfg(not(feature = "auth"))]
         let auth_token = None;
-        self.core.http_post(url, auth_token, &request).await
+        self.retriable_http_request(
+            nut19::Method::Post,
+            nut19::Path::MeltBolt12,
+            auth_token,
+            &request,
+        )
+        .await
     }
 }
 
