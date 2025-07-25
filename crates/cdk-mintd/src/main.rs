@@ -211,7 +211,7 @@ async fn setup_sqlite_database(
     #[cfg(feature = "sqlcipher")]
     let db = {
         // Get password from command line arguments for sqlcipher
-        MintSqliteDatabase::new(&sql_db_path, _password.unwrap()).await?
+        MintSqliteDatabase::new((sql_db_path, _password.unwrap())).await?
     };
     Ok(Arc::new(db))
 }
@@ -486,7 +486,7 @@ async fn setup_authentication(
                 #[cfg(feature = "sqlcipher")]
                 let password = CLIArgs::parse().password;
                 #[cfg(feature = "sqlcipher")]
-                let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path, password).await?;
+                let sqlite_db = MintSqliteAuthDatabase::new((sql_db_path, password)).await?;
                 #[cfg(not(feature = "sqlcipher"))]
                 let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
                 Arc::new(sqlite_db)
