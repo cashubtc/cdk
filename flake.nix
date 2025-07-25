@@ -49,9 +49,11 @@
 
         # Toolchains
         # latest stable
+        # TODO: go back to stable version (stwo_cairo now uses nightly features)
         # stable_toolchain = pkgs.rust-bin.stable."1.86.0".default.override {
         stable_toolchain = pkgs.rust-bin.nightly."2025-01-02".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
+          extensions = [ "rustfmt" "clippy" "rust-analyzer" ];
         };
 
         # MSRV stable
@@ -60,14 +62,10 @@
         };
 
         # Nightly used for formatting
-        # nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
-        #   extensions = [ "rustfmt" "clippy" "rust-analyzer" "rust-src" ];
-        #   targets = [ "wasm32-unknown-unknown" ]; # wasm
-        # });
-        nightly_toolchain = pkgs.rust-bin.nightly."2025-01-02".default.override {
-          targets = [ "wasm32-unknown-unknown" ]; # wasm
+        nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
           extensions = [ "rustfmt" "clippy" "rust-analyzer" "rust-src" ];
-        };
+          targets = [ "wasm32-unknown-unknown" ]; # wasm
+        });
 
         # Common inputs
         envVars = { };
