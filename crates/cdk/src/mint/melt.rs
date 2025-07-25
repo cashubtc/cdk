@@ -152,7 +152,7 @@ impl Mint {
         .await?;
 
         let ln = self
-            .ln
+            .payment_processors
             .get(&PaymentProcessorKey::new(
                 unit.clone(),
                 PaymentMethod::Bolt11,
@@ -250,7 +250,7 @@ impl Mint {
         .await?;
 
         let ln = self
-            .ln
+            .payment_processors
             .get(&PaymentProcessorKey::new(
                 unit.clone(),
                 PaymentMethod::Bolt12,
@@ -586,7 +586,7 @@ impl Mint {
                     _ => None,
                 };
                 tracing::debug!("partial_amount: {:?}", partial_amount);
-                let ln = match self.ln.get(&PaymentProcessorKey::new(
+                let ln = match self.payment_processors.get(&PaymentProcessorKey::new(
                     quote.unit.clone(),
                     PaymentMethod::Bolt11,
                 )) {
@@ -755,13 +755,6 @@ impl Mint {
         )
         .await?;
 
-        self.pubsub_manager.melt_quote_status(
-            &quote,
-            payment_preimage.clone(),
-            None,
-            MeltQuoteState::Paid,
-        );
-
         let mut change = None;
 
         // Check if there is change to return
@@ -826,6 +819,13 @@ impl Mint {
                 change = Some(change_sigs);
             }
         }
+
+        self.pubsub_manager.melt_quote_status(
+            &quote,
+            payment_preimage.clone(),
+            change.clone(),
+            MeltQuoteState::Paid,
+        );
 
         proof_writer.commit();
         tx.commit().await?;
