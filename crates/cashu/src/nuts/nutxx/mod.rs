@@ -12,9 +12,9 @@ use super::{Conditions, Proof};
 use crate::nuts::nut00::BlindedMessage;
 
 use starknet_types_core::felt::Felt;
-use stwo_cairo_prover::stwo::core::vcs::blake2_merkle::{
-    Blake2sMerkleChannel, Blake2sMerkleHasher,
-};
+// use stwo_cairo_prover::stwo::core::vcs::blake2_merkle::{
+//     Blake2sMerkleChannel, Blake2sMerkleHasher,
+// };
 
 pub mod serde_cc_witness;
 

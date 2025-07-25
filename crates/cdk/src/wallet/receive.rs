@@ -102,6 +102,9 @@ impl Wallet {
                                 .ok_or(Error::PreimageNotProvided)?;
                             proof.add_preimage(preimage.to_string());
                         }
+                        Kind::CC => {
+                            // TODO
+                        }
                     }
                     for pubkey in pubkeys {
                         if let Some(signing) = p2pk_signing_keys.get(&pubkey.x_only_public_key()) {

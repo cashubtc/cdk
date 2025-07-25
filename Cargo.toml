@@ -100,8 +100,8 @@ tonic-build = "0.13.1"
 strum = "0.27.1"
 strum_macros = "0.27.1"
 rustls = { version = "0.23.28", default-features = false, features = ["ring"] }
-starknet-types-core = "0.1.9"
-stwo_cairo_prover = { git = "https://github.com/starkware-libs/stwo-cairo", rev = "ff7b4b5" }
+starknet-types-core = "0.1.7"
+stwo_cairo_prover = { git = "https://github.com/starkware-libs/stwo-cairo", rev = "8520522" } # latest commit using rust nightly-2025-01-02
 
 
 
