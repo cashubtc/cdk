@@ -29,18 +29,6 @@ where
     }
 }
 
-// Custom deserializer for optional u64 that handles empty strings
-fn deserialize_optional_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let opt = Option::<String>::deserialize(deserializer)?;
-    match opt.as_deref() {
-        None | Some("") => Ok(None),
-        Some(s) => s.parse::<u64>().map(Some).map_err(serde::de::Error::custom),
-    }
-}
-
 use crate::web::templates::{
     error_message, form_card, format_msats_as_btc, format_sats_as_btc, info_card, layout,
     success_message,
@@ -439,7 +427,7 @@ pub async fn channels_page(State(state): State<AppState>) -> Result<Html<String>
                     }
                     @if channel.is_usable {
                         div style="margin-top: 1rem;" {
-                            a href=(format!("/channels/close?channel_id={}&node_id={}", channel.channel_id, channel.counterparty_node_id)) {
+                            a href=(format!("/channels/close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
                                 button style="background: #dc3545;" { "Close Channel" }
                             }
                         }
@@ -471,11 +459,11 @@ pub async fn open_channel_page(State(_state): State<AppState>) -> Result<Html<St
                 }
                 div class="form-group" {
                     label for="amount_btc" { "Channel Size" }
-                    input type="number" id="amount_btc" name="amount_btc" required placeholder="₿0" step="0.00000001" {}
+                    input type="number" id="amount_sats" name="amount_sats" required placeholder="₿0" step="1" {}
                 }
                 div class="form-group" {
                     label for="push_btc" { "Push Amount (optional)" }
-                    input type="number" id="push_btc" name="push_btc" placeholder="₿0" step="0.00000001" {}
+                    input type="number" id="push_btc" name="push_btc" placeholder="₿0" step="1" {}
                 }
                 button type="submit" { "Open Channel" }
                 " "
@@ -492,8 +480,8 @@ pub struct OpenChannelForm {
     node_id: String,
     address: String,
     port: u32,
-    amount_btc: f64,
-    push_btc: Option<f64>,
+    amount_sats: u64,
+    push_btc: Option<u64>,
 }
 
 pub async fn post_open_channel(
@@ -556,15 +544,13 @@ pub async fn post_open_channel(
     }
 
     // Convert Bitcoin to millisatoshis (1 BTC = 100,000,000,000 msats)
-    let amount_msats = (form.amount_btc * 100_000_000_000.0) as u64;
-    let push_msats = form.push_btc.map(|p| (p * 100_000_000_000.0) as u64);
 
     // Then open the channel
     let channel_result = state.node.inner.open_announced_channel(
         pubkey,
         socket_addr,
-        amount_msats,
-        push_msats,
+        form.amount_sats,
+        form.push_btc.map(|a| a * 1000),
         None,
     );
 
@@ -577,8 +563,8 @@ pub async fn post_open_channel(
                     vec![
                         ("Temporary Channel ID", user_channel_id.0.to_string()),
                         ("Node ID", form.node_id),
-                        ("Amount", format_sats_as_btc((form.amount_btc * 100_000_000.0) as u64)),
-                        ("Push Amount", form.push_btc.map(|p| format_sats_as_btc((p * 100_000_000.0) as u64)).unwrap_or_else(|| "0 ₿".to_string())),
+                        ("Amount", format_sats_as_btc(form.amount_sats)),
+                        ("Push Amount", form.push_btc.map(|p| format_sats_as_btc(p)).unwrap_or_else(|| "₿ 0".to_string())),
                     ]
                 ))
                 div class="card" {
@@ -627,7 +613,7 @@ pub async fn close_channel_page(
         html! {
             p { "Are you sure you want to close this channel?" }
             div class="info-item" {
-                span class="info-label" { "Channel ID:" }
+                span class="info-label" { "User Channel ID:" }
                 span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (channel_id) }
             }
             div class="info-item" {
