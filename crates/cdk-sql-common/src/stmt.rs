@@ -176,9 +176,11 @@ impl Statement {
         } else {
             let parts = split_sql_parts(sql)?;
 
-            let _ = cache.write().map(|mut cache| {
+            if let Ok(mut cache) = cache.write() {
                 cache.insert(sql.to_owned(), (parts.clone(), None));
-            });
+            } else {
+                tracing::warn!("Failed to acquire write lock for SQL statement cache");
+            }
 
             Ok(Self {
                 parts,
