@@ -29,9 +29,21 @@ where
     }
 }
 
+// Custom deserializer for optional u64 that handles empty strings
+fn deserialize_optional_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    match opt.as_deref() {
+        None | Some("") => Ok(None),
+        Some(s) => s.parse::<u64>().map(Some).map_err(serde::de::Error::custom),
+    }
+}
+
 use crate::web::templates::{
-    error_message, form_card, format_msats_as_btc, format_sats_as_btc, info_card, layout,
-    success_message,
+    balance_card, error_message, form_card, format_msats_as_btc, format_sats_as_btc, info_card,
+    layout, success_message,
 };
 use crate::CdkLdkNode;
 
@@ -96,7 +108,7 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
                 ]
             ))
 
-            (info_card(
+            (balance_card(
                 "Balance Summary",
                 vec![
                     ("Total Lightning Balance", format_sats_as_btc(balances.total_lightning_balance_sats)),
@@ -115,8 +127,8 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
                     a href="/onchain" style="text-decoration: none;" {
                         button style="width: 100%;" { "On-chain Balance" }
                     }
-                    a href="/channels" style="text-decoration: none;" {
-                        button style="width: 100%;" { "Manage Channels" }
+                    a href="/channels/open" style="text-decoration: none;" {
+                        button style="width: 100%;" { "Open Channel" }
                     }
                     a href="/invoices" style="text-decoration: none;" {
                         button style="width: 100%;" { "Create Invoice" }
@@ -168,35 +180,152 @@ pub async fn get_new_address(State(state): State<AppState>) -> Result<Html<Strin
 
 pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let balances = state.node.inner.list_balances();
+    let channels = state.node.inner.list_channels();
 
-    let content = html! {
-        (info_card(
-            "Lightning Balance Details",
-            vec![
-                ("Total Lightning Balance", format_sats_as_btc(balances.total_lightning_balance_sats)),
-            ]
-        ))
+    let (num_active_channels, num_inactive_channels) =
+        channels
+            .iter()
+            .fold((0, 0), |(mut active, mut inactive), c| {
+                if c.is_usable {
+                    active += 1;
+                } else {
+                    inactive += 1;
+                }
+                (active, inactive)
+            });
 
-        div class="card" {
-            h2 { "Quick Actions" }
-            div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 1rem;" {
-                a href="/invoices" style="text-decoration: none;" {
-                    button style="width: 100%;" { "Create Lightning Invoice" }
+    let content = if channels.is_empty() {
+        html! {
+            div class="card" {
+                h2 { "Lightning Channels" }
+
+                // Quick Actions moved to the top
+                div style="margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid #eee;" {
+                    h3 { "Quick Actions" }
+                    div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 1rem;" {
+                        a href="/invoices" style="text-decoration: none;" {
+                            button style="width: 100%;" { "Create Lightning Invoice" }
+                        }
+                        a href="/payments" style="text-decoration: none;" {
+                            button style="width: 100%;" { "Make Lightning Payment" }
+                        }
+                        a href="/channels/open" style="text-decoration: none;" {
+                            button style="width: 100%;" { "Open New Channel" }
+                        }
+                        a href="/onchain" style="text-decoration: none;" {
+                            button style="width: 100%;" { "View On-chain Balance" }
+                        }
+                    }
                 }
-                a href="/payments" style="text-decoration: none;" {
-                    button style="width: 100%;" { "Make Lightning Payment" }
+
+                // Balance information
+                (balance_card(
+                    "Balance Information",
+                    vec![
+                        ("Total Lightning Balance", format_sats_as_btc(balances.total_lightning_balance_sats)),
+                        ("Active Channels", format!("{} / {}", num_active_channels, num_active_channels + num_inactive_channels)),
+                    ]
+                ))
+
+                p { "No channels found. Create your first channel to start using Lightning Network." }
+
+                // Add Open New Channel button at the bottom of the card
+                div style="margin-top: 1rem; border-top: 1px solid #eee; padding-top: 1rem;" {
+                    a href="/channels/open" {
+                        button style="width: 100%;" { "Open New Channel" }
+                    }
                 }
-                a href="/channels" style="text-decoration: none;" {
-                    button style="width: 100%;" { "Manage Channels" }
+            }
+        }
+    } else {
+        html! {
+            div class="card" {
+                h2 { "Lightning Channels" }
+
+                // Quick Actions moved to the top
+                div style="margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid #eee;" {
+                    h3 { "Quick Actions" }
+                    div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 1rem;" {
+                        a href="/invoices" style="text-decoration: none;" {
+                            button style="width: 100%;" { "Create Lightning Invoice" }
+                        }
+                        a href="/payments" style="text-decoration: none;" {
+                            button style="width: 100%;" { "Make Lightning Payment" }
+                        }
+                        a href="/channels/open" style="text-decoration: none;" {
+                            button style="width: 100%;" { "Open New Channel" }
+                        }
+                        a href="/onchain" style="text-decoration: none;" {
+                            button style="width: 100%;" { "View On-chain Balance" }
+                        }
+                    }
                 }
-                a href="/onchain" style="text-decoration: none;" {
-                    button style="width: 100%;" { "View On-chain Balance" }
+
+                // Balance information
+                (balance_card(
+                    "Balance Information",
+                    vec![
+                        ("Total Lightning Balance", format_sats_as_btc(balances.total_lightning_balance_sats)),
+                        ("Active Channels", format!("{} / {}", num_active_channels, num_active_channels + num_inactive_channels)),
+                    ]
+                ))
+
+                // Channels list
+                @for channel in &channels {
+                    div class="channel-item" {
+                        div class="channel-header" {
+                            span class="channel-id" { "Channel ID: " (channel.channel_id.to_string()) }
+                            @if channel.is_usable {
+                                span class="status-badge status-active" { "Active" }
+                            } @else {
+                                span class="status-badge status-inactive" { "Inactive" }
+                            }
+                        }
+                        div class="info-item" {
+                            span class="info-label" { "Counterparty" }
+                            span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (channel.counterparty_node_id.to_string()) }
+                        }
+                        @if let Some(short_channel_id) = channel.short_channel_id {
+                            div class="info-item" {
+                                span class="info-label" { "Short Channel ID" }
+                                span class="info-value" { (short_channel_id.to_string()) }
+                            }
+                        }
+                        div class="balance-info" {
+                            div class="balance-item" {
+                                div class="balance-amount" { (format_sats_as_btc(channel.outbound_capacity_msat / 1000)) }
+                                div class="balance-label" { "Outbound" }
+                            }
+                            div class="balance-item" {
+                                div class="balance-amount" { (format_sats_as_btc(channel.inbound_capacity_msat / 1000)) }
+                                div class="balance-label" { "Inbound" }
+                            }
+                            div class="balance-item" {
+                                div class="balance-amount" { (format_sats_as_btc((channel.outbound_capacity_msat + channel.inbound_capacity_msat) / 1000)) }
+                                div class="balance-label" { "Total" }
+                            }
+                        }
+                        @if channel.is_usable {
+                            div style="margin-top: 1rem;" {
+                                a href=(format!("/channels/close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
+                                    button style="background: #dc3545;" { "Close Channel" }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Add Open New Channel button at the bottom of the card
+                div style="margin-top: 1rem; border-top: 1px solid #eee; padding-top: 1rem;" {
+                    a href="/channels/open" {
+                        button style="width: 100%;" { "Open New Channel" }
+                    }
                 }
             }
         }
     };
 
-    Ok(Html(layout("Lightning Balance", content).into_string()))
+    Ok(Html(layout("Lightning", content).into_string()))
 }
 
 #[derive(Deserialize)]
@@ -217,7 +346,7 @@ pub async fn onchain_page(
 
     let mut content = html! {
         // Balance overview for onchain
-        (info_card(
+        (balance_card(
             "On-chain Balance",
             vec![
                 ("Total On-chain Balance", format_sats_as_btc(balances.total_onchain_balance_sats)),
@@ -273,25 +402,29 @@ pub async fn onchain_page(
             content = html! {
                 (content)
                 div class="grid" {
-                    (form_card(
-                        "Receive Bitcoin",
-                        html! {
+                    div class="card card-flex" {
+                        div class="card-flex-content" {
+                            h2 { "Receive Bitcoin" }
                             p { "Generate a new Bitcoin address to receive on-chain payments." }
+                        }
+                        div class="card-flex-button" {
                             a href="/onchain?action=receive" {
-                                button style="width: 100%; margin-top: 1rem;" { "Generate New Address" }
+                                button style="width: 100%;" { "Generate New Address" }
                             }
                         }
-                    ))
+                    }
 
-                    (form_card(
-                        "Send Bitcoin",
-                        html! {
+                    div class="card card-flex" {
+                        div class="card-flex-content" {
+                            h2 { "Send Bitcoin" }
                             p { "Send Bitcoin to any address on the network." }
+                        }
+                        div class="card-flex-button" {
                             a href="/onchain?action=send" {
-                                button style="width: 100%; margin-top: 1rem;" { "Send Payment" }
+                                button style="width: 100%;" { "Send Payment" }
                             }
                         }
-                    ))
+                    }
                 }
             };
         }
@@ -367,77 +500,13 @@ pub async fn post_send_onchain(
         .unwrap())
 }
 
-pub async fn channels_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
-    let channels = state.node.inner.list_channels();
-
-    let mut content = html! {
-        div class="card" {
-            h2 { "Lightning Channels" }
-            div style="margin-bottom: 1rem;" {
-                a href="/channels/open" { button { "Open New Channel" } }
-            }
-        }
-    };
-
-    if channels.is_empty() {
-        content = html! {
-            (content)
-            div class="card" {
-                p { "No channels found. Create your first channel to start using Lightning Network." }
-            }
-        };
-    } else {
-        for channel in channels {
-            let status_badge = if channel.is_usable {
-                html! { span class="status-badge status-active" { "Active" } }
-            } else {
-                html! { span class="status-badge status-inactive" { "Inactive" } }
-            };
-
-            content = html! {
-                (content)
-                div class="channel-item" {
-                    div class="channel-header" {
-                        span class="channel-id" { "Channel ID: " (channel.channel_id.to_string()) }
-                        (status_badge)
-                    }
-                    div class="info-item" {
-                        span class="info-label" { "Counterparty" }
-                        span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (channel.counterparty_node_id.to_string()) }
-                    }
-                    @if let Some(short_channel_id) = channel.short_channel_id {
-                        div class="info-item" {
-                            span class="info-label" { "Short Channel ID" }
-                            span class="info-value" { (short_channel_id.to_string()) }
-                        }
-                    }
-                    div class="balance-info" {
-                        div class="balance-item" {
-                            div class="balance-amount" { (format_sats_as_btc(channel.outbound_capacity_msat / 1000)) }
-                            div class="balance-label" { "Outbound" }
-                        }
-                        div class="balance-item" {
-                            div class="balance-amount" { (format_sats_as_btc(channel.inbound_capacity_msat / 1000)) }
-                            div class="balance-label" { "Inbound" }
-                        }
-                        div class="balance-item" {
-                            div class="balance-amount" { (format_sats_as_btc((channel.outbound_capacity_msat + channel.inbound_capacity_msat) / 1000)) }
-                            div class="balance-label" { "Total" }
-                        }
-                    }
-                    @if channel.is_usable {
-                        div style="margin-top: 1rem;" {
-                            a href=(format!("/channels/close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
-                                button style="background: #dc3545;" { "Close Channel" }
-                            }
-                        }
-                    }
-                }
-            };
-        }
-    }
-
-    Ok(Html(layout("Channels", content).into_string()))
+pub async fn channels_page(State(_state): State<AppState>) -> Result<Response, StatusCode> {
+    // Redirect to the balance page since channels are now part of the Lightning section
+    Ok(Response::builder()
+        .status(StatusCode::FOUND)
+        .header("Location", "/balance")
+        .body(Body::empty())
+        .unwrap())
 }
 
 pub async fn open_channel_page(State(_state): State<AppState>) -> Result<Html<String>, StatusCode> {
@@ -467,7 +536,7 @@ pub async fn open_channel_page(State(_state): State<AppState>) -> Result<Html<St
                 }
                 button type="submit" { "Open Channel" }
                 " "
-                a href="/channels" { button type="button" { "Cancel" } }
+                a href="/balance" { button type="button" { "Cancel" } }
             }
         },
     );
@@ -569,7 +638,7 @@ pub async fn post_open_channel(
                 ))
                 div class="card" {
                     p { "The channel is now being opened. It may take some time for the channel to become active." }
-                    a href="/channels" { button { "← Back to Channels" } }
+                    a href="/balance" { button { "← Back to Lightning" } }
                 }
             }
         }
@@ -602,7 +671,7 @@ pub async fn close_channel_page(
         let content = html! {
             (error_message("Missing channel ID or node ID"))
             div class="card" {
-                a href="/channels" { button { "← Back to Channels" } }
+                a href="/balance" { button { "← Back to Lightning" } }
             }
         };
         return Ok(Html(layout("Close Channel Error", content).into_string()));
@@ -625,7 +694,7 @@ pub async fn close_channel_page(
                 input type="hidden" name="node_id" value=(node_id) {}
                 button type="submit" style="background: #dc3545;" { "Close Channel" }
                 " "
-                a href="/channels" { button type="button" { "Cancel" } }
+                a href="/balance" { button type="button" { "Cancel" } }
             }
         },
     );
@@ -693,7 +762,7 @@ pub async fn post_close_channel(
                 (success_message("Channel closing initiated successfully!"))
                 div class="card" {
                     p { "The channel is now being closed. It may take some time for the closing transaction to be confirmed." }
-                    a href="/channels" { button { "← Back to Channels" } }
+                    a href="/balance" { button { "← Back to Lightning" } }
                 }
             }
         }
@@ -701,7 +770,7 @@ pub async fn post_close_channel(
             html! {
                 (error_message(&format!("Failed to close channel: {}", e)))
                 div class="card" {
-                    a href="/channels" { button { "← Back to Channels" } }
+                    a href="/balance" { button { "← Back to Lightning" } }
                 }
             }
         }
@@ -767,7 +836,7 @@ pub async fn invoices_page(State(_state): State<AppState>) -> Result<Html<String
 
 #[derive(Deserialize)]
 pub struct CreateBolt11Form {
-    amount_btc: f64,
+    amount_btc: u64,
     description: Option<String>,
     #[serde(deserialize_with = "deserialize_optional_u32")]
     expiry_seconds: Option<u32>,
@@ -812,8 +881,8 @@ pub async fn post_create_bolt11(
         }
     };
 
-    // Convert Bitcoin to millisatoshis (1 BTC = 100,000,000,000 msats)
-    let amount_msats = (form.amount_btc * 100_000_000_000.0) as u64;
+    // Convert Bitcoin to millisatoshis
+    let amount_msats = form.amount_btc * 1_000;
 
     let expiry_seconds = form.expiry_seconds.unwrap_or(3600);
     let invoice_result =
@@ -842,7 +911,7 @@ pub async fn post_create_bolt11(
                     "Invoice Details",
                     vec![
                         ("Payment Hash", invoice.payment_hash().to_string()),
-                        ("Amount", format_sats_as_btc((form.amount_btc * 100_000_000.0) as u64)),
+                        ("Amount", format_sats_as_btc(form.amount_btc)),
                         ("Description", description_display),
                         ("Expires At", format!("{}", current_time + expiry_seconds as u64)),
                     ]
@@ -979,7 +1048,7 @@ pub async fn payments_page(State(_state): State<AppState>) -> Result<Html<String
                         }
                         div class="form-group" {
                             label for="amount_btc" { "Amount Override (optional)" }
-                            input type="number" id="amount_btc" name="amount_btc" placeholder="Leave empty to use invoice amount" step="0.00000001" {}
+                            input type="number" id="amount_btc" name="amount_btc" placeholder="Leave empty to use invoice amount" step="1" {}
                         }
                         button type="submit" { "Pay BOLT11 Invoice" }
                     }
@@ -996,7 +1065,7 @@ pub async fn payments_page(State(_state): State<AppState>) -> Result<Html<String
                         }
                         div class="form-group" {
                             label for="amount_btc" { "Amount" }
-                            input type="number" id="amount_btc" name="amount_btc" required placeholder="₿0" step="0.00000001" {}
+                            input type="number" id="amount_btc" name="amount_btc" required placeholder="₿0" step="1" {}
                         }
                         button type="submit" { "Pay BOLT12 Offer" }
                     }
@@ -1008,16 +1077,18 @@ pub async fn payments_page(State(_state): State<AppState>) -> Result<Html<String
     Ok(Html(layout("Make Payments", content).into_string()))
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct PayBolt11Form {
     invoice: String,
-    amount_btc: Option<f64>,
+    #[serde(deserialize_with = "deserialize_optional_u64")]
+    amount_btc: Option<u64>,
 }
 
 pub async fn post_pay_bolt11(
     State(state): State<AppState>,
     Form(form): Form<PayBolt11Form>,
 ) -> Result<Response, StatusCode> {
+    println!("{:?}", form);
     let invoice = match Bolt11Invoice::from_str(&form.invoice.trim()) {
         Ok(inv) => inv,
         Err(e) => {
@@ -1036,8 +1107,8 @@ pub async fn post_pay_bolt11(
     };
 
     let payment_id = if let Some(amount_btc) = form.amount_btc {
-        // Convert Bitcoin to millisatoshis (1 BTC = 100,000,000,000 msats)
-        let amount_msats = (amount_btc * 100_000_000_000.0) as u64;
+        // Convert Bitcoin to millisatoshis
+        let amount_msats = amount_btc * 1000;
         state
             .node
             .inner
@@ -1112,7 +1183,7 @@ pub async fn post_pay_bolt11(
                         ("Payment Hash", invoice.payment_hash().to_string()),
                         ("Payment Preimage", preimage),
                         ("Fee Paid", format_msats_as_btc(fee_msats)),
-                        ("Amount", form.amount_btc.map(|a| format_sats_as_btc((a * 100_000_000.0) as u64)).unwrap_or_else(|| "As per invoice".to_string())),
+                        ("Amount", form.amount_btc.map(|_a| format_sats_as_btc(details.amount_msat.unwrap_or(1000) / 1000)).unwrap_or_default()),
                     ]
                 ))
                 div class="card" {
@@ -1139,7 +1210,8 @@ pub async fn post_pay_bolt11(
 #[derive(Deserialize)]
 pub struct PayBolt12Form {
     offer: String,
-    amount_btc: f64,
+    #[serde(deserialize_with = "deserialize_optional_u64")]
+    amount_btc: Option<u64>,
 }
 
 pub async fn post_pay_bolt12(
@@ -1164,14 +1236,28 @@ pub async fn post_pay_bolt12(
     };
 
     // Convert Bitcoin to millisatoshis (1 BTC = 100,000,000,000 msats)
-    let amount_msats = (form.amount_btc * 100_000_000_000.0) as u64;
-
-    let payment_id =
+    let payment_id = if let Some(amount_btc) = form.amount_btc {
+        let amount_msats = amount_btc * 1_000;
         state
             .node
             .inner
             .bolt12_payment()
-            .send_using_amount(&offer, amount_msats, None, None);
+            .send_using_amount(&offer, amount_msats, None, None)
+    } else {
+        // Handle the case where amount is missing - this might not be valid for all offers
+        // We should provide a better error message here or modify the form to require amount
+        let content = html! {
+            (error_message("Amount is required for paying BOLT12 offers"))
+            div class="card" {
+                a href="/payments" { button { "← Try Again" } }
+            }
+        };
+        return Ok(Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header("content-type", "text/html")
+            .body(Body::from(layout("Payment Error", content).into_string()))
+            .unwrap());
+    };
 
     let payment_id = match payment_id {
         Ok(id) => id,
@@ -1242,7 +1328,7 @@ pub async fn post_pay_bolt12(
                         ("Payment Hash", payment_hash),
                         ("Payment Preimage", preimage),
                         ("Fee Paid", format_msats_as_btc(fee_msats)),
-                        ("Amount Paid", format_sats_as_btc((form.amount_btc * 100_000_000.0) as u64)),
+                        ("Amount Paid", form.amount_btc.map(|a| format_sats_as_btc(a)).unwrap_or_default()),
                     ]
                 ))
                 div class="card" {

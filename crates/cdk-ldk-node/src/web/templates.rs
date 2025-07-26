@@ -2,13 +2,13 @@ use maud::{html, Markup, DOCTYPE};
 
 /// Format satoshis as a whole number with Bitcoin symbol (BIP177)
 pub fn format_sats_as_btc(sats: u64) -> String {
-    format!("₿ {}", sats)
+    format!("₿{}", sats)
 }
 
 /// Format millisatoshis as satoshis (whole number) with Bitcoin symbol (BIP177)
 pub fn format_msats_as_btc(msats: u64) -> String {
     let sats = msats / 1000;
-    format!("₿ {}", sats)
+    format!("₿{}", sats)
 }
 
 pub fn layout(title: &str, content: Markup) -> Markup {
@@ -98,6 +98,20 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         transition: transform 0.3s ease;
                     }
                     
+                    .card-flex {
+                        display: flex;
+                        flex-direction: column;
+                        height: 100%;
+                    }
+                    
+                    .card-flex-content {
+                        flex-grow: 1;
+                    }
+                    
+                    .card-flex-button {
+                        margin-top: auto;
+                    }
+                    
                     .card:hover {
                         transform: translateY(-5px);
                     }
@@ -171,6 +185,32 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         color: #333;
                         word-break: break-all;
                         max-width: 60%;
+                        text-align: right;
+                    }
+                    
+                    /* Specific styles for balance items to prevent overflow */
+                    .balance-item-container {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 0.25rem;
+                        padding: 0.75rem 0;
+                        border-bottom: 1px solid #eee;
+                    }
+                    
+                    .balance-item-container:last-child {
+                        border-bottom: none;
+                    }
+                    
+                    .balance-title {
+                        font-weight: 600;
+                        color: #555;
+                        font-size: 0.9rem;
+                    }
+                    
+                    .balance-amount-value {
+                        color: #333;
+                        font-size: 1.1rem;
+                        word-break: break-all;
                         text-align: right;
                     }
                     
@@ -303,7 +343,6 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                             li { a href="/" { "Dashboard" } }
                             li { a href="/balance" { "Lightning" } }
                             li { a href="/onchain" { "On-chain" } }
-                            li { a href="/channels" { "Channels" } }
                             li { a href="/invoices" { "Invoices" } }
                             li { a href="/payments" { "Payments" } }
                         }
@@ -350,5 +389,19 @@ pub fn success_message(message: &str) -> Markup {
 pub fn error_message(message: &str) -> Markup {
     html! {
         div class="error" { (message) }
+    }
+}
+
+pub fn balance_card(title: &str, items: Vec<(&str, String)>) -> Markup {
+    html! {
+        div class="card" {
+            h2 { (title) }
+            @for (label, value) in items {
+                div class="balance-item-container" {
+                    span class="balance-title" { (label) ":" }
+                    span class="balance-amount-value" { (value) }
+                }
+            }
+        }
     }
 }
