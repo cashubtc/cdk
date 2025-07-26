@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS "proof" (
     amount INTEGER NOT NULL,
     keyset_id TEXT NOT NULL, -- no FK constraint here
     secret TEXT NOT NULL,
-    c BLOBNOT NULL,
+    c BLOB NOT NULL,
     witness TEXT,
     state TEXT CHECK (state IN ('SPENT', 'PENDING', 'UNSPENT', 'RESERVED', 'UNKNOWN')) NOT NULL,
     quote_id TEXT,
