@@ -18,6 +18,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
+                link rel="icon" type="image/svg+xml" href="/static/favicon.svg";
                 title { (title) " - CDK LDK Node" }
                 style {
                     "

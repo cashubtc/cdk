@@ -5,6 +5,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 
 use crate::web::handlers::{
     balance_page, channels_page, close_channel_page, dashboard, get_new_address, invoices_page,
@@ -28,6 +29,9 @@ impl WebServer {
             node: self.node.clone(),
         };
 
+        // Use a simple path for the static files
+        let static_files = ServeDir::new("crates/cdk-ldk-node/static");
+
         Router::new()
             // Dashboard
             .route("/", get(dashboard))
@@ -50,6 +54,8 @@ impl WebServer {
             .route("/payments", get(payments_page))
             .route("/payments/bolt11", post(post_pay_bolt11))
             .route("/payments/bolt12", post(post_pay_bolt12))
+            // Static files
+            .nest_service("/static", static_files)
             .layer(ServiceBuilder::new().layer(CorsLayer::permissive()))
             .with_state(state)
     }

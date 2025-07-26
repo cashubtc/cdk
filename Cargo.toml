@@ -70,7 +70,7 @@ thiserror = { version = "2" }
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "test-util"] }
 tokio-util = { version = "0.7.11", default-features = false }
 tower = "0.5.2"
-tower-http = { version = "0.6.1", features = ["compression-full", "decompression-full", "cors", "trace"] }
+tower-http = { version = "0.6.1", features = ["compression-full", "decompression-full", "cors", "trace", "fs"] }
 tokio-tungstenite = { version = "0.26.0", default-features = false }
 tokio-stream = "0.1.15"
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
