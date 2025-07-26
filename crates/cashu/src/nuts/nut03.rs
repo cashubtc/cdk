@@ -61,6 +61,11 @@ impl SwapRequest {
         &self.inputs
     }
 
+    /// Get mutable inputs (proofs)
+    pub fn inputs_mut(&mut self) -> &mut Proofs {
+        &mut self.inputs
+    }
+
     /// Get outputs (blinded messages)
     pub fn outputs(&self) -> &Vec<BlindedMessage> {
         &self.outputs

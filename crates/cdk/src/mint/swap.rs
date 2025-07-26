@@ -59,20 +59,10 @@ impl Mint {
     }
 
     async fn validate_sig_flag(&self, swap_request: &SwapRequest) -> Result<(), Error> {
-        let EnforceSigFlag {
-            sig_flag,
-            pubkeys,
-            sigs_required,
-        } = enforce_sig_flag(swap_request.inputs().clone());
+        let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(swap_request.inputs().clone());
 
-        if sig_flag.eq(&SigFlag::SigAll) {
-            let pubkeys = pubkeys.into_iter().collect();
-            for blinded_message in swap_request.outputs() {
-                if let Err(err) = blinded_message.verify_p2pk(&pubkeys, sigs_required) {
-                    tracing::info!("Could not verify p2pk in swap request");
-                    return Err(err.into());
-                }
-            }
+        if sig_flag == SigFlag::SigAll {
+            swap_request.verify_sig_all()?;
         }
 
         Ok(())
