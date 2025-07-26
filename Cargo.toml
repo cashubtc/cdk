@@ -101,6 +101,7 @@ strum = "0.27.1"
 strum_macros = "0.27.1"
 rustls = { version = "0.23.28", default-features = false, features = ["ring"] }
 starknet-types-core = "0.1.9"
+cairo-air = { git = "https://github.com/starkware-libs/stwo-cairo", rev = "335de15" }
 stwo_cairo_prover = { git = "https://github.com/starkware-libs/stwo-cairo", rev = "335de15" }
 
 
