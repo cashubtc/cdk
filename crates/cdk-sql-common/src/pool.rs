@@ -37,7 +37,7 @@ pub trait ResourceManager: Debug {
 
     /// Creates a new resource with a given config.
     ///
-    /// If `stale` is every set to TRUE it is assumed the resource is no longer valid and it will be
+    /// If `stale` is ever set to TRUE it is assumed the resource is no longer valid and it will be
     /// dropped.
     fn new_resource(
         config: &Self::Config,

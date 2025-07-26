@@ -21,13 +21,14 @@ pub async fn migrate<C: DatabaseExecutor>(
 
     // Apply each migration if it hasn’t been applied yet
     for (name, sql) in migrations {
-        let basename = if let Some((prefix, basename)) = name.split_once(['/', '\\']) {
-            if prefix != db_prefix {
-                continue;
+        let basename = match name.split_once(['/', '\\']) {
+            Some((prefix, basename)) => {
+                if prefix != db_prefix {
+                    continue;
+                }
+                basename
             }
-            basename
-        } else {
-            name
+            None => name,
         };
 
         let is_missing = query("SELECT name FROM migrations WHERE name = :name")?
