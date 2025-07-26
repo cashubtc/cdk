@@ -4,7 +4,7 @@
 
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -30,13 +30,20 @@ pub trait ResourceManager: Debug {
     type Resource: Debug;
 
     /// The configuration that is needed in order to create the resource
-    type Config: Debug;
+    type Config: Clone + Debug;
 
     /// The error the resource may return when creating a new instance
     type Error: Debug;
 
-    /// Creates a new resource with a given config
-    fn new_resource(config: &Self::Config) -> Result<Self::Resource, Error<Self::Error>>;
+    /// Creates a new resource with a given config.
+    ///
+    /// If `stale` is ever set to TRUE it is assumed the resource is no longer valid and it will be
+    /// dropped.
+    fn new_resource(
+        config: &Self::Config,
+        stale: Arc<AtomicBool>,
+        timeout: Duration,
+    ) -> Result<Self::Resource, Error<Self::Error>>;
 
     /// The object is dropped
     fn drop(_resource: Self::Resource) {}
@@ -49,7 +56,7 @@ where
     RM: ResourceManager,
 {
     config: RM::Config,
-    queue: Mutex<Vec<RM::Resource>>,
+    queue: Mutex<Vec<(Arc<AtomicBool>, RM::Resource)>>,
     in_use: AtomicUsize,
     max_size: usize,
     default_timeout: Duration,
@@ -61,7 +68,7 @@ pub struct PooledResource<RM>
 where
     RM: ResourceManager,
 {
-    resource: Option<RM::Resource>,
+    resource: Option<(Arc<AtomicBool>, RM::Resource)>,
     pool: Arc<Pool<RM>>,
 }
 
@@ -88,7 +95,7 @@ where
     type Target = RM::Resource;
 
     fn deref(&self) -> &Self::Target {
-        self.resource.as_ref().expect("resource already dropped")
+        &self.resource.as_ref().expect("resource already dropped").1
     }
 }
 
@@ -97,7 +104,7 @@ where
     RM: ResourceManager,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.resource.as_mut().expect("resource already dropped")
+        &mut self.resource.as_mut().expect("resource already dropped").1
     }
 }
 
@@ -135,22 +142,28 @@ where
         let mut resources = self.queue.lock().map_err(|_| Error::Poison)?;
 
         loop {
-            if let Some(resource) = resources.pop() {
-                drop(resources);
-                self.in_use.fetch_add(1, Ordering::AcqRel);
+            if let Some((stale, resource)) = resources.pop() {
+                if !stale.load(Ordering::SeqCst) {
+                    drop(resources);
+                    self.in_use.fetch_add(1, Ordering::AcqRel);
 
-                return Ok(PooledResource {
-                    resource: Some(resource),
-                    pool: self.clone(),
-                });
+                    return Ok(PooledResource {
+                        resource: Some((stale, resource)),
+                        pool: self.clone(),
+                    });
+                }
             }
 
             if self.in_use.load(Ordering::Relaxed) < self.max_size {
                 drop(resources);
                 self.in_use.fetch_add(1, Ordering::AcqRel);
+                let stale: Arc<AtomicBool> = Arc::new(false.into());
 
                 return Ok(PooledResource {
-                    resource: Some(RM::new_resource(&self.config)?),
+                    resource: Some((
+                        stale.clone(),
+                        RM::new_resource(&self.config, stale, timeout)?,
+                    )),
                     pool: self.clone(),
                 });
             }
@@ -178,7 +191,7 @@ where
         if let Ok(mut resources) = self.queue.lock() {
             loop {
                 while let Some(resource) = resources.pop() {
-                    RM::drop(resource);
+                    RM::drop(resource.1);
                 }
 
                 if self.in_use.load(Ordering::Relaxed) == 0 {
