@@ -26,7 +26,7 @@ impl ResourceManager for SqliteConnectionManager {
 
     fn new_resource(
         config: &Self::Config,
-        _still_valid: Arc<AtomicBool>,
+        _stale: Arc<AtomicBool>,
         _timeout: Duration,
     ) -> Result<Self::Resource, pool::Error<Self::Error>> {
         let conn = if let Some(path) = config.path.as_ref() {

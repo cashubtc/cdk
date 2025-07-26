@@ -35,10 +35,13 @@ pub trait ResourceManager: Debug {
     /// The error the resource may return when creating a new instance
     type Error: Debug;
 
-    /// Creates a new resource with a given config
+    /// Creates a new resource with a given config.
+    ///
+    /// If `stale` is every set to TRUE it is assumed the resource is no longer valid and it will be
+    /// dropped.
     fn new_resource(
         config: &Self::Config,
-        still_valid: Arc<AtomicBool>,
+        stale: Arc<AtomicBool>,
         timeout: Duration,
     ) -> Result<Self::Resource, Error<Self::Error>>;
 
@@ -139,13 +142,13 @@ where
         let mut resources = self.queue.lock().map_err(|_| Error::Poison)?;
 
         loop {
-            if let Some(resource) = resources.pop() {
-                if resource.0.load(Ordering::SeqCst) {
+            if let Some((stale, resource)) = resources.pop() {
+                if !stale.load(Ordering::SeqCst) {
                     drop(resources);
                     self.in_use.fetch_add(1, Ordering::AcqRel);
 
                     return Ok(PooledResource {
-                        resource: Some(resource),
+                        resource: Some((stale, resource)),
                         pool: self.clone(),
                     });
                 }
@@ -154,12 +157,12 @@ where
             if self.in_use.load(Ordering::Relaxed) < self.max_size {
                 drop(resources);
                 self.in_use.fetch_add(1, Ordering::AcqRel);
-                let still_valid: Arc<AtomicBool> = Arc::new(true.into());
+                let stale: Arc<AtomicBool> = Arc::new(false.into());
 
                 return Ok(PooledResource {
                     resource: Some((
-                        still_valid.clone(),
-                        RM::new_resource(&self.config, still_valid, timeout)?,
+                        stale.clone(),
+                        RM::new_resource(&self.config, stale, timeout)?,
                     )),
                     pool: self.clone(),
                 });
