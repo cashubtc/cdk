@@ -3,6 +3,11 @@
 //! These tests verify the interaction between mint and wallet components, simulating real-world usage scenarios.
 //! They test the complete flow of operations including wallet funding, token swapping, sending tokens between wallets,
 //! and other operations that require client-mint interaction.
+//!
+//! Test Environment:
+//! - Uses pure in-memory mint instances for fast execution
+//! - Tests run concurrently with multi-threaded tokio runtime
+//! - No external dependencies (Lightning nodes, databases) required
 
 use std::assert_eq;
 use std::collections::{HashMap, HashSet};

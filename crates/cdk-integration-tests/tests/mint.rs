@@ -1,8 +1,15 @@
-//! Mint tests
+//! Mint Tests
 //!
 //! This file contains tests that focus on the mint's internal functionality without client interaction.
 //! These tests verify the mint's behavior in isolation, such as keyset management, database operations,
 //! and other mint-specific functionality that doesn't require wallet clients.
+//!
+//! Test Categories:
+//! - Keyset rotation and management
+//! - Database transaction handling
+//! - Internal state transitions
+//! - Fee calculation and enforcement
+//! - Proof validation and state management
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
