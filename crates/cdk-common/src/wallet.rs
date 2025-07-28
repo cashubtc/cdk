@@ -310,6 +310,9 @@ impl TransactionId {
     /// From hex string
     pub fn from_hex(value: &str) -> Result<Self, Error> {
         let bytes = hex::decode(value)?;
+        if bytes.len() != 32 {
+            return Err(Error::InvalidTransactionId);
+        }
         let mut array = [0u8; 32];
         array.copy_from_slice(&bytes);
         Ok(Self(array))
@@ -355,5 +358,31 @@ impl TryFrom<Proofs> for TransactionId {
 
     fn try_from(proofs: Proofs) -> Result<Self, Self::Error> {
         Self::from_proofs(proofs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_transaction_id_from_hex() {
+        let hex_str = "a1b2c3d4e5f60718293a0b1c2d3e4f506172839a0b1c2d3e4f506172839a0b1c";
+        let transaction_id = TransactionId::from_hex(hex_str).unwrap();
+        assert_eq!(transaction_id.to_string(), hex_str);
+    }
+
+    #[test]
+    fn test_transaction_id_from_hex_empty_string() {
+        let hex_str = "";
+        let res = TransactionId::from_hex(hex_str);
+        assert!(matches!(res, Err(Error::InvalidTransactionId)));
+    }
+
+    #[test]
+    fn test_transaction_id_from_hex_longer_string() {
+        let hex_str = "a1b2c3d4e5f60718293a0b1c2d3e4f506172839a0b1c2d3e4f506172839a0b1ca1b2";
+        let res = TransactionId::from_hex(hex_str);
+        assert!(matches!(res, Err(Error::InvalidTransactionId)));
     }
 }
