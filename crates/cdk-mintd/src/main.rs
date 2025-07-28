@@ -18,7 +18,7 @@ use bip39::Mnemonic;
 // internal crate modules
 use cdk::cdk_database::{self, MintDatabase, MintKeysDatabase};
 use cdk::cdk_payment;
-use cdk::cdk_payment::MintPayment;
+use cdk::cdk_payment::{MetricsMintPayment, MintPayment, PrometheusMetricsCollector};
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 #[cfg(any(
     feature = "cln",
@@ -88,12 +88,13 @@ async fn main() -> Result<()> {
     let (work_dir, settings, localstore, keystore) = initial_setup().await?;
 
     let mint_builder = MintBuilder::new(localstore);
+    #[cfg(feature = "prometheus")]
+    let metrics = Arc::new(cdk_prometheus::CdkMetrics::new()?);
 
-    let (mint_builder, ln_routers) = configure_mint_builder(&settings, mint_builder).await?;
+    let (mint_builder, ln_routers) = configure_mint_builder(&settings, mint_builder, metrics.clone()).await?;
     #[cfg(feature = "auth")]
     let mint_builder = setup_authentication(&settings, &work_dir, mint_builder).await?;
 
-    let metrics = Arc::new(cdk_prometheus::CdkMetrics::new()?);
     #[cfg(feature = "prometheus")]
     let mint_builder = mint_builder.with_prometheus_metrics(metrics.clone());
 
@@ -232,6 +233,7 @@ async fn setup_sqlite_database(
 async fn configure_mint_builder(
     settings: &config::Settings,
     mint_builder: MintBuilder,
+    metrics: Arc<metrics::CdkMetrics>,
 ) -> Result<(MintBuilder, Vec<Router>)> {
     let mut ln_routers = vec![];
 
@@ -239,7 +241,7 @@ async fn configure_mint_builder(
     let mint_builder = configure_basic_info(settings, mint_builder);
 
     // Configure lightning backend
-    let mint_builder = configure_lightning_backend(settings, mint_builder, &mut ln_routers).await?;
+    let mint_builder = configure_lightning_backend(settings, mint_builder, &mut ln_routers,&metrics).await?;
 
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
@@ -302,6 +304,7 @@ async fn configure_lightning_backend(
     settings: &config::Settings,
     mut mint_builder: MintBuilder,
     ln_routers: &mut Vec<Router>,
+    metrics: &Arc<metrics::CdkMetrics>, 
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
         mint_min: settings.ln.min_mint,
@@ -373,13 +376,14 @@ async fn configure_lightning_backend(
                 let fake = fake_wallet
                     .setup(ln_routers, settings, CurrencyUnit::Sat)
                     .await?;
+                let _payment_with_metrics = MetricsMintPayment::new(fake,  Arc::new(PrometheusMetricsCollector::new(metrics.as_ref().clone())));
 
                 mint_builder = configure_backend_for_unit(
                     settings,
                     mint_builder,
                     unit.clone(),
                     mint_melt_limits,
-                    Arc::new(fake),
+                    Arc::new(_payment_with_metrics),
                 )
                 .await?;
             }

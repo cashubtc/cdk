@@ -30,6 +30,7 @@ lightning-invoice.workspace = true
 lightning.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+cdk-prometheus = { workspace = true}
 url.workspace = true
 uuid = { workspace = true, optional = true }
 utoipa = { workspace = true, optional = true }

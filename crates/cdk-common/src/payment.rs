@@ -2,20 +2,21 @@
 
 use std::convert::Infallible;
 use std::pin::Pin;
+use std::sync::Arc;
 
+use crate::mint::MeltPaymentRequest;
+use crate::nuts::{CurrencyUnit, MeltQuoteState};
+use crate::Amount;
 use async_trait::async_trait;
 use cashu::util::hex;
 use cashu::{Bolt11Invoice, MeltOptions};
+use cdk_prometheus::CdkMetrics;
 use futures::Stream;
 use lightning::offers::offer::Offer;
 use lightning_invoice::ParseOrSemanticError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
-
-use crate::mint::MeltPaymentRequest;
-use crate::nuts::{CurrencyUnit, MeltQuoteState};
-use crate::Amount;
 
 /// CDK Lightning Error
 #[derive(Debug, Error)]
@@ -394,5 +395,317 @@ impl TryFrom<Value> for Bolt11Settings {
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         serde_json::from_value(value).map_err(|err| err.into())
+    }
+}
+
+/// Metrics wrapper for MintPayment implementations
+///
+/// This wrapper implements the Decorator pattern to collect metrics on all
+/// MintPayment trait methods. It wraps any existing MintPayment implementation
+/// and automatically records timing and operation metrics.
+#[derive(Clone)]
+pub struct MetricsMintPayment<T> {
+    inner: T,
+    metrics: Arc<dyn MetricsCollector + Send + Sync>,
+}
+
+/// Trait for collecting payment metrics
+pub trait MetricsCollector {
+    /// Record the start of a payment operation
+    fn start_operation(&self, operation: &str);
+
+    /// Record the completion of a payment operation
+    fn complete_operation(&self, operation: &str, success: bool, duration_seconds: f64);
+
+    /// Record payment amount
+    fn record_payment_amount(&self, amount: f64, unit: &CurrencyUnit);
+
+    /// Record payment fees
+    fn record_payment_fees(&self, fee: f64, unit: &CurrencyUnit);
+
+    /// Increment in-flight requests counter
+    fn inc_in_flight(&self, operation: &str);
+
+    /// Decrement in-flight requests counter
+    fn dec_in_flight(&self, operation: &str);
+}
+
+impl<T> MetricsMintPayment<T>
+where
+    T: MintPayment,
+{
+    /// Create a new metrics wrapper around a MintPayment implementation
+    pub fn new(inner: T, metrics: Arc<dyn MetricsCollector + Send + Sync>) -> Self {
+        Self { inner, metrics }
+    }
+
+    /// Get reference to the underlying implementation
+    pub fn inner(&self) -> &T {
+        &self.inner
+    }
+
+    /// Consume the wrapper and return the inner implementation
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
+}
+
+#[async_trait]
+impl<T> MintPayment for MetricsMintPayment<T>
+where
+    T: MintPayment + Send + Sync,
+{
+    type Err = T::Err;
+
+    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err> {
+        let start = std::time::Instant::now();
+        self.metrics.inc_in_flight("get_settings");
+
+        let result = self.inner.get_settings().await;
+
+        let duration = start.elapsed().as_secs_f64();
+        self.metrics
+            .complete_operation("get_settings", result.is_ok(), duration);
+        self.metrics.dec_in_flight("get_settings");
+
+        result
+    }
+
+    async fn create_incoming_payment_request(
+        &self,
+        unit: &CurrencyUnit,
+        options: IncomingPaymentOptions,
+    ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        let start = std::time::Instant::now();
+        self.metrics
+            .inc_in_flight("create_incoming_payment_request");
+
+        let result = self
+            .inner
+            .create_incoming_payment_request(unit, options)
+            .await;
+
+        let duration = start.elapsed().as_secs_f64();
+        self.metrics.complete_operation(
+            "create_incoming_payment_request",
+            result.is_ok(),
+            duration,
+        );
+        self.metrics
+            .dec_in_flight("create_incoming_payment_request");
+
+        result
+    }
+
+    async fn get_payment_quote(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        let start = std::time::Instant::now();
+        self.metrics.inc_in_flight("get_payment_quote");
+
+        let result = self.inner.get_payment_quote(unit, options).await;
+
+        let duration = start.elapsed().as_secs_f64();
+        let success = result.is_ok();
+
+        if let Ok(ref quote) = result {
+            let amount: f64 = u64::from(quote.amount) as f64;
+            let fee: f64 = u64::from(quote.fee) as f64;
+            self.metrics.record_payment_amount(amount, unit);
+            self.metrics.record_payment_fees(fee, unit);
+        }
+
+        self.metrics
+            .complete_operation("get_payment_quote", success, duration);
+        self.metrics.dec_in_flight("get_payment_quote");
+
+        result
+    }
+
+    async fn make_payment(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        let start = std::time::Instant::now();
+        self.metrics.inc_in_flight("make_payment");
+
+        let result = self.inner.make_payment(unit, options).await;
+
+        let duration = start.elapsed().as_secs_f64();
+        let success = result.is_ok();
+
+        if let Ok(ref payment) = result {
+            let amount: f64 = u64::from(payment.total_spent) as f64;
+            self.metrics.record_payment_amount(amount, &payment.unit);
+        }
+
+        self.metrics
+            .complete_operation("make_payment", success, duration);
+        self.metrics.dec_in_flight("make_payment");
+
+        result
+    }
+
+    async fn wait_any_incoming_payment(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
+        let start = std::time::Instant::now();
+        self.metrics.inc_in_flight("wait_any_incoming_payment");
+
+        let result = self.inner.wait_any_incoming_payment().await;
+
+        let duration = start.elapsed().as_secs_f64();
+        self.metrics
+            .complete_operation("wait_any_incoming_payment", result.is_ok(), duration);
+        self.metrics.dec_in_flight("wait_any_incoming_payment");
+
+        result
+    }
+
+    fn is_wait_invoice_active(&self) -> bool {
+        self.inner.is_wait_invoice_active()
+    }
+
+    fn cancel_wait_invoice(&self) {
+        self.inner.cancel_wait_invoice()
+    }
+
+    async fn check_incoming_payment_status(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+        let start = std::time::Instant::now();
+        self.metrics.inc_in_flight("check_incoming_payment_status");
+
+        let result = self
+            .inner
+            .check_incoming_payment_status(payment_identifier)
+            .await;
+
+        let duration = start.elapsed().as_secs_f64();
+        self.metrics
+            .complete_operation("check_incoming_payment_status", result.is_ok(), duration);
+        self.metrics.dec_in_flight("check_incoming_payment_status");
+
+        result
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        let start = std::time::Instant::now();
+        self.metrics.inc_in_flight("check_outgoing_payment");
+
+        let result = self.inner.check_outgoing_payment(payment_identifier).await;
+
+        let duration = start.elapsed().as_secs_f64();
+        let success = result.is_ok();
+
+        if let Ok(ref payment) = result {
+            let amount: f64 = u64::from(payment.total_spent) as f64;
+            self.metrics.record_payment_amount(amount, &payment.unit);
+        }
+
+        self.metrics
+            .complete_operation("check_outgoing_payment", success, duration);
+        self.metrics.dec_in_flight("check_outgoing_payment");
+
+        result
+    }
+}
+
+/// Default metrics implementation using prometheus metrics
+///
+/// This implementation provides concrete metrics collection using the existing
+/// CDK prometheus metrics infrastructure.
+pub struct PrometheusMetricsCollector {
+    metrics: CdkMetrics,
+}
+
+impl PrometheusMetricsCollector {
+    /// Create a new prometheus metrics collector
+    pub fn new(metrics: CdkMetrics) -> Self {
+        Self { metrics }
+    }
+}
+
+impl MetricsCollector for PrometheusMetricsCollector {
+    fn start_operation(&self, _operation: &str) {
+        // Start operation is tracked when inc_in_flight is called
+    }
+
+    fn complete_operation(&self, operation: &str, success: bool, _duration_seconds: f64) {
+        self.metrics.record_mint_operation(operation, success);
+    }
+
+    fn record_payment_amount(&self, amount: f64, _unit: &CurrencyUnit) {
+        self.metrics.record_lightning_payment(amount, 0.0);
+    }
+
+    fn record_payment_fees(&self, fee: f64, _unit: &CurrencyUnit) {
+        self.metrics.record_lightning_payment(0.0, fee);
+    }
+
+    fn inc_in_flight(&self, operation: &str) {
+        self.metrics.inc_in_flight_requests(operation);
+    }
+
+    fn dec_in_flight(&self, operation: &str) {
+        self.metrics.dec_in_flight_requests(operation);
+    }
+}
+
+/// No-op metrics implementation for when metrics are disabled
+///
+/// This implementation provides a no-overhead metrics collector that does nothing.
+/// Use this when you want the metrics interface but don't want to collect actual metrics.
+pub struct NoOpMetricsCollector;
+
+impl MetricsCollector for NoOpMetricsCollector {
+    fn start_operation(&self, _operation: &str) {
+        // No-op
+    }
+
+    fn complete_operation(&self, _operation: &str, _success: bool, _duration_seconds: f64) {
+        // No-op
+    }
+
+    fn record_payment_amount(&self, _amount: f64, _unit: &CurrencyUnit) {
+        // No-op
+    }
+
+    fn record_payment_fees(&self, _fee: f64, _unit: &CurrencyUnit) {
+        // No-op
+    }
+
+    fn inc_in_flight(&self, _operation: &str) {
+        // No-op
+    }
+
+    fn dec_in_flight(&self, _operation: &str) {
+        // No-op
+    }
+}
+
+/// Helper functions for creating metrics-enabled MintPayment implementations
+impl<T> MetricsMintPayment<T>
+where
+    T: MintPayment,
+{
+    /// Create a metrics wrapper with prometheus metrics collector
+    #[cfg(feature = "prometheus")]
+    pub fn with_prometheus(inner: T, metrics: cdk_prometheus::CdkMetrics) -> Self {
+        let collector = Arc::new(PrometheusMetricsCollector::new(metrics));
+        Self::new(inner, collector)
+    }
+
+    /// Create a metrics wrapper with no-op metrics collector (no metrics collection)
+    pub fn with_noop(inner: T) -> Self {
+        let collector = Arc::new(NoOpMetricsCollector);
+        Self::new(inner, collector)
     }
 }
