@@ -314,7 +314,8 @@ impl MintBuilder {
             signatory,
             self.localstore,
             self.payment_processors,
-            #[cfg(feature = "prometheus")] self.metrics,
+            #[cfg(feature = "prometheus")]
+            self.metrics,
         )
         .await
     }

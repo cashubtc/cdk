@@ -151,7 +151,6 @@ impl Mint {
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
         >,
     ) -> Result<Self, Error> {
-        
         let keysets = signatory.keysets().await?;
         if !keysets
             .keysets
@@ -932,9 +931,16 @@ mod tests {
             .expect("Failed to create signatory"),
         );
 
-        Mint::new(MintInfo::default(), signatory, localstore, HashMap::new())
-            .await
-            .unwrap()
+        Mint::new(
+            MintInfo::default(),
+            signatory,
+            localstore,
+            HashMap::new(),
+            #[cfg(feature = "prometheus")]
+            None,
+        )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]

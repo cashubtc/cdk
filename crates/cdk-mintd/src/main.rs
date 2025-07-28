@@ -47,6 +47,8 @@ use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus;
+use cdk_prometheus::metrics;
+use cdk_prometheus::prometheus::proto::Metric;
 #[cfg(feature = "auth")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -58,8 +60,6 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 #[cfg(feature = "swagger")]
 use utoipa::OpenApi;
-use cdk_prometheus::metrics;
-use cdk_prometheus::prometheus::proto::Metric;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 
@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
     let metrics = Arc::new(cdk_prometheus::CdkMetrics::new()?);
     #[cfg(feature = "prometheus")]
     let mint_builder = mint_builder.with_prometheus_metrics(metrics.clone());
-    
+
     let mint = build_mint(&settings, keystore, mint_builder).await?;
 
     tracing::debug!("Mint built from builder.");
@@ -765,7 +765,6 @@ async fn start_services(
     #[cfg(feature = "prometheus")]
     {
         if let Some(prometheus_settings) = &settings.prometheus {
-
             if prometheus_settings.enabled {
                 let addr = prometheus_settings
                     .address
