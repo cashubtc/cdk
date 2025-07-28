@@ -1,7 +1,5 @@
 use std::collections::HashSet;
-#[cfg(feature = "auth")]
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -112,12 +110,14 @@ impl HttpClientCore {
     }
 }
 
+type Cache = (u64, HashSet<(nut19::Method, nut19::Path)>);
+
 /// Http Client
 #[derive(Debug, Clone)]
 pub struct HttpClient {
     core: HttpClientCore,
     mint_url: MintUrl,
-    cache_support: OnceLock<(u64, HashSet<(nut19::Method, nut19::Path)>)>,
+    cache_support: Arc<StdRwLock<Cache>>,
     #[cfg(feature = "auth")]
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
 }
@@ -219,8 +219,14 @@ impl HttpClient {
 
         let retriable_window = self
             .cache_support
-            .get()
-            .and_then(|(ttl, cached_endpoints)| cached_endpoints.get(&(method, path)).map(|_| *ttl))
+            .read()
+            .map(|cache_support| {
+                cache_support
+                    .1
+                    .get(&(method, path))
+                    .map(|_| cache_support.0)
+            })
+            .unwrap_or_default()
             .map(Duration::from_secs)
             .unwrap_or_default();
 
@@ -243,10 +249,9 @@ impl HttpClient {
             }
 
             match result.as_ref() {
-                Err(
-                    Error::Database(_) | Error::HttpError(_) | Error::Custom(_) | Error::Payment(_),
-                ) => {
+                Err(Error::Database(_) | Error::HttpError(_) | Error::Custom(_)) => {
                     // retry request, if possible
+                    tracing::error!("Failed http_request {:?}", result.as_ref().err());
 
                     if retriable_window < started.elapsed() {
                         return result;
@@ -439,8 +444,8 @@ impl MintConnector for HttpClient {
         let url = self.mint_url.join_paths(&["v1", "info"])?;
         let info: MintInfo = self.core.http_get(url, None).await?;
 
-        if self.cache_support.get().is_none() {
-            let _ = self.cache_support.set((
+        if let Ok(mut cache_support) = self.cache_support.write() {
+            *cache_support = (
                 info.nuts.nut19.ttl.unwrap_or(300),
                 info.nuts
                     .nut19
@@ -449,7 +454,7 @@ impl MintConnector for HttpClient {
                     .into_iter()
                     .map(|cached_endpoint| (cached_endpoint.method, cached_endpoint.path))
                     .collect(),
-            ));
+            );
         }
 
         Ok(info)
