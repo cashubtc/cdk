@@ -443,7 +443,7 @@ pub async fn test_p2pk_swap() {
         .collect();
 
     let mut listener = mint_bob
-        .pubsub_manager
+        .pubsub_manager()
         .try_subscribe::<IndexableParams>(
             Params {
                 kind: cdk::nuts::nut17::Kind::ProofState,
@@ -773,7 +773,7 @@ async fn test_concurrent_double_spend_swap() {
 
     // Verify that all proofs are marked as spent in the mint
     let states = mint_bob
-        .localstore
+        .localstore()
         .get_proofs_states(&proofs.iter().map(|p| p.y().unwrap()).collect::<Vec<_>>())
         .await
         .expect("Failed to get proof state");
@@ -832,11 +832,11 @@ async fn test_concurrent_double_spend_melt() {
     let melt_request3 = melt_request.clone();
 
     // Spawn 3 concurrent tasks to process the melt requests
-    let task1 = tokio::spawn(async move { mint_clone1.melt_bolt11(&melt_request).await });
+    let task1 = tokio::spawn(async move { mint_clone1.melt(&melt_request).await });
 
-    let task2 = tokio::spawn(async move { mint_clone2.melt_bolt11(&melt_request2).await });
+    let task2 = tokio::spawn(async move { mint_clone2.melt(&melt_request2).await });
 
-    let task3 = tokio::spawn(async move { mint_clone3.melt_bolt11(&melt_request3).await });
+    let task3 = tokio::spawn(async move { mint_clone3.melt(&melt_request3).await });
 
     // Wait for all tasks to complete
     let results = tokio::try_join!(task1, task2, task3).expect("Tasks failed to complete");
@@ -870,7 +870,7 @@ async fn test_concurrent_double_spend_melt() {
 
     // Verify that all proofs are marked as spent in the mint
     let states = mint_bob
-        .localstore
+        .localstore()
         .get_proofs_states(&proofs.iter().map(|p| p.y().unwrap()).collect::<Vec<_>>())
         .await
         .expect("Failed to get proof state");

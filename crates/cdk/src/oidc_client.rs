@@ -32,9 +32,9 @@ pub enum Error {
     /// Unsupported Algo
     #[error("Unsupported signing algo")]
     UnsupportedSigningAlgo,
-    /// Access token not returned
-    #[error("Error getting access token")]
-    AccessTokenMissing,
+    /// Invalid Client ID
+    #[error("Invalid Client ID")]
+    InvalidClientId,
 }
 
 impl From<Error> for cdk_common::error::Error {
@@ -58,6 +58,7 @@ pub struct OidcConfig {
 pub struct OidcClient {
     client: Client,
     openid_discovery: String,
+    client_id: Option<String>,
     oidc_config: Arc<RwLock<Option<OidcConfig>>>,
     jwks_set: Arc<RwLock<Option<JwkSet>>>,
 }
@@ -88,10 +89,11 @@ pub struct TokenResponse {
 
 impl OidcClient {
     /// Create new [`OidcClient`]
-    pub fn new(openid_discovery: String) -> Self {
+    pub fn new(openid_discovery: String, client_id: Option<String>) -> Self {
         Self {
             client: Client::new(),
             openid_discovery,
+            client_id,
             oidc_config: Arc::new(RwLock::new(None)),
             jwks_set: Arc::new(RwLock::new(None)),
         }
@@ -192,11 +194,40 @@ impl OidcClient {
             validation
         };
 
-        if let Err(err) =
-            decode::<HashMap<String, serde_json::Value>>(cat_jwt, &decoding_key, &validation)
-        {
-            tracing::debug!("Could not verify cat: {}", err);
-            return Err(err.into());
+        match decode::<HashMap<String, serde_json::Value>>(cat_jwt, &decoding_key, &validation) {
+            Ok(claims) => {
+                tracing::debug!("Successfully verified cat");
+                tracing::debug!("Claims: {:?}", claims.claims);
+                if let Some(client_id) = &self.client_id {
+                    if let Some(token_client_id) = claims.claims.get("client_id") {
+                        if let Some(token_client_id_value) = token_client_id.as_str() {
+                            if token_client_id_value != client_id {
+                                tracing::warn!(
+                                    "Client ID mismatch: expected {}, got {}",
+                                    client_id,
+                                    token_client_id_value
+                                );
+                                return Err(Error::InvalidClientId);
+                            }
+                        }
+                    } else if let Some(azp) = claims.claims.get("azp") {
+                        if let Some(azp_value) = azp.as_str() {
+                            if azp_value != client_id {
+                                tracing::warn!(
+                                    "Client ID (azp) mismatch: expected {}, got {}",
+                                    client_id,
+                                    azp_value
+                                );
+                                return Err(Error::InvalidClientId);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::debug!("Could not verify cat: {}", err);
+                return Err(err.into());
+            }
         }
 
         Ok(())

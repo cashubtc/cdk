@@ -4,6 +4,27 @@
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
+## [Unreleased]
+
+### Added
+- cashu: `KeySetInfos` type alias and `KeySetInfosMethods` trait for filtering keysets ([thesimplekid]).
+- cdk: Mint lifecycle management with `start()` and `stop()` methods for graceful background service control ([thesimplekid]).
+- cdk: Background task management for invoice payment monitoring with proper shutdown handling ([thesimplekid]).
+
+### Changed
+- cdk: Refactored wallet keyset management methods for better clarity and separation of concerns ([thesimplekid]).
+- cdk: Renamed `get_keyset_keys` to `fetch_keyset_keys` to indicate network operation ([thesimplekid]).
+- cdk: Renamed `get_active_mint_keyset` to `fetch_active_keyset` for consistency ([thesimplekid]).
+- cdk: Updated `get_active_mint_keysets` to `refresh_keysets` with improved keyset refresh logic ([thesimplekid]).
+- cdk: Improved `load_mint_keysets` method to be the primary method for getting keysets for token operations ([thesimplekid]).
+- cdk: Enhanced keyset management with better offline/online operation separation ([thesimplekid]).
+- cdk: Updated method documentation to clarify storage vs network operations ([thesimplekid]).
+- cdk: Refactored invoice payment monitoring to use centralized lifecycle management instead of manual task spawning ([thesimplekid]).
+- cdk-mintd: Updated to use new mint lifecycle methods for improved service management ([thesimplekid]).
+- cdk-integration-tests: Updated test utilities to use new mint lifecycle management ([thesimplekid]).
+
+### Fixed
+- cashu: Fixed CurrencyUnit custom units preserving original case instead of being converted to uppercase ([thesimplekid]).
 
 
 ## [0.11.0](https://github.com/cashubtc/cdk/releases/tag/v0.11.0)

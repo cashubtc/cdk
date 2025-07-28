@@ -8,6 +8,7 @@ use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
 use cdk::wallet::{Wallet, WalletSubscription};
 use cdk::Amount;
+use cdk_common::nut02::KeySetInfosMethods;
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -62,9 +63,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Select proofs to send
     let amount = Amount::from(64);
     let active_keyset_ids = wallet
-        .get_active_mint_keysets()
+        .refresh_keysets()
         .await?
-        .into_iter()
+        .active()
         .map(|keyset| keyset.id)
         .collect();
     let selected =

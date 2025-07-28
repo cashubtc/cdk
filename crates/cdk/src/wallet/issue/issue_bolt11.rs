@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use cdk_common::nut04::MintMethodOptions;
-use cdk_common::wallet::{Transaction, TransactionDirection};
+use cdk_common::wallet::{MintQuote, Transaction, TransactionDirection};
+use cdk_common::PaymentMethod;
 use tracing::instrument;
 
-use super::MintQuote;
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
@@ -81,16 +81,16 @@ impl Wallet {
 
         let quote_res = self.client.post_mint_quote(request).await?;
 
-        let quote = MintQuote {
+        let quote = MintQuote::new(
+            quote_res.quote,
             mint_url,
-            id: quote_res.quote,
-            amount,
+            PaymentMethod::Bolt11,
+            Some(amount),
             unit,
-            request: quote_res.request,
-            state: quote_res.state,
-            expiry: quote_res.expiry.unwrap_or(0),
-            secret_key: Some(secret_key),
-        };
+            quote_res.request,
+            quote_res.expiry.unwrap_or(0),
+            Some(secret_key),
+        );
 
         self.localstore.add_mint_quote(quote.clone()).await?;
 
@@ -139,6 +139,20 @@ impl Wallet {
             }
         }
         Ok(total_amount)
+    }
+
+    /// Get active mint quotes
+    /// Returns mint quotes that are not expired and not yet issued.
+    #[instrument(skip(self))]
+    pub async fn get_active_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        let mut mint_quotes = self.localstore.get_mint_quotes().await?;
+        let unix_time = unix_time();
+        mint_quotes.retain(|quote| {
+            quote.mint_url == self.mint_url
+                && quote.state != MintQuoteState::Issued
+                && quote.expiry > unix_time
+        });
+        Ok(mint_quotes)
     }
 
     /// Mint
@@ -196,13 +210,24 @@ impl Wallet {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
+        if quote_info.payment_method != PaymentMethod::Bolt11 {
+            return Err(Error::UnsupportedPaymentMethod);
+        }
+
+        let amount_mintable = quote_info.amount_mintable();
+
+        if amount_mintable == Amount::ZERO {
+            tracing::debug!("Amount mintable 0.");
+            return Err(Error::AmountUndefined);
+        }
+
         let unix_time = unix_time();
 
         if quote_info.expiry > unix_time {
             tracing::warn!("Attempting to mint with expired quote.");
         }
 
-        let active_keyset_id = self.get_active_mint_keyset().await?.id;
+        let active_keyset_id = self.fetch_active_keyset().await?.id;
 
         let count = self
             .localstore
@@ -214,7 +239,7 @@ impl Wallet {
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
                 active_keyset_id,
-                quote_info.amount,
+                amount_mintable,
                 &amount_split_target,
                 spending_conditions,
             )?,
@@ -222,7 +247,7 @@ impl Wallet {
                 active_keyset_id,
                 count,
                 self.xpriv,
-                quote_info.amount,
+                amount_mintable,
                 &amount_split_target,
             )?,
         };
@@ -239,12 +264,12 @@ impl Wallet {
 
         let mint_res = self.client.post_mint(request).await?;
 
-        let keys = self.get_keyset_keys(active_keyset_id).await?;
+        let keys = self.fetch_keyset_keys(active_keyset_id).await?;
 
         // Verify the signature DLEQ is valid
         {
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
-                let keys = self.get_keyset_keys(sig.keyset_id).await?;
+                let keys = self.fetch_keyset_keys(sig.keyset_id).await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
                 match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
                     Ok(_) | Err(nut12::Error::MissingDleqProof) => (),

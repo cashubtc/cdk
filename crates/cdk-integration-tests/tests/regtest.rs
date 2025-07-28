@@ -89,7 +89,7 @@ async fn test_internal_payment() {
 
     let _melted = wallet.melt(&melt.id).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+    wait_for_mint_to_be_paid(&wallet_2, &mint_quote.id, 60)
         .await
         .unwrap();
 
@@ -308,7 +308,7 @@ async fn test_cached_mint() {
         .await
         .unwrap();
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
     let http_client = HttpClient::new(get_mint_url_from_env().parse().unwrap(), None);
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
@@ -348,7 +348,7 @@ async fn test_regtest_melt_amountless() {
 
     let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
 
-    assert_eq!(mint_quote.amount, mint_amount);
+    assert_eq!(mint_quote.amount, Some(mint_amount));
 
     lnd_client
         .pay_invoice(mint_quote.request)

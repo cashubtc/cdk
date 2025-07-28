@@ -291,6 +291,16 @@ impl Settings {
             .position(|settings| &settings.method == method && &settings.unit == unit)
             .map(|index| self.methods.remove(index))
     }
+
+    /// Supported nut04 methods
+    pub fn supported_methods(&self) -> Vec<&PaymentMethod> {
+        self.methods.iter().map(|a| &a.method).collect()
+    }
+
+    /// Supported nut04 units
+    pub fn supported_units(&self) -> Vec<&CurrencyUnit> {
+        self.methods.iter().map(|s| &s.unit).collect()
+    }
 }
 
 #[cfg(test)]

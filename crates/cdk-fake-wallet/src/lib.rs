@@ -9,7 +9,6 @@
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -17,22 +16,23 @@ use async_trait::async_trait;
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::rand::{thread_rng, Rng};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
-use cdk::amount::{to_unit, Amount};
-use cdk::cdk_payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, MakePaymentResponse, MintPayment,
-    PaymentQuoteResponse,
+use cdk_common::amount::{to_unit, Amount};
+use cdk_common::common::FeeReserve;
+use cdk_common::ensure_cdk;
+use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
+use cdk_common::payment::{
+    self, Bolt11Settings, CreateIncomingPaymentResponse, IncomingPaymentOptions,
+    MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
+    PaymentQuoteResponse, WaitPaymentResponse,
 };
-use cdk::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState};
-use cdk::types::FeeReserve;
-use cdk::{ensure_cdk, mint};
 use error::Error;
 use futures::stream::StreamExt;
 use futures::Stream;
+use lightning::offers::offer::OfferBuilder;
 use lightning_invoice::{Bolt11Invoice, Currency, InvoiceBuilder, PaymentSecret};
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::time;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
@@ -44,13 +44,16 @@ pub mod error;
 #[derive(Clone)]
 pub struct FakeWallet {
     fee_reserve: FeeReserve,
-    sender: tokio::sync::mpsc::Sender<String>,
-    receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<String>>>>,
+    #[allow(clippy::type_complexity)]
+    sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount)>,
+    #[allow(clippy::type_complexity)]
+    receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<(PaymentIdentifier, Amount)>>>>,
     payment_states: Arc<Mutex<HashMap<String, MeltQuoteState>>>,
     failed_payment_check: Arc<Mutex<HashSet<String>>>,
     payment_delay: u64,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
+    incoming_payments: Arc<RwLock<HashMap<PaymentIdentifier, Vec<WaitPaymentResponse>>>>,
 }
 
 impl FakeWallet {
@@ -72,6 +75,7 @@ impl FakeWallet {
             payment_delay,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
+            incoming_payments: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -102,7 +106,7 @@ impl Default for FakeInvoiceDescription {
 
 #[async_trait]
 impl MintPayment for FakeWallet {
-    type Err = cdk_payment::Error;
+    type Err = payment::Error;
 
     #[instrument(skip_all)]
     async fn get_settings(&self) -> Result<Value, Self::Err> {
@@ -111,6 +115,7 @@ impl MintPayment for FakeWallet {
             unit: CurrencyUnit::Msat,
             invoice_description: true,
             amountless: false,
+            bolt12: false,
         })?)
     }
 
@@ -127,51 +132,86 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn wait_any_incoming_payment(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
         tracing::info!("Starting stream for fake invoices");
-        let receiver = self.receiver.lock().await.take().ok_or(Error::NoReceiver)?;
+        let receiver = self
+            .receiver
+            .lock()
+            .await
+            .take()
+            .ok_or(Error::NoReceiver)
+            .unwrap();
         let receiver_stream = ReceiverStream::new(receiver);
-        Ok(Box::pin(receiver_stream.map(|label| label)))
+        Ok(Box::pin(receiver_stream.map(
+            |(request_lookup_id, payment_amount)| WaitPaymentResponse {
+                payment_identifier: request_lookup_id.clone(),
+                payment_amount,
+                unit: CurrencyUnit::Sat,
+                payment_id: request_lookup_id.to_string(),
+            },
+        )))
     }
 
     #[instrument(skip_all)]
     async fn get_payment_quote(
         &self,
-        request: &str,
         unit: &CurrencyUnit,
-        options: Option<MeltOptions>,
+        options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
-        let bolt11 = Bolt11Invoice::from_str(request)?;
+        let (amount_msat, request_lookup_id) = match options {
+            OutgoingPaymentOptions::Bolt11(bolt11_options) => {
+                // If we have specific amount options, use those
+                let amount_msat: u64 = if let Some(melt_options) = bolt11_options.melt_options {
+                    let msats = match melt_options {
+                        MeltOptions::Amountless { amountless } => {
+                            let amount_msat = amountless.amount_msat;
 
-        let amount_msat = match options {
-            Some(amount) => amount.amount_msat(),
-            None => bolt11
-                .amount_milli_satoshis()
-                .ok_or(Error::UnknownInvoiceAmount)?
-                .into(),
+                            if let Some(invoice_amount) =
+                                bolt11_options.bolt11.amount_milli_satoshis()
+                            {
+                                ensure_cdk!(
+                                    invoice_amount == u64::from(amount_msat),
+                                    Error::UnknownInvoiceAmount.into()
+                                );
+                            }
+                            amount_msat
+                        }
+                        MeltOptions::Mpp { mpp } => mpp.amount,
+                    };
+
+                    u64::from(msats)
+                } else {
+                    // Fall back to invoice amount
+                    bolt11_options
+                        .bolt11
+                        .amount_milli_satoshis()
+                        .ok_or(Error::UnknownInvoiceAmount)?
+                };
+                let payment_id =
+                    PaymentIdentifier::PaymentHash(*bolt11_options.bolt11.payment_hash().as_ref());
+                (amount_msat, payment_id)
+            }
+            OutgoingPaymentOptions::Bolt12(bolt12_options) => {
+                let offer = bolt12_options.offer;
+
+                let amount_msat: u64 = if let Some(amount) = bolt12_options.melt_options {
+                    amount.amount_msat().into()
+                } else {
+                    // Fall back to offer amount
+                    let amount = offer.amount().ok_or(Error::UnknownInvoiceAmount)?;
+                    match amount {
+                        lightning::offers::offer::Amount::Bitcoin { amount_msats } => amount_msats,
+                        _ => return Err(Error::UnknownInvoiceAmount.into()),
+                    }
+                };
+                (
+                    amount_msat,
+                    PaymentIdentifier::OfferId(offer.id().to_string()),
+                )
+            }
         };
 
-        let amount = if unit != &CurrencyUnit::Sat && unit != &CurrencyUnit::Msat {
-            let client = Client::new();
-
-            let response: Value = client
-                .get("https://mempool.space/api/v1/prices")
-                .send()
-                .await
-                .map_err(|_| Error::UnknownInvoice)?
-                .json()
-                .await
-                .unwrap();
-
-            let price = response.get(unit.to_string().to_uppercase()).unwrap();
-
-            let bitcoin_amount = u64::from(amount_msat) as f64 / 100_000_000_000.0;
-            let total_price = price.as_f64().unwrap() * bitcoin_amount;
-
-            Amount::from((total_price * 100.0).ceil() as u64)
-        } else {
-            to_unit(amount_msat, &CurrencyUnit::Msat, unit)?
-        };
+        let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
 
         let relative_fee_reserve =
             (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
@@ -181,96 +221,203 @@ impl MintPayment for FakeWallet {
         let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
         Ok(PaymentQuoteResponse {
-            request_lookup_id: bolt11.payment_hash().to_string(),
+            request_lookup_id,
             amount,
             fee: fee.into(),
-            unit: unit.clone(),
             state: MeltQuoteState::Unpaid,
+            options: None,
+            unit: unit.clone(),
         })
     }
 
     #[instrument(skip_all)]
     async fn make_payment(
         &self,
-        melt_quote: mint::MeltQuote,
-        _partial_msats: Option<Amount>,
-        _max_fee_msats: Option<Amount>,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let bolt11 = Bolt11Invoice::from_str(&melt_quote.request)?;
+        match options {
+            OutgoingPaymentOptions::Bolt11(bolt11_options) => {
+                let bolt11 = bolt11_options.bolt11;
+                let payment_hash = bolt11.payment_hash().to_string();
 
-        let payment_hash = bolt11.payment_hash().to_string();
+                let description = bolt11.description().to_string();
 
-        let description = bolt11.description().to_string();
+                let status: Option<FakeInvoiceDescription> =
+                    serde_json::from_str(&description).ok();
 
-        let status: Option<FakeInvoiceDescription> = serde_json::from_str(&description).ok();
+                let mut payment_states = self.payment_states.lock().await;
+                let payment_status = status
+                    .clone()
+                    .map(|s| s.pay_invoice_state)
+                    .unwrap_or(MeltQuoteState::Paid);
 
-        let mut payment_states = self.payment_states.lock().await;
-        let payment_status = status
-            .clone()
-            .map(|s| s.pay_invoice_state)
-            .unwrap_or(MeltQuoteState::Paid);
+                let checkout_going_status = status
+                    .clone()
+                    .map(|s| s.check_payment_state)
+                    .unwrap_or(MeltQuoteState::Paid);
 
-        let checkout_going_status = status
-            .clone()
-            .map(|s| s.check_payment_state)
-            .unwrap_or(MeltQuoteState::Paid);
+                payment_states.insert(payment_hash.clone(), checkout_going_status);
 
-        payment_states.insert(payment_hash.clone(), checkout_going_status);
+                if let Some(description) = status {
+                    if description.check_err {
+                        let mut fail = self.failed_payment_check.lock().await;
+                        fail.insert(payment_hash.clone());
+                    }
 
-        if let Some(description) = status {
-            if description.check_err {
-                let mut fail = self.failed_payment_check.lock().await;
-                fail.insert(payment_hash.clone());
+                    ensure_cdk!(!description.pay_err, Error::UnknownInvoice.into());
+                }
+
+                let amount_msat: u64 = if let Some(melt_options) = bolt11_options.melt_options {
+                    melt_options.amount_msat().into()
+                } else {
+                    // Fall back to invoice amount
+                    bolt11
+                        .amount_milli_satoshis()
+                        .ok_or(Error::UnknownInvoiceAmount)?
+                };
+
+                let total_spent = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
+
+                Ok(MakePaymentResponse {
+                    payment_proof: Some("".to_string()),
+                    payment_lookup_id: PaymentIdentifier::PaymentHash(
+                        *bolt11.payment_hash().as_ref(),
+                    ),
+                    status: payment_status,
+                    total_spent: total_spent + 1.into(),
+                    unit: unit.clone(),
+                })
             }
+            OutgoingPaymentOptions::Bolt12(bolt12_options) => {
+                let bolt12 = bolt12_options.offer;
+                let amount_msat: u64 = if let Some(amount) = bolt12_options.melt_options {
+                    amount.amount_msat().into()
+                } else {
+                    // Fall back to offer amount
+                    let amount = bolt12.amount().ok_or(Error::UnknownInvoiceAmount)?;
+                    match amount {
+                        lightning::offers::offer::Amount::Bitcoin { amount_msats } => amount_msats,
+                        _ => return Err(Error::UnknownInvoiceAmount.into()),
+                    }
+                };
 
-            ensure_cdk!(!description.pay_err, Error::UnknownInvoice.into());
+                let total_spent = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
+
+                Ok(MakePaymentResponse {
+                    payment_proof: Some("".to_string()),
+                    payment_lookup_id: PaymentIdentifier::OfferId(bolt12.id().to_string()),
+                    status: MeltQuoteState::Paid,
+                    total_spent: total_spent + 1.into(),
+                    unit: unit.clone(),
+                })
+            }
         }
-
-        Ok(MakePaymentResponse {
-            payment_proof: Some("".to_string()),
-            payment_lookup_id: payment_hash,
-            status: payment_status,
-            total_spent: melt_quote.amount + 1.into(),
-            unit: melt_quote.unit,
-        })
     }
 
     #[instrument(skip_all)]
     async fn create_incoming_payment_request(
         &self,
-        amount: Amount,
-        _unit: &CurrencyUnit,
-        description: String,
-        _unix_expiry: Option<u64>,
+        unit: &CurrencyUnit,
+        options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        // Since this is fake we just use the amount no matter the unit to create an invoice
-        let amount_msat = amount;
+        let (payment_hash, request, amount, expiry) = match options {
+            IncomingPaymentOptions::Bolt12(bolt12_options) => {
+                let description = bolt12_options.description.unwrap_or_default();
+                let amount = bolt12_options.amount;
+                let expiry = bolt12_options.unix_expiry;
 
-        let invoice = create_fake_invoice(amount_msat.into(), description);
+                let secret_key = SecretKey::new(&mut thread_rng());
+                let secp_ctx = Secp256k1::new();
+
+                let offer_builder = OfferBuilder::new(secret_key.public_key(&secp_ctx))
+                    .description(description.clone());
+
+                let offer_builder = match amount {
+                    Some(amount) => {
+                        let amount_msat = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+                        offer_builder.amount_msats(amount_msat.into())
+                    }
+                    None => offer_builder,
+                };
+
+                let offer = offer_builder.build().unwrap();
+
+                (
+                    PaymentIdentifier::OfferId(offer.id().to_string()),
+                    offer.to_string(),
+                    amount.unwrap_or(Amount::ZERO),
+                    expiry,
+                )
+            }
+            IncomingPaymentOptions::Bolt11(bolt11_options) => {
+                let description = bolt11_options.description.unwrap_or_default();
+                let amount = if unit == &CurrencyUnit::Sat {
+                    to_unit(bolt11_options.amount, unit, &CurrencyUnit::Msat)
+                        .unwrap_or(bolt11_options.amount * Amount::from(1000))
+                } else {
+                    bolt11_options.amount
+                };
+                let expiry = bolt11_options.unix_expiry;
+
+                // Since this is fake we just use the amount no matter the unit to create an invoice
+                let invoice = create_fake_invoice(amount.into(), description.clone());
+                let payment_hash = invoice.payment_hash();
+
+                (
+                    PaymentIdentifier::PaymentHash(*payment_hash.as_ref()),
+                    invoice.to_string(),
+                    amount,
+                    expiry,
+                )
+            }
+        };
 
         let sender = self.sender.clone();
-
-        let payment_hash = invoice.payment_hash();
-
-        let payment_hash_clone = payment_hash.to_string();
-
         let duration = time::Duration::from_secs(self.payment_delay);
+
+        let final_amount = if amount == Amount::ZERO {
+            let mut rng = thread_rng();
+            // Generate a random number between 1 and 1000 (inclusive)
+            let random_number: u64 = rng.gen_range(1..=1000);
+            random_number.into()
+        } else {
+            amount
+        };
+
+        let payment_hash_clone = payment_hash.clone();
+
+        let incoming_payment = self.incoming_payments.clone();
 
         tokio::spawn(async move {
             // Wait for the random delay to elapse
             time::sleep(duration).await;
 
+            let response = WaitPaymentResponse {
+                payment_identifier: payment_hash_clone.clone(),
+                payment_amount: final_amount,
+                unit: CurrencyUnit::Sat,
+                payment_id: payment_hash_clone.to_string(),
+            };
+            let mut incoming = incoming_payment.write().await;
+            incoming
+                .entry(payment_hash_clone.clone())
+                .or_insert_with(Vec::new)
+                .push(response.clone());
+
             // Send the message after waiting for the specified duration
-            if sender.send(payment_hash_clone.clone()).await.is_err() {
-                tracing::error!("Failed to send label: {}", payment_hash_clone);
+            if sender
+                .send((payment_hash_clone.clone(), final_amount))
+                .await
+                .is_err()
+            {
+                tracing::error!("Failed to send label: {:?}", payment_hash_clone);
             }
         });
 
-        let expiry = invoice.expires_at().map(|t| t.as_secs());
-
         Ok(CreateIncomingPaymentResponse {
-            request_lookup_id: payment_hash.to_string(),
-            request: invoice.to_string(),
+            request_lookup_id: payment_hash,
+            request,
             expiry,
         })
     }
@@ -278,31 +425,37 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn check_incoming_payment_status(
         &self,
-        _request_lookup_id: &str,
-    ) -> Result<MintQuoteState, Self::Err> {
-        Ok(MintQuoteState::Paid)
+        request_lookup_id: &PaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+        Ok(self
+            .incoming_payments
+            .read()
+            .await
+            .get(request_lookup_id)
+            .cloned()
+            .unwrap_or(vec![]))
     }
 
     #[instrument(skip_all)]
     async fn check_outgoing_payment(
         &self,
-        request_lookup_id: &str,
+        request_lookup_id: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err> {
         // For fake wallet if the state is not explicitly set default to paid
         let states = self.payment_states.lock().await;
-        let status = states.get(request_lookup_id).cloned();
+        let status = states.get(&request_lookup_id.to_string()).cloned();
 
         let status = status.unwrap_or(MeltQuoteState::Paid);
 
         let fail_payments = self.failed_payment_check.lock().await;
 
-        if fail_payments.contains(request_lookup_id) {
-            return Err(cdk_payment::Error::InvoicePaymentPending);
+        if fail_payments.contains(&request_lookup_id.to_string()) {
+            return Err(payment::Error::InvoicePaymentPending);
         }
 
         Ok(MakePaymentResponse {
             payment_proof: Some("".to_string()),
-            payment_lookup_id: request_lookup_id.to_string(),
+            payment_lookup_id: request_lookup_id.clone(),
             status,
             total_spent: Amount::ZERO,
             unit: CurrencyUnit::Msat,

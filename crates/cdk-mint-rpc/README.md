@@ -19,7 +19,7 @@ This crate includes:
 
 From crates.io:
 ```bash
-cargo install cdk-mint-cli
+cargo install cdk-mint-rpc
 ```
 
 As a library:

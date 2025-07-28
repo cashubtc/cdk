@@ -14,8 +14,8 @@ use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
 use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
 use cdk_common::{
-    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, Proof, ProofDleq,
-    PublicKey, SecretKey, SpendingConditions, State,
+    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PaymentMethod, Proof,
+    ProofDleq, PublicKey, SecretKey, SpendingConditions, State,
 };
 use error::Error;
 use tracing::instrument;
@@ -376,9 +376,9 @@ ON CONFLICT(mint_url) DO UPDATE SET
         Statement::new(
             r#"
 INSERT INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry, secret_key)
+(id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid)
 VALUES
-(:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key)
+(:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid)
 ON CONFLICT(id) DO UPDATE SET
     mint_url = excluded.mint_url,
     amount = excluded.amount,
@@ -386,18 +386,24 @@ ON CONFLICT(id) DO UPDATE SET
     request = excluded.request,
     state = excluded.state,
     expiry = excluded.expiry,
-    secret_key = excluded.secret_key
+    secret_key = excluded.secret_key,
+    payment_method = excluded.payment_method,
+    amount_issued = excluded.amount_issued,
+    amount_paid = excluded.amount_paid
 ;
         "#,
         )
         .bind(":id", quote.id.to_string())
         .bind(":mint_url", quote.mint_url.to_string())
-        .bind(":amount", u64::from(quote.amount) as i64)
+        .bind(":amount", quote.amount.map(|a| a.to_i64()))
         .bind(":unit", quote.unit.to_string())
         .bind(":request", quote.request)
         .bind(":state", quote.state.to_string())
         .bind(":expiry", quote.expiry as i64)
         .bind(":secret_key", quote.secret_key.map(|p| p.to_string()))
+        .bind(":payment_method", quote.payment_method.to_string())
+        .bind(":amount_issued", quote.amount_issued.to_i64())
+        .bind(":amount_paid", quote.amount_paid.to_i64())
         .execute(&self.pool.get().map_err(Error::Pool)?)
         .map_err(Error::Sqlite)?;
 
@@ -416,7 +422,10 @@ ON CONFLICT(id) DO UPDATE SET
                 request,
                 state,
                 expiry,
-                secret_key
+                secret_key,
+                payment_method,
+                amount_issued,
+                amount_paid
             FROM
                 mint_quote
             WHERE
@@ -519,6 +528,30 @@ ON CONFLICT(id) DO UPDATE SET
         .map_err(Error::Sqlite)?
         .map(sqlite_row_to_melt_quote)
         .transpose()?)
+    }
+
+    #[instrument(skip(self))]
+    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, Self::Err> {
+        Ok(Statement::new(
+            r#"
+            SELECT
+                id,
+                unit,
+                amount,
+                request,
+                fee_reserve,
+                state,
+                expiry,
+                payment_preimage
+            FROM
+                melt_quote
+            "#,
+        )
+        .fetch_all(&self.pool.get().map_err(Error::Pool)?)
+        .map_err(Error::Sqlite)?
+        .into_iter()
+        .map(sqlite_row_to_melt_quote)
+        .collect::<Result<_, _>>()?)
     }
 
     #[instrument(skip(self))]
@@ -950,16 +983,24 @@ fn sqlite_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
             request,
             state,
             expiry,
-            secret_key
+            secret_key,
+            row_method,
+            row_amount_minted,
+            row_amount_paid
         ) = row
     );
 
-    let amount: u64 = column_as_number!(amount);
+    let amount: Option<i64> = column_as_nullable_number!(amount);
+
+    let amount_paid: u64 = column_as_number!(row_amount_paid);
+    let amount_minted: u64 = column_as_number!(row_amount_minted);
+    let payment_method =
+        PaymentMethod::from_str(&column_as_string!(row_method)).map_err(Error::from)?;
 
     Ok(MintQuote {
         id: column_as_string!(id),
         mint_url: column_as_string!(mint_url, MintUrl::from_str),
-        amount: Amount::from(amount),
+        amount: amount.and_then(Amount::from_i64),
         unit: column_as_string!(unit, CurrencyUnit::from_str),
         request: column_as_string!(request),
         state: column_as_string!(state, MintQuoteState::from_str),
@@ -967,6 +1008,9 @@ fn sqlite_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
         secret_key: column_as_nullable_string!(secret_key)
             .map(|v| SecretKey::from_str(&v))
             .transpose()?,
+        payment_method,
+        amount_issued: amount_minted.into(),
+        amount_paid: amount_paid.into(),
     })
 }
 

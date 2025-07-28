@@ -6,7 +6,6 @@ use cdk_common::wallet::{Transaction, TransactionDirection};
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
-use super::MeltQuote;
 use crate::amount::to_unit;
 use crate::dhke::construct_proofs;
 use crate::nuts::{
@@ -15,6 +14,7 @@ use crate::nuts::{
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
+use crate::wallet::MeltQuote;
 use crate::{ensure_cdk, Error, Wallet};
 
 impl Wallet {
@@ -104,6 +104,13 @@ impl Wallet {
             Some(quote) => {
                 let mut quote = quote;
 
+                if let Err(e) = self
+                    .add_transaction_for_pending_melt(&quote, &response)
+                    .await
+                {
+                    tracing::error!("Failed to add transaction for pending melt: {}", e);
+                }
+
                 quote.state = response.state;
                 self.localstore.add_melt_quote(quote).await?;
             }
@@ -139,7 +146,7 @@ impl Wallet {
             .update_proofs_state(ys, State::Pending)
             .await?;
 
-        let active_keyset_id = self.get_active_mint_keyset().await?.id;
+        let active_keyset_id = self.fetch_active_keyset().await?.id;
 
         let count = self
             .localstore
@@ -310,7 +317,7 @@ impl Wallet {
         let available_proofs = self.get_unspent_proofs().await?;
 
         let active_keyset_ids = self
-            .get_active_mint_keysets()
+            .refresh_keysets()
             .await?
             .into_iter()
             .map(|k| k.id)

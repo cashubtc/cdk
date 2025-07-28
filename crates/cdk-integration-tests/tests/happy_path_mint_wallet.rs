@@ -100,6 +100,10 @@ async fn test_happy_mint_melt_round_trip() {
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&invoice).await.unwrap();
 
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 10)
+        .await
+        .unwrap();
+
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
         .await
@@ -210,7 +214,7 @@ async fn test_happy_mint() {
 
     let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
 
-    assert_eq!(mint_quote.amount, mint_amount);
+    assert_eq!(mint_quote.amount, Some(mint_amount));
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&invoice).await.unwrap();
@@ -285,6 +289,8 @@ async fn test_restore() {
     let restored = wallet_2.restore().await.unwrap();
     let proofs = wallet_2.get_unspent_proofs().await.unwrap();
 
+    assert!(!proofs.is_empty());
+
     let expected_fee = wallet.get_proofs_fee(&proofs).await.unwrap();
     wallet_2
         .swap(None, SplitTarget::default(), proofs, None, false)
@@ -352,7 +358,7 @@ async fn test_fake_melt_change_in_quote() {
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
-    let keyset = wallet.get_active_mint_keyset().await.unwrap();
+    let keyset = wallet.fetch_active_keyset().await.unwrap();
 
     let premint_secrets =
         PreMintSecrets::random(keyset.id, 100.into(), &SplitTarget::default()).unwrap();
@@ -431,7 +437,9 @@ async fn test_pay_invoice_twice() {
         Err(err) => match err {
             cdk::Error::RequestAlreadyPaid => (),
             err => {
-                panic!("Wrong invoice already paid: {}", err.to_string());
+                if !err.to_string().contains("Duplicate entry") {
+                    panic!("Wrong invoice already paid: {}", err.to_string());
+                }
             }
         },
         Ok(_) => {

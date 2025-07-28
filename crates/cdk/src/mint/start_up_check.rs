@@ -10,7 +10,7 @@ use crate::types::PaymentProcessorKey;
 impl Mint {
     /// Checks the states of melt quotes that are **PENDING** or **UNKNOWN** to the mint with the ln node
     pub async fn check_pending_melt_quotes(&self) -> Result<(), Error> {
-        let melt_quotes = self.localstore.get_melt_quotes().await?;
+        let melt_quotes = self.localstore.get_melt_quotes().await.unwrap();
         let pending_quotes: Vec<MeltQuote> = melt_quotes
             .into_iter()
             .filter(|q| q.state == MeltQuoteState::Pending || q.state == MeltQuoteState::Unknown)
@@ -27,7 +27,7 @@ impl Mint {
                 method: PaymentMethod::Bolt11,
             };
 
-            let ln_backend = match self.ln.get(&ln_key) {
+            let ln_backend = match self.payment_processors.get(&ln_key) {
                 Some(ln_backend) => ln_backend,
                 None => {
                     tracing::warn!("No backend for ln key: {:?}", ln_key);
@@ -53,7 +53,11 @@ impl Mint {
             };
 
             if let Err(err) = tx
-                .update_melt_quote_state(&pending_quote.id, melt_quote_state)
+                .update_melt_quote_state(
+                    &pending_quote.id,
+                    melt_quote_state,
+                    pay_invoice_response.payment_proof,
+                )
                 .await
             {
                 tracing::error!(

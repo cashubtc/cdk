@@ -1,21 +1,31 @@
+use cdk_common::amount::to_unit;
 use cdk_common::common::PaymentProcessorKey;
-use cdk_common::database::{self, MintTransaction};
 use cdk_common::mint::MintQuote;
-use cdk_common::MintQuoteState;
+use cdk_common::util::unix_time;
+use cdk_common::{MintQuoteState, PaymentMethod};
+use tracing::instrument;
 
 use super::Mint;
 use crate::Error;
 
 impl Mint {
     /// Check the status of an ln payment for a quote
-    pub async fn check_mint_quote_paid(
-        &self,
-        tx: Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
-        quote: &mut MintQuote,
-    ) -> Result<Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>, Error> {
-        let ln = match self.ln.get(&PaymentProcessorKey::new(
+    #[instrument(skip_all)]
+    pub async fn check_mint_quote_paid(&self, quote: &mut MintQuote) -> Result<(), Error> {
+        let state = quote.state();
+
+        // We can just return here and do not need to check with ln node.
+        // If quote is issued it is already in a final state,
+        // If it is paid ln node will only tell us what we already know
+        if quote.payment_method == PaymentMethod::Bolt11
+            && (state == MintQuoteState::Issued || state == MintQuoteState::Paid)
+        {
+            return Ok(());
+        }
+
+        let ln = match self.payment_processors.get(&PaymentProcessorKey::new(
             quote.unit.clone(),
-            cdk_common::PaymentMethod::Bolt11,
+            quote.payment_method.clone(),
         )) {
             Some(ln) => ln,
             None => {
@@ -25,23 +35,30 @@ impl Mint {
             }
         };
 
-        tx.commit().await?;
-
         let ln_status = ln
             .check_incoming_payment_status(&quote.request_lookup_id)
             .await?;
 
         let mut tx = self.localstore.begin_transaction().await?;
 
-        if ln_status != quote.state && quote.state != MintQuoteState::Issued {
-            tx.update_mint_quote_state(&quote.id, ln_status).await?;
+        for payment in ln_status {
+            if !quote.payment_ids().contains(&&payment.payment_id) {
+                tracing::debug!("Found payment for quote {} when checking.", quote.id);
+                let amount_paid = to_unit(payment.payment_amount, &payment.unit, &quote.unit)?;
 
-            quote.state = ln_status;
+                quote.increment_amount_paid(amount_paid)?;
+                quote.add_payment(amount_paid, payment.payment_id.clone(), unix_time())?;
 
-            self.pubsub_manager
-                .mint_quote_bolt11_status(quote.clone(), ln_status);
+                tx.increment_mint_quote_amount_paid(&quote.id, amount_paid, payment.payment_id)
+                    .await?;
+
+                self.pubsub_manager
+                    .mint_quote_bolt11_status(quote.clone(), MintQuoteState::Paid);
+            }
         }
 
-        Ok(tx)
+        tx.commit().await?;
+
+        Ok(())
     }
 }

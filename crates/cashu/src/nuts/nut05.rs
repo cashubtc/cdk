@@ -105,9 +105,19 @@ impl TryFrom<MeltRequest<String>> for MeltRequest<Uuid> {
 
 // Basic implementation without trait bounds
 impl<Q> MeltRequest<Q> {
+    /// Quote Id
+    pub fn quote_id(&self) -> &Q {
+        &self.quote
+    }
+
     /// Get inputs (proofs)
     pub fn inputs(&self) -> &Proofs {
         &self.inputs
+    }
+
+    /// Get mutable inputs (proofs)
+    pub fn inputs_mut(&mut self) -> &mut Proofs {
+        &mut self.inputs
     }
 
     /// Get outputs (blinded messages for change)
@@ -132,7 +142,7 @@ impl<Q: Serialize + DeserializeOwned> MeltRequest<Q> {
     }
 
     /// Total [`Amount`] of [`Proofs`]
-    pub fn proofs_amount(&self) -> Result<Amount, Error> {
+    pub fn inputs_amount(&self) -> Result<Amount, Error> {
         Amount::try_sum(self.inputs.iter().map(|proof| proof.amount))
             .map_err(|_| Error::AmountOverflow)
     }
@@ -353,6 +363,18 @@ pub struct Settings {
     pub methods: Vec<MeltMethodSettings>,
     /// Minting disabled
     pub disabled: bool,
+}
+
+impl Settings {
+    /// Supported nut05 methods
+    pub fn supported_methods(&self) -> Vec<&PaymentMethod> {
+        self.methods.iter().map(|a| &a.method).collect()
+    }
+
+    /// Supported nut05 units
+    pub fn supported_units(&self) -> Vec<&CurrencyUnit> {
+        self.methods.iter().map(|s| &s.unit).collect()
+    }
 }
 
 #[cfg(test)]

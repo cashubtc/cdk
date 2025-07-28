@@ -3,12 +3,13 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use cdk::mint::Mint;
+use cdk::mint::{Mint, MintQuote};
 use cdk::nuts::nut04::MintMethodSettings;
 use cdk::nuts::nut05::MeltMethodSettings;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk::Amount;
+use cdk_common::payment::WaitPaymentResponse;
 use thiserror::Error;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -642,7 +643,7 @@ impl CdkMint for MintRPCServer {
 
         let mint_quote = self
             .mint
-            .localstore
+            .localstore()
             .get_mint_quote(&quote_id)
             .await
             .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
@@ -650,23 +651,53 @@ impl CdkMint for MintRPCServer {
 
         match state {
             MintQuoteState::Paid => {
-                self.mint
-                    .pay_mint_quote(&mint_quote)
+                // Create a dummy payment response
+                let response = WaitPaymentResponse {
+                    payment_id: String::new(),
+                    payment_amount: mint_quote.amount_paid(),
+                    unit: mint_quote.unit.clone(),
+                    payment_identifier: mint_quote.request_lookup_id.clone(),
+                };
+
+                let localstore = self.mint.localstore();
+                let mut tx = localstore
+                    .begin_transaction()
                     .await
-                    .map_err(|_| Status::internal("Could not find quote".to_string()))?;
+                    .map_err(|_| Status::internal("Could not start db transaction".to_string()))?;
+
+                self.mint
+                    .pay_mint_quote(&mut tx, &mint_quote, response)
+                    .await
+                    .map_err(|_| Status::internal("Could not process payment".to_string()))?;
+
+                tx.commit()
+                    .await
+                    .map_err(|_| Status::internal("Could not commit db transaction".to_string()))?;
             }
             _ => {
-                let mut mint_quote = mint_quote;
+                // Create a new quote with the same values
+                let quote = MintQuote::new(
+                    Some(mint_quote.id),                  // id
+                    mint_quote.request.clone(),           // request
+                    mint_quote.unit.clone(),              // unit
+                    mint_quote.amount,                    // amount
+                    mint_quote.expiry,                    // expiry
+                    mint_quote.request_lookup_id.clone(), // request_lookup_id
+                    mint_quote.pubkey,                    // pubkey
+                    mint_quote.amount_issued(),           // amount_issued
+                    mint_quote.amount_paid(),             // amount_paid
+                    mint_quote.payment_method.clone(),    // method
+                    0,                                    // created_at
+                    vec![],                               // blinded_messages
+                    vec![],                               // payment_ids
+                );
 
-                mint_quote.state = state;
-
-                let mut tx = self
-                    .mint
-                    .localstore
+                let mint_store = self.mint.localstore();
+                let mut tx = mint_store
                     .begin_transaction()
                     .await
                     .map_err(|_| Status::internal("Could not update quote".to_string()))?;
-                tx.add_or_replace_mint_quote(mint_quote)
+                tx.add_mint_quote(quote.clone())
                     .await
                     .map_err(|_| Status::internal("Could not update quote".to_string()))?;
                 tx.commit()
@@ -677,14 +708,14 @@ impl CdkMint for MintRPCServer {
 
         let mint_quote = self
             .mint
-            .localstore
+            .localstore()
             .get_mint_quote(&quote_id)
             .await
             .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
             .ok_or(Status::invalid_argument("Could not find quote".to_string()))?;
 
         Ok(Response::new(UpdateNut04QuoteRequest {
-            state: mint_quote.state.to_string(),
+            state: mint_quote.state().to_string(),
             quote_id: mint_quote.id.to_string(),
         }))
     }
