@@ -75,6 +75,7 @@ pub struct Mint {
     /// Background task management
     task_state: Arc<Mutex<TaskState>>,
     #[cfg(feature = "prometheus")]
+    /// prometheus cdk metrics manager
     pub metrics: Arc<CdkMetrics>,
 }
 
