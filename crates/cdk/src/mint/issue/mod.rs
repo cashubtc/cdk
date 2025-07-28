@@ -187,6 +187,10 @@ impl Mint {
         &self,
         mint_quote_request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse, Error> {
+        #[cfg(feature = "prometheus")]
+        self.metrics.inc_in_flight_requests("get_mint_quote");
+
+        let result = async {
         let unit: CurrencyUnit;
         let amount;
         let pubkey;
@@ -314,7 +318,20 @@ impl Mint {
             PaymentMethod::Custom(_) => {}
         }
 
-        quote.try_into()
+            quote.try_into()
+        } // Closing for the `async` block
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            self.metrics.dec_in_flight_requests("get_mint_quote");
+            self.metrics.record_mint_operation("get_mint_quote", result.is_ok());
+            if result.is_err() {
+                self.metrics.record_error();
+            }
+        }
+
+        result
     }
 
     /// Retrieves all mint quotes from the database
@@ -456,6 +473,10 @@ impl Mint {
     /// * `Error` if the quote doesn't exist or checking fails
     #[instrument(skip(self))]
     pub async fn check_mint_quote(&self, quote_id: &Uuid) -> Result<MintQuoteResponse, Error> {
+        #[cfg(feature = "prometheus")]
+        self.metrics.inc_in_flight_requests("check_mint_quote");
+
+        let result = async {
         let mut quote = self
             .localstore
             .get_mint_quote(quote_id)
@@ -464,7 +485,20 @@ impl Mint {
 
         self.check_mint_quote_paid(&mut quote).await?;
 
-        quote.try_into()
+            quote.try_into()
+        } // Closing for the `async` block
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            self.metrics.dec_in_flight_requests("check_mint_quote");
+            self.metrics.record_mint_operation("check_mint_quote", result.is_ok());
+            if result.is_err() {
+                self.metrics.record_error();
+            }
+        }
+
+        result
     }
 
     /// Processes a mint request to issue new tokens
@@ -488,6 +522,9 @@ impl Mint {
         &self,
         mint_request: MintRequest<Uuid>,
     ) -> Result<MintResponse, Error> {
+        #[cfg(feature = "prometheus")]
+        self.metrics.inc_in_flight_requests("process_mint_request");
+
         let mut mint_quote = self
             .localstore
             .get_mint_quote(&mint_request.quote)
