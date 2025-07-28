@@ -6,7 +6,7 @@ use crate::stmt::query;
 pub async fn migrate<C: DatabaseExecutor>(
     conn: &C,
     db_prefix: &str,
-    migrations: &[(&str, &str)],
+    migrations: &[(&str, &str, &str)],
 ) -> Result<(), cdk_common::database::Error> {
     query(
         r#"
@@ -20,19 +20,13 @@ pub async fn migrate<C: DatabaseExecutor>(
     .await?;
 
     // Apply each migration if it hasn’t been applied yet
-    for (name, sql) in migrations {
-        let basename = match name.split_once(['/', '\\']) {
-            Some((prefix, basename)) => {
-                if prefix != db_prefix {
-                    continue;
-                }
-                basename
-            }
-            None => name,
-        };
+    for (prefix, name, sql) in migrations {
+        if !prefix.is_empty() && *prefix != db_prefix {
+            continue;
+        }
 
         let is_missing = query("SELECT name FROM migrations WHERE name = :name")?
-            .bind("name", basename)
+            .bind("name", name)
             .pluck(conn)
             .await?
             .is_none();
