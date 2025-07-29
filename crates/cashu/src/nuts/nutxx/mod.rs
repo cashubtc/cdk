@@ -9,7 +9,7 @@ use thiserror::Error;
 
 // use super::nut00::Witness;
 use super::nut01::PublicKey;
-use super::{Conditions, Proof};
+use super::{Conditions, Kind, Nut10Secret, Proof};
 use crate::nuts::nut00::BlindedMessage;
 // use stwo_cairo_prover::stwo::core::vcs::blake2_merkle::{
 //     Blake2sMerkleChannel, Blake2sMerkleHasher,
@@ -106,17 +106,11 @@ impl SpendingConditions {
             conditions,
         }
     }
-}
 
-impl SpendingConditions {
-    pub fn new_cc(program_hash: Felt, output: Vec<Felt>) -> Result<Self, Error> {
-        Ok(Self::Cairo {
-            data: program_hash,
-            conditions: Some(CairoConditions { output }),
-        })
-    }
     pub fn kind(&self) -> Kind {
         match self {
+            // Self::P2PKConditions { .. } => Kind::P2PK,
+            // Self::HTLCConditions { .. } => Kind::HTLC,
             Self::CCConditions { .. } => Kind::CC,
         }
     }
@@ -129,16 +123,27 @@ impl SpendingConditions {
 #[cfg(test)]
 mod tests {
     // TODO: write tests
+    use std::str::FromStr;
+
+    use starknet_types_core::felt::Felt;
+
+    use super::*;
+    use crate::nuts::Id;
+    use crate::secret::Secret;
+    use crate::Amount;
 
     #[test]
     fn test_secret_ser() {
         // testing the serde serialization of the secret
-        // 1. Create a secret
-        // 2. Serialize it to JSON
-        // 3. Deserialize it back to a secret
-        // 4. Assert that the original secret and the deserialized secret are equal
+        let data = Felt::from_hex("0x1234567890abcdef").unwrap();
 
-        let data: Felt = _; // some hash output from the correct hash function
+        let secret = Nut10Secret::new(Kind::CC, data.to_hex_string(), None::<Conditions>);
+
+        let secret_str = serde_json::to_string(&secret).unwrap();
+
+        let secret_der: Nut10Secret = serde_json::from_str(&secret_str).unwrap();
+
+        assert_eq!(secret, secret_der);
     }
 
     #[test]
