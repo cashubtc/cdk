@@ -414,7 +414,7 @@ impl<'a> MintQuotesTransaction<'a> for SqliteTransaction<'a> {
         // Get current amount_paid from quote
         let current_amount = query(
             r#"
-            SELECT amount_paid 
+            SELECT amount_paid
             FROM mint_quote
             WHERE id = :quote_id
             "#,
@@ -442,8 +442,8 @@ impl<'a> MintQuotesTransaction<'a> for SqliteTransaction<'a> {
         // Update the amount_paid
         query(
             r#"
-            UPDATE mint_quote 
-            SET amount_paid = :amount_paid 
+            UPDATE mint_quote
+            SET amount_paid = :amount_paid
             WHERE id = :quote_id
             "#,
         )
@@ -487,7 +487,7 @@ impl<'a> MintQuotesTransaction<'a> for SqliteTransaction<'a> {
         // Get current amount_issued from quote
         let current_amount = query(
             r#"
-            SELECT amount_issued 
+            SELECT amount_issued
             FROM mint_quote
             WHERE id = :quote_id
             "#,
@@ -515,8 +515,8 @@ impl<'a> MintQuotesTransaction<'a> for SqliteTransaction<'a> {
         // Update the amount_issued
         query(
             r#"
-            UPDATE mint_quote 
-            SET amount_issued = :amount_issued 
+            UPDATE mint_quote
+            SET amount_issued = :amount_issued
             WHERE id = :quote_id
             "#,
         )
@@ -593,8 +593,8 @@ VALUES (:quote_id, :amount, :timestamp);
         let current_time = unix_time();
         let row_affected = query(
             r#"
-            DELETE FROM melt_quote 
-            WHERE request_lookup_id = :request_lookup_id 
+            DELETE FROM melt_quote
+            WHERE request_lookup_id = :request_lookup_id
             AND state = :state
             AND expiry < :current_time
             "#,
@@ -781,7 +781,7 @@ VALUES (:quote_id, :amount, :timestamp);
     ) -> Result<Option<mint::MeltQuote>, Self::Err> {
         Ok(query(
             r#"
-            SELECT 
+            SELECT
                 id,
                 unit,
                 amount,
@@ -985,12 +985,12 @@ impl MintQuotesDatabase for MintSqliteDatabase {
                 request_lookup_id_kind
             FROM
                 mint_quote
-            WHERE request_lookup_id = :request_lookup_id"#,
+            WHERE request_lookup_id = :request_lookup_id
+            AND request_lookup_id_kind = :request_lookup_id_kind
+            "#,
         )
-        .bind(
-            ":request_lookup_id",
-            serde_json::to_string(request_lookup_id)?,
-        )
+        .bind(":request_lookup_id", request_lookup_id.to_string())
+        .bind(":request_lookup_id_kind", request_lookup_id.kind())
         .fetch_one(&self.pool)
         .await?
         .map(|row| sqlite_row_to_mint_quote(row, vec![], vec![]))
@@ -1077,7 +1077,7 @@ impl MintQuotesDatabase for MintSqliteDatabase {
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err> {
         Ok(query(
             r#"
-            SELECT            
+            SELECT
                 id,
                 unit,
                 amount,
