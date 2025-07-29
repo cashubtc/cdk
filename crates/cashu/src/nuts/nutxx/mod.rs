@@ -1,52 +1,57 @@
-//! NUT-xx: Cairo Contracts (CC)
+//! NUT-xx: STARK-proven Computations (Cairo)
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/xx.md>
 
-use bitcoin::hashes::sha256::Hash as Sha256Hash;
 // use cairo_air::utils::{serialize_proof_to_file, ProofFormat};
-use cairo_air::verifier::verify_cairo;
+use cairo_air::verifier::{verify_cairo, CairoVerificationError};
 use cairo_air::{CairoProof, PreProcessedTraceVariant};
 use serde::{Deserialize, Serialize};
-use starknet_types_core::felt::Felt;
+// use starknet_types_core::felt::Felt;
 use stwo_cairo_prover::stwo::core::vcs::blake2_merkle::{
     Blake2sMerkleChannel, Blake2sMerkleHasher,
 };
 use thiserror::Error;
 
-// use super::nut00::Witness;
-use super::nut01::PublicKey;
-use super::{Conditions, Proof};
-use crate::nuts::nut00::BlindedMessage;
+use super::nut00::Witness;
+// use super::nut11::Conditions;
+// use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
+use super::{Nut10Secret, Proof};
 
-pub mod serde_cc_witness;
+pub mod serde_cairo_witness;
 
 /// Nutxx Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Incorrect secret kind
-    #[error("Secret is not a cc secret")]
+    #[error("Secret is not a Cairo secret")]
     IncorrectSecretKind,
-    /// CC locktime has already passed
-    #[error("Locktime in past")]
-    LocktimeInPast,
+    /// Cairo verification error
+    #[error(transparent)]
+    CairoVerification(CairoVerificationError),
+    /// NUT11 Error
+    #[error(transparent)]
+    NUT11(#[from] super::nut11::Error),
+    /// Serde Error
+    #[error(transparent)]
+    Serde(#[from] serde_json::Error),
     /// Not implemented
     #[error("Not implemented")]
     NotImplemented,
 }
 
-/// CC Witness
+/// Cairo Witness
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 
 /// The Witness of a Cairo program
 ///
 /// Given to the mint by the recipient
-pub struct CCWitness {
+pub struct CairoWitness {
     /// The serialized .json proof
     pub proof: String,
 }
 
-impl CCWitness {
+impl CairoWitness {
     #[inline]
     /// Check if Witness is empty
     pub fn is_empty(&self) -> bool {
@@ -55,107 +60,114 @@ impl CCWitness {
 }
 
 impl Proof {
-    /// Verify CC
-    pub fn verify_cc(&self) -> Result<(), Error> {
-        // let secret: Nut10Secret = self.secret.clone().try_into()?;
-        Err(Error::NotImplemented)
+    /// Verify Cairo
+    pub fn verify_cairo(&self) -> Result<(), Error> {
+        let secret: Nut10Secret = self.secret.clone().try_into()?;
+        let cairo_witness = match &self.witness {
+            Some(Witness::CairoWitness(witness)) => witness,
+            _ => return Err(Error::IncorrectSecretKind),
+        };
+
+        // let conditions: Option<Conditions> = secret
+        //     .secret_data()
+        //     .tags()
+        //     .and_then(|c| c.clone().try_into().ok());
+
+        // if let Some(_conditions) = conditions {
+        //     // additional conditions are not yet supported with Cairo
+        //     return Err(Error::NotImplemented);
+        // }
+
+        if secret.kind().ne(&super::Kind::Cairo) {
+            return Err(Error::IncorrectSecretKind);
+        }
+
+        // TODO: verify program (secret)
+
+        let cairo_proof =
+            match serde_json::from_str::<CairoProof<Blake2sMerkleHasher>>(&cairo_witness.proof) {
+                Ok(proof) => proof,
+                Err(e) => return Err(Error::Serde(e)),
+            };
+
+        let preprocessed_trace = PreProcessedTraceVariant::CanonicalWithoutPedersen; // TODO: give option
+        let result = verify_cairo::<Blake2sMerkleChannel>(cairo_proof, preprocessed_trace);
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => Err(Error::CairoVerification(e)),
+        }
     }
 }
 
-impl BlindedMessage {}
-
-/// Spending Conditions
-///
-/// Defined in [NUT10](https://github.com/cashubtc/nuts/blob/main/10.md)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum SpendingConditions {
-    /// NUT11 Spending conditions
-    ///
-    /// Defined in [NUT11](https://github.com/cashubtc/nuts/blob/main/11.md)
-    P2PKConditions {
-        /// The public key of the recipient of the locked ecash
-        data: PublicKey,
-        /// Additional Optional Spending [`Conditions`]
-        conditions: Option<Conditions>,
-    },
-    /// NUT14 Spending conditions
-    ///
-    /// Defined in [NUT14](https://github.com/cashubtc/nuts/blob/main/14.md)
-    HTLCConditions {
-        /// Hash Lock of ecash
-        data: Sha256Hash,
-        /// Additional Optional Spending [`Conditions`]
-        conditions: Option<Conditions>,
-    },
-    /// NUTXX Spending conditions
-    /// Defined in [NUTXX](https://github.com/cashubtc/nuts/blob/main/xx.md)
-    CCConditions {
-        /// Program hash
-        data: Felt,
-        /// Additional Optional Spending [`Conditions`]
-        conditions: Option<Conditions>,
-    },
-}
-
-impl SpendingConditions {}
-
-// impl TryFrom<&Secret> for SpendingConditions {}
-// impl TryFrom<Nut10Secret> for SpendingConditions {}
-// impl From<SpendingConditions> for super::nut10::Secret {}
-
-fn verify_cc_test(
-    _secret_data: String, // TODO: verify this also, should have type `SecretData`
-    witness: &CCWitness,
-    with_pedersen: bool,
-) -> Result<(), Error> {
-    // info!("Verifying proof from: {:?}", proof);
-    let cairo_proof = serde_json::from_str::<CairoProof<Blake2sMerkleHasher>>(&witness.proof)
-        .expect("Failed to deserialize Cairo proof");
-    let preprocessed_trace = match with_pedersen {
-        true => PreProcessedTraceVariant::Canonical,
-        false => PreProcessedTraceVariant::CanonicalWithoutPedersen,
-    };
-    let result = verify_cairo::<Blake2sMerkleChannel>(cairo_proof, preprocessed_trace);
-    match result {
-        Ok(_) => Ok(()),
-        Err(_) => Err(Error::NotImplemented), // TODO: find better error
-    }
-}
+// fn verify_cc_test(
+//     _secret_data: String, // TODO: verify this also, should have type `SecretData`
+//     witness: &CairoWitness,
+//     with_pedersen: bool,
+// ) -> Result<(), Error> {
+//     // info!("Verifying proof from: {:?}", proof);
+//     let cairo_proof = serde_json::from_str::<CairoProof<Blake2sMerkleHasher>>(&witness.proof)
+//         .expect("Failed to deserialize Cairo proof");
+//     let preprocessed_trace = match with_pedersen {
+//         true => PreProcessedTraceVariant::Canonical,
+//         false => PreProcessedTraceVariant::CanonicalWithoutPedersen,
+//     };
+//     let result = verify_cairo::<Blake2sMerkleChannel>(cairo_proof, preprocessed_trace);
+//     match result {
+//         Ok(_) => Ok(()),
+//         Err(_) => Err(Error::NotImplemented), // TODO: find better error
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::convert::TryInto;
+    use std::str::FromStr;
 
     use super::*;
+    use crate::secret::Secret;
+    use crate::{Amount, Conditions, Id, Kind, Nut10Secret, SecretKey, SigFlag};
     // use crate::nuts::nut00::{Amount, Id, Secret, Witness};
 
     #[test]
     fn test_verify() {
-        let proof_json = {
-            let path = PathBuf::from("./example_proof.json");
-            std::fs::read_to_string(path).unwrap()
-        };
-        let witness = CCWitness { proof: proof_json };
-        verify_cc_test("".to_string(), &witness, false).unwrap();
-        assert!(verify_cc_test("".to_string(), &witness, true).is_ok());
+        let cairo_proof = include_str!("example_proof.json").to_string();
+        println!("cairo proof: {}", cairo_proof);
+        let witness = CairoWitness { proof: cairo_proof };
 
-        // TODO: make it work with the real verify_cc:
-        // let valid_proof: Proof = Proof {
-        //     amount: Amount::from(100),
-        //     keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
-        //     secret: Secret::generate(),
-        //     c: PublicKey::from_str(
-        //         "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea",
-        //     )
-        //     .unwrap(),
-        //     witness: Some(Witness::CCWitness(witness)),
-        //     dleq: None,
-        // };
-        // valid_proof.verify_cc().unwrap();
-        // assert!(valid_proof.verify_cc().is_ok());
+        let secret_key =
+            SecretKey::from_str("99590802251e78ee1051648439eedb003dc539093a48a44e7b8f2642c909ea37")
+                .unwrap();
+        let v_key = secret_key.public_key();
+
+        let conditions = Conditions {
+            locktime: None,
+            pubkeys: None,
+            refund_keys: None,
+            num_sigs: None,
+            sig_flag: SigFlag::SigInputs,
+            num_sigs_refund: None,
+        };
+
+        let secret: Secret = Nut10Secret::new(
+            Kind::Cairo,
+            "PROGRAM_HASH_TODO".to_string(),
+            Some(conditions), // TODO: adapt conditions to Cairo
+        )
+        .try_into()
+        .unwrap();
+
+        let valid_proof: Proof = Proof {
+            amount: Amount::ZERO,
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            secret,
+            c: v_key, // TODO: this serves no purpose for now
+            witness: Some(Witness::CairoWitness(witness)),
+            dleq: None,
+        };
+        valid_proof.verify_cairo().unwrap();
+        assert!(valid_proof.verify_cairo().is_ok());
 
         // let invalid_proof: Proof = // TODO: example of an invalid proof
         // assert!(invalid_proof.verify_cc().is_err());
     }
-    // TODO: write tests
 }
