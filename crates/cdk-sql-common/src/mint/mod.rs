@@ -1124,12 +1124,12 @@ where
                 request_lookup_id_kind
             FROM
                 mint_quote
-            WHERE request_lookup_id = :request_lookup_id"#,
+            WHERE request_lookup_id = :request_lookup_id
+            AND request_lookup_id_kind = :request_lookup_id_kind
+            "#,
         )?
-        .bind(
-            "request_lookup_id",
-            serde_json::to_string(request_lookup_id)?,
-        )
+        .bind("request_lookup_id", request_lookup_id.to_string())
+        .bind("request_lookup_id_kind", request_lookup_id.kind())
         .fetch_one(&self.db)
         .await?
         .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
