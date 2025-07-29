@@ -1,5 +1,5 @@
 -- Add foreign key constraints for keyset_id in SQLite
--- SQLite requires recreating tables to add foreign keys
+-- SQL requires recreating tables to add foreign keys
 
 -- First, ensure we have the right schema information
 PRAGMA foreign_keys = OFF;
