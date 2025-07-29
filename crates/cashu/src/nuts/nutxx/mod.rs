@@ -6,6 +6,7 @@
 use cairo_air::verifier::{verify_cairo, CairoVerificationError};
 use cairo_air::{CairoProof, PreProcessedTraceVariant};
 use serde::{Deserialize, Serialize};
+use stwo_cairo_prover::stwo_prover::core::fri::FriConfig;
 use stwo_cairo_prover::stwo_prover::core::pcs::PcsConfig;
 // use starknet_types_core::felt::Felt;
 use stwo_cairo_prover::stwo_prover::core::vcs::blake2_merkle::{
@@ -60,6 +61,17 @@ impl CairoWitness {
     }
 }
 
+fn secure_pcs_config() -> PcsConfig {
+    PcsConfig {
+        pow_bits: 26,
+        fri_config: FriConfig {
+            log_last_layer_degree_bound: 0,
+            log_blowup_factor: 1,
+            n_queries: 70,
+        },
+    }
+}
+
 impl Proof {
     /// Verify Cairo
     pub fn verify_cairo(&self) -> Result<(), Error> {
@@ -94,7 +106,7 @@ impl Proof {
         let preprocessed_trace = PreProcessedTraceVariant::CanonicalWithoutPedersen; // TODO: give option
         let result = verify_cairo::<Blake2sMerkleChannel>(
             cairo_proof,
-            PcsConfig::default(),
+            secure_pcs_config(),
             preprocessed_trace,
         );
         match result {
