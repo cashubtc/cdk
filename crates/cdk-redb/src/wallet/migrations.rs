@@ -1,20 +1,77 @@
 //! Wallet Migrations
+use std::collections::HashSet;
 use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use cdk_common::mint_url::MintUrl;
+use cdk_common::Id;
 use redb::{
     Database, MultimapTableDefinition, ReadableMultimapTable, ReadableTable, TableDefinition,
 };
 
 use super::Error;
+use crate::wallet::{KEYSETS_TABLE, KEYSET_U32_MAPPING, MINT_KEYS_TABLE};
 
 // <Mint_url, Info>
 const MINTS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mints_table");
 // <Mint_Url, Keyset_id>
 const MINT_KEYSETS_TABLE: MultimapTableDefinition<&str, &[u8]> =
     MultimapTableDefinition::new("mint_keysets");
+
+pub(crate) fn migrate_02_to_03(db: Arc<Database>) -> Result<u32, Error> {
+    let write_txn = db.begin_write().map_err(Error::from)?;
+
+    let mut duplicate = false;
+
+    {
+        let table = write_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
+
+        let ids: Vec<Id> = table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .flat_map(|(id, _)| Id::from_str(id.value()))
+            .collect();
+
+        let mut table = write_txn
+            .open_table(KEYSET_U32_MAPPING)
+            .map_err(Error::from)?;
+
+        // Also process existing keysets
+
+        let keysets_table = write_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
+
+        let keyset_ids: Vec<Id> = keysets_table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .flat_map(|(id_bytes, _)| Id::from_bytes(id_bytes.value()))
+            .collect();
+
+        let ids: HashSet<Id> = ids.into_iter().chain(keyset_ids).collect();
+
+        for id in ids {
+            let t = table.insert(u32::from(id), id.to_string().as_str())?;
+
+            tracing::info!("Adding u32 {} for keyset {}", u32::from(id), id.to_string());
+
+            if t.is_some() {
+                duplicate = true;
+            }
+        }
+    }
+
+    if duplicate {
+        write_txn.abort()?;
+
+        return Err(Error::Duplicate);
+    }
+
+    write_txn.commit()?;
+
+    Ok(3)
+}
 
 pub fn migrate_01_to_02(db: Arc<Database>) -> Result<u32, Error> {
     migrate_trim_mint_urls_01_to_02(db)?;
