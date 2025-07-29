@@ -11,6 +11,7 @@ use thiserror::Error;
 use super::nut01::PublicKey;
 use super::{Conditions, Kind, Nut10Secret, Proof};
 use crate::nuts::nut00::BlindedMessage;
+use crate::nuts::nut11::SigFlag;
 // use stwo_cairo_prover::stwo::core::vcs::blake2_merkle::{
 //     Blake2sMerkleChannel, Blake2sMerkleHasher,
 // };
@@ -128,6 +129,7 @@ mod tests {
     use starknet_types_core::felt::Felt;
 
     use super::*;
+    use crate::nuts::nut11::SigFlag;
     use crate::nuts::Id;
     use crate::secret::Secret;
     use crate::Amount;
@@ -135,9 +137,30 @@ mod tests {
     #[test]
     fn test_secret_ser() {
         // testing the serde serialization of the secret
+        let conditions = Conditions {
+            locktime: Some(99999),
+            pubkeys: Some(vec![
+                PublicKey::from_str(
+                    "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+                )
+                .unwrap(),
+                PublicKey::from_str(
+                    "023192200a0cfd3867e48eb63b03ff599c7e46c8f4e41146b2d281173ca6c50c54",
+                )
+                .unwrap(),
+            ]),
+            refund_keys: Some(vec![PublicKey::from_str(
+                "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
+            )
+            .unwrap()]),
+            num_sigs: Some(2),
+            sig_flag: SigFlag::SigAll,
+            num_sigs_refund: None,
+        };
+
         let data = Felt::from_hex("0x1234567890abcdef").unwrap();
 
-        let secret = Nut10Secret::new(Kind::CC, data.to_hex_string(), None::<Conditions>);
+        let secret = Nut10Secret::new(Kind::CC, data.to_hex_string(), Some(conditions));
 
         let secret_str = serde_json::to_string(&secret).unwrap();
 
