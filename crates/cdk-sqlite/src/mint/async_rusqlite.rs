@@ -1,16 +1,20 @@
+//! Async, pipelined rusqlite client
 use std::marker::PhantomData;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::thread::spawn;
 use std::time::Instant;
 
+use cdk_common::database::Error;
+use cdk_sql_common::database::{DatabaseConnector, DatabaseExecutor, DatabaseTransaction};
+use cdk_sql_common::pool::{self, Pool, PooledResource};
+use cdk_sql_common::stmt::{Column, ExpectedSqlResponse, Statement as InnerStatement};
+use cdk_sql_common::ConversionError;
 use rusqlite::{ffi, Connection, ErrorCode, TransactionBehavior};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::common::SqliteConnectionManager;
-use crate::mint::Error;
-use crate::pool::{Pool, PooledResource};
-use crate::stmt::{Column, ExpectedSqlResponse, Statement as InnerStatement, Value};
+use crate::common::{create_sqlite_pool, from_sqlite, to_sqlite, SqliteConnectionManager};
 
 /// The number of queued SQL statements before it start failing
 const SQL_QUEUE_SIZE: usize = 10_000;
@@ -25,9 +29,57 @@ pub struct AsyncRusqlite {
     inflight_requests: Arc<AtomicUsize>,
 }
 
+impl From<PathBuf> for AsyncRusqlite {
+    fn from(value: PathBuf) -> Self {
+        AsyncRusqlite::new(create_sqlite_pool(value.to_str().unwrap_or_default(), None))
+    }
+}
+
+impl From<&str> for AsyncRusqlite {
+    fn from(value: &str) -> Self {
+        AsyncRusqlite::new(create_sqlite_pool(value, None))
+    }
+}
+
+impl From<(&str, &str)> for AsyncRusqlite {
+    fn from((value, pass): (&str, &str)) -> Self {
+        AsyncRusqlite::new(create_sqlite_pool(value, Some(pass.to_owned())))
+    }
+}
+
+impl From<(PathBuf, &str)> for AsyncRusqlite {
+    fn from((value, pass): (PathBuf, &str)) -> Self {
+        AsyncRusqlite::new(create_sqlite_pool(
+            value.to_str().unwrap_or_default(),
+            Some(pass.to_owned()),
+        ))
+    }
+}
+
+impl From<(&str, String)> for AsyncRusqlite {
+    fn from((value, pass): (&str, String)) -> Self {
+        AsyncRusqlite::new(create_sqlite_pool(value, Some(pass)))
+    }
+}
+
+impl From<(PathBuf, String)> for AsyncRusqlite {
+    fn from((value, pass): (PathBuf, String)) -> Self {
+        AsyncRusqlite::new(create_sqlite_pool(
+            value.to_str().unwrap_or_default(),
+            Some(pass),
+        ))
+    }
+}
+
+impl From<&PathBuf> for AsyncRusqlite {
+    fn from(value: &PathBuf) -> Self {
+        AsyncRusqlite::new(create_sqlite_pool(value.to_str().unwrap_or_default(), None))
+    }
+}
+
 /// Internal request for the database thread
 #[derive(Debug)]
-pub enum DbRequest {
+enum DbRequest {
     Sql(InnerStatement, oneshot::Sender<DbResponse>),
     Begin(oneshot::Sender<DbResponse>),
     Commit(oneshot::Sender<DbResponse>),
@@ -35,97 +87,67 @@ pub enum DbRequest {
 }
 
 #[derive(Debug)]
-pub enum DbResponse {
+enum DbResponse {
     Transaction(mpsc::Sender<DbRequest>),
     AffectedRows(usize),
     Pluck(Option<Column>),
     Row(Option<Vec<Column>>),
     Rows(Vec<Vec<Column>>),
-    Error(Error),
+    Error(SqliteError),
     Unexpected,
     Ok,
 }
 
-/// Statement for the async_rusqlite wrapper
-pub struct Statement(InnerStatement);
+#[derive(thiserror::Error, Debug)]
+enum SqliteError {
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
 
-impl Statement {
-    /// Bind a variable
-    pub fn bind<C, V>(self, name: C, value: V) -> Self
-    where
-        C: ToString,
-        V: Into<Value>,
-    {
-        Self(self.0.bind(name, value))
-    }
+    #[error(transparent)]
+    Inner(#[from] Error),
 
-    /// Bind vec
-    pub fn bind_vec<C, V>(self, name: C, value: Vec<V>) -> Self
-    where
-        C: ToString,
-        V: Into<Value>,
-    {
-        Self(self.0.bind_vec(name, value))
-    }
+    #[error(transparent)]
+    Pool(#[from] pool::Error<rusqlite::Error>),
 
-    /// Executes a query and return the number of affected rows
-    pub async fn execute<C>(self, conn: &C) -> Result<usize, Error>
-    where
-        C: DatabaseExecutor + Send + Sync,
-    {
-        conn.execute(self.0).await
-    }
+    /// Duplicate entry
+    #[error("Duplicate")]
+    Duplicate,
 
-    /// Returns the first column of the first row of the query result
-    pub async fn pluck<C>(self, conn: &C) -> Result<Option<Column>, Error>
-    where
-        C: DatabaseExecutor + Send + Sync,
-    {
-        conn.pluck(self.0).await
-    }
+    #[error(transparent)]
+    Conversion(#[from] ConversionError),
+}
 
-    /// Returns the first row of the query result
-    pub async fn fetch_one<C>(self, conn: &C) -> Result<Option<Vec<Column>>, Error>
-    where
-        C: DatabaseExecutor + Send + Sync,
-    {
-        conn.fetch_one(self.0).await
-    }
-
-    /// Returns all rows of the query result
-    pub async fn fetch_all<C>(self, conn: &C) -> Result<Vec<Vec<Column>>, Error>
-    where
-        C: DatabaseExecutor + Send + Sync,
-    {
-        conn.fetch_all(self.0).await
+impl From<SqliteError> for Error {
+    fn from(val: SqliteError) -> Self {
+        match val {
+            SqliteError::Duplicate => Error::Duplicate,
+            SqliteError::Conversion(e) => e.into(),
+            o => Error::Internal(o.to_string()),
+        }
     }
 }
 
 /// Process a query
 #[inline(always)]
-fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, Error> {
+fn process_query(conn: &Connection, statement: InnerStatement) -> Result<DbResponse, SqliteError> {
     let start = Instant::now();
-    let mut args = sql.args;
-    let mut stmt = conn.prepare_cached(&sql.sql)?;
-    let total_parameters = stmt.parameter_count();
+    let expected_response = statement.expected_response;
+    let (sql, placeholder_values) = statement.to_sql()?;
+    let sql = sql.trim_end_matches("FOR UPDATE");
 
-    for index in 1..=total_parameters {
-        let value = if let Some(value) = stmt.parameter_name(index).map(|name| {
-            args.remove(name)
-                .ok_or(Error::MissingParameter(name.to_owned()))
-        }) {
-            value?
-        } else {
-            continue;
-        };
-
-        stmt.raw_bind_parameter(index, value)?;
+    let mut stmt = conn.prepare_cached(sql)?;
+    for (i, value) in placeholder_values.into_iter().enumerate() {
+        stmt.raw_bind_parameter(i + 1, to_sqlite(value))?;
     }
 
     let columns = stmt.column_count();
 
-    let to_return = match sql.expected_response {
+    let to_return = match expected_response {
         ExpectedSqlResponse::AffectedRows => DbResponse::AffectedRows(stmt.raw_execute()?),
+        ExpectedSqlResponse::Batch => {
+            conn.execute_batch(sql)?;
+            DbResponse::Ok
+        }
         ExpectedSqlResponse::ManyRows => {
             let mut rows = stmt.raw_query();
             let mut results = vec![];
@@ -133,7 +155,7 @@ fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, E
             while let Some(row) = rows.next()? {
                 results.push(
                     (0..columns)
-                        .map(|i| row.get(i))
+                        .map(|i| row.get(i).map(from_sqlite))
                         .collect::<Result<Vec<_>, _>>()?,
                 )
             }
@@ -142,7 +164,11 @@ fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, E
         }
         ExpectedSqlResponse::Pluck => {
             let mut rows = stmt.raw_query();
-            DbResponse::Pluck(rows.next()?.map(|row| row.get(0usize)).transpose()?)
+            DbResponse::Pluck(
+                rows.next()?
+                    .map(|row| row.get(0usize).map(from_sqlite))
+                    .transpose()?,
+            )
         }
         ExpectedSqlResponse::SingleRow => {
             let mut rows = stmt.raw_query();
@@ -150,7 +176,7 @@ fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, E
                 .next()?
                 .map(|row| {
                     (0..columns)
-                        .map(|i| row.get(i))
+                        .map(|i| row.get(i).map(from_sqlite))
                         .collect::<Result<Vec<_>, _>>()
                 })
                 .transpose()?;
@@ -161,7 +187,7 @@ fn process_query(conn: &Connection, sql: InnerStatement) -> Result<DbResponse, E
     let duration = start.elapsed();
 
     if duration.as_millis() > SLOW_QUERY_THRESHOLD_MS {
-        tracing::warn!("[SLOW QUERY] Took {} ms: {}", duration.as_millis(), sql.sql);
+        tracing::warn!("[SLOW QUERY] Took {} ms: {}", duration.as_millis(), sql);
     }
 
     Ok(to_return)
@@ -196,13 +222,12 @@ fn rusqlite_spawn_worker_threads(
         let inflight_requests = inflight_requests.clone();
         spawn(move || loop {
             while let Ok((conn, sql, reply_to)) = rx.lock().expect("failed to acquire").recv() {
-                tracing::trace!("Execute query: {}", sql.sql);
                 let result = process_query(&conn, sql);
                 let _ = match result {
                     Ok(ok) => reply_to.send(ok),
                     Err(err) => {
                         tracing::error!("Failed query with error {:?}", err);
-                        let err = if let Error::Sqlite(rusqlite::Error::SqliteFailure(
+                        let err = if let SqliteError::Sqlite(rusqlite::Error::SqliteFailure(
                             ffi::Error {
                                 code,
                                 extended_code,
@@ -214,7 +239,7 @@ fn rusqlite_spawn_worker_threads(
                                 && (*extended_code == ffi::SQLITE_CONSTRAINT_PRIMARYKEY
                                     || *extended_code == ffi::SQLITE_CONSTRAINT_UNIQUE)
                             {
-                                Error::Duplicate
+                                SqliteError::Duplicate
                             } else {
                                 err
                             }
@@ -256,7 +281,7 @@ fn rusqlite_worker_manager(
     while let Some(request) = receiver.blocking_recv() {
         inflight_requests.fetch_add(1, Ordering::Relaxed);
         match request {
-            DbRequest::Sql(sql, reply_to) => {
+            DbRequest::Sql(statement, reply_to) => {
                 let conn = match pool.get() {
                     Ok(conn) => conn,
                     Err(err) => {
@@ -267,7 +292,7 @@ fn rusqlite_worker_manager(
                     }
                 };
 
-                let _ = send_sql_to_thread.send((conn, sql, reply_to));
+                let _ = send_sql_to_thread.send((conn, statement, reply_to));
                 continue;
             }
             DbRequest::Begin(reply_to) => {
@@ -341,9 +366,9 @@ fn rusqlite_worker_manager(
                         DbRequest::Begin(reply_to) => {
                             let _ = reply_to.send(DbResponse::Unexpected);
                         }
-                        DbRequest::Sql(sql, reply_to) => {
-                            tracing::trace!("Tx {}: SQL {}", tx_id, sql.sql);
-                            let _ = match process_query(&tx, sql) {
+                        DbRequest::Sql(statement, reply_to) => {
+                            tracing::trace!("Tx {}: SQL {:?}", tx_id, statement);
+                            let _ = match process_query(&tx, statement) {
                                 Ok(ok) => reply_to.send(ok),
                                 Err(err) => {
                                     tracing::error!(
@@ -351,7 +376,7 @@ fn rusqlite_worker_manager(
                                         tx_id,
                                         err
                                     );
-                                    let err = if let Error::Sqlite(
+                                    let err = if let SqliteError::Sqlite(
                                         rusqlite::Error::SqliteFailure(
                                             ffi::Error {
                                                 code,
@@ -365,7 +390,7 @@ fn rusqlite_worker_manager(
                                             && (*extended_code == ffi::SQLITE_CONSTRAINT_PRIMARYKEY
                                                 || *extended_code == ffi::SQLITE_CONSTRAINT_UNIQUE)
                                         {
-                                            Error::Duplicate
+                                            SqliteError::Duplicate
                                         } else {
                                             err
                                         }
@@ -395,83 +420,6 @@ fn rusqlite_worker_manager(
     }
 }
 
-#[async_trait::async_trait]
-pub trait DatabaseExecutor {
-    /// Returns the connection to the database thread (or the on-going transaction)
-    fn get_queue_sender(&self) -> mpsc::Sender<DbRequest>;
-
-    /// Executes a query and returns the affected rows
-    async fn execute(&self, mut statement: InnerStatement) -> Result<usize, Error> {
-        let (sender, receiver) = oneshot::channel();
-        statement.expected_response = ExpectedSqlResponse::AffectedRows;
-        self.get_queue_sender()
-            .send(DbRequest::Sql(statement, sender))
-            .await
-            .map_err(|_| Error::Communication)?;
-
-        match receiver.await.map_err(|_| Error::Communication)? {
-            DbResponse::AffectedRows(n) => Ok(n),
-            DbResponse::Error(err) => Err(err),
-            _ => Err(Error::InvalidDbResponse),
-        }
-    }
-
-    /// Runs the query and returns the first row or None
-    async fn fetch_one(&self, mut statement: InnerStatement) -> Result<Option<Vec<Column>>, Error> {
-        let (sender, receiver) = oneshot::channel();
-        statement.expected_response = ExpectedSqlResponse::SingleRow;
-        self.get_queue_sender()
-            .send(DbRequest::Sql(statement, sender))
-            .await
-            .map_err(|_| Error::Communication)?;
-
-        match receiver.await.map_err(|_| Error::Communication)? {
-            DbResponse::Row(row) => Ok(row),
-            DbResponse::Error(err) => Err(err),
-            _ => Err(Error::InvalidDbResponse),
-        }
-    }
-
-    /// Runs the query and returns the first row or None
-    async fn fetch_all(&self, mut statement: InnerStatement) -> Result<Vec<Vec<Column>>, Error> {
-        let (sender, receiver) = oneshot::channel();
-        statement.expected_response = ExpectedSqlResponse::ManyRows;
-        self.get_queue_sender()
-            .send(DbRequest::Sql(statement, sender))
-            .await
-            .map_err(|_| Error::Communication)?;
-
-        match receiver.await.map_err(|_| Error::Communication)? {
-            DbResponse::Rows(rows) => Ok(rows),
-            DbResponse::Error(err) => Err(err),
-            _ => Err(Error::InvalidDbResponse),
-        }
-    }
-
-    async fn pluck(&self, mut statement: InnerStatement) -> Result<Option<Column>, Error> {
-        let (sender, receiver) = oneshot::channel();
-        statement.expected_response = ExpectedSqlResponse::Pluck;
-        self.get_queue_sender()
-            .send(DbRequest::Sql(statement, sender))
-            .await
-            .map_err(|_| Error::Communication)?;
-
-        match receiver.await.map_err(|_| Error::Communication)? {
-            DbResponse::Pluck(value) => Ok(value),
-            DbResponse::Error(err) => Err(err),
-            _ => Err(Error::InvalidDbResponse),
-        }
-    }
-}
-
-#[inline(always)]
-pub fn query<T>(sql: T) -> Statement
-where
-    T: ToString,
-{
-    Statement(crate::stmt::Statement::new(sql))
-}
-
 impl AsyncRusqlite {
     /// Creates a new Async Rusqlite wrapper.
     pub fn new(pool: Arc<Pool<SqliteConnectionManager>>) -> Self {
@@ -488,43 +436,153 @@ impl AsyncRusqlite {
         }
     }
 
+    fn get_queue_sender(&self) -> &mpsc::Sender<DbRequest> {
+        &self.sender
+    }
+
     /// Show how many inflight requests
     #[allow(dead_code)]
     pub fn inflight_requests(&self) -> usize {
         self.inflight_requests.load(Ordering::Relaxed)
     }
+}
+
+#[async_trait::async_trait]
+impl DatabaseConnector for AsyncRusqlite {
+    type Transaction<'a> = Transaction<'a>;
 
     /// Begins a transaction
     ///
     /// If the transaction is Drop it will trigger a rollback operation
-    pub async fn begin(&self) -> Result<Transaction<'_>, Error> {
+    async fn begin(&self) -> Result<Self::Transaction<'_>, Error> {
         let (sender, receiver) = oneshot::channel();
         self.sender
             .send(DbRequest::Begin(sender))
             .await
-            .map_err(|_| Error::Communication)?;
+            .map_err(|_| Error::Internal("Communication".to_owned()))?;
 
-        match receiver.await.map_err(|_| Error::Communication)? {
+        match receiver
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?
+        {
             DbResponse::Transaction(db_sender) => Ok(Transaction {
                 db_sender,
                 _marker: PhantomData,
             }),
-            DbResponse::Error(err) => Err(err),
+            DbResponse::Error(err) => Err(err.into()),
             _ => Err(Error::InvalidDbResponse),
         }
     }
 }
 
+#[async_trait::async_trait]
 impl DatabaseExecutor for AsyncRusqlite {
-    #[inline(always)]
-    fn get_queue_sender(&self) -> mpsc::Sender<DbRequest> {
-        self.sender.clone()
+    fn name() -> &'static str {
+        "sqlite"
+    }
+
+    async fn fetch_one(&self, mut statement: InnerStatement) -> Result<Option<Vec<Column>>, Error> {
+        let (sender, receiver) = oneshot::channel();
+        statement.expected_response = ExpectedSqlResponse::SingleRow;
+        self.get_queue_sender()
+            .send(DbRequest::Sql(statement, sender))
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?;
+
+        match receiver
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?
+        {
+            DbResponse::Row(row) => Ok(row),
+            DbResponse::Error(err) => Err(err.into()),
+            _ => Err(Error::InvalidDbResponse),
+        }
+    }
+
+    async fn batch(&self, mut statement: InnerStatement) -> Result<(), Error> {
+        let (sender, receiver) = oneshot::channel();
+        statement.expected_response = ExpectedSqlResponse::Batch;
+        self.get_queue_sender()
+            .send(DbRequest::Sql(statement, sender))
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?;
+
+        match receiver
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?
+        {
+            DbResponse::Ok => Ok(()),
+            DbResponse::Error(err) => Err(err.into()),
+            _ => Err(Error::InvalidDbResponse),
+        }
+    }
+
+    async fn fetch_all(&self, mut statement: InnerStatement) -> Result<Vec<Vec<Column>>, Error> {
+        let (sender, receiver) = oneshot::channel();
+        statement.expected_response = ExpectedSqlResponse::ManyRows;
+        self.get_queue_sender()
+            .send(DbRequest::Sql(statement, sender))
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?;
+
+        match receiver
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?
+        {
+            DbResponse::Rows(row) => Ok(row),
+            DbResponse::Error(err) => Err(err.into()),
+            _ => Err(Error::InvalidDbResponse),
+        }
+    }
+
+    async fn execute(&self, mut statement: InnerStatement) -> Result<usize, Error> {
+        let (sender, receiver) = oneshot::channel();
+        statement.expected_response = ExpectedSqlResponse::AffectedRows;
+        self.get_queue_sender()
+            .send(DbRequest::Sql(statement, sender))
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?;
+
+        match receiver
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?
+        {
+            DbResponse::AffectedRows(total) => Ok(total),
+            DbResponse::Error(err) => Err(err.into()),
+            _ => Err(Error::InvalidDbResponse),
+        }
+    }
+
+    async fn pluck(&self, mut statement: InnerStatement) -> Result<Option<Column>, Error> {
+        let (sender, receiver) = oneshot::channel();
+        statement.expected_response = ExpectedSqlResponse::Pluck;
+        self.get_queue_sender()
+            .send(DbRequest::Sql(statement, sender))
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?;
+
+        match receiver
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?
+        {
+            DbResponse::Pluck(value) => Ok(value),
+            DbResponse::Error(err) => Err(err.into()),
+            _ => Err(Error::InvalidDbResponse),
+        }
     }
 }
 
+/// Database transaction
+#[derive(Debug)]
 pub struct Transaction<'conn> {
     db_sender: mpsc::Sender<DbRequest>,
     _marker: PhantomData<&'conn ()>,
+}
+
+impl Transaction<'_> {
+    fn get_queue_sender(&self) -> &mpsc::Sender<DbRequest> {
+        &self.db_sender
+    }
 }
 
 impl Drop for Transaction<'_> {
@@ -534,40 +592,136 @@ impl Drop for Transaction<'_> {
     }
 }
 
-impl Transaction<'_> {
-    pub async fn commit(self) -> Result<(), Error> {
+#[async_trait::async_trait]
+impl<'a> DatabaseTransaction<'a> for Transaction<'a> {
+    async fn commit(self) -> Result<(), Error> {
         let (sender, receiver) = oneshot::channel();
         self.db_sender
             .send(DbRequest::Commit(sender))
             .await
-            .map_err(|_| Error::Communication)?;
+            .map_err(|_| Error::Internal("Communication".to_owned()))?;
 
-        match receiver.await.map_err(|_| Error::Communication)? {
+        match receiver
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?
+        {
             DbResponse::Ok => Ok(()),
-            DbResponse::Error(err) => Err(err),
+            DbResponse::Error(err) => Err(err.into()),
             _ => Err(Error::InvalidDbResponse),
         }
     }
 
-    pub async fn rollback(self) -> Result<(), Error> {
+    async fn rollback(self) -> Result<(), Error> {
         let (sender, receiver) = oneshot::channel();
         self.db_sender
             .send(DbRequest::Rollback(sender))
             .await
-            .map_err(|_| Error::Communication)?;
+            .map_err(|_| Error::Internal("Communication".to_owned()))?;
 
-        match receiver.await.map_err(|_| Error::Communication)? {
+        match receiver
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?
+        {
             DbResponse::Ok => Ok(()),
-            DbResponse::Error(err) => Err(err),
+            DbResponse::Error(err) => Err(err.into()),
             _ => Err(Error::InvalidDbResponse),
         }
     }
 }
 
+#[async_trait::async_trait]
 impl DatabaseExecutor for Transaction<'_> {
-    /// Get the internal sender to the SQL queue
-    #[inline(always)]
-    fn get_queue_sender(&self) -> mpsc::Sender<DbRequest> {
-        self.db_sender.clone()
+    fn name() -> &'static str {
+        "sqlite"
+    }
+
+    async fn fetch_one(&self, mut statement: InnerStatement) -> Result<Option<Vec<Column>>, Error> {
+        let (sender, receiver) = oneshot::channel();
+        statement.expected_response = ExpectedSqlResponse::SingleRow;
+        self.get_queue_sender()
+            .send(DbRequest::Sql(statement, sender))
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?;
+
+        match receiver
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?
+        {
+            DbResponse::Row(row) => Ok(row),
+            DbResponse::Error(err) => Err(err.into()),
+            _ => Err(Error::InvalidDbResponse),
+        }
+    }
+
+    async fn batch(&self, mut statement: InnerStatement) -> Result<(), Error> {
+        let (sender, receiver) = oneshot::channel();
+        statement.expected_response = ExpectedSqlResponse::Batch;
+        self.get_queue_sender()
+            .send(DbRequest::Sql(statement, sender))
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?;
+
+        match receiver
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?
+        {
+            DbResponse::Ok => Ok(()),
+            DbResponse::Error(err) => Err(err.into()),
+            _ => Err(Error::InvalidDbResponse),
+        }
+    }
+
+    async fn fetch_all(&self, mut statement: InnerStatement) -> Result<Vec<Vec<Column>>, Error> {
+        let (sender, receiver) = oneshot::channel();
+        statement.expected_response = ExpectedSqlResponse::ManyRows;
+        self.get_queue_sender()
+            .send(DbRequest::Sql(statement, sender))
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?;
+
+        match receiver
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?
+        {
+            DbResponse::Rows(row) => Ok(row),
+            DbResponse::Error(err) => Err(err.into()),
+            _ => Err(Error::InvalidDbResponse),
+        }
+    }
+
+    async fn execute(&self, mut statement: InnerStatement) -> Result<usize, Error> {
+        let (sender, receiver) = oneshot::channel();
+        statement.expected_response = ExpectedSqlResponse::AffectedRows;
+        self.get_queue_sender()
+            .send(DbRequest::Sql(statement, sender))
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?;
+
+        match receiver
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?
+        {
+            DbResponse::AffectedRows(total) => Ok(total),
+            DbResponse::Error(err) => Err(err.into()),
+            _ => Err(Error::InvalidDbResponse),
+        }
+    }
+
+    async fn pluck(&self, mut statement: InnerStatement) -> Result<Option<Column>, Error> {
+        let (sender, receiver) = oneshot::channel();
+        statement.expected_response = ExpectedSqlResponse::Pluck;
+        self.get_queue_sender()
+            .send(DbRequest::Sql(statement, sender))
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?;
+
+        match receiver
+            .await
+            .map_err(|_| Error::Internal("Communication".to_owned()))?
+        {
+            DbResponse::Pluck(value) => Ok(value),
+            DbResponse::Error(err) => Err(err.into()),
+            _ => Err(Error::InvalidDbResponse),
+        }
     }
 }

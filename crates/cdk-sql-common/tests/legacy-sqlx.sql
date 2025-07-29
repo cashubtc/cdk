@@ -1,0 +1,97 @@
+PRAGMA foreign_keys=OFF;
+BEGIN TRANSACTION;
+CREATE TABLE _sqlx_migrations (
+    version BIGINT PRIMARY KEY,
+    description TEXT NOT NULL,
+    installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    success BOOLEAN NOT NULL,
+    checksum BYTEA NOT NULL,
+    execution_time BIGINT NOT NULL
+);
+INSERT INTO _sqlx_migrations VALUES(20240612124932,'init','2025-06-13 20:01:04',1,X'42664ceda25b07bca420c2f7480c90334cb8a720203c1b4b8971181d5d3afabda3171aa89c1c0c8a26421eded94b77fa',921834);
+INSERT INTO _sqlx_migrations VALUES(20240618195700,'quote state','2025-06-13 20:01:04',1,X'4b3a5a7f91032320f32b2c60a4348f0e80cef98fcf58153c4c942aa5124ddadce7c5c4338f29d2cb672fc4c08dd894a6',1019333);
+INSERT INTO _sqlx_migrations VALUES(20240626092101,'nut04 state','2025-06-13 20:01:04',1,X'3641316faa018b13892d2972010b26a68d48b499aa67f8c084587265d070b575f541f165a9e2c5653b9c81a8dc198843',814000);
+INSERT INTO _sqlx_migrations VALUES(20240703122347,'request lookup id','2025-06-13 20:01:04',1,X'234851aa0990048e119d07e9844f064ee71731c4e21021934e733359d6c50bc95a40051673f0a06e82d151c34fff6e8a',430875);
+INSERT INTO _sqlx_migrations VALUES(20240710145043,'input fee','2025-06-13 20:01:04',1,X'422d4ce6a1d94c2df4a7fd9400c3d45db35953e53ba46025df7d3ed4d373e04f948468dcbcd8155829a5441f8b46d7f3',302916);
+INSERT INTO _sqlx_migrations VALUES(20240711183109,'derivation path index','2025-06-13 20:01:04',1,X'83651c857135516fd578c5ee9f179a04964dc9a366a5b698c1cb54f2b5aa139dc912d34e28c5ff4cc157e6991032952f',225125);
+INSERT INTO _sqlx_migrations VALUES(20240718203721,'allow unspent','2025-06-13 20:01:04',1,X'9b900846657b9083cdeca3da6ca7d74487c400f715f7d455c6a662de6b60e2761c3d80ea67d820e9b1ec9fbfd596e267',776167);
+INSERT INTO _sqlx_migrations VALUES(20240811031111,'update mint url','2025-06-13 20:01:04',1,X'b8d771e08d3bbe3fc1e8beb1674714f0306d7f9f7cc09990fc0215850179a64366c8c46305ea0c1fb5dbc73a5fe48207',79334);
+INSERT INTO _sqlx_migrations VALUES(20240919103407,'proofs quote id','2025-06-13 20:01:04',1,X'e3df13daebbc7df1907c68963258ad3722a0f2398f5ee1e92ea1824ce1a22f5657411f9c08a1f72bfd250e40630fdca5',387875);
+INSERT INTO _sqlx_migrations VALUES(20240923153640,'melt requests','2025-06-13 20:01:04',1,X'8c35d740fbb1c0c13dc4594da50cce3e066cba2ff3926a5527629207678afe3a4fa3b7c8f5fab7e08525c676a4098154',188958);
+INSERT INTO _sqlx_migrations VALUES(20240930101140,'dleq for sigs','2025-06-13 20:01:04',1,X'23c61a60db9bb145c238bb305583ccc025cd17958e61a6ff97ef0e4385517fe87729f77de0c26ce9cfa3a0c70b273038',383542);
+INSERT INTO _sqlx_migrations VALUES(20241108093102,'mint mint quote pubkey','2025-06-13 20:01:04',1,X'00c83af91dc109368fcdc9a1360e1c893afcac3a649c7dfd04e841f1f8fe3d0e99a2ade6891ab752e1b942a738ac6b44',246875);
+INSERT INTO _sqlx_migrations VALUES(20250103201327,'amount to pay msats','2025-06-13 20:01:04',1,X'4cc8bd34aec65365271e2dc2a19735403c8551dbf738b541659399c900fb167577d3f02b1988679e6c7922fe018b9a32',235041);
+INSERT INTO _sqlx_migrations VALUES(20250129200912,'remove mint url','2025-06-13 20:01:04',1,X'f86b07a6b816683d72bdad637502a47cdeb21f6535aa8e2c0647d4b29f4f58931683b72062b3e313a5936264876bb2c3',638084);
+INSERT INTO _sqlx_migrations VALUES(20250129230326,'add config table','2025-06-13 20:01:04',1,X'c232f4cfa032105cdd48097197d7fb0eea290a593af0996434c3f1f5396efb41d1f225592b292367fd9d584672a347d8',163625);
+INSERT INTO _sqlx_migrations VALUES(20250307213652,'keyset id as foreign key','2025-06-13 20:01:04',1,X'50a36140780074b2730d429d664c2a7593f2c2237c1a36ed2a11e22c40bfa40b24dc3a5c8089959fae955fdbe2f06533',1498459);
+INSERT INTO _sqlx_migrations VALUES(20250406091754,'mint time of quotes','2025-06-13 20:01:04',1,X'ac0165a8371cf7ad424be08c0e6931e1dd1249354ea0e33b4a04ff48ab4188da105e1fd763c42f06aeb733eb33d85415',934250);
+INSERT INTO _sqlx_migrations VALUES(20250406093755,'mint created time signature','2025-06-13 20:01:04',1,X'7f2ff8e30f66ab142753cc2e0faec89560726d96298e9ce0c9e871974300fcbe7c2f8a9b2d48ed4ca8daf1b9a5043e95',447000);
+INSERT INTO _sqlx_migrations VALUES(20250415093121,'drop keystore foreign','2025-06-13 20:01:04',1,X'efa99131d37335d64c86680c9e5b1362c2bf4d03fbdb6f60c9160edc572add6422d871f76a245d6f55f7fb6f4491b825',1375084);
+CREATE TABLE keyset (
+    id TEXT PRIMARY KEY,
+    unit TEXT NOT NULL,
+    active BOOL NOT NULL,
+    valid_from INTEGER NOT NULL,
+    valid_to INTEGER,
+    derivation_path TEXT NOT NULL,
+    max_order INTEGER NOT NULL
+, input_fee_ppk INTEGER, derivation_path_index INTEGER);
+INSERT INTO keyset VALUES('0083a60439303340','sat',1,1749844864,NULL,'0''/0''/0''',32,0,0);
+INSERT INTO keyset VALUES('00b13456b2934304','auth',1,1749844864,NULL,'0''/4''/0''',1,0,0);
+INSERT INTO keyset VALUES('0002c733628bb92f','usd',1,1749844864,NULL,'0''/2''/0''',32,0,0);
+CREATE TABLE mint_quote (
+    id TEXT PRIMARY KEY,
+    amount INTEGER NOT NULL,
+    unit TEXT NOT NULL,
+    request TEXT NOT NULL,
+    expiry INTEGER NOT NULL
+, state TEXT CHECK ( state IN ('UNPAID', 'PENDING', 'PAID', 'ISSUED' ) ) NOT NULL DEFAULT 'UNPAID', request_lookup_id TEXT, pubkey TEXT, created_time INTEGER NOT NULL DEFAULT 0, paid_time INTEGER, issued_time INTEGER);
+CREATE TABLE melt_quote (
+    id TEXT PRIMARY KEY,
+    unit TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    request TEXT NOT NULL,
+    fee_reserve INTEGER NOT NULL,
+    expiry INTEGER NOT NULL
+, state TEXT CHECK ( state IN ('UNPAID', 'PENDING', 'PAID' ) ) NOT NULL DEFAULT 'UNPAID', payment_preimage TEXT, request_lookup_id TEXT, msat_to_pay INTEGER, created_time INTEGER NOT NULL DEFAULT 0, paid_time INTEGER);
+CREATE TABLE melt_request (
+id TEXT PRIMARY KEY,
+inputs TEXT NOT NULL,
+outputs TEXT,
+method TEXT NOT NULL,
+unit TEXT NOT NULL
+);
+CREATE TABLE config (
+    id TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS "proof" (
+    y BYTEA PRIMARY KEY,
+    amount INTEGER NOT NULL,
+    keyset_id TEXT NOT NULL, -- no FK constraint here
+    secret TEXT NOT NULL,
+    c BYTEA NOT NULL,
+    witness TEXT,
+    state TEXT CHECK (state IN ('SPENT', 'PENDING', 'UNSPENT', 'RESERVED', 'UNKNOWN')) NOT NULL,
+    quote_id TEXT,
+    created_time INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS "blind_signature" (
+    y BYTEA PRIMARY KEY,
+    amount INTEGER NOT NULL,
+    keyset_id TEXT NOT NULL,  -- FK removed
+    c BYTEA NOT NULL,
+    dleq_e TEXT,
+    dleq_s TEXT,
+    quote_id TEXT,
+    created_time INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX unit_index ON keyset(unit);
+CREATE INDEX active_index ON keyset(active);
+CREATE INDEX request_index ON mint_quote(request);
+CREATE INDEX expiry_index ON mint_quote(expiry);
+CREATE INDEX melt_quote_state_index ON melt_quote(state);
+CREATE INDEX mint_quote_state_index ON mint_quote(state);
+CREATE UNIQUE INDEX unique_request_lookup_id_mint ON mint_quote(request_lookup_id);
+CREATE UNIQUE INDEX unique_request_lookup_id_melt ON melt_quote(request_lookup_id);
+COMMIT;
