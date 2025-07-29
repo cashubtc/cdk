@@ -6,8 +6,9 @@
 use cairo_air::verifier::{verify_cairo, CairoVerificationError};
 use cairo_air::{CairoProof, PreProcessedTraceVariant};
 use serde::{Deserialize, Serialize};
+use stwo_cairo_prover::stwo_prover::core::pcs::PcsConfig;
 // use starknet_types_core::felt::Felt;
-use stwo_cairo_prover::stwo::core::vcs::blake2_merkle::{
+use stwo_cairo_prover::stwo_prover::core::vcs::blake2_merkle::{
     Blake2sMerkleChannel, Blake2sMerkleHasher,
 };
 use thiserror::Error;
@@ -91,32 +92,17 @@ impl Proof {
             };
 
         let preprocessed_trace = PreProcessedTraceVariant::CanonicalWithoutPedersen; // TODO: give option
-        let result = verify_cairo::<Blake2sMerkleChannel>(cairo_proof, preprocessed_trace);
+        let result = verify_cairo::<Blake2sMerkleChannel>(
+            cairo_proof,
+            PcsConfig::default(),
+            preprocessed_trace,
+        );
         match result {
             Ok(_) => Ok(()),
             Err(e) => Err(Error::CairoVerification(e)),
         }
     }
 }
-
-// fn verify_cc_test(
-//     _secret_data: String, // TODO: verify this also, should have type `SecretData`
-//     witness: &CairoWitness,
-//     with_pedersen: bool,
-// ) -> Result<(), Error> {
-//     // info!("Verifying proof from: {:?}", proof);
-//     let cairo_proof = serde_json::from_str::<CairoProof<Blake2sMerkleHasher>>(&witness.proof)
-//         .expect("Failed to deserialize Cairo proof");
-//     let preprocessed_trace = match with_pedersen {
-//         true => PreProcessedTraceVariant::Canonical,
-//         false => PreProcessedTraceVariant::CanonicalWithoutPedersen,
-//     };
-//     let result = verify_cairo::<Blake2sMerkleChannel>(cairo_proof, preprocessed_trace);
-//     match result {
-//         Ok(_) => Ok(()),
-//         Err(_) => Err(Error::NotImplemented), // TODO: find better error
-//     }
-// }
 
 #[cfg(test)]
 mod tests {
@@ -126,12 +112,11 @@ mod tests {
     use super::*;
     use crate::secret::Secret;
     use crate::{Amount, Conditions, Id, Kind, Nut10Secret, SecretKey, SigFlag};
-    // use crate::nuts::nut00::{Amount, Id, Secret, Witness};
 
     #[test]
     fn test_verify() {
         let cairo_proof = include_str!("example_proof.json").to_string();
-        println!("cairo proof: {}", cairo_proof);
+        // println!("cairo proof: {}", cairo_proof);
         let witness = CairoWitness { proof: cairo_proof };
 
         let secret_key =
