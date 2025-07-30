@@ -177,7 +177,7 @@ impl Mint {
         tx.set_mint_info(mint_info.clone()).await?;
         tx.set_quote_ttl(QuoteTTL::default()).await?;
         tx.commit().await?;
-
+        let local_metrics = metrics.is_some().then(|| metrics.unwrap()).unwrap();
         Ok(Self {
             signatory,
             pubsub_manager: Arc::new(localstore.clone().into()),
@@ -195,7 +195,7 @@ impl Mint {
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             task_state: Arc::new(Mutex::new(TaskState::default())),
             #[cfg(feature = "prometheus")]
-            metrics: metrics.unwrap(),
+            metrics: local_metrics,
         })
     }
 
