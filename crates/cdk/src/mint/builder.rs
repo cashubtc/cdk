@@ -50,7 +50,7 @@ impl MintBuilder {
     /// New [`MintBuilder`]
     pub fn new(
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
-        #[cfg(feature = "prometheus")] metrics: Option<Arc<CdkMetrics>>,
+        metrics: Option<Arc<CdkMetrics>>,
     ) -> MintBuilder {
         let mint_info = MintInfo {
             nuts: Nuts::new()
