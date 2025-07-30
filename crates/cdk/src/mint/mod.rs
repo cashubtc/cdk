@@ -177,6 +177,7 @@ impl Mint {
         tx.set_mint_info(mint_info.clone()).await?;
         tx.set_quote_ttl(QuoteTTL::default()).await?;
         tx.commit().await?;
+        #[cfg(feature = "prometheus")]
         let local_metrics = metrics.is_some().then(|| metrics.unwrap()).unwrap();
         Ok(Self {
             signatory,
