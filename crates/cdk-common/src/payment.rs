@@ -4,9 +4,6 @@ use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::mint::MeltPaymentRequest;
-use crate::nuts::{CurrencyUnit, MeltQuoteState};
-use crate::Amount;
 use async_trait::async_trait;
 use cashu::util::hex;
 use cashu::{Bolt11Invoice, MeltOptions};
@@ -17,6 +14,10 @@ use lightning_invoice::ParseOrSemanticError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+
+use crate::mint::MeltPaymentRequest;
+use crate::nuts::{CurrencyUnit, MeltQuoteState};
+use crate::Amount;
 
 /// CDK Lightning Error
 #[derive(Debug, Error)]
