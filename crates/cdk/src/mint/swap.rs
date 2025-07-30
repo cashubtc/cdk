@@ -1,4 +1,3 @@
-use tracing::field::Visit;
 use tracing::instrument;
 
 use super::nut11::{enforce_sig_flag, EnforceSigFlag};

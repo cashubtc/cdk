@@ -91,15 +91,11 @@ async fn main() -> Result<()> {
 
     #[cfg(feature = "prometheus")]
     let metrics = Arc::new(cdk_prometheus::CdkMetrics::new()?);
+    #[cfg(not(feature = "prometheus"))]
+    let mint_builder = MintBuilder::new(localstore, None);
 
-    let mint_builder = MintBuilder::new(
-        localstore,
-        #[cfg(feature = "prometheus")]
-        Some(metrics.clone()),
-        #[cfg(not(feature = "prometheus"))]
-        None,
-    );
-
+    #[cfg(feature = "prometheus")]
+    let mint_builder = MintBuilder::new(localstore, Some(metrics.clone()));
     let (mint_builder, ln_routers) = configure_mint_builder(
         &settings,
         mint_builder,

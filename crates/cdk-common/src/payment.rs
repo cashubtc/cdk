@@ -624,12 +624,12 @@ where
 /// This implementation provides concrete metrics collection using the existing
 /// CDK prometheus metrics infrastructure.
 pub struct PrometheusMetricsCollector {
-    metrics: CdkMetrics,
+    metrics: Arc<CdkMetrics>,
 }
 
 impl PrometheusMetricsCollector {
     /// Create a new prometheus metrics collector
-    pub fn new(metrics: CdkMetrics) -> Self {
+    pub fn new(metrics: Arc<CdkMetrics>) -> Self {
         Self { metrics }
     }
 }
@@ -699,7 +699,7 @@ where
 {
     /// Create a metrics wrapper with prometheus metrics collector
     #[cfg(feature = "prometheus")]
-    pub fn with_prometheus(inner: T, metrics: cdk_prometheus::CdkMetrics) -> Self {
+    pub fn with_prometheus(inner: T, metrics: Arc<cdk_prometheus::CdkMetrics>) -> Self {
         let collector = Arc::new(PrometheusMetricsCollector::new(metrics));
         Self::new(inner, collector)
     }
