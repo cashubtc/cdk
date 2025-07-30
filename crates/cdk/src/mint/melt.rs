@@ -839,7 +839,7 @@ impl Mint {
             Ok(response) => response,
             Err(err) => {
                 tracing::error!("Could not process melt request: {}", err);
-                
+
                 #[cfg(feature = "prometheus")]
                 if let Some(metrics) = self.metrics.as_ref() {
                     metrics.dec_in_flight_requests("melt_bolt11");
