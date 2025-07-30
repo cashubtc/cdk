@@ -185,12 +185,7 @@ impl MultiMintWallet {
         send: PreparedSend,
         memo: Option<SendMemo>,
     ) -> Result<Token, Error> {
-        let wallets = self.wallets.read().await;
-        let wallet = wallets
-            .get(wallet_key)
-            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
-
-        wallet.send(send, memo).await
+        send.confirm(memo).await
     }
 
     /// Mint quote for wallet

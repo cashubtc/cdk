@@ -62,7 +62,7 @@ async fn main() -> Result<(), Error> {
 
     // Send a token with the specified amount
     let prepared_send = wallet.prepare_send(amount, SendOptions::default()).await?;
-    let token = wallet.send(prepared_send, None).await?;
+    let token = prepared_send.confirm(None).await?;
     println!("Token:");
     println!("{}", token);
 

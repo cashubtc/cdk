@@ -70,11 +70,8 @@ async fn test_swap_to_send() {
                 .expect("Failed to get ys")
         )
     );
-    let token = wallet_alice
-        .send(
-            prepared_send,
-            Some(SendMemo::for_token("test_swapt_to_send")),
-        )
+    let token = prepared_send
+        .confirm(Some(SendMemo::for_token("test_swapt_to_send")))
         .await
         .expect("Failed to send token");
     let keysets_info = wallet_alice.get_mint_keysets().await.unwrap();
