@@ -120,6 +120,7 @@ impl Mint {
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
         auth_localstore: Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>,
+        #[cfg(feature = "prometheus")] metrics: Option<Arc<CdkMetrics>>,
         payment_processors: HashMap<
             PaymentProcessorKey,
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
@@ -131,7 +132,7 @@ impl Mint {
             localstore,
             Some(auth_localstore),
             #[cfg(feature = "prometheus")]
-            None,
+            metrics,
             payment_processors,
         )
         .await
