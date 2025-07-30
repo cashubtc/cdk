@@ -10,6 +10,9 @@
 - cashu: `KeySetInfos` type alias and `KeySetInfosMethods` trait for filtering keysets ([thesimplekid]).
 - cdk: Mint lifecycle management with `start()` and `stop()` methods for graceful background service control ([thesimplekid]).
 - cdk: Background task management for invoice payment monitoring with proper shutdown handling ([thesimplekid]).
+- cashu: NUT-19 support in the wallet ([crodas]).
+- cdk: SIG_ALL support for swap and melt operations ([thesimplekid]).
+- cdk-sql-common: Add cache to SQL statements for better performance ([crodas]).
 
 ### Changed
 - cdk: Refactored wallet keyset management methods for better clarity and separation of concerns ([thesimplekid]).
@@ -22,9 +25,17 @@
 - cdk: Refactored invoice payment monitoring to use centralized lifecycle management instead of manual task spawning ([thesimplekid]).
 - cdk-mintd: Updated to use new mint lifecycle methods for improved service management ([thesimplekid]).
 - cdk-integration-tests: Updated test utilities to use new mint lifecycle management ([thesimplekid]).
+- cdk-sqlite: Introduce `cdk-sql-common` crate for shared SQL storage codebase ([crodas]).
+- cdk-sqlite: Rename `still_active` to `stale` for better clarity ([crodas]).
 
 ### Fixed
 - cashu: Fixed CurrencyUnit custom units preserving original case instead of being converted to uppercase ([thesimplekid]).
+- cdk-sqlite: Fix `get_mint_quote_by_request_lookup_id` function synchronization ([crodas]).
+- cdk-common: Fix TransactionId::from_hex to check bytes length before copy to avoid panic ([codingpeanut157]).
+- cdk: Include change in melt quote state updates ([thesimplekid]).
+
+### Migration
+- cdk-sql-common: Improve migrations with namespaced and global migrations support ([crodas]).
 
 
 ## [0.11.0](https://github.com/cashubtc/cdk/releases/tag/v0.11.0)
@@ -449,3 +460,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [Darrell]: https://github.com/Darrellbor
 [asmo]: https://github.com/asmogo
 [gudnuf]: https://github.com/gudnuf
+[codingpeanut157]: https://github.com/codingpeanut157
