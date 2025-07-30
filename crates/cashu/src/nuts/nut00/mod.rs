@@ -985,4 +985,57 @@ mod tests {
         let deserialized: CurrencyUnit = serde_json::from_str(&serialized).unwrap();
         assert_eq!(unit, deserialized)
     }
+
+    #[test]
+    fn test_payment_method_parsing() {
+        // Test standard variants
+        assert_eq!(
+            PaymentMethod::from_str("bolt11").unwrap(),
+            PaymentMethod::Bolt11
+        );
+        assert_eq!(
+            PaymentMethod::from_str("BOLT11").unwrap(),
+            PaymentMethod::Bolt11
+        );
+        assert_eq!(
+            PaymentMethod::from_str("Bolt11").unwrap(),
+            PaymentMethod::Bolt11
+        );
+
+        assert_eq!(
+            PaymentMethod::from_str("bolt12").unwrap(),
+            PaymentMethod::Bolt12
+        );
+        assert_eq!(
+            PaymentMethod::from_str("BOLT12").unwrap(),
+            PaymentMethod::Bolt12
+        );
+        assert_eq!(
+            PaymentMethod::from_str("Bolt12").unwrap(),
+            PaymentMethod::Bolt12
+        );
+
+        // Test custom variants
+        assert_eq!(
+            PaymentMethod::from_str("custom").unwrap(),
+            PaymentMethod::Custom("custom".to_string())
+        );
+        assert_eq!(
+            PaymentMethod::from_str("CUSTOM").unwrap(),
+            PaymentMethod::Custom("custom".to_string())
+        );
+
+        // Test serialization/deserialization consistency
+        let methods = vec![
+            PaymentMethod::Bolt11,
+            PaymentMethod::Bolt12,
+            PaymentMethod::Custom("test".to_string()),
+        ];
+
+        for method in methods {
+            let serialized = serde_json::to_string(&method).unwrap();
+            let deserialized: PaymentMethod = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(method, deserialized);
+        }
+    }
 }
