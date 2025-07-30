@@ -43,12 +43,15 @@ pub struct MintBuilder {
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     #[cfg(feature = "prometheus")]
-    metrics: Option<Arc<CdkMetrics>>,
+    metrics: Arc<CdkMetrics>,
 }
 
 impl MintBuilder {
     /// New [`MintBuilder`]
-    pub fn new(localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>) -> MintBuilder {
+    pub fn new(
+        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+        #[cfg(feature = "prometheus")] metrics: Arc<CdkMetrics>,
+    ) -> MintBuilder {
         let mint_info = MintInfo {
             nuts: Nuts::new()
                 .nut07(true)
@@ -64,7 +67,7 @@ impl MintBuilder {
             mint_info,
             localstore,
             #[cfg(feature = "prometheus")]
-            metrics: None,
+            metrics: metrics,
             #[cfg(feature = "auth")]
             auth_localstore: None,
             payment_processors: HashMap::new(),
@@ -276,7 +279,7 @@ impl MintBuilder {
     /// Set prometheus metrics
     #[cfg(feature = "prometheus")]
     pub fn with_prometheus_metrics(mut self, metrics: Arc<CdkMetrics>) -> Self {
-        self.metrics = Some(metrics);
+        self.metrics = metrics;
         self
     }
     /// Sets the input fee ppk for a given unit

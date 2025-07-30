@@ -98,7 +98,7 @@ impl Mint {
             PaymentProcessorKey,
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
         >,
-        #[cfg(feature = "prometheus")] metrics: Option<Arc<CdkMetrics>>,
+        #[cfg(feature = "prometheus")] metrics: Arc<CdkMetrics>,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -120,7 +120,7 @@ impl Mint {
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
         auth_localstore: Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>,
-        #[cfg(feature = "prometheus")] metrics: Option<Arc<CdkMetrics>>,
+        #[cfg(feature = "prometheus")] metrics: Arc<CdkMetrics>,
         payment_processors: HashMap<
             PaymentProcessorKey,
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
@@ -147,7 +147,7 @@ impl Mint {
         #[cfg(feature = "auth")] auth_localstore: Option<
             Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>,
         >,
-        #[cfg(feature = "prometheus")] metrics: Option<Arc<CdkMetrics>>,
+        #[cfg(feature = "prometheus")] metrics: Arc<CdkMetrics>,
         payment_processors: HashMap<
             PaymentProcessorKey,
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
@@ -177,8 +177,7 @@ impl Mint {
         tx.set_mint_info(mint_info.clone()).await?;
         tx.set_quote_ttl(QuoteTTL::default()).await?;
         tx.commit().await?;
-        #[cfg(feature = "prometheus")]
-        let local_metrics = metrics.is_some().then(|| metrics.unwrap()).unwrap();
+
         Ok(Self {
             signatory,
             pubsub_manager: Arc::new(localstore.clone().into()),
@@ -196,7 +195,7 @@ impl Mint {
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             task_state: Arc::new(Mutex::new(TaskState::default())),
             #[cfg(feature = "prometheus")]
-            metrics: local_metrics,
+            metrics: metrics,
         })
     }
 

@@ -89,9 +89,14 @@ compile_error!(
 async fn main() -> Result<()> {
     let (work_dir, settings, localstore, keystore) = initial_setup().await?;
 
-    let mint_builder = MintBuilder::new(localstore);
     #[cfg(feature = "prometheus")]
     let metrics = Arc::new(cdk_prometheus::CdkMetrics::new()?);
+
+    let mint_builder = MintBuilder::new(
+        localstore,
+        #[cfg(feature = "prometheus")]
+        metrics.clone(),
+    );
 
     let (mint_builder, ln_routers) = configure_mint_builder(
         &settings,

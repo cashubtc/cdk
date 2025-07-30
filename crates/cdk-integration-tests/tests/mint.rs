@@ -13,6 +13,8 @@ use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk_fake_wallet::FakeWallet;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::CdkMetrics;
 use cdk_sqlite::mint::memory;
 
 pub const MINT_URL: &str = "http://127.0.0.1:8088";
@@ -30,7 +32,11 @@ async fn test_correct_keyset() {
     let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
 
     let localstore = Arc::new(database);
-    let mut mint_builder = MintBuilder::new(localstore.clone());
+    let mut mint_builder = MintBuilder::new(
+        localstore.clone(),
+        #[cfg(feature = "prometheus")]
+        Arc::new(CdkMetrics),
+    );
 
     mint_builder = mint_builder
         .with_name("regtest mint".to_string())
