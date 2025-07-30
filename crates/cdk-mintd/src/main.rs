@@ -95,14 +95,16 @@ async fn main() -> Result<()> {
     let mint_builder = MintBuilder::new(
         localstore,
         #[cfg(feature = "prometheus")]
-        metrics.clone(),
+        Some(metrics.clone()),
+        #[cfg(not(feature = "prometheus"))]
+        None,
     );
 
     let (mint_builder, ln_routers) = configure_mint_builder(
         &settings,
         mint_builder,
         #[cfg(feature = "prometheus")]
-        metrics.clone(),
+        Some(metrics.clone()),
     )
     .await?;
     #[cfg(feature = "auth")]
@@ -247,7 +249,7 @@ async fn setup_sqlite_database(
 async fn configure_mint_builder(
     settings: &config::Settings,
     mint_builder: MintBuilder,
-    #[cfg(feature = "prometheus")] metrics: Arc<metrics::CdkMetrics>,
+    #[cfg(feature = "prometheus")] metrics: Option<Arc<metrics::CdkMetrics>>,
 ) -> Result<(MintBuilder, Vec<Router>)> {
     let mut ln_routers = vec![];
 
@@ -260,7 +262,7 @@ async fn configure_mint_builder(
         mint_builder,
         &mut ln_routers,
         #[cfg(feature = "prometheus")]
-        &metrics,
+        metrics,
     )
     .await?;
 
@@ -325,7 +327,7 @@ async fn configure_lightning_backend(
     settings: &config::Settings,
     mut mint_builder: MintBuilder,
     ln_routers: &mut Vec<Router>,
-    #[cfg(feature = "prometheus")] metrics: &Arc<metrics::CdkMetrics>,
+    #[cfg(feature = "prometheus")] metrics: Option<Arc<metrics::CdkMetrics>>,
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
         mint_min: settings.ln.min_mint,
@@ -400,7 +402,7 @@ async fn configure_lightning_backend(
                 #[cfg(feature = "prometheus")]
                 let fake = MetricsMintPayment::new(
                     fake,
-                    Arc::new(PrometheusMetricsCollector::new(metrics.as_ref().clone())),
+                    Arc::new(PrometheusMetricsCollector::new(metrics.clone().unwrap())),
                 );
 
                 mint_builder = configure_backend_for_unit(

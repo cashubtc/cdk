@@ -33,6 +33,7 @@ pub struct CdkMetrics {
     // Mint metrics
     mint_operations_total: IntCounterVec,
     mint_in_flight_requests: IntGaugeVec,
+    mint_operation_duration: HistogramVec,
 }
 
 impl CdkMetrics {
@@ -61,7 +62,7 @@ impl CdkMetrics {
         let errors_total = Self::create_error_metrics(&registry)?;
 
         // Create and register mint metrics
-        let (mint_operations_total, _, mint_in_flight_requests) =
+        let (mint_operations_total, mint_operation_duration, mint_in_flight_requests) =
             Self::create_mint_metrics(&registry)?;
 
         Ok(Self {
@@ -79,6 +80,7 @@ impl CdkMetrics {
             errors_total,
             mint_operations_total,
             mint_in_flight_requests,
+            mint_operation_duration,
         })
     }
 
@@ -222,7 +224,7 @@ impl CdkMetrics {
     /// Returns an error if any of the metrics cannot be created or registered
     fn create_mint_metrics(
         registry: &Registry,
-    ) -> crate::Result<(IntCounterVec, Histogram, IntGaugeVec)> {
+    ) -> crate::Result<(IntCounterVec, HistogramVec, IntGaugeVec)> {
         let mint_operations_total = IntCounterVec::new(
             prometheus::Opts::new(
                 "cdk_mint_operations_total",
@@ -232,7 +234,7 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(mint_operations_total.clone()))?;
 
-        let mint_operation_duration = Histogram::with_opts(
+        let mint_operation_duration = HistogramVec::new(
             prometheus::HistogramOpts::new(
                 "cdk_mint_operation_duration_seconds",
                 "Duration of mint operations in seconds",
@@ -240,6 +242,7 @@ impl CdkMetrics {
             .buckets(vec![
                 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
             ]),
+            &["operation", "status"],
         )?;
         registry.register(Box::new(mint_operation_duration.clone()))?;
 
@@ -316,7 +319,17 @@ impl CdkMetrics {
             .with_label_values(&[operation, status])
             .inc();
     }
-
+    pub fn record_mint_operation_histogram(
+        &self,
+        operation: &str,
+        success: bool,
+        duration_seconds: f64,
+    ) {
+        let status = if success { "success" } else { "error" };
+        self.mint_operation_duration
+            .with_label_values(&[operation, status])
+            .observe(duration_seconds);
+    }
     pub fn inc_in_flight_requests(&self, operation: &str) {
         self.mint_in_flight_requests
             .with_label_values(&[operation])

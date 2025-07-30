@@ -132,7 +132,9 @@ impl Mint {
         melt_request: &MeltQuoteBolt11Request,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
         #[cfg(feature = "prometheus")]
-        self.metrics.inc_in_flight_requests("get_melt_bolt11_quote");
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.inc_in_flight_requests("get_melt_bolt11_quote");
+        }
         let MeltQuoteBolt11Request {
             request,
             unit,
@@ -187,12 +189,12 @@ impl Mint {
 
                 #[cfg(feature = "prometheus")]
                 {
-                    self.metrics.dec_in_flight_requests("get_melt_bolt11_quote");
-                    self.metrics
-                        .record_mint_operation("get_melt_bolt11_quote", false);
-                    self.metrics.record_error();
+                    if let Some(metrics) = self.metrics.as_ref() {
+                        metrics.dec_in_flight_requests("get_melt_bolt11_quote");
+                        metrics.record_mint_operation("get_melt_bolt11_quote", false);
+                        metrics.record_error();
+                    }
                 }
-
                 Error::UnsupportedUnit
             })?;
 
@@ -331,9 +333,10 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            self.metrics.dec_in_flight_requests("get_melt_bolt11_quote");
-            self.metrics
-                .record_mint_operation("get_melt_bolt11_quote", true);
+            if let Some(metrics) = self.metrics.as_ref() {
+                metrics.dec_in_flight_requests("get_melt_bolt11_quote");
+                metrics.record_mint_operation("get_melt_bolt11_quote", true);
+            }
         }
 
         Ok(quote.into())
@@ -346,26 +349,30 @@ impl Mint {
         quote_id: &Uuid,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
         #[cfg(feature = "prometheus")]
-        self.metrics.inc_in_flight_requests("check_melt_quote");
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.inc_in_flight_requests("check_melt_quote");
+        }
         let quote = match self.localstore.get_melt_quote(quote_id).await {
             Ok(Some(quote)) => quote,
             Ok(None) => {
                 #[cfg(feature = "prometheus")]
                 {
-                    self.metrics.dec_in_flight_requests("check_melt_quote");
-                    self.metrics
-                        .record_mint_operation("check_melt_quote", false);
-                    self.metrics.record_error();
+                    if let Some(metrics) = self.metrics.as_ref() {
+                        metrics.dec_in_flight_requests("check_melt_quote");
+                        metrics.record_mint_operation("check_melt_quote", false);
+                        metrics.record_error();
+                    }
                 }
                 return Err(Error::UnknownQuote);
             }
             Err(err) => {
                 #[cfg(feature = "prometheus")]
                 {
-                    self.metrics.dec_in_flight_requests("check_melt_quote");
-                    self.metrics
-                        .record_mint_operation("check_melt_quote", false);
-                    self.metrics.record_error();
+                    if let Some(metrics) = self.metrics.as_ref() {
+                        metrics.dec_in_flight_requests("check_melt_quote");
+                        metrics.record_mint_operation("check_melt_quote", false);
+                        metrics.record_error();
+                    }
                 }
                 return Err(err.into());
             }
@@ -380,10 +387,11 @@ impl Mint {
             Err(err) => {
                 #[cfg(feature = "prometheus")]
                 {
-                    self.metrics.dec_in_flight_requests("check_melt_quote");
-                    self.metrics
-                        .record_mint_operation("check_melt_quote", false);
-                    self.metrics.record_error();
+                    if let Some(metrics) = self.metrics.as_ref() {
+                        metrics.dec_in_flight_requests("check_melt_quote");
+                        metrics.record_mint_operation("check_melt_quote", false);
+                        metrics.record_error();
+                    }
                 }
                 return Err(err.into());
             }
@@ -406,8 +414,10 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            self.metrics.dec_in_flight_requests("check_melt_quote");
-            self.metrics.record_mint_operation("check_melt_quote", true);
+            if let Some(metrics) = self.metrics.as_ref() {
+                metrics.dec_in_flight_requests("check_melt_quote");
+                metrics.record_mint_operation("check_melt_quote", true);
+            }
         }
 
         Ok(response)
@@ -582,7 +592,10 @@ impl Mint {
         melt_request: &MeltRequest<Uuid>,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
         #[cfg(feature = "prometheus")]
-        self.metrics.inc_in_flight_requests("melt_bolt11");
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.inc_in_flight_requests("melt_bolt11");
+        }
+
         use std::sync::Arc;
         async fn check_payment_state(
             ln: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
@@ -614,9 +627,11 @@ impl Mint {
 
                 #[cfg(feature = "prometheus")]
                 {
-                    self.metrics.dec_in_flight_requests("melt_bolt11");
-                    self.metrics.record_mint_operation("melt_bolt11", false);
-                    self.metrics.record_error();
+                    if let Some(metrics) = self.metrics.as_ref() {
+                        metrics.dec_in_flight_requests("melt_bolt11");
+                        metrics.record_mint_operation("melt_bolt11", false);
+                        metrics.record_error();
+                    }
                 }
 
                 return Err(err);
@@ -633,9 +648,11 @@ impl Mint {
 
                 #[cfg(feature = "prometheus")]
                 {
-                    self.metrics.dec_in_flight_requests("melt_bolt11");
-                    self.metrics.record_mint_operation("melt_bolt11", false);
-                    self.metrics.record_error();
+                    if let Some(metrics) = self.metrics.as_ref() {
+                        metrics.dec_in_flight_requests("melt_bolt11");
+                        metrics.record_mint_operation("melt_bolt11", false);
+                        metrics.record_error();
+                    }
                 }
 
                 return Err(err);
@@ -744,9 +761,11 @@ impl Mint {
 
                         #[cfg(feature = "prometheus")]
                         {
-                            self.metrics.dec_in_flight_requests("melt_bolt11");
-                            self.metrics.record_mint_operation("melt_bolt11", false);
-                            self.metrics.record_error();
+                            if let Some(metrics) = self.metrics.as_ref() {
+                                metrics.dec_in_flight_requests("melt_bolt11");
+                                metrics.record_mint_operation("melt_bolt11", false);
+                                metrics.record_error();
+                            }
                         }
 
                         return Err(Error::PaymentFailed);
@@ -758,10 +777,10 @@ impl Mint {
                         );
                         proof_writer.commit();
 
-                        #[cfg(feature = "prometheus")]
-                        {
-                            self.metrics.dec_in_flight_requests("melt_bolt11");
-                            self.metrics.record_mint_operation("melt_bolt11", false);
+                        if let Some(metrics) = self.metrics.as_ref() {
+                            metrics.dec_in_flight_requests("melt_bolt11");
+                            metrics.record_mint_operation("melt_bolt11", false);
+                            metrics.record_error();
                         }
 
                         return Err(Error::PendingQuote);
@@ -821,11 +840,10 @@ impl Mint {
             Err(err) => {
                 tracing::error!("Could not process melt request: {}", err);
 
-                #[cfg(feature = "prometheus")]
-                {
-                    self.metrics.dec_in_flight_requests("melt_bolt11");
-                    self.metrics.record_mint_operation("melt_bolt11", false);
-                    self.metrics.record_error();
+                if let Some(metrics) = self.metrics.as_ref() {
+                    metrics.dec_in_flight_requests("melt_bolt11");
+                    metrics.record_mint_operation("melt_bolt11", false);
+                    metrics.record_error();
                 }
 
                 return Err(err);
@@ -834,8 +852,10 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            self.metrics.dec_in_flight_requests("melt_bolt11");
-            self.metrics.record_mint_operation("melt_bolt11", true);
+            if let Some(metrics) = self.metrics.as_ref() {
+                metrics.dec_in_flight_requests("melt_bolt11");
+                metrics.record_mint_operation("melt_bolt11", true);
+            }
         }
 
         Ok(res)
@@ -854,7 +874,10 @@ impl Mint {
         total_spent: Amount,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
         #[cfg(feature = "prometheus")]
-        self.metrics.inc_in_flight_requests("process_melt_request");
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.inc_in_flight_requests("process_melt_request");
+        }
+
         tracing::debug!("Processing melt quote: {}", melt_request.quote());
 
         let input_ys = melt_request.inputs().ys()?;
@@ -966,9 +989,10 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            self.metrics.dec_in_flight_requests("process_melt_request");
-            self.metrics
-                .record_mint_operation("process_melt_request", true);
+            if let Some(metrics) = self.metrics.as_ref() {
+                metrics.dec_in_flight_requests("process_melt_request");
+                metrics.record_mint_operation("process_melt_request", true);
+            }
         }
 
         Ok(response)
@@ -976,8 +1000,10 @@ impl Mint {
 
     #[cfg(feature = "prometheus")]
     fn record_melt_quote_failure(&self, operation: &str) {
-        self.metrics.dec_in_flight_requests(operation);
-        self.metrics.record_mint_operation(operation, false);
-        self.metrics.record_error();
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.dec_in_flight_requests(operation);
+            metrics.record_mint_operation(operation, false);
+            metrics.record_error();
+        }
     }
 }

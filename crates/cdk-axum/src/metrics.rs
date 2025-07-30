@@ -47,8 +47,10 @@ pub async fn metrics_middleware(
         let status_code = response.status().as_u16().to_string();
         let request_duration = start_time.elapsed().as_secs_f64();
         let metrics = &state.mint.metrics;
-        metrics.record_http_request(&endpoint_path, &status_code);
-        metrics.record_http_request_duration(request_duration, &endpoint_path);
+        if let Some(metrics) = metrics.as_ref() {
+            metrics.record_http_request(&endpoint_path, &status_code);
+            metrics.record_http_request_duration(request_duration, &endpoint_path);
+        }
     }
 
     response
