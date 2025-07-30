@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 use tracing::instrument;
 
 use super::receive::ReceiveOptions;
-use super::send::{PreparedSend, SendMemo, SendOptions};
+use super::send::{PreparedSend, SendOptions};
 use super::Error;
 use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
@@ -175,17 +175,6 @@ impl MultiMintWallet {
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
         wallet.prepare_send(amount, opts).await
-    }
-
-    /// Create cashu token
-    #[instrument(skip(self))]
-    pub async fn send(
-        &self,
-        wallet_key: &WalletKey,
-        send: PreparedSend,
-        memo: Option<SendMemo>,
-    ) -> Result<Token, Error> {
-        send.confirm(memo).await
     }
 
     /// Mint quote for wallet
