@@ -102,7 +102,7 @@ impl Wallet {
                                 .ok_or(Error::PreimageNotProvided)?;
                             proof.add_preimage(preimage.to_string());
                         }
-                        Kind::CC => {
+                        Kind::Cairo => {
                             // TODO
                         }
                     }

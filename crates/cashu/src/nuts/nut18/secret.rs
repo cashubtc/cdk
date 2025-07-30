@@ -58,6 +58,9 @@ impl From<SpendingConditions> for Nut10SecretRequest {
             SpendingConditions::HTLCConditions { data, conditions } => {
                 Self::new(Kind::HTLC, data.to_string(), conditions)
             }
+            SpendingConditions::CairoConditions { data, conditions } => {
+                Self::new(Kind::Cairo, data.to_string(), conditions)
+            }
         }
     }
 }

@@ -347,6 +347,9 @@ pub enum Error {
     /// NUT23 Error
     #[error(transparent)]
     NUT23(#[from] crate::nuts::nut23::Error),
+    /// NUTXX Error
+    #[error(transparent)]
+    NUTXX(#[from] crate::nuts::nutxx::Error),
     /// Database Error
     #[error(transparent)]
     Database(crate::database::Error),
