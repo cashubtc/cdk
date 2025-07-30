@@ -67,7 +67,7 @@ impl MintBuilder {
             mint_info,
             localstore,
             #[cfg(feature = "prometheus")]
-            metrics: metrics,
+            metrics,
             #[cfg(feature = "auth")]
             auth_localstore: None,
             payment_processors: HashMap::new(),

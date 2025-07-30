@@ -195,7 +195,7 @@ impl Mint {
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             task_state: Arc::new(Mutex::new(TaskState::default())),
             #[cfg(feature = "prometheus")]
-            metrics: metrics,
+            metrics,
         })
     }
 
@@ -939,7 +939,7 @@ mod tests {
             localstore,
             HashMap::new(),
             #[cfg(feature = "prometheus")]
-            None,
+            Arc::new(CdkMetrics::new().unwrap()),
         )
         .await
         .unwrap()
