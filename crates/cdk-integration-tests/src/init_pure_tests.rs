@@ -240,13 +240,13 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
             )
         }
     };
-
+    #[cfg(feature = "prometheus")]
     let mut mint_builder = MintBuilder::new(
         localstore.clone(),
-        #[cfg(feature = "prometheus")]
         Some(Arc::new(cdk_prometheus::CdkMetrics)),
     );
-
+    #[cfg(not(feature = "prometheus"))]
+    let mut mint_builder = MintBuilder::new(localstore.clone(), None);
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
         percent_fee_reserve: 1.0,

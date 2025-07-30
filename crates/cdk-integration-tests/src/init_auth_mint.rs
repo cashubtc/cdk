@@ -30,12 +30,13 @@ where
     };
 
     let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
-
+    #[cfg(feature = "prometheus")]
     let mut mint_builder = MintBuilder::new(
         Arc::new(database),
-        #[cfg(feature = "prometheus")]
         Some(Arc::new(cdk_prometheus::CdkMetrics)),
     );
+    #[cfg(not(feature = "prometheus"))]
+    let mut mint_builder = MintBuilder::new(Arc::new(database), None);
 
     mint_builder
         .add_payment_processor(
