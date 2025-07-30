@@ -18,7 +18,10 @@ use bip39::Mnemonic;
 // internal crate modules
 use cdk::cdk_database::{self, MintDatabase, MintKeysDatabase};
 use cdk::cdk_payment;
-use cdk::cdk_payment::{MetricsMintPayment, MintPayment, PrometheusMetricsCollector};
+use cdk::cdk_payment::{ MintPayment};
+#[cfg(feature = "prometheus")]
+use cdk::cdk_payment::{ MetricsMintPayment, PrometheusMetricsCollector};
+
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 #[cfg(any(
     feature = "cln",

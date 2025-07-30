@@ -34,7 +34,7 @@ where
     let mut mint_builder = MintBuilder::new(
         Arc::new(database),
         #[cfg(feature = "prometheus")]
-        Arc::new(cdk_prometheus::CdkMetrics),
+        Some(Arc::new(cdk_prometheus::CdkMetrics)),
     );
 
     mint_builder

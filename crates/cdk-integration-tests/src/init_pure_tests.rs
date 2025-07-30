@@ -244,7 +244,7 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
     let mut mint_builder = MintBuilder::new(
         localstore.clone(),
         #[cfg(feature = "prometheus")]
-        Arc::new(cdk_prometheus::CdkMetrics),
+        Some(Arc::new(cdk_prometheus::CdkMetrics)),
     );
 
     let fee_reserve = FeeReserve {
