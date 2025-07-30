@@ -47,7 +47,9 @@ use cdk_mintd::env_vars::ENV_WORK_DIR;
 use cdk_mintd::setup::LnBackendSetup;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus;
+#[cfg(feature = "prometheus")]
 use cdk_prometheus::metrics;
+#[cfg(feature = "prometheus")]
 use cdk_prometheus::prometheus::proto::Metric;
 #[cfg(feature = "auth")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;

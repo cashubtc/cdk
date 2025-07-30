@@ -702,7 +702,7 @@ where
         let collector = Arc::new(PrometheusMetricsCollector::new(metrics));
         Self::new(inner, collector)
     }
-
+    #[cfg(not(feature = "prometheus"))]
     /// Create a metrics wrapper with no-op metrics collector (no metrics collection)
     pub fn with_noop(inner: T) -> Self {
         let collector = Arc::new(NoOpMetricsCollector);
