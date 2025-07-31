@@ -92,7 +92,7 @@ pub async fn pay_request(
         )
         .await?;
 
-    let token = matching_wallet.send(prepared_send, None).await?;
+    let token = prepared_send.confirm(None).await?;
 
     // We need the keysets information to properly convert from token proof to proof
     let keysets_info = match matching_wallet

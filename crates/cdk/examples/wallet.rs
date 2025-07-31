@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Send the token
     let prepared_send = wallet.prepare_send(amount, SendOptions::default()).await?;
-    let token = wallet.send(prepared_send, None).await?;
+    let token = prepared_send.confirm(None).await?;
 
     println!("{}", token);
 
