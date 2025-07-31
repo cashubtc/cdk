@@ -168,7 +168,15 @@ async fn setup_sqlite_database(
     _password: Option<String>,
 ) -> Result<Arc<MintSqliteDatabase>> {
     let sql_db_path = work_dir.join("cdk-mintd.sqlite");
+
+    #[cfg(not(feature = "sqlcipher"))]
     let db = MintSqliteDatabase::new(&sql_db_path).await?;
+    #[cfg(feature = "sqlcipher")]
+    let db = {
+        // Get password from command line arguments for sqlcipher
+        MintSqliteDatabase::new((sql_db_path, _password.unwrap())).await?
+    };
+
     Ok(Arc::new(db))
 }
 
