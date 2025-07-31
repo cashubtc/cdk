@@ -1,16 +1,33 @@
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cdk_sql_common::pool::{self, Pool, ResourceManager};
+use cdk_sql_common::pool::{self, ResourceManager};
 use cdk_sql_common::value::Value;
 use rusqlite::Connection;
+
+use crate::async_sqlite;
 
 /// The config need to create a new SQLite connection
 #[derive(Clone, Debug)]
 pub struct Config {
     path: Option<String>,
     password: Option<String>,
+}
+
+impl pool::Config for Config {
+    fn default_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+
+    fn max_size(&self) -> usize {
+        if self.password.is_none() {
+            1
+        } else {
+            20
+        }
+    }
 }
 
 /// Sqlite connection manager
@@ -20,7 +37,7 @@ pub struct SqliteConnectionManager;
 impl ResourceManager for SqliteConnectionManager {
     type Config = Config;
 
-    type Resource = Connection;
+    type Resource = async_sqlite::AsyncSqlite;
 
     type Error = rusqlite::Error;
 
@@ -52,35 +69,58 @@ impl ResourceManager for SqliteConnectionManager {
 
         conn.busy_timeout(Duration::from_secs(10))?;
 
-        Ok(conn)
+        Ok(async_sqlite::AsyncSqlite::new(conn))
     }
 }
 
-/// Create a configured rusqlite connection to a SQLite database.
-/// For SQLCipher support, enable the "sqlcipher" feature and pass a password.
-pub fn create_sqlite_pool(
-    path: &str,
-    password: Option<String>,
-) -> Arc<Pool<SqliteConnectionManager>> {
-    let (config, max_size) = if path.contains(":memory:") {
-        (
+impl From<PathBuf> for Config {
+    fn from(path: PathBuf) -> Self {
+        path.to_str().unwrap_or_default().into()
+    }
+}
+
+impl From<(PathBuf, String)> for Config {
+    fn from((path, password): (PathBuf, String)) -> Self {
+        (path.to_str().unwrap_or_default(), password.as_str()).into()
+    }
+}
+
+impl From<&PathBuf> for Config {
+    fn from(path: &PathBuf) -> Self {
+        path.to_str().unwrap_or_default().into()
+    }
+}
+
+impl From<&str> for Config {
+    fn from(path: &str) -> Self {
+        if path.contains(":memory:") {
             Config {
                 path: None,
-                password,
-            },
-            1,
-        )
-    } else {
-        (
+                password: None,
+            }
+        } else {
             Config {
                 path: Some(path.to_owned()),
-                password,
-            },
-            20,
-        )
-    };
+                password: None,
+            }
+        }
+    }
+}
 
-    Pool::new(config, max_size, Duration::from_secs(10))
+impl From<(&str, &str)> for Config {
+    fn from((path, pass): (&str, &str)) -> Self {
+        if path.contains(":memory:") {
+            Config {
+                path: None,
+                password: Some(pass.to_owned()),
+            }
+        } else {
+            Config {
+                path: Some(path.to_owned()),
+                password: Some(pass.to_owned()),
+            }
+        }
+    }
 }
 
 /// Convert cdk_sql_common::value::Value to rusqlite Value

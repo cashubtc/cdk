@@ -10,7 +10,10 @@ use std::time::Duration;
 
 /// Pool error
 #[derive(thiserror::Error, Debug)]
-pub enum Error<E> {
+pub enum Error<E>
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
     /// Mutex Poison Error
     #[error("Internal: PoisonError")]
     Poison,
@@ -24,16 +27,25 @@ pub enum Error<E> {
     Resource(#[from] E),
 }
 
+/// Configuration
+pub trait Config: Clone + Debug + Send + Sync {
+    /// Max resource sizes
+    fn max_size(&self) -> usize;
+
+    /// Default timeout
+    fn default_timeout(&self) -> Duration;
+}
+
 /// Trait to manage resources
 pub trait ResourceManager: Debug {
     /// The resource to be pooled
     type Resource: Debug;
 
     /// The configuration that is needed in order to create the resource
-    type Config: Clone + Debug;
+    type Config: Config;
 
     /// The error the resource may return when creating a new instance
-    type Error: Debug;
+    type Error: Debug + std::error::Error + Send + Sync + 'static;
 
     /// Creates a new resource with a given config.
     ///
@@ -70,6 +82,15 @@ where
 {
     resource: Option<(Arc<AtomicBool>, RM::Resource)>,
     pool: Arc<Pool<RM>>,
+}
+
+impl<RM> Debug for PooledResource<RM>
+where
+    RM: ResourceManager,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Resource: {:?}", self.resource)
+    }
 }
 
 impl<RM> Drop for PooledResource<RM>
@@ -113,14 +134,14 @@ where
     RM: ResourceManager,
 {
     /// Creates a new pool
-    pub fn new(config: RM::Config, max_size: usize, default_timeout: Duration) -> Arc<Self> {
+    pub fn new(config: RM::Config) -> Arc<Self> {
         Arc::new(Self {
+            default_timeout: config.default_timeout(),
+            max_size: config.max_size(),
             config,
             queue: Default::default(),
             in_use: Default::default(),
             waiter: Default::default(),
-            default_timeout,
-            max_size,
         })
     }
 

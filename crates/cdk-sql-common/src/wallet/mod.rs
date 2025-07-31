@@ -1,7 +1,9 @@
 //! SQLite Wallet Database
 
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::common::ProofInfo;
@@ -17,7 +19,8 @@ use cdk_common::{
 use tracing::instrument;
 
 use crate::common::migrate;
-use crate::database::DatabaseExecutor;
+use crate::database::{ConnectionWithTransaction, DatabaseConnector, DatabaseExecutor};
+use crate::pool::{Pool, PooledResource, ResourceManager};
 use crate::stmt::{query, Column};
 use crate::{
     column_as_binary, column_as_nullable_binary, column_as_nullable_number,
@@ -29,36 +32,49 @@ mod migrations;
 
 /// Wallet SQLite Database
 #[derive(Debug, Clone)]
-pub struct SQLWalletDatabase<T>
+pub struct SQLWalletDatabase<DB, RM, C, E>
 where
-    T: DatabaseExecutor,
+    DB: DatabaseConnector,
+    RM: ResourceManager<Resource = DB, Config = C, Error = E>,
+    C: Debug + Clone + Send + Sync,
+    E: Debug + std::error::Error + Send + Sync + 'static,
 {
-    db: T,
+    pool: Arc<Pool<RM>>,
 }
 
-impl<DB> SQLWalletDatabase<DB>
+impl<DB, RM, C, E> SQLWalletDatabase<DB, RM, C, E>
 where
-    DB: DatabaseExecutor,
+    DB: DatabaseConnector + 'static,
+    RM: ResourceManager<Resource = DB, Config = C, Error = E> + 'static,
+    C: Debug + Clone + Send + Sync,
+    E: Debug + std::error::Error + Send + Sync + 'static,
 {
     /// Creates a new instance
     pub async fn new<X>(db: X) -> Result<Self, Error>
     where
-        X: Into<DB>,
+        X: Into<RM::Config>,
     {
-        let db = db.into();
-        Self::migrate(&db).await?;
-        Ok(Self { db })
+        let pool = Pool::new(db.into());
+        Self::migrate(pool.get().map_err(|e| Error::Database(Box::new(e)))?).await?;
+
+        Ok(Self { pool })
     }
 
     /// Migrate [`WalletSqliteDatabase`]
-    async fn migrate(conn: &DB) -> Result<(), Error> {
-        migrate(conn, DB::name(), migrations::MIGRATIONS).await?;
+    async fn migrate(conn: PooledResource<RM>) -> Result<(), Error> {
+        let tx = ConnectionWithTransaction::new(conn).await?;
+        migrate(&tx, DB::name(), migrations::MIGRATIONS).await?;
         // Update any existing keys with missing keyset_u32 values
-        Self::add_keyset_u32(conn).await?;
+        Self::add_keyset_u32(&tx).await?;
+        tx.commit().await?;
+
         Ok(())
     }
 
-    async fn add_keyset_u32(conn: &DB) -> Result<(), Error> {
+    async fn add_keyset_u32<T>(conn: &T) -> Result<(), Error>
+    where
+        T: DatabaseExecutor,
+    {
         // First get the keysets where keyset_u32 on key is null
         let keys_without_u32: Vec<Vec<Column>> = query(
             r#"
@@ -126,14 +142,19 @@ where
 }
 
 #[async_trait]
-impl<T> WalletDatabase for SQLWalletDatabase<T>
+impl<DB, RM, C, E> WalletDatabase for SQLWalletDatabase<DB, RM, C, E>
 where
-    T: DatabaseExecutor,
+    DB: DatabaseConnector + 'static,
+    RM: ResourceManager<Resource = DB, Config = C, Error = E> + 'static,
+    C: Debug + Clone + Send + Sync,
+    E: Debug + std::error::Error + Send + Sync + 'static,
 {
     type Err = database::Error;
 
     #[instrument(skip(self))]
     async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
         Ok(query(
             r#"
               SELECT
@@ -149,7 +170,7 @@ where
                   melt_quote
               "#,
         )?
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .map(sql_row_to_melt_quote)
@@ -212,6 +233,8 @@ where
             ),
         };
 
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
         query(
             r#"
 INSERT INTO mint
@@ -253,7 +276,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
         .bind("motd", motd)
         .bind("mint_time", time.map(|v| v as i64))
         .bind("tos_url", tos_url)
-        .execute(&self.db)
+        .execute(&*conn)
         .await?;
 
         Ok(())
@@ -261,9 +284,11 @@ ON CONFLICT(mint_url) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
         query(r#"DELETE FROM mint WHERE mint_url=:mint_url"#)?
             .bind("mint_url", mint_url.to_string())
-            .execute(&self.db)
+            .execute(&*conn)
             .await?;
 
         Ok(())
@@ -271,6 +296,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -292,7 +318,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
             "#,
         )?
         .bind("mint_url", mint_url.to_string())
-        .fetch_one(&self.db)
+        .fetch_one(&*conn)
         .await?
         .map(sql_row_to_mint_info)
         .transpose()?)
@@ -300,6 +326,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
                 SELECT
@@ -320,7 +347,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
                     mint
                 "#,
         )?
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .map(|mut row| {
@@ -340,6 +367,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
         old_mint_url: MintUrl,
         new_mint_url: MintUrl,
     ) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let tables = ["mint_quote", "proof"];
 
         for table in &tables {
@@ -352,7 +380,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
             ))?
             .bind("new_mint_url", new_mint_url.to_string())
             .bind("old_mint_url", old_mint_url.to_string())
-            .execute(&self.db)
+            .execute(&*conn)
             .await?;
         }
 
@@ -365,6 +393,8 @@ ON CONFLICT(mint_url) DO UPDATE SET
         mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
     ) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
         for keyset in keysets {
             query(
                 r#"
@@ -384,7 +414,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
             .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
             .bind("final_expiry", keyset.final_expiry.map(|v| v as i64))
             .bind("keyset_u32", u32::from(keyset.id))
-            .execute(&self.db)
+            .execute(&*conn)
             .await?;
         }
 
@@ -396,6 +426,8 @@ ON CONFLICT(mint_url) DO UPDATE SET
         &self,
         mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
         let keysets = query(
             r#"
             SELECT
@@ -410,7 +442,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
             "#,
         )?
         .bind("mint_url", mint_url.to_string())
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .map(sql_row_to_keyset)
@@ -424,6 +456,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -438,7 +471,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
             "#,
         )?
         .bind("id", keyset_id.to_string())
-        .fetch_one(&self.db)
+        .fetch_one(&*conn)
         .await?
         .map(sql_row_to_keyset)
         .transpose()?)
@@ -446,6 +479,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
 
     #[instrument(skip_all)]
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         query(
             r#"
 INSERT INTO mint_quote
@@ -477,13 +511,14 @@ ON CONFLICT(id) DO UPDATE SET
         .bind("payment_method", quote.payment_method.to_string())
         .bind("amount_issued", quote.amount_issued.to_i64())
         .bind("amount_paid", quote.amount_paid.to_i64())
-        .execute(&self.db).await?;
+        .execute(&*conn).await?;
 
         Ok(())
     }
 
     #[instrument(skip(self))]
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -505,7 +540,7 @@ ON CONFLICT(id) DO UPDATE SET
             "#,
         )?
         .bind("id", quote_id.to_string())
-        .fetch_one(&self.db)
+        .fetch_one(&*conn)
         .await?
         .map(sql_row_to_mint_quote)
         .transpose()?)
@@ -513,6 +548,7 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -528,7 +564,7 @@ ON CONFLICT(id) DO UPDATE SET
                 mint_quote
             "#,
         )?
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .map(sql_row_to_mint_quote)
@@ -537,9 +573,10 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         query(r#"DELETE FROM mint_quote WHERE id=:id"#)?
             .bind("id", quote_id.to_string())
-            .execute(&self.db)
+            .execute(&*conn)
             .await?;
 
         Ok(())
@@ -547,6 +584,7 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip_all)]
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         query(
             r#"
 INSERT INTO melt_quote
@@ -570,7 +608,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind("fee_reserve", u64::from(quote.fee_reserve) as i64)
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry as i64)
-        .execute(&self.db)
+        .execute(&*conn)
         .await?;
 
         Ok(())
@@ -578,6 +616,7 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -596,7 +635,7 @@ ON CONFLICT(id) DO UPDATE SET
             "#,
         )?
         .bind("id", quote_id.to_owned())
-        .fetch_one(&self.db)
+        .fetch_one(&*conn)
         .await?
         .map(sql_row_to_melt_quote)
         .transpose()?)
@@ -604,9 +643,10 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         query(r#"DELETE FROM melt_quote WHERE id=:id"#)?
             .bind("id", quote_id.to_owned())
-            .execute(&self.db)
+            .execute(&*conn)
             .await?;
 
         Ok(())
@@ -614,6 +654,8 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip_all)]
     async fn add_keys(&self, keyset: KeySet) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
         // Recompute ID for verification
         keyset.verify_id()?;
 
@@ -631,7 +673,7 @@ ON CONFLICT(id) DO UPDATE SET
             serde_json::to_string(&keyset.keys).map_err(Error::from)?,
         )
         .bind("keyset_u32", u32::from(keyset.id))
-        .execute(&self.db)
+        .execute(&*conn)
         .await?;
 
         Ok(())
@@ -639,6 +681,7 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -648,7 +691,7 @@ ON CONFLICT(id) DO UPDATE SET
             "#,
         )?
         .bind("id", keyset_id.to_string())
-        .pluck(&self.db)
+        .pluck(&*conn)
         .await?
         .map(|keys| {
             let keys = column_as_string!(keys);
@@ -659,9 +702,10 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn remove_keys(&self, id: &Id) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         query(r#"DELETE FROM key WHERE id = :id"#)?
             .bind("id", id.to_string())
-            .pluck(&self.db)
+            .pluck(&*conn)
             .await?;
 
         Ok(())
@@ -672,6 +716,10 @@ ON CONFLICT(id) DO UPDATE SET
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        let tx = ConnectionWithTransaction::new(conn).await?;
+
         // TODO: Use a transaction for all these operations
         for proof in added {
             query(
@@ -729,7 +777,7 @@ ON CONFLICT(id) DO UPDATE SET
                 "dleq_r",
                 proof.proof.dleq.as_ref().map(|dleq| dleq.r.to_secret_bytes().to_vec()),
             )
-            .execute(&self.db).await?;
+            .execute(&tx).await?;
         }
 
         query(r#"DELETE FROM proof WHERE y IN (:ys)"#)?
@@ -737,8 +785,10 @@ ON CONFLICT(id) DO UPDATE SET
                 "ys",
                 removed_ys.iter().map(|y| y.to_bytes().to_vec()).collect(),
             )
-            .execute(&self.db)
+            .execute(&tx)
             .await?;
+
+        tx.commit().await?;
 
         Ok(())
     }
@@ -751,6 +801,7 @@ ON CONFLICT(id) DO UPDATE SET
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -770,7 +821,7 @@ ON CONFLICT(id) DO UPDATE SET
             FROM proof
         "#,
         )?
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .filter_map(|row| {
@@ -786,10 +837,11 @@ ON CONFLICT(id) DO UPDATE SET
     }
 
     async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         query("UPDATE proof SET state = :state WHERE y IN (:ys)")?
             .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
             .bind("state", state.to_string())
-            .execute(&self.db)
+            .execute(&*conn)
             .await?;
 
         Ok(())
@@ -797,6 +849,7 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         query(
             r#"
             UPDATE keyset
@@ -806,7 +859,7 @@ ON CONFLICT(id) DO UPDATE SET
         )?
         .bind("count", count)
         .bind("id", keyset_id.to_string())
-        .execute(&self.db)
+        .execute(&*conn)
         .await?;
 
         Ok(())
@@ -814,6 +867,7 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -825,7 +879,7 @@ ON CONFLICT(id) DO UPDATE SET
             "#,
         )?
         .bind("id", keyset_id.to_string())
-        .pluck(&self.db)
+        .pluck(&*conn)
         .await?
         .map(|n| Ok::<_, Error>(column_as_number!(n)))
         .transpose()?)
@@ -833,6 +887,7 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mint_url = transaction.mint_url.to_string();
         let direction = transaction.direction.to_string();
         let unit = transaction.unit.to_string();
@@ -876,7 +931,7 @@ ON CONFLICT(id) DO UPDATE SET
             "metadata",
             serde_json::to_string(&transaction.metadata).map_err(Error::from)?,
         )
-        .execute(&self.db)
+        .execute(&*conn)
         .await?;
 
         Ok(())
@@ -887,6 +942,7 @@ ON CONFLICT(id) DO UPDATE SET
         &self,
         transaction_id: TransactionId,
     ) -> Result<Option<Transaction>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -906,7 +962,7 @@ ON CONFLICT(id) DO UPDATE SET
             "#,
         )?
         .bind("id", transaction_id.as_slice().to_vec())
-        .fetch_one(&self.db)
+        .fetch_one(&*conn)
         .await?
         .map(sql_row_to_transaction)
         .transpose()?)
@@ -919,6 +975,8 @@ ON CONFLICT(id) DO UPDATE SET
         direction: Option<TransactionDirection>,
         unit: Option<CurrencyUnit>,
     ) -> Result<Vec<Transaction>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
         Ok(query(
             r#"
             SELECT
@@ -935,7 +993,7 @@ ON CONFLICT(id) DO UPDATE SET
                 transactions
             "#,
         )?
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .filter_map(|row| {
@@ -952,9 +1010,11 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
         query(r#"DELETE FROM transactions WHERE id=:id"#)?
             .bind("id", transaction_id.as_slice().to_vec())
-            .execute(&self.db)
+            .execute(&*conn)
             .await?;
 
         Ok(())
