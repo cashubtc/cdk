@@ -42,7 +42,7 @@ impl Wallet {
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
 
-        let keys = self.fetch_keyset_keys(active_keyset_id).await?;
+        let keys = self.load_keyset_keys(active_keyset_id).await?;
 
         let mut proofs = proofs;
 
@@ -70,7 +70,7 @@ impl Wallet {
         for proof in &mut proofs {
             // Verify that proof DLEQ is valid
             if proof.dleq.is_some() {
-                let keys = self.fetch_keyset_keys(proof.keyset_id).await?;
+                let keys = self.load_keyset_keys(proof.keyset_id).await?;
                 let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
                 proof.verify_dleq(key)?;
             }

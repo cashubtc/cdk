@@ -21,7 +21,7 @@ use tracing::instrument;
 
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
-use crate::wallet::migrations::migrate_01_to_02;
+use crate::wallet::migrations::{migrate_01_to_02, migrate_02_to_03};
 
 mod migrations;
 
@@ -44,7 +44,9 @@ const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_
 // <Transaction_id, Transaction>
 const TRANSACTIONS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("transactions");
 
-const DATABASE_VERSION: u32 = 2;
+const KEYSET_U32_MAPPING: TableDefinition<u32, &str> = TableDefinition::new("keyset_u32_mapping");
+
+const DATABASE_VERSION: u32 = 3;
 
 /// Wallet Redb Database
 #[derive(Debug, Clone)]
@@ -88,6 +90,10 @@ impl WalletRedbDatabase {
 
                             if current_file_version == 1 {
                                 current_file_version = migrate_01_to_02(Arc::clone(&db))?;
+                            }
+
+                            if current_file_version == 2 {
+                                current_file_version = migrate_02_to_03(Arc::clone(&db))?;
                             }
 
                             if current_file_version != DATABASE_VERSION {
@@ -136,6 +142,7 @@ impl WalletRedbDatabase {
                         let _ = write_txn.open_table(PROOFS_TABLE)?;
                         let _ = write_txn.open_table(KEYSET_COUNTER)?;
                         let _ = write_txn.open_table(TRANSACTIONS_TABLE)?;
+                        let _ = write_txn.open_table(KEYSET_U32_MAPPING)?;
                         table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
                     }
 
@@ -290,19 +297,63 @@ impl WalletDatabase for WalletRedbDatabase {
     ) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
+        let mut existing_u32 = false;
+
         {
             let mut table = write_txn
                 .open_multimap_table(MINT_KEYSETS_TABLE)
                 .map_err(Error::from)?;
             let mut keysets_table = write_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
+            let mut u32_table = write_txn
+                .open_table(KEYSET_U32_MAPPING)
+                .map_err(Error::from)?;
 
             for keyset in keysets {
-                table
-                    .insert(
-                        mint_url.to_string().as_str(),
-                        keyset.id.to_bytes().as_slice(),
-                    )
+                // Check if keyset already exists
+                let existing_keyset = {
+                    let existing_keyset = keysets_table
+                        .get(keyset.id.to_bytes().as_slice())
+                        .map_err(Error::from)?;
+
+                    existing_keyset.map(|r| r.value().to_string())
+                };
+
+                let existing = u32_table
+                    .insert(u32::from(keyset.id), keyset.id.to_string().as_str())
                     .map_err(Error::from)?;
+
+                match existing {
+                    None => existing_u32 = false,
+                    Some(id) => {
+                        let id = Id::from_str(id.value())?;
+
+                        if id == keyset.id {
+                            existing_u32 = false;
+                        } else {
+                            println!("Breaking here");
+                            existing_u32 = true;
+                            break;
+                        }
+                    }
+                }
+
+                let keyset = if let Some(existing_keyset) = existing_keyset {
+                    let mut existing_keyset: KeySetInfo = serde_json::from_str(&existing_keyset)?;
+
+                    existing_keyset.active = keyset.active;
+                    existing_keyset.input_fee_ppk = keyset.input_fee_ppk;
+
+                    existing_keyset
+                } else {
+                    table
+                        .insert(
+                            mint_url.to_string().as_str(),
+                            keyset.id.to_bytes().as_slice(),
+                        )
+                        .map_err(Error::from)?;
+
+                    keyset
+                };
 
                 keysets_table
                     .insert(
@@ -314,6 +365,14 @@ impl WalletDatabase for WalletRedbDatabase {
                     .map_err(Error::from)?;
             }
         }
+
+        if existing_u32 {
+            tracing::warn!("Keyset already exists for keyset id");
+            write_txn.abort().map_err(Error::from)?;
+
+            return Err(database::Error::Duplicate);
+        }
+
         write_txn.commit().map_err(Error::from)?;
 
         Ok(())
@@ -514,16 +573,45 @@ impl WalletDatabase for WalletRedbDatabase {
 
         keyset.verify_id()?;
 
+        let existing_keys;
+        let existing_u32;
+
         {
             let mut table = write_txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
-            table
+
+            existing_keys = table
                 .insert(
                     keyset.id.to_string().as_str(),
                     serde_json::to_string(&keyset.keys)
                         .map_err(Error::from)?
                         .as_str(),
                 )
+                .map_err(Error::from)?
+                .is_some();
+
+            let mut table = write_txn
+                .open_table(KEYSET_U32_MAPPING)
                 .map_err(Error::from)?;
+
+            let existing = table
+                .insert(u32::from(keyset.id), keyset.id.to_string().as_str())
+                .map_err(Error::from)?;
+
+            match existing {
+                None => existing_u32 = false,
+                Some(id) => {
+                    let id = Id::from_str(id.value())?;
+
+                    existing_u32 = id != keyset.id;
+                }
+            }
+        }
+
+        if existing_keys || existing_u32 {
+            tracing::warn!("Keys already exist for keyset id");
+            write_txn.abort().map_err(Error::from)?;
+
+            return Err(database::Error::Duplicate);
         }
 
         write_txn.commit().map_err(Error::from)?;

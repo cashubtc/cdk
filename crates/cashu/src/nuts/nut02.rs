@@ -445,18 +445,17 @@ pub struct KeySet {
 impl KeySet {
     /// Verify the keyset id matches keys
     pub fn verify_id(&self) -> Result<(), Error> {
-        match self.id.version {
-            KeySetVersion::Version00 => {
-                let keys_id: Id = Id::v1_from_keys(&self.keys);
+        let keys_id = match self.id.version {
+            KeySetVersion::Version00 => Id::v1_from_keys(&self.keys),
+            KeySetVersion::Version01 => Id::v2_from_data(&self.keys, &self.unit, self.final_expiry),
+        };
 
-                ensure_cdk!(keys_id == self.id, Error::IncorrectKeysetId);
-            }
-            KeySetVersion::Version01 => {
-                let keys_id: Id = Id::v2_from_data(&self.keys, &self.unit, self.final_expiry);
+        ensure_cdk!(
+            u32::from(keys_id) == u32::from(self.id),
+            Error::IncorrectKeysetId
+        );
 
-                ensure_cdk!(keys_id == self.id, Error::IncorrectKeysetId);
-            }
-        }
+        ensure_cdk!(keys_id == self.id, Error::IncorrectKeysetId);
 
         Ok(())
     }

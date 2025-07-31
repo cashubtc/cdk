@@ -264,12 +264,12 @@ impl Wallet {
 
         let mint_res = self.client.post_mint(request).await?;
 
-        let keys = self.fetch_keyset_keys(active_keyset_id).await?;
+        let keys = self.load_keyset_keys(active_keyset_id).await?;
 
         // Verify the signature DLEQ is valid
         {
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
-                let keys = self.fetch_keyset_keys(sig.keyset_id).await?;
+                let keys = self.load_keyset_keys(sig.keyset_id).await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
                 match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
                     Ok(_) | Err(nut12::Error::MissingDleqProof) => (),

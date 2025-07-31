@@ -383,7 +383,7 @@ impl Wallet {
         let mut restored_value = Amount::ZERO;
 
         for keyset in keysets {
-            let keys = self.fetch_keyset_keys(keyset.id).await?;
+            let keys = self.load_keyset_keys(keyset.id).await?;
             let mut empty_batch = 0;
             let mut start_counter = 0;
 
@@ -632,7 +632,7 @@ impl Wallet {
             let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
                 Some(keys) => keys.amount_key(proof.amount),
                 None => {
-                    let keys = self.fetch_keyset_keys(proof.keyset_id).await?;
+                    let keys = self.load_keyset_keys(proof.keyset_id).await?;
 
                     let key = keys.amount_key(proof.amount);
                     keys_cache.insert(proof.keyset_id, keys);
