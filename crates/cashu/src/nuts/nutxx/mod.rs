@@ -2,15 +2,17 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/xx.md>
 
+use cairo_air::air::PubMemoryValue;
 use cairo_air::verifier::{verify_cairo, CairoVerificationError};
 use cairo_air::{CairoProof, PreProcessedTraceVariant};
 use serde::{Deserialize, Serialize};
-// use starknet_types_core::felt::Felt;
+use starknet_types_core::felt::Felt;
 use stwo_cairo_prover::stwo_prover::core::fri::FriConfig;
 use stwo_cairo_prover::stwo_prover::core::pcs::PcsConfig;
 use stwo_cairo_prover::stwo_prover::core::vcs::blake2_merkle::{
     Blake2sMerkleChannel, Blake2sMerkleHasher,
 };
+use stwo_cairo_prover::stwo_prover::core::vcs::blake3_hash::{Blake3Hash, Blake3Hasher};
 use thiserror::Error;
 
 use super::nut00::Witness;
@@ -27,6 +29,12 @@ pub enum Error {
     /// Cairo verification error
     #[error(transparent)]
     CairoVerification(CairoVerificationError),
+    /// Program hash verification error
+    #[error("Program hash from proof does not match program hash from secret")]
+    ProgramHashVerification,
+    /// Output verification error
+    #[error("Output from proof does not match output from secret")]
+    OutputVerification,
     /// NUT11 Error
     #[error(transparent)]
     NUT11(#[from] super::nut11::Error),
@@ -69,12 +77,29 @@ fn secure_pcs_config() -> PcsConfig {
     }
 }
 
-impl Proof {
-    // /// prove cairo program // TODO: vincent: I dont think this is the right place for this
-    // pub fn prove_cairo(&self) -> Result<CairoWitness, Error> {
-    //     Err(Error::NotImplemented)
-    // }
+fn pmv_to_felt(pmv: &PubMemoryValue) -> Felt {
+    let (_id, value) = pmv;
+    let mut le_bytes = [0u8; 32];
+    for (i, &v) in value.iter().enumerate() {
+        let start = i * 4;
+        le_bytes[start..start + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    Felt::from_bytes_le(&le_bytes)
+}
 
+/// TODO: use something more secure for hashing multiple values,
+/// like `poseidon_hash_many` on the Felt values directly
+fn hash_bytecode(bytecode: &Vec<Felt>) -> Blake3Hash {
+    let mut hasher = Blake3Hasher::default();
+    for felt in bytecode {
+        for byte in felt.to_bytes_le().iter() {
+            hasher.update(&[*byte]);
+        }
+    }
+    hasher.finalize()
+}
+
+impl Proof {
     /// Verify Cairo
     pub fn verify_cairo(&self) -> Result<(), Error> {
         let secret: Nut10Secret = self.secret.clone().try_into()?;
@@ -97,13 +122,19 @@ impl Proof {
             return Err(Error::IncorrectSecretKind);
         }
 
-        // TODO: verify program (secret)
-
         let cairo_proof =
             match serde_json::from_str::<CairoProof<Blake2sMerkleHasher>>(&cairo_witness.proof) {
                 Ok(proof) => proof,
                 Err(e) => return Err(Error::Serde(e)),
             };
+
+        let program: &Vec<PubMemoryValue> = &cairo_proof.claim.public_data.public_memory.program;
+        let bytecode = program.iter().map(|v| pmv_to_felt(v)).collect::<Vec<_>>();
+        let program_hash = hash_bytecode(&bytecode);
+
+        if program_hash.to_string() != secret.secret_data().data() {
+            return Err(Error::ProgramHashVerification);
+        }
 
         let preprocessed_trace = PreProcessedTraceVariant::CanonicalWithoutPedersen; // TODO: give option
         let result = verify_cairo::<Blake2sMerkleChannel>(
@@ -123,11 +154,45 @@ mod tests {
     use std::convert::TryInto;
     use std::str::FromStr;
 
+    use serde::de::{self, Deserializer};
     use starknet_types_core::felt::Felt;
 
     use super::*;
     use crate::secret::Secret;
     use crate::{Amount, Conditions, Id, Kind, Nut10Secret, PublicKey, SecretKey, SigFlag};
+
+    #[derive(Deserialize)]
+    struct Executable {
+        program: Program,
+    }
+
+    #[derive(Deserialize)]
+    struct Program {
+        #[serde(deserialize_with = "deserialize_felt_vec")]
+        bytecode: Vec<Felt>,
+    }
+
+    fn deserialize_felt_vec<'de, D>(deserializer: D) -> Result<Vec<Felt>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let hex_strings: Vec<String> = Vec::deserialize(deserializer)?;
+        hex_strings
+            .into_iter()
+            .map(|s| {
+                // TODO: this is a hack because `Felt::from_hex` doesn't work with negative numbers
+                let is_negative = s.starts_with('-');
+                let normalized_hex = if is_negative {
+                    s.trim_start_matches('-').to_string()
+                } else {
+                    s.clone()
+                };
+                let felt = Felt::from_hex(&normalized_hex).map_err(de::Error::custom)?;
+                let corrected_felt = if is_negative { -felt } else { felt };
+                Ok(corrected_felt)
+            })
+            .collect()
+    }
 
     #[test]
     fn test_verify() {
@@ -148,9 +213,14 @@ mod tests {
         //     num_sigs_refund: None,
         // };
 
+        // hash the program bytecode
+        let executable_json = include_str!("example_executable.json");
+        let executable: Executable = serde_json::from_str(executable_json).unwrap();
+        let program_hash = hash_bytecode(&executable.program.bytecode);
+
         let secret: Secret = Nut10Secret::new(
             Kind::Cairo,
-            "PROGRAM_HASH_TODO".to_string(),
+            program_hash.to_string(),
             // Some(conditions), // TODO: adapt conditions to Cairo
             None::<Conditions>,
         )
