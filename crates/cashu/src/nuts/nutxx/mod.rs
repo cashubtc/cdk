@@ -16,7 +16,8 @@ use stwo_cairo_prover::stwo_prover::core::vcs::blake3_hash::{Blake3Hash, Blake3H
 use thiserror::Error;
 
 use super::nut00::Witness;
-use super::{Conditions, Nut10Secret, Proof};
+use super::{Nut10Secret, Proof};
+use crate::nut11::TagKind;
 
 pub mod serde_cairo_witness;
 
@@ -26,6 +27,9 @@ pub enum Error {
     /// Incorrect secret kind
     #[error("Secret is not a Cairo secret")]
     IncorrectSecretKind,
+    /// Incorrect witness kind
+    #[error("Witness is not a Cairo witness")]
+    IncorrectWitnessKind,
     /// Cairo verification error
     #[error(transparent)]
     CairoVerification(CairoVerificationError),
@@ -33,8 +37,8 @@ pub enum Error {
     #[error("Program hash from proof does not match program hash from secret")]
     ProgramHashVerification,
     /// Output verification error
-    #[error("Output from proof does not match output from secret")]
-    OutputVerification,
+    #[error("Output hash from proof ({0}) does not match output hash from secret ({1})")]
+    OutputHashVerification(String, String),
     /// NUT11 Error
     #[error(transparent)]
     NUT11(#[from] super::nut11::Error),
@@ -44,6 +48,56 @@ pub enum Error {
     /// Not implemented
     #[error("Not implemented")]
     NotImplemented,
+}
+
+/// Cairo spending conditions
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub struct Conditions {
+    /// Output of the program
+    #[serde(skip_serializing_if = "Option::is_none")]
+    // pub output: Option<Felt>,
+    pub output: Option<String>, // hash of the output
+}
+
+impl From<Conditions> for Vec<Vec<String>> {
+    fn from(conditions: Conditions) -> Vec<Vec<String>> {
+        let Conditions { output } = conditions;
+
+        let mut tags = Vec::new();
+
+        if let Some(output) = output {
+            tags.push(vec![
+                TagKind::Custom("program_output".to_string()).to_string(),
+                // output.to_hex_string(),
+                output.to_string(),
+            ]);
+        }
+        tags
+    }
+}
+
+impl TryFrom<Vec<Vec<String>>> for Conditions {
+    type Error = Error;
+    fn try_from(tags: Vec<Vec<String>>) -> Result<Conditions, Self::Error> {
+        let mut output = None;
+
+        for tag in tags {
+            if tag.len() < 2 {
+                continue;
+            }
+
+            let tag_kind = TagKind::from(tag[0].as_str());
+            match tag_kind {
+                TagKind::Custom(ref kind) if kind == "program_output" => {
+                    // output = Some(Felt::from_hex(&tag[1]).unwrap());
+                    output = Some(tag[1].clone());
+                }
+                _ => {}
+            }
+        }
+
+        Ok(Conditions { output })
+    }
 }
 
 /// Cairo Witness
@@ -89,7 +143,7 @@ fn pmv_to_felt(pmv: &PubMemoryValue) -> Felt {
 
 /// TODO: use something more secure for hashing multiple values,
 /// like `poseidon_hash_many` on the Felt values directly
-fn hash_bytecode(bytecode: &Vec<Felt>) -> Blake3Hash {
+fn hash_many_felt(bytecode: &Vec<Felt>) -> Blake3Hash {
     let mut hasher = Blake3Hasher::default();
     for felt in bytecode {
         for byte in felt.to_bytes_le().iter() {
@@ -99,24 +153,18 @@ fn hash_bytecode(bytecode: &Vec<Felt>) -> Blake3Hash {
     hasher.finalize()
 }
 
+fn hash_many_pmv(values: &Vec<PubMemoryValue>) -> Blake3Hash {
+    hash_many_felt(&values.iter().map(|v| pmv_to_felt(v)).collect::<Vec<_>>())
+}
+
 impl Proof {
     /// Verify Cairo
     pub fn verify_cairo(&self) -> Result<(), Error> {
         let secret: Nut10Secret = self.secret.clone().try_into()?;
         let cairo_witness = match &self.witness {
             Some(Witness::CairoWitness(witness)) => witness,
-            _ => return Err(Error::IncorrectSecretKind),
+            _ => return Err(Error::IncorrectWitnessKind),
         };
-
-        let conditions: Option<Conditions> = secret
-            .secret_data()
-            .tags()
-            .and_then(|c| c.clone().try_into().ok());
-
-        if let Some(_conditions) = conditions {
-            // TODO: additional conditions are not yet supported with Cairo
-            return Err(Error::NotImplemented);
-        }
 
         if secret.kind().ne(&super::Kind::Cairo) {
             return Err(Error::IncorrectSecretKind);
@@ -129,11 +177,40 @@ impl Proof {
             };
 
         let program: &Vec<PubMemoryValue> = &cairo_proof.claim.public_data.public_memory.program;
-        let bytecode = program.iter().map(|v| pmv_to_felt(v)).collect::<Vec<_>>();
-        let program_hash = hash_bytecode(&bytecode);
+        let program_hash = hash_many_pmv(program);
 
         if program_hash.to_string() != secret.secret_data().data() {
             return Err(Error::ProgramHashVerification);
+        }
+
+        let conditions: Option<Conditions> = secret
+            .secret_data()
+            .tags()
+            .and_then(|c| c.clone().try_into().ok());
+
+        if let Some(conditions) = conditions {
+            if let Some(output) = conditions.output {
+                // check if the output in the claim matches the output in the conditions
+                println!(
+                    "Output in claim : {:?}",
+                    cairo_proof
+                        .claim
+                        .public_data
+                        .public_memory
+                        .output
+                        .iter()
+                        .map(|v| (pmv_to_felt(v)).to_hex_string())
+                        .collect::<Vec<_>>()
+                );
+                let output_claim: Blake3Hash =
+                    hash_many_pmv(&cairo_proof.claim.public_data.public_memory.output);
+                if output_claim.to_string() != output {
+                    return Err(Error::OutputHashVerification(
+                        output_claim.to_string(),
+                        output,
+                    ));
+                }
+            }
         }
 
         let preprocessed_trace = PreProcessedTraceVariant::CanonicalWithoutPedersen; // TODO: give option
@@ -159,7 +236,7 @@ mod tests {
 
     use super::*;
     use crate::secret::Secret;
-    use crate::{Amount, Conditions, Id, Kind, Nut10Secret, PublicKey, SecretKey, SigFlag};
+    use crate::{Amount, Id, Kind, Nut10Secret, SecretKey};
 
     #[derive(Deserialize)]
     struct Executable {
@@ -204,28 +281,21 @@ mod tests {
                 .unwrap();
         let v_key = secret_key.public_key();
 
-        // let conditions = Conditions {
-        //     locktime: None,
-        //     pubkeys: None,
-        //     refund_keys: None,
-        //     num_sigs: None,
-        //     sig_flag: SigFlag::SigInputs,
-        //     num_sigs_refund: None,
-        // };
-
         // hash the program bytecode
         let executable_json = include_str!("example_executable.json");
         let executable: Executable = serde_json::from_str(executable_json).unwrap();
-        let program_hash = hash_bytecode(&executable.program.bytecode);
+        let program_hash = hash_many_felt(&executable.program.bytecode);
 
-        let secret: Secret = Nut10Secret::new(
-            Kind::Cairo,
-            program_hash.to_string(),
-            // Some(conditions), // TODO: adapt conditions to Cairo
-            None::<Conditions>,
-        )
-        .try_into()
-        .unwrap();
+        // specify output condition (0 -> not prime, 1 -> prime)
+        let output_condition = vec![Felt::from(1)]; // the example is on input 7, so output should be 1
+        let conditions = Conditions {
+            output: Some(hash_many_felt(&output_condition).to_string()),
+        };
+
+        let secret: Secret =
+            Nut10Secret::new(Kind::Cairo, program_hash.to_string(), Some(conditions))
+                .try_into()
+                .unwrap();
 
         let valid_proof: Proof = Proof {
             amount: Amount::ZERO,
@@ -245,26 +315,7 @@ mod tests {
     #[test]
     fn test_secret_ser() {
         // testing the serde serialization of the secret
-        let conditions = Conditions {
-            locktime: Some(99999),
-            pubkeys: Some(vec![
-                PublicKey::from_str(
-                    "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
-                )
-                .unwrap(),
-                PublicKey::from_str(
-                    "023192200a0cfd3867e48eb63b03ff599c7e46c8f4e41146b2d281173ca6c50c54",
-                )
-                .unwrap(),
-            ]),
-            refund_keys: Some(vec![PublicKey::from_str(
-                "033281c37677ea273eb7183b783067f5244933ef78d8c3f15b1a77cb246099c26e",
-            )
-            .unwrap()]),
-            num_sigs: Some(2),
-            sig_flag: SigFlag::SigAll,
-            num_sigs_refund: None,
-        };
+        let conditions = Conditions { output: None };
 
         let data = Felt::from_hex("0x1234567890abcdef").unwrap();
 
