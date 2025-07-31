@@ -11,6 +11,7 @@ use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::Bolt11Settings;
 #[cfg(feature = "auth")]
 use cdk_common::{nut21, nut22};
+#[cfg(feature = "prometheus")]
 use cdk_prometheus::CdkMetrics;
 use cdk_signatory::signatory::Signatory;
 
@@ -49,7 +50,7 @@ impl MintBuilder {
     /// New [`MintBuilder`]
     pub fn new(
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
-        metrics: Option<Arc<CdkMetrics>>,
+        #[cfg(feature = "prometheus")] metrics: Option<Arc<CdkMetrics>>,
     ) -> MintBuilder {
         let mint_info = MintInfo {
             nuts: Nuts::new()
