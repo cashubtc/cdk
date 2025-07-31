@@ -123,7 +123,7 @@ cargo build -p cdk-integration-tests --bin start_regtest
 cargo build --bin cdk-mintd
 
 echo "Starting regtest network (Bitcoin + Lightning nodes)..."
-cargo run --bin start_regtest &
+cargo run --bin start_regtest -- --enable-logging "$CDK_ITESTS_DIR" &
 export CDK_REGTEST_PID=$!
 
 # Create named pipe for progress tracking

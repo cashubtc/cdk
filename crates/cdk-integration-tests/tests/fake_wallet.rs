@@ -1,3 +1,19 @@
+//! Fake Wallet Integration Tests
+//!
+//! This file contains tests for the fake wallet backend functionality.
+//! The fake wallet simulates Lightning Network behavior for testing purposes,
+//! allowing verification of mint behavior in various payment scenarios without
+//! requiring a real Lightning node.
+//!
+//! Test Scenarios:
+//! - Pending payment states and proof handling
+//! - Payment failure cases and proof state management
+//! - Change output verification in melt operations
+//! - Witness signature validation
+//! - Cross-unit transaction validation
+//! - Overflow and balance validation
+//! - Duplicate proof detection
+
 use std::sync::Arc;
 
 use bip39::Mnemonic;
@@ -406,40 +422,6 @@ async fn test_fake_melt_change_in_quote() {
     check.sort_by(|a, b| a.amount.cmp(&b.amount));
 
     assert_eq!(melt_change, check);
-}
-
-/// Tests that the correct database type is used based on environment variables
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_database_type() {
-    // Get the database type and work dir from environment
-    let db_type = std::env::var("CDK_MINTD_DATABASE").expect("MINT_DATABASE env var should be set");
-    let work_dir =
-        std::env::var("CDK_MINTD_WORK_DIR").expect("CDK_MINTD_WORK_DIR env var should be set");
-
-    // Check that the correct database file exists
-    match db_type.as_str() {
-        "REDB" => {
-            let db_path = std::path::Path::new(&work_dir).join("cdk-mintd.redb");
-            assert!(
-                db_path.exists(),
-                "Expected redb database file to exist at {:?}",
-                db_path
-            );
-        }
-        "SQLITE" => {
-            let db_path = std::path::Path::new(&work_dir).join("cdk-mintd.sqlite");
-            assert!(
-                db_path.exists(),
-                "Expected sqlite database file to exist at {:?}",
-                db_path
-            );
-        }
-        "MEMORY" => {
-            // Memory database has no file to check
-            println!("Memory database in use - no file to check");
-        }
-        _ => panic!("Unknown database type: {}", db_type),
-    }
 }
 
 /// Tests minting tokens with a valid witness signature

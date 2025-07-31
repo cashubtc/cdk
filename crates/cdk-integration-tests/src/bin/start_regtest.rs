@@ -1,20 +1,33 @@
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Result};
-use cdk_integration_tests::init_regtest::{get_temp_dir, start_regtest_end};
+use anyhow::Result;
+use cdk_integration_tests::cli::{init_logging, CommonArgs};
+use cdk_integration_tests::init_regtest::start_regtest_end;
+use clap::Parser;
 use tokio::signal;
 use tokio::sync::{oneshot, Notify};
 use tokio::time::timeout;
-use tracing_subscriber::EnvFilter;
 
-fn signal_progress() {
-    let temp_dir = get_temp_dir();
+#[derive(Parser)]
+#[command(name = "start-regtest")]
+#[command(about = "Start regtest environment", long_about = None)]
+struct Args {
+    #[command(flatten)]
+    common: CommonArgs,
+
+    /// Working directory path
+    work_dir: String,
+}
+
+fn signal_progress(work_dir: &Path) {
     let mut pipe = OpenOptions::new()
         .write(true)
-        .open(temp_dir.join("progress_pipe"))
+        .open(work_dir.join("progress_pipe"))
         .expect("Failed to open pipe");
 
     pipe.write_all(b"checkpoint1\n")
@@ -23,24 +36,21 @@ fn signal_progress() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let default_filter = "debug";
+    let args = Args::parse();
 
-    let sqlx_filter = "sqlx=warn";
-    let hyper_filter = "hyper=warn";
-    let h2_filter = "h2=warn";
-    let rustls_filter = "rustls=warn";
+    // Initialize logging based on CLI arguments
+    init_logging(args.common.enable_logging, args.common.log_level);
 
-    let env_filter = EnvFilter::new(format!(
-        "{default_filter},{sqlx_filter},{hyper_filter},{h2_filter},{rustls_filter}"
-    ));
-
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    let temp_dir = PathBuf::from_str(&args.work_dir)?;
+    let temp_dir_clone = temp_dir.clone();
 
     let shutdown_regtest = Arc::new(Notify::new());
-    let shutdown_clone = shutdown_regtest.clone();
+    let shutdown_clone = Arc::clone(&shutdown_regtest);
+    let shutdown_clone_two = Arc::clone(&shutdown_regtest);
+
     let (tx, rx) = oneshot::channel();
     tokio::spawn(async move {
-        start_regtest_end(tx, shutdown_clone)
+        start_regtest_end(&temp_dir_clone, tx, shutdown_clone)
             .await
             .expect("Error starting regtest");
     });
@@ -48,15 +58,25 @@ async fn main() -> Result<()> {
     match timeout(Duration::from_secs(300), rx).await {
         Ok(_) => {
             tracing::info!("Regtest set up");
-            signal_progress();
+            signal_progress(&temp_dir);
         }
         Err(_) => {
             tracing::error!("regtest setup timed out after 5 minutes");
-            bail!("Could not set up regtest");
+            anyhow::bail!("Could not set up regtest");
         }
     }
 
-    signal::ctrl_c().await?;
+    let shutdown_future = async {
+        // Wait for Ctrl+C signal
+        signal::ctrl_c()
+            .await
+            .expect("failed to install CTRL+C handler");
+        tracing::info!("Shutdown signal received");
+        println!("\nReceived Ctrl+C, shutting down mints...");
+        shutdown_clone_two.notify_waiters();
+    };
+
+    shutdown_future.await;
 
     Ok(())
 }

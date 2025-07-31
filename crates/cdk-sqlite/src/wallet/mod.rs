@@ -306,4 +306,59 @@ mod tests {
         assert_eq!(retrieved_dleq.s.to_string(), s.to_string());
         assert_eq!(retrieved_dleq.r.to_string(), r.to_string());
     }
+
+    #[tokio::test]
+    async fn test_mint_quote_payment_method_read_and_write() {
+        use cdk_common::mint_url::MintUrl;
+        use cdk_common::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
+        use cdk_common::wallet::MintQuote;
+        use cdk_common::Amount;
+
+        // Create a temporary database
+        let path = std::env::temp_dir().to_path_buf().join(format!(
+            "cdk-test-migration-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+
+        #[cfg(feature = "sqlcipher")]
+        let db = WalletSqliteDatabase::new((path, "password".to_string()))
+            .await
+            .unwrap();
+
+        #[cfg(not(feature = "sqlcipher"))]
+        let db = WalletSqliteDatabase::new(path).await.unwrap();
+
+        // Test PaymentMethod variants
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        let payment_methods = vec![
+            PaymentMethod::Bolt11,
+            PaymentMethod::Bolt12,
+            PaymentMethod::Custom("custom".to_string()),
+        ];
+
+        for (i, payment_method) in payment_methods.iter().enumerate() {
+            let quote = MintQuote {
+                id: format!("test_quote_{}", i),
+                mint_url: mint_url.clone(),
+                amount: Some(Amount::from(100)),
+                unit: CurrencyUnit::Sat,
+                request: "test_request".to_string(),
+                state: MintQuoteState::Unpaid,
+                expiry: 1000000000,
+                secret_key: None,
+                payment_method: payment_method.clone(),
+                amount_issued: Amount::from(0),
+                amount_paid: Amount::from(0),
+            };
+
+            // Store the quote
+            db.add_mint_quote(quote.clone()).await.unwrap();
+
+            // Retrieve and verify
+            let retrieved = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
+            assert_eq!(retrieved.payment_method, *payment_method);
+            assert_eq!(retrieved.amount_issued, Amount::from(0));
+            assert_eq!(retrieved.amount_paid, Amount::from(0));
+        }
+    }
 }

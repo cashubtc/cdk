@@ -3,6 +3,11 @@
 //! These tests verify the interaction between mint and wallet components, simulating real-world usage scenarios.
 //! They test the complete flow of operations including wallet funding, token swapping, sending tokens between wallets,
 //! and other operations that require client-mint interaction.
+//!
+//! Test Environment:
+//! - Uses pure in-memory mint instances for fast execution
+//! - Tests run concurrently with multi-threaded tokio runtime
+//! - No external dependencies (Lightning nodes, databases) required
 
 use std::assert_eq;
 use std::collections::{HashMap, HashSet};
@@ -70,11 +75,8 @@ async fn test_swap_to_send() {
                 .expect("Failed to get ys")
         )
     );
-    let token = wallet_alice
-        .send(
-            prepared_send,
-            Some(SendMemo::for_token("test_swapt_to_send")),
-        )
+    let token = prepared_send
+        .confirm(Some(SendMemo::for_token("test_swapt_to_send")))
         .await
         .expect("Failed to send token");
     let keysets_info = wallet_alice.get_mint_keysets().await.unwrap();
