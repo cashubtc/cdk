@@ -42,8 +42,6 @@ use cdk_axum::cache::HttpCache;
 #[cfg(feature = "auth")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
-#[cfg(feature = "sqlcipher")]
-use clap::Parser;
 use cli::CLIArgs;
 use config::{DatabaseEngine, LnBackend};
 use env_vars::ENV_WORK_DIR;
@@ -85,11 +83,12 @@ fn expand_path(path: &str) -> Option<PathBuf> {
 async fn initial_setup(
     work_dir: &Path,
     settings: &config::Settings,
+    db_password: Option<String>,
 ) -> Result<(
     Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
 )> {
-    let (localstore, keystore) = setup_database(settings, work_dir).await?;
+    let (localstore, keystore) = setup_database(settings, work_dir, db_password).await?;
     Ok((localstore, keystore))
 }
 
@@ -145,17 +144,14 @@ pub fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<co
 async fn setup_database(
     settings: &config::Settings,
     work_dir: &Path,
+    db_password: Option<String>,
 ) -> Result<(
     Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
 )> {
     match settings.database.engine {
         DatabaseEngine::Sqlite => {
-            #[cfg(feature = "sqlcipher")]
-            let password = CLIArgs::parse().password;
-            #[cfg(not(feature = "sqlcipher"))]
-            let password = String::new();
-            let db = setup_sqlite_database(work_dir, Some(password)).await?;
+            let db = setup_sqlite_database(work_dir, db_password).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
             Ok((localstore, keystore))
@@ -439,6 +435,7 @@ async fn setup_authentication(
     settings: &config::Settings,
     work_dir: &Path,
     mut mint_builder: MintBuilder,
+    _password: Option<String>,
 ) -> Result<MintBuilder> {
     if let Some(auth_settings) = settings.auth.clone() {
         tracing::info!("Auth settings are defined. {:?}", auth_settings);
@@ -450,9 +447,9 @@ async fn setup_authentication(
                 #[cfg(not(feature = "sqlcipher"))]
                 let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
                 #[cfg(feature = "sqlcipher")]
-                let db = {
+                let sqlite_db = {
                     // Get password from command line arguments for sqlcipher
-                    MintAuthSqliteDatabase::new((sql_db_path, _password.unwrap())).await?
+                    MintSqliteAuthDatabase::new((sql_db_path, _password.unwrap())).await?
                 };
 
                 Arc::new(sqlite_db)
@@ -781,8 +778,12 @@ fn work_dir() -> Result<PathBuf> {
 /// 3. Applies additional custom configurations and authentication setup for the `MintBuilder`.
 /// 4. Constructs a `Mint` instance from the configured `MintBuilder`.
 /// 5. Checks and resolves the status of any pending mint and melt quotes.
-pub async fn run_mintd(work_dir: &Path, settings: &config::Settings) -> Result<()> {
-    run_mintd_with_shutdown(work_dir, settings, shutdown_signal()).await
+pub async fn run_mintd(
+    work_dir: &Path,
+    settings: &config::Settings,
+    db_password: Option<String>,
+) -> Result<()> {
+    run_mintd_with_shutdown(work_dir, settings, shutdown_signal(), db_password).await
 }
 
 /// Run mintd with a custom shutdown signal
@@ -790,14 +791,15 @@ pub async fn run_mintd_with_shutdown(
     work_dir: &Path,
     settings: &config::Settings,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    db_password: Option<String>,
 ) -> Result<()> {
-    let (localstore, keystore) = initial_setup(work_dir, settings).await?;
+    let (localstore, keystore) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
     let mint_builder = MintBuilder::new(localstore);
 
     let (mint_builder, ln_routers) = configure_mint_builder(settings, mint_builder).await?;
     #[cfg(feature = "auth")]
-    let mint_builder = setup_authentication(settings, work_dir, mint_builder).await?;
+    let mint_builder = setup_authentication(settings, work_dir, mint_builder, db_password).await?;
 
     let mint = build_mint(settings, keystore, mint_builder).await?;
 

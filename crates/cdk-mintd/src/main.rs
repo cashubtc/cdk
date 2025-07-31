@@ -32,5 +32,11 @@ async fn main() -> Result<()> {
 
     let settings = load_settings(&work_dir, args.config)?;
 
-    cdk_mintd::run_mintd(&work_dir, &settings).await
+    #[cfg(feature = "sqlcipher")]
+    let password = Some(CLIArgs::parse().password);
+
+    #[cfg(not(feature = "sqlcipher"))]
+    let password = None;
+
+    cdk_mintd::run_mintd(&work_dir, &settings, password).await
 }
