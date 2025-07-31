@@ -34,6 +34,23 @@ The project is split up into several crates in the `crates/` directory:
 
 For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVELOPMENT.md)
 
+### Wallet Simulator
+
+The project includes a wallet simulator for testing purposes. You can run it with customizable parameters:
+
+```bash
+# Run with default parameters (100 transactions, localhost mint, Sat unit)
+just wallet-sim
+
+# Run with custom parameters
+just wallet-sim [num_transactions] [mint_url] [unit]
+
+# Example with 50 transactions, custom mint URL, and USD unit
+just wallet-sim 50 http://127.0.0.1:3338 Usd
+```
+
+The wallet simulator performs a series of mint, swap, and melt operations to stress test the mint implementation.
+
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
 ### Mandatory
