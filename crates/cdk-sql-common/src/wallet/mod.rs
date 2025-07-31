@@ -53,6 +53,77 @@ where
     /// Migrate [`WalletSqliteDatabase`]
     async fn migrate(conn: &DB) -> Result<(), Error> {
         migrate(conn, DB::name(), migrations::MIGRATIONS).await?;
+        // Update any existing keys with missing keyset_u32 values
+        Self::add_keyset_u32(conn).await?;
+        Ok(())
+    }
+
+    async fn add_keyset_u32(conn: &DB) -> Result<(), Error> {
+        // First get the keysets where keyset_u32 on key is null
+        let keys_without_u32: Vec<Vec<Column>> = query(
+            r#"
+            SELECT
+                id
+            FROM key
+            WHERE keyset_u32 IS NULL
+            "#,
+        )?
+        .fetch_all(conn)
+        .await?;
+
+        let mut ids = vec![];
+
+        for id in keys_without_u32 {
+            let id = column_as_string!(id.first().unwrap());
+
+            if let Ok(id) = Id::from_str(&id) {
+                ids.push(id);
+                query(
+                    r#"
+            UPDATE
+                key
+            SET keyset_u32 = :u32_keyset
+            WHERE id = :keyset_id
+            "#,
+                )?
+                .bind("u32_keyset", u32::from(id))
+                .bind("keyset_id", id.to_string())
+                .execute(conn)
+                .await?;
+            }
+        }
+
+        // Also update keysets where keyset_u32 is null
+        let keysets_without_u32: Vec<Vec<Column>> = query(
+            r#"
+            SELECT
+                id
+            FROM keyset
+            WHERE keyset_u32 IS NULL
+            "#,
+        )?
+        .fetch_all(conn)
+        .await?;
+
+        for id in keysets_without_u32 {
+            let id = column_as_string!(id.first().unwrap());
+
+            if let Ok(id) = Id::from_str(&id) {
+                query(
+                    r#"
+            UPDATE
+                keyset
+            SET keyset_u32 = :u32_keyset
+            WHERE id = :keyset_id
+            "#,
+                )?
+                .bind("u32_keyset", u32::from(id))
+                .bind("keyset_id", id.to_string())
+                .execute(conn)
+                .await?;
+            }
+        }
+
         Ok(())
     }
 }
@@ -301,15 +372,12 @@ ON CONFLICT(mint_url) DO UPDATE SET
             query(
                 r#"
     INSERT INTO keyset
-    (mint_url, id, unit, active, input_fee_ppk, final_expiry)
+    (mint_url, id, unit, active, input_fee_ppk, final_expiry, keyset_u32)
     VALUES
-    (:mint_url, :id, :unit, :active, :input_fee_ppk, :final_expiry)
+    (:mint_url, :id, :unit, :active, :input_fee_ppk, :final_expiry, :keyset_u32)
     ON CONFLICT(id) DO UPDATE SET
-        mint_url = excluded.mint_url,
-        unit = excluded.unit,
         active = excluded.active,
-        input_fee_ppk = excluded.input_fee_ppk,
-        final_expiry = excluded.final_expiry;
+        input_fee_ppk = excluded.input_fee_ppk
     "#,
             )?
             .bind("mint_url", mint_url.to_string())
@@ -318,6 +386,7 @@ ON CONFLICT(mint_url) DO UPDATE SET
             .bind("active", keyset.active)
             .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
             .bind("final_expiry", keyset.final_expiry.map(|v| v as i64))
+            .bind("keyset_u32", u32::from(keyset.id))
             .execute(&self.db)
             .await?;
         }
@@ -554,11 +623,9 @@ ON CONFLICT(id) DO UPDATE SET
         query(
             r#"
             INSERT INTO key
-            (id, keys)
+            (id, keys, keyset_u32)
             VALUES
-            (:id, :keys)
-            ON CONFLICT(id) DO UPDATE SET
-                keys = excluded.keys
+            (:id, :keys, :keyset_u32)
         "#,
         )?
         .bind("id", keyset.id.to_string())
@@ -566,6 +633,7 @@ ON CONFLICT(id) DO UPDATE SET
             "keys",
             serde_json::to_string(&keyset.keys).map_err(Error::from)?,
         )
+        .bind("keyset_u32", u32::from(keyset.id))
         .execute(&self.db)
         .await?;
 
