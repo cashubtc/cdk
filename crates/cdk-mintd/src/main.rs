@@ -747,7 +747,7 @@ async fn start_services(
         if settings.info.enable_swagger_ui.unwrap_or(false) {
             mint_service = mint_service.merge(
                 utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
-                    .url("/api-docs/openapi.json", cdk_axum::ApiDocV1::openapi()),
+                    .url("/api-docs/openapi.json", cdk_axum::ApiDoc::openapi()),
             );
         }
     }
