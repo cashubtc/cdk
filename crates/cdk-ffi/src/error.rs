@@ -18,6 +18,10 @@ pub enum FfiError {
     #[error("Invalid amount")]
     InvalidAmount,
 
+    /// Amount error
+    #[error("Amount error: {msg}")]
+    Amount { msg: String },
+
     /// Payment failed
     #[error("Payment failed")]
     PaymentFailed,
@@ -74,6 +78,14 @@ impl From<CdkError> for FfiError {
 impl From<anyhow::Error> for FfiError {
     fn from(err: anyhow::Error) -> Self {
         FfiError::Generic {
+            msg: err.to_string(),
+        }
+    }
+}
+
+impl From<cdk::amount::Error> for FfiError {
+    fn from(err: cdk::amount::Error) -> Self {
+        FfiError::Amount {
             msg: err.to_string(),
         }
     }

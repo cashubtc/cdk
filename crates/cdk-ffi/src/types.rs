@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Mutex;
 
 use cdk::nuts::{CurrencyUnit as CdkCurrencyUnit, State as CdkState};
 use cdk::Amount as CdkAmount;
@@ -26,6 +27,16 @@ impl Amount {
 
     pub fn is_zero(&self) -> bool {
         self.value == 0
+    }
+
+    pub fn convert_unit(
+        &self,
+        current_unit: CurrencyUnit,
+        target_unit: CurrencyUnit,
+    ) -> Result<Amount, FfiError> {
+        Ok(CdkAmount::from(self.value)
+            .convert_unit(&current_unit.into(), &target_unit.into())
+            .map(Into::into)?)
     }
 }
 
@@ -363,25 +374,106 @@ impl From<cdk::nuts::nut05::QuoteState> for QuoteState {
 }
 
 /// FFI-compatible PreparedSend
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, uniffi::Object)]
 pub struct PreparedSend {
-    pub id: String,
-    pub amount: Amount,
-    pub proofs: Proofs,
+    inner: Mutex<Option<cdk::wallet::PreparedSend>>,
+    id: String,
+    amount: Amount,
+    proofs: Proofs,
 }
 
 impl From<cdk::wallet::PreparedSend> for PreparedSend {
     fn from(prepared: cdk::wallet::PreparedSend) -> Self {
+        let id = format!("{:?}", prepared); // Use debug format as ID
+        let amount = prepared.amount().into();
+        let proofs = prepared.proofs().iter().cloned().map(Into::into).collect();
         Self {
-            id: format!("{:?}", prepared), // Use debug format as ID
-            amount: prepared.amount().into(),
-            proofs: prepared.proofs().iter().cloned().map(Into::into).collect(),
+            inner: Mutex::new(Some(prepared)),
+            id,
+            amount,
+            proofs,
         }
     }
 }
 
-// Note: PreparedSend conversion back to CDK type is complex and may not be needed
-// for FFI use cases. If needed, it would require wallet context to reconstruct properly.
+#[uniffi::export]
+impl PreparedSend {
+    /// Get the prepared send ID
+    pub fn id(&self) -> String {
+        self.id.clone()
+    }
+
+    /// Get the amount to send
+    pub fn amount(&self) -> Amount {
+        self.amount
+    }
+
+    /// Get the proofs that will be used
+    pub fn proofs(&self) -> Proofs {
+        self.proofs.clone()
+    }
+
+    /// Get the total fee for this send operation
+    pub fn fee(&self) -> Amount {
+        if let Ok(guard) = self.inner.lock() {
+            if let Some(ref inner) = *guard {
+                inner.fee().into()
+            } else {
+                Amount::new(0)
+            }
+        } else {
+            Amount::new(0)
+        }
+    }
+
+    /// Confirm the prepared send and create a token
+    pub async fn confirm(
+        self: std::sync::Arc<Self>,
+        memo: Option<String>,
+    ) -> Result<Token, FfiError> {
+        let inner = {
+            if let Ok(mut guard) = self.inner.lock() {
+                guard.take()
+            } else {
+                return Err(FfiError::Generic {
+                    msg: "Failed to acquire lock on PreparedSend".to_string(),
+                });
+            }
+        };
+
+        if let Some(inner) = inner {
+            let send_memo = memo.map(|m| cdk::wallet::SendMemo::for_token(&m));
+            let token = inner.confirm(send_memo).await?;
+            Ok(token.into())
+        } else {
+            Err(FfiError::Generic {
+                msg: "PreparedSend has already been consumed or cancelled".to_string(),
+            })
+        }
+    }
+
+    /// Cancel the prepared send operation
+    pub async fn cancel(self: std::sync::Arc<Self>) -> Result<(), FfiError> {
+        let inner = {
+            if let Ok(mut guard) = self.inner.lock() {
+                guard.take()
+            } else {
+                return Err(FfiError::Generic {
+                    msg: "Failed to acquire lock on PreparedSend".to_string(),
+                });
+            }
+        };
+
+        if let Some(inner) = inner {
+            inner.cancel().await?;
+            Ok(())
+        } else {
+            Err(FfiError::Generic {
+                msg: "PreparedSend has already been consumed or cancelled".to_string(),
+            })
+        }
+    }
+}
 
 /// FFI-compatible Melted result
 #[derive(Debug, Clone, uniffi::Record)]

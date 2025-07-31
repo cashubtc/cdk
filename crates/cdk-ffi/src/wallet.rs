@@ -108,7 +108,7 @@ impl Wallet {
                 .await?;
 
             let send_memo = memo.map(|m| cdk::wallet::SendMemo::for_token(&m));
-            let token = self.inner.send(prepared, send_memo).await?;
+            let token = prepared.confirm(send_memo).await?;
 
             Ok(token.into())
         })
@@ -164,22 +164,14 @@ impl Wallet {
         &self,
         amount: Amount,
         options: SendOptions,
-    ) -> Result<PreparedSend, FfiError> {
+    ) -> Result<std::sync::Arc<PreparedSend>, FfiError> {
         self.runtime.block_on(async {
             let prepared = self
                 .inner
                 .prepare_send(amount.into(), options.into())
                 .await?;
-            Ok(prepared.into())
+            Ok(std::sync::Arc::new(prepared.into()))
         })
-    }
-
-    /// Cancel a prepared send operation
-    /// Note: This is a simplified implementation
-    pub fn cancel_send(&self, _prepared_send: PreparedSend) -> Result<(), FfiError> {
-        // For now, this is a no-op since we can't easily reconstruct PreparedSend
-        // In a real implementation, you'd need to track prepared sends in the wallet
-        Ok(())
     }
 
     /// Get a mint quote
