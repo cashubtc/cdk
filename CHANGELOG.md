@@ -7,6 +7,7 @@
 ## [Unreleased]
 
 ### Added
+- dev: Goose recipes for changelog and commit message generation with Just commands ([thesimplekid]).
 - cashu: `KeySetInfos` type alias and `KeySetInfosMethods` trait for filtering keysets ([thesimplekid]).
 - cdk: Mint lifecycle management with `start()` and `stop()` methods for graceful background service control ([thesimplekid]).
 - cdk: Background task management for invoice payment monitoring with proper shutdown handling ([thesimplekid]).
