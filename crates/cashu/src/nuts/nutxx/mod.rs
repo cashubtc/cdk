@@ -29,6 +29,12 @@ pub enum Error {
     /// Cairo verification error
     #[error(transparent)]
     CairoVerification(CairoVerificationError),
+    /// Program hash verification error
+    #[error("Program hash from proof does not match program hash from secret")]
+    ProgramHashVerification,
+    /// Output verification error
+    #[error("Output from proof does not match output from secret")]
+    OutputVerification,
     /// NUT11 Error
     #[error(transparent)]
     NUT11(#[from] super::nut11::Error),
@@ -73,7 +79,6 @@ fn secure_pcs_config() -> PcsConfig {
 
 fn pmv_to_felt(pmv: &PubMemoryValue) -> Felt {
     let (id, value) = pmv;
-    print!("{:?} ", id);
     let mut le_bytes = [0u8; 32];
     for (i, &v) in value.iter().enumerate() {
         let start = i * 4;
@@ -125,12 +130,10 @@ impl Proof {
 
         let program: &Vec<PubMemoryValue> = &cairo_proof.claim.public_data.public_memory.program;
         let bytecode = program.iter().map(|v| pmv_to_felt(v)).collect::<Vec<_>>();
-
         let program_hash = hash_bytecode(&bytecode);
-        println!("program_hash: {}", program_hash.to_string());
 
         if program_hash.to_string() != secret.secret_data().data() {
-            return Err(Error::IncorrectSecretKind); // TODO: this is not the right error
+            return Err(Error::ProgramHashVerification);
         }
 
         let preprocessed_trace = PreProcessedTraceVariant::CanonicalWithoutPedersen; // TODO: give option
