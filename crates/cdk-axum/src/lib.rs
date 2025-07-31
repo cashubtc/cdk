@@ -47,6 +47,8 @@ mod swagger_imports {
         MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintQuoteBolt11Request,
         MintQuoteBolt11Response,
     };
+    #[cfg(feature = "auth")]
+    pub use cdk::nuts::MintAuthRequest;
     pub use cdk::nuts::{nut04, nut05, nut15, MeltQuoteState, MintQuoteState};
 }
 
@@ -66,9 +68,47 @@ pub struct MintState {
 }
 
 #[cfg(feature = "swagger")]
-#[derive(utoipa::OpenApi)]
-#[openapi(
-    components(schemas(
+macro_rules! define_api_doc {
+    (
+        schemas: [$($schema:ty),* $(,)?]
+        $(, auth_schemas: [$($auth_schema:ty),* $(,)?])?
+        $(, paths: [$($path:path),* $(,)?])?
+        $(, auth_paths: [$($auth_path:path),* $(,)?])?
+    ) => {
+        #[derive(utoipa::OpenApi)]
+        #[openapi(
+            components(schemas(
+                $($schema,)*
+                $($($auth_schema,)*)?
+            )),
+            info(description = "Cashu CDK mint APIs", title = "cdk-mintd"),
+            paths(
+                get_keys,
+                get_keyset_pubkeys,
+                get_keysets,
+                get_mint_info,
+                post_mint_bolt11_quote,
+                get_check_mint_bolt11_quote,
+                post_mint_bolt11,
+                post_melt_bolt11_quote,
+                get_check_melt_bolt11_quote,
+                post_melt_bolt11,
+                post_swap,
+                post_check,
+                post_restore
+                $(,$($path,)*)?
+                $(,$($auth_path,)*)?
+            )
+        )]
+        /// Swagger api docs
+        pub struct ApiDoc;
+    };
+}
+
+// Configuration without auth feature
+#[cfg(all(feature = "swagger", not(feature = "auth")))]
+define_api_doc! {
+    schemas: [
         Amount,
         BlindedMessage,
         BlindSignature,
@@ -118,26 +158,70 @@ pub struct MintState {
         nut04::Settings,
         nut05::Settings,
         nut15::Settings
-    )),
-    info(description = "Cashu CDK mint APIs", title = "cdk-mintd",),
-    paths(
-        get_keys,
-        get_keyset_pubkeys,
-        get_keysets,
-        get_mint_info,
-        post_mint_bolt11_quote,
-        get_check_mint_bolt11_quote,
-        post_mint_bolt11,
-        post_melt_bolt11_quote,
-        get_check_melt_bolt11_quote,
-        post_melt_bolt11,
-        post_swap,
-        post_check,
-        post_restore
-    )
-)]
-/// OpenAPI spec for the mint's v1 APIs
-pub struct ApiDocV1;
+    ]
+}
+
+// Configuration with auth feature
+#[cfg(all(feature = "swagger", feature = "auth"))]
+define_api_doc! {
+    schemas: [
+        Amount,
+        BlindedMessage,
+        BlindSignature,
+        BlindSignatureDleq,
+        CheckStateRequest,
+        CheckStateResponse,
+        ContactInfo,
+        CurrencyUnit,
+        ErrorCode,
+        ErrorResponse,
+        HTLCWitness,
+        Keys,
+        KeysResponse,
+        KeysetResponse,
+        KeySet,
+        KeySetInfo,
+        MeltRequest<String>,
+        MeltQuoteBolt11Request,
+        MeltQuoteBolt11Response<String>,
+        MeltQuoteState,
+        MeltMethodSettings,
+        MintRequest<String>,
+        MintResponse,
+        MintInfo,
+        MintQuoteBolt11Request,
+        MintQuoteBolt11Response<String>,
+        MintQuoteState,
+        MintMethodSettings,
+        MintVersion,
+        Mpp,
+        MppMethodSettings,
+        Nuts,
+        P2PKWitness,
+        PaymentMethod,
+        Proof,
+        ProofDleq,
+        ProofState,
+        PublicKey,
+        RestoreRequest,
+        RestoreResponse,
+        SecretKey,
+        State,
+        SupportedSettings,
+        SwapRequest,
+        SwapResponse,
+        Witness,
+        nut04::Settings,
+        nut05::Settings,
+        nut15::Settings
+    ],
+    auth_schemas: [MintAuthRequest],
+    auth_paths: [
+        crate::auth::get_auth_keysets,
+        crate::auth::get_blind_auth_keys,
+        crate::auth::post_mint_auth
+    ]
+}
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
 pub async fn create_mint_router(mint: Arc<Mint>, include_bolt12: bool) -> Result<Router> {

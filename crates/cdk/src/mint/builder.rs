@@ -52,7 +52,8 @@ impl MintBuilder {
                 .nut09(true)
                 .nut10(true)
                 .nut11(true)
-                .nut12(true),
+                .nut12(true)
+                .nut20(true),
             ..Default::default()
         };
 
