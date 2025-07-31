@@ -447,7 +447,14 @@ async fn setup_authentication(
         > = match settings.database.engine {
             DatabaseEngine::Sqlite => {
                 let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
+                #[cfg(not(feature = "sqlcipher"))]
                 let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
+                #[cfg(feature = "sqlcipher")]
+                let db = {
+                    // Get password from command line arguments for sqlcipher
+                    MintAuthSqliteDatabase::new((sql_db_path, _password.unwrap())).await?
+                };
+
                 Arc::new(sqlite_db)
             }
         };
