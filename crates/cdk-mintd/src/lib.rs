@@ -14,6 +14,14 @@ use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
 // internal crate modules
+#[cfg(feature = "prometheus")]
+use cdk::cdk_payment::{MetricsMintPayment, PrometheusMetricsCollector};
+#[cfg(feature = "prometheus")]
+use cdk_prometheus;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::metrics;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::prometheus::proto::Metric;
 use cdk::cdk_database::{self, MintDatabase, MintKeysDatabase};
 use cdk::cdk_payment;
 use cdk::cdk_payment::MintPayment;
@@ -86,7 +94,7 @@ async fn initial_setup(
     db_password: Option<String>,
 ) -> Result<(
     Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
-    Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
+    Arc<dyn MintKeysDatabase<Err=cdk_database::Error> + Send + Sync>,
 )> {
     let (localstore, keystore) = setup_database(settings, work_dir, db_password).await?;
     Ok((localstore, keystore))
@@ -147,13 +155,13 @@ async fn setup_database(
     db_password: Option<String>,
 ) -> Result<(
     Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
-    Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
+    Arc<dyn MintKeysDatabase<Err=cdk_database::Error> + Send + Sync>,
 )> {
     match settings.database.engine {
         DatabaseEngine::Sqlite => {
             let db = setup_sqlite_database(work_dir, db_password).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
-            let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
+            let keystore: Arc<dyn MintKeysDatabase<Err=cdk_database::Error> + Send + Sync> = db;
             Ok((localstore, keystore))
         }
     }
@@ -183,6 +191,7 @@ async fn setup_sqlite_database(
 async fn configure_mint_builder(
     settings: &config::Settings,
     mint_builder: MintBuilder,
+    #[cfg(feature = "prometheus")] metrics: Option<Arc<metrics::CdkMetrics>>,
 ) -> Result<(MintBuilder, Vec<Router>)> {
     let mut ln_routers = vec![];
 
@@ -190,8 +199,14 @@ async fn configure_mint_builder(
     let mint_builder = configure_basic_info(settings, mint_builder);
 
     // Configure lightning backend
-    let mint_builder = configure_lightning_backend(settings, mint_builder, &mut ln_routers).await?;
-
+    let mint_builder = configure_lightning_backend(
+        settings,
+        mint_builder,
+        &mut ln_routers,
+        #[cfg(feature = "prometheus")]
+        metrics,
+    )
+        .await?;
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
 
@@ -253,6 +268,7 @@ async fn configure_lightning_backend(
     settings: &config::Settings,
     mut mint_builder: MintBuilder,
     ln_routers: &mut Vec<Router>,
+    #[cfg(feature = "prometheus")] metrics: Option<Arc<metrics::CdkMetrics>>,
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
         mint_min: settings.ln.min_mint,
@@ -281,7 +297,7 @@ async fn configure_lightning_backend(
                 mint_melt_limits,
                 Arc::new(cln),
             )
-            .await?;
+                .await?;
         }
         #[cfg(feature = "lnbits")]
         LnBackend::LNbits => {
@@ -297,7 +313,7 @@ async fn configure_lightning_backend(
                 mint_melt_limits,
                 Arc::new(lnbits),
             )
-            .await?;
+                .await?;
         }
         #[cfg(feature = "lnd")]
         LnBackend::Lnd => {
@@ -313,7 +329,7 @@ async fn configure_lightning_backend(
                 mint_melt_limits,
                 Arc::new(lnd),
             )
-            .await?;
+                .await?;
         }
         #[cfg(feature = "fakewallet")]
         LnBackend::FakeWallet => {
@@ -324,6 +340,11 @@ async fn configure_lightning_backend(
                 let fake = fake_wallet
                     .setup(ln_routers, settings, CurrencyUnit::Sat)
                     .await?;
+                #[cfg(feature = "prometheus")]
+                let fake = MetricsMintPayment::new(
+                    fake,
+                    Arc::new(PrometheusMetricsCollector::new(metrics.clone().unwrap())),
+                );
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -332,7 +353,7 @@ async fn configure_lightning_backend(
                     mint_melt_limits,
                     Arc::new(fake),
                 )
-                .await?;
+                    .await?;
             }
         }
         #[cfg(feature = "grpc-processor")]
@@ -361,7 +382,7 @@ async fn configure_lightning_backend(
                     mint_melt_limits,
                     Arc::new(processor),
                 )
-                .await?;
+                    .await?;
             }
         }
         LnBackend::None => {
@@ -382,7 +403,7 @@ async fn configure_backend_for_unit(
     mut mint_builder: MintBuilder,
     unit: cdk::nuts::CurrencyUnit,
     mint_melt_limits: MintMeltLimits,
-    backend: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+    backend: Arc<dyn MintPayment<Err=cdk_payment::Error> + Send + Sync>,
 ) -> Result<MintBuilder> {
     let payment_settings = backend.get_settings().await?;
 
@@ -440,7 +461,7 @@ async fn setup_authentication(
     if let Some(auth_settings) = settings.auth.clone() {
         tracing::info!("Auth settings are defined. {:?}", auth_settings);
         let auth_localstore: Arc<
-            dyn cdk_database::MintAuthDatabase<Err = cdk_database::Error> + Send + Sync,
+            dyn cdk_database::MintAuthDatabase<Err=cdk_database::Error> + Send + Sync,
         > = match settings.database.engine {
             DatabaseEngine::Sqlite => {
                 let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
@@ -582,7 +603,7 @@ async fn setup_authentication(
 /// Build mints with the configured the signing method (remote signatory or local seed)
 async fn build_mint(
     settings: &config::Settings,
-    keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
+    keystore: Arc<dyn MintKeysDatabase<Err=cdk_database::Error> + Send + Sync>,
     mint_builder: MintBuilder,
 ) -> Result<Mint> {
     if let Some(signatory_url) = settings.info.signatory_url.clone() {
@@ -598,7 +619,7 @@ async fn build_mint(
                     signatory_url,
                     settings.info.signatory_certs.clone(),
                 )
-                .await?,
+                    .await?,
             ))
             .await?)
     } else if let Some(mnemonic) = settings
@@ -622,7 +643,8 @@ async fn start_services_with_shutdown(
     ln_routers: Vec<Router>,
     work_dir: &Path,
     mint_builder_info: cdk::nuts::MintInfo,
-    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    #[cfg(feature = "prometheus")] metrics: Option<Arc<metrics::CdkMetrics>>,
+    shutdown_signal: impl std::future::Future<Output=()> + Send + 'static,
 ) -> Result<()> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
@@ -715,7 +737,32 @@ async fn start_services_with_shutdown(
             );
         }
     }
+    #[cfg(feature = "prometheus")]
+    {
+        if let Some(prometheus_settings) = &settings.prometheus {
+            if prometheus_settings.enabled {
+                let addr = prometheus_settings
+                    .address
+                    .clone()
+                    .unwrap_or("127.0.0.1".to_string());
+                let port = prometheus_settings.port.unwrap_or(9000);
 
+                let address = format!("{}:{}", addr, port)
+                    .parse()
+                    .expect("Invalid prometheus address");
+
+                let server = cdk_prometheus::PrometheusBuilder::new()
+                    .bind_address(address)
+                    .build_with_cdk_metrics(metrics.unwrap().as_ref())?;
+
+                tokio::spawn(async move {
+                    if let Err(e) = server.start().await {
+                        tracing::error!("Failed to start prometheus server: {}", e);
+                    }
+                });
+            }
+        }
+    }
     for router in ln_routers {
         mint_service = mint_service.merge(router);
     }
@@ -790,14 +837,27 @@ pub async fn run_mintd(
 pub async fn run_mintd_with_shutdown(
     work_dir: &Path,
     settings: &config::Settings,
-    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    shutdown_signal: impl std::future::Future<Output=()> + Send + 'static,
     db_password: Option<String>,
 ) -> Result<()> {
     let (localstore, keystore) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
-    let mint_builder = MintBuilder::new(localstore);
 
-    let (mint_builder, ln_routers) = configure_mint_builder(settings, mint_builder).await?;
+    #[cfg(feature = "prometheus")]
+    let metrics = Arc::new(cdk_prometheus::CdkMetrics::new()?);
+
+    #[cfg(not(feature = "prometheus"))]
+    let mint_builder = MintBuilder::new(localstore, None);
+
+    #[cfg(feature = "prometheus")]
+    let mint_builder = MintBuilder::new(localstore, Some(metrics.clone()));
+
+    let (mint_builder, ln_routers) = configure_mint_builder(
+        &settings,
+        mint_builder,
+        #[cfg(feature = "prometheus")]
+        Some(metrics.clone()),
+    ).await?;
     #[cfg(feature = "auth")]
     let mint_builder = setup_authentication(settings, work_dir, mint_builder, db_password).await?;
 
@@ -818,9 +878,11 @@ pub async fn run_mintd_with_shutdown(
         ln_routers,
         work_dir,
         mint.mint_info().await?,
+        #[cfg(feature = "prometheus")]
+        Some(metrics.clone()),
         shutdown_signal,
     )
-    .await?;
+        .await?;
 
     Ok(())
 }
