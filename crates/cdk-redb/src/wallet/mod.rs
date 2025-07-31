@@ -602,11 +602,7 @@ impl WalletDatabase for WalletRedbDatabase {
                 Some(id) => {
                     let id = Id::from_str(id.value())?;
 
-                    if id == keyset.id {
-                        existing_u32 = false;
-                    } else {
-                        existing_u32 = true;
-                    }
+                    existing_u32 = id != keyset.id;
                 }
             }
         }

@@ -47,7 +47,7 @@ pub(crate) fn migrate_02_to_03(db: Arc<Database>) -> Result<u32, Error> {
             .flat_map(|(id_bytes, _)| Id::from_bytes(id_bytes.value()))
             .collect();
 
-        let ids: HashSet<Id> = ids.into_iter().chain(keyset_ids.into_iter()).collect();
+        let ids: HashSet<Id> = ids.into_iter().chain(keyset_ids).collect();
 
         for id in ids {
             let t = table.insert(u32::from(id), id.to_string().as_str())?;
