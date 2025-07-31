@@ -874,18 +874,24 @@ pub struct Melted {
     pub fee_paid: Amount,
 }
 
-// Simplified implementation - not implementing From trait for now
-// impl From<CdkMelted> for Melted {
-//     fn from(melted: CdkMelted) -> Self {
-//         Self {
-//             state: QuoteState::Paid,
-//             preimage: melted.preimage,
-//             change: melted.change.map(|c| c.into_iter().map(Into::into).collect()),
-//             amount: melted.amount.into(),
-//             fee_paid: melted.fee_paid.into(),
-//         }
-//     }
-// }
+// MeltQuoteState is just an alias for nut05::QuoteState, so we don't need a separate implementation
+
+impl From<cdk_common::common::Melted> for Melted {
+    fn from(melted: cdk_common::common::Melted) -> Self {
+        Self {
+            state: melted.state.into(),
+            preimage: melted.preimage,
+            change: melted.change.map(|proofs| {
+                proofs
+                    .into_iter()
+                    .map(|p| std::sync::Arc::new(p.into()))
+                    .collect()
+            }),
+            amount: melted.amount.into(),
+            fee_paid: melted.fee_paid.into(),
+        }
+    }
+}
 
 /// FFI-compatible MeltOptions
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -1100,6 +1106,169 @@ impl From<cdk::nuts::MintInfo> for MintInfo {
             motd: info.motd,
             time: info.time,
             tos_url: info.tos_url,
+        }
+    }
+}
+
+/// FFI-compatible Conditions (for spending conditions)
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Conditions {
+    /// Unix locktime after which refund keys can be used
+    pub locktime: Option<u64>,
+    /// Additional Public keys (as hex strings)
+    pub pubkeys: Vec<String>,
+    /// Refund keys (as hex strings)
+    pub refund_keys: Vec<String>,
+    /// Number of signatures required (default 1)
+    pub num_sigs: Option<u64>,
+    /// Signature flag (0 = SigInputs, 1 = SigAll)
+    pub sig_flag: u8,
+    /// Number of refund signatures required (default 1)
+    pub num_sigs_refund: Option<u64>,
+}
+
+impl From<cdk::nuts::nut11::Conditions> for Conditions {
+    fn from(conditions: cdk::nuts::nut11::Conditions) -> Self {
+        Self {
+            locktime: conditions.locktime,
+            pubkeys: conditions
+                .pubkeys
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| p.to_string())
+                .collect(),
+            refund_keys: conditions
+                .refund_keys
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| p.to_string())
+                .collect(),
+            num_sigs: conditions.num_sigs,
+            sig_flag: match conditions.sig_flag {
+                cdk::nuts::nut11::SigFlag::SigInputs => 0,
+                cdk::nuts::nut11::SigFlag::SigAll => 1,
+            },
+            num_sigs_refund: conditions.num_sigs_refund,
+        }
+    }
+}
+
+impl TryFrom<Conditions> for cdk::nuts::nut11::Conditions {
+    type Error = FfiError;
+
+    fn try_from(conditions: Conditions) -> Result<Self, Self::Error> {
+        let pubkeys = if conditions.pubkeys.is_empty() {
+            None
+        } else {
+            Some(
+                conditions
+                    .pubkeys
+                    .into_iter()
+                    .map(|s| {
+                        s.parse().map_err(|e| FfiError::Generic {
+                            msg: format!("Invalid pubkey: {}", e),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        };
+
+        let refund_keys = if conditions.refund_keys.is_empty() {
+            None
+        } else {
+            Some(
+                conditions
+                    .refund_keys
+                    .into_iter()
+                    .map(|s| {
+                        s.parse().map_err(|e| FfiError::Generic {
+                            msg: format!("Invalid refund key: {}", e),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        };
+
+        let sig_flag = match conditions.sig_flag {
+            0 => cdk::nuts::nut11::SigFlag::SigInputs,
+            1 => cdk::nuts::nut11::SigFlag::SigAll,
+            _ => {
+                return Err(FfiError::Generic {
+                    msg: "Invalid sig_flag value".to_string(),
+                })
+            }
+        };
+
+        Ok(Self {
+            locktime: conditions.locktime,
+            pubkeys,
+            refund_keys,
+            num_sigs: conditions.num_sigs,
+            sig_flag,
+            num_sigs_refund: conditions.num_sigs_refund,
+        })
+    }
+}
+
+/// FFI-compatible SpendingConditions
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum SpendingConditions {
+    /// P2PK (Pay to Public Key) conditions
+    P2PK {
+        /// The public key (as hex string)
+        pubkey: String,
+        /// Additional conditions
+        conditions: Option<Conditions>,
+    },
+    /// HTLC (Hash Time Locked Contract) conditions
+    HTLC {
+        /// Hash of the preimage (as hex string)
+        hash: String,
+        /// Additional conditions
+        conditions: Option<Conditions>,
+    },
+}
+
+impl From<cdk::nuts::SpendingConditions> for SpendingConditions {
+    fn from(spending_conditions: cdk::nuts::SpendingConditions) -> Self {
+        match spending_conditions {
+            cdk::nuts::SpendingConditions::P2PKConditions { data, conditions } => Self::P2PK {
+                pubkey: data.to_string(),
+                conditions: conditions.map(Into::into),
+            },
+            cdk::nuts::SpendingConditions::HTLCConditions { data, conditions } => Self::HTLC {
+                hash: data.to_string(),
+                conditions: conditions.map(Into::into),
+            },
+        }
+    }
+}
+
+impl TryFrom<SpendingConditions> for cdk::nuts::SpendingConditions {
+    type Error = FfiError;
+
+    fn try_from(spending_conditions: SpendingConditions) -> Result<Self, Self::Error> {
+        match spending_conditions {
+            SpendingConditions::P2PK { pubkey, conditions } => {
+                let pubkey = pubkey.parse().map_err(|e| FfiError::Generic {
+                    msg: format!("Invalid pubkey: {}", e),
+                })?;
+                let conditions = conditions.map(|c| c.try_into()).transpose()?;
+                Ok(Self::P2PKConditions {
+                    data: pubkey,
+                    conditions,
+                })
+            }
+            SpendingConditions::HTLC { hash, conditions } => {
+                let hash = hash.parse().map_err(|e| FfiError::Generic {
+                    msg: format!("Invalid hash: {}", e),
+                })?;
+                let conditions = conditions.map(|c| c.try_into()).transpose()?;
+                Ok(Self::HTLCConditions {
+                    data: hash,
+                    conditions,
+                })
+            }
         }
     }
 }

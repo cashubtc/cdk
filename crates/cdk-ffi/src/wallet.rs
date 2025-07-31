@@ -151,17 +151,10 @@ impl Wallet {
         &self,
         quote_id: String,
         amount_split_target: SplitTarget,
-        spending_conditions: Option<String>,
+        spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, FfiError> {
-        // Parse spending conditions if provided
-        let conditions = if let Some(cond_str) = spending_conditions {
-            Some(
-                serde_json::from_str(&cond_str)
-                    .map_err(|e| FfiError::Generic { msg: e.to_string() })?,
-            )
-        } else {
-            None
-        };
+        // Convert spending conditions if provided
+        let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
 
         let proofs = self
             .inner
@@ -187,18 +180,7 @@ impl Wallet {
     /// Melt tokens
     pub async fn melt(&self, quote_id: String) -> Result<Melted, FfiError> {
         let melted = self.inner.melt(&quote_id).await?;
-        Ok(Melted {
-            state: melted.state.into(),
-            preimage: melted.preimage,
-            change: melted.change.map(|proofs| {
-                proofs
-                    .into_iter()
-                    .map(|p| std::sync::Arc::new(p.into()))
-                    .collect()
-            }),
-            amount: melted.amount.into(),
-            fee_paid: melted.fee_paid.into(),
-        })
+        Ok(melted.into())
     }
 
     /// Swap proofs
@@ -207,21 +189,14 @@ impl Wallet {
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
         input_proofs: Proofs,
-        spending_conditions: Option<String>,
+        spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<Option<Proofs>, FfiError> {
         let cdk_proofs: Vec<cdk::nuts::Proof> =
             input_proofs.into_iter().map(|p| p.inner.clone()).collect();
 
-        // Parse spending conditions if provided
-        let conditions = if let Some(cond_str) = spending_conditions {
-            Some(
-                serde_json::from_str(&cond_str)
-                    .map_err(|e| FfiError::Generic { msg: e.to_string() })?,
-            )
-        } else {
-            None
-        };
+        // Convert spending conditions if provided
+        let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
 
         let result = self
             .inner
