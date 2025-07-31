@@ -58,7 +58,7 @@ async fn test_regtest_bolt12_mint() {
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .unwrap();
@@ -101,7 +101,7 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -157,7 +157,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -166,7 +166,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -250,7 +250,7 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
@@ -305,7 +305,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await?),
-        &Mnemonic::generate(12)?.to_seed_normalized(""),
+        Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
 
