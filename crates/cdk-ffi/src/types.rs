@@ -888,16 +888,38 @@ pub struct Melted {
 // }
 
 /// FFI-compatible MeltOptions
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct MeltOptions {
-    pub fee_reserve: Option<Amount>,
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum MeltOptions {
+    /// MPP (Multi-Part Payments) options
+    Mpp { amount: Amount },
+    /// Amountless options
+    Amountless { amount_msat: Amount },
 }
 
-impl Default for MeltOptions {
-    fn default() -> Self {
-        Self { fee_reserve: None }
+impl From<MeltOptions> for cdk::nuts::MeltOptions {
+    fn from(opts: MeltOptions) -> Self {
+        match opts {
+            MeltOptions::Mpp { amount } => {
+                let cdk_amount: cdk::Amount = amount.into();
+                cdk::nuts::MeltOptions::new_mpp(cdk_amount)
+            }
+            MeltOptions::Amountless { amount_msat } => {
+                let cdk_amount: cdk::Amount = amount_msat.into();
+                cdk::nuts::MeltOptions::new_amountless(cdk_amount)
+            }
+        }
     }
 }
 
-// MeltOptions type may not exist in current CDK version
-// Using a simplified approach for melt options
+impl From<cdk::nuts::MeltOptions> for MeltOptions {
+    fn from(opts: cdk::nuts::MeltOptions) -> Self {
+        match opts {
+            cdk::nuts::MeltOptions::Mpp { mpp } => MeltOptions::Mpp {
+                amount: mpp.amount.into(),
+            },
+            cdk::nuts::MeltOptions::Amountless { amountless } => MeltOptions::Amountless {
+                amount_msat: amountless.amount_msat.into(),
+            },
+        }
+    }
+}

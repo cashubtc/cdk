@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
 use cdk_sqlite::wallet::memory;
-use tokio::runtime::Runtime;
 
 use crate::error::FfiError;
 use crate::types::*;
@@ -13,43 +12,38 @@ use crate::types::*;
 #[derive(uniffi::Object)]
 pub struct Wallet {
     inner: Arc<CdkWallet>,
-    runtime: Arc<Runtime>,
 }
 
 #[uniffi::export]
 impl Wallet {
     /// Create a new Wallet
     #[uniffi::constructor]
-    pub fn new(
+    pub async fn new(
         mint_url: String,
         unit: CurrencyUnit,
         seed: Vec<u8>,
         target_proof_count: Option<u32>,
     ) -> Result<Self, FfiError> {
-        let runtime =
-            Arc::new(Runtime::new().map_err(|e| FfiError::Generic { msg: e.to_string() })?);
+        let localstore = memory::empty()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
 
-        let inner = runtime.block_on(async {
-            let localstore = memory::empty()
-                .await
-                .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        let wallet = CdkWalletBuilder::new()
+            .mint_url(
+                mint_url
+                    .parse()
+                    .map_err(|e: cdk::mint_url::Error| FfiError::Generic { msg: e.to_string() })?,
+            )
+            .unit(unit.into())
+            .localstore(Arc::new(localstore))
+            .seed(&seed)
+            .target_proof_count(target_proof_count.unwrap_or(3) as usize)
+            .build()
+            .map_err(FfiError::from)?;
 
-            let wallet =
-                CdkWalletBuilder::new()
-                    .mint_url(mint_url.parse().map_err(|e: cdk::mint_url::Error| {
-                        FfiError::Generic { msg: e.to_string() }
-                    })?)
-                    .unit(unit.into())
-                    .localstore(Arc::new(localstore))
-                    .seed(&seed)
-                    .target_proof_count(target_proof_count.unwrap_or(3) as usize)
-                    .build()
-                    .map_err(FfiError::from)?;
-
-            Ok::<_, FfiError>(Arc::new(wallet))
-        })?;
-
-        Ok(Self { inner, runtime })
+        Ok(Self {
+            inner: Arc::new(wallet),
+        })
     }
 
     /// Get the mint URL
@@ -63,194 +57,170 @@ impl Wallet {
     }
 
     /// Get total balance
-    pub fn total_balance(&self) -> Result<Amount, FfiError> {
-        self.runtime.block_on(async {
-            let balance = self.inner.total_balance().await?;
-            Ok(balance.into())
-        })
+    pub async fn total_balance(&self) -> Result<Amount, FfiError> {
+        let balance = self.inner.total_balance().await?;
+        Ok(balance.into())
     }
 
     /// Get total pending balance
-    pub fn total_pending_balance(&self) -> Result<Amount, FfiError> {
-        self.runtime.block_on(async {
-            let balance = self.inner.total_pending_balance().await?;
-            Ok(balance.into())
-        })
+    pub async fn total_pending_balance(&self) -> Result<Amount, FfiError> {
+        let balance = self.inner.total_pending_balance().await?;
+        Ok(balance.into())
     }
 
     /// Get total reserved balance  
-    pub fn total_reserved_balance(&self) -> Result<Amount, FfiError> {
-        self.runtime.block_on(async {
-            let balance = self.inner.total_reserved_balance().await?;
-            Ok(balance.into())
-        })
+    pub async fn total_reserved_balance(&self) -> Result<Amount, FfiError> {
+        let balance = self.inner.total_reserved_balance().await?;
+        Ok(balance.into())
     }
 
     /// Get mint info
-    pub fn get_mint_info(&self) -> Result<Option<String>, FfiError> {
-        self.runtime.block_on(async {
-            let info = self.inner.get_mint_info().await?;
-            Ok(info.map(|i| serde_json::to_string(&i).unwrap_or_default()))
-        })
+    pub async fn get_mint_info(&self) -> Result<Option<String>, FfiError> {
+        let info = self.inner.get_mint_info().await?;
+        Ok(info.map(|i| serde_json::to_string(&i).unwrap_or_default()))
     }
 
     /// Send tokens directly (simplified API)
-    pub fn send(
+    pub async fn send(
         &self,
         amount: Amount,
         options: SendOptions,
         memo: Option<String>,
     ) -> Result<std::sync::Arc<Token>, FfiError> {
-        self.runtime.block_on(async {
-            let prepared = self
-                .inner
-                .prepare_send(amount.into(), options.into())
-                .await?;
+        let prepared = self
+            .inner
+            .prepare_send(amount.into(), options.into())
+            .await?;
 
-            let send_memo = memo.map(|m| cdk::wallet::SendMemo::for_token(&m));
-            let token = prepared.confirm(send_memo).await?;
+        let send_memo = memo.map(|m| cdk::wallet::SendMemo::for_token(&m));
+        let token = prepared.confirm(send_memo).await?;
 
-            Ok(std::sync::Arc::new(token.into()))
-        })
+        Ok(std::sync::Arc::new(token.into()))
     }
 
     /// Receive tokens
-    pub fn receive(
+    pub async fn receive(
         &self,
         token: std::sync::Arc<Token>,
         options: ReceiveOptions,
     ) -> Result<Amount, FfiError> {
-        self.runtime.block_on(async {
-            let amount = self
-                .inner
-                .receive(&token.to_string(), options.into())
-                .await?;
-            Ok(amount.into())
-        })
+        let amount = self
+            .inner
+            .receive(&token.to_string(), options.into())
+            .await?;
+        Ok(amount.into())
     }
 
     /// Restore wallet from seed
-    pub fn restore(&self) -> Result<Amount, FfiError> {
-        self.runtime.block_on(async {
-            let amount = self.inner.restore().await?;
-            Ok(amount.into())
-        })
+    pub async fn restore(&self) -> Result<Amount, FfiError> {
+        let amount = self.inner.restore().await?;
+        Ok(amount.into())
     }
 
     /// Verify token DLEQ proofs
-    pub fn verify_token_dleq(&self, token: std::sync::Arc<Token>) -> Result<(), FfiError> {
-        self.runtime.block_on(async {
-            let cdk_token = token.inner.clone();
-            self.inner.verify_token_dleq(&cdk_token).await?;
-            Ok(())
-        })
+    pub async fn verify_token_dleq(&self, token: std::sync::Arc<Token>) -> Result<(), FfiError> {
+        let cdk_token = token.inner.clone();
+        self.inner.verify_token_dleq(&cdk_token).await?;
+        Ok(())
     }
 
     /// Receive proofs directly
-    pub fn receive_proofs(
+    pub async fn receive_proofs(
         &self,
         proofs: Proofs,
         options: ReceiveOptions,
         memo: Option<String>,
     ) -> Result<Amount, FfiError> {
-        self.runtime.block_on(async {
-            let cdk_proofs: Vec<cdk::nuts::Proof> =
-                proofs.into_iter().map(|p| p.inner.clone()).collect();
+        let cdk_proofs: Vec<cdk::nuts::Proof> =
+            proofs.into_iter().map(|p| p.inner.clone()).collect();
 
-            let amount = self
-                .inner
-                .receive_proofs(cdk_proofs, options.into(), memo)
-                .await?;
-            Ok(amount.into())
-        })
+        let amount = self
+            .inner
+            .receive_proofs(cdk_proofs, options.into(), memo)
+            .await?;
+        Ok(amount.into())
     }
 
     /// Prepare a send operation
-    pub fn prepare_send(
+    pub async fn prepare_send(
         &self,
         amount: Amount,
         options: SendOptions,
     ) -> Result<std::sync::Arc<PreparedSend>, FfiError> {
-        self.runtime.block_on(async {
-            let prepared = self
-                .inner
-                .prepare_send(amount.into(), options.into())
-                .await?;
-            Ok(std::sync::Arc::new(prepared.into()))
-        })
+        let prepared = self
+            .inner
+            .prepare_send(amount.into(), options.into())
+            .await?;
+        Ok(std::sync::Arc::new(prepared.into()))
     }
 
     /// Get a mint quote
-    pub fn mint_quote(
+    pub async fn mint_quote(
         &self,
         amount: Amount,
         description: Option<String>,
     ) -> Result<std::sync::Arc<MintQuote>, FfiError> {
-        self.runtime.block_on(async {
-            let quote = self.inner.mint_quote(amount.into(), description).await?;
-            Ok(std::sync::Arc::new(quote.into()))
-        })
+        let quote = self.inner.mint_quote(amount.into(), description).await?;
+        Ok(std::sync::Arc::new(quote.into()))
     }
 
     /// Mint tokens
-    pub fn mint(
+    pub async fn mint(
         &self,
         quote_id: String,
         amount_split_target: SplitTarget,
         spending_conditions: Option<String>,
     ) -> Result<Proofs, FfiError> {
-        self.runtime.block_on(async {
-            // Parse spending conditions if provided
-            let conditions = if let Some(cond_str) = spending_conditions {
-                Some(
-                    serde_json::from_str(&cond_str)
-                        .map_err(|e| FfiError::Generic { msg: e.to_string() })?,
-                )
-            } else {
-                None
-            };
+        // Parse spending conditions if provided
+        let conditions = if let Some(cond_str) = spending_conditions {
+            Some(
+                serde_json::from_str(&cond_str)
+                    .map_err(|e| FfiError::Generic { msg: e.to_string() })?,
+            )
+        } else {
+            None
+        };
 
-            let proofs = self
-                .inner
-                .mint(&quote_id, amount_split_target.into(), conditions)
-                .await?;
-            Ok(proofs
-                .into_iter()
-                .map(|p| std::sync::Arc::new(p.into()))
-                .collect())
-        })
+        let proofs = self
+            .inner
+            .mint(&quote_id, amount_split_target.into(), conditions)
+            .await?;
+        Ok(proofs
+            .into_iter()
+            .map(|p| std::sync::Arc::new(p.into()))
+            .collect())
     }
 
     /// Get a melt quote
-    pub fn melt_quote(
+    pub async fn melt_quote(
         &self,
         request: String,
-        _options: Option<MeltOptions>,
+        options: Option<MeltOptions>,
     ) -> Result<std::sync::Arc<MeltQuote>, FfiError> {
-        self.runtime.block_on(async {
-            // Simplified approach - not using options for now
-            let quote = self.inner.melt_quote(request, None).await?;
-            Ok(std::sync::Arc::new(quote.into()))
-        })
+        let cdk_options = options.map(Into::into);
+        let quote = self.inner.melt_quote(request, cdk_options).await?;
+        Ok(std::sync::Arc::new(quote.into()))
     }
 
-    /// Melt tokens (simplified implementation)
-    pub fn melt(&self, quote_id: String) -> Result<Melted, FfiError> {
-        self.runtime.block_on(async {
-            let _melted = self.inner.melt(&quote_id).await?;
-            // Return a simplified result for now
-            Ok(Melted {
-                state: QuoteState::Paid,
-                preimage: None,
-                change: None,
-                amount: Amount::zero(),
-                fee_paid: Amount::zero(),
-            })
+    /// Melt tokens
+    pub async fn melt(&self, quote_id: String) -> Result<Melted, FfiError> {
+        let melted = self.inner.melt(&quote_id).await?;
+        Ok(Melted {
+            state: melted.state.into(),
+            preimage: melted.preimage,
+            change: melted.change.map(|proofs| {
+                proofs
+                    .into_iter()
+                    .map(|p| std::sync::Arc::new(p.into()))
+                    .collect()
+            }),
+            amount: melted.amount.into(),
+            fee_paid: melted.fee_paid.into(),
         })
     }
 
     /// Swap proofs
-    pub fn swap(
+    pub async fn swap(
         &self,
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
@@ -258,68 +228,80 @@ impl Wallet {
         spending_conditions: Option<String>,
         include_fees: bool,
     ) -> Result<Option<Proofs>, FfiError> {
-        self.runtime.block_on(async {
-            let cdk_proofs: Vec<cdk::nuts::Proof> =
-                input_proofs.into_iter().map(|p| p.inner.clone()).collect();
+        let cdk_proofs: Vec<cdk::nuts::Proof> =
+            input_proofs.into_iter().map(|p| p.inner.clone()).collect();
 
-            // Parse spending conditions if provided
-            let conditions = if let Some(cond_str) = spending_conditions {
-                Some(
-                    serde_json::from_str(&cond_str)
-                        .map_err(|e| FfiError::Generic { msg: e.to_string() })?,
-                )
-            } else {
-                None
-            };
+        // Parse spending conditions if provided
+        let conditions = if let Some(cond_str) = spending_conditions {
+            Some(
+                serde_json::from_str(&cond_str)
+                    .map_err(|e| FfiError::Generic { msg: e.to_string() })?,
+            )
+        } else {
+            None
+        };
 
-            let result = self
-                .inner
-                .swap(
-                    amount.map(Into::into),
-                    amount_split_target.into(),
-                    cdk_proofs,
-                    conditions,
-                    include_fees,
-                )
-                .await?;
+        let result = self
+            .inner
+            .swap(
+                amount.map(Into::into),
+                amount_split_target.into(),
+                cdk_proofs,
+                conditions,
+                include_fees,
+            )
+            .await?;
 
-            Ok(result.map(|proofs| {
-                proofs
-                    .into_iter()
-                    .map(|p| std::sync::Arc::new(p.into()))
-                    .collect()
-            }))
-        })
+        Ok(result.map(|proofs| {
+            proofs
+                .into_iter()
+                .map(|p| std::sync::Arc::new(p.into()))
+                .collect()
+        }))
     }
 
-    /// Get proofs by states (simplified implementation)
-    pub fn get_proofs_by_states(&self, _states: Vec<ProofState>) -> Result<Proofs, FfiError> {
-        self.runtime.block_on(async {
-            // Simplified implementation - return empty vec for now
-            // In a full implementation, this would filter proofs by state
-            Ok(Vec::new())
-        })
+    /// Get proofs by states
+    pub async fn get_proofs_by_states(&self, states: Vec<ProofState>) -> Result<Proofs, FfiError> {
+        let mut all_proofs = Vec::new();
+
+        for state in states {
+            let proofs = match state {
+                ProofState::Unspent => self.inner.get_unspent_proofs().await?,
+                ProofState::Pending => self.inner.get_pending_proofs().await?,
+                ProofState::Reserved => self.inner.get_reserved_proofs().await?,
+                ProofState::PendingSpent => self.inner.get_pending_spent_proofs().await?,
+                ProofState::Spent => {
+                    // CDK doesn't have a method to get spent proofs directly
+                    // They are removed from the database when spent
+                    continue;
+                }
+            };
+
+            for proof in proofs {
+                all_proofs.push(std::sync::Arc::new(proof.into()));
+            }
+        }
+
+        Ok(all_proofs)
     }
 
     /// Check if proofs are spent
-    pub fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<bool>, FfiError> {
-        self.runtime.block_on(async {
-            let cdk_proofs: Vec<cdk::nuts::Proof> =
-                proofs.into_iter().map(|p| p.inner.clone()).collect();
+    pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<bool>, FfiError> {
+        let cdk_proofs: Vec<cdk::nuts::Proof> =
+            proofs.into_iter().map(|p| p.inner.clone()).collect();
 
-            let proof_states = self.inner.check_proofs_spent(cdk_proofs).await?;
-            // Convert ProofState to bool (spent = true, unspent = false)
-            let spent_bools = proof_states
-                .into_iter()
-                .map(|proof_state| {
-                    matches!(
-                        proof_state.state,
-                        cdk::nuts::State::Spent | cdk::nuts::State::PendingSpent
-                    )
-                })
-                .collect();
-            Ok(spent_bools)
-        })
+        let proof_states = self.inner.check_proofs_spent(cdk_proofs).await?;
+        // Convert ProofState to bool (spent = true, unspent = false)
+        let spent_bools = proof_states
+            .into_iter()
+            .map(|proof_state| {
+                matches!(
+                    proof_state.state,
+                    cdk::nuts::State::Spent | cdk::nuts::State::PendingSpent
+                )
+            })
+            .collect();
+        Ok(spent_bools)
     }
 }
 
@@ -347,7 +329,6 @@ impl Default for WalletConfig {
 #[derive(uniffi::Object)]
 pub struct WalletBuilder {
     config: WalletConfig,
-    runtime: Arc<Runtime>,
 }
 
 #[uniffi::export]
@@ -355,12 +336,8 @@ impl WalletBuilder {
     /// Create a new WalletBuilder
     #[uniffi::constructor]
     pub fn new() -> Result<Self, FfiError> {
-        let runtime =
-            Arc::new(Runtime::new().map_err(|e| FfiError::Generic { msg: e.to_string() })?);
-
         Ok(Self {
             config: WalletConfig::default(),
-            runtime,
         })
     }
 
@@ -374,10 +351,7 @@ impl WalletBuilder {
         let mut config = self.config.clone();
         config.mint_url = Some(mint_url);
 
-        Ok(Self {
-            config,
-            runtime: self.runtime.clone(),
-        })
+        Ok(Self { config })
     }
 
     /// Set currency unit
@@ -385,10 +359,7 @@ impl WalletBuilder {
         let mut config = self.config.clone();
         config.unit = Some(unit);
 
-        Self {
-            config,
-            runtime: self.runtime.clone(),
-        }
+        Self { config }
     }
 
     /// Set seed
@@ -396,10 +367,7 @@ impl WalletBuilder {
         let mut config = self.config.clone();
         config.seed = Some(seed);
 
-        Self {
-            config,
-            runtime: self.runtime.clone(),
-        }
+        Self { config }
     }
 
     /// Set target proof count
@@ -407,14 +375,11 @@ impl WalletBuilder {
         let mut config = self.config.clone();
         config.target_proof_count = Some(count);
 
-        Self {
-            config,
-            runtime: self.runtime.clone(),
-        }
+        Self { config }
     }
 
     /// Build the wallet
-    pub fn build(&self) -> Result<Wallet, FfiError> {
+    pub async fn build(&self) -> Result<Wallet, FfiError> {
         let mint_url = self
             .config
             .mint_url
@@ -429,27 +394,25 @@ impl WalletBuilder {
             msg: "seed is required".to_string(),
         })?;
 
-        self.runtime.block_on(async {
-            let localstore = memory::empty()
-                .await
-                .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        let localstore = memory::empty()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
 
-            let wallet =
-                CdkWalletBuilder::new()
-                    .mint_url(mint_url.parse().map_err(|e: cdk::mint_url::Error| {
-                        FfiError::Generic { msg: e.to_string() }
-                    })?)
-                    .unit(unit.clone().into())
-                    .localstore(Arc::new(localstore))
-                    .seed(seed)
-                    .target_proof_count(self.config.target_proof_count.unwrap_or(3) as usize)
-                    .build()
-                    .map_err(FfiError::from)?;
+        let wallet = CdkWalletBuilder::new()
+            .mint_url(
+                mint_url
+                    .parse()
+                    .map_err(|e: cdk::mint_url::Error| FfiError::Generic { msg: e.to_string() })?,
+            )
+            .unit(unit.clone().into())
+            .localstore(Arc::new(localstore))
+            .seed(seed)
+            .target_proof_count(self.config.target_proof_count.unwrap_or(3) as usize)
+            .build()
+            .map_err(FfiError::from)?;
 
-            Ok(Wallet {
-                inner: Arc::new(wallet),
-                runtime: self.runtime.clone(),
-            })
+        Ok(Wallet {
+            inner: Arc::new(wallet),
         })
     }
 }
