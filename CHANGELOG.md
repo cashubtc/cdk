@@ -7,12 +7,17 @@
 ## [Unreleased]
 
 ### Added
+- dev: Goose recipes for changelog and commit message generation with Just commands ([thesimplekid]).
 - cashu: `KeySetInfos` type alias and `KeySetInfosMethods` trait for filtering keysets ([thesimplekid]).
 - cdk: Mint lifecycle management with `start()` and `stop()` methods for graceful background service control ([thesimplekid]).
 - cdk: Background task management for invoice payment monitoring with proper shutdown handling ([thesimplekid]).
 - cashu: NUT-19 support in the wallet ([crodas]).
 - cdk: SIG_ALL support for swap and melt operations ([thesimplekid]).
 - cdk-sql-common: Add cache to SQL statements for better performance ([crodas]).
+- cdk-integration-tests: New binary `start_fake_auth_mint` for testing fake mint with authentication ([thesimplekid]).
+- cdk-integration-tests: New binary `start_fake_mint` for testing fake mint instances ([thesimplekid]).
+- cdk-integration-tests: New binary `start_regtest_mints` for testing regtest mints ([thesimplekid]).
+- cdk-integration-tests: Shared utilities module for common integration test functionality ([thesimplekid]).
 
 ### Changed
 - cdk: Refactored wallet keyset management methods for better clarity and separation of concerns ([thesimplekid]).
@@ -27,6 +32,12 @@
 - cdk-integration-tests: Updated test utilities to use new mint lifecycle management ([thesimplekid]).
 - cdk-sqlite: Introduce `cdk-sql-common` crate for shared SQL storage codebase ([crodas]).
 - cdk-sqlite: Rename `still_active` to `stale` for better clarity ([crodas]).
+- cdk-integration-tests: Refactored regtest setup to use Rust binaries instead of shell scripts ([thesimplekid]).
+- cdk-integration-tests: Improved environment variable handling for test configurations ([thesimplekid]).
+- cdk-integration-tests: Enhanced CLN client connection with retry logic ([thesimplekid]).
+- cdk-integration-tests: Updated integration tests to use proper temp directory management ([thesimplekid]).
+- cdk-integration-tests: Simplified regtest shell scripts to use new binaries ([thesimplekid]).
+- crates/cdk-mintd: Moved mintd library functions to separate module for better organization and testability ([thesimplekid]).
 
 ### Fixed
 - cashu: Fixed CurrencyUnit custom units preserving original case instead of being converted to uppercase ([thesimplekid]).

@@ -80,7 +80,7 @@ cargo build -p cdk-integration-tests
 export CDK_TEST_REGTEST=0
 if [ "$LN_BACKEND" != "FAKEWALLET" ]; then
     export CDK_TEST_REGTEST=1
-    cargo run --bin start_regtest &
+    cargo run --bin start_regtest "$CDK_ITESTS_DIR" &
     CDK_REGTEST_PID=$!
     mkfifo "$CDK_ITESTS_DIR/progress_pipe"
     rm -f "$CDK_ITESTS_DIR/signal_received"  # Ensure clean state

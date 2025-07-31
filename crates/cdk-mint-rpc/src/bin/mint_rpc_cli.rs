@@ -7,21 +7,54 @@ use cdk_mint_rpc::GetInfoRequest;
 use clap::{Parser, Subcommand};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tonic::Request;
-use tracing::Level;
 use tracing_subscriber::EnvFilter;
+
+/// Common CLI arguments for CDK binaries
+#[derive(Parser, Debug)]
+pub struct CommonArgs {
+    /// Enable logging (default is false)
+    #[arg(long, default_value_t = false)]
+    pub enable_logging: bool,
+
+    /// Logging level when enabled (default is debug)
+    #[arg(long, default_value = "debug")]
+    pub log_level: tracing::Level,
+}
+
+/// Initialize logging based on CLI arguments
+pub fn init_logging(enable_logging: bool, log_level: tracing::Level) {
+    if enable_logging {
+        let default_filter = log_level.to_string();
+
+        // Common filters to reduce noise
+        let sqlx_filter = "sqlx=warn";
+        let hyper_filter = "hyper=warn";
+        let h2_filter = "h2=warn";
+        let rustls_filter = "rustls=warn";
+        let reqwest_filter = "reqwest=warn";
+
+        let env_filter = EnvFilter::new(format!(
+            "{default_filter},{sqlx_filter},{hyper_filter},{h2_filter},{rustls_filter},{reqwest_filter}"
+        ));
+
+        // Ok if successful, Err if already initialized
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .try_init();
+    }
+}
 
 const DEFAULT_WORK_DIR: &str = ".cdk-mint-rpc-cli";
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
+    #[command(flatten)]
+    common: CommonArgs,
+
     /// Address of RPC server
     #[arg(short, long, default_value = "https://127.0.0.1:8086")]
     addr: String,
-
-    /// Logging level
-    #[arg(short, long, default_value = "debug")]
-    log_level: Level,
 
     /// Path to working dir
     #[arg(short, long)]
@@ -70,14 +103,9 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Cli = Cli::parse();
-    let default_filter = args.log_level;
 
-    let sqlx_filter = "sqlx=warn,hyper_util=warn,reqwest=warn";
-
-    let env_filter = EnvFilter::new(format!("{default_filter},{sqlx_filter}"));
-
-    // Parse input
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    // Initialize logging based on CLI arguments
+    init_logging(args.common.enable_logging, args.common.log_level);
 
     let cli = Cli::parse();
 

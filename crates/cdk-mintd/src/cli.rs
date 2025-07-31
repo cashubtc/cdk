@@ -24,4 +24,12 @@ pub struct CLIArgs {
     pub config: Option<PathBuf>,
     #[arg(short, long, help = "Recover Greenlight from seed", required = false)]
     pub recover: Option<String>,
+    #[arg(
+        long,
+        help = "Enable logging output",
+        required = false,
+        action = clap::ArgAction::SetTrue,
+        default_value = "true"
+    )]
+    pub enable_logging: bool,
 }
