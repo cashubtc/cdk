@@ -71,13 +71,10 @@ where
         .fetch_all(conn)
         .await?;
 
-        let mut ids = vec![];
-
         for id in keys_without_u32 {
             let id = column_as_string!(id.first().unwrap());
 
             if let Ok(id) = Id::from_str(&id) {
-                ids.push(id);
                 query(
                     r#"
             UPDATE
