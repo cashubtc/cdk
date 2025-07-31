@@ -41,16 +41,17 @@ impl ResourceManager for SqliteConnectionManager {
 
         conn.execute_batch(
             r#"
-            pragma busy_timeout = 10000;
+            pragma busy_timeout = 5000;
             pragma journal_mode = WAL;
             pragma synchronous = normal;
             pragma temp_store = memory;
-            pragma mmap_size = 30000000000;
-            pragma cache = shared;
+            pragma mmap_size = 268435456;  -- 256MB instead of 30GB
+            pragma cache_size = 1000;
+            pragma page_size = 4096;
             "#,
         )?;
 
-        conn.busy_timeout(Duration::from_secs(10))?;
+        conn.busy_timeout(Duration::from_secs(5))?; // Match the pragma setting
 
         Ok(conn)
     }
@@ -76,11 +77,11 @@ pub fn create_sqlite_pool(
                 path: Some(path.to_owned()),
                 password,
             },
-            20,
+            5, // Reduced from 20 to 5 to minimize memory usage
         )
     };
 
-    Pool::new(config, max_size, Duration::from_secs(10))
+    Pool::new(config, max_size, Duration::from_secs(5)) // Reduced timeout
 }
 
 /// Convert cdk_sql_common::value::Value to rusqlite Value
