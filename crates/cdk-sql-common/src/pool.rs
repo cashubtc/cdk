@@ -10,7 +10,10 @@ use std::time::Duration;
 
 /// Pool error
 #[derive(thiserror::Error, Debug)]
-pub enum Error<E> {
+pub enum Error<E>
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
     /// Mutex Poison Error
     #[error("Internal: PoisonError")]
     Poison,
@@ -27,13 +30,13 @@ pub enum Error<E> {
 /// Trait to manage resources
 pub trait ResourceManager: Debug {
     /// The resource to be pooled
-    type Resource: Debug;
+    type Resource: Debug + Send + Sync;
 
     /// The configuration that is needed in order to create the resource
-    type Config: Clone + Debug;
+    type Config: Clone + Debug + Send + Sync;
 
     /// The error the resource may return when creating a new instance
-    type Error: Debug;
+    type Error: Debug + std::error::Error + Send + Sync + 'static;
 
     /// Creates a new resource with a given config.
     ///

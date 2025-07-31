@@ -42,12 +42,14 @@ pub trait DatabaseTransaction<'a>: Debug + DatabaseExecutor + Send + Sync {
 
 /// Database connector
 #[async_trait::async_trait]
-pub trait DatabaseConnector: Debug + DatabaseExecutor + Send + Sync {
+pub trait DatabaseConnector: Debug + DatabaseExecutor + Send + Sync + 'static {
     /// Transaction type for this database connection
     type Transaction<'a>: DatabaseTransaction<'a>
     where
         Self: 'a;
 
     /// Begin a new transaction
-    async fn begin(&self) -> Result<Self::Transaction<'_>, Error>;
+    async fn begin(&mut self) -> Result<Self::Transaction<'_>, Error>
+    where
+        Self: Sized;
 }

@@ -1,6 +1,7 @@
 //! SQL Mint Auth
 
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::str::FromStr;
 
@@ -17,6 +18,7 @@ use crate::column_as_string;
 use crate::common::migrate;
 use crate::database::{DatabaseConnector, DatabaseTransaction};
 use crate::mint::Error;
+use crate::pool::ResourceManager;
 use crate::stmt::query;
 
 /// Mint SQL Database
@@ -56,9 +58,11 @@ mod migrations;
 
 
 #[async_trait]
-impl<'a, T> MintAuthTransaction<database::Error> for SQLTransaction<'a, T>
+impl<'a, DB, RM, C> MintAuthTransaction<database::Error> for SQLTransaction<'a, DB, RM, C>
 where
-    T: DatabaseTransaction<'a>,
+    DB: DatabaseConnector,
+    RM: ResourceManager<Resource = DB, Config = C, Error = database::Error>,
+    C: Debug + Clone + Send + Sync,
 {
     #[instrument(skip(self))]
     async fn set_active_keyset(&mut self, id: Id) -> Result<(), database::Error> {
@@ -73,7 +77,11 @@ where
             "#,
         )?
         .bind("id", id.to_string())
-        .execute(&self.inner)
+        .execute(
+            self.inner
+                .as_ref()
+                .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
+        )
         .await?;
 
         Ok(())
@@ -109,7 +117,11 @@ where
         .bind("derivation_path", keyset.derivation_path.to_string())
         .bind("max_order", keyset.max_order)
         .bind("derivation_path_index", keyset.derivation_path_index)
-        .execute(&self.inner)
+        .execute(
+            self.inner
+                .as_ref()
+                .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
+        )
         .await?;
 
         Ok(())
@@ -129,7 +141,11 @@ where
         .bind("secret", proof.secret.to_string())
         .bind("c", proof.c.to_bytes().to_vec())
         .bind("state", "UNSPENT".to_string())
-        .execute(&self.inner)
+        .execute(
+            self.inner
+                .as_ref()
+                .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
+        )
         .await
         {
             tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
@@ -144,7 +160,11 @@ where
     ) -> Result<Option<State>, Self::Err> {
         let current_state = query(r#"SELECT state FROM proof WHERE y = :y"#)?
             .bind("y", y.to_bytes().to_vec())
-            .pluck(&self.inner)
+            .pluck(
+                self.inner
+                    .as_ref()
+                    .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
+            )
             .await?
             .map(|state| Ok::<_, Error>(column_as_string!(state, State::from_str)))
             .transpose()?;
@@ -156,7 +176,11 @@ where
                 current_state.as_ref().map(|state| state.to_string()),
             )
             .bind("new_state", proofs_state.to_string())
-            .execute(&self.inner)
+            .execute(
+                self.inner
+                    .as_ref()
+                    .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
+            )
             .await?;
 
         Ok(current_state)
@@ -181,7 +205,11 @@ where
             .bind("amount", u64::from(signature.amount) as i64)
             .bind("keyset_id", signature.keyset_id.to_string())
             .bind("c", signature.c.to_bytes().to_vec())
-            .execute(&self.inner)
+            .execute(
+                self.inner
+                    .as_ref()
+                    .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
+            )
             .await?;
         }
 
@@ -202,7 +230,11 @@ where
             )?
             .bind("endpoint", serde_json::to_string(endpoint)?)
             .bind("auth", serde_json::to_string(auth)?)
-            .execute(&self.inner)
+            .execute(
+                self.inner
+                    .as_ref()
+                    .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
+            )
             .await
             {
                 tracing::debug!(
@@ -226,7 +258,11 @@ where
                     .map(serde_json::to_string)
                     .collect::<Result<_, _>>()?,
             )
-            .execute(&self.inner)
+            .execute(
+                self.inner
+                    .as_ref()
+                    .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
+            )
             .await?;
         Ok(())
     }
