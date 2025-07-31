@@ -1,31 +1,37 @@
-
 #!/usr/bin/env bash
 
 # Function to perform cleanup
 cleanup() {
     echo "Cleaning up..."
 
-    echo "Killing the cdk mintd"
-    kill -2 $cdk_mintd_pid
-    wait $cdk_mintd_pid
+    if [ -n "$FAKE_AUTH_MINT_PID" ]; then
+        echo "Killing the fake auth mint process"
+        kill -2 $FAKE_AUTH_MINT_PID 2>/dev/null || true
+        wait $FAKE_AUTH_MINT_PID 2>/dev/null || true
+    fi
 
     echo "Mint binary terminated"
     
     # Remove the temporary directory
-    rm -rf "$CDK_ITESTS_DIR"
-    echo "Temp directory removed: $CDK_ITESTS_DIR"
+    if [ -n "$CDK_ITESTS_DIR" ] && [ -d "$CDK_ITESTS_DIR" ]; then
+        rm -rf "$CDK_ITESTS_DIR"
+        echo "Temp directory removed: $CDK_ITESTS_DIR"
+    fi
+
+    # Unset all environment variables
     unset CDK_ITESTS_DIR
     unset CDK_ITESTS_MINT_ADDR
     unset CDK_ITESTS_MINT_PORT
+    unset FAKE_AUTH_MINT_PID
 }
 
 # Set up trap to call cleanup on script exit
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 # Create a temporary directory
 export CDK_ITESTS_DIR=$(mktemp -d)
-export CDK_ITESTS_MINT_ADDR="127.0.0.1";
-export CDK_ITESTS_MINT_PORT=8087;
+export CDK_ITESTS_MINT_ADDR="127.0.0.1"
+export CDK_ITESTS_MINT_PORT=8087
 
 # Check if the temporary directory was created successfully
 if [[ ! -d "$CDK_ITESTS_DIR" ]]; then
@@ -34,72 +40,41 @@ if [[ ! -d "$CDK_ITESTS_DIR" ]]; then
 fi
 
 echo "Temp directory created: $CDK_ITESTS_DIR"
-export MINT_DATABASE="$1";
-export OPENID_DISCOVERY="$2";
 
+# Check if a database type was provided as first argument, default to sqlite
+export MINT_DATABASE="${1:-sqlite}"
+
+# Check if OPENID_DISCOVERY was provided as second argument, default to a test value
+export OPENID_DISCOVERY="${2:-http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration}"
+
+# Build the project
 cargo build -p cdk-integration-tests 
 
-export CDK_MINTD_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT";
-export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR";
-export CDK_MINTD_LISTEN_HOST=$CDK_ITESTS_MINT_ADDR;
-export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT;
-export CDK_MINTD_LN_BACKEND="fakewallet";
-export CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS="sat";
-export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal";
-export CDK_MINTD_FAKE_WALLET_FEE_PERCENT="0";
-export CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN="1";
-export CDK_MINTD_DATABASE=$MINT_DATABASE;
-
 # Auth configuration
-export CDK_TEST_OIDC_USER="cdk-test";
-export CDK_TEST_OIDC_PASSWORD="cdkpassword";
+export CDK_TEST_OIDC_USER="cdk-test"
+export CDK_TEST_OIDC_PASSWORD="cdkpassword"
 
-export CDK_MINTD_AUTH_OPENID_DISCOVERY=$OPENID_DISCOVERY;
-export CDK_MINTD_AUTH_OPENID_CLIENT_ID="cashu-client";
-export CDK_MINTD_AUTH_MINT_MAX_BAT="50";
-export CDK_MINTD_AUTH_ENABLED_MINT="true";
-export CDK_MINTD_AUTH_ENABLED_MELT="true";
-export CDK_MINTD_AUTH_ENABLED_SWAP="true";
-export CDK_MINTD_AUTH_ENABLED_CHECK_MINT_QUOTE="true";
-export CDK_MINTD_AUTH_ENABLED_CHECK_MELT_QUOTE="true";
-export CDK_MINTD_AUTH_ENABLED_RESTORE="true";
-export CDK_MINTD_AUTH_ENABLED_CHECK_PROOF_STATE="true";
+# Start the fake auth mint in the background
+echo "Starting fake auth mint with discovery URL: $OPENID_DISCOVERY"
+echo "Using temp directory: $CDK_ITESTS_DIR"
+cargo run -p cdk-integration-tests --bin start_fake_auth_mint -- --enable-logging "$MINT_DATABASE" "$CDK_ITESTS_DIR" "$OPENID_DISCOVERY" "$CDK_ITESTS_MINT_PORT" &
 
-echo "Starting auth mintd";
-cargo run --bin cdk-mintd --features redb &
-cdk_mintd_pid=$!
+# Store the PID of the mint process
+FAKE_AUTH_MINT_PID=$!
 
-URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT/v1/info"
-TIMEOUT=100
-START_TIME=$(date +%s)
-# Loop until the endpoint returns a 200 OK status or timeout is reached
-while true; do
-    # Get the current time
-    CURRENT_TIME=$(date +%s)
-    
-    # Calculate the elapsed time
-    ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
+# Wait a moment for the mint to start
+sleep 5
 
-    # Check if the elapsed time exceeds the timeout
-    if [ $ELAPSED_TIME -ge $TIMEOUT ]; then
-        echo "Timeout of $TIMEOUT seconds reached. Exiting..."
-        exit 1
-    fi
+# Check if the mint is running
+if ! kill -0 $FAKE_AUTH_MINT_PID 2>/dev/null; then
+    echo "Failed to start fake auth mint"
+    exit 1
+fi
 
-    # Make a request to the endpoint and capture the HTTP status code
-    HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}" $URL)
-
-    # Check if the HTTP status is 200 OK
-    if [ "$HTTP_STATUS" -eq 200 ]; then
-        echo "Received 200 OK from $URL"
-        break
-    else
-        echo "Waiting for 200 OK response, current status: $HTTP_STATUS"
-        sleep 2  # Wait for 2 seconds before retrying
-    fi
-done
+echo "Fake auth mint started with PID: $FAKE_AUTH_MINT_PID"
 
 # Run cargo test
+echo "Running fake auth integration tests..."
 cargo test -p cdk-integration-tests --test fake_auth
 
 # Capture the exit status of cargo test

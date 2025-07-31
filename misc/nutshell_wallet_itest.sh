@@ -58,6 +58,9 @@ export CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN="1"
 export CDK_MINTD_INPUT_FEE_PPK="100"
 
 
+export CDK_ITESTS_DIR="$CDK_ITESTS"
+
+
 echo "Starting fake mintd"
 cargo run --bin cdk-mintd &
 CDK_MINTD_PID=$!

@@ -30,6 +30,7 @@ cdk-common = { workspace = true, features = ["mint"] }
 cdk-cln = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }
 cdk-fake-wallet = { workspace = true, optional = true }
+clap = { workspace = true, features = ["derive"] }
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

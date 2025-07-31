@@ -1,3 +1,5 @@
+use std::env;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
@@ -6,10 +8,44 @@ use cashu::amount::SplitTarget;
 use cashu::nut23::Amountless;
 use cashu::{Amount, CurrencyUnit, MintRequest, PreMintSecrets, ProofsMethods};
 use cdk::wallet::{HttpClient, MintConnector, Wallet};
-use cdk_integration_tests::init_regtest::get_cln_dir;
+use cdk_integration_tests::init_regtest::{get_cln_dir, get_temp_dir};
 use cdk_integration_tests::{get_mint_url_from_env, wait_for_mint_to_be_paid};
 use cdk_sqlite::wallet::memory;
 use ln_regtest_rs::ln_client::ClnClient;
+
+// Helper function to get temp directory from environment or fallback
+fn get_test_temp_dir() -> PathBuf {
+    match env::var("CDK_ITESTS_DIR") {
+        Ok(dir) => PathBuf::from(dir),
+        Err(_) => get_temp_dir(), // fallback to default
+    }
+}
+
+// Helper function to create CLN client with retries
+async fn create_cln_client_with_retry(cln_dir: PathBuf) -> Result<ClnClient> {
+    let mut retries = 0;
+    let max_retries = 10;
+    loop {
+        match ClnClient::new(cln_dir.clone(), None).await {
+            Ok(client) => return Ok(client),
+            Err(e) => {
+                retries += 1;
+                if retries >= max_retries {
+                    bail!(
+                        "Could not connect to CLN client after {} retries: {}",
+                        max_retries,
+                        e
+                    );
+                }
+                println!(
+                    "Failed to connect to CLN (attempt {}/{}): {}. Retrying in 7 seconds...",
+                    retries, max_retries, e
+                );
+                tokio::time::sleep(tokio::time::Duration::from_secs(7)).await;
+            }
+        }
+    }
+}
 
 /// Tests basic BOLT12 minting functionality:
 /// - Creates a wallet
@@ -36,8 +72,11 @@ async fn test_regtest_bolt12_mint() {
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
 
-    let cln_one_dir = get_cln_dir("one");
-    let cln_client = ClnClient::new(cln_one_dir.clone(), None).await.unwrap();
+    let work_dir = get_test_temp_dir();
+    let cln_one_dir = get_cln_dir(&work_dir, "one");
+    let cln_client = create_cln_client_with_retry(cln_one_dir.clone())
+        .await
+        .unwrap();
     cln_client
         .pay_bolt12_offer(None, mint_quote.request)
         .await
@@ -68,8 +107,9 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
 
     let mint_quote = wallet.mint_bolt12_quote(None, None).await?;
 
-    let cln_one_dir = get_cln_dir("one");
-    let cln_client = ClnClient::new(cln_one_dir.clone(), None).await?;
+    let work_dir = get_test_temp_dir();
+    let cln_one_dir = get_cln_dir(&work_dir, "one");
+    let cln_client = create_cln_client_with_retry(cln_one_dir.clone()).await?;
     cln_client
         .pay_bolt12_offer(Some(10000), mint_quote.request.clone())
         .await
@@ -131,8 +171,9 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
     )?;
 
     // Create a BOLT12 offer that both wallets will use
-    let cln_one_dir = get_cln_dir("one");
-    let cln_client = ClnClient::new(cln_one_dir.clone(), None).await?;
+    let work_dir = get_test_temp_dir();
+    let cln_one_dir = get_cln_dir(&work_dir, "one");
+    let cln_client = create_cln_client_with_retry(cln_one_dir.clone()).await?;
     // First wallet payment
     let quote_one = wallet_one
         .mint_bolt12_quote(Some(10_000.into()), None)
@@ -222,8 +263,9 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
 
     assert_eq!(mint_quote.amount, Some(mint_amount));
     // Pay the quote
-    let cln_one_dir = get_cln_dir("one");
-    let cln_client = ClnClient::new(cln_one_dir.clone(), None).await?;
+    let work_dir = get_test_temp_dir();
+    let cln_one_dir = get_cln_dir(&work_dir, "one");
+    let cln_client = create_cln_client_with_retry(cln_one_dir.clone()).await?;
     cln_client
         .pay_bolt12_offer(None, mint_quote.request.clone())
         .await?;
@@ -281,8 +323,9 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
 
     let pay_amount_msats = 10_000;
 
-    let cln_one_dir = get_cln_dir("one");
-    let cln_client = ClnClient::new(cln_one_dir.clone(), None).await?;
+    let work_dir = get_test_temp_dir();
+    let cln_one_dir = get_cln_dir(&work_dir, "one");
+    let cln_client = create_cln_client_with_retry(cln_one_dir.clone()).await?;
     cln_client
         .pay_bolt12_offer(Some(pay_amount_msats), mint_quote.request.clone())
         .await?;

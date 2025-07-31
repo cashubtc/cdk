@@ -6,6 +6,7 @@ use cashu::{Bolt11Invoice, ProofsMethods};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{ReceiveOptions, SendKind, SendOptions, Wallet};
+use cdk_integration_tests::init_regtest::get_temp_dir;
 use cdk_integration_tests::{
     create_invoice_for_env, get_mint_url_from_env, pay_if_regtest, wait_for_mint_to_be_paid,
 };
@@ -26,7 +27,7 @@ async fn test_swap() {
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
-    pay_if_regtest(&invoice).await.unwrap();
+    pay_if_regtest(&get_temp_dir(), &invoice).await.unwrap();
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 10)
         .await
@@ -93,7 +94,7 @@ async fn test_fake_melt_change_in_quote() {
 
     let bolt11 = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
 
-    pay_if_regtest(&bolt11).await.unwrap();
+    pay_if_regtest(&get_temp_dir(), &bolt11).await.unwrap();
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
         .await
@@ -106,7 +107,9 @@ async fn test_fake_melt_change_in_quote() {
 
     let invoice_amount = 9;
 
-    let invoice = create_invoice_for_env(Some(invoice_amount)).await.unwrap();
+    let invoice = create_invoice_for_env(&get_temp_dir(), Some(invoice_amount))
+        .await
+        .unwrap();
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 

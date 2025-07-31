@@ -14,10 +14,46 @@ use cdk_common::payment::{self, MintPayment};
 use cdk_common::Amount;
 #[cfg(feature = "fake")]
 use cdk_fake_wallet::FakeWallet;
+use clap::Parser;
 use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "cln", feature = "lnd", feature = "fake"))]
 use tokio::signal;
 use tracing_subscriber::EnvFilter;
+
+/// Common CLI arguments for CDK binaries
+#[derive(Parser, Debug)]
+pub struct CommonArgs {
+    /// Enable logging (default is false)
+    #[arg(long, default_value_t = false)]
+    pub enable_logging: bool,
+
+    /// Logging level when enabled (default is debug)
+    #[arg(long, default_value = "debug")]
+    pub log_level: tracing::Level,
+}
+
+/// Initialize logging based on CLI arguments
+pub fn init_logging(enable_logging: bool, log_level: tracing::Level) {
+    if enable_logging {
+        let default_filter = log_level.to_string();
+
+        // Common filters to reduce noise
+        let sqlx_filter = "sqlx=warn";
+        let hyper_filter = "hyper=warn";
+        let h2_filter = "h2=warn";
+        let rustls_filter = "rustls=warn";
+        let reqwest_filter = "reqwest=warn";
+
+        let env_filter = EnvFilter::new(format!(
+            "{default_filter},{sqlx_filter},{hyper_filter},{h2_filter},{rustls_filter},{reqwest_filter}"
+        ));
+
+        // Ok if successful, Err if already initialized
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .try_init();
+    }
+}
 
 pub const ENV_LN_BACKEND: &str = "CDK_PAYMENT_PROCESSOR_LN_BACKEND";
 pub const ENV_LISTEN_HOST: &str = "CDK_PAYMENT_PROCESSOR_LISTEN_HOST";
@@ -36,20 +72,20 @@ pub const ENV_LND_ADDRESS: &str = "CDK_PAYMENT_PROCESSOR_LND_ADDRESS";
 pub const ENV_LND_CERT_FILE: &str = "CDK_PAYMENT_PROCESSOR_LND_CERT_FILE";
 pub const ENV_LND_MACAROON_FILE: &str = "CDK_PAYMENT_PROCESSOR_LND_MACAROON_FILE";
 
+#[derive(Parser)]
+#[command(name = "payment-processor")]
+#[command(about = "CDK Payment Processor", long_about = None)]
+struct Args {
+    #[command(flatten)]
+    common: CommonArgs,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let default_filter = "debug";
+    let args = Args::parse();
 
-    let sqlx_filter = "sqlx=warn";
-    let hyper_filter = "hyper=warn";
-    let h2_filter = "h2=warn";
-    let rustls_filter = "rustls=warn";
-
-    let env_filter = EnvFilter::new(format!(
-        "{default_filter},{sqlx_filter},{hyper_filter},{h2_filter},{rustls_filter}"
-    ));
-
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    // Initialize logging based on CLI arguments
+    init_logging(args.common.enable_logging, args.common.log_level);
 
     #[cfg(any(feature = "cln", feature = "lnd", feature = "fake"))]
     {

@@ -31,21 +31,41 @@ pub const LND_TWO_RPC_ADDR: &str = "localhost:10010";
 pub const CLN_ADDR: &str = "127.0.0.1:19846";
 pub const CLN_TWO_ADDR: &str = "127.0.0.1:19847";
 
-pub fn get_mint_addr() -> String {
-    env::var("CDK_ITESTS_MINT_ADDR").expect("Mint address not set")
+/// Configuration for regtest environment
+pub struct RegtestConfig {
+    pub mint_addr: String,
+    pub cln_port: u16,
+    pub lnd_port: u16,
+    pub temp_dir: PathBuf,
 }
 
-pub fn get_mint_port(which: &str) -> u16 {
-    let dir = env::var(format!("CDK_ITESTS_MINT_PORT_{which}")).expect("Mint port not set");
-    dir.parse().unwrap()
+impl Default for RegtestConfig {
+    fn default() -> Self {
+        Self {
+            mint_addr: "127.0.0.1".to_string(),
+            cln_port: 8085,
+            lnd_port: 8087,
+            temp_dir: std::env::temp_dir().join("cdk-itests-default"),
+        }
+    }
 }
 
-pub fn get_mint_url(which: &str) -> String {
-    format!("http://{}:{}", get_mint_addr(), get_mint_port(which))
+pub fn get_mint_url_with_config(config: &RegtestConfig, which: &str) -> String {
+    let port = match which {
+        "0" => config.cln_port,
+        "1" => config.lnd_port,
+        _ => panic!("Unknown mint identifier: {which}"),
+    };
+    format!("http://{}:{}", config.mint_addr, port)
 }
 
-pub fn get_mint_ws_url(which: &str) -> String {
-    format!("ws://{}:{}/v1/ws", get_mint_addr(), get_mint_port(which))
+pub fn get_mint_ws_url_with_config(config: &RegtestConfig, which: &str) -> String {
+    let port = match which {
+        "0" => config.cln_port,
+        "1" => config.lnd_port,
+        _ => panic!("Unknown mint identifier: {which}"),
+    };
+    format!("ws://{}:{}/v1/ws", config.mint_addr, port)
 }
 
 pub fn get_temp_dir() -> PathBuf {
@@ -54,15 +74,19 @@ pub fn get_temp_dir() -> PathBuf {
     dir.parse().expect("Valid path buf")
 }
 
-pub fn get_bitcoin_dir() -> PathBuf {
-    let dir = get_temp_dir().join(BITCOIN_DIR);
+pub fn get_temp_dir_with_config(config: &RegtestConfig) -> &PathBuf {
+    &config.temp_dir
+}
+
+pub fn get_bitcoin_dir(temp_dir: &Path) -> PathBuf {
+    let dir = temp_dir.join(BITCOIN_DIR);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-pub fn init_bitcoind() -> Bitcoind {
+pub fn init_bitcoind(work_dir: &Path) -> Bitcoind {
     Bitcoind::new(
-        get_bitcoin_dir(),
+        get_bitcoin_dir(work_dir),
         BITCOIND_ADDR.parse().unwrap(),
         BITCOIN_RPC_USER.to_string(),
         BITCOIN_RPC_PASS.to_string(),
@@ -81,14 +105,14 @@ pub fn init_bitcoin_client() -> Result<BitcoinClient> {
     )
 }
 
-pub fn get_cln_dir(name: &str) -> PathBuf {
-    let dir = get_temp_dir().join("cln").join(name);
+pub fn get_cln_dir(work_dir: &Path, name: &str) -> PathBuf {
+    let dir = work_dir.join("cln").join(name);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-pub fn get_lnd_dir(name: &str) -> PathBuf {
-    let dir = get_temp_dir().join("lnd").join(name);
+pub fn get_lnd_dir(work_dir: &Path, name: &str) -> PathBuf {
+    let dir = work_dir.join("lnd").join(name);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -101,9 +125,14 @@ pub fn get_lnd_macaroon_path(lnd_dir: &Path) -> PathBuf {
     lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon")
 }
 
-pub async fn init_lnd(lnd_dir: PathBuf, lnd_addr: &str, lnd_rpc_addr: &str) -> Lnd {
+pub async fn init_lnd(
+    work_dir: &Path,
+    lnd_dir: PathBuf,
+    lnd_addr: &str,
+    lnd_rpc_addr: &str,
+) -> Lnd {
     Lnd::new(
-        get_bitcoin_dir(),
+        get_bitcoin_dir(work_dir),
         lnd_dir,
         lnd_addr.parse().unwrap(),
         lnd_rpc_addr.to_string(),
@@ -192,8 +221,12 @@ where
     Ok(())
 }
 
-pub async fn start_regtest_end(sender: Sender<()>, notify: Arc<Notify>) -> anyhow::Result<()> {
-    let mut bitcoind = init_bitcoind();
+pub async fn start_regtest_end(
+    work_dir: &Path,
+    sender: Sender<()>,
+    notify: Arc<Notify>,
+) -> anyhow::Result<()> {
+    let mut bitcoind = init_bitcoind(work_dir);
     bitcoind.start_bitcoind()?;
 
     let bitcoin_client = init_bitcoin_client()?;
@@ -203,9 +236,9 @@ pub async fn start_regtest_end(sender: Sender<()>, notify: Arc<Notify>) -> anyho
     let new_add = bitcoin_client.get_new_address()?;
     bitcoin_client.generate_blocks(&new_add, 200).unwrap();
 
-    let cln_one_dir = get_cln_dir("one");
+    let cln_one_dir = get_cln_dir(work_dir, "one");
     let mut clnd = Clnd::new(
-        get_bitcoin_dir(),
+        get_bitcoin_dir(work_dir),
         cln_one_dir.clone(),
         CLN_ADDR.into(),
         BITCOIN_RPC_USER.to_string(),
@@ -220,9 +253,9 @@ pub async fn start_regtest_end(sender: Sender<()>, notify: Arc<Notify>) -> anyho
     fund_ln(&bitcoin_client, &cln_client).await.unwrap();
 
     // Create second cln
-    let cln_two_dir = get_cln_dir("two");
+    let cln_two_dir = get_cln_dir(work_dir, "two");
     let mut clnd_two = Clnd::new(
-        get_bitcoin_dir(),
+        get_bitcoin_dir(work_dir),
         cln_two_dir.clone(),
         CLN_TWO_ADDR.into(),
         BITCOIN_RPC_USER.to_string(),
@@ -236,10 +269,10 @@ pub async fn start_regtest_end(sender: Sender<()>, notify: Arc<Notify>) -> anyho
 
     fund_ln(&bitcoin_client, &cln_two_client).await.unwrap();
 
-    let lnd_dir = get_lnd_dir("one");
+    let lnd_dir = get_lnd_dir(work_dir, "one");
     println!("{}", lnd_dir.display());
 
-    let mut lnd = init_lnd(lnd_dir.clone(), LND_ADDR, LND_RPC_ADDR).await;
+    let mut lnd = init_lnd(work_dir, lnd_dir.clone(), LND_ADDR, LND_RPC_ADDR).await;
     lnd.start_lnd().unwrap();
     tracing::info!("Started lnd node");
 
@@ -255,8 +288,15 @@ pub async fn start_regtest_end(sender: Sender<()>, notify: Arc<Notify>) -> anyho
     fund_ln(&bitcoin_client, &lnd_client).await.unwrap();
 
     // create second lnd node
-    let lnd_two_dir = get_lnd_dir("two");
-    let mut lnd_two = init_lnd(lnd_two_dir.clone(), LND_TWO_ADDR, LND_TWO_RPC_ADDR).await;
+    let work_dir = get_temp_dir();
+    let lnd_two_dir = get_lnd_dir(&work_dir, "two");
+    let mut lnd_two = init_lnd(
+        &work_dir,
+        lnd_two_dir.clone(),
+        LND_TWO_ADDR,
+        LND_TWO_RPC_ADDR,
+    )
+    .await;
     lnd_two.start_lnd().unwrap();
     tracing::info!("Started second lnd node");
 
