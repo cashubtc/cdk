@@ -155,62 +155,210 @@ impl From<ProofState> for CdkState {
 }
 
 /// FFI-compatible Token
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, uniffi::Object)]
 pub struct Token {
-    pub token: String,
-}
-
-impl Token {
-    pub fn new(token: String) -> Self {
-        Self { token }
-    }
+    pub(crate) inner: cdk::nuts::Token,
 }
 
 impl From<cdk::nuts::Token> for Token {
     fn from(token: cdk::nuts::Token) -> Self {
-        Self {
-            token: token.to_string(),
+        Self { inner: token }
+    }
+}
+
+impl From<Token> for cdk::nuts::Token {
+    fn from(token: Token) -> Self {
+        token.inner
+    }
+}
+
+#[uniffi::export]
+impl Token {
+    /// Create a new Token from string
+    #[uniffi::constructor]
+    pub fn from_string(token_str: String) -> Result<Token, FfiError> {
+        let token = cdk::nuts::Token::from_str(&token_str)
+            .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+        Ok(Token { inner: token })
+    }
+
+    /// Get the token as a string
+    pub fn to_string(&self) -> String {
+        self.inner.to_string()
+    }
+
+    /// Get the total value of the token
+    pub fn value(&self) -> Result<Amount, FfiError> {
+        Ok(self.inner.value()?.into())
+    }
+
+    /// Get the memo from the token
+    pub fn memo(&self) -> Option<String> {
+        self.inner.memo().clone()
+    }
+
+    /// Get the currency unit
+    pub fn unit(&self) -> Option<CurrencyUnit> {
+        self.inner.unit().map(Into::into)
+    }
+
+    /// Get the mint URL
+    pub fn mint_url(&self) -> Result<MintUrl, FfiError> {
+        Ok(self.inner.mint_url()?.into())
+    }
+
+    /// Get proofs from the token (simplified - no keyset filtering for now)
+    pub fn proofs_simple(&self) -> Result<Proofs, FfiError> {
+        // For now, return empty keysets to get all proofs
+        let empty_keysets = vec![];
+        let proofs = self.inner.proofs(&empty_keysets)?;
+        Ok(proofs
+            .into_iter()
+            .map(|p| std::sync::Arc::new(p.into()))
+            .collect())
+    }
+
+    /// Convert to V3 string format
+    pub fn to_v3_string(&self) -> String {
+        self.inner.to_v3_string()
+    }
+}
+
+/// FFI-compatible SendMemo
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SendMemo {
+    /// Memo text
+    pub memo: String,
+    /// Include memo in token
+    pub include_memo: bool,
+}
+
+impl From<SendMemo> for cdk::wallet::SendMemo {
+    fn from(memo: SendMemo) -> Self {
+        cdk::wallet::SendMemo {
+            memo: memo.memo,
+            include_memo: memo.include_memo,
         }
     }
 }
 
-impl TryFrom<Token> for cdk::nuts::Token {
-    type Error = FfiError;
+impl From<cdk::wallet::SendMemo> for SendMemo {
+    fn from(memo: cdk::wallet::SendMemo) -> Self {
+        Self {
+            memo: memo.memo,
+            include_memo: memo.include_memo,
+        }
+    }
+}
 
-    fn try_from(token: Token) -> Result<Self, Self::Error> {
-        cdk::nuts::Token::from_str(&token.token)
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })
+/// FFI-compatible SplitTarget
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum SplitTarget {
+    /// Default target; least amount of proofs
+    None,
+    /// Target amount for wallet to have most proofs that add up to value
+    Value { amount: Amount },
+    /// Specific amounts to split into (must equal amount being split)
+    Values { amounts: Vec<Amount> },
+}
+
+impl From<SplitTarget> for cdk::amount::SplitTarget {
+    fn from(target: SplitTarget) -> Self {
+        match target {
+            SplitTarget::None => cdk::amount::SplitTarget::None,
+            SplitTarget::Value { amount } => cdk::amount::SplitTarget::Value(amount.into()),
+            SplitTarget::Values { amounts } => {
+                cdk::amount::SplitTarget::Values(amounts.into_iter().map(Into::into).collect())
+            }
+        }
+    }
+}
+
+impl From<cdk::amount::SplitTarget> for SplitTarget {
+    fn from(target: cdk::amount::SplitTarget) -> Self {
+        match target {
+            cdk::amount::SplitTarget::None => SplitTarget::None,
+            cdk::amount::SplitTarget::Value(amount) => SplitTarget::Value {
+                amount: amount.into(),
+            },
+            cdk::amount::SplitTarget::Values(amounts) => SplitTarget::Values {
+                amounts: amounts.into_iter().map(Into::into).collect(),
+            },
+        }
+    }
+}
+
+/// FFI-compatible SendKind
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum SendKind {
+    /// Allow online swap before send if wallet does not have exact amount
+    OnlineExact,
+    /// Prefer offline send if difference is less than tolerance
+    OnlineTolerance { tolerance: Amount },
+    /// Wallet cannot do an online swap and selected proof must be exactly send amount
+    OfflineExact,
+    /// Wallet must remain offline but can over pay if below tolerance
+    OfflineTolerance { tolerance: Amount },
+}
+
+impl From<SendKind> for cdk_common::wallet::SendKind {
+    fn from(kind: SendKind) -> Self {
+        match kind {
+            SendKind::OnlineExact => cdk_common::wallet::SendKind::OnlineExact,
+            SendKind::OnlineTolerance { tolerance } => {
+                cdk_common::wallet::SendKind::OnlineTolerance(tolerance.into())
+            }
+            SendKind::OfflineExact => cdk_common::wallet::SendKind::OfflineExact,
+            SendKind::OfflineTolerance { tolerance } => {
+                cdk_common::wallet::SendKind::OfflineTolerance(tolerance.into())
+            }
+        }
+    }
+}
+
+impl From<cdk_common::wallet::SendKind> for SendKind {
+    fn from(kind: cdk_common::wallet::SendKind) -> Self {
+        match kind {
+            cdk_common::wallet::SendKind::OnlineExact => SendKind::OnlineExact,
+            cdk_common::wallet::SendKind::OnlineTolerance(tolerance) => SendKind::OnlineTolerance {
+                tolerance: tolerance.into(),
+            },
+            cdk_common::wallet::SendKind::OfflineExact => SendKind::OfflineExact,
+            cdk_common::wallet::SendKind::OfflineTolerance(tolerance) => {
+                SendKind::OfflineTolerance {
+                    tolerance: tolerance.into(),
+                }
+            }
+        }
     }
 }
 
 /// FFI-compatible Send options
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct SendOptions {
-    pub offline: bool,
+    /// Memo
+    pub memo: Option<SendMemo>,
+    /// Spending conditions (JSON string for now - simplified)
+    pub conditions: Option<String>,
+    /// Amount split target
+    pub amount_split_target: SplitTarget,
+    /// Send kind
+    pub send_kind: SendKind,
+    /// Include fee
+    pub include_fee: bool,
+    /// Maximum number of proofs to include in the token
+    pub max_proofs: Option<u32>,
+    /// Metadata
+    pub metadata: HashMap<String, String>,
 }
 
 impl Default for SendOptions {
     fn default() -> Self {
-        Self { offline: false }
-    }
-}
-
-impl From<SendOptions> for cdk::wallet::SendOptions {
-    fn from(opts: SendOptions) -> Self {
-        use cdk::amount::SplitTarget;
-        use cdk_common::wallet::SendKind;
-
-        let send_kind = if opts.offline {
-            SendKind::OfflineExact
-        } else {
-            SendKind::OnlineExact
-        };
-
-        cdk::wallet::SendOptions {
+        Self {
             memo: None,
             conditions: None,
             amount_split_target: SplitTarget::None,
-            send_kind,
+            send_kind: SendKind::OnlineExact,
             include_fee: false,
             max_proofs: None,
             metadata: HashMap::new(),
@@ -218,27 +366,118 @@ impl From<SendOptions> for cdk::wallet::SendOptions {
     }
 }
 
+impl From<SendOptions> for cdk::wallet::SendOptions {
+    fn from(opts: SendOptions) -> Self {
+        // Parse spending conditions from JSON string if provided
+        let conditions = if let Some(cond_str) = opts.conditions {
+            // For now, we'll parse this as JSON. In a full implementation,
+            // you might want to create a proper FFI type for SpendingConditions
+            serde_json::from_str(&cond_str).ok()
+        } else {
+            None
+        };
+
+        cdk::wallet::SendOptions {
+            memo: opts.memo.map(Into::into),
+            conditions,
+            amount_split_target: opts.amount_split_target.into(),
+            send_kind: opts.send_kind.into(),
+            include_fee: opts.include_fee,
+            max_proofs: opts.max_proofs.map(|p| p as usize),
+            metadata: opts.metadata,
+        }
+    }
+}
+
+impl From<cdk::wallet::SendOptions> for SendOptions {
+    fn from(opts: cdk::wallet::SendOptions) -> Self {
+        // Convert spending conditions to JSON string if present
+        let conditions = if let Some(cond) = opts.conditions {
+            serde_json::to_string(&cond).ok()
+        } else {
+            None
+        };
+
+        Self {
+            memo: opts.memo.map(Into::into),
+            conditions,
+            amount_split_target: opts.amount_split_target.into(),
+            send_kind: opts.send_kind.into(),
+            include_fee: opts.include_fee,
+            max_proofs: opts.max_proofs.map(|p| p as u32),
+            metadata: opts.metadata,
+        }
+    }
+}
+
+/// FFI-compatible SecretKey
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SecretKey {
+    /// Hex-encoded secret key (64 characters)
+    pub hex: String,
+}
+
+impl SecretKey {
+    /// Create a new SecretKey from hex string
+    pub fn from_hex(hex: String) -> Result<Self, FfiError> {
+        // Validate hex string length (should be 64 characters for 32 bytes)
+        if hex.len() != 64 {
+            return Err(FfiError::Generic {
+                msg: "Secret key hex must be exactly 64 characters (32 bytes)".to_string(),
+            });
+        }
+
+        // Validate hex format
+        if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(FfiError::Generic {
+                msg: "Secret key hex contains invalid characters".to_string(),
+            });
+        }
+
+        Ok(Self { hex })
+    }
+
+    /// Generate a random secret key
+    pub fn random() -> Self {
+        use cdk::nuts::SecretKey as CdkSecretKey;
+        let secret_key = CdkSecretKey::generate();
+        Self {
+            hex: secret_key.to_secret_hex(),
+        }
+    }
+}
+
+impl From<SecretKey> for cdk::nuts::SecretKey {
+    fn from(key: SecretKey) -> Self {
+        // This will panic if hex is invalid, but we validate in from_hex()
+        cdk::nuts::SecretKey::from_hex(&key.hex).expect("Invalid secret key hex")
+    }
+}
+
+impl From<cdk::nuts::SecretKey> for SecretKey {
+    fn from(key: cdk::nuts::SecretKey) -> Self {
+        Self {
+            hex: key.to_secret_hex(),
+        }
+    }
+}
+
 /// FFI-compatible Receive options
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ReceiveOptions {
-    pub check_spendable: bool,
+    /// Amount split target
+    pub amount_split_target: SplitTarget,
+    /// P2PK signing keys
+    pub p2pk_signing_keys: Vec<SecretKey>,
+    /// Preimages for HTLC conditions
+    pub preimages: Vec<String>,
+    /// Metadata
+    pub metadata: HashMap<String, String>,
 }
 
 impl Default for ReceiveOptions {
     fn default() -> Self {
         Self {
-            check_spendable: true,
-        }
-    }
-}
-
-impl From<ReceiveOptions> for cdk::wallet::ReceiveOptions {
-    fn from(_opts: ReceiveOptions) -> Self {
-        use std::collections::HashMap;
-
-        use cdk::amount::SplitTarget;
-
-        cdk::wallet::ReceiveOptions {
             amount_split_target: SplitTarget::None,
             p2pk_signing_keys: Vec::new(),
             preimages: Vec::new(),
@@ -247,108 +486,241 @@ impl From<ReceiveOptions> for cdk::wallet::ReceiveOptions {
     }
 }
 
+impl From<ReceiveOptions> for cdk::wallet::ReceiveOptions {
+    fn from(opts: ReceiveOptions) -> Self {
+        cdk::wallet::ReceiveOptions {
+            amount_split_target: opts.amount_split_target.into(),
+            p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
+            preimages: opts.preimages,
+            metadata: opts.metadata,
+        }
+    }
+}
+
+impl From<cdk::wallet::ReceiveOptions> for ReceiveOptions {
+    fn from(opts: cdk::wallet::ReceiveOptions) -> Self {
+        Self {
+            amount_split_target: opts.amount_split_target.into(),
+            p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
+            preimages: opts.preimages,
+            metadata: opts.metadata,
+        }
+    }
+}
+
 /// FFI-compatible Proof
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, uniffi::Object)]
 pub struct Proof {
-    pub amount: Amount,
-    pub secret: String,
-    pub c: String,
-    pub witness: Option<String>,
+    pub(crate) inner: cdk::nuts::Proof,
 }
 
 impl From<cdk::nuts::Proof> for Proof {
     fn from(proof: cdk::nuts::Proof) -> Self {
-        Self {
-            amount: proof.amount.into(),
-            secret: proof.secret.to_string(),
-            c: proof.c.to_string(),
-            witness: proof
-                .witness
-                .map(|w| serde_json::to_string(&w).unwrap_or_default()),
-        }
+        Self { inner: proof }
     }
 }
 
-impl TryFrom<Proof> for cdk::nuts::Proof {
-    type Error = FfiError;
+impl From<Proof> for cdk::nuts::Proof {
+    fn from(proof: Proof) -> Self {
+        proof.inner
+    }
+}
 
-    fn try_from(proof: Proof) -> Result<Self, Self::Error> {
-        use cdk::nuts::{Id, PublicKey};
-        use cdk::secret::Secret;
+#[uniffi::export]
+impl Proof {
+    /// Get the amount
+    pub fn amount(&self) -> Amount {
+        self.inner.amount.into()
+    }
 
-        let secret = Secret::from_str(&proof.secret)
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
-        let c =
-            PublicKey::from_str(&proof.c).map_err(|e| FfiError::Generic { msg: e.to_string() })?;
-        let witness = if let Some(w) = proof.witness {
-            Some(serde_json::from_str(&w).map_err(|e| FfiError::Generic { msg: e.to_string() })?)
-        } else {
-            None
-        };
+    /// Get the secret as string
+    pub fn secret(&self) -> String {
+        self.inner.secret.to_string()
+    }
 
-        Ok(cdk::nuts::Proof {
-            amount: proof.amount.into(),
-            secret,
-            c,
-            witness,
-            keyset_id: Id::from_bytes(&[0u8; 8])
-                .unwrap_or_else(|_| panic!("Failed to create keyset ID")),
-            dleq: None,
-        })
+    /// Get the unblinded signature (C) as string
+    pub fn c(&self) -> String {
+        self.inner.c.to_string()
+    }
+
+    /// Get the keyset ID as string
+    pub fn keyset_id(&self) -> String {
+        self.inner.keyset_id.to_string()
+    }
+
+    /// Get the witness as JSON string
+    pub fn witness(&self) -> Option<String> {
+        self.inner
+            .witness
+            .as_ref()
+            .map(|w| serde_json::to_string(w).unwrap_or_default())
+    }
+
+    /// Check if proof is active with given keyset IDs
+    pub fn is_active(&self, active_keyset_ids: Vec<String>) -> bool {
+        use cdk::nuts::Id;
+        let ids: Vec<Id> = active_keyset_ids
+            .into_iter()
+            .filter_map(|id| Id::from_str(&id).ok())
+            .collect();
+        self.inner.is_active(&ids)
+    }
+
+    /// Get the Y value (hash_to_curve of secret)
+    pub fn y(&self) -> Result<String, FfiError> {
+        Ok(self.inner.y()?.to_string())
     }
 }
 
 /// FFI-compatible Proofs (vector of Proof)
-pub type Proofs = Vec<Proof>;
+pub type Proofs = Vec<std::sync::Arc<Proof>>;
+
+/// Helper functions for Proofs
+pub fn proofs_total_amount(proofs: &Proofs) -> Result<Amount, FfiError> {
+    let cdk_proofs: Vec<cdk::nuts::Proof> = proofs.iter().map(|p| p.inner.clone()).collect();
+    use cdk::nuts::ProofsMethods;
+    Ok(cdk_proofs.total_amount()?.into())
+}
 
 /// FFI-compatible MintQuote
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, uniffi::Object)]
 pub struct MintQuote {
-    pub id: String,
-    pub amount: Amount,
-    pub unit: CurrencyUnit,
-    pub request: String,
-    pub state: QuoteState,
-    pub expiry: Option<u64>,
+    inner: cdk::wallet::MintQuote,
 }
 
 impl From<cdk::wallet::MintQuote> for MintQuote {
     fn from(quote: cdk::wallet::MintQuote) -> Self {
-        Self {
-            id: quote.id,
-            // Handle optional amount
-            amount: quote.amount.unwrap_or_default().into(),
-            unit: quote.unit.into(),
-            request: quote.request,
-            state: QuoteState::Unpaid, // Simplified mapping
-            expiry: Some(quote.expiry),
-        }
+        Self { inner: quote }
+    }
+}
+
+impl From<MintQuote> for cdk::wallet::MintQuote {
+    fn from(quote: MintQuote) -> Self {
+        quote.inner
+    }
+}
+
+#[uniffi::export]
+impl MintQuote {
+    /// Get quote ID
+    pub fn id(&self) -> String {
+        self.inner.id.clone()
+    }
+
+    /// Get quote amount
+    pub fn amount(&self) -> Option<Amount> {
+        self.inner.amount.map(Into::into)
+    }
+
+    /// Get currency unit
+    pub fn unit(&self) -> CurrencyUnit {
+        self.inner.unit.clone().into()
+    }
+
+    /// Get payment request
+    pub fn request(&self) -> String {
+        self.inner.request.clone()
+    }
+
+    /// Get quote state
+    pub fn state(&self) -> QuoteState {
+        self.inner.state.into()
+    }
+
+    /// Get expiry timestamp
+    pub fn expiry(&self) -> u64 {
+        self.inner.expiry
+    }
+
+    /// Get mint URL
+    pub fn mint_url(&self) -> MintUrl {
+        self.inner.mint_url.clone().into()
+    }
+
+    /// Get total amount (amount + fees)
+    pub fn total_amount(&self) -> Amount {
+        self.inner.total_amount().into()
+    }
+
+    /// Check if quote is expired
+    pub fn is_expired(&self, current_time: u64) -> bool {
+        self.inner.is_expired(current_time)
+    }
+
+    /// Get amount that can be minted
+    pub fn amount_mintable(&self) -> Amount {
+        self.inner.amount_mintable().into()
+    }
+
+    /// Get amount issued
+    pub fn amount_issued(&self) -> Amount {
+        self.inner.amount_issued.into()
+    }
+
+    /// Get amount paid
+    pub fn amount_paid(&self) -> Amount {
+        self.inner.amount_paid.into()
     }
 }
 
 /// FFI-compatible MeltQuote
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, uniffi::Object)]
 pub struct MeltQuote {
-    pub id: String,
-    pub amount: Amount,
-    pub unit: CurrencyUnit,
-    pub request: String,
-    pub fee_reserve: Amount,
-    pub state: QuoteState,
-    pub expiry: Option<u64>,
+    inner: cdk::wallet::MeltQuote,
 }
 
 impl From<cdk::wallet::MeltQuote> for MeltQuote {
     fn from(quote: cdk::wallet::MeltQuote) -> Self {
-        Self {
-            id: quote.id,
-            amount: quote.amount.into(),
-            unit: quote.unit.into(),
-            request: quote.request,
-            fee_reserve: quote.fee_reserve.into(),
-            state: QuoteState::Unpaid, // Simplified mapping
-            expiry: Some(quote.expiry),
-        }
+        Self { inner: quote }
+    }
+}
+
+impl From<MeltQuote> for cdk::wallet::MeltQuote {
+    fn from(quote: MeltQuote) -> Self {
+        quote.inner
+    }
+}
+
+#[uniffi::export]
+impl MeltQuote {
+    /// Get quote ID
+    pub fn id(&self) -> String {
+        self.inner.id.clone()
+    }
+
+    /// Get quote amount
+    pub fn amount(&self) -> Amount {
+        self.inner.amount.into()
+    }
+
+    /// Get currency unit
+    pub fn unit(&self) -> CurrencyUnit {
+        self.inner.unit.clone().into()
+    }
+
+    /// Get payment request
+    pub fn request(&self) -> String {
+        self.inner.request.clone()
+    }
+
+    /// Get fee reserve
+    pub fn fee_reserve(&self) -> Amount {
+        self.inner.fee_reserve.into()
+    }
+
+    /// Get quote state
+    pub fn state(&self) -> QuoteState {
+        self.inner.state.into()
+    }
+
+    /// Get expiry timestamp
+    pub fn expiry(&self) -> u64 {
+        self.inner.expiry
+    }
+
+    /// Get payment preimage
+    pub fn payment_preimage(&self) -> Option<String> {
+        self.inner.payment_preimage.clone()
     }
 }
 
@@ -373,6 +745,18 @@ impl From<cdk::nuts::nut05::QuoteState> for QuoteState {
     }
 }
 
+impl From<cdk::nuts::MintQuoteState> for QuoteState {
+    fn from(state: cdk::nuts::MintQuoteState) -> Self {
+        match state {
+            cdk::nuts::MintQuoteState::Unpaid => QuoteState::Unpaid,
+            cdk::nuts::MintQuoteState::Paid => QuoteState::Paid,
+            cdk::nuts::MintQuoteState::Issued => QuoteState::Issued,
+        }
+    }
+}
+
+// Note: MeltQuoteState is the same as nut05::QuoteState, so we don't need a separate impl
+
 /// FFI-compatible PreparedSend
 #[derive(Debug, uniffi::Object)]
 pub struct PreparedSend {
@@ -386,7 +770,12 @@ impl From<cdk::wallet::PreparedSend> for PreparedSend {
     fn from(prepared: cdk::wallet::PreparedSend) -> Self {
         let id = format!("{:?}", prepared); // Use debug format as ID
         let amount = prepared.amount().into();
-        let proofs = prepared.proofs().iter().cloned().map(Into::into).collect();
+        let proofs = prepared
+            .proofs()
+            .iter()
+            .cloned()
+            .map(|p| std::sync::Arc::new(p.into()))
+            .collect();
         Self {
             inner: Mutex::new(Some(prepared)),
             id,
@@ -497,28 +886,6 @@ pub struct Melted {
 //         }
 //     }
 // }
-
-/// FFI-compatible SplitTarget
-#[derive(Debug, Clone, uniffi::Enum)]
-pub enum SplitTarget {
-    None,
-    Value { target: Amount },
-    Send { count: u32 },
-}
-
-impl From<SplitTarget> for cdk::amount::SplitTarget {
-    fn from(target: SplitTarget) -> Self {
-        match target {
-            SplitTarget::None => cdk::amount::SplitTarget::None,
-            SplitTarget::Value { target } => cdk::amount::SplitTarget::Value(target.into()),
-            SplitTarget::Send { count } => {
-                // Create values for split target - this is a simplified approach
-                let values: Vec<cdk::Amount> = (0..count).map(|_| cdk::Amount::from(1)).collect();
-                cdk::amount::SplitTarget::Values(values)
-            }
-        }
-    }
-}
 
 /// FFI-compatible MeltOptions
 #[derive(Debug, Clone, uniffi::Record)]

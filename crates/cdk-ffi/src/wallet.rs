@@ -100,7 +100,7 @@ impl Wallet {
         amount: Amount,
         options: SendOptions,
         memo: Option<String>,
-    ) -> Result<Token, FfiError> {
+    ) -> Result<std::sync::Arc<Token>, FfiError> {
         self.runtime.block_on(async {
             let prepared = self
                 .inner
@@ -110,14 +110,21 @@ impl Wallet {
             let send_memo = memo.map(|m| cdk::wallet::SendMemo::for_token(&m));
             let token = prepared.confirm(send_memo).await?;
 
-            Ok(token.into())
+            Ok(std::sync::Arc::new(token.into()))
         })
     }
 
     /// Receive tokens
-    pub fn receive(&self, token: Token, options: ReceiveOptions) -> Result<Amount, FfiError> {
+    pub fn receive(
+        &self,
+        token: std::sync::Arc<Token>,
+        options: ReceiveOptions,
+    ) -> Result<Amount, FfiError> {
         self.runtime.block_on(async {
-            let amount = self.inner.receive(&token.token, options.into()).await?;
+            let amount = self
+                .inner
+                .receive(&token.to_string(), options.into())
+                .await?;
             Ok(amount.into())
         })
     }
@@ -131,9 +138,9 @@ impl Wallet {
     }
 
     /// Verify token DLEQ proofs
-    pub fn verify_token_dleq(&self, token: Token) -> Result<(), FfiError> {
+    pub fn verify_token_dleq(&self, token: std::sync::Arc<Token>) -> Result<(), FfiError> {
         self.runtime.block_on(async {
-            let cdk_token: cdk::nuts::Token = token.try_into()?;
+            let cdk_token = token.inner.clone();
             self.inner.verify_token_dleq(&cdk_token).await?;
             Ok(())
         })
@@ -147,9 +154,8 @@ impl Wallet {
         memo: Option<String>,
     ) -> Result<Amount, FfiError> {
         self.runtime.block_on(async {
-            let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
-                proofs.into_iter().map(TryInto::try_into).collect();
-            let cdk_proofs = cdk_proofs?;
+            let cdk_proofs: Vec<cdk::nuts::Proof> =
+                proofs.into_iter().map(|p| p.inner.clone()).collect();
 
             let amount = self
                 .inner
@@ -179,10 +185,10 @@ impl Wallet {
         &self,
         amount: Amount,
         description: Option<String>,
-    ) -> Result<MintQuote, FfiError> {
+    ) -> Result<std::sync::Arc<MintQuote>, FfiError> {
         self.runtime.block_on(async {
             let quote = self.inner.mint_quote(amount.into(), description).await?;
-            Ok(quote.into())
+            Ok(std::sync::Arc::new(quote.into()))
         })
     }
 
@@ -208,7 +214,10 @@ impl Wallet {
                 .inner
                 .mint(&quote_id, amount_split_target.into(), conditions)
                 .await?;
-            Ok(proofs.into_iter().map(Into::into).collect())
+            Ok(proofs
+                .into_iter()
+                .map(|p| std::sync::Arc::new(p.into()))
+                .collect())
         })
     }
 
@@ -217,11 +226,11 @@ impl Wallet {
         &self,
         request: String,
         _options: Option<MeltOptions>,
-    ) -> Result<MeltQuote, FfiError> {
+    ) -> Result<std::sync::Arc<MeltQuote>, FfiError> {
         self.runtime.block_on(async {
             // Simplified approach - not using options for now
             let quote = self.inner.melt_quote(request, None).await?;
-            Ok(quote.into())
+            Ok(std::sync::Arc::new(quote.into()))
         })
     }
 
@@ -250,9 +259,8 @@ impl Wallet {
         include_fees: bool,
     ) -> Result<Option<Proofs>, FfiError> {
         self.runtime.block_on(async {
-            let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
-                input_proofs.into_iter().map(TryInto::try_into).collect();
-            let cdk_proofs = cdk_proofs?;
+            let cdk_proofs: Vec<cdk::nuts::Proof> =
+                input_proofs.into_iter().map(|p| p.inner.clone()).collect();
 
             // Parse spending conditions if provided
             let conditions = if let Some(cond_str) = spending_conditions {
@@ -275,7 +283,12 @@ impl Wallet {
                 )
                 .await?;
 
-            Ok(result.map(|proofs| proofs.into_iter().map(Into::into).collect()))
+            Ok(result.map(|proofs| {
+                proofs
+                    .into_iter()
+                    .map(|p| std::sync::Arc::new(p.into()))
+                    .collect()
+            }))
         })
     }
 
@@ -291,9 +304,8 @@ impl Wallet {
     /// Check if proofs are spent
     pub fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<bool>, FfiError> {
         self.runtime.block_on(async {
-            let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
-                proofs.into_iter().map(TryInto::try_into).collect();
-            let cdk_proofs = cdk_proofs?;
+            let cdk_proofs: Vec<cdk::nuts::Proof> =
+                proofs.into_iter().map(|p| p.inner.clone()).collect();
 
             let proof_states = self.inner.check_proofs_spent(cdk_proofs).await?;
             // Convert ProofState to bool (spent = true, unspent = false)

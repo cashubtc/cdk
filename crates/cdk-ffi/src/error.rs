@@ -90,3 +90,11 @@ impl From<cdk::amount::Error> for FfiError {
         }
     }
 }
+
+impl From<cdk_common::nut00::Error> for FfiError {
+    fn from(err: cdk_common::nut00::Error) -> Self {
+        FfiError::Generic {
+            msg: err.to_string(),
+        }
+    }
+}
