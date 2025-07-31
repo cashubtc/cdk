@@ -4,25 +4,29 @@
 cleanup() {
     echo "Cleaning up..."
 
-    echo "Killing the cdk mintd"
-    kill -2 $CDK_MINTD_PID
-    wait $CDK_MINTD_PID
-
-    
-    echo "Killing the cdk lnd mintd"
-    kill -2 $CDK_MINTD_LND_PID
-    wait $CDK_MINTD_LND_PID
-
-    echo "Killing the cdk regtest"
-    kill -2 $CDK_REGTEST_PID
-    wait $CDK_REGTEST_PID
-
+    echo "Killing the cdk regtest and mints"
+    if [ ! -z "$CDK_REGTEST_PID" ]; then
+        # First try graceful shutdown with SIGTERM
+        kill -15 $CDK_REGTEST_PID 2>/dev/null
+        sleep 2
+        
+        # Check if process is still running, if so force kill with SIGKILL
+        if ps -p $CDK_REGTEST_PID > /dev/null 2>&1; then
+            echo "Process still running, force killing..."
+            kill -9 $CDK_REGTEST_PID 2>/dev/null
+        fi
+        
+        # Wait for process to terminate
+        wait $CDK_REGTEST_PID 2>/dev/null || true
+    fi
 
     echo "Mint binary terminated"
 
     # Remove the temporary directory
-    rm -rf "$CDK_ITESTS_DIR"
-    echo "Temp directory removed: $CDK_ITESTS_DIR"
+    if [ ! -z "$CDK_ITESTS_DIR" ] && [ -d "$CDK_ITESTS_DIR" ]; then
+        rm -rf "$CDK_ITESTS_DIR"
+        echo "Temp directory removed: $CDK_ITESTS_DIR"
+    fi
     
     # Unset all environment variables
     unset CDK_ITESTS_DIR
@@ -32,18 +36,6 @@ cleanup() {
     unset CDK_MINTD_DATABASE
     unset CDK_TEST_MINT_URL
     unset CDK_TEST_MINT_URL_2
-    unset CDK_MINTD_URL
-    unset CDK_MINTD_WORK_DIR
-    unset CDK_MINTD_LISTEN_HOST
-    unset CDK_MINTD_LISTEN_PORT
-    unset CDK_MINTD_LN_BACKEND
-    unset CDK_MINTD_MNEMONIC
-    unset CDK_MINTD_CLN_RPC_PATH
-    unset CDK_MINTD_LND_ADDRESS
-    unset CDK_MINTD_LND_CERT_FILE
-    unset CDK_MINTD_LND_MACAROON_FILE
-    unset CDK_MINTD_PID
-    unset CDK_MINTD_LND_PID
     unset CDK_REGTEST_PID
     unset RUST_BACKTRACE
     unset CDK_TEST_REGTEST
@@ -69,53 +61,59 @@ fi
 echo "Temp directory created: $CDK_ITESTS_DIR"
 export CDK_MINTD_DATABASE="$1"
 
-cargo build -p cdk-integration-tests 
+cargo build -p cdk-integration-tests
+cargo build --bin start_regtest_mints 
 
-cargo run --bin start_regtest &
-
+echo "Starting regtest and mints"
+# Run the binary in background
+cargo r --bin start_regtest_mints -- --enable-logging "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR" "$CDK_ITESTS_MINT_ADDR" "$CDK_ITESTS_MINT_PORT_0" "$CDK_ITESTS_MINT_PORT_1" &
 export CDK_REGTEST_PID=$!
-mkfifo "$CDK_ITESTS_DIR/progress_pipe"
-rm -f "$CDK_ITESTS_DIR/signal_received"  # Ensure clean state
-# Start reading from pipe in background
-(while read line; do
-    case "$line" in
-        "checkpoint1")
-            echo "Reached first checkpoint"
-            touch "$CDK_ITESTS_DIR/signal_received"
-            exit 0
-            ;;
-    esac
-done < "$CDK_ITESTS_DIR/progress_pipe") &
-# Wait for up to 120 seconds
-for ((i=0; i<120; i++)); do
-    if [ -f "$CDK_ITESTS_DIR/signal_received" ]; then
-        echo "break signal received"
+
+# Give it a moment to start - reduced from 5 to 2 seconds since we have better waiting mechanisms now
+sleep 2
+
+# Look for the .env file in the current directory
+ENV_FILE_PATH="$CDK_ITESTS_DIR/.env"
+
+# Wait for the .env file to be created in the current directory
+max_wait=120
+wait_count=0
+while [ $wait_count -lt $max_wait ]; do
+    if [ -f "$ENV_FILE_PATH" ]; then
+        echo ".env file found at: $ENV_FILE_PATH"
         break
     fi
+    wait_count=$((wait_count + 1))
     sleep 1
 done
-echo "Regtest set up continuing"
 
-echo "Starting regtest mint"
-# cargo run --bin regtest_mint &
+# Check if we found the .env file
+if [ ! -f "$ENV_FILE_PATH" ]; then
+    echo "ERROR: Could not find .env file at $ENV_FILE_PATH"
+    exit 1
+fi
 
-export CDK_MINTD_CLN_RPC_PATH="$CDK_ITESTS_DIR/cln/one/regtest/lightning-rpc"
-export CDK_MINTD_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
-export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR"
-export CDK_MINTD_LISTEN_HOST=$CDK_ITESTS_MINT_ADDR
-export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_0
-export CDK_MINTD_LN_BACKEND="cln"
-export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
-export RUST_BACKTRACE=1
+# Source the environment variables from the .env file
+echo "Sourcing environment variables from $ENV_FILE_PATH"
+source "$ENV_FILE_PATH"
 
-echo "Starting cln mintd"
-cargo run --bin cdk-mintd &
-export CDK_MINTD_PID=$!
+echo "Sourced environment variables:"
+echo "CDK_TEST_MINT_URL=$CDK_TEST_MINT_URL"
+echo "CDK_TEST_MINT_URL_2=$CDK_TEST_MINT_URL_2"
+echo "CDK_ITESTS_DIR=$CDK_ITESTS_DIR"
 
+# Validate that we sourced the variables
+if [ -z "$CDK_TEST_MINT_URL" ] || [ -z "$CDK_TEST_MINT_URL_2" ] || [ -z "$CDK_ITESTS_DIR" ]; then
+    echo "ERROR: Failed to source environment variables from the .env file"
+    exit 1
+fi
 
-echo $CDK_ITESTS_DIR
+# Export all variables so they're available to the tests
+export CDK_TEST_MINT_URL
+export CDK_TEST_MINT_URL_2
 
-URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0/v1/info"
+URL="$CDK_TEST_MINT_URL/v1/info"
+
 
 TIMEOUT=100
 START_TIME=$(date +%s)
@@ -146,24 +144,8 @@ while true; do
     fi
 done
 
+URL="$CDK_TEST_MINT_URL_2/v1/info"
 
-export CDK_MINTD_LND_ADDRESS="https://localhost:10010"
-export CDK_MINTD_LND_CERT_FILE="$CDK_ITESTS_DIR/lnd/two/tls.cert"
-export CDK_MINTD_LND_MACAROON_FILE="$CDK_ITESTS_DIR/lnd/two/data/chain/bitcoin/regtest/admin.macaroon"
-
-export CDK_MINTD_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1"
-mkdir -p "$CDK_ITESTS_DIR/lnd_mint"
-export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR/lnd_mint"
-export CDK_MINTD_LISTEN_HOST=$CDK_ITESTS_MINT_ADDR
-export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_1
-export CDK_MINTD_LN_BACKEND="lnd"
-export CDK_MINTD_MNEMONIC="cattle gold bind busy sound reduce tone addict baby spend february strategy"
-
-echo "Starting lnd mintd"
-cargo run --bin cdk-mintd &
-export CDK_MINTD_LND_PID=$!
-
-URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1/v1/info"
 
 TIMEOUT=100
 START_TIME=$(date +%s)
@@ -193,13 +175,6 @@ while true; do
         sleep 2  # Wait for 2 seconds before retrying
     fi
 done
-
-
-
-export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
-export CDK_TEST_MINT_URL_2="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1"
-
-# Run tests and exit immediately on failure
 
 # Run cargo test
 echo "Running regtest test with CLN mint"
@@ -216,7 +191,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# # Run cargo test with the http_subscription feature
+# Run cargo test with the http_subscription feature
 echo "Running regtest test with http_subscription feature"
 cargo test -p cdk-integration-tests --test regtest --features http_subscription
 if [ $? -ne 0 ]; then
@@ -233,12 +208,13 @@ fi
 
 # Switch Mints: Run tests with LND mint
 echo "Switching to LND mint for tests"
-export CDK_ITESTS_MINT_PORT_0=8087
-export CDK_ITESTS_MINT_PORT_1=8085
-export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
-export CDK_TEST_MINT_URL_2="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1"
 
 echo "Running regtest test with LND mint"
+CDK_TEST_MINT_URL_SWITCHED=$CDK_TEST_MINT_URL_2
+CDK_TEST_MINT_URL_2_SWITCHED=$CDK_TEST_MINT_URL
+export CDK_TEST_MINT_URL=$CDK_TEST_MINT_URL_SWITCHED
+export CDK_TEST_MINT_URL_2=$CDK_TEST_MINT_URL_2_SWITCHED
+
 cargo test -p cdk-integration-tests --test regtest
 if [ $? -ne 0 ]; then
     echo "regtest test with LND mint failed, exiting"

@@ -211,10 +211,10 @@ impl MintConnector for DirectMintConnection {
 pub fn setup_tracing() {
     let default_filter = "debug";
 
-    let sqlx_filter = "sqlx=warn";
+    let h2_filter = "h2=warn";
     let hyper_filter = "hyper=warn";
 
-    let env_filter = EnvFilter::new(format!("{default_filter},{sqlx_filter},{hyper_filter}"));
+    let env_filter = EnvFilter::new(format!("{default_filter},{h2_filter},{hyper_filter}"));
 
     // Ok if successful, Err if already initialized
     // Allows us to setup tracing at the start of several parallel tests
