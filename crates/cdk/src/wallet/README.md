@@ -15,12 +15,12 @@ The CDK [`Wallet`] is a high level Cashu wallet. The [`Wallet`] is for a single 
 
   #[tokio::main]
   async fn main() -> anyhow::Result<()> {
-    let seed = random::<[u8; 32]>();
+    let seed = random::<[u8; 64]>();
     let mint_url = "https://fake.thesimplekid.dev";
     let unit = CurrencyUnit::Sat;
 
     let localstore = memory::empty().await?;
-    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None);
+    let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None);
     Ok(())
   }
 ```

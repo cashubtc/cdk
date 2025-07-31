@@ -31,12 +31,12 @@ impl Wallet {
     ///
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
-    ///     let seed = random::<[u8; 32]>();
+    ///     let seed = random::<[u8; 64]>();
     ///     let mint_url = "https://fake.thesimplekid.dev";
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = memory::empty().await?;
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None)?;
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None)?;
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount, None).await?;
@@ -170,12 +170,12 @@ impl Wallet {
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
-    ///     let seed = random::<[u8; 32]>();
+    ///     let seed = random::<[u8; 64]>();
     ///     let mint_url = "https://fake.thesimplekid.dev";
     ///     let unit = CurrencyUnit::Sat;
     ///
     ///     let localstore = memory::empty().await?;
-    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), &seed, None).unwrap();
+    ///     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None).unwrap();
     ///     let amount = Amount::from(100);
     ///
     ///     let quote = wallet.mint_quote(amount, None).await?;
@@ -243,10 +243,10 @@ impl Wallet {
                 &amount_split_target,
                 spending_conditions,
             )?,
-            None => PreMintSecrets::from_xpriv(
+            None => PreMintSecrets::from_seed(
                 active_keyset_id,
                 count,
-                self.xpriv,
+                &self.seed,
                 amount_mintable,
                 &amount_split_target,
             )?,
