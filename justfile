@@ -131,15 +131,21 @@ typos-fix:
 
 # Goose AI Recipe Commands
 
-# Create git message from staged changes using Goose AI
-goose-changelog-update:
-  #!/usr/bin/env bash
-  goose run --recipe ./misc/recipes/changelog-update.yaml --interactive
-  
 # Update changelog from staged changes using Goose AI  
 goose-git-msg:
   #!/usr/bin/env bash
   goose run --recipe ./misc/recipes/git-commit-message.yaml --interactive
+
+# Create git message from staged changes using Goose AI
+goose-changelog-staged:
+  #!/usr/bin/env bash
+  goose run --recipe ./misc/recipes/changelog-update.yaml --interactive
+
+# Update changelog from recent commits using Goose AI
+# Usage: just goose-changelog-commits [number_of_commits]
+goose-changelog-commits *COMMITS="5":
+  #!/usr/bin/env bash
+  COMMITS={{COMMITS}} goose run --recipe ./misc/recipes/changelog-from-commits.yaml --interactive
 
 itest db:
   #!/usr/bin/env bash
