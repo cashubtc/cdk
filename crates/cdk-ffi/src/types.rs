@@ -923,3 +923,183 @@ impl From<cdk::nuts::MeltOptions> for MeltOptions {
         }
     }
 }
+
+/// FFI-compatible MintVersion
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MintVersion {
+    /// Mint Software name
+    pub name: String,
+    /// Mint Version
+    pub version: String,
+}
+
+impl From<cdk::nuts::MintVersion> for MintVersion {
+    fn from(version: cdk::nuts::MintVersion) -> Self {
+        Self {
+            name: version.name,
+            version: version.version,
+        }
+    }
+}
+
+impl From<MintVersion> for cdk::nuts::MintVersion {
+    fn from(version: MintVersion) -> Self {
+        Self {
+            name: version.name,
+            version: version.version,
+        }
+    }
+}
+
+/// FFI-compatible ContactInfo
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ContactInfo {
+    /// Contact Method i.e. nostr
+    pub method: String,
+    /// Contact info i.e. npub...
+    pub info: String,
+}
+
+impl From<cdk::nuts::ContactInfo> for ContactInfo {
+    fn from(contact: cdk::nuts::ContactInfo) -> Self {
+        Self {
+            method: contact.method,
+            info: contact.info,
+        }
+    }
+}
+
+impl From<ContactInfo> for cdk::nuts::ContactInfo {
+    fn from(contact: ContactInfo) -> Self {
+        Self {
+            method: contact.method,
+            info: contact.info,
+        }
+    }
+}
+
+/// FFI-compatible SupportedSettings
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SupportedSettings {
+    /// Setting supported
+    pub supported: bool,
+}
+
+impl From<cdk::nuts::nut06::SupportedSettings> for SupportedSettings {
+    fn from(settings: cdk::nuts::nut06::SupportedSettings) -> Self {
+        Self {
+            supported: settings.supported,
+        }
+    }
+}
+
+impl From<SupportedSettings> for cdk::nuts::nut06::SupportedSettings {
+    fn from(settings: SupportedSettings) -> Self {
+        Self {
+            supported: settings.supported,
+        }
+    }
+}
+
+/// FFI-compatible Nuts settings (simplified - only includes basic boolean flags)
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Nuts {
+    /// NUT07 Settings - Token state check
+    pub nut07_supported: bool,
+    /// NUT08 Settings - Lightning fee return
+    pub nut08_supported: bool,
+    /// NUT09 Settings - Restore signature
+    pub nut09_supported: bool,
+    /// NUT10 Settings - Spending conditions
+    pub nut10_supported: bool,
+    /// NUT11 Settings - Pay to Public Key Hash
+    pub nut11_supported: bool,
+    /// NUT12 Settings - DLEQ proofs
+    pub nut12_supported: bool,
+    /// NUT14 Settings - Hashed Time Locked Contracts
+    pub nut14_supported: bool,
+    /// NUT20 Settings - Web sockets
+    pub nut20_supported: bool,
+    /// Supported currency units for minting
+    pub mint_units: Vec<CurrencyUnit>,
+    /// Supported currency units for melting
+    pub melt_units: Vec<CurrencyUnit>,
+}
+
+impl From<cdk::nuts::Nuts> for Nuts {
+    fn from(nuts: cdk::nuts::Nuts) -> Self {
+        Self {
+            nut07_supported: nuts.nut07.supported,
+            nut08_supported: nuts.nut08.supported,
+            nut09_supported: nuts.nut09.supported,
+            nut10_supported: nuts.nut10.supported,
+            nut11_supported: nuts.nut11.supported,
+            nut12_supported: nuts.nut12.supported,
+            nut14_supported: nuts.nut14.supported,
+            nut20_supported: nuts.nut20.supported,
+            mint_units: nuts
+                .supported_mint_units()
+                .into_iter()
+                .map(|u| u.clone().into())
+                .collect(),
+            melt_units: nuts
+                .supported_melt_units()
+                .into_iter()
+                .map(|u| u.clone().into())
+                .collect(),
+        }
+    }
+}
+
+/// FFI-compatible MintInfo
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MintInfo {
+    /// name of the mint and should be recognizable
+    pub name: Option<String>,
+    /// hex pubkey of the mint  
+    pub pubkey: Option<String>,
+    /// implementation name and the version running
+    pub version: Option<MintVersion>,
+    /// short description of the mint
+    pub description: Option<String>,
+    /// long description
+    pub description_long: Option<String>,
+    /// Contact info
+    pub contact: Vec<ContactInfo>,
+    /// shows which NUTs the mint supports
+    pub nuts: Nuts,
+    /// Mint's icon URL
+    pub icon_url: Option<String>,
+    /// Mint's endpoint URLs
+    pub urls: Vec<String>,
+    /// message of the day that the wallet must display to the user
+    pub motd: Option<String>,
+    /// server unix timestamp
+    pub time: Option<u64>,
+    /// terms of url service of the mint
+    pub tos_url: Option<String>,
+}
+
+impl From<cdk::nuts::MintInfo> for MintInfo {
+    fn from(info: cdk::nuts::MintInfo) -> Self {
+        Self {
+            name: info.name,
+            pubkey: info.pubkey.map(|p| p.to_string()),
+            version: info.version.map(Into::into),
+            description: info.description,
+            description_long: info.description_long,
+            contact: info
+                .contact
+                .unwrap_or_default()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            nuts: info.nuts.into(),
+            icon_url: info.icon_url,
+            urls: info.urls.unwrap_or_default(),
+            motd: info.motd,
+            time: info.time,
+            tos_url: info.tos_url,
+        }
+    }
+}

@@ -75,27 +75,9 @@ impl Wallet {
     }
 
     /// Get mint info
-    pub async fn get_mint_info(&self) -> Result<Option<String>, FfiError> {
+    pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
         let info = self.inner.get_mint_info().await?;
-        Ok(info.map(|i| serde_json::to_string(&i).unwrap_or_default()))
-    }
-
-    /// Send tokens directly (simplified API)
-    pub async fn send(
-        &self,
-        amount: Amount,
-        options: SendOptions,
-        memo: Option<String>,
-    ) -> Result<std::sync::Arc<Token>, FfiError> {
-        let prepared = self
-            .inner
-            .prepare_send(amount.into(), options.into())
-            .await?;
-
-        let send_memo = memo.map(|m| cdk::wallet::SendMemo::for_token(&m));
-        let token = prepared.confirm(send_memo).await?;
-
-        Ok(std::sync::Arc::new(token.into()))
+        Ok(info.map(Into::into))
     }
 
     /// Receive tokens
