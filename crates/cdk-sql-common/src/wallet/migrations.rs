@@ -19,4 +19,5 @@ pub static MIGRATIONS: &[(&str, &str, &str)] = &[
     ("sqlite", "20250401120000_add_transactions_table.sql", include_str!(r#"./migrations/sqlite/20250401120000_add_transactions_table.sql"#)),
     ("sqlite", "20250616144830_add_keyset_expiry.sql", include_str!(r#"./migrations/sqlite/20250616144830_add_keyset_expiry.sql"#)),
     ("sqlite", "20250707093445_bolt12.sql", include_str!(r#"./migrations/sqlite/20250707093445_bolt12.sql"#)),
+    ("sqlite", "20250729111701_keyset_v2_u32.sql", include_str!(r#"./migrations/sqlite/20250729111701_keyset_v2_u32.sql"#)),
 ];
