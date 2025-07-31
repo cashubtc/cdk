@@ -78,7 +78,7 @@ fn secure_pcs_config() -> PcsConfig {
 }
 
 fn pmv_to_felt(pmv: &PubMemoryValue) -> Felt {
-    let (id, value) = pmv;
+    let (_id, value) = pmv;
     let mut le_bytes = [0u8; 32];
     for (i, &v) in value.iter().enumerate() {
         let start = i * 4;
