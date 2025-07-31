@@ -72,7 +72,8 @@ fn secure_pcs_config() -> PcsConfig {
 }
 
 fn pmv_to_felt(pmv: &PubMemoryValue) -> Felt {
-    let (_id, value) = pmv;
+    let (id, value) = pmv;
+    print!("{:?} ", id);
     let mut le_bytes = [0u8; 32];
     for (i, &v) in value.iter().enumerate() {
         let start = i * 4;
@@ -81,11 +82,14 @@ fn pmv_to_felt(pmv: &PubMemoryValue) -> Felt {
     Felt::from_bytes_le(&le_bytes)
 }
 
-/// TODO: this is just temporary, use poseidon_hash_many on the Felt values directly instead
-fn hash_bytecode(bytecode: &[String]) -> Blake3Hash {
+/// TODO: use something more secure for hashing multiple values,
+/// like `poseidon_hash_many` on the Felt values directly
+fn hash_bytecode(bytecode: &Vec<Felt>) -> Blake3Hash {
     let mut hasher = Blake3Hasher::default();
-    for byte in bytecode {
-        hasher.update(byte.as_bytes());
+    for felt in bytecode {
+        for byte in felt.to_bytes_le().iter() {
+            hasher.update(&[*byte]);
+        }
     }
     hasher.finalize()
 }
@@ -120,11 +124,7 @@ impl Proof {
             };
 
         let program: &Vec<PubMemoryValue> = &cairo_proof.claim.public_data.public_memory.program;
-        let bytecode = program
-            .iter()
-            .map(|v| pmv_to_felt(v).to_hex_string())
-            .collect::<Vec<_>>();
-        println!("bytecode: {}", bytecode.join(" "));
+        let bytecode = program.iter().map(|v| pmv_to_felt(v)).collect::<Vec<_>>();
 
         let program_hash = hash_bytecode(&bytecode);
         println!("program_hash: {}", program_hash.to_string());
@@ -151,6 +151,7 @@ mod tests {
     use std::convert::TryInto;
     use std::str::FromStr;
 
+    use serde::de::{self, Deserializer};
     use starknet_types_core::felt::Felt;
 
     use super::*;
@@ -164,7 +165,30 @@ mod tests {
 
     #[derive(Deserialize)]
     struct Program {
-        bytecode: Vec<String>,
+        #[serde(deserialize_with = "deserialize_felt_vec")]
+        bytecode: Vec<Felt>,
+    }
+
+    fn deserialize_felt_vec<'de, D>(deserializer: D) -> Result<Vec<Felt>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let hex_strings: Vec<String> = Vec::deserialize(deserializer)?;
+        hex_strings
+            .into_iter()
+            .map(|s| {
+                // TODO: this is a hack because `Felt::from_hex` doesn't work with negative numbers
+                let is_negative = s.starts_with('-');
+                let normalized_hex = if is_negative {
+                    s.trim_start_matches('-').to_string()
+                } else {
+                    s.clone()
+                };
+                let felt = Felt::from_hex(&normalized_hex).map_err(de::Error::custom)?;
+                let corrected_felt = if is_negative { -felt } else { felt };
+                Ok(corrected_felt)
+            })
+            .collect()
     }
 
     #[test]
@@ -189,10 +213,7 @@ mod tests {
         // hash the program bytecode
         let executable_json = include_str!("example_executable.json");
         let executable: Executable = serde_json::from_str(executable_json).unwrap();
-        println!("bytecode: {}", executable.program.bytecode.join(" "));
-
         let program_hash = hash_bytecode(&executable.program.bytecode);
-        println!("program_hash: {}", program_hash.to_string());
 
         let secret: Secret = Nut10Secret::new(
             Kind::Cairo,
