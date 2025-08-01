@@ -34,14 +34,11 @@ pub enum Error {
     #[error(transparent)]
     CairoVerification(CairoVerificationError),
     /// Program hash verification error
-    #[error("Program hash from proof does not match program hash from secret")]
-    ProgramHashVerification,
+    #[error("Program hash ({0}) from proof does not match program hash ({1}) from secret")]
+    ProgramHashVerification(String, String),
     /// Output verification error
     #[error("Output hash from proof ({0}) does not match output hash from secret ({1})")]
     OutputHashVerification(String, String),
-    /// NUT11 Error
-    #[error(transparent)]
-    NUT11(#[from] super::nut11::Error),
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
@@ -180,7 +177,10 @@ impl Proof {
         let program_hash = hash_many_pmv(program);
 
         if program_hash.to_string() != secret.secret_data().data() {
-            return Err(Error::ProgramHashVerification);
+            return Err(Error::ProgramHashVerification(
+                program_hash.to_string(),
+                secret.secret_data().data().to_string(),
+            ));
         }
 
         let conditions: Option<Conditions> = secret

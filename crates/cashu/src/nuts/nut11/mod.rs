@@ -12,16 +12,15 @@ use bitcoin::secp256k1::schnorr::Signature;
 use serde::de::Error as DeserializerError;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use starknet_types_core::felt::Felt;
 use thiserror::Error;
 
 use super::nut00::Witness;
 use super::nut01::PublicKey;
 use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
-use crate::ensure_cdk;
 use crate::nuts::nut00::BlindedMessage;
 use crate::secret::Secret;
 use crate::util::{hex, unix_time};
+use crate::{ensure_cdk, NutXXConditions};
 
 pub mod serde_p2pk_witness;
 
@@ -317,9 +316,10 @@ pub enum SpendingConditions {
     /// Defined in [NUTXX](https://github.com/cashubtc/nuts/blob/main/xx.md)
     CairoConditions {
         /// Program hash
-        data: Felt,
-        /// Additional Optional Spending [`Conditions`]
-        conditions: Option<Conditions>,
+        // data: Felt,
+        data: String, // Blake3Hash // TODO: maybe cleaner to use Felt ?
+        /// Additional Optional Spending [`NutXXConditions`]
+        conditions: Option<NutXXConditions>,
     },
 }
 
@@ -352,6 +352,11 @@ impl SpendingConditions {
         }
     }
 
+    /// New Cairo [SpendingConditions]
+    pub fn new_cairo(data: String, conditions: Option<NutXXConditions>) -> Self {
+        Self::CairoConditions { data, conditions }
+    }
+
     /// Kind of [SpendingConditions]
     pub fn kind(&self) -> Kind {
         match self {
@@ -366,9 +371,7 @@ impl SpendingConditions {
         match self {
             Self::P2PKConditions { conditions, .. } => conditions.as_ref().and_then(|c| c.num_sigs),
             Self::HTLCConditions { conditions, .. } => conditions.as_ref().and_then(|c| c.num_sigs),
-            Self::CairoConditions { conditions, .. } => {
-                conditions.as_ref().and_then(|c| c.num_sigs)
-            }
+            Self::CairoConditions { .. } => None,
         }
     }
 
@@ -384,7 +387,7 @@ impl SpendingConditions {
                 Some(pubkeys)
             }
             Self::HTLCConditions { conditions, .. } => conditions.clone().and_then(|c| c.pubkeys),
-            Self::CairoConditions { conditions, .. } => conditions.clone().and_then(|c| c.pubkeys),
+            Self::CairoConditions { .. } => None,
         }
     }
 
@@ -393,9 +396,7 @@ impl SpendingConditions {
         match self {
             Self::P2PKConditions { conditions, .. } => conditions.as_ref().and_then(|c| c.locktime),
             Self::HTLCConditions { conditions, .. } => conditions.as_ref().and_then(|c| c.locktime),
-            Self::CairoConditions { conditions, .. } => {
-                conditions.as_ref().and_then(|c| c.locktime)
-            }
+            Self::CairoConditions { .. } => None,
         }
     }
 
@@ -408,9 +409,16 @@ impl SpendingConditions {
             Self::HTLCConditions { conditions, .. } => {
                 conditions.clone().and_then(|c| c.refund_keys)
             }
-            Self::CairoConditions { conditions, .. } => {
-                conditions.clone().and_then(|c| c.refund_keys)
-            }
+            Self::CairoConditions { .. } => None,
+        }
+    }
+
+    /// Cairo program output hash
+    pub fn output(&self) -> Option<String> {
+        match self {
+            Self::P2PKConditions { .. } => None,
+            Self::HTLCConditions { .. } => None,
+            Self::CairoConditions { conditions, .. } => conditions.clone().and_then(|c| c.output),
         }
     }
 }
@@ -443,7 +451,13 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
                     .tags()
                     .and_then(|t| t.clone().try_into().ok()),
             }),
-            Kind::Cairo => Err(Error::KindNotFound), // TODO: Implement Cairo conditions
+            Kind::Cairo => Ok(Self::CairoConditions {
+                data: secret.secret_data().data().to_string(),
+                conditions: secret
+                    .secret_data()
+                    .tags()
+                    .and_then(|t| t.clone().try_into().ok()),
+            }),
         }
     }
 }
