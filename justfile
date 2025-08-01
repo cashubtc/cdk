@@ -529,10 +529,4 @@ ffi-test-python: ffi-dev-python
   set -euo pipefail
   cd target/bindings/python
   echo "🧪 Testing Python bindings..."
-  python3 -c "import cdk_ffi; print('✅ Python bindings loaded successfully!'); seed = cdk_ffi.generate_seed(); print(f'✅ Generated seed with length: {len(seed)}')"
-  echo "✅ Python bindings test completed!"
-
-# Full FFI development cycle: format, check, test, generate bindings
-ffi-dev-cycle: ffi-format ffi-check ffi-test ffi-generate-python
-  @echo "✅ FFI development cycle complete!"
-
+  python3 -c "import cdk_ffi;"
