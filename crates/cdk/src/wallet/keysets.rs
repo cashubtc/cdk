@@ -7,15 +7,21 @@ use crate::nuts::{Id, KeySetInfo, Keys};
 use crate::{Error, Wallet};
 
 impl Wallet {
-    /// Fetch keys for mint keyset
+    /// Load keys for mint keyset
     ///
     /// Returns keys from local database if they are already stored.
     /// If keys are not found locally, goes online to query the mint for the keyset and stores the [`Keys`] in local database.
     #[instrument(skip(self))]
-    pub async fn fetch_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
+    pub async fn load_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
         let keys = if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
             keys
         } else {
+            tracing::debug!(
+                "Keyset {} not in db fetching from mint {}",
+                keyset_id,
+                self.mint_url
+            );
+
             let keys = self.client.get_mint_keyset(keyset_id).await?;
 
             keys.verify_id()?;
@@ -92,10 +98,7 @@ impl Wallet {
 
         // Ensure we have keys for all active keysets
         for keyset in &keysets {
-            if self.localstore.get_keys(&keyset.id).await?.is_none() {
-                tracing::debug!("Fetching missing keys for keyset {}", keyset.id);
-                self.fetch_keyset_keys(keyset.id).await?;
-            }
+            self.load_keyset_keys(keyset.id).await?;
         }
 
         Ok(keysets)
