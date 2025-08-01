@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
-use cdk_sqlite::wallet::memory;
+use cdk_sqlite::wallet::{memory, WalletSqliteDatabase};
 
 use crate::error::FfiError;
 use crate::types::*;
@@ -22,11 +22,21 @@ impl Wallet {
         mint_url: String,
         unit: CurrencyUnit,
         seed: Vec<u8>,
-        target_proof_count: Option<u32>,
+        config: WalletConfig,
     ) -> Result<Self, FfiError> {
-        let localstore = memory::empty()
-            .await
-            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        let localstore: Arc<dyn cdk_common::database::WalletDatabase + Send + Sync> = if let Some(database_path) = &config.database_path {
+            Arc::new(
+                WalletSqliteDatabase::new(database_path.as_str())
+                    .await
+                    .map_err(|e| FfiError::Database { msg: e.to_string() })?
+            )
+        } else {
+            Arc::new(
+                memory::empty()
+                    .await
+                    .map_err(|e| FfiError::Database { msg: e.to_string() })?
+            )
+        };
 
         let wallet = CdkWalletBuilder::new()
             .mint_url(
@@ -35,9 +45,9 @@ impl Wallet {
                     .map_err(|e: cdk::mint_url::Error| FfiError::Generic { msg: e.to_string() })?,
             )
             .unit(unit.into())
-            .localstore(Arc::new(localstore))
+            .localstore(localstore)
             .seed(&seed)
-            .target_proof_count(target_proof_count.unwrap_or(3) as usize)
+            .target_proof_count(3)
             .build()
             .map_err(FfiError::from)?;
 
@@ -262,117 +272,20 @@ impl Wallet {
     }
 }
 
-/// Builder configuration for creating wallets
+/// Configuration for creating wallets
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct WalletConfig {
-    pub mint_url: Option<String>,
-    pub unit: Option<CurrencyUnit>,
-    pub seed: Option<Vec<u8>>,
-    pub target_proof_count: Option<u32>,
+    pub database_path: Option<String>,
 }
 
 impl Default for WalletConfig {
     fn default() -> Self {
         Self {
-            mint_url: None,
-            unit: None,
-            seed: None,
-            target_proof_count: Some(3),
+            database_path: None,
         }
     }
 }
 
-/// Create a wallet builder for more advanced configurations
-#[derive(uniffi::Object)]
-pub struct WalletBuilder {
-    config: WalletConfig,
-}
-
-#[uniffi::export]
-impl WalletBuilder {
-    /// Create a new WalletBuilder
-    #[uniffi::constructor]
-    pub fn new() -> Result<Self, FfiError> {
-        Ok(Self {
-            config: WalletConfig::default(),
-        })
-    }
-
-    /// Set mint URL
-    pub fn mint_url(&self, mint_url: String) -> Result<Self, FfiError> {
-        // Validate URL
-        let _parsed = mint_url
-            .parse::<cdk::mint_url::MintUrl>()
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
-
-        let mut config = self.config.clone();
-        config.mint_url = Some(mint_url);
-
-        Ok(Self { config })
-    }
-
-    /// Set currency unit
-    pub fn unit(&self, unit: CurrencyUnit) -> Self {
-        let mut config = self.config.clone();
-        config.unit = Some(unit);
-
-        Self { config }
-    }
-
-    /// Set seed
-    pub fn seed(&self, seed: Vec<u8>) -> Self {
-        let mut config = self.config.clone();
-        config.seed = Some(seed);
-
-        Self { config }
-    }
-
-    /// Set target proof count
-    pub fn target_proof_count(&self, count: u32) -> Self {
-        let mut config = self.config.clone();
-        config.target_proof_count = Some(count);
-
-        Self { config }
-    }
-
-    /// Build the wallet
-    pub async fn build(&self) -> Result<Wallet, FfiError> {
-        let mint_url = self
-            .config
-            .mint_url
-            .as_ref()
-            .ok_or_else(|| FfiError::Generic {
-                msg: "mint_url is required".to_string(),
-            })?;
-        let unit = self.config.unit.as_ref().ok_or_else(|| FfiError::Generic {
-            msg: "unit is required".to_string(),
-        })?;
-        let seed = self.config.seed.as_ref().ok_or_else(|| FfiError::Generic {
-            msg: "seed is required".to_string(),
-        })?;
-
-        let localstore = memory::empty()
-            .await
-            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
-
-        let wallet = CdkWalletBuilder::new()
-            .mint_url(
-                mint_url
-                    .parse()
-                    .map_err(|e: cdk::mint_url::Error| FfiError::Generic { msg: e.to_string() })?,
-            )
-            .unit(unit.clone().into())
-            .localstore(Arc::new(localstore))
-            .seed(seed)
-            .target_proof_count(self.config.target_proof_count.unwrap_or(3) as usize)
-            .build()
-            .map_err(FfiError::from)?;
-
-        Ok(Wallet {
-            inner: Arc::new(wallet),
-        })
-    }
-}
 
 /// Utility functions
 #[uniffi::export]

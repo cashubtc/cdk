@@ -9,11 +9,14 @@ use cdk_ffi::*;
 
 // Generate seed and create wallet
 let seed = generate_seed();
+let config = WalletConfig {
+    database_path: Some("/path/to/wallet.db".to_string()), // or None for in-memory
+};
 let wallet = Wallet::new(
     "https://mint.example.com".to_string(),
     CurrencyUnit::Sat,
     seed,
-    Some(3)
+    config
 ).await?;
 
 // Send and receive tokens
