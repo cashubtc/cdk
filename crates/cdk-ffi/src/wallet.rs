@@ -24,19 +24,20 @@ impl Wallet {
         seed: Vec<u8>,
         config: WalletConfig,
     ) -> Result<Self, FfiError> {
-        let localstore: Arc<dyn cdk_common::database::WalletDatabase + Send + Sync> = if let Some(database_path) = &config.database_path {
-            Arc::new(
-                WalletSqliteDatabase::new(database_path.as_str())
-                    .await
-                    .map_err(|e| FfiError::Database { msg: e.to_string() })?
-            )
-        } else {
-            Arc::new(
-                memory::empty()
-                    .await
-                    .map_err(|e| FfiError::Database { msg: e.to_string() })?
-            )
-        };
+        let localstore: Arc<dyn cdk_common::database::WalletDatabase + Send + Sync> =
+            if let Some(database_path) = &config.database_path {
+                Arc::new(
+                    WalletSqliteDatabase::new(database_path.as_str())
+                        .await
+                        .map_err(|e| FfiError::Database { msg: e.to_string() })?,
+                )
+            } else {
+                Arc::new(
+                    memory::empty()
+                        .await
+                        .map_err(|e| FfiError::Database { msg: e.to_string() })?,
+                )
+            };
 
         let wallet = CdkWalletBuilder::new()
             .mint_url(
@@ -273,21 +274,11 @@ impl Wallet {
 }
 
 /// Configuration for creating wallets
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Default, Clone, uniffi::Record)]
 pub struct WalletConfig {
     pub database_path: Option<String>,
     pub target_proof_count: Option<u32>,
 }
-
-impl Default for WalletConfig {
-    fn default() -> Self {
-        Self {
-            database_path: None,
-            target_proof_count: Some(3),
-        }
-    }
-}
-
 
 /// Utility functions
 #[uniffi::export]
