@@ -75,13 +75,6 @@ impl From<CdkError> for FfiError {
     }
 }
 
-impl From<anyhow::Error> for FfiError {
-    fn from(err: anyhow::Error) -> Self {
-        FfiError::Generic {
-            msg: err.to_string(),
-        }
-    }
-}
 
 impl From<cdk::amount::Error> for FfiError {
     fn from(err: cdk::amount::Error) -> Self {

@@ -18,8 +18,6 @@ cdk-common = { workspace = true }
 uniffi = { version = "0.28", features = ["cli"] }
 
 # Core dependencies
-anyhow = { workspace = true }
-serde_json = { workspace = true }
 rand = { workspace = true }
 url = { workspace = true }
 thiserror = { workspace = true }

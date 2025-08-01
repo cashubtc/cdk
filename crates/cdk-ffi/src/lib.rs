@@ -6,9 +6,6 @@ pub mod error;
 pub mod types;
 pub mod wallet;
 
-// Re-export the main types from CDK for convenience
-pub use cdk::nuts::CurrencyUnit as CdkCurrencyUnit;
-pub use cdk::{Amount as CdkAmount, Error as CdkError};
 pub use error::*;
 pub use types::*;
 pub use wallet::*;

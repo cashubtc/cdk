@@ -7,7 +7,6 @@ use std::sync::Mutex;
 use cdk::nuts::{CurrencyUnit as CdkCurrencyUnit, State as CdkState};
 use cdk::Amount as CdkAmount;
 
-// use cdk::Melted as CdkMelted;
 use crate::error::FfiError;
 
 /// FFI-compatible Amount type
