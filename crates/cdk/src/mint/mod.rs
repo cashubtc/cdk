@@ -12,6 +12,8 @@ use cdk_common::database::{self, MintDatabase, MintTransaction};
 use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
 use cdk_common::payment::WaitPaymentResponse;
 use cdk_common::secret;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::CdkMetrics;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
 #[cfg(feature = "auth")]
@@ -72,6 +74,9 @@ pub struct Mint {
     keysets: Arc<ArcSwap<Vec<SignatoryKeySet>>>,
     /// Background task management
     task_state: Arc<Mutex<TaskState>>,
+    #[cfg(feature = "prometheus")]
+    /// prometheus cdk metrics manager
+    pub metrics: Option<Arc<CdkMetrics>>,
 }
 
 /// State for managing background tasks
@@ -93,6 +98,7 @@ impl Mint {
             PaymentProcessorKey,
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
         >,
+        #[cfg(feature = "prometheus")] metrics: Option<Arc<CdkMetrics>>,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -100,6 +106,8 @@ impl Mint {
             localstore,
             #[cfg(feature = "auth")]
             None,
+            #[cfg(feature = "prometheus")]
+            metrics,
             payment_processors,
         )
         .await
@@ -112,6 +120,7 @@ impl Mint {
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
         auth_localstore: Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>,
+        #[cfg(feature = "prometheus")] metrics: Option<Arc<CdkMetrics>>,
         payment_processors: HashMap<
             PaymentProcessorKey,
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
@@ -122,6 +131,8 @@ impl Mint {
             signatory,
             localstore,
             Some(auth_localstore),
+            #[cfg(feature = "prometheus")]
+            metrics,
             payment_processors,
         )
         .await
@@ -136,6 +147,7 @@ impl Mint {
         #[cfg(feature = "auth")] auth_localstore: Option<
             Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>,
         >,
+        #[cfg(feature = "prometheus")] metrics: Option<Arc<CdkMetrics>>,
         payment_processors: HashMap<
             PaymentProcessorKey,
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
@@ -182,6 +194,8 @@ impl Mint {
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             task_state: Arc::new(Mutex::new(TaskState::default())),
+            #[cfg(feature = "prometheus")]
+            metrics,
         })
     }
 
@@ -201,7 +215,7 @@ impl Mint {
     /// - Invoice payment monitoring across all configured payment processors
     ///
     /// Future services may include:
-    /// - Quote cleanup and expiration management  
+    /// - Quote cleanup and expiration management
     /// - Periodic database maintenance
     /// - Health check monitoring
     /// - Metrics collection
@@ -637,43 +651,76 @@ impl Mint {
         &self,
         blinded_message: BlindedMessage,
     ) -> Result<BlindSignature, Error> {
-        self.signatory
+        #[cfg(feature = "prometheus")]
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.inc_in_flight_requests("blind_sign")
+        }
+        let result = self
+            .signatory
             .blind_sign(vec![blinded_message])
             .await?
             .pop()
-            .ok_or(Error::Internal)
+            .ok_or(Error::Internal);
+
+        #[cfg(feature = "prometheus")]
+        {
+            if let Some(metrics) = self.metrics.as_ref() {
+                metrics.dec_in_flight_requests("blind_sign");
+                metrics.record_mint_operation("blind_sign", result.is_ok());
+            }
+        }
+
+        result
     }
 
     /// Verify [`Proof`] meets conditions and is signed
     #[tracing::instrument(skip_all)]
     pub async fn verify_proofs(&self, proofs: Proofs) -> Result<(), Error> {
-        proofs
-            .iter()
-            .map(|proof| {
-                // Check if secret is a nut10 secret with conditions
-                if let Ok(secret) =
-                    <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
-                {
-                    // Checks and verifies known secret kinds.
-                    // If it is an unknown secret kind it will be treated as a normal secret.
-                    // Spending conditions will **not** be check. It is up to the wallet to ensure
-                    // only supported secret kinds are used as there is no way for the mint to
-                    // enforce only signing supported secrets as they are blinded at
-                    // that point.
-                    match secret.kind() {
-                        Kind::P2PK => {
-                            proof.verify_p2pk()?;
-                        }
-                        Kind::HTLC => {
-                            proof.verify_htlc()?;
+        #[cfg(feature = "prometheus")]
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.inc_in_flight_requests("verify_proofs")
+        }
+
+        let result = async {
+            proofs
+                .iter()
+                .map(|proof| {
+                    // Check if secret is a nut10 secret with conditions
+                    if let Ok(secret) =
+                        <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
+                    {
+                        // Checks and verifies known secret kinds.
+                        // If it is an unknown secret kind it will be treated as a normal secret.
+                        // Spending conditions will **not** be check. It is up to the wallet to ensure
+                        // only supported secret kinds are used as there is no way for the mint to
+                        // enforce only signing supported secrets as they are blinded at
+                        // that point.
+                        match secret.kind() {
+                            Kind::P2PK => {
+                                proof.verify_p2pk()?;
+                            }
+                            Kind::HTLC => {
+                                proof.verify_htlc()?;
+                            }
                         }
                     }
-                }
-                Ok(())
-            })
-            .collect::<Result<Vec<()>, Error>>()?;
+                    Ok(())
+                })
+                .collect::<Result<Vec<()>, Error>>()?;
 
-        self.signatory.verify_proofs(proofs).await
+            self.signatory.verify_proofs(proofs).await
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            if let Some(metrics) = self.metrics.as_ref() {
+                metrics.dec_in_flight_requests("verify_proofs");
+                metrics.record_mint_operation("verify_proofs", result.is_ok());
+            }
+        }
+
+        result
     }
 
     /// Verify melt request is valid
@@ -735,56 +782,92 @@ impl Mint {
     /// Restore
     #[instrument(skip_all)]
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
-        let output_len = request.outputs.len();
+        #[cfg(feature = "prometheus")]
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.inc_in_flight_requests("restore");
+        }
 
-        let mut outputs = Vec::with_capacity(output_len);
-        let mut signatures = Vec::with_capacity(output_len);
+        let result = async {
+            let output_len = request.outputs.len();
 
-        let blinded_message: Vec<PublicKey> =
-            request.outputs.iter().map(|b| b.blinded_secret).collect();
+            let mut outputs = Vec::with_capacity(output_len);
+            let mut signatures = Vec::with_capacity(output_len);
 
-        let blinded_signatures = self
-            .localstore
-            .get_blind_signatures(&blinded_message)
-            .await?;
+            let blinded_message: Vec<PublicKey> =
+                request.outputs.iter().map(|b| b.blinded_secret).collect();
 
-        assert_eq!(blinded_signatures.len(), output_len);
+            let blinded_signatures = self
+                .localstore
+                .get_blind_signatures(&blinded_message)
+                .await?;
 
-        for (blinded_message, blinded_signature) in
-            request.outputs.into_iter().zip(blinded_signatures)
+            assert_eq!(blinded_signatures.len(), output_len);
+
+            for (blinded_message, blinded_signature) in
+                request.outputs.into_iter().zip(blinded_signatures)
+            {
+                if let Some(blinded_signature) = blinded_signature {
+                    outputs.push(blinded_message);
+                    signatures.push(blinded_signature);
+                }
+            }
+
+            Ok(RestoreResponse {
+                outputs,
+                signatures: signatures.clone(),
+                promises: Some(signatures),
+            })
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
         {
-            if let Some(blinded_signature) = blinded_signature {
-                outputs.push(blinded_message);
-                signatures.push(blinded_signature);
+            if let Some(metrics) = self.metrics.as_ref() {
+                metrics.dec_in_flight_requests("restore");
+                metrics.record_mint_operation("restore", result.is_ok());
             }
         }
 
-        Ok(RestoreResponse {
-            outputs,
-            signatures: signatures.clone(),
-            promises: Some(signatures),
-        })
+        result
     }
 
     /// Get the total amount issed by keyset
     #[instrument(skip_all)]
     pub async fn total_issued(&self) -> Result<HashMap<Id, Amount>, Error> {
-        let keysets = self.keysets().keysets;
-
-        let mut total_issued = HashMap::new();
-
-        for keyset in keysets {
-            let blinded = self
-                .localstore
-                .get_blind_signatures_for_keyset(&keyset.id)
-                .await?;
-
-            let total = Amount::try_sum(blinded.iter().map(|b| b.amount))?;
-
-            total_issued.insert(keyset.id, total);
+        #[cfg(feature = "prometheus")]
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.inc_in_flight_requests("total_issued");
         }
 
-        Ok(total_issued)
+        let result = async {
+            let keysets = self.keysets().keysets;
+
+            let mut total_issued = HashMap::new();
+
+            for keyset in keysets {
+                let blinded = self
+                    .localstore
+                    .get_blind_signatures_for_keyset(&keyset.id)
+                    .await?;
+
+                let total = Amount::try_sum(blinded.iter().map(|b| b.amount))?;
+
+                total_issued.insert(keyset.id, total);
+            }
+
+            Ok(total_issued)
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            if let Some(metrics) = self.metrics.as_ref() {
+                metrics.dec_in_flight_requests("total_issued");
+                metrics.record_mint_operation("total_issued", result.is_ok());
+            }
+        }
+
+        result
     }
 
     /// Total redeemed for keyset
@@ -793,6 +876,10 @@ impl Mint {
         let keysets = self.signatory.keysets().await?;
 
         let mut total_redeemed = HashMap::new();
+        #[cfg(feature = "prometheus")]
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.inc_in_flight_requests("total_redeemed");
+        }
 
         for keyset in keysets.keysets {
             let (proofs, state) = self.localstore.get_proofs_by_keyset_id(&keyset.id).await?;
@@ -860,9 +947,16 @@ mod tests {
             .expect("Failed to create signatory"),
         );
 
-        Mint::new(MintInfo::default(), signatory, localstore, HashMap::new())
-            .await
-            .unwrap()
+        Mint::new(
+            MintInfo::default(),
+            signatory,
+            localstore,
+            HashMap::new(),
+            #[cfg(feature = "prometheus")]
+            Some(Arc::new(CdkMetrics::new().unwrap())),
+        )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]

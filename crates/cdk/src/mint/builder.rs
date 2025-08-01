@@ -11,6 +11,8 @@ use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::Bolt11Settings;
 #[cfg(feature = "auth")]
 use cdk_common::{nut21, nut22};
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::CdkMetrics;
 use cdk_signatory::signatory::Signatory;
 
 use super::nut17::SupportedMethods;
@@ -40,11 +42,16 @@ pub struct MintBuilder {
         HashMap<PaymentProcessorKey, Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+    #[cfg(feature = "prometheus")]
+    metrics: Option<Arc<CdkMetrics>>,
 }
 
 impl MintBuilder {
     /// New [`MintBuilder`]
-    pub fn new(localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>) -> MintBuilder {
+    pub fn new(
+        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+        #[cfg(feature = "prometheus")] metrics: Option<Arc<CdkMetrics>>,
+    ) -> MintBuilder {
         let mint_info = MintInfo {
             nuts: Nuts::new()
                 .nut07(true)
@@ -60,6 +67,8 @@ impl MintBuilder {
         MintBuilder {
             mint_info,
             localstore,
+            #[cfg(feature = "prometheus")]
+            metrics,
             #[cfg(feature = "auth")]
             auth_localstore: None,
             payment_processors: HashMap::new(),
@@ -268,7 +277,12 @@ impl MintBuilder {
         self.payment_processors.insert(key, payment_processor);
         Ok(())
     }
-
+    /// Set prometheus metrics
+    #[cfg(feature = "prometheus")]
+    pub fn with_prometheus_metrics(mut self, metrics: Arc<CdkMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
     /// Sets the input fee ppk for a given unit
     ///
     /// The unit **MUST** already have been added with a ln backend
@@ -295,6 +309,8 @@ impl MintBuilder {
                 signatory,
                 self.localstore,
                 auth_localstore,
+                #[cfg(feature = "prometheus")]
+                self.metrics,
                 self.payment_processors,
             )
             .await;
@@ -304,6 +320,8 @@ impl MintBuilder {
             signatory,
             self.localstore,
             self.payment_processors,
+            #[cfg(feature = "prometheus")]
+            self.metrics,
         )
         .await
     }
