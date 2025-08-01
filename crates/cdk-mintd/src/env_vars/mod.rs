@@ -60,6 +60,8 @@ impl Settings {
 
         #[cfg(feature = "auth")]
         {
+            use crate::config::AuthType;
+
             // Check env vars for auth config even if None
             let auth = self.auth.clone().unwrap_or_default().from_env();
 
@@ -67,9 +69,15 @@ impl Settings {
             if auth.openid_discovery != String::default()
                 || auth.openid_client_id != String::default()
                 || auth.mint_max_bat != 0
-                || auth.enabled_mint
-                || auth.enabled_melt
-                || auth.enabled_swap
+                || auth.mint != AuthType::Blind
+                || auth.get_mint_quote != AuthType::None
+                || auth.check_mint_quote != AuthType::None
+                || auth.melt != AuthType::None
+                || auth.get_melt_quote != AuthType::None
+                || auth.check_melt_quote != AuthType::None
+                || auth.swap != AuthType::Blind
+                || auth.restore != AuthType::Blind
+                || auth.check_proof_state != AuthType::None
             {
                 self.auth = Some(auth);
             } else {
