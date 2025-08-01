@@ -75,7 +75,6 @@ impl From<CdkError> for FfiError {
     }
 }
 
-
 impl From<cdk::amount::Error> for FfiError {
     fn from(err: cdk::amount::Error) -> Self {
         FfiError::Amount {
