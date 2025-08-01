@@ -852,7 +852,7 @@ pub async fn run_mintd_with_shutdown(
     let mint_builder = MintBuilder::new(localstore, Some(metrics.clone()));
 
     let (mint_builder, ln_routers) = configure_mint_builder(
-        &settings,
+        settings,
         mint_builder,
         #[cfg(feature = "prometheus")]
         Some(metrics.clone()),
