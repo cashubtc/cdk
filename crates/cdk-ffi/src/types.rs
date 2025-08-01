@@ -337,8 +337,8 @@ impl From<cdk_common::wallet::SendKind> for SendKind {
 pub struct SendOptions {
     /// Memo
     pub memo: Option<SendMemo>,
-    /// Spending conditions (JSON string for now - simplified)
-    pub conditions: Option<String>,
+    /// Spending conditions
+    pub conditions: Option<SpendingConditions>,
     /// Amount split target
     pub amount_split_target: SplitTarget,
     /// Send kind
@@ -367,18 +367,9 @@ impl Default for SendOptions {
 
 impl From<SendOptions> for cdk::wallet::SendOptions {
     fn from(opts: SendOptions) -> Self {
-        // Parse spending conditions from JSON string if provided
-        let conditions = if let Some(cond_str) = opts.conditions {
-            // For now, we'll parse this as JSON. In a full implementation,
-            // you might want to create a proper FFI type for SpendingConditions
-            serde_json::from_str(&cond_str).ok()
-        } else {
-            None
-        };
-
         cdk::wallet::SendOptions {
             memo: opts.memo.map(Into::into),
-            conditions,
+            conditions: opts.conditions.map(|c| c.try_into().ok()).flatten(),
             amount_split_target: opts.amount_split_target.into(),
             send_kind: opts.send_kind.into(),
             include_fee: opts.include_fee,
@@ -390,16 +381,9 @@ impl From<SendOptions> for cdk::wallet::SendOptions {
 
 impl From<cdk::wallet::SendOptions> for SendOptions {
     fn from(opts: cdk::wallet::SendOptions) -> Self {
-        // Convert spending conditions to JSON string if present
-        let conditions = if let Some(cond) = opts.conditions {
-            serde_json::to_string(&cond).ok()
-        } else {
-            None
-        };
-
         Self {
             memo: opts.memo.map(Into::into),
-            conditions,
+            conditions: opts.conditions.map(Into::into),
             amount_split_target: opts.amount_split_target.into(),
             send_kind: opts.send_kind.into(),
             include_fee: opts.include_fee,
@@ -547,12 +531,9 @@ impl Proof {
         self.inner.keyset_id.to_string()
     }
 
-    /// Get the witness as JSON string
-    pub fn witness(&self) -> Option<String> {
-        self.inner
-            .witness
-            .as_ref()
-            .map(|w| serde_json::to_string(w).unwrap_or_default())
+    /// Get the witness
+    pub fn witness(&self) -> Option<Witness> {
+        self.inner.witness.as_ref().map(|w| w.clone().into())
     }
 
     /// Check if proof is active with given keyset IDs
@@ -1206,6 +1187,54 @@ impl TryFrom<Conditions> for cdk::nuts::nut11::Conditions {
             sig_flag,
             num_sigs_refund: conditions.num_sigs_refund,
         })
+    }
+}
+
+/// FFI-compatible Witness
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum Witness {
+    /// P2PK Witness
+    P2PK {
+        /// Signatures
+        signatures: Vec<String>,
+    },
+    /// HTLC Witness  
+    HTLC {
+        /// Preimage
+        preimage: String,
+        /// Optional signatures
+        signatures: Option<Vec<String>>,
+    },
+}
+
+impl From<cdk::nuts::Witness> for Witness {
+    fn from(witness: cdk::nuts::Witness) -> Self {
+        match witness {
+            cdk::nuts::Witness::P2PKWitness(p2pk) => Self::P2PK {
+                signatures: p2pk.signatures,
+            },
+            cdk::nuts::Witness::HTLCWitness(htlc) => Self::HTLC {
+                preimage: htlc.preimage,
+                signatures: htlc.signatures,
+            },
+        }
+    }
+}
+
+impl From<Witness> for cdk::nuts::Witness {
+    fn from(witness: Witness) -> Self {
+        match witness {
+            Witness::P2PK { signatures } => {
+                Self::P2PKWitness(cdk::nuts::nut11::P2PKWitness { signatures })
+            }
+            Witness::HTLC {
+                preimage,
+                signatures,
+            } => Self::HTLCWitness(cdk::nuts::nut14::HTLCWitness {
+                preimage,
+                signatures,
+            }),
+        }
     }
 }
 

@@ -24,20 +24,23 @@ impl Wallet {
         seed: Vec<u8>,
         config: WalletConfig,
     ) -> Result<Self, FfiError> {
-        let localstore: Arc<dyn cdk_common::database::WalletDatabase + Send + Sync> =
-            if let Some(database_path) = &config.database_path {
-                Arc::new(
-                    WalletSqliteDatabase::new(database_path.as_str())
-                        .await
-                        .map_err(|e| FfiError::Database { msg: e.to_string() })?,
-                )
-            } else {
-                Arc::new(
-                    memory::empty()
-                        .await
-                        .map_err(|e| FfiError::Database { msg: e.to_string() })?,
-                )
-            };
+        let localstore: Arc<
+            dyn cdk_common::database::WalletDatabase<Err = cdk_common::database::Error>
+                + Send
+                + Sync,
+        > = if let Some(database_path) = &config.database_path {
+            Arc::new(
+                WalletSqliteDatabase::new(database_path.as_str())
+                    .await
+                    .map_err(|e| FfiError::Database { msg: e.to_string() })?,
+            )
+        } else {
+            Arc::new(
+                memory::empty()
+                    .await
+                    .map_err(|e| FfiError::Database { msg: e.to_string() })?,
+            )
+        };
 
         let wallet = CdkWalletBuilder::new()
             .mint_url(

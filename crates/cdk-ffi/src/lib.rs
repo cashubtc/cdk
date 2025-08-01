@@ -28,6 +28,8 @@ mod tests {
 
     #[test]
     fn test_currency_unit_conversion() {
+        use cdk::nuts::CurrencyUnit as CdkCurrencyUnit;
+
         let unit = CurrencyUnit::Sat;
         let cdk_unit: CdkCurrencyUnit = unit.into();
         let back: CurrencyUnit = cdk_unit.into();
@@ -155,9 +157,15 @@ mod tests {
         let mut metadata = HashMap::new();
         metadata.insert("key1".to_string(), "value1".to_string());
 
+        let conditions = SpendingConditions::P2PK {
+            pubkey: "02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc"
+                .to_string(),
+            conditions: None,
+        };
+
         let options = SendOptions {
             memo: Some(memo),
-            conditions: Some("{\"test\": \"condition\"}".to_string()),
+            conditions: Some(conditions),
             amount_split_target: SplitTarget::Value {
                 amount: Amount::new(1000),
             },
@@ -221,21 +229,19 @@ mod tests {
     }
 
     #[test]
-    fn test_wallet_creation() {
-        let seed = generate_seed();
+    fn test_wallet_config() {
+        let config = WalletConfig::default();
+        assert!(config.database_path.is_none());
+        assert!(config.target_proof_count.is_none());
 
-        // This will likely fail without a proper runtime context, but we can test
-        // that the function doesn't panic and returns a proper error
-        let result = std::panic::catch_unwind(|| {
-            Wallet::new(
-                "https://mint.example.com".to_string(),
-                CurrencyUnit::Sat,
-                seed,
-                Some(3),
-            )
-        });
-
-        // We expect this to either succeed or fail gracefully (not panic)
-        assert!(result.is_ok(), "Wallet constructor should not panic");
+        let config_with_values = WalletConfig {
+            database_path: Some("test.db".to_string()),
+            target_proof_count: Some(5),
+        };
+        assert_eq!(
+            config_with_values.database_path,
+            Some("test.db".to_string())
+        );
+        assert_eq!(config_with_values.target_proof_count, Some(5));
     }
 }
