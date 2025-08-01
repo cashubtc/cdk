@@ -6,6 +6,8 @@
 
 
 
+## [0.11.1](https://github.com/cashubtc/cdk/releases/tag/v0.11.1)
+
 ## [0.11.0](https://github.com/cashubtc/cdk/releases/tag/v0.11.0)
 
 ### Summary
