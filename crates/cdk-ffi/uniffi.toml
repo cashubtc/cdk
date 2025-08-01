@@ -1,0 +1,10 @@
+[bindings.kotlin]
+package_name = "org.cashudevkit"
+cdylib_name = "cdkffi"
+
+[bindings.python]
+cdylib_name = "cdkffi"
+
+[bindings.swift]
+module_name = "CashuDevKit"
+cdylib_name = "cdkffi"
