@@ -47,7 +47,7 @@ impl Wallet {
             .unit(unit.into())
             .localstore(localstore)
             .seed(&seed)
-            .target_proof_count(3)
+            .target_proof_count(config.target_proof_count.unwrap_or(3) as usize)
             .build()
             .map_err(FfiError::from)?;
 
@@ -276,12 +276,14 @@ impl Wallet {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct WalletConfig {
     pub database_path: Option<String>,
+    pub target_proof_count: Option<u32>,
 }
 
 impl Default for WalletConfig {
     fn default() -> Self {
         Self {
             database_path: None,
+            target_proof_count: Some(3),
         }
     }
 }

@@ -11,6 +11,7 @@ use cdk_ffi::*;
 let seed = generate_seed();
 let config = WalletConfig {
     database_path: Some("/path/to/wallet.db".to_string()), // or None for in-memory
+    target_proof_count: Some(3), // or None for default
 };
 let wallet = Wallet::new(
     "https://mint.example.com".to_string(),

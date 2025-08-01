@@ -343,3 +343,31 @@ docs-strict:
     echo
   done
 
+# =============================================================================
+# FFI Commands - CDK Foreign Function Interface bindings
+# =============================================================================
+
+# Build the FFI library
+ffi-build *ARGS="--release":
+  cargo build {{ARGS}} --package cdk-ffi
+
+# Check the FFI library compiles
+ffi-check *ARGS="":
+  cargo check {{ARGS}} --package cdk-ffi
+
+# Run tests for the FFI library  
+ffi-test *ARGS="":
+  cargo test {{ARGS}} --package cdk-ffi
+
+# Run clippy on the FFI library
+ffi-clippy *ARGS="--all-targets":
+  cargo clippy {{ARGS}} --package cdk-ffi
+
+# Format the FFI code
+ffi-format:
+  cargo fmt --package cdk-ffi
+
+# Clean FFI build artifacts
+ffi-clean:
+  cargo clean --package cdk-ffi
+
