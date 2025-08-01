@@ -40,12 +40,12 @@ where
         X: Into<DB>,
     {
         let db = db.into();
-        Self::migrate(&db).await?;
+        Self::migrate(db).await?;
         Ok(Self { db })
     }
 
     /// Migrate
-    async fn migrate(conn: &DB) -> Result<(), Error> {
+    async fn migrate(mut conn: DB) -> Result<(), Error> {
         let tx = conn.begin().await?;
         migrate(&tx, DB::name(), MIGRATIONS).await?;
         tx.commit().await?;
@@ -280,7 +280,8 @@ where
     ) -> Result<Box<dyn MintAuthTransaction<database::Error> + Send + Sync + 'a>, database::Error>
     {
         Ok(Box::new(SQLTransaction {
-            inner: self.db.begin().await?,
+            conn: self.db.get().map_err(|e| Error::Database(Box::new(e)))?,
+            inner: None,
             _phantom: PhantomData,
         }))
     }

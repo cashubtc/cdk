@@ -514,10 +514,9 @@ where
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn MintKeyDatabaseTransaction<'a, Error> + Send + Sync + 'a>, Error> {
-        let mut conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(Box::new(SQLTransaction {
+            conn: self.db.get().map_err(|e| Error::Database(Box::new(e)))?,
             inner: None,
-            conn,
             _phantom: PhantomData,
         }))
     }
@@ -1777,15 +1776,11 @@ where
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn database::MintTransaction<'a, Error> + Send + Sync + 'a>, Error> {
-        let mut tx = SQLTransaction::<_, _, C> {
+        Ok(Box::new(SQLTransaction {
             conn: self.db.get().map_err(|e| Error::Database(Box::new(e)))?,
             inner: None,
             _phantom: PhantomData,
-        };
-
-        tx.begin().await?;
-
-        Ok(Box::new(tx))
+        }))
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
