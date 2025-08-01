@@ -66,7 +66,7 @@ where
     RM: ResourceManager<Resource = DB, Config = C, Error = Error>,
     C: Debug + Clone + Send + Sync,
 {
-    db: Arc<Pool<RM>>,
+    pool: Arc<Pool<RM>>,
 }
 
 /// SQL Transaction Writer
@@ -144,15 +144,17 @@ where
     /// Creates a new instance
     pub async fn new<X>(db: X) -> Result<Self, Error>
     where
-        X: Into<DB>,
+        X: Into<Pool<RM>>,
     {
-        let db = Pool::new(db.into());
-        Self::migrate(db.get()).await?;
-        Ok(Self { db })
+        let pool = Arc::new(db.into());
+        let mut conn = pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        Self::migrate(&mut conn).await?;
+        Ok(Self { pool })
     }
 
     /// Migrate
-    async fn migrate(mut conn: DB) -> Result<(), Error> {
+    async fn migrate(conn: &mut DB) -> Result<(), Error> {
         let tx = conn.begin().await?;
         migrate(&tx, DB::name(), MIGRATIONS).await?;
         tx.commit().await?;
@@ -164,7 +166,7 @@ where
     where
         R: serde::de::DeserializeOwned,
     {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let value = column_as_string!(query(r#"SELECT value FROM config WHERE id = :id LIMIT 1"#)?
             .bind("id", id.to_owned())
             .pluck(&*conn)
@@ -515,14 +517,14 @@ where
         &'a self,
     ) -> Result<Box<dyn MintKeyDatabaseTransaction<'a, Error> + Send + Sync + 'a>, Error> {
         Ok(Box::new(SQLTransaction {
-            conn: self.db.get().map_err(|e| Error::Database(Box::new(e)))?,
+            conn: self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             inner: None,
             _phantom: PhantomData,
         }))
     }
 
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(
             query(r#" SELECT id FROM keyset WHERE active = 1 AND unit IS :unit"#)?
                 .bind("unit", unit.to_string())
@@ -538,7 +540,7 @@ where
     }
 
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(r#"SELECT id, unit FROM keyset WHERE active = 1"#)?
             .fetch_all(&*conn)
             .await?
@@ -553,7 +555,7 @@ where
     }
 
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"SELECT
                 id,
@@ -577,7 +579,7 @@ where
     }
 
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"SELECT
                 id,
@@ -1237,7 +1239,7 @@ where
     type Err = Error;
 
     async fn get_mint_quote(&self, quote_id: &Uuid) -> Result<Option<MintQuote>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         let payments = get_mint_quote_payments(&*conn, quote_id).await?;
         let issuance = get_mint_quote_issuance(&*conn, quote_id).await?;
@@ -1272,7 +1274,7 @@ where
         &self,
         request: &str,
     ) -> Result<Option<MintQuote>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut mint_quote = query(
             r#"
             SELECT
@@ -1312,7 +1314,7 @@ where
         &self,
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintQuote>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut mint_quote = query(
             r#"
             SELECT
@@ -1353,7 +1355,7 @@ where
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut mint_quotes = query(
             r#"
             SELECT
@@ -1390,7 +1392,7 @@ where
     }
 
     async fn get_melt_quote(&self, quote_id: &Uuid) -> Result<Option<mint::MeltQuote>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -1422,7 +1424,7 @@ where
     }
 
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -1462,7 +1464,7 @@ where
     type Err = Error;
 
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut proofs = query(
             r#"
             SELECT
@@ -1498,7 +1500,7 @@ where
     }
 
     async fn get_proof_ys_by_quote_id(&self, quote_id: &Uuid) -> Result<Vec<PublicKey>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -1523,7 +1525,7 @@ where
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut current_states = get_current_states(&*conn, ys).await?;
 
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
@@ -1533,7 +1535,7 @@ where
         &self,
         keyset_id: &Id,
     ) -> Result<(Proofs, Vec<Option<State>>), Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -1669,7 +1671,7 @@ where
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut blinded_signatures = query(
             r#"SELECT
                 keyset_id,
@@ -1714,7 +1716,7 @@ where
         &self,
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -1742,7 +1744,7 @@ where
         &self,
         quote_id: &Uuid,
     ) -> Result<Vec<BlindSignature>, Self::Err> {
-        let conn = self.db.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -1777,7 +1779,7 @@ where
         &'a self,
     ) -> Result<Box<dyn database::MintTransaction<'a, Error> + Send + Sync + 'a>, Error> {
         Ok(Box::new(SQLTransaction {
-            conn: self.db.get().map_err(|e| Error::Database(Box::new(e)))?,
+            conn: self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             inner: None,
             _phantom: PhantomData,
         }))
