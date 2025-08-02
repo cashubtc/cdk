@@ -185,6 +185,7 @@ async fn setup_sqlite_database(
 async fn configure_mint_builder(
     settings: &config::Settings,
     mint_builder: MintBuilder,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 ) -> Result<(MintBuilder, Vec<Router>)> {
     let mut ln_routers = vec![];
 
@@ -192,7 +193,8 @@ async fn configure_mint_builder(
     let mint_builder = configure_basic_info(settings, mint_builder);
 
     // Configure lightning backend
-    let mint_builder = configure_lightning_backend(settings, mint_builder, &mut ln_routers).await?;
+    let mint_builder =
+        configure_lightning_backend(settings, mint_builder, &mut ln_routers, runtime).await?;
 
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
@@ -255,6 +257,7 @@ async fn configure_lightning_backend(
     settings: &config::Settings,
     mut mint_builder: MintBuilder,
     ln_routers: &mut Vec<Router>,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
         mint_min: settings.ln.min_mint,
@@ -372,7 +375,7 @@ async fn configure_lightning_backend(
             tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
 
             let ldk_node = ldk_node_settings
-                .setup(ln_routers, settings, CurrencyUnit::Sat, None)
+                .setup(ln_routers, settings, CurrencyUnit::Sat, runtime)
                 .await?;
 
             mint_builder = configure_backend_for_unit(
@@ -803,8 +806,9 @@ pub async fn run_mintd(
     work_dir: &Path,
     settings: &config::Settings,
     db_password: Option<String>,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 ) -> Result<()> {
-    run_mintd_with_shutdown(work_dir, settings, shutdown_signal(), db_password).await
+    run_mintd_with_shutdown(work_dir, settings, shutdown_signal(), db_password, runtime).await
 }
 
 /// Run mintd with a custom shutdown signal
@@ -813,12 +817,15 @@ pub async fn run_mintd_with_shutdown(
     settings: &config::Settings,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     db_password: Option<String>,
+
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 ) -> Result<()> {
     let (localstore, keystore) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
     let mint_builder = MintBuilder::new(localstore);
 
-    let (mint_builder, ln_routers) = configure_mint_builder(settings, mint_builder).await?;
+    let (mint_builder, ln_routers) =
+        configure_mint_builder(settings, mint_builder, runtime).await?;
     #[cfg(feature = "auth")]
     let mint_builder = setup_authentication(settings, work_dir, mint_builder, db_password).await?;
 
