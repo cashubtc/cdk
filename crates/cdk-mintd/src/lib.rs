@@ -100,9 +100,10 @@ pub fn setup_tracing() {
     let hyper_filter = "hyper=warn";
     let h2_filter = "h2=warn";
     let tower_http = "tower_http=warn";
+    let rustls = "rustls=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{default_filter},{hyper_filter},{h2_filter},{tower_http}"
+        "{default_filter},{hyper_filter},{h2_filter},{tower_http},{rustls}"
     ));
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
