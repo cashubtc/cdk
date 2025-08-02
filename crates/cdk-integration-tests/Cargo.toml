@@ -7,7 +7,7 @@ description = "Core Cashu Development Kit library implementing the Cashu protoco
 license.workspace = true
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-rust-version.workspace = true                                                            # MSRV
+rust-version.workspace = true                                                      # MSRV
 
 
 [features]
@@ -60,3 +60,4 @@ cdk = { workspace = true, features = ["mint", "wallet"] }
 cdk-axum = { workspace = true }
 cdk-fake-wallet = { workspace = true }
 tower-http = { workspace = true, features = ["cors"] }
+starknet-types-core = { workspace = true }
