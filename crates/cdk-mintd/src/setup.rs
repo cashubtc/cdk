@@ -33,6 +33,7 @@ pub trait LnBackendSetup {
         routers: &mut Vec<Router>,
         settings: &Settings,
         unit: CurrencyUnit,
+        runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     ) -> anyhow::Result<impl MintPayment>;
 }
 
@@ -44,6 +45,7 @@ impl LnBackendSetup for config::Cln {
         _routers: &mut Vec<Router>,
         _settings: &Settings,
         _unit: CurrencyUnit,
+        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     ) -> anyhow::Result<cdk_cln::Cln> {
         let cln_socket = expand_path(
             self.rpc_path
@@ -71,6 +73,7 @@ impl LnBackendSetup for config::LNbits {
         routers: &mut Vec<Router>,
         settings: &Settings,
         _unit: CurrencyUnit,
+        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     ) -> anyhow::Result<cdk_lnbits::LNbits> {
         let admin_api_key = &self.admin_api_key;
         let invoice_api_key = &self.invoice_api_key;
@@ -133,6 +136,7 @@ impl LnBackendSetup for config::Lnd {
         _routers: &mut Vec<Router>,
         _settings: &Settings,
         _unit: CurrencyUnit,
+        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     ) -> anyhow::Result<cdk_lnd::Lnd> {
         let address = &self.address;
         let cert_file = &self.cert_file;
@@ -163,6 +167,7 @@ impl LnBackendSetup for config::FakeWallet {
         _router: &mut Vec<Router>,
         _settings: &Settings,
         _unit: CurrencyUnit,
+        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     ) -> anyhow::Result<cdk_fake_wallet::FakeWallet> {
         let fee_reserve = FeeReserve {
             min_fee_reserve: self.reserve_fee_min,
@@ -192,6 +197,7 @@ impl LnBackendSetup for config::GrpcProcessor {
         _routers: &mut Vec<Router>,
         _settings: &Settings,
         _unit: CurrencyUnit,
+        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     ) -> anyhow::Result<cdk_payment_processor::PaymentProcessorClient> {
         let payment_processor = cdk_payment_processor::PaymentProcessorClient::new(
             &self.addr,
@@ -212,6 +218,7 @@ impl LnBackendSetup for config::LdkNode {
         _routers: &mut Vec<Router>,
         _settings: &Settings,
         _unit: CurrencyUnit,
+        runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     ) -> anyhow::Result<cdk_ldk_node::CdkLdkNode> {
         use std::net::SocketAddr;
         use std::path::PathBuf;
@@ -314,6 +321,11 @@ impl LnBackendSetup for config::LdkNode {
             fee_reserve,
             listen_address,
         )?;
+
+        // Set the runtime if provided
+        if let Some(rt) = runtime {
+            ldk_node.set_runtime(rt);
+        }
 
         // Configure webserver address if specified
         let webserver_addr = if let Some(host) = &self.webserver_host {

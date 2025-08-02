@@ -273,7 +273,7 @@ async fn configure_lightning_backend(
                 .clone()
                 .expect("Config checked at load that cln is some");
             let cln = cln_settings
-                .setup(ln_routers, settings, CurrencyUnit::Msat)
+                .setup(ln_routers, settings, CurrencyUnit::Msat, None)
                 .await?;
 
             mint_builder = configure_backend_for_unit(
@@ -289,7 +289,7 @@ async fn configure_lightning_backend(
         LnBackend::LNbits => {
             let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
             let lnbits = lnbits_settings
-                .setup(ln_routers, settings, CurrencyUnit::Sat)
+                .setup(ln_routers, settings, CurrencyUnit::Sat, None)
                 .await?;
 
             mint_builder = configure_backend_for_unit(
@@ -305,7 +305,7 @@ async fn configure_lightning_backend(
         LnBackend::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
             let lnd = lnd_settings
-                .setup(ln_routers, settings, CurrencyUnit::Msat)
+                .setup(ln_routers, settings, CurrencyUnit::Msat, None)
                 .await?;
 
             mint_builder = configure_backend_for_unit(
@@ -324,7 +324,7 @@ async fn configure_lightning_backend(
 
             for unit in fake_wallet.clone().supported_units {
                 let fake = fake_wallet
-                    .setup(ln_routers, settings, CurrencyUnit::Sat)
+                    .setup(ln_routers, settings, CurrencyUnit::Sat, None)
                     .await?;
 
                 mint_builder = configure_backend_for_unit(
@@ -353,7 +353,7 @@ async fn configure_lightning_backend(
             for unit in grpc_processor.clone().supported_units {
                 tracing::debug!("Adding unit: {:?}", unit);
                 let processor = grpc_processor
-                    .setup(ln_routers, settings, unit.clone())
+                    .setup(ln_routers, settings, unit.clone(), None)
                     .await?;
 
                 mint_builder = configure_backend_for_unit(
@@ -372,7 +372,7 @@ async fn configure_lightning_backend(
             tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
 
             let ldk_node = ldk_node_settings
-                .setup(ln_routers, settings, CurrencyUnit::Sat)
+                .setup(ln_routers, settings, CurrencyUnit::Sat, None)
                 .await?;
 
             mint_builder = configure_backend_for_unit(
