@@ -4,14 +4,17 @@ use std::str::FromStr;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::XOnlyPublicKey;
+use cairo_air::CairoProof;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{Transaction, TransactionDirection};
+use stwo_cairo_prover::stwo_prover::core::vcs::blake2_merkle::Blake2sMerkleHasher;
 use tracing::instrument;
 
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
+use crate::nuts::nutxx::hash_array_pmv;
 use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State, Token};
 use crate::types::ProofInfo;
 use crate::util::hex;
@@ -60,6 +63,17 @@ impl Wallet {
                 Ok::<(String, &String), Error>((Sha256Hash::hash(&hex_bytes).to_string(), p))
             })
             .collect::<Result<HashMap<String, &String>, _>>()?;
+        // Map of program hash to cairo proof
+        let hashed_to_cairo_proof: HashMap<String, &String> = opts
+            .cairo_proofs
+            .iter()
+            .map(|p| {
+                let cairo_proof =
+                    serde_json::from_str::<CairoProof<Blake2sMerkleHasher>>(p.as_str())?;
+                let program = &cairo_proof.claim.public_data.public_memory.program;
+                Ok::<(String, &String), Error>((hash_array_pmv(program).to_string(), p))
+            })
+            .collect::<Result<HashMap<String, &String>, _>>()?;
 
         let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = opts
             .p2pk_signing_keys
@@ -103,7 +117,11 @@ impl Wallet {
                             proof.add_preimage(preimage.to_string());
                         }
                         Kind::Cairo => {
-                            // TODO
+                            let hashed_program = secret.secret_data().data();
+                            let cairo_json_proof = hashed_to_cairo_proof
+                                .get(hashed_program)
+                                .ok_or(Error::CairoProofNotProvided)?;
+                            proof.add_cairo_proof(cairo_json_proof.to_string());
                         }
                     }
                     for pubkey in pubkeys {
@@ -283,6 +301,8 @@ pub struct ReceiveOptions {
     pub p2pk_signing_keys: Vec<SecretKey>,
     /// Preimages
     pub preimages: Vec<String>,
+    /// Cairo proofs
+    pub cairo_proofs: Vec<String>,
     /// Metadata
     pub metadata: HashMap<String, String>,
 }

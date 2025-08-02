@@ -303,6 +303,12 @@ impl From<HTLCWitness> for Witness {
     }
 }
 
+impl From<CairoWitness> for Witness {
+    fn from(witness: CairoWitness) -> Self {
+        Self::CairoWitness(witness)
+    }
+}
+
 impl Witness {
     /// Add signatures to [`Witness`]
     pub fn add_signatures(&mut self, signatues: Vec<String>) {

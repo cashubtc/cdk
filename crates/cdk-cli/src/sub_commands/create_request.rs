@@ -35,6 +35,9 @@ pub struct CreateRequestSubCommand {
     /// HTLC: Preimage of the hash (to be used instead of hash)
     #[arg(long, conflicts_with = "hash")]
     preimage: Option<String>,
+    /// Cairo: Program and output hash
+    #[arg(long)]
+    cairo: Option<String>, // TODO: figure out what to put exactly here
     /// Transport type to use (nostr, http, or none)
     /// - nostr: Use Nostr transport and listen for payment
     /// - http: Use HTTP transport but only print the request
@@ -131,6 +134,7 @@ pub async fn create_request(
     // 2. Only HTLC condition with hash
     // 3. Only HTLC condition with preimage
     // 4. Both P2PK and HTLC conditions
+    // 5. // TODO: handle cases all cases above both with and without Cairo conditions
 
     let spending_conditions = if let Some(pubkey_strings) = &sub_command_args.pubkey {
         // Parse all pubkeys
