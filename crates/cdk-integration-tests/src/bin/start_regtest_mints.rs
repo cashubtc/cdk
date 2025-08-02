@@ -197,7 +197,7 @@ async fn start_ldk_mint(
         bitcoind_rpc_user: Some("testuser".to_string()),
         bitcoind_rpc_password: Some("testpass".to_string()),
         esplora_url: None,
-        storage_dir_path: Some(ldk_work_dir.join("storage").to_string_lossy().to_string()),
+        storage_dir_path: Some(ldk_work_dir.to_string_lossy().to_string()),
         ldk_node_host: Some("127.0.0.1".to_string()),
         ldk_node_port: Some(port + 10), // Use a different port for the LDK node P2P connections
         gossip_source_type: None,

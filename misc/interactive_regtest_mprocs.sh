@@ -355,7 +355,7 @@ procs:
     autostart: true
   
   ldk-node:
-    shell: "while [ ! -f $CDK_ITESTS_DIR/ldk_mint/ldk_node.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/ldk_mint/ldk_node.log"
+    shell: "while [ ! -f $CDK_ITESTS_DIR/ldk_mint/ldk_node.log ]; do sleep 1; done && $PROJECT_ROOT/misc/scripts/filtered_ldk_node_log.sh $CDK_ITESTS_DIR/ldk_mint/ldk_node.log"
     autostart: true
 
 settings:

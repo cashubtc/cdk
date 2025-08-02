@@ -721,11 +721,10 @@ impl MintPayment for CdkLdkNode {
                             break (MeltQuoteState::Failed, details);
                         }
                         PaymentStatus::Pending => {
-                            tracing::warn!(
-                                "Paying bolt11 exceeded timeout 10 seconds no longer waitning."
-                            );
-
                             if start.elapsed() > timeout {
+                                tracing::warn!(
+                                    "Paying bolt11 exceeded timeout 10 seconds no longer waitning."
+                                );
                                 break (MeltQuoteState::Pending, details);
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await;

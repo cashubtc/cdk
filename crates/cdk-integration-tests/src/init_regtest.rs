@@ -392,17 +392,6 @@ pub async fn start_regtest_end(
                 true,
             )?;
 
-            lnd_client
-                .connect_peer(pubkey.to_string(), listen_addr, *port)
-                .await?;
-
-            lnd_client.wait_chain_sync().await?;
-
-            lnd_client
-                .open_channel(1_500_000, &pubkey.to_string(), Some(750_000))
-                .await
-                .unwrap();
-
             let lnd_info = lnd_client.get_connect_info().await?;
 
             node.connect(
@@ -412,6 +401,25 @@ pub async fn start_regtest_end(
                     port: lnd_info.port,
                 },
                 true,
+            )?;
+
+            // lnd_client
+            //     .open_channel(1_500_000, &pubkey.to_string(), Some(750_000))
+            //     .await
+            //     .unwrap();
+
+            generate_block(&bitcoin_client)?;
+            lnd_client.wait_chain_sync().await?;
+
+            node.open_announced_channel(
+                lnd_info.pubkey.parse()?,
+                SocketAddress::TcpIpV4 {
+                    addr: [127, 0, 0, 1],
+                    port: lnd_info.port,
+                },
+                1_000_000,
+                Some(500_000_000),
+                None,
             )?;
 
             generate_block(&bitcoin_client)?;
