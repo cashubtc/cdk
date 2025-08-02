@@ -14,8 +14,8 @@ use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
 use cashu::mint_url::MintUrl;
 use cashu::{
-    CurrencyUnit, Id, MeltRequest, NotificationPayload, PreMintSecrets, ProofState, SecretKey,
-    SpendingConditions, State, SwapRequest,
+    CurrencyUnit, Id, MeltRequest, NotificationPayload, NutXXConditions, PreMintSecrets,
+    ProofState, SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
@@ -505,6 +505,118 @@ pub async fn test_p2pk_swap() {
 
     assert!(listener.try_recv().is_err(), "no other event is happening");
     assert!(msgs.is_empty(), "Only expected key events are received");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+pub async fn test_cairo_swap() {
+    setup_tracing();
+    let mint_bob = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet_alice = create_test_wallet_for_mint(mint_bob.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Alice gets 100 sats
+    fund_wallet(wallet_alice.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let proofs = wallet_alice
+        .get_unspent_proofs()
+        .await
+        .expect("Could not get proofs");
+
+    let keyset_id: Id = get_keyset_id(&mint_bob).await;
+
+    let program_hash = String::from(""); // TODO: hash cairo program
+
+    let desired_program_output = Some(NutXXConditions {
+        output: Some(String::from("1")),
+    });
+
+    let spending_conditions = SpendingConditions::new_cairo(program_hash, desired_program_output);
+
+    let pre_swap = PreMintSecrets::with_conditions(
+        keyset_id,
+        100.into(),
+        &SplitTarget::default(),
+        &spending_conditions,
+    )
+    .unwrap();
+
+    let swap_request = SwapRequest::new(proofs.clone(), pre_swap.blinded_messages());
+
+    let keys = mint_bob.pubkeys().keysets.first().cloned().unwrap().keys;
+
+    let post_swap = mint_bob.process_swap_request(swap_request).await.unwrap();
+
+    let mut proofs = construct_proofs(
+        post_swap.signatures,
+        pre_swap.rs(),
+        pre_swap.secrets(),
+        &keys,
+    )
+    .unwrap();
+
+    let pre_swap = PreMintSecrets::random(keyset_id, 100.into(), &SplitTarget::default()).unwrap();
+
+    let swap_request = SwapRequest::new(proofs.clone(), pre_swap.blinded_messages());
+
+    // Listen for status updates on all input proof pks
+    let public_keys_to_listen: Vec<_> = swap_request
+        .inputs()
+        .ys()
+        .unwrap()
+        .iter()
+        .map(|pk| pk.to_string())
+        .collect();
+
+    let mut listener = mint_bob
+        .pubsub_manager()
+        .try_subscribe::<IndexableParams>(
+            Params {
+                kind: cdk::nuts::nut17::Kind::ProofState,
+                filters: public_keys_to_listen.clone(),
+                id: "test".into(),
+            }
+            .into(),
+        )
+        .await
+        .expect("valid subscription");
+
+    let public_keys_to_listen: Vec<_> = swap_request
+        .inputs()
+        .ys()
+        .unwrap()
+        .iter()
+        .map(|pk| pk.to_string())
+        .collect();
+
+    let mut listener = mint_bob
+        .pubsub_manager()
+        .try_subscribe::<IndexableParams>(
+            Params {
+                kind: cdk::nuts::nut17::Kind::ProofState,
+                filters: public_keys_to_listen.clone(),
+                id: "test".into(),
+            }
+            .into(),
+        )
+        .await
+        .expect("valid subscription");
+
+    // Processing the swap before providing the witness should throw and error.
+    match mint_bob.process_swap_request(swap_request).await {
+        Ok(_) => panic!("Proofs spent without providing a cairo proof"),
+        Err(err) => match err {
+            cdk::Error::NUT11(cdk::nuts::nut11::Error::SignaturesNotProvided) => (), // TODO add the right error to nutxx
+            _ => {
+                println!("{:?}", err);
+                panic!("Wrong error returned")
+            }
+        },
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
