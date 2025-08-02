@@ -146,6 +146,16 @@ pub fn hash_array_pmv(values: &Vec<PubMemoryValue>) -> Felt {
 }
 
 impl Proof {
+    // dummy proof for Cairo
+    // a possible design for a prove_cairo function would be to have the cairo proof being passed as an argument by the wallet
+    // and the witness being constructed from it here.
+    pub fn dummy_prove_cairo(&mut self) -> Result<(), Error> {
+        let cairo_proof = include_str!("example_proof.json").to_string();
+        let witness = CairoWitness { proof: cairo_proof };
+        self.witness = Some(Witness::CairoWitness(witness));
+        Ok(())
+    }
+
     /// Verify Cairo
     pub fn verify_cairo(&self) -> Result<(), Error> {
         let secret: Nut10Secret = self.secret.clone().try_into()?;
@@ -269,6 +279,8 @@ mod tests {
         let executable_json = include_str!("example_executable.json");
         let executable: Executable = serde_json::from_str(executable_json).unwrap();
         let program_hash = Poseidon::hash_array(&executable.program.bytecode);
+
+        // panic!("Program hash: {}", program_hash.to_hex_string());
 
         // specify output condition (0 -> not prime, 1 -> prime)
         let output_condition = vec![Felt::from(1)]; // the example is on input 7, so output should be 1
