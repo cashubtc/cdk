@@ -124,6 +124,7 @@ impl CdkLdkNode {
     ) -> Result<Self, Error> {
         let mut builder = Builder::new();
         builder.set_network(network);
+        tracing::info!("Storage dir of node is {}", storage_dir_path);
         builder.set_storage_dir_path(storage_dir_path);
 
         match chain_source {
@@ -162,8 +163,12 @@ impl CdkLdkNode {
 
         let adr = node.announcement_addresses();
 
-        tracing::info!("Created node {} with address {:?}", id, adr);
-        tracing::info!("Initialized message channels for payment notifications");
+        tracing::info!(
+            "Created node {} with address {:?} on network {}",
+            id,
+            adr,
+            network
+        );
 
         Ok(Self {
             inner: node.into(),
@@ -216,7 +221,7 @@ impl CdkLdkNode {
     ///
     /// # Errors
     /// Returns an error if the LDK node fails to start or event handling setup fails
-    pub fn start(&self) -> Result<(), Error> {
+    pub fn start_ldk_node(&self) -> Result<(), Error> {
         match &self.runtime {
             Some(runtime) => {
                 tracing::info!("Starting cdk-ldk node with existing runtime");
@@ -277,7 +282,7 @@ impl CdkLdkNode {
     ///
     /// # Errors
     /// Returns an error if the underlying LDK node fails to stop
-    pub fn stop(&self) -> Result<(), Error> {
+    pub fn stop_ldk_node(&self) -> Result<(), Error> {
         tracing::info!("Stopping CdkLdkNode");
         // Cancel all tokio tasks
         tracing::info!("Cancelling event handler");
@@ -438,7 +443,7 @@ impl MintPayment for CdkLdkNode {
     /// Start the payment processor
     /// Starts the LDK node and begins event processing
     async fn start(&self) -> Result<(), Self::Err> {
-        self.start().map_err(|e| {
+        self.start_ldk_node().map_err(|e| {
             tracing::error!("Failed to start CdkLdkNode: {}", e);
             e
         })?;
@@ -462,16 +467,10 @@ impl MintPayment for CdkLdkNode {
     /// Stop the payment processor
     /// Gracefully stops the LDK node and cancels all background tasks
     async fn stop(&self) -> Result<(), Self::Err> {
-        match self.stop() {
-            Ok(()) => {
-                tracing::info!("CdkLdkNode payment processor stopped successfully");
-                Ok(())
-            }
-            Err(e) => {
-                tracing::error!("Failed to stop CdkLdkNode: {}", e);
-                Err(e.into())
-            }
-        }
+        self.stop_ldk_node().map_err(|e| {
+            tracing::error!("Failed to stop CdkLdkNode: {}", e);
+            e.into()
+        })
     }
 
     /// Base Settings
@@ -1003,7 +1002,11 @@ impl Drop for CdkLdkNode {
         tracing::info!("Drop called on CdkLdkNode");
         self.wait_invoice_cancel_token.cancel();
         tracing::debug!("Cancelled wait_invoice token in drop");
-        if let Err(e) = self.stop() {
+        // Create a temporary clone to call async method via block_on
+        let node = self.clone();
+        if let Err(e) = tokio::task::block_in_place(move || {
+            tokio::runtime::Handle::current().block_on(async move { node.stop().await })
+        }) {
             tracing::error!("Error stopping node during drop: {}", e);
         } else {
             tracing::info!("Successfully stopped node during drop");
