@@ -71,6 +71,15 @@ impl From<(PathBuf, String)> for AsyncRusqlite {
     }
 }
 
+impl From<(&PathBuf, String)> for AsyncRusqlite {
+    fn from((value, pass): (&PathBuf, String)) -> Self {
+        AsyncRusqlite::new(create_sqlite_pool(
+            value.to_str().unwrap_or_default(),
+            Some(pass),
+        ))
+    }
+}
+
 impl From<&PathBuf> for AsyncRusqlite {
     fn from(value: &PathBuf) -> Self {
         AsyncRusqlite::new(create_sqlite_pool(value.to_str().unwrap_or_default(), None))

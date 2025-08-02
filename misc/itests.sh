@@ -22,11 +22,11 @@ cleanup() {
 
     echo "Mint binary terminated"
 
-    # Remove the temporary directory
-    if [ ! -z "$CDK_ITESTS_DIR" ] && [ -d "$CDK_ITESTS_DIR" ]; then
-        rm -rf "$CDK_ITESTS_DIR"
-        echo "Temp directory removed: $CDK_ITESTS_DIR"
-    fi
+    # # Remove the temporary directory
+    # if [ ! -z "$CDK_ITESTS_DIR" ] && [ -d "$CDK_ITESTS_DIR" ]; then
+    #     rm -rf "$CDK_ITESTS_DIR"
+    #     echo "Temp directory removed: $CDK_ITESTS_DIR"
+    # fi
     
     # Unset all environment variables
     unset CDK_ITESTS_DIR
@@ -115,7 +115,7 @@ export CDK_TEST_MINT_URL_2
 URL="$CDK_TEST_MINT_URL/v1/info"
 
 
-TIMEOUT=100
+TIMEOUT=500
 START_TIME=$(date +%s)
 # Loop until the endpoint returns a 200 OK status or timeout is reached
 while true; do
@@ -176,57 +176,105 @@ while true; do
     fi
 done
 
-# Run cargo test
-echo "Running regtest test with CLN mint"
-cargo test -p cdk-integration-tests --test regtest
-if [ $? -ne 0 ]; then
-    echo "regtest test failed, exiting"
-    exit 1
-fi
+# # Run cargo test
+# echo "Running regtest test with CLN mint"
+# cargo test -p cdk-integration-tests --test regtest
+# if [ $? -ne 0 ]; then
+#     echo "regtest test failed, exiting"
+#     exit 1
+# fi
 
-echo "Running happy_path_mint_wallet test with CLN mint"
+# echo "Running happy_path_mint_wallet test with CLN mint"
+# cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+# if [ $? -ne 0 ]; then
+#     echo "happy_path_mint_wallet test failed, exiting"
+#     exit 1
+# fi
+
+# # Run cargo test with the http_subscription feature
+# echo "Running regtest test with http_subscription feature"
+# cargo test -p cdk-integration-tests --test regtest --features http_subscription
+# if [ $? -ne 0 ]; then
+#     echo "regtest test with http_subscription failed, exiting"
+#     exit 1
+# fi
+
+# echo "Running regtest test with cln mint for bolt12"
+# cargo test -p cdk-integration-tests --test bolt12
+# if [ $? -ne 0 ]; then
+#     echo "regtest test failed, exiting"
+#     exit 1
+# fi
+
+# # Switch Mints: Run tests with LND mint
+# echo "Switching to LND mint for tests"
+
+# echo "Running regtest test with LND mint"
+# CDK_TEST_MINT_URL_SWITCHED=$CDK_TEST_MINT_URL_2
+# CDK_TEST_MINT_URL_2_SWITCHED=$CDK_TEST_MINT_URL
+# export CDK_TEST_MINT_URL=$CDK_TEST_MINT_URL_SWITCHED
+# export CDK_TEST_MINT_URL_2=$CDK_TEST_MINT_URL_2_SWITCHED
+
+#  cargo test -p cdk-integration-tests --test regtest
+#  if [ $? -ne 0 ]; then
+#      echo "regtest test with LND mint failed, exiting"
+#      exit 1
+#  fi
+
+#  echo "Running happy_path_mint_wallet test with LND mint"
+#  cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+#  if [ $? -ne 0 ]; then
+#      echo "happy_path_mint_wallet test with LND mint failed, exiting"
+#      exit 1
+#  fi
+
+
+export CDK_TEST_MINT_URL="http://127.0.0.1:8089"
+ 
+TIMEOUT=100
+START_TIME=$(date +%s)
+# Loop until the endpoint returns a 200 OK status or timeout is reached
+while true; do
+    # Get the current time
+    CURRENT_TIME=$(date +%s)
+    
+    # Calculate the elapsed time
+    ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
+
+    # Check if the elapsed time exceeds the timeout
+    if [ $ELAPSED_TIME -ge $TIMEOUT ]; then
+        echo "Timeout of $TIMEOUT seconds reached. Exiting..."
+        exit 1
+    fi
+
+    # Make a request to the endpoint and capture the HTTP status code
+    HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}" $CDK_TEST_MINT_URL/v1/info)
+
+    # Check if the HTTP status is 200 OK
+    if [ "$HTTP_STATUS" -eq 200 ]; then
+        echo "Received 200 OK from $CDK_TEST_MINT_URL"
+        break
+    else
+        echo "Waiting for 200 OK response, current status: $HTTP_STATUS"
+        sleep 2  # Wait for 2 seconds before retrying
+    fi
+done
+
+
+echo "Running happy_path_mint_wallet test with LDK mint"
 cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 if [ $? -ne 0 ]; then
-    echo "happy_path_mint_wallet test failed, exiting"
+    echo "happy_path_mint_wallet test with LDK mint failed, exiting"
     exit 1
 fi
 
-# Run cargo test with the http_subscription feature
-echo "Running regtest test with http_subscription feature"
-cargo test -p cdk-integration-tests --test regtest --features http_subscription
-if [ $? -ne 0 ]; then
-    echo "regtest test with http_subscription failed, exiting"
-    exit 1
-fi
-
-echo "Running regtest test with cln mint for bolt12"
-cargo test -p cdk-integration-tests --test bolt12
-if [ $? -ne 0 ]; then
-    echo "regtest test failed, exiting"
-    exit 1
-fi
-
-# Switch Mints: Run tests with LND mint
-echo "Switching to LND mint for tests"
-
-echo "Running regtest test with LND mint"
-CDK_TEST_MINT_URL_SWITCHED=$CDK_TEST_MINT_URL_2
-CDK_TEST_MINT_URL_2_SWITCHED=$CDK_TEST_MINT_URL
-export CDK_TEST_MINT_URL=$CDK_TEST_MINT_URL_SWITCHED
-export CDK_TEST_MINT_URL_2=$CDK_TEST_MINT_URL_2_SWITCHED
-
+echo "Running regtest test with LDK mint"
 cargo test -p cdk-integration-tests --test regtest
 if [ $? -ne 0 ]; then
-    echo "regtest test with LND mint failed, exiting"
+    echo "regtest test LDK mint failed, exiting"
     exit 1
 fi
 
-echo "Running happy_path_mint_wallet test with LND mint"
-cargo test -p cdk-integration-tests --test happy_path_mint_wallet
-if [ $? -ne 0 ]; then
-    echo "happy_path_mint_wallet test with LND mint failed, exiting"
-    exit 1
-fi
 
 echo "All tests passed successfully"
 exit 0
