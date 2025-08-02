@@ -207,15 +207,11 @@ pub async fn pay_if_regtest(work_dir: &Path, invoice: &Bolt11Invoice) -> Result<
     if invoice.network() == bitcoin::Network::Regtest {
         let lnd_client = init_lnd_client(work_dir).await;
         let mut tries = 0;
-        loop {
-            if let Err(err) = lnd_client.pay_invoice(invoice.to_string()).await {
-                println!("Could not pay invoice.retrying {}", err);
-                tries += 1;
-                if tries > 10 {
-                    break;
-                }
-            } else {
-                break;
+        while let Err(err) = lnd_client.pay_invoice(invoice.to_string()).await {
+            println!("Could not pay invoice.retrying {}", err);
+            tries += 1;
+            if tries > 10 {
+                bail!("Could not pay invoice");
             }
         }
         Ok(())
