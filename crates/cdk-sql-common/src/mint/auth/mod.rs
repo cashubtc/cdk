@@ -17,9 +17,9 @@ use tracing::instrument;
 use super::{sql_row_to_blind_signature, sql_row_to_keyset_info, SQLTransaction};
 use crate::column_as_string;
 use crate::common::migrate;
-use crate::database::{DatabaseConnector, DatabaseTransaction};
+use crate::database::{ConnnectionWithTransaction, DatabaseConnector};
 use crate::mint::Error;
-use crate::pool::{Pool, ResourceManager};
+use crate::pool::{Pool, PooledResource, ResourceManager};
 use crate::stmt::query;
 
 /// Mint SQL Database
@@ -35,8 +35,8 @@ where
 
 impl<DB, RM, C> SQLMintAuthDatabase<DB, RM, C>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = Error>,
+    DB: DatabaseConnector + 'static,
+    RM: ResourceManager<Resource = DB, Config = C, Error = Error> + 'static,
     C: Debug + Clone + Send + Sync,
 {
     /// Creates a new instance
@@ -45,14 +45,13 @@ where
         X: Into<Pool<RM>>,
     {
         let pool = Arc::new(db.into());
-        let mut conn = pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Self::migrate(&mut conn).await?;
+        Self::migrate(pool.get().map_err(|e| Error::Database(Box::new(e)))?).await?;
         Ok(Self { pool })
     }
 
     /// Migrate
-    async fn migrate(conn: &mut DB) -> Result<(), Error> {
-        let tx = conn.begin().await?;
+    async fn migrate(conn: PooledResource<RM>) -> Result<(), Error> {
+        let tx = ConnnectionWithTransaction::new(conn).await?;
         migrate(&tx, DB::name(), MIGRATIONS).await?;
         tx.commit().await?;
         Ok(())
@@ -83,11 +82,7 @@ where
             "#,
         )?
         .bind("id", id.to_string())
-        .execute(
-            self.inner
-                .as_ref()
-                .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
-        )
+        .execute(&self.inner)
         .await?;
 
         Ok(())
@@ -123,11 +118,7 @@ where
         .bind("derivation_path", keyset.derivation_path.to_string())
         .bind("max_order", keyset.max_order)
         .bind("derivation_path_index", keyset.derivation_path_index)
-        .execute(
-            self.inner
-                .as_ref()
-                .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
-        )
+        .execute(&self.inner)
         .await?;
 
         Ok(())
@@ -147,11 +138,7 @@ where
         .bind("secret", proof.secret.to_string())
         .bind("c", proof.c.to_bytes().to_vec())
         .bind("state", "UNSPENT".to_string())
-        .execute(
-            self.inner
-                .as_ref()
-                .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
-        )
+        .execute(&self.inner)
         .await
         {
             tracing::debug!("Attempting to add known proof. Skipping.... {:?}", err);
@@ -166,11 +153,7 @@ where
     ) -> Result<Option<State>, Self::Err> {
         let current_state = query(r#"SELECT state FROM proof WHERE y = :y"#)?
             .bind("y", y.to_bytes().to_vec())
-            .pluck(
-                self.inner
-                    .as_ref()
-                    .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
-            )
+            .pluck(&self.inner)
             .await?
             .map(|state| Ok::<_, Error>(column_as_string!(state, State::from_str)))
             .transpose()?;
@@ -182,11 +165,7 @@ where
                 current_state.as_ref().map(|state| state.to_string()),
             )
             .bind("new_state", proofs_state.to_string())
-            .execute(
-                self.inner
-                    .as_ref()
-                    .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
-            )
+            .execute(&self.inner)
             .await?;
 
         Ok(current_state)
@@ -211,11 +190,7 @@ where
             .bind("amount", u64::from(signature.amount) as i64)
             .bind("keyset_id", signature.keyset_id.to_string())
             .bind("c", signature.c.to_bytes().to_vec())
-            .execute(
-                self.inner
-                    .as_ref()
-                    .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
-            )
+            .execute(&self.inner)
             .await?;
         }
 
@@ -236,11 +211,7 @@ where
             )?
             .bind("endpoint", serde_json::to_string(endpoint)?)
             .bind("auth", serde_json::to_string(auth)?)
-            .execute(
-                self.inner
-                    .as_ref()
-                    .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
-            )
+            .execute(&self.inner)
             .await
             {
                 tracing::debug!(
@@ -264,11 +235,7 @@ where
                     .map(serde_json::to_string)
                     .collect::<Result<_, _>>()?,
             )
-            .execute(
-                self.inner
-                    .as_ref()
-                    .ok_or(Error::Internal("Missing active transaction".to_owned()))?,
-            )
+            .execute(&self.inner)
             .await?;
         Ok(())
     }
@@ -277,8 +244,8 @@ where
 #[async_trait]
 impl<DB, RM, C> MintAuthDatabase for SQLMintAuthDatabase<DB, RM, C>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = Error>,
+    DB: DatabaseConnector + 'static,
+    RM: ResourceManager<Resource = DB, Config = C, Error = Error> + 'static,
     C: Debug + Clone + Send + Sync,
 {
     type Err = database::Error;
@@ -288,8 +255,10 @@ where
     ) -> Result<Box<dyn MintAuthTransaction<database::Error> + Send + Sync + 'a>, database::Error>
     {
         Ok(Box::new(SQLTransaction {
-            conn: self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
-            inner: None,
+            inner: ConnnectionWithTransaction::new(
+                self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
+            )
+            .await?,
             _phantom: PhantomData,
         }))
     }

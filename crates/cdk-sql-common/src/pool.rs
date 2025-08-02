@@ -75,6 +75,15 @@ where
     pool: Arc<Pool<RM>>,
 }
 
+impl<RM> Debug for PooledResource<RM>
+where
+    RM: ResourceManager,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Resource: {:?}", self.resource)
+    }
+}
+
 impl<RM> Drop for PooledResource<RM>
 where
     RM: ResourceManager,

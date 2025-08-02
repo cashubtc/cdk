@@ -23,6 +23,7 @@ cdk-common = { workspace = true, features = ["test"] }
 bitcoin.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 lightning-invoice.workspace = true
