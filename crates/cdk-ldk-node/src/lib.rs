@@ -992,14 +992,5 @@ impl Drop for CdkLdkNode {
         tracing::info!("Drop called on CdkLdkNode");
         self.wait_invoice_cancel_token.cancel();
         tracing::debug!("Cancelled wait_invoice token in drop");
-        // Create a temporary clone to call async method via block_on
-        let node = self.clone();
-        if let Err(e) = tokio::task::block_in_place(move || {
-            tokio::runtime::Handle::current().block_on(async move { node.stop().await })
-        }) {
-            tracing::error!("Error stopping node during drop: {}", e);
-        } else {
-            tracing::info!("Successfully stopped node during drop");
-        }
     }
 }
