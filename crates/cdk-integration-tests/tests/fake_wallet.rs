@@ -39,7 +39,7 @@ async fn test_fake_tokens_pending() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -81,7 +81,7 @@ async fn test_fake_melt_payment_fail() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("Failed to create new wallet");
@@ -146,7 +146,7 @@ async fn test_fake_melt_payment_fail_and_check() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("Failed to create new wallet");
@@ -194,7 +194,7 @@ async fn test_fake_melt_payment_return_fail_status() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("Failed to create new wallet");
@@ -257,7 +257,7 @@ async fn test_fake_melt_payment_error_unknown() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .unwrap();
@@ -320,7 +320,7 @@ async fn test_fake_melt_payment_err_paid() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("Failed to create new wallet");
@@ -361,7 +361,7 @@ async fn test_fake_melt_change_in_quote() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("Failed to create new wallet");
@@ -431,7 +431,7 @@ async fn test_fake_mint_with_witness() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -458,7 +458,7 @@ async fn test_fake_mint_without_witness() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -498,7 +498,7 @@ async fn test_fake_mint_with_wrong_witness() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -544,7 +544,7 @@ async fn test_fake_mint_inflated() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -602,7 +602,7 @@ async fn test_fake_mint_multiple_units() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -621,7 +621,7 @@ async fn test_fake_mint_multiple_units() {
         MINT_URL,
         CurrencyUnit::Usd,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -679,7 +679,7 @@ async fn test_fake_mint_multiple_unit_swap() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -699,7 +699,7 @@ async fn test_fake_mint_multiple_unit_swap() {
         MINT_URL,
         CurrencyUnit::Usd,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create usd wallet");
@@ -792,7 +792,7 @@ async fn test_fake_mint_multiple_unit_melt() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -814,7 +814,7 @@ async fn test_fake_mint_multiple_unit_melt() {
         MINT_URL,
         CurrencyUnit::Usd,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -910,7 +910,7 @@ async fn test_fake_mint_input_output_mismatch() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -930,7 +930,7 @@ async fn test_fake_mint_input_output_mismatch() {
         MINT_URL,
         CurrencyUnit::Usd,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new  usd wallet");
@@ -968,7 +968,7 @@ async fn test_fake_mint_swap_inflated() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -1012,7 +1012,7 @@ async fn test_fake_mint_swap_spend_after_fail() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -1083,7 +1083,7 @@ async fn test_fake_mint_melt_spend_after_fail() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -1155,7 +1155,7 @@ async fn test_fake_mint_duplicate_proofs_swap() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");
@@ -1234,7 +1234,7 @@ async fn test_fake_mint_duplicate_proofs_melt() {
         MINT_URL,
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");

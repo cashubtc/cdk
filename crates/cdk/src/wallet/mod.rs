@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use bitcoin::bip32::Xpriv;
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::subscription::Params;
 use getrandom::getrandom;
@@ -78,7 +77,7 @@ pub struct Wallet {
     pub target_proof_count: usize,
     #[cfg(feature = "auth")]
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
-    xpriv: Xpriv,
+    seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
 }
@@ -143,7 +142,7 @@ impl Wallet {
     /// use rand::random;
     ///
     /// async fn test() -> anyhow::Result<()> {
-    ///     let seed = random::<[u8; 32]>();
+    ///     let seed = random::<[u8; 64]>();
     ///     let mint_url = "https://fake.thesimplekid.dev";
     ///     let unit = CurrencyUnit::Sat;
     ///
@@ -152,7 +151,7 @@ impl Wallet {
     ///         .mint_url(mint_url.parse().unwrap())
     ///         .unit(unit)
     ///         .localstore(Arc::new(localstore))
-    ///         .seed(&seed)
+    ///         .seed(seed)
     ///         .build();
     ///     Ok(())
     /// }
@@ -161,7 +160,7 @@ impl Wallet {
         mint_url: &str,
         unit: CurrencyUnit,
         localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
-        seed: &[u8],
+        seed: [u8; 64],
         target_proof_count: Option<usize>,
     ) -> Result<Self, Error> {
         let mint_url = MintUrl::from_str(mint_url)?;
@@ -390,7 +389,7 @@ impl Wallet {
             while empty_batch.lt(&3) {
                 let premint_secrets = PreMintSecrets::restore_batch(
                     keyset.id,
-                    self.xpriv,
+                    &self.seed,
                     start_counter,
                     start_counter + 100,
                 )?;

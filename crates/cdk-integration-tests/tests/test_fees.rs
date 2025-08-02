@@ -19,7 +19,7 @@ async fn test_swap() {
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &seed,
+        seed,
         None,
     )
     .expect("failed to create new wallet");
@@ -85,7 +85,7 @@ async fn test_fake_melt_change_in_quote() {
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
         Arc::new(memory::empty().await.unwrap()),
-        &Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
         None,
     )
     .expect("failed to create new wallet");

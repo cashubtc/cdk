@@ -336,7 +336,7 @@ pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
         .mint_url(mint_url.parse().unwrap())
         .unit(unit)
         .localstore(localstore)
-        .seed(&seed)
+        .seed(seed)
         .client(connector)
         .build()?;
 

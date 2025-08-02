@@ -1,5 +1,6 @@
 //! Errors
 
+use std::array::TryFromSliceError;
 use std::fmt;
 
 use cashu::{CurrencyUnit, PaymentMethod};
@@ -347,6 +348,9 @@ pub enum Error {
     /// NUT23 Error
     #[error(transparent)]
     NUT23(#[from] crate::nuts::nut23::Error),
+    /// From slice error
+    #[error(transparent)]
+    TryFromSliceError(#[from] TryFromSliceError),
     /// Database Error
     #[error(transparent)]
     Database(crate::database::Error),
