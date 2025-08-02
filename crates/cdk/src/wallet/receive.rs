@@ -14,7 +14,7 @@ use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
-use crate::nuts::nutxx::hash_many_pmv;
+use crate::nuts::nutxx::hash_array_pmv;
 use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State, Token};
 use crate::types::ProofInfo;
 use crate::util::hex;
@@ -71,7 +71,7 @@ impl Wallet {
                 let cairo_proof =
                     serde_json::from_str::<CairoProof<Blake2sMerkleHasher>>(p.as_str())?;
                 let program = &cairo_proof.claim.public_data.public_memory.program;
-                Ok::<(String, &String), Error>((hash_many_pmv(program).to_string(), p))
+                Ok::<(String, &String), Error>((hash_array_pmv(program).to_string(), p))
             })
             .collect::<Result<HashMap<String, &String>, _>>()?;
 

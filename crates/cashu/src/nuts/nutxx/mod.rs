@@ -2,17 +2,19 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/xx.md>
 
+use std::str::FromStr;
+
 use cairo_air::air::PubMemoryValue;
 use cairo_air::verifier::{verify_cairo, CairoVerificationError};
 use cairo_air::{CairoProof, PreProcessedTraceVariant};
 use serde::{Deserialize, Serialize};
 use starknet_types_core::felt::Felt;
+use starknet_types_core::hash::{Poseidon, StarkHash};
 use stwo_cairo_prover::stwo_prover::core::fri::FriConfig;
 use stwo_cairo_prover::stwo_prover::core::pcs::PcsConfig;
 use stwo_cairo_prover::stwo_prover::core::vcs::blake2_merkle::{
     Blake2sMerkleChannel, Blake2sMerkleHasher,
 };
-use stwo_cairo_prover::stwo_prover::core::vcs::blake3_hash::{Blake3Hash, Blake3Hasher};
 use thiserror::Error;
 
 use super::nut00::Witness;
@@ -34,11 +36,14 @@ pub enum Error {
     #[error(transparent)]
     CairoVerification(CairoVerificationError),
     /// Program hash verification error
-    #[error("Program hash ({0}) from proof does not match program hash ({1}) from secret")]
-    ProgramHashVerification(String, String),
+    #[error("Program hash from proof \"{0}\" does not match program hash from secret \"{1}\"")]
+    ProgramHashVerification(Felt, Felt),
     /// Output verification error
-    #[error("Output hash from proof ({0}) does not match output hash from secret ({1})")]
-    OutputHashVerification(String, String),
+    #[error("Output hash from proof \"{0}\" does not match output hash from secret \"{1}\"")]
+    OutputHashVerification(Felt, Felt),
+    /// Felt from string error
+    #[error(transparent)]
+    FeltFromStr(<Felt as std::str::FromStr>::Err),
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
@@ -50,10 +55,9 @@ pub enum Error {
 /// Cairo spending conditions
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Conditions {
-    /// Output of the program
+    /// Hash of the output of the program
     #[serde(skip_serializing_if = "Option::is_none")]
-    // pub output: Option<Felt>,
-    pub output: Option<String>, // hash of the output
+    pub output: Option<Felt>,
 }
 
 impl From<Conditions> for Vec<Vec<String>> {
@@ -65,8 +69,7 @@ impl From<Conditions> for Vec<Vec<String>> {
         if let Some(output) = output {
             tags.push(vec![
                 TagKind::Custom("program_output".to_string()).to_string(),
-                // output.to_hex_string(),
-                output.to_string(),
+                output.to_hex_string(),
             ]);
         }
         tags
@@ -86,8 +89,7 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
             let tag_kind = TagKind::from(tag[0].as_str());
             match tag_kind {
                 TagKind::Custom(ref kind) if kind == "program_output" => {
-                    // output = Some(Felt::from_hex(&tag[1]).unwrap());
-                    output = Some(tag[1].clone());
+                    output = Some(Felt::from_hex(&tag[1]).unwrap());
                 }
                 _ => {}
             }
@@ -138,48 +140,39 @@ fn pmv_to_felt(pmv: &PubMemoryValue) -> Felt {
     Felt::from_bytes_le(&le_bytes)
 }
 
-/// TODO: use something more secure for hashing multiple values,
-/// like `poseidon_hash_many` on the Felt values directly
-pub fn hash_many_felt(bytecode: &Vec<Felt>) -> Blake3Hash {
-    let mut hasher = Blake3Hasher::default();
-    for felt in bytecode {
-        for byte in felt.to_bytes_le().iter() {
-            hasher.update(&[*byte]);
-        }
-    }
-    hasher.finalize()
-}
-
-pub fn hash_many_pmv(values: &Vec<PubMemoryValue>) -> Blake3Hash {
-    hash_many_felt(&values.iter().map(|v| pmv_to_felt(v)).collect::<Vec<_>>())
+/// Hash an array of PubMemoryValues using Poseidon
+pub fn hash_array_pmv(values: &Vec<PubMemoryValue>) -> Felt {
+    Poseidon::hash_array(&values.iter().map(|v| pmv_to_felt(v)).collect::<Vec<_>>())
 }
 
 impl Proof {
     /// Verify Cairo
     pub fn verify_cairo(&self) -> Result<(), Error> {
         let secret: Nut10Secret = self.secret.clone().try_into()?;
-        let cairo_witness = match &self.witness {
-            Some(Witness::CairoWitness(witness)) => witness,
-            _ => return Err(Error::IncorrectWitnessKind),
-        };
-
         if secret.kind().ne(&super::Kind::Cairo) {
             return Err(Error::IncorrectSecretKind);
         }
 
+        let cairo_witness = match &self.witness {
+            Some(Witness::CairoWitness(witness)) => witness,
+            _ => return Err(Error::IncorrectWitnessKind),
+        };
         let cairo_proof =
             match serde_json::from_str::<CairoProof<Blake2sMerkleHasher>>(&cairo_witness.proof) {
                 Ok(proof) => proof,
                 Err(e) => return Err(Error::Serde(e)),
             };
 
-        let program: &Vec<PubMemoryValue> = &cairo_proof.claim.public_data.public_memory.program;
-        let program_hash = hash_many_pmv(program);
+        let program_hash_condition =
+            Felt::from_str(secret.secret_data().data()).map_err(|e| Error::FeltFromStr(e))?;
 
-        if program_hash.to_string() != secret.secret_data().data() {
+        let program: &Vec<PubMemoryValue> = &cairo_proof.claim.public_data.public_memory.program;
+        let program_hash = hash_array_pmv(program);
+
+        if program_hash != program_hash_condition {
             return Err(Error::ProgramHashVerification(
-                program_hash.to_string(),
-                secret.secret_data().data().to_string(),
+                program_hash,
+                program_hash_condition,
             ));
         }
 
@@ -188,14 +181,11 @@ impl Proof {
             .tags()
             .and_then(|c| c.clone().try_into().ok());
 
-        if let Some(conditions) = conditions {
-            if let Some(output) = conditions.output {
-                // check if the output in the claim matches the output in the conditions
-                let output_claim: String =
-                    hash_many_pmv(&cairo_proof.claim.public_data.public_memory.output).to_string();
-                if output_claim != output {
-                    return Err(Error::OutputHashVerification(output_claim, output));
-                }
+        if let Some(output_condition) = conditions.and_then(|c| c.output) {
+            // check if the output in the claim matches the output in the conditions
+            let output = hash_array_pmv(&cairo_proof.claim.public_data.public_memory.output);
+            if output != output_condition {
+                return Err(Error::OutputHashVerification(output, output_condition));
             }
         }
 
@@ -278,12 +268,12 @@ mod tests {
         // hash the program bytecode
         let executable_json = include_str!("example_executable.json");
         let executable: Executable = serde_json::from_str(executable_json).unwrap();
-        let program_hash = hash_many_felt(&executable.program.bytecode);
+        let program_hash = Poseidon::hash_array(&executable.program.bytecode);
 
         // specify output condition (0 -> not prime, 1 -> prime)
         let output_condition = vec![Felt::from(1)]; // the example is on input 7, so output should be 1
         let conditions = Conditions {
-            output: Some(hash_many_felt(&output_condition).to_string()),
+            output: Some(Poseidon::hash_array(&output_condition)),
         };
 
         let secret: Secret =
