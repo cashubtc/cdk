@@ -186,6 +186,7 @@ async fn configure_mint_builder(
     settings: &config::Settings,
     mint_builder: MintBuilder,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    work_dir: &Path,
 ) -> Result<(MintBuilder, Vec<Router>)> {
     let mut ln_routers = vec![];
 
@@ -194,7 +195,8 @@ async fn configure_mint_builder(
 
     // Configure lightning backend
     let mint_builder =
-        configure_lightning_backend(settings, mint_builder, &mut ln_routers, runtime).await?;
+        configure_lightning_backend(settings, mint_builder, &mut ln_routers, runtime, work_dir)
+            .await?;
 
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
@@ -258,6 +260,7 @@ async fn configure_lightning_backend(
     mut mint_builder: MintBuilder,
     ln_routers: &mut Vec<Router>,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    work_dir: &Path,
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
         mint_min: settings.ln.min_mint,
@@ -276,7 +279,7 @@ async fn configure_lightning_backend(
                 .clone()
                 .expect("Config checked at load that cln is some");
             let cln = cln_settings
-                .setup(ln_routers, settings, CurrencyUnit::Msat, None)
+                .setup(ln_routers, settings, CurrencyUnit::Msat, None, work_dir)
                 .await?;
 
             mint_builder = configure_backend_for_unit(
@@ -292,7 +295,7 @@ async fn configure_lightning_backend(
         LnBackend::LNbits => {
             let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
             let lnbits = lnbits_settings
-                .setup(ln_routers, settings, CurrencyUnit::Sat, None)
+                .setup(ln_routers, settings, CurrencyUnit::Sat, None, work_dir)
                 .await?;
 
             mint_builder = configure_backend_for_unit(
@@ -308,7 +311,7 @@ async fn configure_lightning_backend(
         LnBackend::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
             let lnd = lnd_settings
-                .setup(ln_routers, settings, CurrencyUnit::Msat, None)
+                .setup(ln_routers, settings, CurrencyUnit::Msat, None, work_dir)
                 .await?;
 
             mint_builder = configure_backend_for_unit(
@@ -327,7 +330,7 @@ async fn configure_lightning_backend(
 
             for unit in fake_wallet.clone().supported_units {
                 let fake = fake_wallet
-                    .setup(ln_routers, settings, CurrencyUnit::Sat, None)
+                    .setup(ln_routers, settings, CurrencyUnit::Sat, None, work_dir)
                     .await?;
 
                 mint_builder = configure_backend_for_unit(
@@ -356,7 +359,7 @@ async fn configure_lightning_backend(
             for unit in grpc_processor.clone().supported_units {
                 tracing::debug!("Adding unit: {:?}", unit);
                 let processor = grpc_processor
-                    .setup(ln_routers, settings, unit.clone(), None)
+                    .setup(ln_routers, settings, unit.clone(), None, work_dir)
                     .await?;
 
                 mint_builder = configure_backend_for_unit(
@@ -375,7 +378,7 @@ async fn configure_lightning_backend(
             tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
 
             let ldk_node = ldk_node_settings
-                .setup(ln_routers, settings, CurrencyUnit::Sat, runtime)
+                .setup(ln_routers, settings, CurrencyUnit::Sat, runtime, work_dir)
                 .await?;
 
             mint_builder = configure_backend_for_unit(
@@ -825,7 +828,7 @@ pub async fn run_mintd_with_shutdown(
     let mint_builder = MintBuilder::new(localstore);
 
     let (mint_builder, ln_routers) =
-        configure_mint_builder(settings, mint_builder, runtime).await?;
+        configure_mint_builder(settings, mint_builder, runtime, work_dir).await?;
     #[cfg(feature = "auth")]
     let mint_builder = setup_authentication(settings, work_dir, mint_builder, db_password).await?;
 

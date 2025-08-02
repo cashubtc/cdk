@@ -108,6 +108,7 @@ impl CdkLdkNode {
     /// * `storage_dir_path` - Directory path for node data storage
     /// * `fee_reserve` - Fee reserve configuration for payments
     /// * `listening_address` - Socket addresses for peer connections
+    /// * `runtime` - Optional Tokio runtime to use for starting the node
     ///
     /// # Returns
     /// A new `CdkLdkNode` instance ready to be started
@@ -121,6 +122,7 @@ impl CdkLdkNode {
         storage_dir_path: String,
         fee_reserve: FeeReserve,
         listening_address: Vec<SocketAddress>,
+        runtime: Option<Arc<Runtime>>,
     ) -> Result<Self, Error> {
         let mut builder = Builder::new();
         builder.set_network(network);
@@ -178,17 +180,9 @@ impl CdkLdkNode {
             sender,
             receiver: Arc::new(receiver),
             events_cancel_token: CancellationToken::new(),
-            runtime: None,
+            runtime,
             web_addr: None,
         })
-    }
-
-    /// Set the runtime for this LDK node
-    ///
-    /// # Arguments
-    /// * `runtime` - Tokio runtime to use for starting the node
-    pub fn set_runtime(&mut self, runtime: Arc<Runtime>) {
-        self.runtime = Some(runtime);
     }
 
     /// Set the web server address for the LDK node management interface
@@ -211,10 +205,6 @@ impl CdkLdkNode {
     ///
     /// Starts the underlying LDK node and begins event processing.
     /// Sets up event handlers to listen for Lightning events like payment received.
-    ///
-    /// # Arguments
-    /// * `runtime` - Optional Tokio runtime to use for starting the node.
-    ///   If None, the default runtime will be used.
     ///
     /// # Returns
     /// Returns `Ok(())` on successful start, error otherwise
