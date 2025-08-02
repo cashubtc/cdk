@@ -69,7 +69,7 @@ impl From<Conditions> for Vec<Vec<String>> {
         if let Some(output) = output {
             tags.push(vec![
                 TagKind::Custom("program_output".to_string()).to_string(),
-                output.to_hex_string(),
+                output.to_string(),
             ]);
         }
         tags
@@ -86,10 +86,10 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
                 continue;
             }
 
-            let tag_kind = TagKind::from(tag[0].as_str());
+            let tag_kind = TagKind::from(&tag[0]);
             match tag_kind {
                 TagKind::Custom(ref kind) if kind == "program_output" => {
-                    output = Some(Felt::from_hex(&tag[1]).unwrap());
+                    output = Some(Felt::from_str(&tag[1]).map_err(|e| Error::FeltFromStr(e))?);
                 }
                 _ => {}
             }
