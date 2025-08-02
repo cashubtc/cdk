@@ -36,6 +36,7 @@ pub struct ReceiveSubCommand {
     /// Preimage
     #[arg(short, long,  action = clap::ArgAction::Append)]
     preimage: Vec<String>,
+    // TODO: add cairo proofs argument (path to json)
 }
 
 pub async fn receive(
@@ -155,6 +156,7 @@ async fn receive_token(
             ReceiveOptions {
                 p2pk_signing_keys: signing_keys.to_vec(),
                 preimages: preimage.to_vec(),
+                // TODO: add cairo_proofs here
                 ..Default::default()
             },
         )

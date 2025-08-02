@@ -105,7 +105,7 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
 ///
 /// Given to the mint by the recipient
 pub struct CairoWitness {
-    /// The serialized .json proof
+    /// The serialized .json Cairo proof
     pub proof: String,
 }
 
@@ -140,7 +140,7 @@ fn pmv_to_felt(pmv: &PubMemoryValue) -> Felt {
 
 /// TODO: use something more secure for hashing multiple values,
 /// like `poseidon_hash_many` on the Felt values directly
-fn hash_many_felt(bytecode: &Vec<Felt>) -> Blake3Hash {
+pub fn hash_many_felt(bytecode: &Vec<Felt>) -> Blake3Hash {
     let mut hasher = Blake3Hasher::default();
     for felt in bytecode {
         for byte in felt.to_bytes_le().iter() {
@@ -150,7 +150,7 @@ fn hash_many_felt(bytecode: &Vec<Felt>) -> Blake3Hash {
     hasher.finalize()
 }
 
-fn hash_many_pmv(values: &Vec<PubMemoryValue>) -> Blake3Hash {
+pub fn hash_many_pmv(values: &Vec<PubMemoryValue>) -> Blake3Hash {
     hash_many_felt(&values.iter().map(|v| pmv_to_felt(v)).collect::<Vec<_>>())
 }
 
@@ -191,24 +191,10 @@ impl Proof {
         if let Some(conditions) = conditions {
             if let Some(output) = conditions.output {
                 // check if the output in the claim matches the output in the conditions
-                println!(
-                    "Output in claim : {:?}",
-                    cairo_proof
-                        .claim
-                        .public_data
-                        .public_memory
-                        .output
-                        .iter()
-                        .map(|v| (pmv_to_felt(v)).to_hex_string())
-                        .collect::<Vec<_>>()
-                );
-                let output_claim: Blake3Hash =
-                    hash_many_pmv(&cairo_proof.claim.public_data.public_memory.output);
-                if output_claim.to_string() != output {
-                    return Err(Error::OutputHashVerification(
-                        output_claim.to_string(),
-                        output,
-                    ));
+                let output_claim: String =
+                    hash_many_pmv(&cairo_proof.claim.public_data.public_memory.output).to_string();
+                if output_claim != output {
+                    return Err(Error::OutputHashVerification(output_claim, output));
                 }
             }
         }
@@ -223,6 +209,14 @@ impl Proof {
             Ok(_) => Ok(()),
             Err(e) => Err(Error::CairoVerification(e)),
         }
+    }
+
+    /// Add cairo proof
+    #[inline]
+    pub fn add_cairo_proof(&mut self, cairo_proof_json: String) {
+        self.witness = Some(Witness::CairoWitness(CairoWitness {
+            proof: cairo_proof_json,
+        }))
     }
 }
 

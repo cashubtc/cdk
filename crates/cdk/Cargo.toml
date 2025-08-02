@@ -42,6 +42,9 @@ url.workspace = true
 utoipa = { workspace = true, optional = true }
 uuid.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
+starknet-types-core = { workspace = true }
+cairo-air = { workspace = true }
+stwo_cairo_prover = { workspace = true }
 
 # -Z minimal-versions
 sync_wrapper = "0.1.2"
