@@ -146,16 +146,6 @@ pub fn hash_array_pmv(values: &Vec<PubMemoryValue>) -> Felt {
 }
 
 impl Proof {
-    // dummy proof for Cairo
-    // a possible design for a prove_cairo function would be to have the cairo proof being passed as an argument by the wallet
-    // and the witness being constructed from it here.
-    pub fn dummy_prove_cairo(&mut self) -> Result<(), Error> {
-        let cairo_proof = include_str!("example_proof.json").to_string();
-        let witness = CairoWitness { proof: cairo_proof };
-        self.witness = Some(Witness::CairoWitness(witness));
-        Ok(())
-    }
-
     /// Verify Cairo
     pub fn verify_cairo(&self) -> Result<(), Error> {
         let secret: Nut10Secret = self.secret.clone().try_into()?;
@@ -267,7 +257,7 @@ mod tests {
 
     #[test]
     fn test_verify() {
-        let cairo_proof = include_str!("example_proof.json").to_string();
+        let cairo_proof: String = include_str!("example_proof.json").to_string();
         let witness = CairoWitness { proof: cairo_proof };
 
         let secret_key =

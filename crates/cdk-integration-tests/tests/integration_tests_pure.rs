@@ -596,7 +596,7 @@ pub async fn test_cairo_swap() {
     match mint_bob.process_swap_request(swap_request).await {
         Ok(_) => panic!("Proofs spent without providing a cairo proof"),
         Err(err) => match err {
-            // Fix: Use the correct Cairo error
+            // TODO: Use the correct Cairo error
             cdk::Error::NUTXX(cdk::nuts::nutxx::Error::IncorrectWitnessKind) => (),
             _ => {
                 println!("{:?}", err);
@@ -605,12 +605,12 @@ pub async fn test_cairo_swap() {
         },
     }
 
-    // for now we're just going to use a dummy witness which is the pre-generated proof of prime number
+    // for now we're just going to use a toy witness which is the pre-generated proof of prime number
     // TODO: implement the actual cairo proof generation from the wallet
+    let cairo_proof: String =
+        include_str!("../../cashu/src/nuts/nutxx/example_proof.json").to_string();
     for proof in &mut proofs {
-        let res = proof.dummy_prove_cairo();
-        println!("res = {:?}", res);
-        res.unwrap();
+        proof.add_cairo_proof(cairo_proof.clone());
     }
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_swap.blinded_messages());
