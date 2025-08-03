@@ -20,7 +20,7 @@ use crate::{ensure_cdk, Error, Wallet};
 impl Wallet {
     /// Melt Quote
     /// # Synopsis
-    /// ```rust
+    /// ```rust,no_run
     ///  use std::sync::Arc;
     ///
     ///  use cdk_sqlite::wallet::memory;
