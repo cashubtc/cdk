@@ -572,7 +572,7 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
     fn try_from(tags: Vec<Vec<String>>) -> Result<Conditions, Self::Error> {
         let tags: HashMap<TagKind, Tag> = tags
             .into_iter()
-            .map(|t| Tag::try_from(t).unwrap())
+            .filter_map(|t| Tag::try_from(t).ok())
             .map(|t| (t.kind(), t))
             .collect();
 
