@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn test_verify() {
-        let cairo_proof: String = include_str!("example_proof.json").to_string();
+        let cairo_proof = include_str!("example_proof.json").to_string();
         let witness = CairoWitness { proof: cairo_proof };
 
         let secret_key =
@@ -269,8 +269,6 @@ mod tests {
         let executable_json = include_str!("example_executable.json");
         let executable: Executable = serde_json::from_str(executable_json).unwrap();
         let program_hash = Poseidon::hash_array(&executable.program.bytecode);
-
-        // panic!("Program hash: {}", program_hash.to_hex_string());
 
         // specify output condition (0 -> not prime, 1 -> prime)
         let output_condition = vec![Felt::from(1)]; // the example is on input 7, so output should be 1

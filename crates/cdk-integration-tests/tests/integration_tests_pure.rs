@@ -511,6 +511,7 @@ pub async fn test_p2pk_swap() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_cairo_swap() {
     setup_tracing();
+
     let mint_bob = create_and_start_test_mint()
         .await
         .expect("Failed to create test mint");
@@ -592,7 +593,7 @@ pub async fn test_cairo_swap() {
         .await
         .expect("valid subscription");
 
-    // Processing the swap before providing the witness should throw and error.
+    // Processing the swap before providing the witness should throw an error
     match mint_bob.process_swap_request(swap_request).await {
         Ok(_) => panic!("Proofs spent without providing a cairo proof"),
         Err(err) => match err {
@@ -600,7 +601,7 @@ pub async fn test_cairo_swap() {
             cdk::Error::NUTXX(cdk::nuts::nutxx::Error::IncorrectWitnessKind) => (),
             _ => {
                 println!("{:?}", err);
-                panic!("Wrong error returned")
+                panic!("Wrong error returned");
             }
         },
     }
@@ -614,11 +615,9 @@ pub async fn test_cairo_swap() {
     }
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_swap.blinded_messages());
-
     let attempt_swap = mint_bob.process_swap_request(swap_request).await;
 
     assert!(attempt_swap.is_ok());
-
     sleep(Duration::from_secs(1)).await;
 
     let mut msgs = HashMap::new();
@@ -636,7 +635,6 @@ pub async fn test_cairo_swap() {
 
     for (i, key) in public_keys_to_listen.into_iter().enumerate() {
         let statuses = msgs.remove(&key).expect("some events");
-        // Every input pk receives two state updates, as there are only two state transitions
         assert_eq!(
             statuses,
             vec![State::Pending, State::Spent],
