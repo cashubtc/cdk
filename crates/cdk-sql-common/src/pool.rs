@@ -6,7 +6,9 @@ use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "prometheus")]
+use std::time::Instant;
 
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::metrics::METRICS;
@@ -158,10 +160,11 @@ where
         loop {
             if let Some((stale, resource)) = resources.pop() {
                 if !stale.load(Ordering::SeqCst) {
-                    let in_use = self.in_use.fetch_add(1, Ordering::AcqRel);
-
                     #[cfg(feature = "prometheus")]
-                    METRICS.set_db_connections_active(in_use as i64);
+                    {
+                        let in_use = self.in_use.fetch_add(1, Ordering::AcqRel);
+                        METRICS.set_db_connections_active(in_use as i64);
+                    }
                     drop(resources);
 
                     return Ok(PooledResource {
@@ -175,10 +178,11 @@ where
 
             if self.in_use.load(Ordering::Relaxed) < self.max_size {
                 drop(resources);
-                let in_use = self.in_use.fetch_add(1, Ordering::AcqRel);
-
                 #[cfg(feature = "prometheus")]
-                METRICS.set_db_connections_active(in_use as i64);
+                {
+                    let in_use = self.in_use.fetch_add(1, Ordering::AcqRel);
+                    METRICS.set_db_connections_active(in_use as i64);
+                }
                 let stale: Arc<AtomicBool> = Arc::new(false.into());
 
                 return Ok(PooledResource {
