@@ -87,10 +87,10 @@ where
         if let Some(resource) = self.resource.take() {
             let mut active_resource = self.pool.queue.lock().expect("active_resource");
             active_resource.push(resource);
-            let in_use = self.pool.in_use.fetch_sub(1, Ordering::AcqRel);
 
             #[cfg(feature = "prometheus")]
             {
+                let in_use = self.pool.in_use.fetch_sub(1, Ordering::AcqRel);
                 METRICS.set_db_connections_active(in_use as i64);
 
                 let duration = self.start_time.elapsed().as_secs_f64();
