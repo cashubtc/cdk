@@ -137,10 +137,10 @@ impl Wallet {
                 &amount_split_target,
                 spending_conditions,
             )?,
-            None => PreMintSecrets::from_xpriv(
+            None => PreMintSecrets::from_seed(
                 active_keyset_id,
                 count,
-                self.xpriv,
+                &self.seed,
                 amount,
                 &amount_split_target,
             )?,
