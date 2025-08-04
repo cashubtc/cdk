@@ -9,12 +9,59 @@ pub mod process;
 
 // Re-exports for convenience
 pub use error::{PrometheusError, Result};
-pub use metrics::CdkMetrics;
+pub use metrics::{global, CdkMetrics, METRICS};
 #[cfg(feature = "system-metrics")]
 pub use process::SystemMetrics;
 // Re-export prometheus crate for custom metrics
 pub use prometheus;
 pub use server::{PrometheusBuilder, PrometheusConfig, PrometheusServer};
+
+/// Macro for recording metrics with optional fallback to global instance
+///
+/// Usage:
+/// ```rust
+/// use cdk_prometheus::record_metrics;
+///
+/// // With optional metrics instance
+/// record_metrics!(metrics_option => {
+///     dec_in_flight_requests("operation");
+///     record_mint_operation("operation", true);
+/// });
+///
+/// // Direct global calls
+/// record_metrics!({
+///     dec_in_flight_requests("operation");
+///     record_mint_operation("operation", true);
+/// });
+/// ```
+#[macro_export]
+macro_rules! record_metrics {
+    // Pattern for using optional metrics with fallback to global
+    ($metrics_opt:expr => { $($method:ident($($arg:expr),*));* $(;)? }) => {
+        #[cfg(feature = "prometheus")]
+        {
+            if let Some(metrics) = $metrics_opt.as_ref() {
+                $(
+                    metrics.$method($($arg),*);
+                )*
+            } else {
+                $(
+                    $crate::global::$method($($arg),*);
+                )*
+            }
+        }
+    };
+
+    // Pattern for using global metrics directly
+    ({ $($method:ident($($arg:expr),*));* $(;)? }) => {
+        #[cfg(feature = "prometheus")]
+        {
+            $(
+                $crate::global::$method($($arg),*);
+            )*
+        }
+    };
+}
 
 /// Convenience function to create a new CDK metrics instance
 ///
@@ -24,24 +71,44 @@ pub fn create_cdk_metrics() -> Result<CdkMetrics> {
     CdkMetrics::new()
 }
 
-/// Convenience function to start a Prometheus server with default configuration
+/// Convenience function to start a Prometheus server with the global metrics instance
 ///
 /// # Errors
 /// Returns an error if the server cannot be created or started
-pub async fn start_default_server(metrics: &CdkMetrics) -> Result<()> {
-    let server = PrometheusBuilder::new().build_with_cdk_metrics(metrics)?;
+pub async fn start_default_server() -> Result<()> {
+    let server = PrometheusBuilder::new().build_with_cdk_metrics()?;
 
     server.start().await
 }
 
-/// Convenience function to start a Prometheus server in the background
+/// Convenience function to start a Prometheus server with specific metrics
+///
+/// # Errors
+/// Returns an error if the server cannot be created or started
+pub async fn start_default_server_with_metrics(metrics: &CdkMetrics) -> Result<()> {
+    let server = PrometheusBuilder::new().build_with_cdk_metrics()?;
+
+    server.start().await
+}
+
+/// Convenience function to start a Prometheus server in the background using global metrics
 ///
 /// # Errors
 /// Returns an error if the server cannot be created
-pub fn start_background_server(
+pub fn start_background_server() -> Result<tokio::task::JoinHandle<Result<()>>> {
+    let server = PrometheusBuilder::new().build_with_cdk_metrics()?;
+
+    Ok(server.start_background())
+}
+
+/// Convenience function to start a Prometheus server in the background with specific metrics
+///
+/// # Errors
+/// Returns an error if the server cannot be created
+pub fn start_background_server_with_metrics(
     metrics: &CdkMetrics,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
-    let server = PrometheusBuilder::new().build_with_cdk_metrics(metrics)?;
+    let server = PrometheusBuilder::new().build_with_cdk_metrics()?;
 
     Ok(server.start_background())
 }

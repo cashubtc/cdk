@@ -1,8 +1,12 @@
+use once_cell::sync::Lazy;
 use std::sync::Arc;
 
 use prometheus::{
     Histogram, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry,
 };
+
+/// Global metrics instance
+pub static METRICS: Lazy<CdkMetrics> = Lazy::new(CdkMetrics::default);
 
 /// Custom metrics for CDK applications
 #[derive(Clone, Debug)]
@@ -24,7 +28,7 @@ pub struct CdkMetrics {
 
     // Database metrics
     db_operations_total: IntCounter,
-    db_operation_duration: Histogram,
+    db_operation_duration: HistogramVec,
     db_connections_active: IntGauge,
 
     // Error metrics
@@ -180,17 +184,19 @@ impl CdkMetrics {
     ///
     /// # Errors
     /// Returns an error if any of the metrics cannot be created or registered
-    fn create_db_metrics(registry: &Registry) -> crate::Result<(IntCounter, Histogram, IntGauge)> {
+    fn create_db_metrics(
+        registry: &Registry,
+    ) -> crate::Result<(IntCounter, HistogramVec, IntGauge)> {
         let db_operations_total =
             IntCounter::new("cdk_db_operations_total", "Total database operations")?;
         registry.register(Box::new(db_operations_total.clone()))?;
-
-        let db_operation_duration = Histogram::with_opts(
+        let db_operation_duration = HistogramVec::new(
             prometheus::HistogramOpts::new(
                 "cdk_db_operation_duration_seconds",
                 "Database operation duration in seconds",
             )
             .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0]),
+            &["operation"],
         )?;
         registry.register(Box::new(db_operation_duration.clone()))?;
 
@@ -298,9 +304,11 @@ impl CdkMetrics {
     }
 
     // Database metrics methods
-    pub fn record_db_operation(&self, duration_seconds: f64) {
+    pub fn record_db_operation(&self, duration_seconds: f64, op: &str) {
         self.db_operations_total.inc();
-        self.db_operation_duration.observe(duration_seconds);
+        self.db_operation_duration
+            .with_label_values(&[op])
+            .observe(duration_seconds);
     }
 
     pub fn set_db_connections_active(&self, count: i64) {
@@ -346,5 +354,75 @@ impl CdkMetrics {
 impl Default for CdkMetrics {
     fn default() -> Self {
         Self::new().expect("Failed to create default CdkMetrics")
+    }
+}
+
+/// Helper functions for recording metrics using the global instance
+pub mod global {
+    use super::METRICS;
+
+    /// Record an HTTP request using the global metrics instance
+    pub fn record_http_request(endpoint: &str, status: &str) {
+        METRICS.record_http_request(endpoint, status);
+    }
+
+    /// Record HTTP request duration using the global metrics instance
+    pub fn record_http_request_duration(duration_seconds: f64, endpoint: &str) {
+        METRICS.record_http_request_duration(duration_seconds, endpoint);
+    }
+
+    /// Record authentication attempt using the global metrics instance
+    pub fn record_auth_attempt() {
+        METRICS.record_auth_attempt();
+    }
+
+    /// Record authentication success using the global metrics instance
+    pub fn record_auth_success() {
+        METRICS.record_auth_success();
+    }
+
+    /// Record Lightning payment using the global metrics instance
+    pub fn record_lightning_payment(amount: f64, fee: f64) {
+        METRICS.record_lightning_payment(amount, fee);
+    }
+
+    /// Record database operation using the global metrics instance
+    pub fn record_db_operation(duration_seconds: f64, op: &str) {
+        METRICS.record_db_operation(duration_seconds, op);
+    }
+
+    /// Set database connections active using the global metrics instance
+    pub fn set_db_connections_active(count: i64) {
+        METRICS.set_db_connections_active(count);
+    }
+
+    /// Record error using the global metrics instance
+    pub fn record_error() {
+        METRICS.record_error();
+    }
+
+    /// Record mint operation using the global metrics instance
+    pub fn record_mint_operation(operation: &str, success: bool) {
+        METRICS.record_mint_operation(operation, success);
+    }
+
+    /// Record mint operation with histogram using the global metrics instance
+    pub fn record_mint_operation_histogram(operation: &str, success: bool, duration_seconds: f64) {
+        METRICS.record_mint_operation_histogram(operation, success, duration_seconds);
+    }
+
+    /// Increment in-flight requests using the global metrics instance
+    pub fn inc_in_flight_requests(operation: &str) {
+        METRICS.inc_in_flight_requests(operation);
+    }
+
+    /// Decrement in-flight requests using the global metrics instance
+    pub fn dec_in_flight_requests(operation: &str) {
+        METRICS.dec_in_flight_requests(operation);
+    }
+
+    /// Get the metrics registry from the global instance
+    pub fn registry() -> std::sync::Arc<prometheus::Registry> {
+        METRICS.registry()
     }
 }

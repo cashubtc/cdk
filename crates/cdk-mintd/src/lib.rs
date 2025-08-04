@@ -18,7 +18,7 @@ use cdk::cdk_payment;
 use cdk::cdk_payment::MintPayment;
 // internal crate modules
 #[cfg(feature = "prometheus")]
-use cdk::cdk_payment::{MetricsMintPayment, PrometheusMetricsCollector};
+use cdk::cdk_payment::MetricsMintPayment;
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 #[cfg(any(
     feature = "cln",
@@ -47,6 +47,8 @@ use cdk_prometheus;
 use cdk_prometheus::metrics;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::prometheus::proto::Metric;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::METRICS;
 #[cfg(feature = "auth")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -191,7 +193,6 @@ async fn setup_sqlite_database(
 async fn configure_mint_builder(
     settings: &config::Settings,
     mint_builder: MintBuilder,
-    #[cfg(feature = "prometheus")] metrics: Option<Arc<metrics::CdkMetrics>>,
 ) -> Result<(MintBuilder, Vec<Router>)> {
     let mut ln_routers = vec![];
 
@@ -199,14 +200,7 @@ async fn configure_mint_builder(
     let mint_builder = configure_basic_info(settings, mint_builder);
 
     // Configure lightning backend
-    let mint_builder = configure_lightning_backend(
-        settings,
-        mint_builder,
-        &mut ln_routers,
-        #[cfg(feature = "prometheus")]
-        metrics,
-    )
-    .await?;
+    let mint_builder = configure_lightning_backend(settings, mint_builder, &mut ln_routers).await?;
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
 
@@ -268,7 +262,6 @@ async fn configure_lightning_backend(
     settings: &config::Settings,
     mut mint_builder: MintBuilder,
     ln_routers: &mut Vec<Router>,
-    #[cfg(feature = "prometheus")] metrics: Option<Arc<metrics::CdkMetrics>>,
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
         mint_min: settings.ln.min_mint,
@@ -341,10 +334,7 @@ async fn configure_lightning_backend(
                     .setup(ln_routers, settings, CurrencyUnit::Sat)
                     .await?;
                 #[cfg(feature = "prometheus")]
-                let fake = MetricsMintPayment::new(
-                    fake,
-                    Arc::new(PrometheusMetricsCollector::new(metrics.clone().unwrap())),
-                );
+                let fake = MetricsMintPayment::new(fake);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -643,7 +633,6 @@ async fn start_services_with_shutdown(
     ln_routers: Vec<Router>,
     work_dir: &Path,
     mint_builder_info: cdk::nuts::MintInfo,
-    #[cfg(feature = "prometheus")] metrics: Option<Arc<metrics::CdkMetrics>>,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     let listen_addr = settings.info.listen_host.clone();
@@ -753,13 +742,11 @@ async fn start_services_with_shutdown(
 
                 let server = cdk_prometheus::PrometheusBuilder::new()
                     .bind_address(address)
-                    .build_with_cdk_metrics(metrics.unwrap().as_ref())?;
+                    .build_with_cdk_metrics()?;
 
-                tokio::spawn(async move {
-                    if let Err(e) = server.start().await {
-                        tracing::error!("Failed to start prometheus server: {}", e);
-                    }
-                });
+                if let Err(e) = server.start().await {
+                    tracing::error!("Failed to start prometheus server: {}", e);
+                }
             }
         }
     }
@@ -842,22 +829,9 @@ pub async fn run_mintd_with_shutdown(
 ) -> Result<()> {
     let (localstore, keystore) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
-    #[cfg(feature = "prometheus")]
-    let metrics = Arc::new(cdk_prometheus::CdkMetrics::new()?);
+    let mint_builder = MintBuilder::new(localstore);
 
-    #[cfg(not(feature = "prometheus"))]
-    let mint_builder = MintBuilder::new(localstore, None);
-
-    #[cfg(feature = "prometheus")]
-    let mint_builder = MintBuilder::new(localstore, Some(metrics.clone()));
-
-    let (mint_builder, ln_routers) = configure_mint_builder(
-        settings,
-        mint_builder,
-        #[cfg(feature = "prometheus")]
-        Some(metrics.clone()),
-    )
-    .await?;
+    let (mint_builder, ln_routers) = configure_mint_builder(settings, mint_builder).await?;
     #[cfg(feature = "auth")]
     let mint_builder = setup_authentication(settings, work_dir, mint_builder, db_password).await?;
 
@@ -878,8 +852,6 @@ pub async fn run_mintd_with_shutdown(
         ln_routers,
         work_dir,
         mint.mint_info().await?,
-        #[cfg(feature = "prometheus")]
-        Some(metrics.clone()),
         shutdown_signal,
     )
     .await?;

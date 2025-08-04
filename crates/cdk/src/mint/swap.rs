@@ -1,9 +1,10 @@
-use tracing::instrument;
-
 use super::nut11::{enforce_sig_flag, EnforceSigFlag};
 use super::proof_writer::ProofWriter;
 use super::{Mint, PublicKey, SigFlag, State, SwapRequest, SwapResponse};
 use crate::Error;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::METRICS;
+use tracing::instrument;
 
 impl Mint {
     /// Process Swap
@@ -13,9 +14,7 @@ impl Mint {
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
         #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.inc_in_flight_requests("process_swap_request");
-        }
+        METRICS.inc_in_flight_requests("process_swap_request");
 
         let mut tx = self.localstore.begin_transaction().await?;
 
@@ -27,11 +26,9 @@ impl Mint {
 
             #[cfg(feature = "prometheus")]
             {
-                if let Some(metrics) = self.metrics.as_ref() {
-                    metrics.dec_in_flight_requests("process_swap_request");
-                    metrics.record_mint_operation("process_swap_request", false);
-                    metrics.record_error();
-                }
+                METRICS.dec_in_flight_requests("process_swap_request");
+                METRICS.record_mint_operation("process_swap_request", false);
+                METRICS.record_error();
             }
 
             return Err(err);
@@ -52,12 +49,11 @@ impl Mint {
             Ok(ys) => ys,
             Err(err) => {
                 #[cfg(feature = "prometheus")]
-                if let Some(metrics) = self.metrics.as_ref() {
-                    metrics.dec_in_flight_requests("process_swap_request");
-                    metrics.record_mint_operation("process_swap_request", false);
-                    metrics.record_error();
+                {
+                    METRICS.dec_in_flight_requests("process_swap_request");
+                    METRICS.record_mint_operation("process_swap_request", false);
+                    METRICS.record_error();
                 }
-
                 return Err(err);
             }
         };
@@ -97,10 +93,8 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            if let Some(metrics) = self.metrics.as_ref() {
-                metrics.dec_in_flight_requests("process_swap_request");
-                metrics.record_mint_operation("process_swap_request", true);
-            }
+            METRICS.dec_in_flight_requests("process_swap_request");
+            METRICS.record_mint_operation("process_swap_request", true);
         }
 
         Ok(response)
@@ -117,10 +111,8 @@ impl Mint {
     }
     #[cfg(feature = "prometheus")]
     fn record_swap_failure(&self, operation: &str) {
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.dec_in_flight_requests(operation);
-            metrics.record_mint_operation(operation, false);
-            metrics.record_error();
-        }
+        METRICS.dec_in_flight_requests(operation);
+        METRICS.record_mint_operation(operation, false);
+        METRICS.record_error();
     }
 }

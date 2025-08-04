@@ -13,20 +13,12 @@ use axum::middleware::Next;
 use axum::response::Response;
 
 #[cfg(feature = "prometheus")]
-use crate::MintState;
-/// This module provides middleware for collecting HTTP metrics in the CDK Axum server.
-///
-/// The metrics collected include:
-/// - Total number of HTTP requests by endpoint and status code
-/// - HTTP request duration by endpoint
-///
-/// These metrics are exposed via the Prometheus endpoint provided by the cdk-prometheus crate.
-///
-/// To use this middleware, ensure the "prometheus" feature is enabled and the middleware
-/// is applied to your router using `from_fn(metrics_middleware)`.
+use cdk_prometheus::global;
+
+/// Global metrics middleware that uses the singleton instance.
+/// This version doesn't require access to MintState and can be used in any Axum application.
 #[cfg(feature = "prometheus")]
-pub async fn metrics_middleware(
-    State(state): State<MintState>,
+pub async fn global_metrics_middleware(
     matched_path: Option<MatchedPath>,
     req: Request<Body>,
     next: Next,
@@ -35,23 +27,16 @@ pub async fn metrics_middleware(
 
     let response = next.run(req).await;
 
-    #[cfg(feature = "prometheus")]
-    // Use the matched route pattern if available,
-    // otherwise fall back to empty string to reduce the memory footprint
     let endpoint_path = matched_path
         .map(|mp| mp.as_str().to_string())
         .unwrap_or_default();
 
-    #[cfg(feature = "prometheus")]
-    {
-        let status_code = response.status().as_u16().to_string();
-        let request_duration = start_time.elapsed().as_secs_f64();
-        let metrics = &state.mint.metrics;
-        if let Some(metrics) = metrics.as_ref() {
-            metrics.record_http_request(&endpoint_path, &status_code);
-            metrics.record_http_request_duration(request_duration, &endpoint_path);
-        }
-    }
+    let status_code = response.status().as_u16().to_string();
+    let request_duration = start_time.elapsed().as_secs_f64();
+
+    // Always use global metrics
+    global::record_http_request(&endpoint_path, &status_code);
+    global::record_http_request_duration(request_duration, &endpoint_path);
 
     response
 }

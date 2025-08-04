@@ -327,7 +327,7 @@ pub async fn create_mint_router_with_custom_cache(
     #[cfg(feature = "prometheus")]
     let mint_router = mint_router.layer(axum::middleware::from_fn_with_state(
         state.clone(),
-        metrics::metrics_middleware,
+        metrics::global_metrics_middleware,
     ));
     let mint_router = mint_router
         .layer(from_fn(cors_middleware))

@@ -13,7 +13,7 @@ use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, K
 use cdk_common::payment::WaitPaymentResponse;
 use cdk_common::secret;
 #[cfg(feature = "prometheus")]
-use cdk_prometheus::CdkMetrics;
+use cdk_prometheus::global;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
 #[cfg(feature = "auth")]
@@ -74,9 +74,6 @@ pub struct Mint {
     keysets: Arc<ArcSwap<Vec<SignatoryKeySet>>>,
     /// Background task management
     task_state: Arc<Mutex<TaskState>>,
-    #[cfg(feature = "prometheus")]
-    /// prometheus cdk metrics manager
-    pub metrics: Option<Arc<CdkMetrics>>,
 }
 
 /// State for managing background tasks
@@ -98,7 +95,6 @@ impl Mint {
             PaymentProcessorKey,
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
         >,
-        #[cfg(feature = "prometheus")] metrics: Option<Arc<CdkMetrics>>,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -106,8 +102,6 @@ impl Mint {
             localstore,
             #[cfg(feature = "auth")]
             None,
-            #[cfg(feature = "prometheus")]
-            metrics,
             payment_processors,
         )
         .await
@@ -120,7 +114,6 @@ impl Mint {
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
         auth_localstore: Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>,
-        #[cfg(feature = "prometheus")] metrics: Option<Arc<CdkMetrics>>,
         payment_processors: HashMap<
             PaymentProcessorKey,
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
@@ -131,8 +124,6 @@ impl Mint {
             signatory,
             localstore,
             Some(auth_localstore),
-            #[cfg(feature = "prometheus")]
-            metrics,
             payment_processors,
         )
         .await
@@ -147,7 +138,6 @@ impl Mint {
         #[cfg(feature = "auth")] auth_localstore: Option<
             Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>,
         >,
-        #[cfg(feature = "prometheus")] metrics: Option<Arc<CdkMetrics>>,
         payment_processors: HashMap<
             PaymentProcessorKey,
             Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
@@ -194,8 +184,6 @@ impl Mint {
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             task_state: Arc::new(Mutex::new(TaskState::default())),
-            #[cfg(feature = "prometheus")]
-            metrics,
         })
     }
 
@@ -652,9 +640,8 @@ impl Mint {
         blinded_message: BlindedMessage,
     ) -> Result<BlindSignature, Error> {
         #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.inc_in_flight_requests("blind_sign")
-        }
+        global::inc_in_flight_requests("blind_sign");
+
         let result = self
             .signatory
             .blind_sign(vec![blinded_message])
@@ -664,10 +651,8 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            if let Some(metrics) = self.metrics.as_ref() {
-                metrics.dec_in_flight_requests("blind_sign");
-                metrics.record_mint_operation("blind_sign", result.is_ok());
-            }
+            global::dec_in_flight_requests("blind_sign");
+            global::record_mint_operation("blind_sign", result.is_ok());
         }
 
         result
@@ -677,9 +662,7 @@ impl Mint {
     #[tracing::instrument(skip_all)]
     pub async fn verify_proofs(&self, proofs: Proofs) -> Result<(), Error> {
         #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.inc_in_flight_requests("verify_proofs")
-        }
+        global::inc_in_flight_requests("verify_proofs");
 
         let result = async {
             proofs
@@ -714,10 +697,8 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            if let Some(metrics) = self.metrics.as_ref() {
-                metrics.dec_in_flight_requests("verify_proofs");
-                metrics.record_mint_operation("verify_proofs", result.is_ok());
-            }
+            global::dec_in_flight_requests("verify_proofs");
+            global::record_mint_operation("verify_proofs", result.is_ok());
         }
 
         result
@@ -783,9 +764,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.inc_in_flight_requests("restore");
-        }
+        global::inc_in_flight_requests("restore");
 
         let result = async {
             let output_len = request.outputs.len();
@@ -822,10 +801,8 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            if let Some(metrics) = self.metrics.as_ref() {
-                metrics.dec_in_flight_requests("restore");
-                metrics.record_mint_operation("restore", result.is_ok());
-            }
+            global::dec_in_flight_requests("restore");
+            global::record_mint_operation("restore", result.is_ok());
         }
 
         result
@@ -835,9 +812,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn total_issued(&self) -> Result<HashMap<Id, Amount>, Error> {
         #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.inc_in_flight_requests("total_issued");
-        }
+        global::inc_in_flight_requests("total_issued");
 
         let result = async {
             let keysets = self.keysets().keysets;
@@ -861,10 +836,8 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            if let Some(metrics) = self.metrics.as_ref() {
-                metrics.dec_in_flight_requests("total_issued");
-                metrics.record_mint_operation("total_issued", result.is_ok());
-            }
+            global::dec_in_flight_requests("total_issued");
+            global::record_mint_operation("total_issued", result.is_ok());
         }
 
         result
@@ -873,13 +846,12 @@ impl Mint {
     /// Total redeemed for keyset
     #[instrument(skip_all)]
     pub async fn total_redeemed(&self) -> Result<HashMap<Id, Amount>, Error> {
+        #[cfg(feature = "prometheus")]
+        global::inc_in_flight_requests("total_redeemed");
+
         let keysets = self.signatory.keysets().await?;
 
         let mut total_redeemed = HashMap::new();
-        #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.inc_in_flight_requests("total_redeemed");
-        }
 
         for keyset in keysets.keysets {
             let (proofs, state) = self.localstore.get_proofs_by_keyset_id(&keyset.id).await?;
@@ -894,6 +866,9 @@ impl Mint {
 
             total_redeemed.insert(keyset.id, total_spent);
         }
+
+        #[cfg(feature = "prometheus")]
+        global::dec_in_flight_requests("total_redeemed");
 
         Ok(total_redeemed)
     }
@@ -947,16 +922,9 @@ mod tests {
             .expect("Failed to create signatory"),
         );
 
-        Mint::new(
-            MintInfo::default(),
-            signatory,
-            localstore,
-            HashMap::new(),
-            #[cfg(feature = "prometheus")]
-            Some(Arc::new(CdkMetrics::new().unwrap())),
-        )
-        .await
-        .unwrap()
+        Mint::new(MintInfo::default(), signatory, localstore, HashMap::new())
+            .await
+            .unwrap()
     }
 
     #[tokio::test]

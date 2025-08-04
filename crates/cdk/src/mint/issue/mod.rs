@@ -1,3 +1,5 @@
+use crate::mint::Verification;
+use crate::Mint;
 use cdk_common::mint::MintQuote;
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
@@ -9,11 +11,10 @@ use cdk_common::{
     MintQuoteBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response, MintQuoteState,
     MintRequest, MintResponse, NotificationPayload, PaymentMethod, PublicKey,
 };
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::METRICS;
 use tracing::instrument;
 use uuid::Uuid;
-
-use crate::mint::Verification;
-use crate::Mint;
 
 #[cfg(feature = "auth")]
 mod auth;
@@ -188,9 +189,7 @@ impl Mint {
         mint_quote_request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse, Error> {
         #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.inc_in_flight_requests("get_mint_quote");
-        }
+        METRICS.inc_in_flight_requests("get_mint_quote");
 
         let result = async {
             let unit: CurrencyUnit;
@@ -326,12 +325,10 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            if let Some(metrics) = self.metrics.as_ref() {
-                metrics.dec_in_flight_requests("get_mint_quote");
-                metrics.record_mint_operation("get_mint_quote", result.is_ok());
-                if result.is_err() {
-                    metrics.record_error();
-                }
+            METRICS.dec_in_flight_requests("get_mint_quote");
+            METRICS.record_mint_operation("get_mint_quote", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
             }
         }
 
@@ -346,9 +343,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
         #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.inc_in_flight_requests("mint_quotes");
-        }
+        METRICS.inc_in_flight_requests("mint_quotes");
 
         let result = async {
             let quotes = self.localstore.get_mint_quotes().await?;
@@ -358,12 +353,10 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            if let Some(metrics) = self.metrics.as_ref() {
-                metrics.dec_in_flight_requests("mint_quotes");
-                metrics.record_mint_operation("mint_quotes", result.is_ok());
-                if result.is_err() {
-                    metrics.record_error();
-                }
+            METRICS.dec_in_flight_requests("mint_quotes");
+            METRICS.record_mint_operation("mint_quotes", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
             }
         }
 
@@ -381,9 +374,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Error> {
         #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.inc_in_flight_requests("remove_mint_quote");
-        }
+        METRICS.inc_in_flight_requests("remove_mint_quote");
 
         let result = async {
             let mut tx = self.localstore.begin_transaction().await?;
@@ -395,12 +386,10 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            if let Some(metrics) = self.metrics.as_ref() {
-                metrics.dec_in_flight_requests("remove_mint_quote");
-                metrics.record_mint_operation("remove_mint_quote", result.is_ok());
-                if result.is_err() {
-                    metrics.record_error();
-                }
+            METRICS.dec_in_flight_requests("remove_mint_quote");
+            METRICS.record_mint_operation("remove_mint_quote", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
             }
         }
 
@@ -424,9 +413,7 @@ impl Mint {
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
         #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.inc_in_flight_requests("pay_mint_quote_for_request_id");
-        }
+        METRICS.inc_in_flight_requests("pay_mint_quote_for_request_id");
         let result = async {
             if wait_payment_response.payment_amount == Amount::ZERO {
                 tracing::warn!(
@@ -459,12 +446,10 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            if let Some(metrics) = self.metrics.as_ref() {
-                metrics.dec_in_flight_requests("pay_mint_quote_for_request_id");
-                metrics.record_mint_operation("pay_mint_quote_for_request_id", result.is_ok());
-                if result.is_err() {
-                    metrics.record_error();
-                }
+            METRICS.dec_in_flight_requests("pay_mint_quote_for_request_id");
+            METRICS.record_mint_operation("pay_mint_quote_for_request_id", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
             }
         }
 
@@ -491,9 +476,7 @@ impl Mint {
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
         #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.inc_in_flight_requests("pay_mint_quote");
-        }
+        METRICS.inc_in_flight_requests("pay_mint_quote");
 
         let result = async {
             tracing::debug!(
@@ -534,12 +517,10 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            if let Some(metrics) = self.metrics.as_ref() {
-                metrics.dec_in_flight_requests("pay_mint_quote");
-                metrics.record_mint_operation("pay_mint_quote", result.is_ok());
-                if result.is_err() {
-                    metrics.record_error();
-                }
+            METRICS.dec_in_flight_requests("pay_mint_quote");
+            METRICS.record_mint_operation("pay_mint_quote", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
             }
         }
 
@@ -560,9 +541,7 @@ impl Mint {
     #[instrument(skip(self))]
     pub async fn check_mint_quote(&self, quote_id: &Uuid) -> Result<MintQuoteResponse, Error> {
         #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.inc_in_flight_requests("check_mint_quote");
-        }
+        METRICS.inc_in_flight_requests("check_mint_quote");
         let result = async {
             let mut quote = self
                 .localstore
@@ -578,12 +557,10 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            if let Some(metrics) = self.metrics.as_ref() {
-                metrics.dec_in_flight_requests("check_mint_quote");
-                metrics.record_mint_operation("check_mint_quote", result.is_ok());
-                if result.is_err() {
-                    metrics.record_error();
-                }
+            METRICS.dec_in_flight_requests("check_mint_quote");
+            METRICS.record_mint_operation("check_mint_quote", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
             }
         }
 
@@ -612,9 +589,7 @@ impl Mint {
         mint_request: MintRequest<Uuid>,
     ) -> Result<MintResponse, Error> {
         #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.as_ref() {
-            metrics.inc_in_flight_requests("process_mint_request");
-        }
+        METRICS.inc_in_flight_requests("process_mint_request");
         let result = async {
             let mut mint_quote = self
                 .localstore
@@ -730,12 +705,10 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            if let Some(metrics) = self.metrics.as_ref() {
-                metrics.dec_in_flight_requests("process_mint_request");
-                metrics.record_mint_operation("process_mint_request", result.is_ok());
-                if result.is_err() {
-                    metrics.record_error();
-                }
+            METRICS.dec_in_flight_requests("process_mint_request");
+            METRICS.record_mint_operation("process_mint_request", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
             }
         }
         result

@@ -5,7 +5,7 @@ use std::time::Duration;
 use prometheus::{Registry, TextEncoder};
 use tokio::time;
 
-use crate::metrics::CdkMetrics;
+use crate::metrics::{METRICS};
 #[cfg(feature = "system-metrics")]
 use crate::process::SystemMetrics;
 
@@ -51,8 +51,8 @@ impl PrometheusServer {
     ///
     /// # Errors
     /// Returns an error if system metrics cannot be created (when enabled)
-    pub fn new(config: PrometheusConfig, cdk_metrics: &CdkMetrics) -> crate::Result<Self> {
-        let registry = cdk_metrics.registry();
+    pub fn new(config: PrometheusConfig) -> crate::Result<Self> {
+        let registry = METRICS.registry();
 
         #[cfg(feature = "system-metrics")]
         let system_metrics = if config.include_system_metrics {
@@ -118,35 +118,11 @@ impl PrometheusServer {
         }
     }
 
-    /// Start a background task to update system metrics
-    #[cfg(feature = "system-metrics")]
-    fn start_system_metrics_updater(system_metrics: SystemMetrics, interval_secs: u64) {
-        let interval = Duration::from_secs(interval_secs);
-        tokio::spawn(async move {
-            let mut interval_timer = time::interval(interval);
-            loop {
-                interval_timer.tick().await;
-                if let Err(e) = system_metrics.update_metrics() {
-                    tracing::warn!("Failed to update system metrics: {e}");
-                }
-            }
-        });
-    }
-
     /// Start the Prometheus HTTP server
     ///
     /// # Errors
     /// This function always returns Ok as errors are handled internally
     pub async fn start(self) -> crate::Result<()> {
-        // Start system metrics update task
-        #[cfg(feature = "system-metrics")]
-        if let Some(ref system_metrics) = self.system_metrics {
-            Self::start_system_metrics_updater(
-                system_metrics.clone(),
-                self.config.system_metrics_interval,
-            );
-        }
-
         // Create and start the exporter
         let binding = self.config.bind_address;
         let registry_clone = Arc::<Registry>::clone(&self.registry);
@@ -286,15 +262,12 @@ impl PrometheusBuilder {
         self
     }
 
-    /// Build the server with CDK metrics
+    /// Build the server with specific CDK metrics instance
     ///
     /// # Errors
     /// Returns an error if system metrics cannot be created (when enabled)
-    pub fn build_with_cdk_metrics(
-        self,
-        cdk_metrics: &CdkMetrics,
-    ) -> crate::Result<PrometheusServer> {
-        PrometheusServer::new(self.config, cdk_metrics)
+    pub fn build_with_cdk_metrics(self) -> crate::Result<PrometheusServer> {
+        PrometheusServer::new(self.config)
     }
 
     /// Build the server with custom registry
