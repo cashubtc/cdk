@@ -20,8 +20,6 @@ use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk_fake_wallet::FakeWallet;
-#[cfg(feature = "prometheus")]
-use cdk_prometheus::CdkMetrics;
 use cdk_sqlite::mint::memory;
 
 pub const MINT_URL: &str = "http://127.0.0.1:8088";

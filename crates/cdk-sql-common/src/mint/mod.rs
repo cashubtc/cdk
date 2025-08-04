@@ -1068,7 +1068,7 @@ where
             let payments = get_mint_quote_payments(&self.db, quote_id).await?;
             let issuance = get_mint_quote_issuance(&self.db, quote_id).await?;
 
-            Ok(query(
+            query(
                 r#"
                 SELECT
                     id,
@@ -1091,7 +1091,7 @@ where
             .fetch_one(&self.db)
             .await?
             .map(|row| sql_row_to_mint_quote(row, payments, issuance))
-            .transpose()?)
+            .transpose()
         }
         .await;
 
@@ -1100,7 +1100,7 @@ where
             let success = result.is_ok();
 
             METRICS.record_mint_operation("get_mint_quote", success);
-            METRICS.record_mint_operation_histogram("get_mint_quote", success, 1.0);
+            METRICS.record_mint_operation_histogram("get_mint_quote", success, start_time.elapsed().as_secs_f64());
             METRICS.dec_in_flight_requests("get_mint_quote");
         }
 
@@ -1233,7 +1233,7 @@ where
         let start_time = std::time::Instant::now();
 
         let result = async {
-            Ok(query(
+            query(
                 r#"
                 SELECT
                     id,
@@ -1260,7 +1260,7 @@ where
             .fetch_one(&self.db)
             .await?
             .map(sql_row_to_melt_quote)
-            .transpose()?)
+            .transpose()
         }
         .await;
 
@@ -1269,7 +1269,7 @@ where
             let success = result.is_ok();
 
             METRICS.record_mint_operation("get_melt_quote", success);
-            METRICS.record_mint_operation_histogram("get_melt_quote", success, 1.0);
+            METRICS.record_mint_operation_histogram("get_melt_quote", success, start_time.elapsed().as_secs_f64());
             METRICS.dec_in_flight_requests("get_melt_quote");
         }
 
@@ -1633,7 +1633,7 @@ where
             let success = result.is_ok();
 
             METRICS.record_mint_operation("get_mint_info", success);
-            METRICS.record_mint_operation_histogram("get_mint_info", success, 1.0);
+            METRICS.record_mint_operation_histogram("get_mint_info", success, start_time.elapsed().as_secs_f64());
             METRICS.dec_in_flight_requests("get_mint_info");
         }
 
@@ -1654,7 +1654,7 @@ where
             let success = result.is_ok();
 
             METRICS.record_mint_operation("get_quote_ttl", success);
-            METRICS.record_mint_operation_histogram("get_quote_ttl", success, 1.0);
+            METRICS.record_mint_operation_histogram("get_quote_ttl", success, start_time.elapsed().as_secs_f64());
             METRICS.dec_in_flight_requests("get_quote_ttl");
         }
 
