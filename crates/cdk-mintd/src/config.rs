@@ -558,7 +558,7 @@ mod tests {
         assert_eq!(ldk_config.fee_percent, 0.04);
         assert_eq!(ldk_config.reserve_fee_min, Amount::from(4));
         assert_eq!(ldk_config.webserver_host, Some("127.0.0.1".to_string()));
-        assert_eq!(ldk_config.webserver_port, Some(0));
+        assert_eq!(ldk_config.webserver_port, Some(8091));
 
         // Test that bitcoin_network is None by default
         assert_eq!(ldk_config.bitcoin_network, None);
