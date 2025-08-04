@@ -14,7 +14,7 @@ env:
 jobs:
   pre-commit-checks:
     name: "Cargo fmt, typos"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     steps:
       - name: checkout
@@ -35,7 +35,7 @@ jobs:
   
   examples:
     name: "Run examples"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy]
     strategy:
@@ -60,7 +60,7 @@ jobs:
 
   clippy:
     name: "Stable build, clippy and test"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     needs: pre-commit-checks
     strategy:
@@ -144,7 +144,7 @@ jobs:
 
   regtest-itest:
     name: "Integration regtest tests"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
     strategy:
@@ -169,7 +169,7 @@ jobs:
           
   fake-mint-itest:
     name: "Integration fake mint tests"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy]
     strategy:
@@ -196,7 +196,7 @@ jobs:
                 
   pure-itest:
     name: "Integration fake wallet tests"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy]
     strategy:
@@ -337,7 +337,7 @@ jobs:
 
   fake-mint-auth-itest:
     name: "Integration fake mint auth tests"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
     strategy:
