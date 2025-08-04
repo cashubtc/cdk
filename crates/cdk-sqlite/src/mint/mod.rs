@@ -3,23 +3,16 @@
 use cdk_sql_common::mint::SQLMintAuthDatabase;
 use cdk_sql_common::SQLMintDatabase;
 
-use crate::async_sqlite;
-use crate::common::{Config, SqliteConnectionManager};
+use crate::common::SqliteConnectionManager;
 
 pub mod memory;
 
 /// Mint SQLite implementation with rusqlite
-pub type MintSqliteDatabase =
-    SQLMintDatabase<async_sqlite::AsyncSqlite, SqliteConnectionManager, Config, rusqlite::Error>;
+pub type MintSqliteDatabase = SQLMintDatabase<SqliteConnectionManager>;
 
 /// Mint Auth database with rusqlite
 #[cfg(feature = "auth")]
-pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<
-    async_sqlite::AsyncSqlite,
-    SqliteConnectionManager,
-    Config,
-    rusqlite::Error,
->;
+pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<SqliteConnectionManager>;
 
 #[cfg(test)]
 mod test {
@@ -30,6 +23,7 @@ mod test {
     use cdk_sql_common::stmt::query;
 
     use super::*;
+    use crate::common::Config;
 
     async fn provide_db() -> MintSqliteDatabase {
         memory::empty().await.unwrap()

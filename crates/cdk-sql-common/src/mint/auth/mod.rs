@@ -16,29 +16,23 @@ use tracing::instrument;
 use super::{sql_row_to_blind_signature, sql_row_to_keyset_info, SQLTransaction};
 use crate::column_as_string;
 use crate::common::migrate;
-use crate::database::{ConnectionWithTransaction, DatabaseConnector};
+use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
 use crate::mint::Error;
-use crate::pool::{Pool, PooledResource, ResourceManager};
+use crate::pool::{DatabasePool, Pool, PooledResource};
 use crate::stmt::query;
 
 /// Mint SQL Database
 #[derive(Debug, Clone)]
-pub struct SQLMintAuthDatabase<DB, RM, C, E>
+pub struct SQLMintAuthDatabase<RM>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E>,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     pool: Arc<Pool<RM>>,
 }
 
-impl<DB, RM, C, E> SQLMintAuthDatabase<DB, RM, C, E>
+impl<RM> SQLMintAuthDatabase<RM>
 where
-    DB: DatabaseConnector + 'static,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E> + 'static,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     /// Creates a new instance
     pub async fn new<X>(db: X) -> Result<Self, Error>
@@ -53,7 +47,7 @@ where
     /// Migrate
     async fn migrate(conn: PooledResource<RM>) -> Result<(), Error> {
         let tx = ConnectionWithTransaction::new(conn).await?;
-        migrate(&tx, DB::name(), MIGRATIONS).await?;
+        migrate(&tx, RM::Connection::name(), MIGRATIONS).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -64,12 +58,9 @@ mod migrations;
 
 
 #[async_trait]
-impl<DB, RM, C, E> MintAuthTransaction<database::Error> for SQLTransaction<DB, RM, C, E>
+impl<RM> MintAuthTransaction<database::Error> for SQLTransaction<RM>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E>,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     #[instrument(skip(self))]
     async fn set_active_keyset(&mut self, id: Id) -> Result<(), database::Error> {
@@ -244,12 +235,9 @@ where
 }
 
 #[async_trait]
-impl<DB, RM, C, E> MintAuthDatabase for SQLMintAuthDatabase<DB, RM, C, E>
+impl<RM> MintAuthDatabase for SQLMintAuthDatabase<RM>
 where
-    DB: DatabaseConnector + 'static,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E> + 'static,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     type Err = database::Error;
 

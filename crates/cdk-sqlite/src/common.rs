@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cdk_sql_common::pool::{self, ResourceManager};
+use cdk_sql_common::pool::{self, DatabasePool};
 use cdk_sql_common::value::Value;
 use rusqlite::Connection;
 
@@ -16,7 +16,7 @@ pub struct Config {
     password: Option<String>,
 }
 
-impl pool::Config for Config {
+impl pool::DatabaseConfig for Config {
     fn default_timeout(&self) -> Duration {
         Duration::from_secs(5)
     }
@@ -34,10 +34,10 @@ impl pool::Config for Config {
 #[derive(Debug)]
 pub struct SqliteConnectionManager;
 
-impl ResourceManager for SqliteConnectionManager {
+impl DatabasePool for SqliteConnectionManager {
     type Config = Config;
 
-    type Resource = async_sqlite::AsyncSqlite;
+    type Connection = async_sqlite::AsyncSqlite;
 
     type Error = rusqlite::Error;
 
@@ -45,7 +45,7 @@ impl ResourceManager for SqliteConnectionManager {
         config: &Self::Config,
         _stale: Arc<AtomicBool>,
         _timeout: Duration,
-    ) -> Result<Self::Resource, pool::Error<Self::Error>> {
+    ) -> Result<Self::Connection, pool::Error<Self::Error>> {
         let conn = if let Some(path) = config.path.as_ref() {
             Connection::open(path)?
         } else {

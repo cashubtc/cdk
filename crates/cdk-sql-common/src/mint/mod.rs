@@ -39,8 +39,8 @@ use tracing::instrument;
 use uuid::Uuid;
 
 use crate::common::migrate;
-use crate::database::{ConnectionWithTransaction, DatabaseConnector, DatabaseExecutor};
-use crate::pool::{Pool, PooledResource, ResourceManager};
+use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
+use crate::pool::{DatabasePool, Pool, PooledResource};
 use crate::stmt::{query, Column};
 use crate::{
     column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
@@ -59,25 +59,19 @@ pub use auth::SQLMintAuthDatabase;
 
 /// Mint SQL Database
 #[derive(Debug, Clone)]
-pub struct SQLMintDatabase<DB, RM, C, E>
+pub struct SQLMintDatabase<RM>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E>,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     pool: Arc<Pool<RM>>,
 }
 
 /// SQL Transaction Writer
-pub struct SQLTransaction<DB, RM, C, E>
+pub struct SQLTransaction<RM>
 where
-    DB: DatabaseConnector + 'static,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E> + 'static,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
-    inner: ConnectionWithTransaction<DB, PooledResource<RM>>,
+    inner: ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
 }
 
 #[inline(always)]
@@ -122,12 +116,9 @@ where
     Ok(())
 }
 
-impl<DB, RM, C, E> SQLMintDatabase<DB, RM, C, E>
+impl<RM> SQLMintDatabase<RM>
 where
-    DB: DatabaseConnector + 'static,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E> + 'static,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     /// Creates a new instance
     pub async fn new<X>(db: X) -> Result<Self, Error>
@@ -144,7 +135,7 @@ where
     /// Migrate
     async fn migrate(conn: PooledResource<RM>) -> Result<(), Error> {
         let tx = ConnectionWithTransaction::new(conn).await?;
-        migrate(&tx, DB::name(), MIGRATIONS).await?;
+        migrate(&tx, RM::Connection::name(), MIGRATIONS).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -166,12 +157,9 @@ where
 }
 
 #[async_trait]
-impl<DB, RM, C, E> database::MintProofsTransaction<'_> for SQLTransaction<DB, RM, C, E>
+impl<RM> database::MintProofsTransaction<'_> for SQLTransaction<RM>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E>,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
@@ -283,12 +271,9 @@ where
 }
 
 #[async_trait]
-impl<DB, RM, C, E> database::MintTransaction<'_, Error> for SQLTransaction<DB, RM, C, E>
+impl<RM> database::MintTransaction<'_, Error> for SQLTransaction<RM>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E>,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     async fn set_mint_info(&mut self, mint_info: MintInfo) -> Result<(), Error> {
         Ok(set_to_config(&self.inner, "mint_info", &mint_info).await?)
@@ -300,12 +285,9 @@ where
 }
 
 #[async_trait]
-impl<DB, RM, C, E> MintDbWriterFinalizer for SQLTransaction<DB, RM, C, E>
+impl<RM> MintDbWriterFinalizer for SQLTransaction<RM>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E>,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
@@ -379,12 +361,9 @@ WHERE quote_id=:quote_id
 }
 
 #[async_trait]
-impl<DB, RM, C, E> MintKeyDatabaseTransaction<'_, Error> for SQLTransaction<DB, RM, C, E>
+impl<RM> MintKeyDatabaseTransaction<'_, Error> for SQLTransaction<RM>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E>,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), Error> {
         query(
@@ -441,12 +420,9 @@ where
 }
 
 #[async_trait]
-impl<DB, RM, C, E> MintKeysDatabase for SQLMintDatabase<DB, RM, C, E>
+impl<RM> MintKeysDatabase for SQLMintDatabase<RM>
 where
-    DB: DatabaseConnector + 'static,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E> + 'static,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
@@ -542,12 +518,9 @@ where
 }
 
 #[async_trait]
-impl<DB, RM, C, E> MintQuotesTransaction<'_> for SQLTransaction<DB, RM, C, E>
+impl<RM> MintQuotesTransaction<'_> for SQLTransaction<RM>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E>,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
@@ -1065,12 +1038,9 @@ VALUES (:quote_id, :amount, :timestamp);
 }
 
 #[async_trait]
-impl<DB, RM, C, E> MintQuotesDatabase for SQLMintDatabase<DB, RM, C, E>
+impl<RM> MintQuotesDatabase for SQLMintDatabase<RM>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E>,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
@@ -1291,12 +1261,9 @@ where
 }
 
 #[async_trait]
-impl<DB, RM, C, E> MintProofsDatabase for SQLMintDatabase<DB, RM, C, E>
+impl<RM> MintProofsDatabase for SQLMintDatabase<RM>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E>,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
@@ -1400,12 +1367,9 @@ where
 }
 
 #[async_trait]
-impl<DB, RM, C, E> MintSignatureTransaction<'_> for SQLTransaction<DB, RM, C, E>
+impl<RM> MintSignatureTransaction<'_> for SQLTransaction<RM>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E>,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
@@ -1493,12 +1457,9 @@ where
 }
 
 #[async_trait]
-impl<DB, RM, C, E> MintSignaturesDatabase for SQLMintDatabase<DB, RM, C, E>
+impl<RM> MintSignaturesDatabase for SQLMintDatabase<RM>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E>,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
@@ -1604,12 +1565,9 @@ where
 }
 
 #[async_trait]
-impl<DB, RM, C, E> MintDatabase<Error> for SQLMintDatabase<DB, RM, C, E>
+impl<RM> MintDatabase<Error> for SQLMintDatabase<RM>
 where
-    DB: DatabaseConnector + 'static,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E> + 'static,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     async fn begin_transaction<'a>(
         &'a self,

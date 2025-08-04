@@ -2,14 +2,12 @@
 
 use cdk_sql_common::SQLWalletDatabase;
 
-use crate::async_sqlite;
-use crate::common::{Config, SqliteConnectionManager};
+use crate::common::SqliteConnectionManager;
 
 pub mod memory;
 
 /// Mint SQLite implementation with rusqlite
-pub type WalletSqliteDatabase =
-    SQLWalletDatabase<async_sqlite::AsyncSqlite, SqliteConnectionManager, Config, rusqlite::Error>;
+pub type WalletSqliteDatabase = SQLWalletDatabase<SqliteConnectionManager>;
 
 #[cfg(test)]
 mod tests {

@@ -19,8 +19,8 @@ use cdk_common::{
 use tracing::instrument;
 
 use crate::common::migrate;
-use crate::database::{ConnectionWithTransaction, DatabaseConnector, DatabaseExecutor};
-use crate::pool::{Pool, PooledResource, ResourceManager};
+use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
+use crate::pool::{DatabasePool, Pool, PooledResource};
 use crate::stmt::{query, Column};
 use crate::{
     column_as_binary, column_as_nullable_binary, column_as_nullable_number,
@@ -32,22 +32,16 @@ mod migrations;
 
 /// Wallet SQLite Database
 #[derive(Debug, Clone)]
-pub struct SQLWalletDatabase<DB, RM, C, E>
+pub struct SQLWalletDatabase<RM>
 where
-    DB: DatabaseConnector,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E>,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     pool: Arc<Pool<RM>>,
 }
 
-impl<DB, RM, C, E> SQLWalletDatabase<DB, RM, C, E>
+impl<RM> SQLWalletDatabase<RM>
 where
-    DB: DatabaseConnector + 'static,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E> + 'static,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     /// Creates a new instance
     pub async fn new<X>(db: X) -> Result<Self, Error>
@@ -63,7 +57,7 @@ where
     /// Migrate [`WalletSqliteDatabase`]
     async fn migrate(conn: PooledResource<RM>) -> Result<(), Error> {
         let tx = ConnectionWithTransaction::new(conn).await?;
-        migrate(&tx, DB::name(), migrations::MIGRATIONS).await?;
+        migrate(&tx, RM::Connection::name(), migrations::MIGRATIONS).await?;
         // Update any existing keys with missing keyset_u32 values
         Self::add_keyset_u32(&tx).await?;
         tx.commit().await?;
@@ -142,12 +136,9 @@ where
 }
 
 #[async_trait]
-impl<DB, RM, C, E> WalletDatabase for SQLWalletDatabase<DB, RM, C, E>
+impl<RM> WalletDatabase for SQLWalletDatabase<RM>
 where
-    DB: DatabaseConnector + 'static,
-    RM: ResourceManager<Resource = DB, Config = C, Error = E> + 'static,
-    C: Debug + Clone + Send + Sync,
-    E: Debug + std::error::Error + Send + Sync + 'static,
+    RM: DatabasePool + 'static,
 {
     type Err = database::Error;
 

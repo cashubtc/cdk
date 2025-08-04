@@ -8,8 +8,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
+use crate::database::DatabaseConnector;
+
 /// Pool error
-#[derive(thiserror::Error, Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error<E>
 where
     E: std::error::Error + Send + Sync + 'static,
@@ -28,7 +30,7 @@ where
 }
 
 /// Configuration
-pub trait Config: Clone + Debug + Send + Sync {
+pub trait DatabaseConfig: Clone + Debug + Send + Sync {
     /// Max resource sizes
     fn max_size(&self) -> usize;
 
@@ -37,12 +39,12 @@ pub trait Config: Clone + Debug + Send + Sync {
 }
 
 /// Trait to manage resources
-pub trait ResourceManager: Debug {
+pub trait DatabasePool: Debug {
     /// The resource to be pooled
-    type Resource: Debug;
+    type Connection: DatabaseConnector;
 
     /// The configuration that is needed in order to create the resource
-    type Config: Config;
+    type Config: DatabaseConfig;
 
     /// The error the resource may return when creating a new instance
     type Error: Debug + std::error::Error + Send + Sync + 'static;
@@ -55,20 +57,20 @@ pub trait ResourceManager: Debug {
         config: &Self::Config,
         stale: Arc<AtomicBool>,
         timeout: Duration,
-    ) -> Result<Self::Resource, Error<Self::Error>>;
+    ) -> Result<Self::Connection, Error<Self::Error>>;
 
     /// The object is dropped
-    fn drop(_resource: Self::Resource) {}
+    fn drop(_resource: Self::Connection) {}
 }
 
 /// Generic connection pool of resources R
 #[derive(Debug)]
 pub struct Pool<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
     config: RM::Config,
-    queue: Mutex<Vec<(Arc<AtomicBool>, RM::Resource)>>,
+    queue: Mutex<Vec<(Arc<AtomicBool>, RM::Connection)>>,
     in_use: AtomicUsize,
     max_size: usize,
     default_timeout: Duration,
@@ -78,15 +80,15 @@ where
 /// The pooled resource
 pub struct PooledResource<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
-    resource: Option<(Arc<AtomicBool>, RM::Resource)>,
+    resource: Option<(Arc<AtomicBool>, RM::Connection)>,
     pool: Arc<Pool<RM>>,
 }
 
 impl<RM> Debug for PooledResource<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Resource: {:?}", self.resource)
@@ -95,7 +97,7 @@ where
 
 impl<RM> Drop for PooledResource<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
     fn drop(&mut self) {
         if let Some(resource) = self.resource.take() {
@@ -111,9 +113,9 @@ where
 
 impl<RM> Deref for PooledResource<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
-    type Target = RM::Resource;
+    type Target = RM::Connection;
 
     fn deref(&self) -> &Self::Target {
         &self.resource.as_ref().expect("resource already dropped").1
@@ -122,7 +124,7 @@ where
 
 impl<RM> DerefMut for PooledResource<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.resource.as_mut().expect("resource already dropped").1
@@ -131,7 +133,7 @@ where
 
 impl<RM> Pool<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
     /// Creates a new pool
     pub fn new(config: RM::Config) -> Arc<Self> {
@@ -206,7 +208,7 @@ where
 
 impl<RM> Drop for Pool<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
     fn drop(&mut self) {
         if let Ok(mut resources) = self.queue.lock() {
