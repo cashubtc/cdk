@@ -50,7 +50,7 @@ impl Wallet {
             )
             .unit(unit.into())
             .localstore(localstore)
-            .seed(&seed)
+            .seed(seed)
             .target_proof_count(config.target_proof_count.unwrap_or(3) as usize)
             .build()
             .map_err(FfiError::from)?;
