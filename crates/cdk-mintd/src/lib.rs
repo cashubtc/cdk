@@ -282,6 +282,8 @@ async fn configure_lightning_backend(
             let cln = cln_settings
                 .setup(ln_routers, settings, CurrencyUnit::Msat)
                 .await?;
+            #[cfg(feature = "prometheus")]
+            let cln = MetricsMintPayment::new(cln);
 
             mint_builder = configure_backend_for_unit(
                 settings,
@@ -298,6 +300,8 @@ async fn configure_lightning_backend(
             let lnbits = lnbits_settings
                 .setup(ln_routers, settings, CurrencyUnit::Sat)
                 .await?;
+            #[cfg(feature = "prometheus")]
+            let lnbits = MetricsMintPayment::new(lnbits);
 
             mint_builder = configure_backend_for_unit(
                 settings,
@@ -314,6 +318,8 @@ async fn configure_lightning_backend(
             let lnd = lnd_settings
                 .setup(ln_routers, settings, CurrencyUnit::Msat)
                 .await?;
+            #[cfg(feature = "prometheus")]
+            let lnd = MetricsMintPayment::new(lnd);
 
             mint_builder = configure_backend_for_unit(
                 settings,
@@ -364,6 +370,8 @@ async fn configure_lightning_backend(
                 let processor = grpc_processor
                     .setup(ln_routers, settings, unit.clone())
                     .await?;
+                #[cfg(feature = "prometheus")]
+                let processor = MetricsMintPayment::new(processor);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
