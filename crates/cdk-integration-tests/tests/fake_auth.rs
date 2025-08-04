@@ -36,7 +36,7 @@ async fn test_invalid_credentials() {
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
         .unit(CurrencyUnit::Sat)
         .localstore(db.clone())
-        .seed(&Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
 
@@ -274,7 +274,7 @@ async fn test_mint_blind_auth() {
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
         .unit(CurrencyUnit::Sat)
         .localstore(db.clone())
-        .seed(&Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
     let mint_info = wallet.get_mint_info().await.unwrap().unwrap();
@@ -304,7 +304,7 @@ async fn test_mint_with_auth() {
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
         .unit(CurrencyUnit::Sat)
         .localstore(db.clone())
-        .seed(&Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
 
@@ -354,7 +354,7 @@ async fn test_swap_with_auth() {
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
         .unit(CurrencyUnit::Sat)
         .localstore(db.clone())
-        .seed(&Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
     let mint_info = wallet.get_mint_info().await.unwrap().unwrap();
@@ -407,7 +407,7 @@ async fn test_melt_with_auth() {
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
         .unit(CurrencyUnit::Sat)
         .localstore(db.clone())
-        .seed(&Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
 
@@ -447,7 +447,7 @@ async fn test_mint_auth_over_max() {
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
         .unit(CurrencyUnit::Sat)
         .localstore(db.clone())
-        .seed(&Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
 
@@ -489,7 +489,7 @@ async fn test_reuse_auth_proof() {
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
         .unit(CurrencyUnit::Sat)
         .localstore(db.clone())
-        .seed(&Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
     let mint_info = wallet.get_mint_info().await.unwrap().unwrap();
@@ -541,7 +541,7 @@ async fn test_melt_with_invalid_auth() {
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
         .unit(CurrencyUnit::Sat)
         .localstore(db.clone())
-        .seed(&Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
     let mint_info = wallet.get_mint_info().await.unwrap().unwrap();
@@ -604,7 +604,7 @@ async fn test_refresh_access_token() {
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
         .unit(CurrencyUnit::Sat)
         .localstore(db.clone())
-        .seed(&Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
 
@@ -660,7 +660,7 @@ async fn test_invalid_refresh_token() {
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
         .unit(CurrencyUnit::Sat)
         .localstore(db.clone())
-        .seed(&Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
 
@@ -696,7 +696,7 @@ async fn test_auth_token_spending_order() {
         .mint_url(MintUrl::from_str(MINT_URL).expect("Valid mint url"))
         .unit(CurrencyUnit::Sat)
         .localstore(db.clone())
-        .seed(&Mnemonic::generate(12).unwrap().to_seed_normalized(""))
+        .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
 
