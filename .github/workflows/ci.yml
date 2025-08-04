@@ -14,13 +14,11 @@ env:
 jobs:
   pre-commit-checks:
     name: "Cargo fmt, typos"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: checkout
         uses: actions/checkout@v4
-        with:
-          path: ${{ github.sha }}
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Rust Cache
@@ -37,7 +35,7 @@ jobs:
   
   examples:
     name: "Run examples"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy]
     strategy:
@@ -62,7 +60,7 @@ jobs:
 
   clippy:
     name: "Stable build, clippy and test"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: pre-commit-checks
     strategy:
@@ -146,7 +144,7 @@ jobs:
 
   regtest-itest:
     name: "Integration regtest tests"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
     strategy:
@@ -171,7 +169,7 @@ jobs:
           
   fake-mint-itest:
     name: "Integration fake mint tests"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy]
     strategy:
@@ -198,7 +196,7 @@ jobs:
                 
   pure-itest:
     name: "Integration fake wallet tests"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy]
     strategy:
@@ -339,7 +337,7 @@ jobs:
 
   fake-mint-auth-itest:
     name: "Integration fake mint auth tests"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
     strategy:
