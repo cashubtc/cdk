@@ -282,7 +282,7 @@ pub async fn create_mint_router_with_custom_cache(
     include_bolt12: bool,
 ) -> Result<Router> {
     let state = MintState {
-        mint: mint.clone(),
+        mint,
         cache: Arc::new(cache),
     };
 

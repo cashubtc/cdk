@@ -1,5 +1,3 @@
-use crate::mint::Verification;
-use crate::Mint;
 use cdk_common::mint::MintQuote;
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
@@ -15,6 +13,9 @@ use cdk_common::{
 use cdk_prometheus::METRICS;
 use tracing::instrument;
 use uuid::Uuid;
+
+use crate::mint::Verification;
+use crate::Mint;
 
 #[cfg(feature = "auth")]
 mod auth;

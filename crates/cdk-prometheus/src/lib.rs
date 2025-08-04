@@ -85,7 +85,7 @@ pub async fn start_default_server() -> Result<()> {
 ///
 /// # Errors
 /// Returns an error if the server cannot be created or started
-pub async fn start_default_server_with_metrics(metrics: &CdkMetrics) -> Result<()> {
+pub async fn start_default_server_with_metrics() -> Result<()> {
     let server = PrometheusBuilder::new().build_with_cdk_metrics()?;
 
     server.start().await

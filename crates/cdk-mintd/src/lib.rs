@@ -15,10 +15,10 @@ use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase, MintKeysDatabase};
 use cdk::cdk_payment;
-use cdk::cdk_payment::MintPayment;
 // internal crate modules
 #[cfg(feature = "prometheus")]
 use cdk::cdk_payment::MetricsMintPayment;
+use cdk::cdk_payment::MintPayment;
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 #[cfg(any(
     feature = "cln",

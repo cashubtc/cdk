@@ -39,10 +39,8 @@ async fn test_correct_keyset() {
     let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
 
     let localstore = Arc::new(database);
-    #[cfg(feature = "prometheus")]
-    let mut mint_builder = MintBuilder::new(localstore.clone(), Some(Arc::new(CdkMetrics)));
-    #[cfg(not(feature = "prometheus"))]
-    let mut mint_builder = MintBuilder::new(localstore.clone(), None);
+
+    let mut mint_builder = MintBuilder::new(localstore.clone());
 
     mint_builder = mint_builder
         .with_name("regtest mint".to_string())

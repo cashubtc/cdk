@@ -2,12 +2,11 @@
 
 use std::convert::Infallible;
 use std::pin::Pin;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use cashu::util::hex;
 use cashu::{Bolt11Invoice, MeltOptions};
-use cdk_prometheus::{METRICS};
+use cdk_prometheus::METRICS;
 use futures::Stream;
 use lightning::offers::offer::Offer;
 use lightning_invoice::ParseOrSemanticError;

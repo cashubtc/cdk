@@ -1,19 +1,5 @@
 use std::str::FromStr;
 
-use super::{
-    CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, Mint,
-    PaymentMethod, PublicKey, State,
-};
-use crate::amount::to_unit;
-use crate::cdk_payment::{MakePaymentResponse, MintPayment};
-use crate::mint::proof_writer::ProofWriter;
-use crate::mint::verification::Verification;
-use crate::mint::SigFlag;
-use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
-use crate::nuts::MeltQuoteState;
-use crate::types::PaymentProcessorKey;
-use crate::util::unix_time;
-use crate::{cdk_payment, ensure_cdk, Amount, Error};
 use anyhow::bail;
 use cdk_common::amount::amount_for_offer;
 use cdk_common::database::{self, MintTransaction};
@@ -31,6 +17,21 @@ use cdk_prometheus::METRICS;
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 use uuid::Uuid;
+
+use super::{
+    CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, Mint,
+    PaymentMethod, PublicKey, State,
+};
+use crate::amount::to_unit;
+use crate::cdk_payment::{MakePaymentResponse, MintPayment};
+use crate::mint::proof_writer::ProofWriter;
+use crate::mint::verification::Verification;
+use crate::mint::SigFlag;
+use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
+use crate::nuts::MeltQuoteState;
+use crate::types::PaymentProcessorKey;
+use crate::util::unix_time;
+use crate::{cdk_payment, ensure_cdk, Amount, Error};
 
 impl Mint {
     #[instrument(skip_all)]

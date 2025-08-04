@@ -5,7 +5,7 @@ use std::time::Duration;
 use prometheus::{Registry, TextEncoder};
 use tokio::time;
 
-use crate::metrics::{METRICS};
+use crate::metrics::METRICS;
 #[cfg(feature = "system-metrics")]
 use crate::process::SystemMetrics;
 

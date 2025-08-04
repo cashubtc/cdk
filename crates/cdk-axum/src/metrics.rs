@@ -11,7 +11,6 @@ use axum::http::Request;
 use axum::middleware::Next;
 #[cfg(feature = "prometheus")]
 use axum::response::Response;
-
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::global;
 

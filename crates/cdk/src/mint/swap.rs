@@ -1,10 +1,11 @@
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::METRICS;
+use tracing::instrument;
+
 use super::nut11::{enforce_sig_flag, EnforceSigFlag};
 use super::proof_writer::ProofWriter;
 use super::{Mint, PublicKey, SigFlag, State, SwapRequest, SwapResponse};
 use crate::Error;
-#[cfg(feature = "prometheus")]
-use cdk_prometheus::METRICS;
-use tracing::instrument;
 
 impl Mint {
     /// Process Swap
