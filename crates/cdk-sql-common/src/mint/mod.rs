@@ -1100,7 +1100,11 @@ where
             let success = result.is_ok();
 
             METRICS.record_mint_operation("get_mint_quote", success);
-            METRICS.record_mint_operation_histogram("get_mint_quote", success, start_time.elapsed().as_secs_f64());
+            METRICS.record_mint_operation_histogram(
+                "get_mint_quote",
+                success,
+                start_time.elapsed().as_secs_f64(),
+            );
             METRICS.dec_in_flight_requests("get_mint_quote");
         }
 
@@ -1269,7 +1273,11 @@ where
             let success = result.is_ok();
 
             METRICS.record_mint_operation("get_melt_quote", success);
-            METRICS.record_mint_operation_histogram("get_melt_quote", success, start_time.elapsed().as_secs_f64());
+            METRICS.record_mint_operation_histogram(
+                "get_melt_quote",
+                success,
+                start_time.elapsed().as_secs_f64(),
+            );
             METRICS.dec_in_flight_requests("get_melt_quote");
         }
 
@@ -1633,7 +1641,11 @@ where
             let success = result.is_ok();
 
             METRICS.record_mint_operation("get_mint_info", success);
-            METRICS.record_mint_operation_histogram("get_mint_info", success, start_time.elapsed().as_secs_f64());
+            METRICS.record_mint_operation_histogram(
+                "get_mint_info",
+                success,
+                start_time.elapsed().as_secs_f64(),
+            );
             METRICS.dec_in_flight_requests("get_mint_info");
         }
 
@@ -1654,7 +1666,11 @@ where
             let success = result.is_ok();
 
             METRICS.record_mint_operation("get_quote_ttl", success);
-            METRICS.record_mint_operation_histogram("get_quote_ttl", success, start_time.elapsed().as_secs_f64());
+            METRICS.record_mint_operation_histogram(
+                "get_quote_ttl",
+                success,
+                start_time.elapsed().as_secs_f64(),
+            );
             METRICS.dec_in_flight_requests("get_quote_ttl");
         }
 

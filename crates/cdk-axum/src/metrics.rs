@@ -4,7 +4,7 @@ use std::time::Instant;
 #[cfg(feature = "prometheus")]
 use axum::body::Body;
 #[cfg(feature = "prometheus")]
-use axum::extract::{MatchedPath};
+use axum::extract::MatchedPath;
 #[cfg(feature = "prometheus")]
 use axum::http::Request;
 #[cfg(feature = "prometheus")]
