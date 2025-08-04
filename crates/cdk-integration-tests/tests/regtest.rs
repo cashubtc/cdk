@@ -29,7 +29,6 @@ use cdk_integration_tests::{
 };
 use cdk_sqlite::wallet::{self, memory};
 use futures::join;
-use ln_regtest_rs::ln_client::LightningClient;
 use tokio::time::timeout;
 
 const LDK_URL: &str = "http://127.0.0.1:8089";

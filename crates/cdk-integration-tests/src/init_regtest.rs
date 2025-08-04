@@ -373,6 +373,12 @@ pub async fn start_regtest_end(
 
             generate_block(&bitcoin_client)?;
 
+            let cln_two_info = cln_two_client.get_connect_info().await?;
+
+            cln_client
+                .connect_peer(cln_two_info.pubkey, listen_addr.clone(), cln_two_info.port)
+                .await?;
+
             tracing::info!("Opening channel from lnd to ldk");
 
             let cln_info = cln_client.get_connect_info().await?;

@@ -39,6 +39,7 @@ cleanup() {
     unset CDK_REGTEST_PID
     unset RUST_BACKTRACE
     unset CDK_TEST_REGTEST
+    unset CDK_TEST_LIGHTNING_CLIENT
 }
 
 # Set up trap to call cleanup on script exit
@@ -61,7 +62,6 @@ fi
 echo "Temp directory created: $CDK_ITESTS_DIR"
 export CDK_MINTD_DATABASE="$1"
 
-cargo build -p cdk-integration-tests
 cargo build --bin start_regtest_mints 
 
 echo "Starting regtest and mints"
@@ -176,57 +176,58 @@ while true; do
     fi
 done
 
-# # Run cargo test
-# echo "Running regtest test with CLN mint"
-# cargo test -p cdk-integration-tests --test regtest
-# if [ $? -ne 0 ]; then
-#     echo "regtest test failed, exiting"
-#     exit 1
-# fi
+# Run cargo test
+echo "Running regtest test with CLN mint and CLN client"
+export CDK_TEST_LIGHTNING_CLIENT="lnd"
+cargo test -p cdk-integration-tests --test regtest
+if [ $? -ne 0 ]; then
+    echo "regtest test with cln mint failed, exiting"
+    exit 1
+fi
 
-# echo "Running happy_path_mint_wallet test with CLN mint"
-# cargo test -p cdk-integration-tests --test happy_path_mint_wallet
-# if [ $? -ne 0 ]; then
-#     echo "happy_path_mint_wallet test failed, exiting"
-#     exit 1
-# fi
+echo "Running happy_path_mint_wallet test with CLN mint and CLN client"
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+if [ $? -ne 0 ]; then
+    echo "happy_path_mint_wallet with cln mint test failed, exiting"
+    exit 1
+fi
 
-# # Run cargo test with the http_subscription feature
-# echo "Running regtest test with http_subscription feature"
-# cargo test -p cdk-integration-tests --test regtest --features http_subscription
-# if [ $? -ne 0 ]; then
-#     echo "regtest test with http_subscription failed, exiting"
-#     exit 1
-# fi
+# Run cargo test with the http_subscription feature
+echo "Running regtest test with http_subscription feature (CLN client)"
+cargo test -p cdk-integration-tests --test regtest --features http_subscription
+if [ $? -ne 0 ]; then
+    echo "regtest test with http_subscription failed, exiting"
+    exit 1
+fi
 
-# echo "Running regtest test with cln mint for bolt12"
-# cargo test -p cdk-integration-tests --test bolt12
-# if [ $? -ne 0 ]; then
-#     echo "regtest test failed, exiting"
-#     exit 1
-# fi
+echo "Running regtest test with cln mint for bolt12 (CLN client)"
+cargo test -p cdk-integration-tests --test bolt12
+if [ $? -ne 0 ]; then
+    echo "regtest test failed, exiting"
+    exit 1
+fi
 
-# # Switch Mints: Run tests with LND mint
-# echo "Switching to LND mint for tests"
+# Switch Mints: Run tests with LND mint
+echo "Switching to LND mint for tests"
 
-# echo "Running regtest test with LND mint"
-# CDK_TEST_MINT_URL_SWITCHED=$CDK_TEST_MINT_URL_2
-# CDK_TEST_MINT_URL_2_SWITCHED=$CDK_TEST_MINT_URL
-# export CDK_TEST_MINT_URL=$CDK_TEST_MINT_URL_SWITCHED
-# export CDK_TEST_MINT_URL_2=$CDK_TEST_MINT_URL_2_SWITCHED
+echo "Running regtest test with LND mint and LND client"
+CDK_TEST_MINT_URL_SWITCHED=$CDK_TEST_MINT_URL_2
+CDK_TEST_MINT_URL_2_SWITCHED=$CDK_TEST_MINT_URL
+export CDK_TEST_MINT_URL=$CDK_TEST_MINT_URL_SWITCHED
+export CDK_TEST_MINT_URL_2=$CDK_TEST_MINT_URL_2_SWITCHED
 
-#  cargo test -p cdk-integration-tests --test regtest
-#  if [ $? -ne 0 ]; then
-#      echo "regtest test with LND mint failed, exiting"
-#      exit 1
-#  fi
+ cargo test -p cdk-integration-tests --test regtest
+ if [ $? -ne 0 ]; then
+     echo "regtest test with LND mint failed, exiting"
+     exit 1
+ fi
 
-#  echo "Running happy_path_mint_wallet test with LND mint"
-#  cargo test -p cdk-integration-tests --test happy_path_mint_wallet
-#  if [ $? -ne 0 ]; then
-#      echo "happy_path_mint_wallet test with LND mint failed, exiting"
-#      exit 1
-#  fi
+ echo "Running happy_path_mint_wallet test with LND mint and LND client"
+ cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+ if [ $? -ne 0 ]; then
+     echo "happy_path_mint_wallet test with LND mint failed, exiting"
+     exit 1
+ fi
 
 
 export CDK_TEST_MINT_URL="http://127.0.0.1:8089"
@@ -261,14 +262,15 @@ while true; do
 done
 
 
-echo "Running happy_path_mint_wallet test with LDK mint"
+echo "Running happy_path_mint_wallet test with LDK mint and CLN client"
+export CDK_TEST_LIGHTNING_CLIENT="cln"  # Use CLN client for LDK tests
 cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 if [ $? -ne 0 ]; then
     echo "happy_path_mint_wallet test with LDK mint failed, exiting"
     exit 1
 fi
 
-echo "Running regtest test with LDK mint"
+echo "Running regtest test with LDK mint and CLN client"
 cargo test -p cdk-integration-tests --test regtest
 if [ $? -ne 0 ]; then
     echo "regtest test LDK mint failed, exiting"

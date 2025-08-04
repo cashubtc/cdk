@@ -202,12 +202,12 @@ pub async fn init_lnd_client(work_dir: &Path) -> LndClient {
 ///
 /// This is useful for tests that need to pay invoices in regtest mode but
 /// should be skipped in other environments.
-pub async fn pay_if_regtest(work_dir: &Path, invoice: &Bolt11Invoice) -> Result<()> {
+pub async fn pay_if_regtest(_work_dir: &Path, invoice: &Bolt11Invoice) -> Result<()> {
     // Check if the invoice is for the regtest network
     if invoice.network() == bitcoin::Network::Regtest {
-        let lnd_client = init_lnd_client(work_dir).await;
+        let client = get_test_client().await;
         let mut tries = 0;
-        while let Err(err) = lnd_client.pay_invoice(invoice.to_string()).await {
+        while let Err(err) = client.pay_invoice(invoice.to_string()).await {
             println!("Could not pay invoice.retrying {err}");
             tries += 1;
             if tries > 10 {
@@ -280,8 +280,22 @@ async fn _get_lnd_client() -> LndClient {
     .expect("Could not connect to lnd rpc")
 }
 
-pub async fn get_test_client() -> ClnClient {
-    create_cln_client_with_retry().await
+/// Returns a Lightning client based on the CDK_TEST_LIGHTNING_CLIENT environment variable.
+///
+/// Reads the CDK_TEST_LIGHTNING_CLIENT environment variable:
+/// - "cln" or "CLN": returns a CLN client
+/// - Anything else (or unset): returns an LND client (default)
+pub async fn get_test_client() -> Box<dyn LightningClient> {
+    match env::var("CDK_TEST_LIGHTNING_CLIENT") {
+        Ok(val) => {
+            let val = val.to_lowercase();
+            match val.as_str() {
+                "cln" => Box::new(create_cln_client_with_retry().await),
+                _ => Box::new(_get_lnd_client().await),
+            }
+        }
+        Err(_) => Box::new(_get_lnd_client().await), // Default to LND
+    }
 }
 
 fn get_work_dir() -> PathBuf {
