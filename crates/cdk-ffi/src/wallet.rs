@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
+use bip39::Mnemonic;
 use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
-use cdk_sqlite::wallet::{memory, WalletSqliteDatabase};
+use cdk_sqlite::wallet::WalletSqliteDatabase;
 
 use crate::error::FfiError;
 use crate::types::*;
@@ -16,31 +17,30 @@ pub struct Wallet {
 
 #[uniffi::export]
 impl Wallet {
-    /// Create a new Wallet
+    /// Create a new Wallet from mnemonic
     #[uniffi::constructor]
     pub async fn new(
         mint_url: String,
         unit: CurrencyUnit,
-        seed: Vec<u8>,
+        mnemonic: String,
+        passphrase: Option<String>,
         config: WalletConfig,
     ) -> Result<Self, FfiError> {
+        // Parse mnemonic and generate seed
+        let m = Mnemonic::parse(&mnemonic).map_err(|e| FfiError::Generic {
+            msg: format!("Invalid mnemonic: {}", e),
+        })?;
+        let seed = m.to_seed_normalized(passphrase.as_deref().unwrap_or_default());
+
         let localstore: Arc<
             dyn cdk_common::database::WalletDatabase<Err = cdk_common::database::Error>
                 + Send
                 + Sync,
-        > = if let Some(database_path) = &config.database_path {
-            Arc::new(
-                WalletSqliteDatabase::new(database_path.as_str())
-                    .await
-                    .map_err(|e| FfiError::Database { msg: e.to_string() })?,
-            )
-        } else {
-            Arc::new(
-                memory::empty()
-                    .await
-                    .map_err(|e| FfiError::Database { msg: e.to_string() })?,
-            )
-        };
+        > = Arc::new(
+            WalletSqliteDatabase::new(config.work_dir.as_str())
+                .await
+                .map_err(|e| FfiError::Database { msg: e.to_string() })?,
+        );
 
         let wallet = CdkWalletBuilder::new()
             .mint_url(
@@ -82,7 +82,7 @@ impl Wallet {
         Ok(balance.into())
     }
 
-    /// Get total reserved balance  
+    /// Get total reserved balance
     pub async fn total_reserved_balance(&self) -> Result<Amount, FfiError> {
         let balance = self.inner.total_reserved_balance().await?;
         Ok(balance.into())
@@ -277,17 +277,15 @@ impl Wallet {
 }
 
 /// Configuration for creating wallets
-#[derive(Debug, Default, Clone, uniffi::Record)]
+#[derive(Debug, Clone, uniffi::Record)]
 pub struct WalletConfig {
-    pub database_path: Option<String>,
+    pub work_dir: String,
     pub target_proof_count: Option<u32>,
 }
 
-/// Utility functions
+/// Generates a new random mnemonic phrase
 #[uniffi::export]
-pub fn generate_seed() -> Vec<u8> {
-    use rand::RngCore;
-    let mut seed = [0u8; 32];
-    rand::rng().fill_bytes(&mut seed);
-    seed.to_vec()
+pub fn generate_mnemonic() -> Result<String, FfiError> {
+    let mnemonic = Mnemonic::generate(12).map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+    Ok(mnemonic.to_string())
 }

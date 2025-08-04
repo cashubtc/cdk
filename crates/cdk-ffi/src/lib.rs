@@ -219,29 +219,50 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_seed() {
-        let seed = generate_seed();
-        assert_eq!(seed.len(), 32);
-
-        // Generate another seed and ensure they're different
-        let seed2 = generate_seed();
-        assert_ne!(seed, seed2);
-    }
-
-    #[test]
     fn test_wallet_config() {
-        let config = WalletConfig::default();
-        assert!(config.database_path.is_none());
+        let config = WalletConfig {
+            work_dir: "test_dir".to_string(),
+            target_proof_count: None,
+        };
+        assert_eq!(config.work_dir, "test_dir");
         assert!(config.target_proof_count.is_none());
 
         let config_with_values = WalletConfig {
-            database_path: Some("test.db".to_string()),
+            work_dir: "test.db".to_string(),
             target_proof_count: Some(5),
         };
-        assert_eq!(
-            config_with_values.database_path,
-            Some("test.db".to_string())
-        );
+        assert_eq!(config_with_values.work_dir, "test.db".to_string());
         assert_eq!(config_with_values.target_proof_count, Some(5));
+    }
+
+    #[test]
+    fn test_mnemonic_generation() {
+        // Test mnemonic generation
+        let mnemonic = generate_mnemonic().unwrap();
+        assert!(!mnemonic.is_empty());
+        assert_eq!(mnemonic.split_whitespace().count(), 12);
+
+        // Verify it's a valid mnemonic by trying to parse it
+        use bip39::Mnemonic;
+        let parsed = Mnemonic::parse(&mnemonic);
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn test_mnemonic_validation() {
+        // Test with valid mnemonic
+        let mnemonic = generate_mnemonic().unwrap();
+        use bip39::Mnemonic;
+        let parsed = Mnemonic::parse(&mnemonic);
+        assert!(parsed.is_ok());
+
+        // Test with invalid mnemonic
+        let invalid_mnemonic = "invalid mnemonic phrase that should not work";
+        let parsed_invalid = Mnemonic::parse(invalid_mnemonic);
+        assert!(parsed_invalid.is_err());
+
+        // Test mnemonic word count variations
+        let mnemonic_12 = generate_mnemonic().unwrap();
+        assert_eq!(mnemonic_12.split_whitespace().count(), 12);
     }
 }

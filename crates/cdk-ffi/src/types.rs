@@ -60,6 +60,8 @@ pub enum CurrencyUnit {
     Msat,
     Usd,
     Eur,
+    Auth,
+    Custom { unit: String },
 }
 
 impl From<CdkCurrencyUnit> for CurrencyUnit {
@@ -69,7 +71,9 @@ impl From<CdkCurrencyUnit> for CurrencyUnit {
             CdkCurrencyUnit::Msat => CurrencyUnit::Msat,
             CdkCurrencyUnit::Usd => CurrencyUnit::Usd,
             CdkCurrencyUnit::Eur => CurrencyUnit::Eur,
-            _ => CurrencyUnit::Sat, // default fallback
+            CdkCurrencyUnit::Auth => CurrencyUnit::Auth,
+            CdkCurrencyUnit::Custom(s) => CurrencyUnit::Custom { unit: s },
+            _ => CurrencyUnit::Sat, // Default for unknown units
         }
     }
 }
@@ -81,6 +85,8 @@ impl From<CurrencyUnit> for CdkCurrencyUnit {
             CurrencyUnit::Msat => CdkCurrencyUnit::Msat,
             CurrencyUnit::Usd => CdkCurrencyUnit::Usd,
             CurrencyUnit::Eur => CdkCurrencyUnit::Eur,
+            CurrencyUnit::Auth => CdkCurrencyUnit::Auth,
+            CurrencyUnit::Custom { unit } => CdkCurrencyUnit::Custom(unit),
         }
     }
 }

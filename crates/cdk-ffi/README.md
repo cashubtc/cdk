@@ -7,16 +7,21 @@ UniFFI bindings for the CDK (Cashu Development Kit) wallet functionality.
 ```rust
 use cdk_ffi::*;
 
-// Generate seed and create wallet
-let seed = generate_seed();
+// Generate a new mnemonic or use an existing one
+let mnemonic = generate_mnemonic()?;
+
+// Create wallet configuration
 let config = WalletConfig {
-    database_path: Some("/path/to/wallet.db".to_string()), // or None for in-memory
+    work_dir: "/path/to/wallet/data".to_string(),
     target_proof_count: Some(3), // or None for default
 };
+
+// Create wallet with mnemonic
 let wallet = Wallet::new(
     "https://mint.example.com".to_string(),
     CurrencyUnit::Sat,
-    seed,
+    mnemonic,
+    Some("optional_passphrase".to_string()), // or None for no passphrase
     config
 ).await?;
 

@@ -15,19 +15,19 @@ cdk = { workspace = true, features = ["wallet"] }
 cdk-common = { workspace = true }
 
 # UniFFI dependencies
-uniffi = { version = "0.28", features = ["cli"] }
+uniffi = { version = "0.29", features = ["cli"] }
 
 # Core dependencies
 rand = { workspace = true }
 url = { workspace = true }
 thiserror = { workspace = true }
+bip39 = { workspace = true }
 
 # Database storage for wallet
 cdk-sqlite = { workspace = true }
 
 
 [dev-dependencies]
-tokio-test = "0.4"
 
 [[bin]]
 name = "uniffi-bindgen"
