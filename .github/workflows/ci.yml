@@ -158,8 +158,6 @@ jobs:
             SQLITE,
           ]
     steps:
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
       - name: checkout
         uses: actions/checkout@v4
       - name: Install Nix
@@ -185,8 +183,6 @@ jobs:
           SQLITE,
           ]
     steps:
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
       - name: checkout
         uses: actions/checkout@v4
       - name: Install Nix
@@ -212,8 +208,6 @@ jobs:
           redb
           ]
     steps:
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
       - name: checkout
         uses: actions/checkout@v4
       - name: Install Nix
@@ -353,8 +347,6 @@ jobs:
           SQLITE,
           ]
     steps:
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
       - name: checkout
         uses: actions/checkout@v4
       - name: Install Nix
