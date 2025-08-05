@@ -165,6 +165,12 @@ pub struct Token {
     pub(crate) inner: cdk::nuts::Token,
 }
 
+impl std::fmt::Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.inner)
+    }
+}
+
 impl From<cdk::nuts::Token> for Token {
     fn from(token: cdk::nuts::Token) -> Self {
         Self { inner: token }
@@ -185,11 +191,6 @@ impl Token {
         let token = cdk::nuts::Token::from_str(&token_str)
             .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
         Ok(Token { inner: token })
-    }
-
-    /// Get the token as a string
-    pub fn to_string(&self) -> String {
-        self.inner.to_string()
     }
 
     /// Get the total value of the token
@@ -375,7 +376,7 @@ impl From<SendOptions> for cdk::wallet::SendOptions {
     fn from(opts: SendOptions) -> Self {
         cdk::wallet::SendOptions {
             memo: opts.memo.map(Into::into),
-            conditions: opts.conditions.map(|c| c.try_into().ok()).flatten(),
+            conditions: opts.conditions.and_then(|c| c.try_into().ok()),
             amount_split_target: opts.amount_split_target.into(),
             send_kind: opts.send_kind.into(),
             include_fee: opts.include_fee,

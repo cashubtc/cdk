@@ -14,7 +14,7 @@ fn main() {
 
     // Generate Python bindings
     let output = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--bin",
             "uniffi-bindgen",
@@ -40,7 +40,7 @@ fn main() {
 
     // Generate Swift bindings
     let output = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--bin",
             "uniffi-bindgen",
