@@ -4,6 +4,7 @@ use std::env;
 
 use crate::config::Auth;
 
+pub const ENV_AUTH_ENABLED: &str = "CDK_MINTD_AUTH_ENABLED";
 pub const ENV_AUTH_OPENID_DISCOVERY: &str = "CDK_MINTD_AUTH_OPENID_DISCOVERY";
 pub const ENV_AUTH_OPENID_CLIENT_ID: &str = "CDK_MINTD_AUTH_OPENID_CLIENT_ID";
 pub const ENV_AUTH_MINT_MAX_BAT: &str = "CDK_MINTD_AUTH_MINT_MAX_BAT";
@@ -19,6 +20,12 @@ pub const ENV_AUTH_CHECK_PROOF_STATE: &str = "CDK_MINTD_AUTH_CHECK_PROOF_STATE";
 
 impl Auth {
     pub fn from_env(mut self) -> Self {
+        if let Ok(enabled_str) = env::var(ENV_AUTH_ENABLED) {
+            if let Ok(enabled) = enabled_str.parse() {
+                self.auth_enabled = enabled;
+            }
+        }
+
         if let Ok(discovery) = env::var(ENV_AUTH_OPENID_DISCOVERY) {
             self.openid_discovery = discovery;
         }

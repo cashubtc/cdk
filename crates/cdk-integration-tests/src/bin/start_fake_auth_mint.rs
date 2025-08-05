@@ -69,6 +69,7 @@ async fn start_fake_auth_mint(
 
     // Enable authentication
     settings.auth = Some(cdk_mintd::config::Auth {
+        auth_enabled: true,
         openid_discovery,
         openid_client_id: "cashu-client".to_string(),
         mint_max_bat: 50,

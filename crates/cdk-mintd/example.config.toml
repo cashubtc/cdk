@@ -83,6 +83,8 @@ reserve_fee_min = 4
 # tls_dir = "/path/to/tls"
 
 # [auth]
+# Set to true to enable authentication features (defaults to false)
+# auth_enabled = false
 # openid_discovery = "http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration"
 # openid_client_id = "cashu-client"
 # mint_max_bat=50

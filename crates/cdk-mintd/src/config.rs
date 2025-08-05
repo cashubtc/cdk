@@ -232,6 +232,8 @@ impl std::str::FromStr for AuthType {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Auth {
+    #[serde(default)]
+    pub auth_enabled: bool,
     pub openid_discovery: String,
     pub openid_client_id: String,
     pub mint_max_bat: u64,
