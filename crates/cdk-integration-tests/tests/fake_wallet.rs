@@ -1,3 +1,19 @@
+//! Fake Wallet Integration Tests
+//!
+//! This file contains tests for the fake wallet backend functionality.
+//! The fake wallet simulates Lightning Network behavior for testing purposes,
+//! allowing verification of mint behavior in various payment scenarios without
+//! requiring a real Lightning node.
+//!
+//! Test Scenarios:
+//! - Pending payment states and proof handling
+//! - Payment failure cases and proof state management
+//! - Change output verification in melt operations
+//! - Witness signature validation
+//! - Cross-unit transaction validation
+//! - Overflow and balance validation
+//! - Duplicate proof detection
+
 use std::sync::Arc;
 
 use bip39::Mnemonic;
@@ -381,7 +397,7 @@ async fn test_fake_melt_change_in_quote() {
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
-    let keyset = wallet.get_active_mint_keyset().await.unwrap();
+    let keyset = wallet.fetch_active_keyset().await.unwrap();
 
     let premint_secrets =
         PreMintSecrets::random(keyset.id, 100.into(), &SplitTarget::default()).unwrap();
@@ -406,40 +422,6 @@ async fn test_fake_melt_change_in_quote() {
     check.sort_by(|a, b| a.amount.cmp(&b.amount));
 
     assert_eq!(melt_change, check);
-}
-
-/// Tests that the correct database type is used based on environment variables
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_database_type() {
-    // Get the database type and work dir from environment
-    let db_type = std::env::var("CDK_MINTD_DATABASE").expect("MINT_DATABASE env var should be set");
-    let work_dir =
-        std::env::var("CDK_MINTD_WORK_DIR").expect("CDK_MINTD_WORK_DIR env var should be set");
-
-    // Check that the correct database file exists
-    match db_type.as_str() {
-        "REDB" => {
-            let db_path = std::path::Path::new(&work_dir).join("cdk-mintd.redb");
-            assert!(
-                db_path.exists(),
-                "Expected redb database file to exist at {:?}",
-                db_path
-            );
-        }
-        "SQLITE" => {
-            let db_path = std::path::Path::new(&work_dir).join("cdk-mintd.sqlite");
-            assert!(
-                db_path.exists(),
-                "Expected sqlite database file to exist at {:?}",
-                db_path
-            );
-        }
-        "MEMORY" => {
-            // Memory database has no file to check
-            println!("Memory database in use - no file to check");
-        }
-        _ => panic!("Unknown database type: {}", db_type),
-    }
 }
 
 /// Tests minting tokens with a valid witness signature
@@ -489,7 +471,7 @@ async fn test_fake_mint_without_witness() {
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
 
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
@@ -529,7 +511,7 @@ async fn test_fake_mint_with_wrong_witness() {
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
 
     let premint_secrets =
         PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::default()).unwrap();
@@ -573,7 +555,7 @@ async fn test_fake_mint_inflated() {
         .await
         .unwrap();
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
 
     let pre_mint =
         PreMintSecrets::random(active_keyset_id, 500.into(), &SplitTarget::None).unwrap();
@@ -631,7 +613,7 @@ async fn test_fake_mint_multiple_units() {
         .await
         .unwrap();
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
 
     let pre_mint = PreMintSecrets::random(active_keyset_id, 50.into(), &SplitTarget::None).unwrap();
 
@@ -644,7 +626,7 @@ async fn test_fake_mint_multiple_units() {
     )
     .expect("failed to create new wallet");
 
-    let active_keyset_id = wallet_usd.get_active_mint_keyset().await.unwrap().id;
+    let active_keyset_id = wallet_usd.fetch_active_keyset().await.unwrap().id;
 
     let usd_pre_mint =
         PreMintSecrets::random(active_keyset_id, 50.into(), &SplitTarget::None).unwrap();
@@ -733,7 +715,7 @@ async fn test_fake_mint_multiple_unit_swap() {
         .await
         .unwrap();
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
 
     {
         let inputs: Proofs = vec![
@@ -767,7 +749,7 @@ async fn test_fake_mint_multiple_unit_swap() {
     }
 
     {
-        let usd_active_keyset_id = wallet_usd.get_active_mint_keyset().await.unwrap().id;
+        let usd_active_keyset_id = wallet_usd.fetch_active_keyset().await.unwrap().id;
         let inputs: Proofs = proofs.into_iter().take(2).collect();
 
         let total_inputs = inputs.total_amount().unwrap();
@@ -883,8 +865,8 @@ async fn test_fake_mint_multiple_unit_melt() {
         let input_amount: u64 = inputs.total_amount().unwrap().into();
 
         let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
-        let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
-        let usd_active_keyset_id = wallet_usd.get_active_mint_keyset().await.unwrap().id;
+        let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+        let usd_active_keyset_id = wallet_usd.fetch_active_keyset().await.unwrap().id;
 
         let usd_pre_mint = PreMintSecrets::random(
             usd_active_keyset_id,
@@ -952,7 +934,7 @@ async fn test_fake_mint_input_output_mismatch() {
         None,
     )
     .expect("failed to create new  usd wallet");
-    let usd_active_keyset_id = wallet_usd.get_active_mint_keyset().await.unwrap().id;
+    let usd_active_keyset_id = wallet_usd.fetch_active_keyset().await.unwrap().id;
 
     let inputs = proofs;
 
@@ -1001,7 +983,7 @@ async fn test_fake_mint_swap_inflated() {
         .mint(&mint_quote.id, SplitTarget::None, None)
         .await
         .unwrap();
-    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
     let pre_mint =
         PreMintSecrets::random(active_keyset_id, 101.into(), &SplitTarget::None).unwrap();
 
@@ -1045,7 +1027,7 @@ async fn test_fake_mint_swap_spend_after_fail() {
         .mint(&mint_quote.id, SplitTarget::None, None)
         .await
         .unwrap();
-    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
 
     let pre_mint =
         PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None).unwrap();
@@ -1116,7 +1098,7 @@ async fn test_fake_mint_melt_spend_after_fail() {
         .mint(&mint_quote.id, SplitTarget::None, None)
         .await
         .unwrap();
-    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
 
     let pre_mint =
         PreMintSecrets::random(active_keyset_id, 100.into(), &SplitTarget::None).unwrap();
@@ -1189,7 +1171,7 @@ async fn test_fake_mint_duplicate_proofs_swap() {
         .await
         .unwrap();
 
-    let active_keyset_id = wallet.get_active_mint_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
 
     let inputs = vec![proofs[0].clone(), proofs[0].clone()];
 

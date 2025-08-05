@@ -34,9 +34,9 @@ use crate::OidcClient;
 mod auth;
 mod balance;
 mod builder;
+mod issue;
 mod keysets;
 mod melt;
-mod mint;
 mod mint_connector;
 pub mod multi_mint_wallet;
 mod proofs;
@@ -268,8 +268,9 @@ impl Wallet {
                                 auth_wallet.protected_endpoints.write().await;
                             *protected_endpoints = mint_info.protected_endpoints();
 
-                            if let Some(oidc_client) =
-                                mint_info.openid_discovery().map(OidcClient::new)
+                            if let Some(oidc_client) = mint_info
+                                .openid_discovery()
+                                .map(|url| OidcClient::new(url, None))
                             {
                                 auth_wallet.set_oidc_client(Some(oidc_client)).await;
                             }
@@ -277,7 +278,9 @@ impl Wallet {
                         None => {
                             tracing::info!("Mint has auth enabled creating auth wallet");
 
-                            let oidc_client = mint_info.openid_discovery().map(OidcClient::new);
+                            let oidc_client = mint_info
+                                .openid_discovery()
+                                .map(|url| OidcClient::new(url, None));
                             let new_auth_wallet = AuthWallet::new(
                                 self.mint_url.clone(),
                                 None,
@@ -375,12 +378,12 @@ impl Wallet {
             self.get_mint_info().await?;
         }
 
-        let keysets = self.get_mint_keysets().await?;
+        let keysets = self.load_mint_keysets().await?;
 
         let mut restored_value = Amount::ZERO;
 
         for keyset in keysets {
-            let keys = self.get_keyset_keys(keyset.id).await?;
+            let keys = self.load_keyset_keys(keyset.id).await?;
             let mut empty_batch = 0;
             let mut start_counter = 0;
 
@@ -474,7 +477,7 @@ impl Wallet {
     /// Can be used to allow a wallet to accept payments offline while reducing
     /// the risk of claiming back to the limits let by the spending_conditions
     #[instrument(skip(self, token))]
-    pub fn verify_token_p2pk(
+    pub async fn verify_token_p2pk(
         &self,
         token: &Token,
         spending_conditions: SpendingConditions,
@@ -526,8 +529,10 @@ impl Wallet {
                 token.mint_url()?
             )));
         }
+        // We need the keysets information to properly convert from token proof to proof
+        let keysets_info = self.load_mint_keysets().await?;
+        let proofs = token.proofs(&keysets_info)?;
 
-        let proofs = token.proofs();
         for proof in proofs {
             let secret: nut10::Secret = (&proof.secret).try_into()?;
 
@@ -620,12 +625,14 @@ impl Wallet {
         //     )));
         // }
 
-        let proofs = token.proofs();
+        // We need the keysets information to properly convert from token proof to proof
+        let keysets_info = self.load_mint_keysets().await?;
+        let proofs = token.proofs(&keysets_info)?;
         for proof in proofs {
             let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
                 Some(keys) => keys.amount_key(proof.amount),
                 None => {
-                    let keys = self.get_keyset_keys(proof.keyset_id).await?;
+                    let keys = self.load_keyset_keys(proof.keyset_id).await?;
 
                     let key = keys.amount_key(proof.amount);
                     keys_cache.insert(proof.keyset_id, keys);

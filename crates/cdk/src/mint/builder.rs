@@ -3,13 +3,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::anyhow;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{self, MintDatabase, MintKeysDatabase};
 use cdk_common::error::Error;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::Bolt11Settings;
+#[cfg(feature = "auth")]
 use cdk_common::{nut21, nut22};
 use cdk_signatory::signatory::Signatory;
 
@@ -19,103 +19,92 @@ use super::nut19::{self, CachedEndpoint};
 use super::MintAuthDatabase;
 use super::Nuts;
 use crate::amount::Amount;
-#[cfg(feature = "auth")]
 use crate::cdk_database;
 use crate::cdk_payment::{self, MintPayment};
 use crate::mint::Mint;
+#[cfg(feature = "auth")]
+use crate::nuts::ProtectedEndpoint;
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
     MppMethodSettings, PaymentMethod,
 };
 use crate::types::PaymentProcessorKey;
 
-/// Cashu Mint
-#[derive(Default)]
+/// Cashu Mint Builder
 pub struct MintBuilder {
-    /// Mint Info
-    pub mint_info: MintInfo,
-    /// Mint Storage backend
-    pub localstore: Option<Arc<dyn MintDatabase<database::Error> + Send + Sync>>,
-    /// Database for the Signatory
-    keystore: Option<Arc<dyn MintKeysDatabase<Err = database::Error> + Send + Sync>>,
-    /// Mint Storage backend
+    mint_info: MintInfo,
+    localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
     #[cfg(feature = "auth")]
     auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>>,
-    /// Ln backends for mint
-    ln: Option<
+    payment_processors:
         HashMap<PaymentProcessorKey, Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>>,
-    >,
-    seed: Option<Vec<u8>>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
-    // protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
-    openid_discovery: Option<String>,
-    signatory: Option<Arc<dyn Signatory + Sync + Send + 'static>>,
 }
 
 impl MintBuilder {
-    /// New mint builder
-    pub fn new() -> MintBuilder {
-        let mut builder = MintBuilder::default();
+    /// New [`MintBuilder`]
+    pub fn new(localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>) -> MintBuilder {
+        let mint_info = MintInfo {
+            nuts: Nuts::new()
+                .nut07(true)
+                .nut08(true)
+                .nut09(true)
+                .nut10(true)
+                .nut11(true)
+                .nut12(true)
+                .nut20(true),
+            ..Default::default()
+        };
 
-        let nuts = Nuts::new()
-            .nut07(true)
-            .nut08(true)
-            .nut09(true)
-            .nut10(true)
-            .nut11(true)
-            .nut12(true)
-            .nut14(true)
-            .nut20(true);
-
-        builder.mint_info.nuts = nuts;
-
-        builder
+        MintBuilder {
+            mint_info,
+            localstore,
+            #[cfg(feature = "auth")]
+            auth_localstore: None,
+            payment_processors: HashMap::new(),
+            supported_units: HashMap::new(),
+            custom_paths: HashMap::new(),
+        }
     }
 
-    /// Set signatory service
-    pub fn with_signatory(mut self, signatory: Arc<dyn Signatory + Sync + Send + 'static>) -> Self {
-        self.signatory = Some(signatory);
-        self
-    }
-
-    /// Set seed
-    pub fn with_seed(mut self, seed: Vec<u8>) -> Self {
-        self.seed = Some(seed);
-        self
-    }
-
-    /// Set localstore
-    pub fn with_localstore(
-        mut self,
-        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
-    ) -> MintBuilder {
-        self.localstore = Some(localstore);
-        self
-    }
-
-    /// Set keystore database
-    pub fn with_keystore(
-        mut self,
-        keystore: Arc<dyn MintKeysDatabase<Err = database::Error> + Send + Sync>,
-    ) -> MintBuilder {
-        self.keystore = Some(keystore);
-        self
-    }
-
-    /// Set auth localstore
+    /// Set clear auth settings
     #[cfg(feature = "auth")]
-    pub fn with_auth_localstore(
+    pub fn with_auth(
         mut self,
-        localstore: Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>,
-    ) -> MintBuilder {
-        self.auth_localstore = Some(localstore);
+        auth_localstore: Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>,
+        openid_discovery: String,
+        client_id: String,
+        protected_endpoints: Vec<ProtectedEndpoint>,
+    ) -> Self {
+        self.auth_localstore = Some(auth_localstore);
+        self.mint_info.nuts.nut21 = Some(nut21::Settings::new(
+            openid_discovery,
+            client_id,
+            protected_endpoints,
+        ));
         self
     }
 
-    /// Set Openid discovery url
-    pub fn with_openid_discovery(mut self, openid_discovery: String) -> Self {
-        self.openid_discovery = Some(openid_discovery);
+    /// Set blind auth settings
+    #[cfg(feature = "auth")]
+    pub fn with_blind_auth(
+        mut self,
+        bat_max_mint: u64,
+        protected_endpoints: Vec<ProtectedEndpoint>,
+    ) -> Self {
+        let mut nuts = self.mint_info.nuts;
+
+        nuts.nut22 = Some(nut22::Settings::new(bat_max_mint, protected_endpoints));
+
+        self.mint_info.nuts = nuts;
+
+        self
+    }
+
+    /// Set mint info
+    pub fn with_mint_info(mut self, mint_info: MintInfo) -> Self {
+        self.mint_info = mint_info;
         self
     }
 
@@ -168,32 +157,68 @@ impl MintBuilder {
     }
 
     /// Set contact info
-    pub fn add_contact_info(mut self, contact_info: ContactInfo) -> Self {
+    pub fn with_contact_info(mut self, contact_info: ContactInfo) -> Self {
         let mut contacts = self.mint_info.contact.clone().unwrap_or_default();
         contacts.push(contact_info);
         self.mint_info.contact = Some(contacts);
         self
     }
 
-    /// Add ln backend
-    pub async fn add_ln_backend(
+    /// Set pubkey
+    pub fn with_pubkey(mut self, pubkey: crate::nuts::PublicKey) -> Self {
+        self.mint_info.pubkey = Some(pubkey);
+
+        self
+    }
+
+    /// Support websockets
+    pub fn with_supported_websockets(mut self, supported_method: SupportedMethods) -> Self {
+        let mut supported_settings = self.mint_info.nuts.nut17.supported.clone();
+
+        if !supported_settings.contains(&supported_method) {
+            supported_settings.push(supported_method);
+
+            self.mint_info.nuts = self.mint_info.nuts.nut17(supported_settings);
+        }
+
+        self
+    }
+
+    /// Add support for NUT19
+    pub fn with_cache(mut self, ttl: Option<u64>, cached_endpoints: Vec<CachedEndpoint>) -> Self {
+        let nut19_settings = nut19::Settings {
+            ttl,
+            cached_endpoints,
+        };
+
+        self.mint_info.nuts.nut19 = nut19_settings;
+
+        self
+    }
+
+    /// Set custom derivation paths for mint units
+    pub fn with_custom_derivation_paths(
         mut self,
+        custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+    ) -> Self {
+        self.custom_paths = custom_paths;
+        self
+    }
+
+    /// Add payment processor
+    pub async fn add_payment_processor(
+        &mut self,
         unit: CurrencyUnit,
         method: PaymentMethod,
         limits: MintMeltLimits,
-        ln_backend: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
-    ) -> Result<Self, Error> {
-        let ln_key = PaymentProcessorKey {
+        payment_processor: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+    ) -> Result<(), Error> {
+        let key = PaymentProcessorKey {
             unit: unit.clone(),
             method: method.clone(),
         };
 
-        tracing::debug!("Adding ln backed for {}, {}", unit, method);
-        tracing::debug!("with limits {:?}", limits);
-
-        let mut ln = self.ln.unwrap_or_default();
-
-        let settings = ln_backend.get_settings().await?;
+        let settings = payment_processor.get_settings().await?;
 
         let settings: Bolt11Settings = settings.try_into()?;
 
@@ -210,118 +235,44 @@ impl MintBuilder {
             self.mint_info.nuts.nut15 = mpp;
         }
 
-        if method == PaymentMethod::Bolt11 {
-            let mint_method_settings = MintMethodSettings {
-                method: method.clone(),
-                unit: unit.clone(),
-                min_amount: Some(limits.mint_min),
-                max_amount: Some(limits.mint_max),
-                options: Some(MintMethodOptions::Bolt11 {
-                    description: settings.invoice_description,
-                }),
-            };
+        let mint_method_settings = MintMethodSettings {
+            method: method.clone(),
+            unit: unit.clone(),
+            min_amount: Some(limits.mint_min),
+            max_amount: Some(limits.mint_max),
+            options: Some(MintMethodOptions::Bolt11 {
+                description: settings.invoice_description,
+            }),
+        };
 
-            self.mint_info.nuts.nut04.methods.push(mint_method_settings);
-            self.mint_info.nuts.nut04.disabled = false;
+        self.mint_info.nuts.nut04.methods.push(mint_method_settings);
+        self.mint_info.nuts.nut04.disabled = false;
 
-            let melt_method_settings = MeltMethodSettings {
-                method,
-                unit,
-                min_amount: Some(limits.melt_min),
-                max_amount: Some(limits.melt_max),
-                options: Some(MeltMethodOptions::Bolt11 {
-                    amountless: settings.amountless,
-                }),
-            };
-            self.mint_info.nuts.nut05.methods.push(melt_method_settings);
-            self.mint_info.nuts.nut05.disabled = false;
-        }
-
-        ln.insert(ln_key.clone(), ln_backend);
+        let melt_method_settings = MeltMethodSettings {
+            method,
+            unit,
+            min_amount: Some(limits.melt_min),
+            max_amount: Some(limits.melt_max),
+            options: Some(MeltMethodOptions::Bolt11 {
+                amountless: settings.amountless,
+            }),
+        };
+        self.mint_info.nuts.nut05.methods.push(melt_method_settings);
+        self.mint_info.nuts.nut05.disabled = false;
 
         let mut supported_units = self.supported_units.clone();
 
-        supported_units.insert(ln_key.unit, (0, 32));
+        supported_units.insert(key.unit.clone(), (0, 32));
         self.supported_units = supported_units;
 
-        self.ln = Some(ln);
-
-        Ok(self)
-    }
-
-    /// Set pubkey
-    pub fn with_pubkey(mut self, pubkey: crate::nuts::PublicKey) -> Self {
-        self.mint_info.pubkey = Some(pubkey);
-
-        self
-    }
-
-    /// Support websockets
-    pub fn add_supported_websockets(mut self, supported_method: SupportedMethods) -> Self {
-        let mut supported_settings = self.mint_info.nuts.nut17.supported.clone();
-
-        if !supported_settings.contains(&supported_method) {
-            supported_settings.push(supported_method);
-
-            self.mint_info.nuts = self.mint_info.nuts.nut17(supported_settings);
-        }
-
-        self
-    }
-
-    /// Add support for NUT19
-    pub fn add_cache(mut self, ttl: Option<u64>, cached_endpoints: Vec<CachedEndpoint>) -> Self {
-        let nut19_settings = nut19::Settings {
-            ttl,
-            cached_endpoints,
-        };
-
-        self.mint_info.nuts.nut19 = nut19_settings;
-
-        self
-    }
-
-    /// Set custom derivation paths for mint units
-    pub fn add_custom_derivation_paths(
-        mut self,
-        custom_paths: HashMap<CurrencyUnit, DerivationPath>,
-    ) -> Self {
-        self.custom_paths = custom_paths;
-        self
-    }
-
-    /// Set clear auth settings
-    pub fn set_clear_auth_settings(mut self, openid_discovery: String, client_id: String) -> Self {
-        let mut nuts = self.mint_info.nuts;
-
-        nuts.nut21 = Some(nut21::Settings::new(
-            openid_discovery.clone(),
-            client_id,
-            vec![],
-        ));
-
-        self.openid_discovery = Some(openid_discovery);
-
-        self.mint_info.nuts = nuts;
-
-        self
-    }
-
-    /// Set blind auth settings
-    pub fn set_blind_auth_settings(mut self, bat_max_mint: u64) -> Self {
-        let mut nuts = self.mint_info.nuts;
-
-        nuts.nut22 = Some(nut22::Settings::new(bat_max_mint, vec![]));
-
-        self.mint_info.nuts = nuts;
-
-        self
+        self.payment_processors.insert(key, payment_processor);
+        Ok(())
     }
 
     /// Sets the input fee ppk for a given unit
     ///
     /// The unit **MUST** already have been added with a ln backend
-    pub fn set_unit_fee(mut self, unit: &CurrencyUnit, input_fee_ppk: u64) -> Result<Self, Error> {
+    pub fn set_unit_fee(&mut self, unit: &CurrencyUnit, input_fee_ppk: u64) -> Result<(), Error> {
         let (input_fee, _max_order) = self
             .supported_units
             .get_mut(unit)
@@ -329,59 +280,53 @@ impl MintBuilder {
 
         *input_fee = input_fee_ppk;
 
-        Ok(self)
+        Ok(())
     }
 
-    /// Build mint
-    pub async fn build(&self) -> anyhow::Result<Mint> {
-        let localstore = self
-            .localstore
-            .clone()
-            .ok_or(anyhow!("Localstore not set"))?;
-        let ln = self.ln.clone().ok_or(anyhow!("Ln backends not set"))?;
-
-        let signatory = if let Some(signatory) = self.signatory.as_ref() {
-            signatory.clone()
-        } else {
-            let seed = self.seed.as_ref().ok_or(anyhow!("Mint seed not set"))?;
-            let in_memory_signatory = cdk_signatory::db_signatory::DbSignatory::new(
-                self.keystore.clone().ok_or(anyhow!("keystore not set"))?,
-                seed,
-                self.supported_units.clone(),
-                HashMap::new(),
-            )
-            .await?;
-
-            Arc::new(cdk_signatory::embedded::Service::new(Arc::new(
-                in_memory_signatory,
-            )))
-        };
-
+    /// Build the mint with the provided signatory
+    pub async fn build_with_signatory(
+        self,
+        signatory: Arc<dyn Signatory + Send + Sync>,
+    ) -> Result<Mint, Error> {
         #[cfg(feature = "auth")]
-        if let Some(openid_discovery) = &self.openid_discovery {
-            let auth_localstore = self
-                .auth_localstore
-                .clone()
-                .ok_or(anyhow!("Auth localstore not set"))?;
-
-            return Ok(Mint::new_with_auth(
+        if let Some(auth_localstore) = self.auth_localstore {
+            return Mint::new_with_auth(
+                self.mint_info,
                 signatory,
-                localstore,
+                self.localstore,
                 auth_localstore,
-                ln,
-                openid_discovery.clone(),
+                self.payment_processors,
             )
-            .await?);
+            .await;
         }
+        Mint::new(
+            self.mint_info,
+            signatory,
+            self.localstore,
+            self.payment_processors,
+        )
+        .await
+    }
 
-        #[cfg(not(feature = "auth"))]
-        if self.openid_discovery.is_some() {
-            return Err(anyhow!(
-                "OpenID discovery URL provided but auth feature is not enabled"
-            ));
-        }
+    /// Build the mint with the provided keystore and seed
+    pub async fn build_with_seed(
+        self,
+        keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
+        seed: &[u8],
+    ) -> Result<Mint, Error> {
+        let in_memory_signatory = cdk_signatory::db_signatory::DbSignatory::new(
+            keystore,
+            seed,
+            self.supported_units.clone(),
+            HashMap::new(),
+        )
+        .await?;
 
-        Ok(Mint::new(signatory, localstore, ln).await?)
+        let signatory = Arc::new(cdk_signatory::embedded::Service::new(Arc::new(
+            in_memory_signatory,
+        )));
+
+        self.build_with_signatory(signatory).await
     }
 }
 

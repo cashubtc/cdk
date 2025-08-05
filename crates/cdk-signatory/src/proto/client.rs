@@ -36,6 +36,11 @@ pub enum ClientError {
 impl SignatoryRpcClient {
     /// Create a new RemoteSigner from a tonic transport channel.
     pub async fn new<A: AsRef<Path>>(url: String, tls_dir: Option<A>) -> Result<Self, ClientError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
+
         let channel = if let Some(tls_dir) = tls_dir {
             let tls_dir = tls_dir.as_ref();
             let server_root_ca_cert = std::fs::read_to_string(tls_dir.join("ca.pem"))?;

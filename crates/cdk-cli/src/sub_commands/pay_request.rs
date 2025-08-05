@@ -91,7 +91,19 @@ pub async fn pay_request(
             },
         )
         .await?;
-    let proofs = matching_wallet.send(prepared_send, None).await?.proofs();
+
+    let token = prepared_send.confirm(None).await?;
+
+    // We need the keysets information to properly convert from token proof to proof
+    let keysets_info = match matching_wallet
+        .localstore
+        .get_mint_keysets(token.mint_url()?)
+        .await?
+    {
+        Some(keysets_info) => keysets_info,
+        None => matching_wallet.load_mint_keysets().await?, // Hit the keysets endpoint if we don't have the keysets for this Mint
+    };
+    let proofs = token.proofs(&keysets_info)?;
 
     if let Some(transport) = transport {
         let payload = PaymentRequestPayload {

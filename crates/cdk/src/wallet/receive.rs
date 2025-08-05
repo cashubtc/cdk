@@ -38,11 +38,11 @@ impl Wallet {
             self.get_mint_info().await?;
         }
 
-        let _ = self.get_active_mint_keyset().await?;
+        let _ = self.fetch_active_keyset().await?;
 
-        let active_keyset_id = self.get_active_mint_keyset().await?.id;
+        let active_keyset_id = self.fetch_active_keyset().await?.id;
 
-        let keys = self.get_keyset_keys(active_keyset_id).await?;
+        let keys = self.load_keyset_keys(active_keyset_id).await?;
 
         let mut proofs = proofs;
 
@@ -70,7 +70,7 @@ impl Wallet {
         for proof in &mut proofs {
             // Verify that proof DLEQ is valid
             if proof.dleq.is_some() {
-                let keys = self.get_keyset_keys(proof.keyset_id).await?;
+                let keys = self.load_keyset_keys(proof.keyset_id).await?;
                 let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
                 proof.verify_dleq(key)?;
             }
@@ -219,7 +219,8 @@ impl Wallet {
 
         ensure_cdk!(unit == self.unit, Error::UnsupportedUnit);
 
-        let proofs = token.proofs();
+        let keysets_info = self.load_mint_keysets().await?;
+        let proofs = token.proofs(&keysets_info)?;
 
         if let Token::TokenV3(token) = &token {
             ensure_cdk!(!token.is_multi_mint(), Error::MultiMintTokenNotSupported);

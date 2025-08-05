@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::util::hex;
-use cashu::{nut00, Proofs, PublicKey};
+use cashu::{nut00, PaymentMethod, Proofs, PublicKey};
 use serde::{Deserialize, Serialize};
 
 use crate::mint_url::MintUrl;
@@ -42,8 +42,11 @@ pub struct MintQuote {
     pub id: String,
     /// Mint Url
     pub mint_url: MintUrl,
+    /// Payment method
+    #[serde(default)]
+    pub payment_method: PaymentMethod,
     /// Amount of quote
-    pub amount: Amount,
+    pub amount: Option<Amount>,
     /// Unit of quote
     pub unit: CurrencyUnit,
     /// Quote payment request e.g. bolt11
@@ -54,6 +57,12 @@ pub struct MintQuote {
     pub expiry: u64,
     /// Secretkey for signing mint quotes [NUT-20]
     pub secret_key: Option<SecretKey>,
+    /// Amount minted
+    #[serde(default)]
+    pub amount_issued: Amount,
+    /// Amount paid to the mint for the quote
+    #[serde(default)]
+    pub amount_paid: Amount,
 }
 
 /// Melt Quote Info
@@ -75,6 +84,62 @@ pub struct MeltQuote {
     pub expiry: u64,
     /// Payment preimage
     pub payment_preimage: Option<String>,
+}
+
+impl MintQuote {
+    /// Create a new MintQuote
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: String,
+        mint_url: MintUrl,
+        payment_method: PaymentMethod,
+        amount: Option<Amount>,
+        unit: CurrencyUnit,
+        request: String,
+        expiry: u64,
+        secret_key: Option<SecretKey>,
+    ) -> Self {
+        Self {
+            id,
+            mint_url,
+            payment_method,
+            amount,
+            unit,
+            request,
+            state: MintQuoteState::Unpaid,
+            expiry,
+            secret_key,
+            amount_issued: Amount::ZERO,
+            amount_paid: Amount::ZERO,
+        }
+    }
+
+    /// Calculate the total amount including any fees
+    pub fn total_amount(&self) -> Amount {
+        self.amount_paid
+    }
+
+    /// Check if the quote has expired
+    pub fn is_expired(&self, current_time: u64) -> bool {
+        current_time > self.expiry
+    }
+
+    /// Amount that can be minted
+    pub fn amount_mintable(&self) -> Amount {
+        if self.amount_issued > self.amount_paid {
+            return Amount::ZERO;
+        }
+
+        let difference = self.amount_paid - self.amount_issued;
+
+        if difference == Amount::ZERO && self.state != MintQuoteState::Issued {
+            if let Some(amount) = self.amount {
+                return amount;
+            }
+        }
+
+        difference
+    }
 }
 
 /// Send Kind
@@ -245,6 +310,9 @@ impl TransactionId {
     /// From hex string
     pub fn from_hex(value: &str) -> Result<Self, Error> {
         let bytes = hex::decode(value)?;
+        if bytes.len() != 32 {
+            return Err(Error::InvalidTransactionId);
+        }
         let mut array = [0u8; 32];
         array.copy_from_slice(&bytes);
         Ok(Self(array))
@@ -290,5 +358,31 @@ impl TryFrom<Proofs> for TransactionId {
 
     fn try_from(proofs: Proofs) -> Result<Self, Self::Error> {
         Self::from_proofs(proofs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_transaction_id_from_hex() {
+        let hex_str = "a1b2c3d4e5f60718293a0b1c2d3e4f506172839a0b1c2d3e4f506172839a0b1c";
+        let transaction_id = TransactionId::from_hex(hex_str).unwrap();
+        assert_eq!(transaction_id.to_string(), hex_str);
+    }
+
+    #[test]
+    fn test_transaction_id_from_hex_empty_string() {
+        let hex_str = "";
+        let res = TransactionId::from_hex(hex_str);
+        assert!(matches!(res, Err(Error::InvalidTransactionId)));
+    }
+
+    #[test]
+    fn test_transaction_id_from_hex_longer_string() {
+        let hex_str = "a1b2c3d4e5f60718293a0b1c2d3e4f506172839a0b1c2d3e4f506172839a0b1ca1b2";
+        let res = TransactionId::from_hex(hex_str);
+        assert!(matches!(res, Err(Error::InvalidTransactionId)));
     }
 }

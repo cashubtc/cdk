@@ -32,7 +32,7 @@ impl CachedEndpoint {
 }
 
 /// HTTP method
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum Method {
@@ -43,7 +43,7 @@ pub enum Method {
 }
 
 /// Route path
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum Path {
     /// Bolt11 Mint
@@ -55,4 +55,10 @@ pub enum Path {
     /// Swap
     #[serde(rename = "/v1/swap")]
     Swap,
+    /// Bolt12 Mint
+    #[serde(rename = "/v1/mint/bolt12")]
+    MintBolt12,
+    /// Bolt12 Melt
+    #[serde(rename = "/v1/melt/bolt12")]
+    MeltBolt12,
 }

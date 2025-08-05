@@ -1,46 +1,108 @@
-use std::str::FromStr;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Duration;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{Error, Pool, Sqlite};
+use cdk_sql_common::pool::{self, Pool, ResourceManager};
+use cdk_sql_common::value::Value;
+use rusqlite::Connection;
 
-#[inline(always)]
-pub async fn create_sqlite_pool(
-    path: &str,
-    #[cfg(feature = "sqlcipher")] password: String,
-) -> Result<Pool<Sqlite>, Error> {
-    let db_options = SqliteConnectOptions::from_str(path)?
-        .busy_timeout(Duration::from_secs(10))
-        .read_only(false)
-        .pragma("busy_timeout", "5000")
-        .pragma("journal_mode", "wal")
-        .pragma("synchronous", "normal")
-        .pragma("temp_store", "memory")
-        .pragma("mmap_size", "30000000000")
-        .shared_cache(true)
-        .create_if_missing(true);
+/// The config need to create a new SQLite connection
+#[derive(Clone, Debug)]
+pub struct Config {
+    path: Option<String>,
+    password: Option<String>,
+}
 
-    #[cfg(feature = "sqlcipher")]
-    let db_options = db_options.pragma("key", password);
+/// Sqlite connection manager
+#[derive(Debug)]
+pub struct SqliteConnectionManager;
 
-    let is_memory = path.contains(":memory:");
+impl ResourceManager for SqliteConnectionManager {
+    type Config = Config;
 
-    let options = SqlitePoolOptions::new()
-        .min_connections(1)
-        .max_connections(1);
+    type Resource = Connection;
 
-    let pool = if is_memory {
-        // Make sure that the connection is not closed after the first query, or any query, as long
-        // as the pool is not dropped
-        options
-            .idle_timeout(None)
-            .max_lifetime(None)
-            .test_before_acquire(false)
-    } else {
-        options
+    type Error = rusqlite::Error;
+
+    fn new_resource(
+        config: &Self::Config,
+        _stale: Arc<AtomicBool>,
+        _timeout: Duration,
+    ) -> Result<Self::Resource, pool::Error<Self::Error>> {
+        let conn = if let Some(path) = config.path.as_ref() {
+            Connection::open(path)?
+        } else {
+            Connection::open_in_memory()?
+        };
+
+        if let Some(password) = config.password.as_ref() {
+            conn.execute_batch(&format!("pragma key = '{password}';"))?;
+        }
+
+        conn.execute_batch(
+            r#"
+            pragma busy_timeout = 10000;
+            pragma journal_mode = WAL;
+            pragma synchronous = normal;
+            pragma temp_store = memory;
+            pragma mmap_size = 30000000000;
+            pragma cache = shared;
+            "#,
+        )?;
+
+        conn.busy_timeout(Duration::from_secs(10))?;
+
+        Ok(conn)
     }
-    .connect_with(db_options)
-    .await?;
+}
 
-    Ok(pool)
+/// Create a configured rusqlite connection to a SQLite database.
+/// For SQLCipher support, enable the "sqlcipher" feature and pass a password.
+pub fn create_sqlite_pool(
+    path: &str,
+    password: Option<String>,
+) -> Arc<Pool<SqliteConnectionManager>> {
+    let (config, max_size) = if path.contains(":memory:") {
+        (
+            Config {
+                path: None,
+                password,
+            },
+            1,
+        )
+    } else {
+        (
+            Config {
+                path: Some(path.to_owned()),
+                password,
+            },
+            20,
+        )
+    };
+
+    Pool::new(config, max_size, Duration::from_secs(10))
+}
+
+/// Convert cdk_sql_common::value::Value to rusqlite Value
+#[inline(always)]
+pub fn to_sqlite(v: Value) -> rusqlite::types::Value {
+    match v {
+        Value::Blob(blob) => rusqlite::types::Value::Blob(blob),
+        Value::Integer(i) => rusqlite::types::Value::Integer(i),
+        Value::Null => rusqlite::types::Value::Null,
+        Value::Text(t) => rusqlite::types::Value::Text(t),
+        Value::Real(r) => rusqlite::types::Value::Real(r),
+    }
+}
+
+/// Convert from rusqlite Valute to cdk_sql_common::value::Value
+#[inline(always)]
+pub fn from_sqlite(v: rusqlite::types::Value) -> Value {
+    match v {
+        rusqlite::types::Value::Blob(blob) => Value::Blob(blob),
+        rusqlite::types::Value::Integer(i) => Value::Integer(i),
+        rusqlite::types::Value::Null => Value::Null,
+        rusqlite::types::Value::Text(t) => Value::Text(t),
+        rusqlite::types::Value::Real(r) => Value::Real(r),
+    }
 }

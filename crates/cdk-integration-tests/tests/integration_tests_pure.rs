@@ -3,6 +3,11 @@
 //! These tests verify the interaction between mint and wallet components, simulating real-world usage scenarios.
 //! They test the complete flow of operations including wallet funding, token swapping, sending tokens between wallets,
 //! and other operations that require client-mint interaction.
+//!
+//! Test Environment:
+//! - Uses pure in-memory mint instances for fast execution
+//! - Tests run concurrently with multi-threaded tokio runtime
+//! - No external dependencies (Lightning nodes, databases) required
 
 use std::assert_eq;
 use std::collections::{HashMap, HashSet};
@@ -70,17 +75,15 @@ async fn test_swap_to_send() {
                 .expect("Failed to get ys")
         )
     );
-    let token = wallet_alice
-        .send(
-            prepared_send,
-            Some(SendMemo::for_token("test_swapt_to_send")),
-        )
+    let token = prepared_send
+        .confirm(Some(SendMemo::for_token("test_swapt_to_send")))
         .await
         .expect("Failed to send token");
+    let keysets_info = wallet_alice.get_mint_keysets().await.unwrap();
+    let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
         Amount::from(40),
-        token
-            .proofs()
+        token_proofs
             .total_amount()
             .expect("Failed to get total amount")
     );
@@ -92,7 +95,7 @@ async fn test_swap_to_send() {
             .expect("Failed to get balance")
     );
     assert_eq!(
-        HashSet::<_, RandomState>::from_iter(token.proofs().ys().expect("Failed to get ys")),
+        HashSet::<_, RandomState>::from_iter(token_proofs.ys().expect("Failed to get ys")),
         HashSet::from_iter(
             wallet_alice
                 .get_pending_spent_proofs()
@@ -103,7 +106,8 @@ async fn test_swap_to_send() {
         )
     );
 
-    let transaction_id = TransactionId::from_proofs(token.proofs()).expect("Failed to get tx id");
+    let transaction_id =
+        TransactionId::from_proofs(token_proofs.clone()).expect("Failed to get tx id");
 
     let transaction = wallet_alice
         .get_transaction(transaction_id)
@@ -115,7 +119,7 @@ async fn test_swap_to_send() {
     assert_eq!(Amount::from(40), transaction.amount);
     assert_eq!(Amount::from(0), transaction.fee);
     assert_eq!(CurrencyUnit::Sat, transaction.unit);
-    assert_eq!(token.proofs().ys().unwrap(), transaction.ys);
+    assert_eq!(token_proofs.ys().unwrap(), transaction.ys);
 
     // Alice sends cashu, Carol receives
     let wallet_carol = create_test_wallet_for_mint(mint_bob.clone())
@@ -123,7 +127,7 @@ async fn test_swap_to_send() {
         .expect("Failed to create Carol's wallet");
     let received_amount = wallet_carol
         .receive_proofs(
-            token.proofs(),
+            token_proofs.clone(),
             ReceiveOptions::default(),
             token.memo().clone(),
         )
@@ -149,7 +153,7 @@ async fn test_swap_to_send() {
     assert_eq!(Amount::from(40), transaction.amount);
     assert_eq!(Amount::from(0), transaction.fee);
     assert_eq!(CurrencyUnit::Sat, transaction.unit);
-    assert_eq!(token.proofs().ys().unwrap(), transaction.ys);
+    assert_eq!(token_proofs.ys().unwrap(), transaction.ys);
     assert_eq!(token.memo().clone(), transaction.memo);
 }
 
@@ -237,8 +241,8 @@ async fn test_mint_double_spend() {
         .await
         .expect("Could not get proofs");
 
-    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
-    let keyset_id = Id::from(&keys);
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
+    let keyset_id = keys.id;
 
     let preswap = PreMintSecrets::random(
         keyset_id,
@@ -294,8 +298,8 @@ async fn test_attempt_to_swap_by_overflowing() {
 
     let amount = 2_u64.pow(63);
 
-    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
-    let keyset_id = Id::from(&keys);
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
+    let keyset_id = keys.id;
 
     let pre_mint_amount =
         PreMintSecrets::random(keyset_id, amount.into(), &SplitTarget::default()).unwrap();
@@ -441,7 +445,7 @@ pub async fn test_p2pk_swap() {
         .collect();
 
     let mut listener = mint_bob
-        .pubsub_manager
+        .pubsub_manager()
         .try_subscribe::<IndexableParams>(
             Params {
                 kind: cdk::nuts::nut17::Kind::ProofState,
@@ -532,7 +536,7 @@ async fn test_swap_overpay_underpay_fee() {
         .expect("Could not get proofs");
 
     let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
-    let keyset_id = Id::from(&keys);
+    let keyset_id = Id::v1_from_keys(&keys);
 
     let preswap = PreMintSecrets::random(keyset_id, 9998.into(), &SplitTarget::default()).unwrap();
 
@@ -597,8 +601,8 @@ async fn test_mint_enforce_fee() {
         .await
         .expect("Could not get proofs");
 
-    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
-    let keyset_id = Id::from(&keys);
+    let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
+    let keyset_id = keys.id;
 
     let five_proofs: Vec<_> = proofs.drain(..5).collect();
 
@@ -771,7 +775,7 @@ async fn test_concurrent_double_spend_swap() {
 
     // Verify that all proofs are marked as spent in the mint
     let states = mint_bob
-        .localstore
+        .localstore()
         .get_proofs_states(&proofs.iter().map(|p| p.y().unwrap()).collect::<Vec<_>>())
         .await
         .expect("Failed to get proof state");
@@ -830,11 +834,11 @@ async fn test_concurrent_double_spend_melt() {
     let melt_request3 = melt_request.clone();
 
     // Spawn 3 concurrent tasks to process the melt requests
-    let task1 = tokio::spawn(async move { mint_clone1.melt_bolt11(&melt_request).await });
+    let task1 = tokio::spawn(async move { mint_clone1.melt(&melt_request).await });
 
-    let task2 = tokio::spawn(async move { mint_clone2.melt_bolt11(&melt_request2).await });
+    let task2 = tokio::spawn(async move { mint_clone2.melt(&melt_request2).await });
 
-    let task3 = tokio::spawn(async move { mint_clone3.melt_bolt11(&melt_request3).await });
+    let task3 = tokio::spawn(async move { mint_clone3.melt(&melt_request3).await });
 
     // Wait for all tasks to complete
     let results = tokio::try_join!(task1, task2, task3).expect("Tasks failed to complete");
@@ -868,7 +872,7 @@ async fn test_concurrent_double_spend_melt() {
 
     // Verify that all proofs are marked as spent in the mint
     let states = mint_bob
-        .localstore
+        .localstore()
         .get_proofs_states(&proofs.iter().map(|p| p.y().unwrap()).collect::<Vec<_>>())
         .await
         .expect("Failed to get proof state");
@@ -884,6 +888,8 @@ async fn test_concurrent_double_spend_melt() {
 }
 
 async fn get_keyset_id(mint: &Mint) -> Id {
-    let keys = mint.pubkeys().keysets.first().unwrap().clone().keys;
-    Id::from(&keys)
+    let keys = mint.pubkeys().keysets.first().unwrap().clone();
+    keys.verify_id()
+        .expect("Keyset ID generation is successful");
+    keys.id
 }

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 
 use async_trait::async_trait;
+use cashu::KeySet;
 
 use super::Error;
 use crate::common::ProofInfo;
@@ -68,11 +69,13 @@ pub trait Database: Debug {
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), Self::Err>;
     /// Get melt quote from storage
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err>;
+    /// Get melt quotes from storage
+    async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, Self::Err>;
     /// Remove melt quote from storage
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 
     /// Add [`Keys`] to storage
-    async fn add_keys(&self, keys: Keys) -> Result<(), Self::Err>;
+    async fn add_keys(&self, keyset: KeySet) -> Result<(), Self::Err>;
     /// Get [`Keys`] from storage
     async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, Self::Err>;
     /// Remove [`Keys`] from storage

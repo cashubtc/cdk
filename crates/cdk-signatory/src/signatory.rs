@@ -73,6 +73,8 @@ pub struct SignatoryKeySet {
     pub keys: Keys,
     /// Information about the fee per public key
     pub input_fee_ppk: u64,
+    /// Final expiry of the keyset (unix timestamp in the future)
+    pub final_expiry: Option<u64>,
 }
 
 impl From<&SignatoryKeySet> for KeySet {
@@ -87,6 +89,7 @@ impl From<SignatoryKeySet> for KeySet {
             id: val.id,
             unit: val.unit,
             keys: val.keys,
+            final_expiry: val.final_expiry,
         }
     }
 }
@@ -107,7 +110,7 @@ impl From<SignatoryKeySet> for MintKeySetInfo {
             derivation_path: Default::default(),
             derivation_path_index: Default::default(),
             max_order: 0,
-            valid_to: None,
+            final_expiry: val.final_expiry,
             valid_from: 0,
         }
     }
@@ -121,6 +124,7 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
             active: info.active,
             input_fee_ppk: info.input_fee_ppk,
             keys: key.keys.clone().into(),
+            final_expiry: key.final_expiry,
         }
     }
 }
@@ -128,7 +132,7 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
 #[async_trait::async_trait]
 /// Signatory trait
 pub trait Signatory {
-    /// The Signatory implementation name. This may be exposed, so being as discreet as possible is
+    /// The Signatory implementation name. This may be exposed, so being as discrete as possible is
     /// advised.
     fn name(&self) -> String;
 

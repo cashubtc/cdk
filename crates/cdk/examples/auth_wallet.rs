@@ -88,7 +88,7 @@ async fn main() -> Result<(), Error> {
     let prepared_send = wallet
         .prepare_send(10.into(), SendOptions::default())
         .await?;
-    let token = wallet.send(prepared_send, None).await?;
+    let token = prepared_send.confirm(None).await?;
 
     println!("Created token: {}", token);
 
@@ -112,7 +112,7 @@ async fn get_access_token(mint_info: &MintInfo) -> String {
         .expect("Nut21 defined")
         .openid_discovery;
 
-    let oidc_client = OidcClient::new(openid_discovery);
+    let oidc_client = OidcClient::new(openid_discovery, None);
 
     // Get the token endpoint from the OIDC configuration
     let token_url = oidc_client

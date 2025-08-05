@@ -19,6 +19,7 @@ use router_handlers::*;
 
 #[cfg(feature = "auth")]
 mod auth;
+mod bolt12_router;
 pub mod cache;
 mod router_handlers;
 mod ws;
@@ -46,11 +47,18 @@ mod swagger_imports {
         MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintQuoteBolt11Request,
         MintQuoteBolt11Response,
     };
+    #[cfg(feature = "auth")]
+    pub use cdk::nuts::MintAuthRequest;
     pub use cdk::nuts::{nut04, nut05, nut15, MeltQuoteState, MintQuoteState};
 }
 
 #[cfg(feature = "swagger")]
 use swagger_imports::*;
+
+use crate::bolt12_router::{
+    cache_post_melt_bolt12, cache_post_mint_bolt12, get_check_mint_bolt12_quote,
+    post_melt_bolt12_quote, post_mint_bolt12_quote,
+};
 
 /// CDK Mint State
 #[derive(Clone)]
@@ -60,9 +68,47 @@ pub struct MintState {
 }
 
 #[cfg(feature = "swagger")]
-#[derive(utoipa::OpenApi)]
-#[openapi(
-    components(schemas(
+macro_rules! define_api_doc {
+    (
+        schemas: [$($schema:ty),* $(,)?]
+        $(, auth_schemas: [$($auth_schema:ty),* $(,)?])?
+        $(, paths: [$($path:path),* $(,)?])?
+        $(, auth_paths: [$($auth_path:path),* $(,)?])?
+    ) => {
+        #[derive(utoipa::OpenApi)]
+        #[openapi(
+            components(schemas(
+                $($schema,)*
+                $($($auth_schema,)*)?
+            )),
+            info(description = "Cashu CDK mint APIs", title = "cdk-mintd"),
+            paths(
+                get_keys,
+                get_keyset_pubkeys,
+                get_keysets,
+                get_mint_info,
+                post_mint_bolt11_quote,
+                get_check_mint_bolt11_quote,
+                post_mint_bolt11,
+                post_melt_bolt11_quote,
+                get_check_melt_bolt11_quote,
+                post_melt_bolt11,
+                post_swap,
+                post_check,
+                post_restore
+                $(,$($path,)*)?
+                $(,$($auth_path,)*)?
+            )
+        )]
+        /// Swagger api docs
+        pub struct ApiDoc;
+    };
+}
+
+// Configuration without auth feature
+#[cfg(all(feature = "swagger", not(feature = "auth")))]
+define_api_doc! {
+    schemas: [
         Amount,
         BlindedMessage,
         BlindSignature,
@@ -112,36 +158,85 @@ pub struct MintState {
         nut04::Settings,
         nut05::Settings,
         nut15::Settings
-    )),
-    info(description = "Cashu CDK mint APIs", title = "cdk-mintd",),
-    paths(
-        get_keys,
-        get_keyset_pubkeys,
-        get_keysets,
-        get_mint_info,
-        post_mint_bolt11_quote,
-        get_check_mint_bolt11_quote,
-        post_mint_bolt11,
-        post_melt_bolt11_quote,
-        get_check_melt_bolt11_quote,
-        post_melt_bolt11,
-        post_swap,
-        post_check,
-        post_restore
-    )
-)]
-/// OpenAPI spec for the mint's v1 APIs
-pub struct ApiDocV1;
+    ]
+}
+
+// Configuration with auth feature
+#[cfg(all(feature = "swagger", feature = "auth"))]
+define_api_doc! {
+    schemas: [
+        Amount,
+        BlindedMessage,
+        BlindSignature,
+        BlindSignatureDleq,
+        CheckStateRequest,
+        CheckStateResponse,
+        ContactInfo,
+        CurrencyUnit,
+        ErrorCode,
+        ErrorResponse,
+        HTLCWitness,
+        Keys,
+        KeysResponse,
+        KeysetResponse,
+        KeySet,
+        KeySetInfo,
+        MeltRequest<String>,
+        MeltQuoteBolt11Request,
+        MeltQuoteBolt11Response<String>,
+        MeltQuoteState,
+        MeltMethodSettings,
+        MintRequest<String>,
+        MintResponse,
+        MintInfo,
+        MintQuoteBolt11Request,
+        MintQuoteBolt11Response<String>,
+        MintQuoteState,
+        MintMethodSettings,
+        MintVersion,
+        Mpp,
+        MppMethodSettings,
+        Nuts,
+        P2PKWitness,
+        PaymentMethod,
+        Proof,
+        ProofDleq,
+        ProofState,
+        PublicKey,
+        RestoreRequest,
+        RestoreResponse,
+        SecretKey,
+        State,
+        SupportedSettings,
+        SwapRequest,
+        SwapResponse,
+        Witness,
+        nut04::Settings,
+        nut05::Settings,
+        nut15::Settings
+    ],
+    auth_schemas: [MintAuthRequest],
+    auth_paths: [
+        crate::auth::get_auth_keysets,
+        crate::auth::get_blind_auth_keys,
+        crate::auth::post_mint_auth
+    ]
+}
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
-pub async fn create_mint_router(mint: Arc<Mint>) -> Result<Router> {
-    create_mint_router_with_custom_cache(mint, Default::default()).await
+pub async fn create_mint_router(mint: Arc<Mint>, include_bolt12: bool) -> Result<Router> {
+    create_mint_router_with_custom_cache(mint, Default::default(), include_bolt12).await
 }
 
 async fn cors_middleware(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> Response {
+    #[cfg(feature = "auth")]
+    let allowed_headers = "Content-Type, Clear-auth, Blind-auth";
+    #[cfg(not(feature = "auth"))]
+    let allowed_headers = "Content-Type";
+
     // Handle preflight requests
     if req.method() == axum::http::Method::OPTIONS {
         let mut response = Response::new("".into());
@@ -154,7 +249,7 @@ async fn cors_middleware(
         );
         response.headers_mut().insert(
             "Access-Control-Allow-Headers",
-            "Content-Type".parse().unwrap(),
+            allowed_headers.parse().unwrap(),
         );
         return response;
     }
@@ -171,7 +266,7 @@ async fn cors_middleware(
     );
     response.headers_mut().insert(
         "Access-Control-Allow-Headers",
-        "Content-Type".parse().unwrap(),
+        allowed_headers.parse().unwrap(),
     );
 
     response
@@ -182,6 +277,7 @@ async fn cors_middleware(
 pub async fn create_mint_router_with_custom_cache(
     mint: Arc<Mint>,
     cache: HttpCache,
+    include_bolt12: bool,
 ) -> Result<Router> {
     let state = MintState {
         mint,
@@ -210,9 +306,7 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/info", get(get_mint_info))
         .route("/restore", post(post_restore));
 
-    let mint_router = Router::new()
-        .nest("/v1", v1_router)
-        .layer(from_fn(cors_middleware));
+    let mint_router = Router::new().nest("/v1", v1_router);
 
     #[cfg(feature = "auth")]
     let mint_router = {
@@ -220,7 +314,34 @@ pub async fn create_mint_router_with_custom_cache(
         mint_router.nest("/v1", auth_router)
     };
 
-    let mint_router = mint_router.with_state(state);
+    // Conditionally create and merge bolt12_router
+    let mint_router = if include_bolt12 {
+        let bolt12_router = create_bolt12_router(state.clone());
+        mint_router.nest("/v1", bolt12_router)
+    } else {
+        mint_router
+    };
+
+    let mint_router = mint_router
+        .layer(from_fn(cors_middleware))
+        .with_state(state);
 
     Ok(mint_router)
+}
+
+fn create_bolt12_router(state: MintState) -> Router<MintState> {
+    Router::new()
+        .route("/melt/quote/bolt12", post(post_melt_bolt12_quote))
+        .route(
+            "/melt/quote/bolt12/{quote_id}",
+            get(get_check_melt_bolt11_quote),
+        )
+        .route("/melt/bolt12", post(cache_post_melt_bolt12))
+        .route("/mint/quote/bolt12", post(post_mint_bolt12_quote))
+        .route(
+            "/mint/quote/bolt12/{quote_id}",
+            get(get_check_mint_bolt12_quote),
+        )
+        .route("/mint/bolt12", post(cache_post_mint_bolt12))
+        .with_state(state)
 }

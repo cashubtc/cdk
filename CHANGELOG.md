@@ -5,16 +5,120 @@
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
 ## [Unreleased]
+
 ### Added
-- Docker build workflow for arm64 images [PR](https://github.com/cashubtc/cdk/pull/770) ([asmo]).
+- dev: Goose recipes for changelog and commit message generation with Just commands ([thesimplekid]).
+- cashu: `KeySetInfos` type alias and `KeySetInfosMethods` trait for filtering keysets ([thesimplekid]).
+- cdk: Mint lifecycle management with `start()` and `stop()` methods for graceful background service control ([thesimplekid]).
+- cdk: Background task management for invoice payment monitoring with proper shutdown handling ([thesimplekid]).
+- cashu: NUT-19 support in the wallet ([crodas]).
+- cdk: SIG_ALL support for swap and melt operations ([thesimplekid]).
+- cdk-sql-common: Add cache to SQL statements for better performance ([crodas]).
+- cdk-integration-tests: New binary `start_fake_auth_mint` for testing fake mint with authentication ([thesimplekid]).
+- cdk-integration-tests: New binary `start_fake_mint` for testing fake mint instances ([thesimplekid]).
+- cdk-integration-tests: New binary `start_regtest_mints` for testing regtest mints ([thesimplekid]).
+- cdk-integration-tests: Shared utilities module for common integration test functionality ([thesimplekid]).
+
+### Changed
+- cdk: Refactored wallet keyset management methods for better clarity and separation of concerns ([thesimplekid]).
+- cdk: Renamed `get_keyset_keys` to `fetch_keyset_keys` to indicate network operation ([thesimplekid]).
+- cdk: Renamed `get_active_mint_keyset` to `fetch_active_keyset` for consistency ([thesimplekid]).
+- cdk: Updated `get_active_mint_keysets` to `refresh_keysets` with improved keyset refresh logic ([thesimplekid]).
+- cdk: Improved `load_mint_keysets` method to be the primary method for getting keysets for token operations ([thesimplekid]).
+- cdk: Enhanced keyset management with better offline/online operation separation ([thesimplekid]).
+- cdk: Updated method documentation to clarify storage vs network operations ([thesimplekid]).
+- cdk: Refactored invoice payment monitoring to use centralized lifecycle management instead of manual task spawning ([thesimplekid]).
+- cdk-mintd: Updated to use new mint lifecycle methods for improved service management ([thesimplekid]).
+- cdk-integration-tests: Updated test utilities to use new mint lifecycle management ([thesimplekid]).
+- cdk-sqlite: Introduce `cdk-sql-common` crate for shared SQL storage codebase ([crodas]).
+- cdk-sqlite: Rename `still_active` to `stale` for better clarity ([crodas]).
+- cdk-integration-tests: Refactored regtest setup to use Rust binaries instead of shell scripts ([thesimplekid]).
+- cdk-integration-tests: Improved environment variable handling for test configurations ([thesimplekid]).
+- cdk-integration-tests: Enhanced CLN client connection with retry logic ([thesimplekid]).
+- cdk-integration-tests: Updated integration tests to use proper temp directory management ([thesimplekid]).
+- cdk-integration-tests: Simplified regtest shell scripts to use new binaries ([thesimplekid]).
+- crates/cdk-mintd: Moved mintd library functions to separate module for better organization and testability ([thesimplekid]).
+
+### Fixed
+- cashu: Fixed CurrencyUnit custom units preserving original case instead of being converted to uppercase ([thesimplekid]).
+- cdk-sqlite: Fix `get_mint_quote_by_request_lookup_id` function synchronization ([crodas]).
+- cdk-common: Fix TransactionId::from_hex to check bytes length before copy to avoid panic ([codingpeanut157]).
+- cdk: Include change in melt quote state updates ([thesimplekid]).
+
+### Migration
+- cdk-sql-common: Improve migrations with namespaced and global migrations support ([crodas]).
+
+
+## [0.11.0](https://github.com/cashubtc/cdk/releases/tag/v0.11.0)
+
+### Summary
+
+Version 0.11.0 brings significant architectural changes to enhance database reliability and performance. The major changes include:
+
+1. **Database Engine Change**: Replaced `sqlx` with `rusqlite` as the SQLite database driver and removed support for `redb`. This change provides better performance and reliability for database operations.
+
+2. **Transaction Management**: Introduced robust database transaction support that encapsulates all database changes. The new Transaction trait implements a rollback operation on Drop unless explicitly committed, ensuring data integrity.
+
+3. **Race Condition Prevention**: Added READ-and-lock operations to securely read and lock records from the database for exclusive access, preventing race conditions in concurrent operations.
+
+### ⚠️ Important Migration Note for redb Users
+If you are currently running a mint with redb, you must migrate to SQLite before upgrading to v0.11. Follow these steps:
+
+1. Stop your current mint
+2. Back up your database
+3. Use the migration script available at: https://github.com/cashubtc/cdk/blob/main/misc/convert_redb_to_sqlite.sh
+4. Update your config file to target the SQLite database engine
+5. Start your mint with v0.11
+
+
+### Added
+- cdk-lnbits: Support lnbits v1 and pre-v1 [PR](https://github.com/cashubtc/cdk/pull/802) ([thesimplekid]).
+- Support for Keyset v2 [PR](https://github.com/cashubtc/cdk/pull/702) ([lollerfirst]).
+- Add option to limit the token size of a send [PR](https://github.com/cashubtc/cdk/pull/855) ([davidcaseria]).
+- Database transaction support [PR](https://github.com/cashubtc/cdk/pull/826) ([crodas]).
+- Support for multsig refund [PR](https://github.com/cashubtc/cdk/pull/860) ([thesimplekid]).
+- Convert unit helper fn [PR](https://github.com/cashubtc/cdk/pull/856) ([davidcaseria]).
+
+### Changed
+- cdk-sqlite: remove sqlx in favor of rusqlite ([crodas]).
+- cdk-lnd: use custom tonic gRPC instead of fedimint-tonic-grpc [PR](https://github.com/cashubtc/cdk/pull/831) ([thesimplekid]).
+- cdk-cln: remove the us of mutex on cln client [PR](https://github.com/cashubtc/cdk/pull/832) ([thesimplekid]).
+
+### Fixed
+- mint start up check was not checking unpaid quotes [PR](https://github.com/cashubtc/cdk/pull/844) ([gudnuf]).
+- Naming of blinded_message column on blind_signatures was y [PR](https://github.com/cashubtc/cdk/pull/845) ([thesimplekid]).
+- cdk-cli: Create wallets for non sat units if supported [PR](https://github.com/cashubtc/cdk/pull/841) ([thesimplekid]).
+
+### Removed
+- cdk-redb support for the mint [PR](https://github.com/cashubtc/cdk/pull/787) ([thesimplekid]).
+- cdk-sqlite remove unused melt_request table [PR](https://github.com/cashubtc/cdk/pull/819) ([crodas])
+
+
+## [0.10.1](https://github.com/cashubtc/cdk/releases/tag/v0.10.1)
+### Fix
+- Set mint version when mint rpc is enabled [PR](https://github.com/cashubtc/cdk/pull/803) ([thesimplekid]).
+- `cdk-signatory` is optional for wallet [PR](https://github.com/cashubtc/cdk/pull/815) ([thesimplekid]).
+
+## [0.10.0](https://github.com/cashubtc/cdk/releases/tag/v0.10.0)
+### Added
 - SignatoryManager service [PR](https://github.com/cashubtc/cdk/pull/509) ([crodas]).
 - Mint URL flag option [PR](https://github.com/cashubtc/cdk/pull/765) ([thesimplekid]).
 - Export NUT-06 supported settings field [PR](https://github.com/cashubtc/cdk/pull/764) ([davidcaseria]).
+- Docker build workflow for arm64 images [PR](https://github.com/cashubtc/cdk/pull/770) ([asmo]).
 
 ### Changed
+- cdk-redb: Removed mint storage functionality to be wallet-only ([thesimplekid]).
 - Updated Nix flake to 25.05 and removed Nix cache [PR](https://github.com/cashubtc/cdk/pull/769) ([thesimplekid]).
 - Updated dependencies [PR](https://github.com/cashubtc/cdk/pull/761) ([thesimplekid]).
 - Refactored NUT-04 and NUT-05 [PR](https://github.com/cashubtc/cdk/pull/749) ([thesimplekid]).
+- Updated Nix flake to 25.05 and removed Nix cache [PR](https://github.com/cashubtc/cdk/pull/769) ([thesimplekid]).
+
+## [0.9.3](https://github.com/cashubtc/cdk/releases/tag/v0.9.3)
+### Changed
+- Melt will perform swap before attempting to melt if exact amount is not available [PR](https://github.com/cashubtc/cdk/pull/793) ([crodas]).
+
+### Fixed
+- Handle old nut15 format to keep compatibility with older nutshell version [PR](https://github.com/cashubtc/cdk/pull/794) ([thesimplekid]).
 
 ## [0.9.2](https://github.com/cashubtc/cdk/releases/tag/v0.9.2)
 ### Added
@@ -366,3 +470,5 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [benthecarman]: https://github.com/benthecarman
 [Darrell]: https://github.com/Darrellbor
 [asmo]: https://github.com/asmogo
+[gudnuf]: https://github.com/gudnuf
+[codingpeanut157]: https://github.com/codingpeanut157

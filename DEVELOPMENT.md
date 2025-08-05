@@ -34,8 +34,8 @@ CDK uses [Nix](https://nixos.org/explore.html) for building, CI, and managing de
 Note: only `Nix` (the language & package manager) and not the NixOS (the Linux distribution) is needed.
 Nix can be installed on any Linux distribution and macOS.
 
-While it is technically possible to not use Nix, it is highly recommended as
-it ensures consistent and reproducible environment for all developers.
+While Nix is preferred as it ensures a consistent and reproducible environment
+for all developers, it is not strictly required to use Nix to build CDK.
 
 ### Install Nix
 
@@ -63,11 +63,93 @@ experimental-features = nix-command flakes
 
 If the Nix installation is in multi-user mode, don’t forget to restart the nix-daemon.
 
+## Alternative Setup Without Nix
+
+While Nix is preferred as it ensures a consistent and reproducible environment
+for all developers, it is not strictly required to use Nix to build CDK. You can
+also set up your environment manually.
+
+### Installing Rust via rustup
+
+To build CDK without Nix, you'll need to install Rust manually:
+
+1. Install rustup by following the instructions at [https://www.rust-lang.org/tools/install](https://www.rust-lang.org/tools/install)
+
+2. Once rustup is installed, you can install the required Rust version:
+```bash
+rustup install stable
+rustup default stable
+```
+
+3. Install required tools:
+```bash
+# For building cdk-mintd, you'll need protobuf compiler
+# On Ubuntu/Debian:
+sudo apt install protobuf-compiler
+
+# On macOS with Homebrew:
+brew install protobuf
+
+# On other systems, please refer to your package manager or
+# https://grpc.io/docs/protoc-installation/
+```
+
+### Building and Running CDK Components
+
+#### Building cdk-cli
+
+To build the CDK command-line interface:
+```bash
+cargo build --bin cdk-cli --release
+```
+
+To run cdk-cli directly without building:
+```bash
+cargo run --bin cdk-cli -- --help
+```
+
+#### Building cdk-mintd
+
+To build the CDK mint server:
+```bash
+cargo build --bin cdk-mintd --release
+```
+
+To run cdk-mintd directly without building:
+```bash
+cargo run --bin cdk-mintd
+```
+
+Note: For cdk-mintd, you need to have the protobuf compiler installed as it's required for some dependencies.
+
 ## Use Nix Shell
 
 ```sh
   nix develop -c $SHELL  
 ```
+
+## Regtest Environment
+
+For testing and development, CDK provides a complete regtest environment with Bitcoin, Lightning Network nodes, and CDK mints.
+
+### Quick Start
+```bash
+just regtest  # Starts full environment with mprocs TUI
+```
+
+This provides:
+- Bitcoin regtest node
+- 4 Lightning Network nodes (2 CLN + 2 LND)
+- 2 CDK mints (one connected to CLN, one to LND)
+- Real-time log monitoring via mprocs
+- Helper commands for testing Lightning payments and CDK operations
+
+### Comprehensive Guide
+See [REGTEST_GUIDE.md](REGTEST_GUIDE.md) for complete documentation including:
+- Detailed setup and usage instructions
+- Development workflows and testing scenarios
+- mprocs TUI interface guide
+- Troubleshooting and advanced usage
 
 ## Common Development Tasks
 

@@ -27,7 +27,7 @@
     pre-commit-hooks.url = "github:cachix/pre-commit-hooks.nix";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, crane, fenix, ... }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
@@ -81,85 +81,15 @@
           bitcoind
           sqlx-cli
           cargo-outdated
+          mprocs
 
           # Needed for github ci
           libz
         ] ++ libsDarwin;
 
-        # WASM deps
-        WASMInputs = with pkgs; [
-        ];
-
-
-
-        craneLib = crane.mkLib pkgs;
-        src = craneLib.cleanCargoSource ./.;
 
         # Common arguments can be set here to avoid repeating them later
-        commonArgs = {
-          inherit src;
-          strictDeps = true;
-
-          buildInputs = [
-            # Add additional build inputs here
-            pkgs.protobuf
-            pkgs.pkg-config
-          ] ++ lib.optionals pkgs.stdenv.isDarwin [
-            # Additional darwin specific inputs can be set here
-            pkgs.libiconv
-          ];
-
-          # Additional environment variables can be set directly
-          # MY_CUSTOM_VAR = "some value";
-          PROTOC = "${pkgs.protobuf}/bin/protoc";
-          PROTOC_INCLUDE = "${pkgs.protobuf}/include";
-        };
-
-
-        craneLibLLvmTools = craneLib.overrideToolchain
-          (fenix.packages.${system}.complete.withComponents [
-            "cargo"
-            "llvm-tools"
-            "rustc"
-          ]);
-
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-
-        individualCrateArgs = commonArgs // {
-          inherit cargoArtifacts;
-          inherit (craneLib.crateNameFromCargoToml { inherit src; }) version;
-          # NB: we disable tests since we'll run them all via cargo-nextest
-          doCheck = false;
-        };
-
-        fileSetForCrate = crate: lib.fileset.toSource {
-          root = ./.;
-          fileset = lib.fileset.unions [
-            ./Cargo.toml
-            ./Cargo.lock
-            (craneLib.fileset.commonCargoSources ./crates/cdk)
-            (craneLib.fileset.commonCargoSources ./crates/cdk-axum)
-            (craneLib.fileset.commonCargoSources ./crates/cdk-cln)
-            (craneLib.fileset.commonCargoSources ./crates/cdk-lnd)
-            (craneLib.fileset.commonCargoSources ./crates/cdk-fake-wallet)
-            (craneLib.fileset.commonCargoSources ./crates/cdk-lnbits)
-            (craneLib.fileset.commonCargoSources ./crates/cdk-redb)
-            (craneLib.fileset.commonCargoSources ./crates/cdk-sqlite)
-            ./crates/cdk-sqlite/src/mint/migrations
-            ./crates/cdk-sqlite/src/wallet/migrations
-            (craneLib.fileset.commonCargoSources crate)
-          ];
-        };
-
-        cdk-mintd = craneLib.buildPackage (individualCrateArgs // {
-          pname = "cdk-mintd";
-          name = "cdk-mintd-${individualCrateArgs.version}";
-          cargoExtraArgs = "-p cdk-mintd";
-          src = fileSetForCrate ./crates/cdk-mintd;
-        });
-
-
-        nativeBuildInputs = with pkgs; [
+        nativeBuildInputs = [
           #Add additional build inputs here
         ] ++ lib.optionals isDarwin [
           # Additional darwin specific native inputs can be set here
@@ -200,22 +130,6 @@
             };
         };
 
-
-        packages = {
-          inherit cdk-mintd;
-          default = cdk-mintd;
-        } // lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
-          my-workspace-llvm-coverage = craneLibLLvmTools.cargoLlvmCov (commonArgs // {
-            inherit cargoArtifacts;
-          });
-        };
-
-        apps = {
-          cdk-mintd = flake-utils.lib.mkApp {
-            drv = cdk-mintd;
-          };
-        };
-
         devShells =
           let
             # pre-commit-checks
@@ -232,14 +146,18 @@
               cargo update -p half --precise 2.4.1
               cargo update -p base64ct --precise 1.7.3
               cargo update -p url --precise 2.5.2
+              cargo update -p pest_derive --precise 2.8.0
+              cargo update -p pest_generator --precise 2.8.0
+              cargo update -p pest_meta --precise 2.8.0
+              cargo update -p pest --precise 2.8.0
               ";
-              buildInputs = buildInputs ++ WASMInputs ++ [ msrv_toolchain ];
+              buildInputs = buildInputs ++ [ msrv_toolchain ];
               inherit nativeBuildInputs;
             } // envVars);
 
             stable = pkgs.mkShell ({
               shellHook = ''${_shellHook}'';
-              buildInputs = buildInputs ++ WASMInputs ++ [ stable_toolchain ];
+              buildInputs = buildInputs ++ [ stable_toolchain ];
               inherit nativeBuildInputs;
             } // envVars);
 
@@ -270,7 +188,7 @@
                 echo "Docker is available at $(which docker)"
                 echo "Docker version: $(docker --version)"
               '';
-              buildInputs = buildInputs ++ [ 
+              buildInputs = buildInputs ++ [
                 stable_toolchain
                 pkgs.docker-client
               ];

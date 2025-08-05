@@ -12,6 +12,7 @@ use std::string::FromUtf8Error;
 use serde::{de, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
+use super::nut02::ShortKeysetId;
 #[cfg(feature = "wallet")]
 use super::nut10;
 #[cfg(feature = "wallet")]
@@ -183,6 +184,9 @@ pub enum Error {
     /// NUT11 error
     #[error(transparent)]
     NUT11(#[from] crate::nuts::nut11::Error),
+    /// Short keyset id -> id error
+    #[error(transparent)]
+    NUT02(#[from] crate::nuts::nut02::Error),
 }
 
 /// Blinded Message (also called `output`)
@@ -434,6 +438,12 @@ impl ProofV4 {
     }
 }
 
+impl Hash for ProofV4 {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.secret.hash(state);
+    }
+}
+
 impl From<Proof> for ProofV4 {
     fn from(proof: Proof) -> ProofV4 {
         let Proof {
@@ -451,6 +461,80 @@ impl From<Proof> for ProofV4 {
             witness,
             dleq,
         }
+    }
+}
+
+impl From<ProofV3> for ProofV4 {
+    fn from(proof: ProofV3) -> Self {
+        Self {
+            amount: proof.amount,
+            secret: proof.secret,
+            c: proof.c,
+            witness: proof.witness,
+            dleq: proof.dleq,
+        }
+    }
+}
+
+/// Proof v3 with short keyset id
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofV3 {
+    /// Amount
+    pub amount: Amount,
+    /// Short keyset id
+    #[serde(rename = "id")]
+    pub keyset_id: ShortKeysetId,
+    /// Secret message
+    pub secret: Secret,
+    /// Unblinded signature
+    #[serde(rename = "C")]
+    pub c: PublicKey,
+    /// Witness
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub witness: Option<Witness>,
+    /// DLEQ Proof
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dleq: Option<ProofDleq>,
+}
+
+impl ProofV3 {
+    /// [`ProofV3`] into [`Proof`]
+    pub fn into_proof(&self, keyset_id: &Id) -> Proof {
+        Proof {
+            amount: self.amount,
+            keyset_id: *keyset_id,
+            secret: self.secret.clone(),
+            c: self.c,
+            witness: self.witness.clone(),
+            dleq: self.dleq.clone(),
+        }
+    }
+}
+
+impl From<Proof> for ProofV3 {
+    fn from(proof: Proof) -> ProofV3 {
+        let Proof {
+            amount,
+            keyset_id,
+            secret,
+            c,
+            witness,
+            dleq,
+        } = proof;
+        ProofV3 {
+            amount,
+            secret,
+            c,
+            witness,
+            dleq,
+            keyset_id: keyset_id.into(),
+        }
+    }
+}
+
+impl Hash for ProofV3 {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.secret.hash(state);
     }
 }
 
@@ -507,14 +591,14 @@ impl CurrencyUnit {
 impl FromStr for CurrencyUnit {
     type Err = Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let value = &value.to_uppercase();
-        match value.as_str() {
+        let upper_value = value.to_uppercase();
+        match upper_value.as_str() {
             "SAT" => Ok(Self::Sat),
             "MSAT" => Ok(Self::Msat),
             "USD" => Ok(Self::Usd),
             "EUR" => Ok(Self::Eur),
             "AUTH" => Ok(Self::Auth),
-            c => Ok(Self::Custom(c.to_string())),
+            _ => Ok(Self::Custom(value.to_string())),
         }
     }
 }
@@ -557,13 +641,14 @@ impl<'de> Deserialize<'de> for CurrencyUnit {
 }
 
 /// Payment Method
-#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum PaymentMethod {
     /// Bolt11 payment type
     #[default]
     Bolt11,
+    /// Bolt12
+    Bolt12,
     /// Custom
     Custom(String),
 }
@@ -573,6 +658,7 @@ impl FromStr for PaymentMethod {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_lowercase().as_str() {
             "bolt11" => Ok(Self::Bolt11),
+            "bolt12" => Ok(Self::Bolt12),
             c => Ok(Self::Custom(c.to_string())),
         }
     }
@@ -582,6 +668,7 @@ impl fmt::Display for PaymentMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PaymentMethod::Bolt11 => write!(f, "bolt11"),
+            PaymentMethod::Bolt12 => write!(f, "bolt12"),
             PaymentMethod::Custom(p) => write!(f, "{p}"),
         }
     }
@@ -889,5 +976,66 @@ mod tests {
         let b = PreMintSecrets::blank(Id::from_str("009a1f293253e41e").unwrap(), Amount::from(1))
             .unwrap();
         assert_eq!(b.len(), 1);
+    }
+
+    #[test]
+    fn custom_unit_ser_der() {
+        let unit = CurrencyUnit::Custom(String::from("test"));
+        let serialized = serde_json::to_string(&unit).unwrap();
+        let deserialized: CurrencyUnit = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(unit, deserialized)
+    }
+
+    #[test]
+    fn test_payment_method_parsing() {
+        // Test standard variants
+        assert_eq!(
+            PaymentMethod::from_str("bolt11").unwrap(),
+            PaymentMethod::Bolt11
+        );
+        assert_eq!(
+            PaymentMethod::from_str("BOLT11").unwrap(),
+            PaymentMethod::Bolt11
+        );
+        assert_eq!(
+            PaymentMethod::from_str("Bolt11").unwrap(),
+            PaymentMethod::Bolt11
+        );
+
+        assert_eq!(
+            PaymentMethod::from_str("bolt12").unwrap(),
+            PaymentMethod::Bolt12
+        );
+        assert_eq!(
+            PaymentMethod::from_str("BOLT12").unwrap(),
+            PaymentMethod::Bolt12
+        );
+        assert_eq!(
+            PaymentMethod::from_str("Bolt12").unwrap(),
+            PaymentMethod::Bolt12
+        );
+
+        // Test custom variants
+        assert_eq!(
+            PaymentMethod::from_str("custom").unwrap(),
+            PaymentMethod::Custom("custom".to_string())
+        );
+        assert_eq!(
+            PaymentMethod::from_str("CUSTOM").unwrap(),
+            PaymentMethod::Custom("custom".to_string())
+        );
+
+        // Test serialization/deserialization consistency
+        let methods = vec![
+            PaymentMethod::Bolt11,
+            PaymentMethod::Bolt12,
+            PaymentMethod::Custom("test".to_string()),
+        ];
+
+        for method in methods {
+            let serialized = serde_json::to_string(&method).unwrap();
+            let deserialized: PaymentMethod = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(method, deserialized);
+        }
     }
 }

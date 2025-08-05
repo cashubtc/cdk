@@ -164,7 +164,7 @@ async fn refresh_access_token(
         .ok_or_else(|| anyhow::anyhow!("OIDC discovery information not available"))?
         .openid_discovery;
 
-    let oidc_client = OidcClient::new(openid_discovery);
+    let oidc_client = OidcClient::new(openid_discovery, None);
 
     // Get the token endpoint from the OIDC configuration
     let token_url = oidc_client.get_oidc_config().await?.token_endpoint;

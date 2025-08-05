@@ -162,8 +162,8 @@ impl PaymentProcessorKey {
     }
 }
 
-/// Secs wuotes are valid
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// Seconds quotes are valid
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuoteTTL {
     /// Seconds mint quote is valid
     pub mint_ttl: u64,
@@ -175,6 +175,15 @@ impl QuoteTTL {
     /// Create new [`QuoteTTL`]
     pub fn new(mint_ttl: u64, melt_ttl: u64) -> QuoteTTL {
         Self { mint_ttl, melt_ttl }
+    }
+}
+
+impl Default for QuoteTTL {
+    fn default() -> Self {
+        Self {
+            mint_ttl: 60 * 60, // 1 hour
+            melt_ttl: 60,      // 1 minute
+        }
     }
 }
 

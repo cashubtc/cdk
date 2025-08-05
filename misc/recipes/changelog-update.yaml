@@ -1,0 +1,78 @@
+version: 1.0.0
+title: Update Changelog from staged
+description: a custom recipe instance from this chat session
+instructions: Analyze staged Git changes and automatically update project changelogs following Keep a Changelog format. Read staged files using git diff, understand the nature of code changes (API refactoring, new features, bug fixes, etc.), and add appropriately categorized entries to the Unreleased section. Use the git author's username for attribution and follow established changelog patterns including proper formatting with contributor links. Requires git command line tools and file editing capabilities.
+prompt: |
+  You are tasked with updating the CHANGELOG.md file based on staged Git changes. Follow these instructions:
+
+  ## Analysis Process:
+  1. **Read staged changes**: Use `git diff --staged` to analyze what files and code changes are currently staged for commit
+  2. **Get git author**: Use `git config --get user.name` to get the author name for attribution
+  3. **Analyze change types**: Categorize changes into:
+     - **Added**: New features, new functions, new files, new functionality
+     - **Changed**: Modifications to existing functionality, refactoring, API changes, dependency updates
+     - **Fixed**: Bug fixes, error handling improvements, corrections
+     - **Removed**: Deleted files, deprecated functions, removed dependencies
+
+  ## CHANGELOG.md Update Requirements:
+  1. **Preserve existing format**: Keep the exact formatting style of the existing CHANGELOG.md
+  2. **Update Unreleased section**: Add new entries to the "## [Unreleased]" section only
+  3. **Use proper categories**: Add entries under the appropriate subsections (Added, Changed, Fixed, Removed)
+  4. **Follow format pattern**: Each entry should follow this exact format:
+     ```
+     - component: Description of change ([author]).
+     ```
+  5. **Author attribution**: Use the git author name in square brackets at the end of each entry
+  6. **Component identification**: Identify the relevant component (e.g., "cdk", "cashu", "cdk-cli", etc.) from file paths
+  7. **Maintain formatting**: 
+     - Use proper bullet points with hyphens
+     - Maintain consistent spacing
+     - Keep entries concise but descriptive
+     - End each entry with period before author attribution
+
+  ## Example Entry Format:
+  ```markdown
+  ### Added
+  - cdk: New keyset refresh functionality with improved error handling ([thesimplekid]).
+
+  ### Changed  
+  - cdk: Refactored wallet keyset management for better performance ([thesimplekid]).
+
+  ### Fixed
+  - cdk-cli: Fixed token parsing error for malformed inputs ([thesimplekid]).
+  ```
+
+  ## Important Guidelines:
+  - **DO NOT** modify any existing changelog entries
+  - **DO NOT** change the structure or format of the changelog
+  - **ONLY** add new entries to the Unreleased section
+  - **DO NOT** add duplicate entries
+  - **BE SPECIFIC** about what changed, not just which files
+  - **FOCUS** on user-facing changes and important internal improvements
+  - **IGNORE** trivial changes like whitespace, comments, or formatting unless they're significant
+
+  ## Steps to Execute:
+  1. Read current CHANGELOG.md file to understand format
+  2. Get git author name  
+  3. Analyze staged changes with `git diff --staged`
+  4. Categorize and write appropriate changelog entries
+  5. Update the CHANGELOG.md file preserving all existing content
+
+  ## Alternative Recipe:
+  If you want to generate changelog entries from recent commits instead of staged changes, see the 
+  `changelog-from-commits.yaml` recipe which analyzes the last X commits instead of staged changes.
+
+extensions:
+- type: builtin
+  name: developer
+  display_name: Developer
+  timeout: 300
+  bundled: true
+activities:
+- Update changelog from staged changes
+- Analyze API refactoring commits
+- Add new feature entries
+- Categorize bug fix changes
+- Format contributor attributions
+author:
+  contact: thesimplekid

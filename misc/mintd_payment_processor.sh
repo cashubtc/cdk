@@ -50,6 +50,7 @@ cleanup() {
     unset CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS
     unset CDK_MINTD_MNEMONIC
     unset CDK_MINTD_PID
+    unset CDK_PAYMENT_PROCESSOR_CLN_BOLT12
 }
 
 # Set up trap to call cleanup on script exit
@@ -79,7 +80,7 @@ cargo build -p cdk-integration-tests
 export CDK_TEST_REGTEST=0
 if [ "$LN_BACKEND" != "FAKEWALLET" ]; then
     export CDK_TEST_REGTEST=1
-    cargo run --bin start_regtest &
+    cargo run --bin start_regtest "$CDK_ITESTS_DIR" &
     CDK_REGTEST_PID=$!
     mkfifo "$CDK_ITESTS_DIR/progress_pipe"
     rm -f "$CDK_ITESTS_DIR/signal_received"  # Ensure clean state
@@ -102,6 +103,7 @@ if [ "$LN_BACKEND" != "FAKEWALLET" ]; then
         sleep 1
     done
     echo "Regtest set up continuing"
+    export CDK_PAYMENT_PROCESSOR_CLN_BOLT12=true
 fi
 
 # Start payment processor
@@ -176,6 +178,18 @@ cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 
 # Capture the exit status of cargo test
 test_status=$?
+
+if [ "$LN_BACKEND" = "CLN" ]; then
+    echo "Running bolt12 tests for CLN backend"
+    cargo test -p cdk-integration-tests --test bolt12
+    bolt12_test_status=$?
+    
+    # Exit with non-zero status if either test failed
+    if [ $test_status -ne 0 ] || [ $bolt12_test_status -ne 0 ]; then
+        echo "Tests failed - happy_path_mint_wallet: $test_status, bolt12: $bolt12_test_status"
+        exit 1
+    fi
+fi
 
 # Exit with the status of the tests
 exit $test_status

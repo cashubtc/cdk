@@ -13,14 +13,46 @@ use bip39::rand::{thread_rng, Rng};
 use bip39::Mnemonic;
 use cdk_common::database::MintKeysDatabase;
 use cdk_common::CurrencyUnit;
-#[cfg(feature = "redb")]
-use cdk_redb::MintRedbDatabase;
 use cdk_signatory::{db_signatory, start_grpc_server};
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
-use tracing::Level;
 use tracing_subscriber::EnvFilter;
+
+/// Common CLI arguments for CDK binaries
+#[derive(Parser, Debug)]
+pub struct CommonArgs {
+    /// Enable logging (default is false)
+    #[arg(long, default_value_t = false)]
+    pub enable_logging: bool,
+
+    /// Logging level when enabled (default is debug)
+    #[arg(long, default_value = "debug")]
+    pub log_level: tracing::Level,
+}
+
+/// Initialize logging based on CLI arguments
+pub fn init_logging(enable_logging: bool, log_level: tracing::Level) {
+    if enable_logging {
+        let default_filter = log_level.to_string();
+
+        // Common filters to reduce noise
+        let sqlx_filter = "sqlx=warn";
+        let hyper_filter = "hyper=warn";
+        let h2_filter = "h2=warn";
+        let rustls_filter = "rustls=warn";
+        let reqwest_filter = "reqwest=warn";
+
+        let env_filter = EnvFilter::new(format!(
+            "{default_filter},{sqlx_filter},{hyper_filter},{h2_filter},{rustls_filter},{reqwest_filter}"
+        ));
+
+        // Ok if successful, Err if already initialized
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .try_init();
+    }
+}
 
 const DEFAULT_WORK_DIR: &str = ".cdk-signatory";
 const ENV_MNEMONIC: &str = "CDK_MINTD_MNEMONIC";
@@ -32,6 +64,9 @@ const ENV_MNEMONIC: &str = "CDK_MINTD_MNEMONIC";
 #[command(version = "0.1.0")]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    #[command(flatten)]
+    common: CommonArgs,
+
     /// Database engine to use (sqlite/redb)
     #[arg(short, long, default_value = "sqlite")]
     engine: String,
@@ -41,9 +76,6 @@ struct Cli {
     /// Path to working dir
     #[arg(short, long)]
     work_dir: Option<PathBuf>,
-    /// Logging level
-    #[arg(short, long, default_value = "error")]
-    log_level: Level,
     #[arg(long, default_value = "127.0.0.1")]
     listen_addr: String,
     #[arg(long, default_value = "15060")]
@@ -58,7 +90,10 @@ struct Cli {
 /// Main function for the signatory standalone binary
 pub async fn cli_main() -> Result<()> {
     let args: Cli = Cli::parse();
-    let default_filter = args.log_level;
+
+    // Initialize logging based on CLI arguments
+    init_logging(args.common.enable_logging, args.common.log_level);
+
     let supported_units = args
         .units
         .into_iter()
@@ -75,13 +110,6 @@ pub async fn cli_main() -> Result<()> {
             Ok::<(_, (_, _)), anyhow::Error>((unit, (fee, max_order)))
         })
         .collect::<Result<HashMap<_, _>, _>>()?;
-
-    let sqlx_filter = "sqlx=warn,hyper_util=warn,reqwest=warn";
-
-    let env_filter = EnvFilter::new(format!("{default_filter},{sqlx_filter}"));
-
-    // Parse input
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     let work_dir = match &args.work_dir {
         Some(work_dir) => work_dir.clone(),
@@ -110,7 +138,7 @@ pub async fn cli_main() -> Result<()> {
                     #[cfg(feature = "sqlcipher")]
                     let db = {
                         match args.password {
-                            Some(pass) => MintSqliteDatabase::new(&sql_path, pass).await?,
+                            Some(pass) => MintSqliteDatabase::new((&sql_path, pass)).await?,
                             None => bail!("Missing database password"),
                         }
                     };
@@ -120,17 +148,6 @@ pub async fn cli_main() -> Result<()> {
                 #[cfg(not(feature = "sqlite"))]
                 {
                     bail!("sqlite feature not enabled");
-                }
-            }
-            "redb" => {
-                #[cfg(feature = "redb")]
-                {
-                    let redb_path = work_dir.join("cdk-cli.redb");
-                    Arc::new(MintRedbDatabase::new(&redb_path)?)
-                }
-                #[cfg(not(feature = "redb"))]
-                {
-                    bail!("redb feature not enabled");
                 }
             }
             _ => bail!("Unknown DB engine"),

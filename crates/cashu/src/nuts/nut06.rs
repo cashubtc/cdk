@@ -4,6 +4,7 @@
 
 #[cfg(feature = "auth")]
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -13,6 +14,7 @@ use super::nut19::CachedEndpoint;
 use super::{nut04, nut05, nut15, nut19, MppMethodSettings};
 #[cfg(feature = "auth")]
 use super::{AuthRequired, BlindAuthSettings, ClearAuthSettings, ProtectedEndpoint};
+use crate::CurrencyUnit;
 
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -256,6 +258,16 @@ impl MintInfo {
     pub fn bat_max_mint(&self) -> Option<u64> {
         self.nuts.nut22.as_ref().map(|s| s.bat_max_mint)
     }
+
+    /// Get all supported currency units for this mint (both mint and melt)
+    pub fn supported_units(&self) -> Vec<&CurrencyUnit> {
+        let mut units = HashSet::new();
+
+        units.extend(self.nuts.supported_mint_units());
+        units.extend(self.nuts.supported_melt_units());
+
+        units.into_iter().collect()
+    }
 }
 
 /// Supported nuts and settings
@@ -439,6 +451,28 @@ impl Nuts {
             nut20: SupportedSettings { supported },
             ..self
         }
+    }
+
+    /// Units where minting is supported
+    pub fn supported_mint_units(&self) -> Vec<&CurrencyUnit> {
+        self.nut04
+            .methods
+            .iter()
+            .map(|s| &s.unit)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// Units where melting is supported
+    pub fn supported_melt_units(&self) -> Vec<&CurrencyUnit> {
+        self.nut05
+            .methods
+            .iter()
+            .map(|s| &s.unit)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect()
     }
 }
 

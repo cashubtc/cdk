@@ -1,8 +1,15 @@
-//! Mint tests
+//! Mint Tests
 //!
 //! This file contains tests that focus on the mint's internal functionality without client interaction.
 //! These tests verify the mint's behavior in isolation, such as keyset management, database operations,
 //! and other mint-specific functionality that doesn't require wallet clients.
+//!
+//! Test Categories:
+//! - Keyset rotation and management
+//! - Database transaction handling
+//! - Internal state transitions
+//! - Fee calculation and enforcement
+//! - Proof validation and state management
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -29,14 +36,15 @@ async fn test_correct_keyset() {
 
     let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
 
-    let mut mint_builder = MintBuilder::new();
     let localstore = Arc::new(database);
-    mint_builder = mint_builder
-        .with_localstore(localstore.clone())
-        .with_keystore(localstore.clone());
+    let mut mint_builder = MintBuilder::new(localstore.clone());
 
     mint_builder = mint_builder
-        .add_ln_backend(
+        .with_name("regtest mint".to_string())
+        .with_description("regtest mint".to_string());
+
+    mint_builder
+        .add_payment_processor(
             CurrencyUnit::Sat,
             PaymentMethod::Bolt11,
             MintMeltLimits::new(1, 5_000),
@@ -44,20 +52,18 @@ async fn test_correct_keyset() {
         )
         .await
         .unwrap();
+    // .with_seed(mnemonic.to_seed_normalized("").to_vec());
 
-    mint_builder = mint_builder
-        .with_name("regtest mint".to_string())
-        .with_description("regtest mint".to_string())
-        .with_seed(mnemonic.to_seed_normalized("").to_vec());
-
-    let mint = mint_builder.build().await.unwrap();
-
-    localstore
-        .set_mint_info(mint_builder.mint_info.clone())
+    let mint = mint_builder
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
         .await
         .unwrap();
+    let mut tx = localstore.begin_transaction().await.unwrap();
+
     let quote_ttl = QuoteTTL::new(10000, 10000);
-    localstore.set_quote_ttl(quote_ttl).await.unwrap();
+    tx.set_quote_ttl(quote_ttl).await.unwrap();
+
+    tx.commit().await.unwrap();
 
     let active = mint.get_active_keysets();
 
@@ -79,7 +85,6 @@ async fn test_correct_keyset() {
     assert_ne!(keyset_info.id, old_keyset_info.id);
 
     mint.rotate_keyset(CurrencyUnit::Sat, 32, 0).await.unwrap();
-    let mint = mint_builder.build().await.unwrap();
 
     let active = mint.get_active_keysets();
 

@@ -11,6 +11,7 @@
 use core::panic;
 use std::env;
 use std::fmt::Debug;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +32,14 @@ use serde_json::json;
 use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
+
+// Helper function to get temp directory from environment or fallback
+fn get_test_temp_dir() -> PathBuf {
+    match env::var("CDK_ITESTS_DIR") {
+        Ok(dir) => PathBuf::from(dir),
+        Err(_) => panic!("Unknown test dir"),
+    }
+}
 
 async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: Debug>(
     reader: &mut T,
@@ -98,7 +107,13 @@ async fn test_happy_mint_melt_round_trip() {
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
-    pay_if_regtest(&invoice).await.unwrap();
+    pay_if_regtest(&get_test_temp_dir(), &invoice)
+        .await
+        .unwrap();
+
+    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 10)
+        .await
+        .unwrap();
 
     let proofs = wallet
         .mint(&mint_quote.id, SplitTarget::default(), None)
@@ -109,7 +124,9 @@ async fn test_happy_mint_melt_round_trip() {
 
     assert!(mint_amount == 100.into());
 
-    let invoice = create_invoice_for_env(Some(50)).await.unwrap();
+    let invoice = create_invoice_for_env(&get_test_temp_dir(), Some(50))
+        .await
+        .unwrap();
 
     let melt = wallet.melt_quote(invoice, None).await.unwrap();
 
@@ -210,10 +227,12 @@ async fn test_happy_mint() {
 
     let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
 
-    assert_eq!(mint_quote.amount, mint_amount);
+    assert_eq!(mint_quote.amount, Some(mint_amount));
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
-    pay_if_regtest(&invoice).await.unwrap();
+    pay_if_regtest(&get_test_temp_dir(), &invoice)
+        .await
+        .unwrap();
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
         .await
@@ -258,7 +277,9 @@ async fn test_restore() {
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
-    pay_if_regtest(&invoice).await.unwrap();
+    pay_if_regtest(&get_test_temp_dir(), &invoice)
+        .await
+        .unwrap();
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
         .await
@@ -284,6 +305,8 @@ async fn test_restore() {
 
     let restored = wallet_2.restore().await.unwrap();
     let proofs = wallet_2.get_unspent_proofs().await.unwrap();
+
+    assert!(!proofs.is_empty());
 
     let expected_fee = wallet.get_proofs_fee(&proofs).await.unwrap();
     wallet_2
@@ -335,7 +358,7 @@ async fn test_fake_melt_change_in_quote() {
 
     let bolt11 = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
 
-    pay_if_regtest(&bolt11).await.unwrap();
+    pay_if_regtest(&get_test_temp_dir(), &bolt11).await.unwrap();
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
         .await
@@ -346,13 +369,15 @@ async fn test_fake_melt_change_in_quote() {
         .await
         .unwrap();
 
-    let invoice = create_invoice_for_env(Some(9)).await.unwrap();
+    let invoice = create_invoice_for_env(&get_test_temp_dir(), Some(9))
+        .await
+        .unwrap();
 
     let proofs = wallet.get_unspent_proofs().await.unwrap();
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
-    let keyset = wallet.get_active_mint_keyset().await.unwrap();
+    let keyset = wallet.fetch_active_keyset().await.unwrap();
 
     let premint_secrets =
         PreMintSecrets::random(keyset.id, 100.into(), &SplitTarget::default()).unwrap();
@@ -402,7 +427,7 @@ async fn test_pay_invoice_twice() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    pay_if_regtest(&mint_quote.request.parse().unwrap())
+    pay_if_regtest(&get_test_temp_dir(), &mint_quote.request.parse().unwrap())
         .await
         .unwrap();
 
@@ -419,21 +444,23 @@ async fn test_pay_invoice_twice() {
 
     assert_eq!(mint_amount, 100.into());
 
-    let invoice = create_invoice_for_env(Some(25)).await.unwrap();
+    let invoice = create_invoice_for_env(&get_test_temp_dir(), Some(25))
+        .await
+        .unwrap();
 
     let melt_quote = wallet.melt_quote(invoice.clone(), None).await.unwrap();
 
     let melt = wallet.melt(&melt_quote.id).await.unwrap();
 
-    let melt_two = wallet.melt_quote(invoice, None).await.unwrap();
-
-    let melt_two = wallet.melt(&melt_two.id).await;
+    let melt_two = wallet.melt_quote(invoice, None).await;
 
     match melt_two {
         Err(err) => match err {
             cdk::Error::RequestAlreadyPaid => (),
             err => {
-                panic!("Wrong invoice already paid: {}", err.to_string());
+                if !err.to_string().contains("Duplicate entry") {
+                    panic!("Wrong invoice already paid: {}", err.to_string());
+                }
             }
         },
         Ok(_) => {

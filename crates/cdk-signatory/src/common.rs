@@ -25,13 +25,14 @@ pub async fn init_keysets(
     // Get keysets info from DB
     let keysets_infos = localstore.get_keyset_infos().await?;
 
+    let mut tx = localstore.begin_transaction().await?;
     if !keysets_infos.is_empty() {
         tracing::debug!("Setting all saved keysets to inactive");
         for keyset in keysets_infos.clone() {
             // Set all to in active
             let mut keyset = keyset;
             keyset.active = false;
-            localstore.add_keyset_info(keyset).await?;
+            tx.add_keyset_info(keyset).await?;
         }
 
         let keysets_by_unit: HashMap<CurrencyUnit, Vec<MintKeySetInfo>> =
@@ -68,13 +69,15 @@ pub async fn init_keysets(
                         highest_index_keyset.max_order,
                         highest_index_keyset.unit.clone(),
                         highest_index_keyset.derivation_path.clone(),
+                        highest_index_keyset.final_expiry,
+                        cdk_common::nut02::KeySetVersion::Version00,
                     );
                     active_keysets.insert(id, keyset);
                     let mut keyset_info = highest_index_keyset;
                     keyset_info.active = true;
-                    localstore.add_keyset_info(keyset_info).await?;
+                    tx.add_keyset_info(keyset_info).await?;
                     active_keyset_units.push(unit.clone());
-                    localstore.set_active_keyset(unit, id).await?;
+                    tx.set_active_keyset(unit, id).await?;
                 } else {
                     // Check to see if there are not keysets by this unit
                     let derivation_path_index = if keysets.is_empty() {
@@ -97,11 +100,13 @@ pub async fn init_keysets(
                         unit.clone(),
                         *max_order,
                         *input_fee_ppk,
+                        // TODO: add Mint settings for a final expiry of newly generated keysets
+                        None,
                     );
 
                     let id = keyset_info.id;
-                    localstore.add_keyset_info(keyset_info).await?;
-                    localstore.set_active_keyset(unit.clone(), id).await?;
+                    tx.add_keyset_info(keyset_info).await?;
+                    tx.set_active_keyset(unit.clone(), id).await?;
                     active_keysets.insert(id, keyset);
                     active_keyset_units.push(unit.clone());
                 };
@@ -109,11 +114,14 @@ pub async fn init_keysets(
         }
     }
 
+    tx.commit().await?;
+
     Ok((active_keysets, active_keyset_units))
 }
 
 /// Generate new [`MintKeySetInfo`] from path
 #[tracing::instrument(skip_all)]
+#[allow(clippy::too_many_arguments)]
 pub fn create_new_keyset<C: secp256k1::Signing>(
     secp: &secp256k1::Secp256k1<C>,
     xpriv: Xpriv,
@@ -122,6 +130,7 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
     unit: CurrencyUnit,
     max_order: u8,
     input_fee_ppk: u64,
+    final_expiry: Option<u64>,
 ) -> (MintKeySet, MintKeySetInfo) {
     let keyset = MintKeySet::generate(
         secp,
@@ -130,13 +139,16 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
             .expect("RNG busted"),
         unit,
         max_order,
+        final_expiry,
+        // TODO: change this to Version01 to generate keysets v2
+        cdk_common::nut02::KeySetVersion::Version00,
     );
     let keyset_info = MintKeySetInfo {
         id: keyset.id,
         unit: keyset.unit.clone(),
         active: true,
         valid_from: unix_time(),
-        valid_to: None,
+        final_expiry: keyset.final_expiry,
         derivation_path,
         derivation_path_index,
         max_order,

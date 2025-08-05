@@ -3,7 +3,7 @@ use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use cdk::error::ErrorResponse;
+use cdk::error::{ErrorCode, ErrorResponse};
 #[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
@@ -22,6 +22,8 @@ use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
 use crate::MintState;
 
+/// Macro to add cache to endpoint
+#[macro_export]
 macro_rules! post_cache_wrapper {
     ($handler:ident, $request_type:ty, $response_type:ty) => {
         paste! {
@@ -163,11 +165,11 @@ pub(crate) async fn post_mint_bolt11_quote(
 
     let quote = state
         .mint
-        .get_mint_bolt11_quote(payload)
+        .get_mint_quote(payload.into())
         .await
         .map_err(into_response)?;
 
-    Ok(Json(quote))
+    Ok(Json(quote.try_into().map_err(into_response)?))
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -212,7 +214,7 @@ pub(crate) async fn get_check_mint_bolt11_quote(
             into_response(err)
         })?;
 
-    Ok(Json(quote))
+    Ok(Json(quote.try_into().map_err(into_response)?))
 }
 
 #[instrument(skip_all)]
@@ -299,7 +301,7 @@ pub(crate) async fn post_melt_bolt11_quote(
 
     let quote = state
         .mint
-        .get_melt_bolt11_quote(&payload)
+        .get_melt_quote(payload.into())
         .await
         .map_err(into_response)?;
 
@@ -382,11 +384,7 @@ pub(crate) async fn post_melt_bolt11(
             .map_err(into_response)?;
     }
 
-    let res = state
-        .mint
-        .melt_bolt11(&payload)
-        .await
-        .map_err(into_response)?;
+    let res = state.mint.melt(&payload).await.map_err(into_response)?;
 
     Ok(Json(res))
 }
@@ -544,9 +542,38 @@ pub(crate) fn into_response<T>(error: T) -> Response
 where
     T: Into<ErrorResponse>,
 {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json::<ErrorResponse>(error.into()),
-    )
-        .into_response()
+    let err_response: ErrorResponse = error.into();
+    let status_code = match err_response.code {
+        // Client errors (400 Bad Request)
+        ErrorCode::TokenAlreadySpent
+        | ErrorCode::TokenPending
+        | ErrorCode::QuoteNotPaid
+        | ErrorCode::QuoteExpired
+        | ErrorCode::QuotePending
+        | ErrorCode::KeysetNotFound
+        | ErrorCode::KeysetInactive
+        | ErrorCode::BlindedMessageAlreadySigned
+        | ErrorCode::UnsupportedUnit
+        | ErrorCode::TokensAlreadyIssued
+        | ErrorCode::MintingDisabled
+        | ErrorCode::InvoiceAlreadyPaid
+        | ErrorCode::TokenNotVerified
+        | ErrorCode::TransactionUnbalanced
+        | ErrorCode::AmountOutofLimitRange
+        | ErrorCode::WitnessMissingOrInvalid
+        | ErrorCode::DuplicateInputs
+        | ErrorCode::DuplicateOutputs
+        | ErrorCode::MultipleUnits
+        | ErrorCode::UnitMismatch
+        | ErrorCode::ClearAuthRequired
+        | ErrorCode::BlindAuthRequired => StatusCode::BAD_REQUEST,
+
+        // Auth failures (401 Unauthorized)
+        ErrorCode::ClearAuthFailed | ErrorCode::BlindAuthFailed => StatusCode::UNAUTHORIZED,
+
+        // Lightning/payment errors and unknown errors (500 Internal Server Error)
+        ErrorCode::LightningError | ErrorCode::Unknown(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+
+    (status_code, Json(err_response)).into_response()
 }

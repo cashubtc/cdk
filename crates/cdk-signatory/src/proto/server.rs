@@ -205,6 +205,11 @@ where
 {
     tracing::info!("Starting RPC server {}", addr);
 
+    #[cfg(not(target_arch = "wasm32"))]
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
     let mut server = match tls_dir {
         Some(tls_dir) => {
             tracing::info!("TLS configuration found, starting secure server");

@@ -1,20 +1,41 @@
+//! Integration Test Library
+//!
+//! This crate provides shared functionality for CDK integration tests.
+//! It includes utilities for setting up test environments, funding wallets,
+//! and common test operations across different test scenarios.
+//!
+//! Test Categories Supported:
+//! - Pure in-memory tests (no external dependencies)
+//! - Regtest environment tests (with actual Lightning nodes)
+//! - Authenticated mint tests
+//! - Multi-mint scenarios
+//!
+//! Key Components:
+//! - Test environment initialization
+//! - Wallet funding utilities
+//! - Lightning Network client helpers
+//! - Proof state management utilities
+
 use std::env;
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
-use cashu::Bolt11Invoice;
+use cashu::{Bolt11Invoice, PaymentMethod};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::{MintQuoteState, NotificationPayload, State};
 use cdk::wallet::WalletSubscription;
 use cdk::Wallet;
 use cdk_fake_wallet::create_fake_invoice;
-use init_regtest::{get_lnd_dir, get_mint_url, LND_RPC_ADDR};
+use init_regtest::{get_lnd_dir, LND_RPC_ADDR};
 use ln_regtest_rs::ln_client::{LightningClient, LndClient};
 use tokio::time::{sleep, timeout, Duration};
 
+pub mod cli;
 pub mod init_auth_mint;
 pub mod init_pure_tests;
 pub mod init_regtest;
+pub mod shared;
 
 pub async fn fund_wallet(wallet: Arc<Wallet>, amount: Amount) {
     let quote = wallet
@@ -30,6 +51,20 @@ pub async fn fund_wallet(wallet: Arc<Wallet>, amount: Amount) {
         .mint(&quote.id, SplitTarget::default(), None)
         .await
         .expect("Could not mint");
+}
+
+pub fn get_mint_url_from_env() -> String {
+    match env::var("CDK_TEST_MINT_URL") {
+        Ok(url) => url,
+        Err(_) => panic!("Mint url not set"),
+    }
+}
+
+pub fn get_second_mint_url_from_env() -> String {
+    match env::var("CDK_TEST_MINT_URL_2") {
+        Ok(url) => url,
+        Err(_) => panic!("Mint url not set"),
+    }
 }
 
 // Get all pending from wallet and attempt to swap
@@ -86,6 +121,10 @@ pub async fn wait_for_mint_to_be_paid(
                 if response.state == MintQuoteState::Paid {
                     return Ok(());
                 }
+            } else if let NotificationPayload::MintQuoteBolt12Response(response) = msg {
+                if response.amount_paid > Amount::ZERO {
+                    return Ok(());
+                }
             }
         }
         Err(anyhow!("Subscription ended without quote being paid"))
@@ -95,18 +134,40 @@ pub async fn wait_for_mint_to_be_paid(
 
     let check_interval = Duration::from_secs(5);
 
+    let method = wallet
+        .localstore
+        .get_mint_quote(mint_quote_id)
+        .await?
+        .map(|q| q.payment_method)
+        .unwrap_or_default();
+
     let periodic_task = async {
         loop {
-            match wallet.mint_quote_state(mint_quote_id).await {
-                Ok(result) => {
-                    if result.state == MintQuoteState::Paid {
-                        tracing::info!("mint quote paid via poll");
-                        return Ok(());
+            match method {
+                PaymentMethod::Bolt11 => match wallet.mint_quote_state(mint_quote_id).await {
+                    Ok(result) => {
+                        if result.state == MintQuoteState::Paid {
+                            tracing::info!("mint quote paid via poll");
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Could not check mint quote status: {:?}", e);
+                    }
+                },
+                PaymentMethod::Bolt12 => {
+                    match wallet.mint_bolt12_quote_state(mint_quote_id).await {
+                        Ok(result) => {
+                            if result.amount_paid > Amount::ZERO {
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Could not check mint quote status: {:?}", e);
+                        }
                     }
                 }
-                Err(e) => {
-                    tracing::error!("Could not check mint quote status: {:?}", e);
-                }
+                PaymentMethod::Custom(_) => (),
             }
             sleep(check_interval).await;
         }
@@ -125,33 +186,9 @@ pub async fn wait_for_mint_to_be_paid(
     }
 }
 
-/// Gets the mint URL from environment variable or falls back to default
-///
-/// Checks the CDK_TEST_MINT_URL environment variable:
-/// - If set, returns that URL
-/// - Otherwise falls back to the default URL from get_mint_url("0")
-pub fn get_mint_url_from_env() -> String {
-    match env::var("CDK_TEST_MINT_URL") {
-        Ok(url) => url,
-        Err(_) => get_mint_url("0"),
-    }
-}
-
-/// Gets the second mint URL from environment variable or falls back to default
-///
-/// Checks the CDK_TEST_MINT_URL_2 environment variable:
-/// - If set, returns that URL
-/// - Otherwise falls back to the default URL from get_mint_url("1")
-pub fn get_second_mint_url_from_env() -> String {
-    match env::var("CDK_TEST_MINT_URL_2") {
-        Ok(url) => url,
-        Err(_) => get_mint_url("1"),
-    }
-}
-
 // This is the ln wallet we use to send/receive ln payements as the wallet
-pub async fn init_lnd_client() -> LndClient {
-    let lnd_dir = get_lnd_dir("one");
+pub async fn init_lnd_client(work_dir: &Path) -> LndClient {
+    let lnd_dir = get_lnd_dir(work_dir, "one");
     let cert_file = lnd_dir.join("tls.cert");
     let macaroon_file = lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon");
     LndClient::new(format!("https://{LND_RPC_ADDR}"), cert_file, macaroon_file)
@@ -163,11 +200,10 @@ pub async fn init_lnd_client() -> LndClient {
 ///
 /// This is useful for tests that need to pay invoices in regtest mode but
 /// should be skipped in other environments.
-pub async fn pay_if_regtest(invoice: &Bolt11Invoice) -> Result<()> {
+pub async fn pay_if_regtest(work_dir: &Path, invoice: &Bolt11Invoice) -> Result<()> {
     // Check if the invoice is for the regtest network
     if invoice.network() == bitcoin::Network::Regtest {
-        println!("Regtest invoice");
-        let lnd_client = init_lnd_client().await;
+        let lnd_client = init_lnd_client(work_dir).await;
         lnd_client.pay_invoice(invoice.to_string()).await?;
         Ok(())
     } else {
@@ -195,10 +231,10 @@ pub fn is_regtest_env() -> bool {
 ///
 /// Uses the is_regtest_env() function to determine whether to
 /// create a real regtest invoice or a fake one for testing.
-pub async fn create_invoice_for_env(amount_sat: Option<u64>) -> Result<String> {
+pub async fn create_invoice_for_env(work_dir: &Path, amount_sat: Option<u64>) -> Result<String> {
     if is_regtest_env() {
         // In regtest mode, create a real invoice
-        let lnd_client = init_lnd_client().await;
+        let lnd_client = init_lnd_client(work_dir).await;
         lnd_client
             .create_invoice(amount_sat)
             .await
