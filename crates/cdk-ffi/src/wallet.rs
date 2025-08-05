@@ -273,6 +273,71 @@ impl Wallet {
             .collect();
         Ok(spent_bools)
     }
+
+    /// List transactions
+    pub async fn list_transactions(
+        &self,
+        direction: Option<TransactionDirection>,
+    ) -> Result<Vec<Transaction>, FfiError> {
+        let cdk_direction = direction.map(Into::into);
+        let transactions = self.inner.list_transactions(cdk_direction).await?;
+        Ok(transactions.into_iter().map(Into::into).collect())
+    }
+
+    /// Get transaction by ID
+    pub async fn get_transaction(
+        &self,
+        id: TransactionId,
+    ) -> Result<Option<Transaction>, FfiError> {
+        let cdk_id = id.try_into()?;
+        let transaction = self.inner.get_transaction(cdk_id).await?;
+        Ok(transaction.map(Into::into))
+    }
+
+    /// Revert a transaction
+    pub async fn revert_transaction(&self, id: TransactionId) -> Result<(), FfiError> {
+        let cdk_id = id.try_into()?;
+        self.inner.revert_transaction(cdk_id).await?;
+        Ok(())
+    }
+
+    /// Set Clear Auth Token (CAT) for authentication
+    #[cfg(feature = "auth")]
+    pub async fn set_cat(&self, cat: String) -> Result<(), FfiError> {
+        self.inner.set_cat(cat).await?;
+        Ok(())
+    }
+
+    /// Set refresh token for authentication
+    #[cfg(feature = "auth")]
+    pub async fn set_refresh_token(&self, refresh_token: String) -> Result<(), FfiError> {
+        self.inner.set_refresh_token(refresh_token).await?;
+        Ok(())
+    }
+
+    /// Refresh access token using the stored refresh token
+    #[cfg(feature = "auth")]
+    pub async fn refresh_access_token(&self) -> Result<(), FfiError> {
+        self.inner.refresh_access_token().await?;
+        Ok(())
+    }
+
+    /// Mint blind auth tokens
+    #[cfg(feature = "auth")]
+    pub async fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, FfiError> {
+        let proofs = self.inner.mint_blind_auth(amount.into()).await?;
+        Ok(proofs
+            .into_iter()
+            .map(|p| std::sync::Arc::new(p.into()))
+            .collect())
+    }
+
+    /// Get unspent auth proofs
+    #[cfg(feature = "auth")]
+    pub async fn get_unspent_auth_proofs(&self) -> Result<Vec<AuthProof>, FfiError> {
+        let auth_proofs = self.inner.get_unspent_auth_proofs().await?;
+        Ok(auth_proofs.into_iter().map(Into::into).collect())
+    }
 }
 
 /// Configuration for creating wallets

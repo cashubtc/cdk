@@ -10,6 +10,10 @@ rust-version.workspace = true
 crate-type = ["cdylib", "staticlib"]
 name = "cdk_ffi"
 
+[features]
+default = ["auth"]
+auth = ["cdk/auth"]
+
 [dependencies]
 cdk = { workspace = true, features = ["wallet"] }
 cdk-common = { workspace = true }

@@ -1279,6 +1279,176 @@ impl From<cdk::nuts::SpendingConditions> for SpendingConditions {
     }
 }
 
+/// FFI-compatible Transaction
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Transaction {
+    /// Transaction ID
+    pub id: TransactionId,
+    /// Mint URL
+    pub mint_url: MintUrl,
+    /// Transaction direction
+    pub direction: TransactionDirection,
+    /// Amount
+    pub amount: Amount,
+    /// Fee
+    pub fee: Amount,
+    /// Currency Unit
+    pub unit: CurrencyUnit,
+    /// Unix timestamp
+    pub timestamp: u64,
+    /// Memo
+    pub memo: Option<String>,
+    /// User-defined metadata
+    pub metadata: HashMap<String, String>,
+}
+
+impl From<cdk_common::wallet::Transaction> for Transaction {
+    fn from(tx: cdk_common::wallet::Transaction) -> Self {
+        Self {
+            id: tx.id().into(),
+            mint_url: tx.mint_url.into(),
+            direction: tx.direction.into(),
+            amount: tx.amount.into(),
+            fee: tx.fee.into(),
+            unit: tx.unit.into(),
+            timestamp: tx.timestamp,
+            memo: tx.memo,
+            metadata: tx.metadata,
+        }
+    }
+}
+
+/// FFI-compatible TransactionDirection
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum TransactionDirection {
+    /// Incoming transaction (i.e., receive or mint)
+    Incoming,
+    /// Outgoing transaction (i.e., send or melt)
+    Outgoing,
+}
+
+impl From<cdk_common::wallet::TransactionDirection> for TransactionDirection {
+    fn from(direction: cdk_common::wallet::TransactionDirection) -> Self {
+        match direction {
+            cdk_common::wallet::TransactionDirection::Incoming => TransactionDirection::Incoming,
+            cdk_common::wallet::TransactionDirection::Outgoing => TransactionDirection::Outgoing,
+        }
+    }
+}
+
+impl From<TransactionDirection> for cdk_common::wallet::TransactionDirection {
+    fn from(direction: TransactionDirection) -> Self {
+        match direction {
+            TransactionDirection::Incoming => cdk_common::wallet::TransactionDirection::Incoming,
+            TransactionDirection::Outgoing => cdk_common::wallet::TransactionDirection::Outgoing,
+        }
+    }
+}
+
+/// FFI-compatible TransactionId
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TransactionId {
+    /// Hex-encoded transaction ID (64 characters)
+    pub hex: String,
+}
+
+impl TransactionId {
+    /// Create a new TransactionId from hex string
+    pub fn from_hex(hex: String) -> Result<Self, FfiError> {
+        // Validate hex string length (should be 64 characters for 32 bytes)
+        if hex.len() != 64 {
+            return Err(FfiError::Generic {
+                msg: "Transaction ID hex must be exactly 64 characters (32 bytes)".to_string(),
+            });
+        }
+
+        // Validate hex format
+        if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(FfiError::Generic {
+                msg: "Transaction ID hex contains invalid characters".to_string(),
+            });
+        }
+
+        Ok(Self { hex })
+    }
+
+    /// Create from proofs
+    pub fn from_proofs(proofs: &Proofs) -> Result<Self, FfiError> {
+        let cdk_proofs: Vec<cdk::nuts::Proof> = proofs.iter().map(|p| p.inner.clone()).collect();
+        let id = cdk_common::wallet::TransactionId::from_proofs(cdk_proofs)?;
+        Ok(Self {
+            hex: id.to_string(),
+        })
+    }
+}
+
+impl From<cdk_common::wallet::TransactionId> for TransactionId {
+    fn from(id: cdk_common::wallet::TransactionId) -> Self {
+        Self {
+            hex: id.to_string(),
+        }
+    }
+}
+
+impl TryFrom<TransactionId> for cdk_common::wallet::TransactionId {
+    type Error = FfiError;
+
+    fn try_from(id: TransactionId) -> Result<Self, Self::Error> {
+        cdk_common::wallet::TransactionId::from_hex(&id.hex)
+            .map_err(|e| FfiError::Generic { msg: e.to_string() })
+    }
+}
+
+/// FFI-compatible AuthProof
+#[cfg(feature = "auth")]
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AuthProof {
+    /// Keyset ID
+    pub keyset_id: String,
+    /// Secret message
+    pub secret: String,
+    /// Unblinded signature (C)
+    pub c: String,
+    /// Y value (hash_to_curve of secret)
+    pub y: String,
+}
+
+#[cfg(feature = "auth")]
+impl From<cdk_common::AuthProof> for AuthProof {
+    fn from(auth_proof: cdk_common::AuthProof) -> Self {
+        Self {
+            keyset_id: auth_proof.keyset_id.to_string(),
+            secret: auth_proof.secret.to_string(),
+            c: auth_proof.c.to_string(),
+            y: auth_proof
+                .y()
+                .map(|y| y.to_string())
+                .unwrap_or_else(|_| "".to_string()),
+        }
+    }
+}
+
+#[cfg(feature = "auth")]
+impl TryFrom<AuthProof> for cdk_common::AuthProof {
+    type Error = FfiError;
+
+    fn try_from(auth_proof: AuthProof) -> Result<Self, Self::Error> {
+        use std::str::FromStr;
+        Ok(Self {
+            keyset_id: cdk_common::Id::from_str(&auth_proof.keyset_id)
+                .map_err(|e| FfiError::Generic { msg: e.to_string() })?,
+            secret: {
+                use std::str::FromStr;
+                cdk_common::secret::Secret::from_str(&auth_proof.secret)
+                    .map_err(|e| FfiError::Generic { msg: e.to_string() })?
+            },
+            c: cdk_common::PublicKey::from_str(&auth_proof.c)
+                .map_err(|e| FfiError::Generic { msg: e.to_string() })?,
+            dleq: None, // FFI doesn't expose DLEQ proofs for simplicity
+        })
+    }
+}
+
 impl TryFrom<SpendingConditions> for cdk::nuts::SpendingConditions {
     type Error = FfiError;
 
