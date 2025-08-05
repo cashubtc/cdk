@@ -1,3 +1,5 @@
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::METRICS;
 use tracing::instrument;
 
 use super::nut11::{enforce_sig_flag, EnforceSigFlag};
@@ -12,6 +14,9 @@ impl Mint {
         &self,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("process_swap_request");
+
         let mut tx = self.localstore.begin_transaction().await?;
 
         if let Err(err) = self
@@ -19,16 +24,40 @@ impl Mint {
             .await
         {
             tracing::debug!("Attempt to swap unbalanced transaction, aborting: {err}");
+
+            #[cfg(feature = "prometheus")]
+            {
+                METRICS.dec_in_flight_requests("process_swap_request");
+                METRICS.record_mint_operation("process_swap_request", false);
+                METRICS.record_error();
+            }
+
             return Err(err);
         };
 
-        self.validate_sig_flag(&swap_request).await?;
-
+        let validate_sig_result = self.validate_sig_flag(&swap_request).await;
+        if validate_sig_result.is_err() {
+            #[cfg(feature = "prometheus")]
+            self.record_swap_failure("process_swap_request");
+            return Err(validate_sig_result.err().unwrap());
+        }
         let mut proof_writer =
             ProofWriter::new(self.localstore.clone(), self.pubsub_manager.clone());
-        let input_ys = proof_writer
+        let input_ys = match proof_writer
             .add_proofs(&mut tx, swap_request.inputs())
-            .await?;
+            .await
+        {
+            Ok(ys) => ys,
+            Err(err) => {
+                #[cfg(feature = "prometheus")]
+                {
+                    METRICS.dec_in_flight_requests("process_swap_request");
+                    METRICS.record_mint_operation("process_swap_request", false);
+                    METRICS.record_error();
+                }
+                return Err(err);
+            }
+        };
 
         let mut promises = Vec::with_capacity(swap_request.outputs().len());
 
@@ -37,9 +66,15 @@ impl Mint {
             promises.push(blinded_signature);
         }
 
-        proof_writer
+        let update_proof_states_result = proof_writer
             .update_proofs_states(&mut tx, &input_ys, State::Spent)
-            .await?;
+            .await;
+
+        if update_proof_states_result.is_err() {
+            #[cfg(feature = "prometheus")]
+            self.record_swap_failure("process_swap_request");
+            return Err(update_proof_states_result.err().unwrap());
+        }
 
         tx.add_blind_signatures(
             &swap_request
@@ -55,7 +90,15 @@ impl Mint {
         proof_writer.commit();
         tx.commit().await?;
 
-        Ok(SwapResponse::new(promises))
+        let response = SwapResponse::new(promises);
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("process_swap_request");
+            METRICS.record_mint_operation("process_swap_request", true);
+        }
+
+        Ok(response)
     }
 
     async fn validate_sig_flag(&self, swap_request: &SwapRequest) -> Result<(), Error> {
@@ -66,5 +109,11 @@ impl Mint {
         }
 
         Ok(())
+    }
+    #[cfg(feature = "prometheus")]
+    fn record_swap_failure(&self, operation: &str) {
+        METRICS.dec_in_flight_requests(operation);
+        METRICS.record_mint_operation(operation, false);
+        METRICS.record_error();
     }
 }

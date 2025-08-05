@@ -7,6 +7,11 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+#[cfg(feature = "prometheus")]
+use std::time::Instant;
+
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::metrics::METRICS;
 
 /// Pool error
 #[derive(thiserror::Error, Debug)]
@@ -70,6 +75,8 @@ where
 {
     resource: Option<(Arc<AtomicBool>, RM::Resource)>,
     pool: Arc<Pool<RM>>,
+    #[cfg(feature = "prometheus")]
+    start_time: Instant,
 }
 
 impl<RM> Drop for PooledResource<RM>
@@ -80,7 +87,16 @@ where
         if let Some(resource) = self.resource.take() {
             let mut active_resource = self.pool.queue.lock().expect("active_resource");
             active_resource.push(resource);
-            self.pool.in_use.fetch_sub(1, Ordering::AcqRel);
+
+            #[cfg(feature = "prometheus")]
+            {
+                let in_use = self.pool.in_use.fetch_sub(1, Ordering::AcqRel);
+                METRICS.set_db_connections_active(in_use as i64);
+
+                let duration = self.start_time.elapsed().as_secs_f64();
+
+                METRICS.record_db_operation(duration, "drop");
+            }
 
             // Notify a waiting thread
             self.pool.waiter.notify_one();
@@ -144,19 +160,29 @@ where
         loop {
             if let Some((stale, resource)) = resources.pop() {
                 if !stale.load(Ordering::SeqCst) {
+                    #[cfg(feature = "prometheus")]
+                    {
+                        let in_use = self.in_use.fetch_add(1, Ordering::AcqRel);
+                        METRICS.set_db_connections_active(in_use as i64);
+                    }
                     drop(resources);
-                    self.in_use.fetch_add(1, Ordering::AcqRel);
 
                     return Ok(PooledResource {
                         resource: Some((stale, resource)),
                         pool: self.clone(),
+                        #[cfg(feature = "prometheus")]
+                        start_time: Instant::now(),
                     });
                 }
             }
 
             if self.in_use.load(Ordering::Relaxed) < self.max_size {
                 drop(resources);
-                self.in_use.fetch_add(1, Ordering::AcqRel);
+                #[cfg(feature = "prometheus")]
+                {
+                    let in_use = self.in_use.fetch_add(1, Ordering::AcqRel);
+                    METRICS.set_db_connections_active(in_use as i64);
+                }
                 let stale: Arc<AtomicBool> = Arc::new(false.into());
 
                 return Ok(PooledResource {
@@ -165,6 +191,8 @@ where
                         RM::new_resource(&self.config, stale, timeout)?,
                     )),
                     pool: self.clone(),
+                    #[cfg(feature = "prometheus")]
+                    start_time: Instant::now(),
                 });
             }
 
