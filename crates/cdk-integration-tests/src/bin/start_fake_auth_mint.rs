@@ -17,6 +17,7 @@ use anyhow::Result;
 use bip39::Mnemonic;
 use cdk_integration_tests::cli::CommonArgs;
 use cdk_integration_tests::shared;
+use cdk_mintd::config::AuthType;
 use clap::Parser;
 use tokio::sync::Notify;
 
@@ -68,16 +69,19 @@ async fn start_fake_auth_mint(
 
     // Enable authentication
     settings.auth = Some(cdk_mintd::config::Auth {
+        auth_enabled: true,
         openid_discovery,
         openid_client_id: "cashu-client".to_string(),
         mint_max_bat: 50,
-        enabled_mint: true,
-        enabled_melt: true,
-        enabled_swap: true,
-        enabled_check_mint_quote: true,
-        enabled_check_melt_quote: true,
-        enabled_restore: true,
-        enabled_check_proof_state: true,
+        mint: AuthType::Blind,
+        get_mint_quote: AuthType::Blind,
+        check_mint_quote: AuthType::Blind,
+        melt: AuthType::Blind,
+        get_melt_quote: AuthType::Blind,
+        check_melt_quote: AuthType::Blind,
+        swap: AuthType::Blind,
+        restore: AuthType::Blind,
+        check_proof_state: AuthType::Blind,
     });
 
     // Set description for the mint

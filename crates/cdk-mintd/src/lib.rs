@@ -43,7 +43,7 @@ use cdk_axum::cache::HttpCache;
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
-use config::{DatabaseEngine, LnBackend};
+use config::{AuthType, DatabaseEngine, LnBackend};
 use env_vars::ENV_WORK_DIR;
 use setup::LnBackendSetup;
 use tower::ServiceBuilder;
@@ -456,116 +456,110 @@ async fn setup_authentication(
             }
         };
 
+        let mut protected_endpoints = HashMap::new();
+        let mut blind_auth_endpoints = vec![];
+        let mut clear_auth_endpoints = vec![];
+        let mut unprotected_endpoints = vec![];
+
         let mint_blind_auth_endpoint =
             ProtectedEndpoint::new(Method::Post, RoutePath::MintBlindAuth);
 
-        let mut protected_endpoints = HashMap::new();
-
         protected_endpoints.insert(mint_blind_auth_endpoint, AuthRequired::Clear);
 
-        let mut blind_auth_endpoints = vec![];
-        let mut unprotected_endpoints = vec![];
+        clear_auth_endpoints.push(mint_blind_auth_endpoint);
 
+        // Helper function to add endpoint based on auth type
+        let mut add_endpoint = |endpoint: ProtectedEndpoint, auth_type: &AuthType| {
+            match auth_type {
+                AuthType::Blind => {
+                    protected_endpoints.insert(endpoint, AuthRequired::Blind);
+                    blind_auth_endpoints.push(endpoint);
+                }
+                AuthType::Clear => {
+                    protected_endpoints.insert(endpoint, AuthRequired::Clear);
+                    clear_auth_endpoints.push(endpoint);
+                }
+                AuthType::None => {
+                    unprotected_endpoints.push(endpoint);
+                }
+            };
+        };
+
+        // Get mint quote endpoint
         {
             let mint_quote_protected_endpoint =
-                ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt11);
-            let mint_protected_endpoint =
-                ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11);
-            if auth_settings.enabled_mint {
-                protected_endpoints.insert(mint_quote_protected_endpoint, AuthRequired::Blind);
-
-                protected_endpoints.insert(mint_protected_endpoint, AuthRequired::Blind);
-
-                blind_auth_endpoints.push(mint_quote_protected_endpoint);
-                blind_auth_endpoints.push(mint_protected_endpoint);
-            } else {
-                unprotected_endpoints.push(mint_protected_endpoint);
-                unprotected_endpoints.push(mint_quote_protected_endpoint);
-            }
+                ProtectedEndpoint::new(cdk::nuts::Method::Post, RoutePath::MintQuoteBolt11);
+            add_endpoint(mint_quote_protected_endpoint, &auth_settings.get_mint_quote);
         }
 
-        {
-            let melt_quote_protected_endpoint =
-                ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuoteBolt11);
-            let melt_protected_endpoint =
-                ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11);
-
-            if auth_settings.enabled_melt {
-                protected_endpoints.insert(melt_quote_protected_endpoint, AuthRequired::Blind);
-                protected_endpoints.insert(melt_protected_endpoint, AuthRequired::Blind);
-
-                blind_auth_endpoints.push(melt_quote_protected_endpoint);
-                blind_auth_endpoints.push(melt_protected_endpoint);
-            } else {
-                unprotected_endpoints.push(melt_quote_protected_endpoint);
-                unprotected_endpoints.push(melt_protected_endpoint);
-            }
-        }
-
-        {
-            let swap_protected_endpoint = ProtectedEndpoint::new(Method::Post, RoutePath::Swap);
-
-            if auth_settings.enabled_swap {
-                protected_endpoints.insert(swap_protected_endpoint, AuthRequired::Blind);
-                blind_auth_endpoints.push(swap_protected_endpoint);
-            } else {
-                unprotected_endpoints.push(swap_protected_endpoint);
-            }
-        }
-
+        // Check mint quote endpoint
         {
             let check_mint_protected_endpoint =
                 ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11);
-
-            if auth_settings.enabled_check_mint_quote {
-                protected_endpoints.insert(check_mint_protected_endpoint, AuthRequired::Blind);
-                blind_auth_endpoints.push(check_mint_protected_endpoint);
-            } else {
-                unprotected_endpoints.push(check_mint_protected_endpoint);
-            }
+            add_endpoint(
+                check_mint_protected_endpoint,
+                &auth_settings.check_mint_quote,
+            );
         }
 
+        // Mint endpoint
+        {
+            let mint_protected_endpoint =
+                ProtectedEndpoint::new(cdk::nuts::Method::Post, RoutePath::MintBolt11);
+            add_endpoint(mint_protected_endpoint, &auth_settings.mint);
+        }
+
+        // Get melt quote endpoint
+        {
+            let melt_quote_protected_endpoint = ProtectedEndpoint::new(
+                cdk::nuts::Method::Post,
+                cdk::nuts::RoutePath::MeltQuoteBolt11,
+            );
+            add_endpoint(melt_quote_protected_endpoint, &auth_settings.get_melt_quote);
+        }
+
+        // Check melt quote endpoint
         {
             let check_melt_protected_endpoint =
                 ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuoteBolt11);
-
-            if auth_settings.enabled_check_melt_quote {
-                protected_endpoints.insert(check_melt_protected_endpoint, AuthRequired::Blind);
-                blind_auth_endpoints.push(check_melt_protected_endpoint);
-            } else {
-                unprotected_endpoints.push(check_melt_protected_endpoint);
-            }
+            add_endpoint(
+                check_melt_protected_endpoint,
+                &auth_settings.check_melt_quote,
+            );
         }
 
+        // Melt endpoint
+        {
+            let melt_protected_endpoint =
+                ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11);
+            add_endpoint(melt_protected_endpoint, &auth_settings.melt);
+        }
+
+        // Swap endpoint
+        {
+            let swap_protected_endpoint = ProtectedEndpoint::new(Method::Post, RoutePath::Swap);
+            add_endpoint(swap_protected_endpoint, &auth_settings.swap);
+        }
+
+        // Restore endpoint
         {
             let restore_protected_endpoint =
                 ProtectedEndpoint::new(Method::Post, RoutePath::Restore);
-
-            if auth_settings.enabled_restore {
-                protected_endpoints.insert(restore_protected_endpoint, AuthRequired::Blind);
-                blind_auth_endpoints.push(restore_protected_endpoint);
-            } else {
-                unprotected_endpoints.push(restore_protected_endpoint);
-            }
+            add_endpoint(restore_protected_endpoint, &auth_settings.restore);
         }
 
+        // Check proof state endpoint
         {
             let state_protected_endpoint =
                 ProtectedEndpoint::new(Method::Post, RoutePath::Checkstate);
-
-            if auth_settings.enabled_check_proof_state {
-                protected_endpoints.insert(state_protected_endpoint, AuthRequired::Blind);
-                blind_auth_endpoints.push(state_protected_endpoint);
-            } else {
-                unprotected_endpoints.push(state_protected_endpoint);
-            }
+            add_endpoint(state_protected_endpoint, &auth_settings.check_proof_state);
         }
 
         mint_builder = mint_builder.with_auth(
             auth_localstore.clone(),
             auth_settings.openid_discovery,
             auth_settings.openid_client_id,
-            vec![mint_blind_auth_endpoint],
+            clear_auth_endpoints,
         );
         mint_builder =
             mint_builder.with_blind_auth(auth_settings.mint_max_bat, blind_auth_endpoints);

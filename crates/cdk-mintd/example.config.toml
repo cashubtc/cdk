@@ -83,13 +83,23 @@ reserve_fee_min = 4
 # tls_dir = "/path/to/tls"
 
 # [auth]
+# Set to true to enable authentication features (defaults to false)
+# auth_enabled = false
 # openid_discovery = "http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration"
 # openid_client_id = "cashu-client"
 # mint_max_bat=50
-# enabled_mint=true
-# enabled_melt=true
-# enabled_swap=true
-# enabled_check_mint_quote=true
-# enabled_check_melt_quote=true
-# enabled_restore=true
-# enabled_check_proof_state=true
+
+# Authentication settings for endpoints
+# Options: "clear", "blind", "none" (none = disabled)
+
+# mint = "blind"
+# get_mint_quote = "none"  
+# check_mint_quote = "none"
+
+# melt = "none"
+# get_melt_quote = "none"
+# check_melt_quote = "none"
+
+# swap = "blind"
+# restore = "blind"
+# check_proof_state = "none"
