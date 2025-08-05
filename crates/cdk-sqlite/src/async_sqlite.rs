@@ -1,7 +1,7 @@
 //! Simple SQLite
 use cdk_common::database::Error;
-use cdk_sql_common::database::{DatabaseConnector, DatabaseExecutor, GenericTransactionHandler};
-use cdk_sql_common::stmt::{Column, SqlPart, Statement};
+use cdk_sql_common::database::{DatabaseConnector, DatabaseExecutor, DatabaseTransaction};
+use cdk_sql_common::stmt::{query, Column, SqlPart, Statement};
 use rusqlite::{ffi, CachedStatement, Connection, Error as SqliteError, ErrorCode};
 use tokio::sync::Mutex;
 
@@ -67,8 +67,32 @@ fn to_sqlite_error(err: SqliteError) -> Error {
     }
 }
 
+/// SQLite trasanction handler
+pub struct SQLiteTransactionHandler;
+
+#[async_trait::async_trait]
+impl DatabaseTransaction<AsyncSqlite> for SQLiteTransactionHandler {
+    /// Consumes the current transaction committing the changes
+    async fn commit(conn: &mut AsyncSqlite) -> Result<(), Error> {
+        query("COMMIT")?.execute(conn).await?;
+        Ok(())
+    }
+
+    /// Begin a transaction
+    async fn begin(conn: &mut AsyncSqlite) -> Result<(), Error> {
+        query("BEGIN IMMEDIATE")?.execute(conn).await?;
+        Ok(())
+    }
+
+    /// Consumes the transaction rolling back all changes
+    async fn rollback(conn: &mut AsyncSqlite) -> Result<(), Error> {
+        query("ROLLBACK")?.execute(conn).await?;
+        Ok(())
+    }
+}
+
 impl DatabaseConnector for AsyncSqlite {
-    type Transaction = GenericTransactionHandler<Self>;
+    type Transaction = SQLiteTransactionHandler;
 }
 
 #[async_trait::async_trait]
