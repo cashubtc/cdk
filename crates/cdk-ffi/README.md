@@ -16,12 +16,11 @@ let config = WalletConfig {
     target_proof_count: Some(3), // or None for default
 };
 
-// Create wallet with mnemonic
+// Create wallet with mnemonic (no passphrase used)
 let wallet = Wallet::new(
     "https://mint.example.com".to_string(),
     CurrencyUnit::Sat,
     mnemonic,
-    Some("optional_passphrase".to_string()), // or None for no passphrase
     config
 ).await?;
 

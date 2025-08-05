@@ -23,14 +23,13 @@ impl Wallet {
         mint_url: String,
         unit: CurrencyUnit,
         mnemonic: String,
-        passphrase: Option<String>,
         config: WalletConfig,
     ) -> Result<Self, FfiError> {
-        // Parse mnemonic and generate seed
+        // Parse mnemonic and generate seed without passphrase
         let m = Mnemonic::parse(&mnemonic).map_err(|e| FfiError::Generic {
             msg: format!("Invalid mnemonic: {}", e),
         })?;
-        let seed = m.to_seed_normalized(passphrase.as_deref().unwrap_or_default());
+        let seed = m.to_seed_normalized("");
 
         let localstore: Arc<
             dyn cdk_common::database::WalletDatabase<Err = cdk_common::database::Error>
