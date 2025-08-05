@@ -4,19 +4,28 @@ use std::env;
 
 use crate::config::Auth;
 
+pub const ENV_AUTH_ENABLED: &str = "CDK_MINTD_AUTH_ENABLED";
 pub const ENV_AUTH_OPENID_DISCOVERY: &str = "CDK_MINTD_AUTH_OPENID_DISCOVERY";
 pub const ENV_AUTH_OPENID_CLIENT_ID: &str = "CDK_MINTD_AUTH_OPENID_CLIENT_ID";
 pub const ENV_AUTH_MINT_MAX_BAT: &str = "CDK_MINTD_AUTH_MINT_MAX_BAT";
-pub const ENV_AUTH_ENABLED_MINT: &str = "CDK_MINTD_AUTH_ENABLED_MINT";
-pub const ENV_AUTH_ENABLED_MELT: &str = "CDK_MINTD_AUTH_ENABLED_MELT";
-pub const ENV_AUTH_ENABLED_SWAP: &str = "CDK_MINTD_AUTH_ENABLED_SWAP";
-pub const ENV_AUTH_ENABLED_CHECK_MINT_QUOTE: &str = "CDK_MINTD_AUTH_ENABLED_CHECK_MINT_QUOTE";
-pub const ENV_AUTH_ENABLED_CHECK_MELT_QUOTE: &str = "CDK_MINTD_AUTH_ENABLED_CHECK_MELT_QUOTE";
-pub const ENV_AUTH_ENABLED_RESTORE: &str = "CDK_MINTD_AUTH_ENABLED_RESTORE";
-pub const ENV_AUTH_ENABLED_CHECK_PROOF_STATE: &str = "CDK_MINTD_AUTH_ENABLED_CHECK_PROOF_STATE";
+pub const ENV_AUTH_MINT: &str = "CDK_MINTD_AUTH_MINT";
+pub const ENV_AUTH_GET_MINT_QUOTE: &str = "CDK_MINTD_AUTH_GET_MINT_QUOTE";
+pub const ENV_AUTH_CHECK_MINT_QUOTE: &str = "CDK_MINTD_AUTH_CHECK_MINT_QUOTE";
+pub const ENV_AUTH_MELT: &str = "CDK_MINTD_AUTH_MELT";
+pub const ENV_AUTH_GET_MELT_QUOTE: &str = "CDK_MINTD_AUTH_GET_MELT_QUOTE";
+pub const ENV_AUTH_CHECK_MELT_QUOTE: &str = "CDK_MINTD_AUTH_CHECK_MELT_QUOTE";
+pub const ENV_AUTH_SWAP: &str = "CDK_MINTD_AUTH_SWAP";
+pub const ENV_AUTH_RESTORE: &str = "CDK_MINTD_AUTH_RESTORE";
+pub const ENV_AUTH_CHECK_PROOF_STATE: &str = "CDK_MINTD_AUTH_CHECK_PROOF_STATE";
 
 impl Auth {
     pub fn from_env(mut self) -> Self {
+        if let Ok(enabled_str) = env::var(ENV_AUTH_ENABLED) {
+            if let Ok(enabled) = enabled_str.parse() {
+                self.auth_enabled = enabled;
+            }
+        }
+
         if let Ok(discovery) = env::var(ENV_AUTH_OPENID_DISCOVERY) {
             self.openid_discovery = discovery;
         }
@@ -31,45 +40,57 @@ impl Auth {
             }
         }
 
-        if let Ok(enabled_mint_str) = env::var(ENV_AUTH_ENABLED_MINT) {
-            if let Ok(enabled) = enabled_mint_str.parse() {
-                self.enabled_mint = enabled;
+        if let Ok(mint_str) = env::var(ENV_AUTH_MINT) {
+            if let Ok(auth_type) = mint_str.parse() {
+                self.mint = auth_type;
             }
         }
 
-        if let Ok(enabled_melt_str) = env::var(ENV_AUTH_ENABLED_MELT) {
-            if let Ok(enabled) = enabled_melt_str.parse() {
-                self.enabled_melt = enabled;
+        if let Ok(get_mint_quote_str) = env::var(ENV_AUTH_GET_MINT_QUOTE) {
+            if let Ok(auth_type) = get_mint_quote_str.parse() {
+                self.get_mint_quote = auth_type;
             }
         }
 
-        if let Ok(enabled_swap_str) = env::var(ENV_AUTH_ENABLED_SWAP) {
-            if let Ok(enabled) = enabled_swap_str.parse() {
-                self.enabled_swap = enabled;
+        if let Ok(check_mint_quote_str) = env::var(ENV_AUTH_CHECK_MINT_QUOTE) {
+            if let Ok(auth_type) = check_mint_quote_str.parse() {
+                self.check_mint_quote = auth_type;
             }
         }
 
-        if let Ok(enabled_check_mint_str) = env::var(ENV_AUTH_ENABLED_CHECK_MINT_QUOTE) {
-            if let Ok(enabled) = enabled_check_mint_str.parse() {
-                self.enabled_check_mint_quote = enabled;
+        if let Ok(melt_str) = env::var(ENV_AUTH_MELT) {
+            if let Ok(auth_type) = melt_str.parse() {
+                self.melt = auth_type;
             }
         }
 
-        if let Ok(enabled_check_melt_str) = env::var(ENV_AUTH_ENABLED_CHECK_MELT_QUOTE) {
-            if let Ok(enabled) = enabled_check_melt_str.parse() {
-                self.enabled_check_melt_quote = enabled;
+        if let Ok(get_melt_quote_str) = env::var(ENV_AUTH_GET_MELT_QUOTE) {
+            if let Ok(auth_type) = get_melt_quote_str.parse() {
+                self.get_melt_quote = auth_type;
             }
         }
 
-        if let Ok(enabled_restore_str) = env::var(ENV_AUTH_ENABLED_RESTORE) {
-            if let Ok(enabled) = enabled_restore_str.parse() {
-                self.enabled_restore = enabled;
+        if let Ok(check_melt_quote_str) = env::var(ENV_AUTH_CHECK_MELT_QUOTE) {
+            if let Ok(auth_type) = check_melt_quote_str.parse() {
+                self.check_melt_quote = auth_type;
             }
         }
 
-        if let Ok(enabled_check_proof_str) = env::var(ENV_AUTH_ENABLED_CHECK_PROOF_STATE) {
-            if let Ok(enabled) = enabled_check_proof_str.parse() {
-                self.enabled_check_proof_state = enabled;
+        if let Ok(swap_str) = env::var(ENV_AUTH_SWAP) {
+            if let Ok(auth_type) = swap_str.parse() {
+                self.swap = auth_type;
+            }
+        }
+
+        if let Ok(restore_str) = env::var(ENV_AUTH_RESTORE) {
+            if let Ok(auth_type) = restore_str.parse() {
+                self.restore = auth_type;
+            }
+        }
+
+        if let Ok(check_proof_state_str) = env::var(ENV_AUTH_CHECK_PROOF_STATE) {
+            if let Ok(auth_type) = check_proof_state_str.parse() {
+                self.check_proof_state = auth_type;
             }
         }
 
