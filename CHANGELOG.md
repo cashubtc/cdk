@@ -18,6 +18,9 @@
 - cdk-integration-tests: New binary `start_fake_mint` for testing fake mint instances ([thesimplekid]).
 - cdk-integration-tests: New binary `start_regtest_mints` for testing regtest mints ([thesimplekid]).
 - cdk-integration-tests: Shared utilities module for common integration test functionality ([thesimplekid]).
+- cdk-ldk-node: New Lightning backend implementation using LDK Node for improved Lightning Network functionality ([thesimplekid]).
+- cdk-common: Added `start()` and `stop()` methods to `MintPayment` trait for payment processor lifecycle management ([thesimplekid]).
+- cdk-mintd: Added LDK Node backend support with comprehensive configuration options ([thesimplekid]).
 
 ### Changed
 - cdk: Refactored wallet keyset management methods for better clarity and separation of concerns ([thesimplekid]).
@@ -28,6 +31,8 @@
 - cdk: Enhanced keyset management with better offline/online operation separation ([thesimplekid]).
 - cdk: Updated method documentation to clarify storage vs network operations ([thesimplekid]).
 - cdk: Refactored invoice payment monitoring to use centralized lifecycle management instead of manual task spawning ([thesimplekid]).
+- cdk: Enhanced mint startup to initialize payment processors before starting background services ([thesimplekid]).
+- cdk: Improved mint shutdown to gracefully stop payment processors alongside background services ([thesimplekid]).
 - cdk-mintd: Updated to use new mint lifecycle methods for improved service management ([thesimplekid]).
 - cdk-integration-tests: Updated test utilities to use new mint lifecycle management ([thesimplekid]).
 - cdk-sqlite: Introduce `cdk-sql-common` crate for shared SQL storage codebase ([crodas]).

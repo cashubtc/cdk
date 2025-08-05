@@ -106,6 +106,9 @@ pub enum Error {
     /// Amount overflow
     #[error("Amount overflow")]
     AmountOverflow,
+    /// Amount zero
+    #[error("Amount zero")]
+    AmountZero,
 
     /// DHKE error
     #[error(transparent)]

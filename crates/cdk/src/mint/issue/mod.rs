@@ -250,14 +250,10 @@ impl Mint {
 
                 let description = bolt12_request.description;
 
-                let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
-
-                let expiry = unix_time() + mint_ttl;
-
                 let bolt12_options = Bolt12IncomingPaymentOptions {
                     description,
                     amount,
-                    unix_expiry: Some(expiry),
+                    unix_expiry: None,
                 };
 
                 let incoming_options = IncomingPaymentOptions::Bolt12(Box::new(bolt12_options));
@@ -409,38 +405,15 @@ impl Mint {
         mint_quote: &MintQuote,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
-        tracing::debug!(
-            "Received payment notification of {} for mint quote {} with payment id {}",
-            wait_payment_response.payment_amount,
-            mint_quote.id,
-            wait_payment_response.payment_id
-        );
+        use crate::mint::Mint;
 
-        let quote_state = mint_quote.state();
-        if !mint_quote
-            .payment_ids()
-            .contains(&&wait_payment_response.payment_id)
-        {
-            if mint_quote.payment_method == PaymentMethod::Bolt11
-                && (quote_state == MintQuoteState::Issued || quote_state == MintQuoteState::Paid)
-            {
-                tracing::info!("Received payment notification for already seen payment.");
-            } else {
-                tx.increment_mint_quote_amount_paid(
-                    &mint_quote.id,
-                    wait_payment_response.payment_amount,
-                    wait_payment_response.payment_id,
-                )
-                .await?;
-
-                self.pubsub_manager
-                    .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
-            }
-        } else {
-            tracing::info!("Received payment notification for already seen payment.");
-        }
-
-        Ok(())
+        Mint::handle_mint_quote_payment_internal(
+            tx,
+            mint_quote,
+            wait_payment_response,
+            &self.pubsub_manager,
+        )
+        .await
     }
 
     /// Checks the status of a mint quote and updates it if necessary
@@ -462,7 +435,9 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        self.check_mint_quote_paid(&mut quote).await?;
+        if quote.payment_method == PaymentMethod::Bolt11 {
+            self.check_mint_quote_paid(&mut quote).await?;
+        }
 
         quote.try_into()
     }
@@ -493,8 +468,9 @@ impl Mint {
             .get_mint_quote(&mint_request.quote)
             .await?
             .ok_or(Error::UnknownQuote)?;
-
-        self.check_mint_quote_paid(&mut mint_quote).await?;
+        if mint_quote.payment_method == PaymentMethod::Bolt11 {
+            self.check_mint_quote_paid(&mut mint_quote).await?;
+        }
 
         let mut tx = self.localstore.begin_transaction().await?;
 

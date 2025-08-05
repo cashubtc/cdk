@@ -22,6 +22,7 @@ use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
+    feature = "ldk-node",
     feature = "fakewallet",
     feature = "grpc-processor"
 ))]
@@ -31,6 +32,7 @@ use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path}
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
+    feature = "ldk-node",
     feature = "fakewallet"
 ))]
 use cdk::nuts::CurrencyUnit;
@@ -98,9 +100,10 @@ pub fn setup_tracing() {
     let hyper_filter = "hyper=warn";
     let h2_filter = "h2=warn";
     let tower_http = "tower_http=warn";
+    let rustls = "rustls=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{default_filter},{hyper_filter},{h2_filter},{tower_http}"
+        "{default_filter},{hyper_filter},{h2_filter},{tower_http},{rustls}"
     ));
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
@@ -183,6 +186,8 @@ async fn setup_sqlite_database(
 async fn configure_mint_builder(
     settings: &config::Settings,
     mint_builder: MintBuilder,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    work_dir: &Path,
 ) -> Result<(MintBuilder, Vec<Router>)> {
     let mut ln_routers = vec![];
 
@@ -190,7 +195,9 @@ async fn configure_mint_builder(
     let mint_builder = configure_basic_info(settings, mint_builder);
 
     // Configure lightning backend
-    let mint_builder = configure_lightning_backend(settings, mint_builder, &mut ln_routers).await?;
+    let mint_builder =
+        configure_lightning_backend(settings, mint_builder, &mut ln_routers, runtime, work_dir)
+            .await?;
 
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
@@ -253,6 +260,8 @@ async fn configure_lightning_backend(
     settings: &config::Settings,
     mut mint_builder: MintBuilder,
     ln_routers: &mut Vec<Router>,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    work_dir: &Path,
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
         mint_min: settings.ln.min_mint,
@@ -271,7 +280,7 @@ async fn configure_lightning_backend(
                 .clone()
                 .expect("Config checked at load that cln is some");
             let cln = cln_settings
-                .setup(ln_routers, settings, CurrencyUnit::Msat)
+                .setup(ln_routers, settings, CurrencyUnit::Msat, None, work_dir)
                 .await?;
 
             mint_builder = configure_backend_for_unit(
@@ -287,7 +296,7 @@ async fn configure_lightning_backend(
         LnBackend::LNbits => {
             let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
             let lnbits = lnbits_settings
-                .setup(ln_routers, settings, CurrencyUnit::Sat)
+                .setup(ln_routers, settings, CurrencyUnit::Sat, None, work_dir)
                 .await?;
 
             mint_builder = configure_backend_for_unit(
@@ -303,7 +312,7 @@ async fn configure_lightning_backend(
         LnBackend::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
             let lnd = lnd_settings
-                .setup(ln_routers, settings, CurrencyUnit::Msat)
+                .setup(ln_routers, settings, CurrencyUnit::Msat, None, work_dir)
                 .await?;
 
             mint_builder = configure_backend_for_unit(
@@ -322,7 +331,7 @@ async fn configure_lightning_backend(
 
             for unit in fake_wallet.clone().supported_units {
                 let fake = fake_wallet
-                    .setup(ln_routers, settings, CurrencyUnit::Sat)
+                    .setup(ln_routers, settings, CurrencyUnit::Sat, None, work_dir)
                     .await?;
 
                 mint_builder = configure_backend_for_unit(
@@ -351,7 +360,7 @@ async fn configure_lightning_backend(
             for unit in grpc_processor.clone().supported_units {
                 tracing::debug!("Adding unit: {:?}", unit);
                 let processor = grpc_processor
-                    .setup(ln_routers, settings, unit.clone())
+                    .setup(ln_routers, settings, unit.clone(), None, work_dir)
                     .await?;
 
                 mint_builder = configure_backend_for_unit(
@@ -363,6 +372,24 @@ async fn configure_lightning_backend(
                 )
                 .await?;
             }
+        }
+        #[cfg(feature = "ldk-node")]
+        LnBackend::LdkNode => {
+            let ldk_node_settings = settings.clone().ldk_node.expect("Checked at config load");
+            tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
+
+            let ldk_node = ldk_node_settings
+                .setup(ln_routers, settings, CurrencyUnit::Sat, runtime, work_dir)
+                .await?;
+
+            mint_builder = configure_backend_for_unit(
+                settings,
+                mint_builder,
+                CurrencyUnit::Sat,
+                mint_melt_limits,
+                Arc::new(ldk_node),
+            )
+            .await?;
         }
         LnBackend::None => {
             tracing::error!(
@@ -444,6 +471,7 @@ async fn setup_authentication(
         > = match settings.database.engine {
             DatabaseEngine::Sqlite => {
                 let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
+
                 #[cfg(not(feature = "sqlcipher"))]
                 let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
                 #[cfg(feature = "sqlcipher")]
@@ -776,8 +804,9 @@ pub async fn run_mintd(
     work_dir: &Path,
     settings: &config::Settings,
     db_password: Option<String>,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 ) -> Result<()> {
-    run_mintd_with_shutdown(work_dir, settings, shutdown_signal(), db_password).await
+    run_mintd_with_shutdown(work_dir, settings, shutdown_signal(), db_password, runtime).await
 }
 
 /// Run mintd with a custom shutdown signal
@@ -786,12 +815,15 @@ pub async fn run_mintd_with_shutdown(
     settings: &config::Settings,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     db_password: Option<String>,
+
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 ) -> Result<()> {
     let (localstore, keystore) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
     let mint_builder = MintBuilder::new(localstore);
 
-    let (mint_builder, ln_routers) = configure_mint_builder(settings, mint_builder).await?;
+    let (mint_builder, ln_routers) =
+        configure_mint_builder(settings, mint_builder, runtime, work_dir).await?;
     #[cfg(feature = "auth")]
     let mint_builder = setup_authentication(settings, work_dir, mint_builder, db_password).await?;
 
