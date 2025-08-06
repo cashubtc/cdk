@@ -39,6 +39,7 @@ use cdk::nuts::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
+use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase};
 #[cfg(feature = "auth")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -154,6 +155,18 @@ async fn setup_database(
             let db = setup_sqlite_database(work_dir, db_password).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
+            Ok((localstore, keystore))
+        }
+        DatabaseEngine::Postgres => {
+            let conn_url = std::env::var("DATABASE_URL").unwrap_or(
+                "host=localhost user=test password=test dbname=mintdb port=5433".to_owned(),
+            );
+
+            let pg_db = Arc::new(MintPgDatabase::new(conn_url.as_str()).await?);
+            let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
+                pg_db.clone();
+            let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> =
+                pg_db;
             Ok((localstore, keystore))
         }
     }
@@ -453,6 +466,13 @@ async fn setup_authentication(
                 };
 
                 Arc::new(sqlite_db)
+            }
+            DatabaseEngine::Postgres => {
+                let conn_url = std::env::var("DATABASE_URL").unwrap_or(
+                    "host=localhost user=test password=test dbname=mintdb_auth port=5433"
+                        .to_owned(),
+                );
+                Arc::new(MintPgAuthDatabase::new(conn_url.as_str()).await?)
             }
         };
 
