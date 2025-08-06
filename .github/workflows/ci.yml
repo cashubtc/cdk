@@ -86,8 +86,6 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-      - name: Add WASM target
-        run: nix develop -i -L .#stable --command rustup target add wasm32-unknown-unknown
       - name: Run WASM tests
         run: nix develop -i -L .#stable --command bash -c 'RUN_WASM_TESTS=true ./misc/test_matrix.sh'
 
