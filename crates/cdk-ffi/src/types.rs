@@ -651,6 +651,156 @@ impl MintQuote {
     }
 }
 
+/// FFI-compatible MintQuoteBolt11Response
+#[derive(Debug, uniffi::Object)]
+pub struct MintQuoteBolt11Response {
+    /// Quote ID
+    pub quote: String,
+    /// Request string
+    pub request: String,
+    /// State of the quote
+    pub state: QuoteState,
+    /// Expiry timestamp (optional)
+    pub expiry: Option<u64>,
+    /// Amount (optional)
+    pub amount: Option<Amount>,
+    /// Unit (optional)
+    pub unit: Option<CurrencyUnit>,
+    /// Pubkey (optional)
+    pub pubkey: Option<String>,
+}
+
+impl From<cdk::nuts::MintQuoteBolt11Response<String>> for MintQuoteBolt11Response {
+    fn from(response: cdk::nuts::MintQuoteBolt11Response<String>) -> Self {
+        Self {
+            quote: response.quote,
+            request: response.request,
+            state: response.state.into(),
+            expiry: response.expiry,
+            amount: response.amount.map(Into::into),
+            unit: response.unit.map(Into::into),
+            pubkey: response.pubkey.map(|p| p.to_string()),
+        }
+    }
+}
+
+#[uniffi::export]
+impl MintQuoteBolt11Response {
+    /// Get quote ID
+    pub fn quote(&self) -> String {
+        self.quote.clone()
+    }
+
+    /// Get request string
+    pub fn request(&self) -> String {
+        self.request.clone()
+    }
+
+    /// Get state
+    pub fn state(&self) -> QuoteState {
+        self.state.clone()
+    }
+
+    /// Get expiry
+    pub fn expiry(&self) -> Option<u64> {
+        self.expiry
+    }
+
+    /// Get amount
+    pub fn amount(&self) -> Option<Amount> {
+        self.amount
+    }
+
+    /// Get unit
+    pub fn unit(&self) -> Option<CurrencyUnit> {
+        self.unit.clone()
+    }
+
+    /// Get pubkey
+    pub fn pubkey(&self) -> Option<String> {
+        self.pubkey.clone()
+    }
+}
+
+/// FFI-compatible MeltQuoteBolt11Response
+#[derive(Debug, uniffi::Object)]
+pub struct MeltQuoteBolt11Response {
+    /// Quote ID
+    pub quote: String,
+    /// Amount
+    pub amount: Amount,
+    /// Fee reserve
+    pub fee_reserve: Amount,
+    /// State of the quote
+    pub state: QuoteState,
+    /// Expiry timestamp
+    pub expiry: u64,
+    /// Payment preimage (optional)
+    pub payment_preimage: Option<String>,
+    /// Request string (optional)
+    pub request: Option<String>,
+    /// Unit (optional)
+    pub unit: Option<CurrencyUnit>,
+}
+
+impl From<cdk::nuts::MeltQuoteBolt11Response<String>> for MeltQuoteBolt11Response {
+    fn from(response: cdk::nuts::MeltQuoteBolt11Response<String>) -> Self {
+        Self {
+            quote: response.quote,
+            amount: response.amount.into(),
+            fee_reserve: response.fee_reserve.into(),
+            state: response.state.into(),
+            expiry: response.expiry,
+            payment_preimage: response.payment_preimage,
+            request: response.request,
+            unit: response.unit.map(Into::into),
+        }
+    }
+}
+
+#[uniffi::export]
+impl MeltQuoteBolt11Response {
+    /// Get quote ID
+    pub fn quote(&self) -> String {
+        self.quote.clone()
+    }
+
+    /// Get amount
+    pub fn amount(&self) -> Amount {
+        self.amount
+    }
+
+    /// Get fee reserve
+    pub fn fee_reserve(&self) -> Amount {
+        self.fee_reserve
+    }
+
+    /// Get state
+    pub fn state(&self) -> QuoteState {
+        self.state.clone()
+    }
+
+    /// Get expiry
+    pub fn expiry(&self) -> u64 {
+        self.expiry
+    }
+
+    /// Get payment preimage
+    pub fn payment_preimage(&self) -> Option<String> {
+        self.payment_preimage.clone()
+    }
+
+    /// Get request
+    pub fn request(&self) -> Option<String> {
+        self.request.clone()
+    }
+
+    /// Get unit
+    pub fn unit(&self) -> Option<CurrencyUnit> {
+        self.unit.clone()
+    }
+}
+
 /// FFI-compatible MeltQuote
 #[derive(Debug, uniffi::Object)]
 pub struct MeltQuote {
@@ -1596,9 +1746,13 @@ pub enum NotificationPayload {
     /// Proof state update
     ProofState { proof_states: Vec<ProofStateUpdate> },
     /// Mint quote update
-    MintQuoteUpdate { quote: std::sync::Arc<MintQuote> },
+    MintQuoteUpdate {
+        quote: std::sync::Arc<MintQuoteBolt11Response>,
+    },
     /// Melt quote update
-    MeltQuoteUpdate { quote: std::sync::Arc<MeltQuote> },
+    MeltQuoteUpdate {
+        quote: std::sync::Arc<MeltQuoteBolt11Response>,
+    },
 }
 
 impl From<cdk::nuts::NotificationPayload<String>> for NotificationPayload {
@@ -1608,38 +1762,13 @@ impl From<cdk::nuts::NotificationPayload<String>> for NotificationPayload {
                 proof_states: vec![states.into()],
             },
             cdk::nuts::NotificationPayload::MintQuoteBolt11Response(quote_resp) => {
-                // Create a simplified MintQuote from the response
-                let mint_quote = cdk::wallet::MintQuote {
-                    id: quote_resp.quote,
-                    mint_url: cdk::mint_url::MintUrl::from_str("http://localhost").unwrap(), // Default URL
-                    amount: quote_resp.amount,
-                    unit: quote_resp.unit.unwrap_or(CdkCurrencyUnit::Sat),
-                    request: quote_resp.request,
-                    state: quote_resp.state,
-                    expiry: quote_resp.expiry.unwrap_or(0),
-                    amount_paid: CdkAmount::from(0),
-                    amount_issued: CdkAmount::from(0),
-                    payment_method: cdk_common::PaymentMethod::default(),
-                    secret_key: None,
-                };
                 NotificationPayload::MintQuoteUpdate {
-                    quote: std::sync::Arc::new(mint_quote.into()),
+                    quote: std::sync::Arc::new(quote_resp.into()),
                 }
             }
             cdk::nuts::NotificationPayload::MeltQuoteBolt11Response(quote_resp) => {
-                // Create a simplified MeltQuote from the response
-                let melt_quote = cdk::wallet::MeltQuote {
-                    id: quote_resp.quote,
-                    unit: quote_resp.unit.unwrap_or(CdkCurrencyUnit::Sat),
-                    amount: quote_resp.amount,
-                    request: quote_resp.request.unwrap_or_default(),
-                    fee_reserve: quote_resp.fee_reserve,
-                    state: quote_resp.state,
-                    expiry: quote_resp.expiry,
-                    payment_preimage: quote_resp.payment_preimage,
-                };
                 NotificationPayload::MeltQuoteUpdate {
-                    quote: std::sync::Arc::new(melt_quote.into()),
+                    quote: std::sync::Arc::new(quote_resp.into()),
                 }
             }
             _ => {
