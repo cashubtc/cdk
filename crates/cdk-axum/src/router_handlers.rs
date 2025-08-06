@@ -9,8 +9,8 @@ use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
-    SwapRequest, SwapResponse,
+    MintQuoteBolt11Response, MintRequest, MintResponse, PostMintQuoteLookupRequest,
+    PostMintQuoteLookupResponse, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
 use paste::paste;
@@ -215,6 +215,44 @@ pub(crate) async fn get_check_mint_bolt11_quote(
         })?;
 
     Ok(Json(quote.try_into().map_err(into_response)?))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/mint/quote/lookup",
+    request_body(content = PostMintQuoteLookupRequest, description = "Lookup request", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = PostMintQuoteLookupResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+/// Lookup mint quotes by NUT-20 locking pubkeys
+///
+/// Retrieve mint quote information by providing the public key(s) used to lock the mint quotes.
+#[instrument(skip_all, fields(pubkey_count = ?payload.pubkeys.len()))]
+pub(crate) async fn post_mint_quote_lookup(
+    #[cfg(feature = "auth")] auth: AuthHeader,
+    State(state): State<MintState>,
+    Json(payload): Json<PostMintQuoteLookupRequest>,
+) -> Result<Json<PostMintQuoteLookupResponse>, Response> {
+    #[cfg(feature = "auth")]
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteLookup),
+        )
+        .await
+        .map_err(into_response)?;
+
+    let quotes = state
+        .mint
+        .lookup_mint_quotes_by_pubkeys(&payload.pubkeys)
+        .await
+        .map_err(into_response)?;
+
+    Ok(Json(PostMintQuoteLookupResponse { quotes }))
 }
 
 #[instrument(skip_all)]
@@ -566,7 +604,10 @@ where
         | ErrorCode::MultipleUnits
         | ErrorCode::UnitMismatch
         | ErrorCode::ClearAuthRequired
-        | ErrorCode::BlindAuthRequired => StatusCode::BAD_REQUEST,
+        | ErrorCode::BlindAuthRequired
+        | ErrorCode::MintQuoteSignatureRequired
+        | ErrorCode::MintQuotePubkeyRequired
+        | ErrorCode::InvalidPubkeyFormat => StatusCode::BAD_REQUEST,
 
         // Auth failures (401 Unauthorized)
         ErrorCode::ClearAuthFailed | ErrorCode::BlindAuthFailed => StatusCode::UNAUTHORIZED,

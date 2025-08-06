@@ -644,6 +644,12 @@ pub enum ErrorCode {
     BlindAuthRequired,
     /// Blind Auth Failed
     BlindAuthFailed,
+    /// Mint quote with pubkey but no valid signature provided (NUT-20)
+    MintQuoteSignatureRequired,
+    /// Mint quote requires pubkey but none given or invalid pubkey (NUT-20)
+    MintQuotePubkeyRequired,
+    /// Invalid public key format provided in lookup request (NUT-20)
+    InvalidPubkeyFormat,
     /// Unknown error code
     Unknown(u16),
 }
@@ -673,6 +679,9 @@ impl ErrorCode {
             20006 => Self::InvoiceAlreadyPaid,
             20007 => Self::QuoteExpired,
             20008 => Self::WitnessMissingOrInvalid,
+            20009 => Self::MintQuoteSignatureRequired,
+            20010 => Self::MintQuotePubkeyRequired,
+            20011 => Self::InvalidPubkeyFormat,
             30001 => Self::ClearAuthRequired,
             30002 => Self::ClearAuthFailed,
             31001 => Self::BlindAuthRequired,
@@ -705,6 +714,9 @@ impl ErrorCode {
             Self::InvoiceAlreadyPaid => 20006,
             Self::QuoteExpired => 20007,
             Self::WitnessMissingOrInvalid => 20008,
+            Self::MintQuoteSignatureRequired => 20009,
+            Self::MintQuotePubkeyRequired => 20010,
+            Self::InvalidPubkeyFormat => 20011,
             Self::ClearAuthRequired => 30001,
             Self::ClearAuthFailed => 30002,
             Self::BlindAuthRequired => 31001,

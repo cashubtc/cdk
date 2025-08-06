@@ -810,6 +810,43 @@ impl Mint {
 
         Ok(total_redeemed)
     }
+
+    /// Lookup mint quotes by NUT-20 locking pubkeys
+    ///
+    /// Retrieve mint quote information by providing the public key(s) used to lock the mint quotes.
+    ///
+    /// # Arguments
+    /// * `pubkeys` - The public keys to lookup quotes for
+    ///
+    /// # Returns
+    /// * `Vec<MintQuoteLookupItem>` - The matching quotes
+    #[instrument(skip(self))]
+    pub async fn lookup_mint_quotes_by_pubkeys(
+        &self,
+        pubkeys: &[nuts::PublicKey],
+    ) -> Result<Vec<nuts::MintQuoteLookupItem>, Error> {
+        let quotes = self
+            .localstore
+            .get_mint_quotes_by_locking_keys(pubkeys)
+            .await?;
+
+        let mut lookup_items = Vec::new();
+        for quote in quotes {
+            if let Some(pubkey) = quote.pubkey {
+                lookup_items.push(nuts::MintQuoteLookupItem {
+                    pubkey,
+                    quote: quote.id.to_string(),
+                    request: quote.request.clone(),
+                    state: quote.state(),
+                    expiry: quote.expiry,
+                    amount: quote.amount.unwrap_or(Amount::ZERO),
+                    unit: quote.unit,
+                });
+            }
+        }
+
+        Ok(lookup_items)
+    }
 }
 
 #[cfg(test)]

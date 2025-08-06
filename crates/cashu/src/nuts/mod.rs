@@ -64,6 +64,10 @@ pub use nut18::{
     PaymentRequest, PaymentRequestBuilder, PaymentRequestPayload, Transport, TransportBuilder,
     TransportType,
 };
+pub use nut20::{
+    MintQuoteLookupItem, PostMintQuoteLookupRequest, PostMintQuoteLookupResponse,
+    Settings as NUT20Settings,
+};
 pub use nut23::{
     MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintQuoteBolt11Request,
     MintQuoteBolt11Response, QuoteState as MintQuoteState,

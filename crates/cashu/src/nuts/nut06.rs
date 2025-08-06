@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::nut01::PublicKey;
 use super::nut17::SupportedMethods;
 use super::nut19::CachedEndpoint;
-use super::{nut04, nut05, nut15, nut19, MppMethodSettings};
+use super::{nut04, nut05, nut15, nut19, nut20, MppMethodSettings};
 #[cfg(feature = "auth")]
 use super::{AuthRequired, BlindAuthSettings, ClearAuthSettings, ProtectedEndpoint};
 use crate::CurrencyUnit;
@@ -325,7 +325,7 @@ pub struct Nuts {
     /// NUT20 Settings
     #[serde(default)]
     #[serde(rename = "20")]
-    pub nut20: SupportedSettings,
+    pub nut20: nut20::Settings,
     /// NUT21 Settings
     #[serde(rename = "21")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -446,9 +446,9 @@ impl Nuts {
     }
 
     /// Nut20 settings
-    pub fn nut20(self, supported: bool) -> Self {
+    pub fn nut20(self, supported: bool, quote_lookup: bool) -> Self {
         Self {
-            nut20: SupportedSettings { supported },
+            nut20: nut20::Settings::new(supported, quote_lookup),
             ..self
         }
     }
