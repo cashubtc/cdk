@@ -35,6 +35,7 @@ cdk = { workspace = true, features = [
 cdk-sqlite = { workspace = true, features = [
     "mint",
 ] }
+cdk-postgres = { workspace = true, features = ["mint"]}
 cdk-cln = { workspace = true, optional = true }
 cdk-lnbits = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }
