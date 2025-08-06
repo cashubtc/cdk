@@ -6,6 +6,7 @@ use std::sync::Mutex;
 
 use cdk::nuts::{CurrencyUnit as CdkCurrencyUnit, State as CdkState};
 use cdk::Amount as CdkAmount;
+use cdk_common::pub_sub::SubId;
 
 use crate::error::FfiError;
 
@@ -1474,6 +1475,200 @@ impl TryFrom<SpendingConditions> for cdk::nuts::SpendingConditions {
                     conditions,
                 })
             }
+        }
+    }
+}
+
+/// FFI-compatible SubscriptionKind
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum SubscriptionKind {
+    /// Bolt 11 Melt Quote
+    Bolt11MeltQuote,
+    /// Bolt 11 Mint Quote
+    Bolt11MintQuote,
+    /// Proof State
+    ProofState,
+}
+
+impl From<SubscriptionKind> for cdk::nuts::nut17::Kind {
+    fn from(kind: SubscriptionKind) -> Self {
+        match kind {
+            SubscriptionKind::Bolt11MeltQuote => cdk::nuts::nut17::Kind::Bolt11MeltQuote,
+            SubscriptionKind::Bolt11MintQuote => cdk::nuts::nut17::Kind::Bolt11MintQuote,
+            SubscriptionKind::ProofState => cdk::nuts::nut17::Kind::ProofState,
+        }
+    }
+}
+
+impl From<cdk::nuts::nut17::Kind> for SubscriptionKind {
+    fn from(kind: cdk::nuts::nut17::Kind) -> Self {
+        match kind {
+            cdk::nuts::nut17::Kind::Bolt11MeltQuote => SubscriptionKind::Bolt11MeltQuote,
+            cdk::nuts::nut17::Kind::Bolt11MintQuote => SubscriptionKind::Bolt11MintQuote,
+            cdk::nuts::nut17::Kind::ProofState => SubscriptionKind::ProofState,
+        }
+    }
+}
+
+/// FFI-compatible SubscribeParams
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SubscribeParams {
+    /// Subscription kind
+    pub kind: SubscriptionKind,
+    /// Filters
+    pub filters: Vec<String>,
+    /// Subscription ID (optional, will be generated if not provided)
+    pub id: Option<String>,
+}
+
+impl From<SubscribeParams> for cdk_common::subscription::Params {
+    fn from(params: SubscribeParams) -> Self {
+        let sub_id = params
+            .id
+            .map(|id| SubId::from(id.as_str()))
+            .unwrap_or_else(|| {
+                // Generate a random ID
+                let uuid = uuid::Uuid::new_v4();
+                SubId::from(uuid.to_string().as_str())
+            });
+
+        cdk::nuts::nut17::Params {
+            kind: params.kind.into(),
+            filters: params.filters,
+            id: sub_id,
+        }
+    }
+}
+
+/// FFI-compatible ActiveSubscription
+#[derive(uniffi::Object)]
+pub struct ActiveSubscription {
+    inner: std::sync::Arc<tokio::sync::Mutex<cdk::wallet::subscription::ActiveSubscription>>,
+    pub sub_id: String,
+}
+
+impl ActiveSubscription {
+    pub(crate) fn new(
+        inner: cdk::wallet::subscription::ActiveSubscription,
+        sub_id: String,
+    ) -> Self {
+        Self {
+            inner: std::sync::Arc::new(tokio::sync::Mutex::new(inner)),
+            sub_id,
+        }
+    }
+}
+
+#[uniffi::export]
+impl ActiveSubscription {
+    /// Get the subscription ID
+    pub fn id(&self) -> String {
+        self.sub_id.clone()
+    }
+
+    /// Receive the next notification
+    pub async fn recv(&self) -> Result<NotificationPayload, FfiError> {
+        let mut guard = self.inner.lock().await;
+        guard
+            .recv()
+            .await
+            .ok_or(FfiError::Generic {
+                msg: "Subscription closed".to_string(),
+            })
+            .map(Into::into)
+    }
+
+    /// Try to receive a notification without blocking
+    pub async fn try_recv(&self) -> Result<Option<NotificationPayload>, FfiError> {
+        let mut guard = self.inner.lock().await;
+        guard
+            .try_recv()
+            .map(|opt| opt.map(Into::into))
+            .map_err(|e| FfiError::Generic {
+                msg: format!("Failed to receive notification: {}", e),
+            })
+    }
+}
+
+/// FFI-compatible NotificationPayload
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum NotificationPayload {
+    /// Proof state update
+    ProofState { proof_states: Vec<ProofStateUpdate> },
+    /// Mint quote update
+    MintQuoteUpdate { quote: std::sync::Arc<MintQuote> },
+    /// Melt quote update
+    MeltQuoteUpdate { quote: std::sync::Arc<MeltQuote> },
+}
+
+impl From<cdk::nuts::NotificationPayload<String>> for NotificationPayload {
+    fn from(payload: cdk::nuts::NotificationPayload<String>) -> Self {
+        match payload {
+            cdk::nuts::NotificationPayload::ProofState(states) => NotificationPayload::ProofState {
+                proof_states: vec![states.into()],
+            },
+            cdk::nuts::NotificationPayload::MintQuoteBolt11Response(quote_resp) => {
+                // Create a simplified MintQuote from the response
+                let mint_quote = cdk::wallet::MintQuote {
+                    id: quote_resp.quote,
+                    mint_url: cdk::mint_url::MintUrl::from_str("http://localhost").unwrap(), // Default URL
+                    amount: quote_resp.amount,
+                    unit: quote_resp.unit.unwrap_or(CdkCurrencyUnit::Sat),
+                    request: quote_resp.request,
+                    state: quote_resp.state,
+                    expiry: quote_resp.expiry.unwrap_or(0),
+                    amount_paid: CdkAmount::from(0),
+                    amount_issued: CdkAmount::from(0),
+                    payment_method: cdk_common::PaymentMethod::default(),
+                    secret_key: None,
+                };
+                NotificationPayload::MintQuoteUpdate {
+                    quote: std::sync::Arc::new(mint_quote.into()),
+                }
+            }
+            cdk::nuts::NotificationPayload::MeltQuoteBolt11Response(quote_resp) => {
+                // Create a simplified MeltQuote from the response
+                let melt_quote = cdk::wallet::MeltQuote {
+                    id: quote_resp.quote,
+                    unit: quote_resp.unit.unwrap_or(CdkCurrencyUnit::Sat),
+                    amount: quote_resp.amount,
+                    request: quote_resp.request.unwrap_or_default(),
+                    fee_reserve: quote_resp.fee_reserve,
+                    state: quote_resp.state,
+                    expiry: quote_resp.expiry,
+                    payment_preimage: quote_resp.payment_preimage,
+                };
+                NotificationPayload::MeltQuoteUpdate {
+                    quote: std::sync::Arc::new(melt_quote.into()),
+                }
+            }
+            _ => {
+                // For now, handle other notification types as empty ProofState
+                NotificationPayload::ProofState {
+                    proof_states: vec![],
+                }
+            }
+        }
+    }
+}
+
+/// FFI-compatible ProofStateUpdate
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ProofStateUpdate {
+    /// Y value (hash_to_curve of secret)
+    pub y: String,
+    /// Current state
+    pub state: ProofState,
+    /// Optional witness data
+    pub witness: Option<String>,
+}
+
+impl From<cdk::nuts::nut07::ProofState> for ProofStateUpdate {
+    fn from(proof_state: cdk::nuts::nut07::ProofState) -> Self {
+        Self {
+            y: proof_state.y.to_string(),
+            state: proof_state.state.into(),
+            witness: proof_state.witness.map(|w| format!("{:?}", w)),
         }
     }
 }

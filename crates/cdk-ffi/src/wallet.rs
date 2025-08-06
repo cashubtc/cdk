@@ -338,6 +338,19 @@ impl Wallet {
         let auth_proofs = self.inner.get_unspent_auth_proofs().await?;
         Ok(auth_proofs.into_iter().map(Into::into).collect())
     }
+
+    /// Subscribe to wallet events
+    pub async fn subscribe(
+        &self,
+        params: SubscribeParams,
+    ) -> Result<std::sync::Arc<ActiveSubscription>, FfiError> {
+        let cdk_params: cdk_common::subscription::Params = params.clone().into();
+        let sub_id = cdk_params.id.to_string();
+        let active_sub = self.inner.subscribe(cdk_params).await;
+        Ok(std::sync::Arc::new(ActiveSubscription::new(
+            active_sub, sub_id,
+        )))
+    }
 }
 
 /// Configuration for creating wallets
