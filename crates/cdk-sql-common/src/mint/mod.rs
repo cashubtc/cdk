@@ -1205,6 +1205,7 @@ where
             return Ok(vec![]);
         }
 
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let sql = r#"
             SELECT
                 id,
@@ -1226,18 +1227,17 @@ where
         "#;
 
         let pubkey_strs: Vec<String> = pubkeys.iter().map(|pk| pk.to_hex()).collect();
-        let query_builder = query(sql)?.bind_vec("pubkeys", pubkey_strs);
-
-        let mut mint_quotes = query_builder
-            .fetch_all(&self.db)
+        let mut mint_quotes = query(sql)?
+            .bind_vec("pubkeys", pubkey_strs)
+            .fetch_all(&*conn)
             .await?
             .into_iter()
             .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
             .collect::<Result<Vec<_>, _>>()?;
 
         for quote in mint_quotes.as_mut_slice() {
-            let payments = get_mint_quote_payments(&self.db, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&self.db, &quote.id).await?;
+            let payments = get_mint_quote_payments(&*conn, &quote.id).await?;
+            let issuance = get_mint_quote_issuance(&*conn, &quote.id).await?;
             quote.issuance = issuance;
             quote.payments = payments;
         }
