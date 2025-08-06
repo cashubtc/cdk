@@ -407,12 +407,12 @@ where
     }
 
     async fn set_active_keyset(&mut self, unit: CurrencyUnit, id: Id) -> Result<(), Error> {
-        query(r#"UPDATE keyset SET active=FALSE WHERE unit IS :unit"#)?
+        query(r#"UPDATE keyset SET active=FALSE WHERE unit = :unit"#)?
             .bind("unit", unit.to_string())
             .execute(&self.inner)
             .await?;
 
-        query(r#"UPDATE keyset SET active=TRUE WHERE unit IS :unit AND id IS :id"#)?
+        query(r#"UPDATE keyset SET active=TRUE WHERE unit = :unit AND id = :id"#)?
             .bind("unit", unit.to_string())
             .bind("id", id.to_string())
             .execute(&self.inner)
@@ -443,7 +443,8 @@ where
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(
-            query(r#" SELECT id FROM keyset WHERE active = 1 AND unit IS :unit"#)?
+            query(r#" SELECT id FROM keyset WHERE active = :active AND unit = :unit"#)?
+                .bind("active", true)
                 .bind("unit", unit.to_string())
                 .pluck(&*conn)
                 .await?
@@ -458,17 +459,20 @@ where
 
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(r#"SELECT id, unit FROM keyset WHERE active = 1"#)?
-            .fetch_all(&*conn)
-            .await?
-            .into_iter()
-            .map(|row| {
-                Ok((
-                    column_as_string!(&row[1], CurrencyUnit::from_str),
-                    column_as_string!(&row[0], Id::from_str, Id::from_bytes),
-                ))
-            })
-            .collect::<Result<HashMap<_, _>, Error>>()?)
+        Ok(
+            query(r#"SELECT id, unit FROM keyset WHERE active = :active"#)?
+                .bind("active", true)
+                .fetch_all(&*conn)
+                .await?
+                .into_iter()
+                .map(|row| {
+                    Ok((
+                        column_as_string!(&row[1], CurrencyUnit::from_str),
+                        column_as_string!(&row[0], Id::from_str, Id::from_bytes),
+                    ))
+                })
+                .collect::<Result<HashMap<_, _>, Error>>()?,
+        )
     }
 
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {

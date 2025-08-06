@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use cdk_axum::cache;
+use cdk_mintd::config::{Database, DatabaseEngine};
 use tokio::signal;
 use tokio::sync::Notify;
 
@@ -150,6 +151,7 @@ pub fn display_mint_info(port: u16, temp_dir: &Path, database_type: &str) {
 /// Create settings for a fake wallet mint
 pub fn create_fake_wallet_settings(
     port: u16,
+    database: &str,
     mnemonic: Option<String>,
     signatory_config: Option<(String, String)>, // (url, certs_dir)
     fake_wallet_config: Option<cdk_mintd::config::FakeWallet>,
@@ -182,7 +184,9 @@ pub fn create_fake_wallet_settings(
         lnd: None,
         fake_wallet: fake_wallet_config,
         grpc_processor: None,
-        database: cdk_mintd::config::Database::default(),
+        database: Database {
+            engine: DatabaseEngine::from_str(database).expect("valid database"),
+        },
         mint_management_rpc: None,
         auth: None,
     }

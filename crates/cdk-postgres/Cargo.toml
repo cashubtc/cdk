@@ -1,0 +1,35 @@
+[package]
+name = "cdk-postgres"
+version.workspace = true
+edition.workspace = true
+authors = ["CDK Developers"]
+description = "PostgreSQL storage backend for CDK"
+license.workspace = true
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+rust-version.workspace = true                            # MSRV
+readme = "README.md"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = ["mint", "wallet", "auth"]
+mint = ["cdk-common/mint", "cdk-sql-common/mint"]
+wallet = ["cdk-common/wallet", "cdk-sql-common/wallet"]
+auth = ["cdk-common/auth", "cdk-sql-common/auth"]
+
+[dependencies]
+async-trait.workspace = true
+cdk-common = { workspace = true, features = ["test"] }
+bitcoin.workspace = true
+cdk-sql-common = { workspace = true }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+lightning-invoice.workspace = true
+uuid.workspace = true
+tokio-postgres = "0.7.13"
+futures-util = "0.3.31"
+postgres-native-tls = "0.5.1"
+once_cell.workspace = true
