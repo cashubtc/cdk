@@ -9,8 +9,9 @@
 //! clients in a pool and expose them to an asynchronous environment, making them compatible with
 //! Mint.
 use std::collections::HashMap;
-use std::marker::PhantomData;
+use std::fmt::Debug;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
@@ -38,7 +39,8 @@ use tracing::instrument;
 use uuid::Uuid;
 
 use crate::common::migrate;
-use crate::database::{DatabaseConnector, DatabaseExecutor, DatabaseTransaction};
+use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
+use crate::pool::{DatabasePool, Pool, PooledResource};
 use crate::stmt::{query, Column};
 use crate::{
     column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
@@ -57,20 +59,19 @@ pub use auth::SQLMintAuthDatabase;
 
 /// Mint SQL Database
 #[derive(Debug, Clone)]
-pub struct SQLMintDatabase<DB>
+pub struct SQLMintDatabase<RM>
 where
-    DB: DatabaseConnector,
+    RM: DatabasePool + 'static,
 {
-    db: DB,
+    pool: Arc<Pool<RM>>,
 }
 
 /// SQL Transaction Writer
-pub struct SQLTransaction<'a, T>
+pub struct SQLTransaction<RM>
 where
-    T: DatabaseTransaction<'a>,
+    RM: DatabasePool + 'static,
 {
-    inner: T,
-    _phantom: PhantomData<&'a ()>,
+    inner: ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
 }
 
 #[inline(always)]
@@ -115,24 +116,26 @@ where
     Ok(())
 }
 
-impl<DB> SQLMintDatabase<DB>
+impl<RM> SQLMintDatabase<RM>
 where
-    DB: DatabaseConnector,
+    RM: DatabasePool + 'static,
 {
     /// Creates a new instance
     pub async fn new<X>(db: X) -> Result<Self, Error>
     where
-        X: Into<DB>,
+        X: Into<RM::Config>,
     {
-        let db = db.into();
-        Self::migrate(&db).await?;
-        Ok(Self { db })
+        let pool = Pool::new(db.into());
+
+        Self::migrate(pool.get().map_err(|e| Error::Database(Box::new(e)))?).await?;
+
+        Ok(Self { pool })
     }
 
     /// Migrate
-    async fn migrate(conn: &DB) -> Result<(), Error> {
-        let tx = conn.begin().await?;
-        migrate(&tx, DB::name(), MIGRATIONS).await?;
+    async fn migrate(conn: PooledResource<RM>) -> Result<(), Error> {
+        let tx = ConnectionWithTransaction::new(conn).await?;
+        migrate(&tx, RM::Connection::name(), MIGRATIONS).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -142,9 +145,10 @@ where
     where
         R: serde::de::DeserializeOwned,
     {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let value = column_as_string!(query(r#"SELECT value FROM config WHERE id = :id LIMIT 1"#)?
             .bind("id", id.to_owned())
-            .pluck(&self.db)
+            .pluck(&*conn)
             .await?
             .ok_or(Error::UnknownQuoteTTL)?);
 
@@ -153,9 +157,9 @@ where
 }
 
 #[async_trait]
-impl<'a, T> database::MintProofsTransaction<'a> for SQLTransaction<'a, T>
+impl<RM> database::MintProofsTransaction<'_> for SQLTransaction<RM>
 where
-    T: DatabaseTransaction<'a>,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
@@ -267,9 +271,9 @@ where
 }
 
 #[async_trait]
-impl<'a, T> database::MintTransaction<'a, Error> for SQLTransaction<'a, T>
+impl<RM> database::MintTransaction<'_, Error> for SQLTransaction<RM>
 where
-    T: DatabaseTransaction<'a>,
+    RM: DatabasePool + 'static,
 {
     async fn set_mint_info(&mut self, mint_info: MintInfo) -> Result<(), Error> {
         Ok(set_to_config(&self.inner, "mint_info", &mint_info).await?)
@@ -281,18 +285,18 @@ where
 }
 
 #[async_trait]
-impl<'a, T> MintDbWriterFinalizer for SQLTransaction<'a, T>
+impl<RM> MintDbWriterFinalizer for SQLTransaction<RM>
 where
-    T: DatabaseTransaction<'a>,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
     async fn commit(self: Box<Self>) -> Result<(), Error> {
-        Ok(self.inner.commit().await?)
+        self.inner.commit().await
     }
 
     async fn rollback(self: Box<Self>) -> Result<(), Error> {
-        Ok(self.inner.rollback().await?)
+        self.inner.rollback().await
     }
 }
 
@@ -357,9 +361,9 @@ WHERE quote_id=:quote_id
 }
 
 #[async_trait]
-impl<'a, T> MintKeyDatabaseTransaction<'a, Error> for SQLTransaction<'a, T>
+impl<RM> MintKeyDatabaseTransaction<'_, Error> for SQLTransaction<RM>
 where
-    T: DatabaseTransaction<'a>,
+    RM: DatabasePool + 'static,
 {
     async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), Error> {
         query(
@@ -416,9 +420,9 @@ where
 }
 
 #[async_trait]
-impl<DB> MintKeysDatabase for SQLMintDatabase<DB>
+impl<RM> MintKeysDatabase for SQLMintDatabase<RM>
 where
-    DB: DatabaseConnector,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
@@ -426,16 +430,19 @@ where
         &'a self,
     ) -> Result<Box<dyn MintKeyDatabaseTransaction<'a, Error> + Send + Sync + 'a>, Error> {
         Ok(Box::new(SQLTransaction {
-            inner: self.db.begin().await?,
-            _phantom: PhantomData,
+            inner: ConnectionWithTransaction::new(
+                self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
+            )
+            .await?,
         }))
     }
 
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(
             query(r#" SELECT id FROM keyset WHERE active = 1 AND unit IS :unit"#)?
                 .bind("unit", unit.to_string())
-                .pluck(&self.db)
+                .pluck(&*conn)
                 .await?
                 .map(|id| match id {
                     Column::Text(text) => Ok(Id::from_str(&text)?),
@@ -447,8 +454,9 @@ where
     }
 
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(r#"SELECT id, unit FROM keyset WHERE active = 1"#)?
-            .fetch_all(&self.db)
+            .fetch_all(&*conn)
             .await?
             .into_iter()
             .map(|row| {
@@ -461,6 +469,7 @@ where
     }
 
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"SELECT
                 id,
@@ -477,13 +486,14 @@ where
                 WHERE id=:id"#,
         )?
         .bind("id", id.to_string())
-        .fetch_one(&self.db)
+        .fetch_one(&*conn)
         .await?
         .map(sql_row_to_keyset_info)
         .transpose()?)
     }
 
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"SELECT
                 id,
@@ -499,7 +509,7 @@ where
                 keyset
             "#,
         )?
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .map(sql_row_to_keyset_info)
@@ -508,9 +518,9 @@ where
 }
 
 #[async_trait]
-impl<'a, T> MintQuotesTransaction<'a> for SQLTransaction<'a, T>
+impl<RM> MintQuotesTransaction<'_> for SQLTransaction<RM>
 where
-    T: DatabaseTransaction<'a>,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
@@ -1028,15 +1038,17 @@ VALUES (:quote_id, :amount, :timestamp);
 }
 
 #[async_trait]
-impl<DB> MintQuotesDatabase for SQLMintDatabase<DB>
+impl<RM> MintQuotesDatabase for SQLMintDatabase<RM>
 where
-    DB: DatabaseConnector,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
     async fn get_mint_quote(&self, quote_id: &Uuid) -> Result<Option<MintQuote>, Self::Err> {
-        let payments = get_mint_quote_payments(&self.db, quote_id).await?;
-        let issuance = get_mint_quote_issuance(&self.db, quote_id).await?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        let payments = get_mint_quote_payments(&*conn, quote_id).await?;
+        let issuance = get_mint_quote_issuance(&*conn, quote_id).await?;
 
         Ok(query(
             r#"
@@ -1058,7 +1070,7 @@ where
             WHERE id = :id"#,
         )?
         .bind("id", quote_id.as_hyphenated().to_string())
-        .fetch_one(&self.db)
+        .fetch_one(&*conn)
         .await?
         .map(|row| sql_row_to_mint_quote(row, payments, issuance))
         .transpose()?)
@@ -1068,6 +1080,7 @@ where
         &self,
         request: &str,
     ) -> Result<Option<MintQuote>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut mint_quote = query(
             r#"
             SELECT
@@ -1088,14 +1101,14 @@ where
             WHERE request = :request"#,
         )?
         .bind("request", request.to_owned())
-        .fetch_one(&self.db)
+        .fetch_one(&*conn)
         .await?
         .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
         .transpose()?;
 
         if let Some(quote) = mint_quote.as_mut() {
-            let payments = get_mint_quote_payments(&self.db, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&self.db, &quote.id).await?;
+            let payments = get_mint_quote_payments(&*conn, &quote.id).await?;
+            let issuance = get_mint_quote_issuance(&*conn, &quote.id).await?;
             quote.issuance = issuance;
             quote.payments = payments;
         }
@@ -1107,6 +1120,7 @@ where
         &self,
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintQuote>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut mint_quote = query(
             r#"
             SELECT
@@ -1130,15 +1144,15 @@ where
         )?
         .bind("request_lookup_id", request_lookup_id.to_string())
         .bind("request_lookup_id_kind", request_lookup_id.kind())
-        .fetch_one(&self.db)
+        .fetch_one(&*conn)
         .await?
         .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
         .transpose()?;
 
         // TODO: these should use an sql join so they can be done in one query
         if let Some(quote) = mint_quote.as_mut() {
-            let payments = get_mint_quote_payments(&self.db, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&self.db, &quote.id).await?;
+            let payments = get_mint_quote_payments(&*conn, &quote.id).await?;
+            let issuance = get_mint_quote_issuance(&*conn, &quote.id).await?;
             quote.issuance = issuance;
             quote.payments = payments;
         }
@@ -1147,6 +1161,7 @@ where
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut mint_quotes = query(
             r#"
             SELECT
@@ -1166,15 +1181,15 @@ where
                 mint_quote
             "#,
         )?
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
         .collect::<Result<Vec<_>, _>>()?;
 
         for quote in mint_quotes.as_mut_slice() {
-            let payments = get_mint_quote_payments(&self.db, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&self.db, &quote.id).await?;
+            let payments = get_mint_quote_payments(&*conn, &quote.id).await?;
+            let issuance = get_mint_quote_issuance(&*conn, &quote.id).await?;
             quote.issuance = issuance;
             quote.payments = payments;
         }
@@ -1183,6 +1198,7 @@ where
     }
 
     async fn get_melt_quote(&self, quote_id: &Uuid) -> Result<Option<mint::MeltQuote>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -1207,13 +1223,14 @@ where
             "#,
         )?
         .bind("id", quote_id.as_hyphenated().to_string())
-        .fetch_one(&self.db)
+        .fetch_one(&*conn)
         .await?
         .map(sql_row_to_melt_quote)
         .transpose()?)
     }
 
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -1235,7 +1252,7 @@ where
                 melt_quote
             "#,
         )?
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .map(sql_row_to_melt_quote)
@@ -1244,13 +1261,14 @@ where
 }
 
 #[async_trait]
-impl<DB> MintProofsDatabase for SQLMintDatabase<DB>
+impl<RM> MintProofsDatabase for SQLMintDatabase<RM>
 where
-    DB: DatabaseConnector,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut proofs = query(
             r#"
             SELECT
@@ -1267,7 +1285,7 @@ where
             "#,
         )?
         .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .map(|mut row| {
@@ -1286,6 +1304,7 @@ where
     }
 
     async fn get_proof_ys_by_quote_id(&self, quote_id: &Uuid) -> Result<Vec<PublicKey>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -1301,7 +1320,7 @@ where
             "#,
         )?
         .bind("quote_id", quote_id.as_hyphenated().to_string())
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .map(sql_row_to_proof)
@@ -1310,7 +1329,8 @@ where
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
-        let mut current_states = get_current_states(&self.db, ys).await?;
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let mut current_states = get_current_states(&*conn, ys).await?;
 
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
     }
@@ -1319,6 +1339,7 @@ where
         &self,
         keyset_id: &Id,
     ) -> Result<(Proofs, Vec<Option<State>>), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -1335,7 +1356,7 @@ where
             "#,
         )?
         .bind("keyset_id", keyset_id.to_string())
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .map(sql_row_to_proof_with_state)
@@ -1346,9 +1367,9 @@ where
 }
 
 #[async_trait]
-impl<'a, T> MintSignatureTransaction<'a> for SQLTransaction<'a, T>
+impl<RM> MintSignatureTransaction<'_> for SQLTransaction<RM>
 where
-    T: DatabaseTransaction<'a>,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
@@ -1436,9 +1457,9 @@ where
 }
 
 #[async_trait]
-impl<DB> MintSignaturesDatabase for SQLMintDatabase<DB>
+impl<RM> MintSignaturesDatabase for SQLMintDatabase<RM>
 where
-    DB: DatabaseConnector,
+    RM: DatabasePool + 'static,
 {
     type Err = Error;
 
@@ -1446,6 +1467,7 @@ where
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut blinded_signatures = query(
             r#"SELECT
                 keyset_id,
@@ -1466,7 +1488,7 @@ where
                 .map(|b_| b_.to_bytes().to_vec())
                 .collect(),
         )
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .map(|mut row| {
@@ -1490,6 +1512,7 @@ where
         &self,
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -1505,7 +1528,7 @@ where
             "#,
         )?
         .bind("keyset_id", keyset_id.to_string())
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .map(sql_row_to_blind_signature)
@@ -1517,6 +1540,7 @@ where
         &self,
         quote_id: &Uuid,
     ) -> Result<Vec<BlindSignature>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -1532,7 +1556,7 @@ where
             "#,
         )?
         .bind("quote_id", quote_id.to_string())
-        .fetch_all(&self.db)
+        .fetch_all(&*conn)
         .await?
         .into_iter()
         .map(sql_row_to_blind_signature)
@@ -1541,16 +1565,18 @@ where
 }
 
 #[async_trait]
-impl<DB> MintDatabase<Error> for SQLMintDatabase<DB>
+impl<RM> MintDatabase<Error> for SQLMintDatabase<RM>
 where
-    DB: DatabaseConnector,
+    RM: DatabasePool + 'static,
 {
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn database::MintTransaction<'a, Error> + Send + Sync + 'a>, Error> {
         Ok(Box::new(SQLTransaction {
-            inner: self.db.begin().await?,
-            _phantom: PhantomData,
+            inner: ConnectionWithTransaction::new(
+                self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
+            )
+            .await?,
         }))
     }
 
