@@ -3,6 +3,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
+mod async_sqlite;
 mod common;
 
 #[cfg(feature = "mint")]

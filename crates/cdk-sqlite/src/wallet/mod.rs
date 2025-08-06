@@ -1,195 +1,13 @@
 //! SQLite Wallet Database
 
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use cdk_common::database::Error;
-use cdk_sql_common::database::DatabaseExecutor;
-use cdk_sql_common::pool::{Pool, PooledResource};
-use cdk_sql_common::stmt::{Column, SqlPart, Statement};
 use cdk_sql_common::SQLWalletDatabase;
-use rusqlite::CachedStatement;
 
-use crate::common::{create_sqlite_pool, from_sqlite, to_sqlite, SqliteConnectionManager};
+use crate::common::SqliteConnectionManager;
 
 pub mod memory;
 
-/// Simple Sqlite wapper, since the wallet may not need rusqlite with concurrency, a shared instance
-/// may be enough
-#[derive(Debug)]
-pub struct SimpleAsyncRusqlite(Arc<Pool<SqliteConnectionManager>>);
-
-impl SimpleAsyncRusqlite {
-    fn get_stmt<'a>(
-        &self,
-        conn: &'a PooledResource<SqliteConnectionManager>,
-        statement: Statement,
-    ) -> Result<CachedStatement<'a>, Error> {
-        let (sql, placeholder_values) = statement.to_sql()?;
-        let mut stmt = conn
-            .prepare_cached(&sql)
-            .map_err(|e| Error::Database(Box::new(e)))?;
-
-        for (i, value) in placeholder_values.into_iter().enumerate() {
-            stmt.raw_bind_parameter(i + 1, to_sqlite(value))
-                .map_err(|e| Error::Database(Box::new(e)))?;
-        }
-
-        Ok(stmt)
-    }
-}
-
-#[async_trait::async_trait]
-impl DatabaseExecutor for SimpleAsyncRusqlite {
-    fn name() -> &'static str {
-        "sqlite"
-    }
-
-    async fn execute(&self, statement: Statement) -> Result<usize, Error> {
-        let conn = self.0.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let mut stmt = self
-            .get_stmt(&conn, statement)
-            .map_err(|e| Error::Database(Box::new(e)))?;
-
-        Ok(stmt
-            .raw_execute()
-            .map_err(|e| Error::Database(Box::new(e)))?)
-    }
-
-    async fn fetch_one(&self, statement: Statement) -> Result<Option<Vec<Column>>, Error> {
-        let conn = self.0.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let mut stmt = self
-            .get_stmt(&conn, statement)
-            .map_err(|e| Error::Database(Box::new(e)))?;
-
-        let columns = stmt.column_count();
-
-        let mut rows = stmt.raw_query();
-        rows.next()
-            .map_err(|e| Error::Database(Box::new(e)))?
-            .map(|row| {
-                (0..columns)
-                    .map(|i| row.get(i).map(from_sqlite))
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()
-            .map_err(|e| Error::Database(Box::new(e)))
-    }
-
-    async fn fetch_all(&self, statement: Statement) -> Result<Vec<Vec<Column>>, Error> {
-        let conn = self.0.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let mut stmt = self
-            .get_stmt(&conn, statement)
-            .map_err(|e| Error::Database(Box::new(e)))?;
-
-        let columns = stmt.column_count();
-
-        let mut rows = stmt.raw_query();
-        let mut results = vec![];
-
-        while let Some(row) = rows.next().map_err(|e| Error::Database(Box::new(e)))? {
-            results.push(
-                (0..columns)
-                    .map(|i| row.get(i).map(from_sqlite))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| Error::Database(Box::new(e)))?,
-            )
-        }
-
-        Ok(results)
-    }
-
-    async fn pluck(&self, statement: Statement) -> Result<Option<Column>, Error> {
-        let conn = self.0.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let mut stmt = self
-            .get_stmt(&conn, statement)
-            .map_err(|e| Error::Database(Box::new(e)))?;
-
-        let mut rows = stmt.raw_query();
-        rows.next()
-            .map_err(|e| Error::Database(Box::new(e)))?
-            .map(|row| row.get(0usize).map(from_sqlite))
-            .transpose()
-            .map_err(|e| Error::Database(Box::new(e)))
-    }
-
-    async fn batch(&self, mut statement: Statement) -> Result<(), Error> {
-        let conn = self.0.get().map_err(|e| Error::Database(Box::new(e)))?;
-
-        let sql = {
-            let part = statement
-                .parts
-                .pop()
-                .ok_or(Error::Internal("Empty SQL".to_owned()))?;
-
-            if !statement.parts.is_empty() || matches!(part, SqlPart::Placeholder(_, _)) {
-                return Err(Error::Internal(
-                    "Invalid usage, batch does not support placeholders".to_owned(),
-                ));
-            }
-
-            if let SqlPart::Raw(sql) = part {
-                sql
-            } else {
-                unreachable!()
-            }
-        };
-
-        conn.execute_batch(&sql)
-            .map_err(|e| Error::Database(Box::new(e)))
-    }
-}
-
-impl From<PathBuf> for SimpleAsyncRusqlite {
-    fn from(value: PathBuf) -> Self {
-        SimpleAsyncRusqlite(create_sqlite_pool(value.to_str().unwrap_or_default(), None))
-    }
-}
-
-impl From<&str> for SimpleAsyncRusqlite {
-    fn from(value: &str) -> Self {
-        SimpleAsyncRusqlite(create_sqlite_pool(value, None))
-    }
-}
-
-impl From<(&str, &str)> for SimpleAsyncRusqlite {
-    fn from((value, pass): (&str, &str)) -> Self {
-        SimpleAsyncRusqlite(create_sqlite_pool(value, Some(pass.to_owned())))
-    }
-}
-
-impl From<(PathBuf, &str)> for SimpleAsyncRusqlite {
-    fn from((value, pass): (PathBuf, &str)) -> Self {
-        SimpleAsyncRusqlite(create_sqlite_pool(
-            value.to_str().unwrap_or_default(),
-            Some(pass.to_owned()),
-        ))
-    }
-}
-
-impl From<(&str, String)> for SimpleAsyncRusqlite {
-    fn from((value, pass): (&str, String)) -> Self {
-        SimpleAsyncRusqlite(create_sqlite_pool(value, Some(pass)))
-    }
-}
-
-impl From<(PathBuf, String)> for SimpleAsyncRusqlite {
-    fn from((value, pass): (PathBuf, String)) -> Self {
-        SimpleAsyncRusqlite(create_sqlite_pool(
-            value.to_str().unwrap_or_default(),
-            Some(pass),
-        ))
-    }
-}
-
-impl From<&PathBuf> for SimpleAsyncRusqlite {
-    fn from(value: &PathBuf) -> Self {
-        SimpleAsyncRusqlite(create_sqlite_pool(value.to_str().unwrap_or_default(), None))
-    }
-}
-
 /// Mint SQLite implementation with rusqlite
-pub type WalletSqliteDatabase = SQLWalletDatabase<SimpleAsyncRusqlite>;
+pub type WalletSqliteDatabase = SQLWalletDatabase<SqliteConnectionManager>;
 
 #[cfg(test)]
 mod tests {
@@ -330,7 +148,7 @@ mod tests {
 
         // Test PaymentMethod variants
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
-        let payment_methods = vec![
+        let payment_methods = [
             PaymentMethod::Bolt11,
             PaymentMethod::Bolt12,
             PaymentMethod::Custom("custom".to_string()),

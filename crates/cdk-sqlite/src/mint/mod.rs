@@ -3,26 +3,27 @@
 use cdk_sql_common::mint::SQLMintAuthDatabase;
 use cdk_sql_common::SQLMintDatabase;
 
-mod async_rusqlite;
+use crate::common::SqliteConnectionManager;
 
 pub mod memory;
 
 /// Mint SQLite implementation with rusqlite
-pub type MintSqliteDatabase = SQLMintDatabase<async_rusqlite::AsyncRusqlite>;
+pub type MintSqliteDatabase = SQLMintDatabase<SqliteConnectionManager>;
 
 /// Mint Auth database with rusqlite
 #[cfg(feature = "auth")]
-pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<async_rusqlite::AsyncRusqlite>;
+pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<SqliteConnectionManager>;
 
 #[cfg(test)]
 mod test {
     use std::fs::remove_file;
 
     use cdk_common::mint_db_test;
+    use cdk_sql_common::pool::Pool;
     use cdk_sql_common::stmt::query;
 
     use super::*;
-    use crate::mint::async_rusqlite::AsyncRusqlite;
+    use crate::common::Config;
 
     async fn provide_db() -> MintSqliteDatabase {
         memory::empty().await.unwrap()
@@ -40,13 +41,17 @@ mod test {
         {
             let _ = remove_file(&file);
             #[cfg(not(feature = "sqlcipher"))]
-            let conn: AsyncRusqlite = file.as_str().into();
+            let config: Config = file.as_str().into();
             #[cfg(feature = "sqlcipher")]
-            let conn: AsyncRusqlite = (file.as_str(), "test".to_owned()).into();
+            let config: Config = (file.as_str(), "test").into();
+
+            let pool = Pool::<SqliteConnectionManager>::new(config);
+
+            let conn = pool.get().expect("valid connection");
 
             query(include_str!("../../tests/legacy-sqlx.sql"))
                 .expect("query")
-                .execute(&conn)
+                .execute(&*conn)
                 .await
                 .expect("create former db failed");
         }
@@ -55,7 +60,7 @@ mod test {
         let conn = MintSqliteDatabase::new(file.as_str()).await;
 
         #[cfg(feature = "sqlcipher")]
-        let conn = MintSqliteDatabase::new((file.as_str(), "test".to_owned())).await;
+        let conn = MintSqliteDatabase::new((file.as_str(), "test")).await;
 
         assert!(conn.is_ok(), "Failed with {:?}", conn.unwrap_err());
 
