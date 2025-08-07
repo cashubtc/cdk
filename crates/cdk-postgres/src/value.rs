@@ -54,9 +54,9 @@ impl<'a> FromSql<'a> for PgValue<'a> {
             } else {
                 0
             }),
-            types::Type::INT2 | types::Type::INT4 | types::Type::INT8 => {
-                PgValue::Integer(<i64 as FromSql>::from_sql(ty, raw)?)
-            }
+            types::Type::INT2 => PgValue::Integer(<i8 as FromSql>::from_sql(ty, raw)? as i64),
+            types::Type::INT4 => PgValue::Integer(<i32 as FromSql>::from_sql(ty, raw)? as i64),
+            types::Type::INT8 => PgValue::Integer(<i64 as FromSql>::from_sql(ty, raw)?),
             types::Type::BIT_ARRAY | types::Type::BYTEA | types::Type::UNKNOWN => {
                 PgValue::Blob(<&[u8] as FromSql>::from_sql(ty, raw)?)
             }

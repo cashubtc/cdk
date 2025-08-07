@@ -28,6 +28,10 @@ cleanup() {
         echo "Temp directory removed: $CDK_ITESTS_DIR"
     fi
 
+    if [ -n "$CONTAINER_NAME" ]; then
+        docker rm "${CONTAINER_NAME}" -f
+    fi
+
     # Unset all environment variables
     unset CDK_ITESTS_DIR
     unset CDK_TEST_MINT_URL
@@ -58,8 +62,22 @@ cargo build -p cdk-integration-tests
 echo "Starting fake mint using Rust binary..."
 
 if [ "${CDK_MINTD_DATABASE}" = "POSTGRES" ]; then
-    bash -x crates/cdk-postgres/start_db_for_test.sh
-    export PG_DB_URL="host=localhost user=test password=test dbname=mintdb port=5433"
+    export CONTAINER_NAME="rust-fake-test-pg"
+    DB_USER="test"
+    DB_PASS="test"
+    DB_NAME="testdb"
+    DB_PORT="15433"
+
+    docker run -d --rm \
+      --name "${CONTAINER_NAME}" \
+      -e POSTGRES_USER="${DB_USER}" \
+      -e POSTGRES_PASSWORD="${DB_PASS}" \
+      -e POSTGRES_DB="${DB_NAME}" \
+      -p ${DB_PORT}:5432 \
+      postgres:16
+    export PG_DB_URL="host=localhost user=${DB_USER} password=${DB_PASS} dbname=${DB_NAME} port=${DB_PORT}"
+
+    echo "Starting fresh PostgreSQL container..."
 fi
 
 if [ "$2" = "external_signatory" ]; then

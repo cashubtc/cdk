@@ -58,15 +58,17 @@ pub async fn pg_fetch_one(
 
     pin_mut!(stream);
 
-    Ok(stream
+    stream
         .try_next()
         .await
         .map_err(|e| Error::Database(Box::new(e)))?
         .map(|row| {
             (0..row.len())
-                .map(|i| row.get::<_, PgValue>(i).into())
-                .collect::<Vec<_>>()
-        }))
+                .map(|i| row.try_get::<_, PgValue>(i).map(|value| value.into()))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()
+        .map_err(|e| Error::Database(Box::new(e)))
 }
 
 #[inline(always)]
@@ -98,8 +100,9 @@ pub async fn pg_fetch_all(conn: &Client, statement: Statement) -> Result<Vec<Vec
     {
         rows.push(
             (0..row.len())
-                .map(|i| row.get::<_, PgValue>(i).into())
-                .collect::<Vec<_>>(),
+                .map(|i| row.try_get::<_, PgValue>(i).map(|value| value.into()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| Error::Database(Box::new(e)))?,
         );
     }
 
@@ -127,9 +130,11 @@ pub async fn gn_pluck(conn: &Client, statement: Statement) -> Result<Option<Colu
 
     pin_mut!(stream);
 
-    Ok(stream
+    stream
         .try_next()
         .await
         .map_err(|e| Error::Database(Box::new(e)))?
-        .map(|row| row.get::<_, PgValue>(0).into()))
+        .map(|row| row.try_get::<_, PgValue>(0).map(|value| value.into()))
+        .transpose()
+        .map_err(|e| Error::Database(Box::new(e)))
 }
