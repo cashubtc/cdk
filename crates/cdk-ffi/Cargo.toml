@@ -15,25 +15,18 @@ default = ["auth"]
 auth = ["cdk/auth"]
 
 [dependencies]
+bip39 = { workspace = true }
 cdk = { workspace = true, features = ["wallet"] }
 cdk-common = { workspace = true }
-
-# UniFFI dependencies
-uniffi = { version = "0.29", features = ["cli"] }
-
-# Core dependencies
-rand = { workspace = true }
-url = { workspace = true }
-thiserror = { workspace = true }
-bip39 = { workspace = true }
-
-# Database storage for wallet
 cdk-sqlite = { workspace = true }
-
-# Async utilities
 futures = { workspace = true }
+once_cell = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
+uniffi = { version = "0.29", features = ["cli"] }
+url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
-tokio = { workspace = true, features = ["sync"] }
 
 
 [dev-dependencies]
