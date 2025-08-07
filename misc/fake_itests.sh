@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Script to run fake mint tests with proper handling of race conditions
-# This script ensures the .env file is properly created and available 
+# This script ensures the .env file is properly created and available
 # before running tests
 
 # Function to perform cleanup
@@ -56,6 +56,12 @@ cargo build -p cdk-integration-tests
 
 # Start the fake mint binary with the new Rust-based approach
 echo "Starting fake mint using Rust binary..."
+
+if [ "${CDK_MINTD_DATABASE}" = "POSTGRES" ]; then
+    bash -x crates/cdk-postgres/start_db_for_test.sh
+    export PG_DB_URL="host=localhost user=test password=test dbname=mintdb port=5433"
+fi
+
 if [ "$2" = "external_signatory" ]; then
     echo "Starting with external signatory support"
 
@@ -64,7 +70,7 @@ if [ "$2" = "external_signatory" ]; then
     cargo run --bin signatory -- -w $CDK_ITESTS_DIR -u "sat" -u "usd"  &
     export CDK_SIGNATORY_PID=$!
     sleep 5
-    
+
     cargo run --bin start_fake_mint -- --enable-logging --external-signatory "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR" &
 else
     cargo run --bin start_fake_mint -- --enable-logging "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR" &
