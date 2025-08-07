@@ -2,10 +2,12 @@
 //!
 //! UniFFI bindings for the CDK Wallet and related types.
 
+pub mod database;
 pub mod error;
 pub mod types;
 pub mod wallet;
 
+pub use database::*;
 pub use error::*;
 pub use types::*;
 pub use wallet::*;
@@ -221,17 +223,13 @@ mod tests {
     #[test]
     fn test_wallet_config() {
         let config = WalletConfig {
-            work_dir: "test_dir".to_string(),
             target_proof_count: None,
         };
-        assert_eq!(config.work_dir, "test_dir");
         assert!(config.target_proof_count.is_none());
 
         let config_with_values = WalletConfig {
-            work_dir: "test.db".to_string(),
             target_proof_count: Some(5),
         };
-        assert_eq!(config_with_values.work_dir, "test.db".to_string());
         assert_eq!(config_with_values.target_proof_count, Some(5));
     }
 

@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use bip39::Mnemonic;
 use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
-use cdk_sqlite::wallet::WalletSqliteDatabase;
 
 use crate::error::FfiError;
 use crate::types::*;
@@ -23,6 +22,7 @@ impl Wallet {
         mint_url: String,
         unit: CurrencyUnit,
         mnemonic: String,
+        db: Arc<crate::database::WalletSqliteDatabase>,
         config: WalletConfig,
     ) -> Result<Self, FfiError> {
         // Parse mnemonic and generate seed without passphrase
@@ -31,15 +31,7 @@ impl Wallet {
         })?;
         let seed = m.to_seed_normalized("");
 
-        let localstore: Arc<
-            dyn cdk_common::database::WalletDatabase<Err = cdk_common::database::Error>
-                + Send
-                + Sync,
-        > = Arc::new(
-            WalletSqliteDatabase::new(config.work_dir.as_str())
-                .await
-                .map_err(|e| FfiError::Database { msg: e.to_string() })?,
-        );
+        let localstore = db.get_inner();
 
         let wallet = CdkWalletBuilder::new()
             .mint_url(
@@ -406,7 +398,6 @@ impl Wallet {
 /// Configuration for creating wallets
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct WalletConfig {
-    pub work_dir: String,
     pub target_proof_count: Option<u32>,
 }
 
