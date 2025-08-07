@@ -48,10 +48,10 @@ static RUNTIME: Lazy<Arc<Runtime>> = Lazy::new(|| {
 pub fn init_runtime() -> Result<(), FfiError> {
     // Force lazy initialization of the runtime
     let runtime = &*RUNTIME;
-    
+
     // Enter the runtime context to ensure it's available for hyper-util
     let _guard = runtime.enter();
-    
+
     Ok(())
 }
 
@@ -69,14 +69,29 @@ pub(crate) fn get_runtime() -> Arc<Runtime> {
 /// This function ensures that async operations run within the proper
 /// Tokio runtime context, which is especially important for operations
 /// that create HTTP clients or other components that require runtime context.
+#[allow(dead_code)]
 pub(crate) fn block_on<F: std::future::Future>(future: F) -> F::Output {
     RUNTIME.block_on(future)
+}
+
+/// Spawn a future on the global runtime
+///
+/// This function spawns a future on the global runtime and returns a JoinHandle.
+/// Use this for non-blocking async operations in FFI context.
+#[allow(dead_code)]
+pub(crate) fn spawn<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    RUNTIME.spawn(future)
 }
 
 /// Get the runtime handle for use in async contexts
 ///
 /// This provides access to the runtime handle for spawning tasks
 /// and other operations that require runtime access.
+#[allow(dead_code)]
 pub(crate) fn handle() -> tokio::runtime::Handle {
     RUNTIME.handle().clone()
 }
