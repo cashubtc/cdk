@@ -108,17 +108,10 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
 /// Given to the mint by the recipient
 pub struct CairoWitness {
     /// The serialized .json Cairo proof
-    pub proof: String,
+    pub cairo_proof_json: String,
 }
 
-impl CairoWitness {
-    #[inline]
-    /// Check if Witness is empty
-    pub fn is_empty(&self) -> bool {
-        self.proof == ""
-    }
-}
-
+// TODO: won't be needed once we update to the latest version of stwo_cairo_prover
 fn secure_pcs_config() -> PcsConfig {
     PcsConfig {
         pow_bits: 26,
@@ -130,6 +123,7 @@ fn secure_pcs_config() -> PcsConfig {
     }
 }
 
+/// Convert a PubMemoryValue to a Felt
 fn pmv_to_felt(pmv: &PubMemoryValue) -> Felt {
     let (_id, value) = pmv;
     let mut le_bytes = [0u8; 32];
@@ -157,11 +151,12 @@ impl Proof {
             Some(Witness::CairoWitness(witness)) => witness,
             _ => return Err(Error::IncorrectWitnessKind),
         };
-        let cairo_proof =
-            match serde_json::from_str::<CairoProof<Blake2sMerkleHasher>>(&cairo_witness.proof) {
-                Ok(proof) => proof,
-                Err(e) => return Err(Error::Serde(e)),
-            };
+        let cairo_proof = match serde_json::from_str::<CairoProof<Blake2sMerkleHasher>>(
+            &cairo_witness.cairo_proof_json,
+        ) {
+            Ok(proof) => proof,
+            Err(e) => return Err(Error::Serde(e)),
+        };
 
         let program_hash_condition =
             Felt::from_str(secret.secret_data().data()).map_err(|e| Error::FeltFromStr(e))?;
@@ -204,9 +199,7 @@ impl Proof {
     /// Add cairo proof
     #[inline]
     pub fn add_cairo_proof(&mut self, cairo_proof_json: String) {
-        self.witness = Some(Witness::CairoWitness(CairoWitness {
-            proof: cairo_proof_json,
-        }))
+        self.witness = Some(Witness::CairoWitness(CairoWitness { cairo_proof_json }))
     }
 }
 
@@ -241,7 +234,9 @@ mod tests {
         hex_strings
             .into_iter()
             .map(|s| {
-                // TODO: this is a hack because `Felt::from_hex` doesn't work with negative numbers
+                // This is a hack because `Felt::from_hex` doesn't work with negative numbers.
+                // This is ok because we only need to parse executables during testing and thus
+                // using cairo_lang_executable is not worth having an extra dependency
                 let is_negative = s.starts_with('-');
                 let normalized_hex = if is_negative {
                     s.trim_start_matches('-').to_string()
@@ -257,75 +252,97 @@ mod tests {
 
     #[test]
     fn test_verify() {
-        let cairo_proof = include_str!("example_proof.json").to_string();
-        let witness = CairoWitness { proof: cairo_proof };
-
         let secret_key =
             SecretKey::from_str("99590802251e78ee1051648439eedb003dc539093a48a44e7b8f2642c909ea37")
                 .unwrap();
         let v_key = secret_key.public_key();
 
-        // hash the program bytecode
-        let executable_json = include_str!("example_executable.json");
+        // Hash the program bytecode
+        let executable_json = include_str!("./test/is_prime_executable.json");
         let executable: Executable = serde_json::from_str(executable_json).unwrap();
         let program_hash = Poseidon::hash_array(&executable.program.bytecode);
 
-        // specify output condition (0 -> not prime, 1 -> prime)
-        let output_condition = vec![Felt::from(1)]; // the example is on input 7, so output should be 1
-        let conditions = Conditions {
-            output: Some(Poseidon::hash_array(&output_condition)),
+        // Specify output condition
+        let output_false = Poseidon::hash_array(&vec![Felt::from(0)]); // is not prime
+        let output_true = Poseidon::hash_array(&vec![Felt::from(1)]); // is prime
+
+        let cond_false = Conditions {
+            output: Some(output_false),
+        };
+        let cond_true = Conditions {
+            output: Some(output_true),
         };
 
-        let secret: Secret =
-            Nut10Secret::new(Kind::Cairo, program_hash.to_string(), Some(conditions))
+        let secret_is_prime_true: Secret =
+            Nut10Secret::new(Kind::Cairo, program_hash.to_string(), Some(cond_true))
+                .try_into()
+                .unwrap();
+        let secret_is_prime_false: Secret =
+            Nut10Secret::new(Kind::Cairo, program_hash.to_string(), Some(cond_false))
                 .try_into()
                 .unwrap();
 
-        let valid_proof: Proof = Proof {
-            amount: Amount::ZERO,
-            keyset_id: Id::from_str("009a1f293253e41e").unwrap(), // TODO: check how this is used
-            secret,
-            c: v_key, // TODO: this serves no purpose for now
-            witness: Some(Witness::CairoWitness(witness)),
-            dleq: None,
+        let cairo_proof_is_prime_7 = include_str!("./test/is_prime_proof_7.json").to_string();
+        let witness_is_prime_7 = CairoWitness {
+            cairo_proof_json: cairo_proof_is_prime_7,
         };
-        valid_proof.verify_cairo().unwrap();
-        assert!(valid_proof.verify_cairo().is_ok());
+        let cairo_proof_is_prime_9 = include_str!("./test/is_prime_proof_9.json").to_string();
+        let witness_is_prime_9 = CairoWitness {
+            cairo_proof_json: cairo_proof_is_prime_9,
+        };
 
-        // let invalid_proof: Proof = // TODO: example of an invalid proof
-        // assert!(invalid_proof.verify_cc().is_err());
+        // proof that is_prime(7) == true
+        let mut proof: Proof = Proof {
+            amount: Amount::ZERO,                                 // unused in this test
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(), // unused in this test
+            secret: secret_is_prime_true.clone(),
+            c: v_key, // unused in this test
+            witness: Some(Witness::CairoWitness(witness_is_prime_7)),
+            dleq: None, // unused in this test
+        };
+        proof.verify_cairo().unwrap();
+        assert!(proof.verify_cairo().is_ok());
+
+        // if we change the output condition to false, the verification should fail
+        proof.secret = secret_is_prime_false.clone();
+        assert!(proof.verify_cairo().is_err());
+
+        // proof that is_prime(9) == false
+        let mut proof2: Proof = Proof {
+            amount: Amount::ZERO,                                 // unused in this test
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(), // unused in this test
+            secret: secret_is_prime_false.clone(),
+            c: v_key, // unused in this test
+            witness: Some(Witness::CairoWitness(witness_is_prime_9)),
+            dleq: None, // unused in this test
+        };
+        assert!(proof2.verify_cairo().is_ok());
+
+        // if we change the output condition to true, the verification should again fail
+        proof2.secret = secret_is_prime_true.clone();
+        assert!(proof2.verify_cairo().is_err());
     }
 
     #[test]
     fn test_secret_ser() {
-        // testing the serde serialization of the secret
+        // Testing the serde serialization of the secret
+
+        // with hex string data
         let conditions = Conditions { output: None };
-
         let data = Felt::from_hex("0x1234567890abcdef").unwrap();
-
         let secret = Nut10Secret::new(Kind::Cairo, data.to_hex_string(), Some(conditions));
-
         let secret_str = serde_json::to_string(&secret).unwrap();
-
         let secret_der: Nut10Secret = serde_json::from_str(&secret_str).unwrap();
 
         assert_eq!(secret, secret_der);
-    }
 
-    #[test]
-    fn test_witness_cc() {
-        // testing the creation of a CC witness
-        // 1. Create a CC secret
-        // 2. Generate a witness (stark proofs) for the CC
-        // 3. Verify the witness
-    }
+        // with decimal string data
+        let conditions = Conditions { output: None };
+        let data = Felt::from_str("99").unwrap();
+        let secret = Nut10Secret::new(Kind::Cairo, data.to_string(), Some(conditions));
+        let secret_str = serde_json::to_string(&secret).unwrap();
+        let secret_der: Nut10Secret = serde_json::from_str(&secret_str).unwrap();
 
-    #[test]
-    fn test_verify_soundness() {
-        // testing the verification of an invalid CC proof
-        // 1. Create an invalid CC secret
-        // 2. Generate a proof for the CC
-        // 3. Verify the proof
-        // 4. Assert that the proof is valid
+        assert_eq!(secret, secret_der);
     }
 }

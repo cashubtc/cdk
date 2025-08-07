@@ -25,7 +25,9 @@ use cdk::wallet::{ReceiveOptions, SendMemo, SendOptions};
 use cdk::Amount;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
+use serde::{self, Deserialize, Deserializer};
 use starknet_types_core::felt::Felt;
+use starknet_types_core::hash::{Poseidon, StarkHash};
 use tokio::time::sleep;
 
 /// Tests the token swap and send functionality:
@@ -510,6 +512,41 @@ pub async fn test_p2pk_swap() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_cairo_swap() {
+    #[derive(Deserialize)]
+    struct Executable {
+        program: Program,
+    }
+
+    #[derive(Deserialize)]
+    struct Program {
+        #[serde(deserialize_with = "deserialize_felt_vec")]
+        bytecode: Vec<Felt>,
+    }
+
+    fn deserialize_felt_vec<'de, D>(deserializer: D) -> Result<Vec<Felt>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let hex_strings: Vec<String> = Vec::deserialize(deserializer)?;
+        hex_strings
+            .into_iter()
+            .map(|s| {
+                // This is a hack because `Felt::from_hex` doesn't work with negative numbers.
+                // This is ok because we only need to parse executables during testing and thus
+                // using cairo_lang_executable is not worth having an extra dependency
+                let is_negative = s.starts_with('-');
+                let normalized_hex = if is_negative {
+                    s.trim_start_matches('-').to_string()
+                } else {
+                    s.clone()
+                };
+                let felt = Felt::from_hex(&normalized_hex).unwrap();
+                let corrected_felt = if is_negative { -felt } else { felt };
+                Ok(corrected_felt)
+            })
+            .collect()
+    }
+
     setup_tracing();
 
     let mint_bob = create_and_start_test_mint()
@@ -531,15 +568,14 @@ pub async fn test_cairo_swap() {
 
     let keyset_id: Id = get_keyset_id(&mint_bob).await;
 
-    let program_hash =
-        Felt::from_hex("0x44ab272273ab3cd02a7cd222d0ca335826b7eeb3824d865bb5db5d0cc9e80e2")
-            .unwrap(); // TODO: hash cairo program
+    // Hash the program bytecode
+    let executable_json = include_str!("../../cashu/src/nuts/nutxx/test/is_prime_executable.json"); // is_prime program
+    let executable: Executable = serde_json::from_str(executable_json).unwrap();
+    let program_hash = Poseidon::hash_array(&executable.program.bytecode);
 
+    let output_condition = vec![Felt::from(1)]; // program output: true
     let desired_program_output_hash = Some(NutXXConditions {
-        output: Some(
-            Felt::from_hex("0x579E8877C7755365D5EC1EC7D3A94A457EFF5D1F40482BBE9729C064CDEAD2")
-                .unwrap(),
-        ),
+        output: Some(Poseidon::hash_array(&output_condition)),
     });
 
     let spending_conditions =
@@ -552,11 +588,8 @@ pub async fn test_cairo_swap() {
         &spending_conditions,
     )
     .unwrap();
-
     let swap_request = SwapRequest::new(proofs.clone(), pre_swap.blinded_messages());
-
     let keys = mint_bob.pubkeys().keysets.first().cloned().unwrap().keys;
-
     let post_swap = mint_bob.process_swap_request(swap_request).await.unwrap();
 
     let mut proofs = construct_proofs(
@@ -568,7 +601,6 @@ pub async fn test_cairo_swap() {
     .unwrap();
 
     let pre_swap = PreMintSecrets::random(keyset_id, 100.into(), &SplitTarget::default()).unwrap();
-
     let swap_request = SwapRequest::new(proofs.clone(), pre_swap.blinded_messages());
 
     // Listen for status updates on all input proof pks
@@ -579,7 +611,6 @@ pub async fn test_cairo_swap() {
         .iter()
         .map(|pk| pk.to_string())
         .collect();
-
     let mut listener = mint_bob
         .pubsub_manager()
         .try_subscribe::<IndexableParams>(
@@ -597,7 +628,6 @@ pub async fn test_cairo_swap() {
     match mint_bob.process_swap_request(swap_request).await {
         Ok(_) => panic!("Proofs spent without providing a cairo proof"),
         Err(err) => match err {
-            // TODO: Use the correct Cairo error
             cdk::Error::NUTXX(cdk::nuts::nutxx::Error::IncorrectWitnessKind) => (),
             _ => {
                 println!("{:?}", err);
@@ -606,10 +636,10 @@ pub async fn test_cairo_swap() {
         },
     }
 
-    // for now we're just going to use a toy witness which is the pre-generated proof of prime number
+    // for now we're just going a pre-generated proof using `cairo-prove`
     // TODO: implement the actual cairo proof generation from the wallet
     let cairo_proof: String =
-        include_str!("../../cashu/src/nuts/nutxx/example_proof.json").to_string();
+        include_str!("../../cashu/src/nuts/nutxx/test/is_prime_proof_7.json").to_string();
     for proof in &mut proofs {
         proof.add_cairo_proof(cairo_proof.clone());
     }
