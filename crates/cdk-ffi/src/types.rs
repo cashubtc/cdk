@@ -101,8 +101,8 @@ pub struct MintUrl {
 impl MintUrl {
     pub fn new(url: String) -> Result<Self, FfiError> {
         // Validate URL format
-        url::Url::parse(&url).map_err(|e| FfiError::Generic {
-            msg: format!("Invalid URL: {}", e),
+        url::Url::parse(&url).map_err(|e| FfiError::InvalidUrl {
+            msg: e.to_string(),
         })?;
 
         Ok(Self { url })
@@ -122,7 +122,7 @@ impl TryFrom<MintUrl> for cdk::mint_url::MintUrl {
 
     fn try_from(mint_url: MintUrl) -> Result<Self, Self::Error> {
         cdk::mint_url::MintUrl::from_str(&mint_url.url)
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })
+            .map_err(|e| FfiError::InvalidUrl { msg: e.to_string() })
     }
 }
 
@@ -190,7 +190,7 @@ impl Token {
     #[uniffi::constructor]
     pub fn from_string(token_str: String) -> Result<Token, FfiError> {
         let token = cdk::nuts::Token::from_str(&token_str)
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+            .map_err(|e| FfiError::InvalidToken { msg: e.to_string() })?;
         Ok(Token { inner: token })
     }
 
@@ -408,14 +408,14 @@ impl SecretKey {
     pub fn from_hex(hex: String) -> Result<Self, FfiError> {
         // Validate hex string length (should be 64 characters for 32 bytes)
         if hex.len() != 64 {
-            return Err(FfiError::Generic {
+            return Err(FfiError::InvalidHex {
                 msg: "Secret key hex must be exactly 64 characters (32 bytes)".to_string(),
             });
         }
 
         // Validate hex format
         if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(FfiError::Generic {
+            return Err(FfiError::InvalidHex {
                 msg: "Secret key hex contains invalid characters".to_string(),
             });
         }
@@ -1298,7 +1298,7 @@ impl TryFrom<Conditions> for cdk::nuts::nut11::Conditions {
                     .pubkeys
                     .into_iter()
                     .map(|s| {
-                        s.parse().map_err(|e| FfiError::Generic {
+                        s.parse().map_err(|e| FfiError::InvalidCryptographicKey {
                             msg: format!("Invalid pubkey: {}", e),
                         })
                     })
@@ -1314,7 +1314,7 @@ impl TryFrom<Conditions> for cdk::nuts::nut11::Conditions {
                     .refund_keys
                     .into_iter()
                     .map(|s| {
-                        s.parse().map_err(|e| FfiError::Generic {
+                        s.parse().map_err(|e| FfiError::InvalidCryptographicKey {
                             msg: format!("Invalid refund key: {}", e),
                         })
                     })
@@ -1503,14 +1503,14 @@ impl TransactionId {
     pub fn from_hex(hex: String) -> Result<Self, FfiError> {
         // Validate hex string length (should be 64 characters for 32 bytes)
         if hex.len() != 64 {
-            return Err(FfiError::Generic {
+            return Err(FfiError::InvalidHex {
                 msg: "Transaction ID hex must be exactly 64 characters (32 bytes)".to_string(),
             });
         }
 
         // Validate hex format
         if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(FfiError::Generic {
+            return Err(FfiError::InvalidHex {
                 msg: "Transaction ID hex contains invalid characters".to_string(),
             });
         }
@@ -1541,7 +1541,7 @@ impl TryFrom<TransactionId> for cdk_common::wallet::TransactionId {
 
     fn try_from(id: TransactionId) -> Result<Self, Self::Error> {
         cdk_common::wallet::TransactionId::from_hex(&id.hex)
-            .map_err(|e| FfiError::Generic { msg: e.to_string() })
+            .map_err(|e| FfiError::InvalidHex { msg: e.to_string() })
     }
 }
 
@@ -1582,14 +1582,14 @@ impl TryFrom<AuthProof> for cdk_common::AuthProof {
         use std::str::FromStr;
         Ok(Self {
             keyset_id: cdk_common::Id::from_str(&auth_proof.keyset_id)
-                .map_err(|e| FfiError::Generic { msg: e.to_string() })?,
+                .map_err(|e| FfiError::Serialization { msg: e.to_string() })?,
             secret: {
                 use std::str::FromStr;
                 cdk_common::secret::Secret::from_str(&auth_proof.secret)
-                    .map_err(|e| FfiError::Generic { msg: e.to_string() })?
+                    .map_err(|e| FfiError::Serialization { msg: e.to_string() })?
             },
             c: cdk_common::PublicKey::from_str(&auth_proof.c)
-                .map_err(|e| FfiError::Generic { msg: e.to_string() })?,
+                .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?,
             dleq: None, // FFI doesn't expose DLEQ proofs for simplicity
         })
     }
@@ -1601,7 +1601,7 @@ impl TryFrom<SpendingConditions> for cdk::nuts::SpendingConditions {
     fn try_from(spending_conditions: SpendingConditions) -> Result<Self, Self::Error> {
         match spending_conditions {
             SpendingConditions::P2PK { pubkey, conditions } => {
-                let pubkey = pubkey.parse().map_err(|e| FfiError::Generic {
+                let pubkey = pubkey.parse().map_err(|e| FfiError::InvalidCryptographicKey {
                     msg: format!("Invalid pubkey: {}", e),
                 })?;
                 let conditions = conditions.map(|c| c.try_into()).transpose()?;
@@ -1611,7 +1611,7 @@ impl TryFrom<SpendingConditions> for cdk::nuts::SpendingConditions {
                 })
             }
             SpendingConditions::HTLC { hash, conditions } => {
-                let hash = hash.parse().map_err(|e| FfiError::Generic {
+                let hash = hash.parse().map_err(|e| FfiError::InvalidCryptographicKey {
                     msg: format!("Invalid hash: {}", e),
                 })?;
                 let conditions = conditions.map(|c| c.try_into()).transpose()?;

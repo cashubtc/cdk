@@ -27,8 +27,8 @@ impl Wallet {
         config: WalletConfig,
     ) -> Result<Self, FfiError> {
         // Parse mnemonic and generate seed without passphrase
-        let m = Mnemonic::parse(&mnemonic).map_err(|e| FfiError::Generic {
-            msg: format!("Invalid mnemonic: {}", e),
+        let m = Mnemonic::parse(&mnemonic).map_err(|e| FfiError::InvalidMnemonic {
+            msg: e.to_string(),
         })?;
         let seed = m.to_seed_normalized("");
 
@@ -38,7 +38,7 @@ impl Wallet {
             .mint_url(
                 mint_url
                     .parse()
-                    .map_err(|e: cdk::mint_url::Error| FfiError::Generic { msg: e.to_string() })?,
+                    .map_err(|e: cdk::mint_url::Error| FfiError::InvalidUrl { msg: e.to_string() })?,
             )
             .unit(unit.into())
             .localstore(localstore)
@@ -69,8 +69,8 @@ impl Wallet {
             let balance = inner.total_balance().await?;
             Ok::<Amount, FfiError>(balance.into())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -81,8 +81,8 @@ impl Wallet {
             let balance = inner.total_pending_balance().await?;
             Ok::<Amount, FfiError>(balance.into())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -93,8 +93,8 @@ impl Wallet {
             let balance = inner.total_reserved_balance().await?;
             Ok::<Amount, FfiError>(balance.into())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -105,8 +105,8 @@ impl Wallet {
             let info = inner.get_mint_info().await?;
             Ok::<Option<MintInfo>, FfiError>(info.map(Into::into))
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -123,8 +123,8 @@ impl Wallet {
                 .await?;
             Ok::<Amount, FfiError>(amount.into())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -135,8 +135,8 @@ impl Wallet {
             let amount = inner.restore().await?;
             Ok::<Amount, FfiError>(amount.into())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -148,8 +148,8 @@ impl Wallet {
             inner.verify_token_dleq(&cdk_token).await?;
             Ok::<(), FfiError>(())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -170,8 +170,8 @@ impl Wallet {
                 .await?;
             Ok::<Amount, FfiError>(amount.into())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -188,8 +188,8 @@ impl Wallet {
                 .await?;
             Ok::<std::sync::Arc<PreparedSend>, FfiError>(std::sync::Arc::new(prepared.into()))
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -204,8 +204,8 @@ impl Wallet {
             let quote = inner.mint_quote(amount.into(), description).await?;
             Ok::<std::sync::Arc<MintQuote>, FfiError>(std::sync::Arc::new(quote.into()))
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -229,8 +229,8 @@ impl Wallet {
                 .map(|p| std::sync::Arc::new(p.into()))
                 .collect())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -246,8 +246,8 @@ impl Wallet {
             let quote = inner.melt_quote(request, cdk_options).await?;
             Ok::<std::sync::Arc<MeltQuote>, FfiError>(std::sync::Arc::new(quote.into()))
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -258,8 +258,8 @@ impl Wallet {
             let melted = inner.melt(&quote_id).await?;
             Ok::<Melted, FfiError>(melted.into())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -276,8 +276,8 @@ impl Wallet {
                 .await?;
             Ok::<std::sync::Arc<MintQuote>, FfiError>(std::sync::Arc::new(quote.into()))
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -307,8 +307,8 @@ impl Wallet {
                 .map(|p| std::sync::Arc::new(p.into()))
                 .collect())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -324,8 +324,8 @@ impl Wallet {
             let quote = inner.melt_bolt12_quote(request, cdk_options).await?;
             Ok::<std::sync::Arc<MeltQuote>, FfiError>(std::sync::Arc::new(quote.into()))
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -363,8 +363,8 @@ impl Wallet {
                     .collect()
             }))
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -394,8 +394,8 @@ impl Wallet {
 
             Ok::<Proofs, FfiError>(all_proofs)
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -419,8 +419,8 @@ impl Wallet {
                 .collect();
             Ok::<Vec<bool>, FfiError>(spent_bools)
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -435,8 +435,8 @@ impl Wallet {
             let transactions = inner.list_transactions(cdk_direction).await?;
             Ok::<Vec<Transaction>, FfiError>(transactions.into_iter().map(Into::into).collect())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -451,8 +451,8 @@ impl Wallet {
             let transaction = inner.get_transaction(cdk_id).await?;
             Ok::<Option<Transaction>, FfiError>(transaction.map(Into::into))
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -464,8 +464,8 @@ impl Wallet {
             inner.revert_transaction(cdk_id).await?;
             Ok::<(), FfiError>(())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -477,8 +477,8 @@ impl Wallet {
             inner.set_cat(cat).await?;
             Ok::<(), FfiError>(())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -490,8 +490,8 @@ impl Wallet {
             inner.set_refresh_token(refresh_token).await?;
             Ok::<(), FfiError>(())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -503,8 +503,8 @@ impl Wallet {
             inner.refresh_access_token().await?;
             Ok::<(), FfiError>(())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -519,8 +519,8 @@ impl Wallet {
                 .map(|p| std::sync::Arc::new(p.into()))
                 .collect())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -532,8 +532,8 @@ impl Wallet {
             let auth_proofs = inner.get_unspent_auth_proofs().await?;
             Ok::<Vec<AuthProof>, FfiError>(auth_proofs.into_iter().map(Into::into).collect())
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 
@@ -551,8 +551,8 @@ impl Wallet {
                 active_sub, sub_id,
             )))
         });
-        handle.await.map_err(|e| FfiError::Generic { 
-            msg: format!("Task join error: {}", e) 
+        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
+            msg: e.to_string() 
         })?
     }
 }
@@ -566,6 +566,6 @@ pub struct WalletConfig {
 /// Generates a new random mnemonic phrase
 #[uniffi::export]
 pub fn generate_mnemonic() -> Result<String, FfiError> {
-    let mnemonic = Mnemonic::generate(12).map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+    let mnemonic = Mnemonic::generate(12).map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
     Ok(mnemonic.to_string())
 }

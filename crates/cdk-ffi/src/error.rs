@@ -14,10 +14,6 @@ pub enum FfiError {
     #[error("Amount overflow")]
     AmountOverflow,
 
-    /// Invalid amount
-    #[error("Invalid amount")]
-    InvalidAmount,
-
     /// Amount error
     #[error("Amount error: {msg}")]
     Amount { msg: String },
@@ -43,8 +39,12 @@ pub enum FfiError {
     Network { msg: String },
 
     /// Invalid token
-    #[error("Invalid token")]
-    InvalidToken,
+    #[error("Invalid token: {msg}")]
+    InvalidToken { msg: String },
+
+    /// Wallet error
+    #[error("Wallet error: {msg}")]
+    Wallet { msg: String },
 
     /// Keyset unknown
     #[error("Keyset unknown")]
@@ -54,9 +54,29 @@ pub enum FfiError {
     #[error("Unit not supported")]
     UnitNotSupported,
 
-    /// Wallet error
-    #[error("Wallet error: {msg}")]
-    Wallet { msg: String },
+    /// Runtime task join error
+    #[error("Runtime task join error: {msg}")]
+    RuntimeTaskJoin { msg: String },
+
+    /// Invalid mnemonic phrase
+    #[error("Invalid mnemonic: {msg}")]
+    InvalidMnemonic { msg: String },
+
+    /// URL parsing error
+    #[error("Invalid URL: {msg}")]
+    InvalidUrl { msg: String },
+
+    /// Hex format error
+    #[error("Invalid hex format: {msg}")]
+    InvalidHex { msg: String },
+
+    /// Cryptographic key parsing error
+    #[error("Invalid cryptographic key: {msg}")]
+    InvalidCryptographicKey { msg: String },
+
+    /// Serialization/deserialization error
+    #[error("Serialization error: {msg}")]
+    Serialization { msg: String },
 }
 
 impl From<CdkError> for FfiError {
