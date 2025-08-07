@@ -836,6 +836,7 @@ impl Mint {
                 lookup_items.push(nuts::MintQuoteLookupItem {
                     pubkey,
                     quote: quote.id.to_string(),
+                    method: quote.payment_method.clone(),
                 });
             }
         }

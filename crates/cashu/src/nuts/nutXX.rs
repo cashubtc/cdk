@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::PublicKey;
+use super::{PaymentMethod, PublicKey};
 
 /// NUT-XX Settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -43,6 +43,8 @@ pub struct MintQuoteLookupItem {
     pub pubkey: PublicKey,
     /// Quote ID
     pub quote: String,
+    /// Payment method
+    pub method: PaymentMethod,
 }
 
 #[cfg(test)]
@@ -83,6 +85,7 @@ mod tests {
         let lookup_item = MintQuoteLookupItem {
             pubkey,
             quote: "85233cdc-02ea-45e6-b96f-dd6dad19d28e".to_string(),
+            method: PaymentMethod::Bolt11,
         };
 
         let response = PostMintQuoteLookupResponse {
@@ -107,10 +110,11 @@ mod tests {
         let item = MintQuoteLookupItem {
             pubkey,
             quote: "85233cdc-02ea-45e6-b96f-dd6dad19d28e".to_string(),
+            method: PaymentMethod::Bolt11,
         };
 
         let json = serde_json::to_string(&item).unwrap();
-        let expected_json = r#"{"pubkey":"031a02b9355b1df74574ca1a85ee96f2a8cad9d650aacbec26734f9ba7309b07b2","quote":"85233cdc-02ea-45e6-b96f-dd6dad19d28e"}"#;
+        let expected_json = r#"{"pubkey":"031a02b9355b1df74574ca1a85ee96f2a8cad9d650aacbec26734f9ba7309b07b2","quote":"85233cdc-02ea-45e6-b96f-dd6dad19d28e","method":"bolt11"}"#;
 
         assert_eq!(json, expected_json);
 

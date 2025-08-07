@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use cdk::nuts::SecretKey;
-use cdk::nuts::{CurrencyUnit, MintQuoteBolt11Request};
+use cdk::nuts::{CurrencyUnit, MintQuoteBolt11Request, PaymentMethod};
 use cdk::Amount;
 use cdk_integration_tests::init_pure_tests::create_and_start_test_mint;
 
@@ -34,6 +34,7 @@ async fn test_nutxx_quote_lookup() -> anyhow::Result<()> {
     let found_quote = &lookup_response[0];
     assert_eq!(found_quote.pubkey, pubkey);
     assert_eq!(found_quote.quote, quote_id);
+    assert_eq!(found_quote.method, PaymentMethod::Bolt11);
 
     println!("✅ NUT-XX quote lookup test passed!");
     Ok(())
