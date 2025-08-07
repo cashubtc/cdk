@@ -23,7 +23,7 @@ futures = { workspace = true }
 once_cell = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["sync", "rt"] }
 uniffi = { version = "0.29", features = ["cli"] }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }

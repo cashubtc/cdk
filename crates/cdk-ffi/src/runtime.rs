@@ -26,8 +26,7 @@ use crate::error::FfiError;
 /// Global Tokio runtime instance
 static RUNTIME: Lazy<Arc<Runtime>> = Lazy::new(|| {
     Arc::new(
-        Builder::new_multi_thread()
-            .worker_threads(4)
+        Builder::new_current_thread()
             .max_blocking_threads(8)
             .thread_name("cdk-ffi-worker")
             .enable_all()
