@@ -636,7 +636,7 @@ pub async fn test_cairo_swap() {
         },
     }
 
-    // for now we're just going a pre-generated proof using `cairo-prove`
+    // for now we're just doing a pre-generated proof using `cairo-prove`
     // TODO: implement the actual cairo proof generation from the wallet
     let cairo_proof: String =
         include_str!("../../cashu/src/nuts/nutxx/test/is_prime_proof_7.json").to_string();

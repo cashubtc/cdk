@@ -102,10 +102,6 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
 /// Cairo Witness
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-
-/// The Witness of a Cairo program
-///
-/// Given to the mint by the recipient
 pub struct CairoWitness {
     /// The serialized .json Cairo proof
     pub cairo_proof_json: String,
@@ -307,20 +303,13 @@ mod tests {
         proof.secret = secret_is_prime_false.clone();
         assert!(proof.verify_cairo().is_err());
 
-        // proof that is_prime(9) == false
-        let mut proof2: Proof = Proof {
-            amount: Amount::ZERO,                                 // unused in this test
-            keyset_id: Id::from_str("009a1f293253e41e").unwrap(), // unused in this test
-            secret: secret_is_prime_false.clone(),
-            c: v_key, // unused in this test
-            witness: Some(Witness::CairoWitness(witness_is_prime_9)),
-            dleq: None, // unused in this test
-        };
-        assert!(proof2.verify_cairo().is_ok());
+        // if we change the witness to the computation of is_prime(9), it now succeeds
+        proof.witness = Some(Witness::CairoWitness(witness_is_prime_9));
+        assert!(proof.verify_cairo().is_ok());
 
         // if we change the output condition to true, the verification should again fail
-        proof2.secret = secret_is_prime_true.clone();
-        assert!(proof2.verify_cairo().is_err());
+        proof.secret = secret_is_prime_true.clone();
+        assert!(proof.verify_cairo().is_err());
     }
 
     #[test]
