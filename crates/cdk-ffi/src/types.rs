@@ -224,11 +224,6 @@ impl Token {
             .map(|p| std::sync::Arc::new(p.into()))
             .collect())
     }
-
-    /// Convert to V3 string format
-    pub fn to_v3_string(&self) -> String {
-        self.inner.to_v3_string()
-    }
 }
 
 /// FFI-compatible SendMemo

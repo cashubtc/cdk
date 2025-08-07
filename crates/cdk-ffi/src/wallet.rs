@@ -196,6 +196,56 @@ impl Wallet {
         Ok(melted.into())
     }
 
+    /// Get a quote for a bolt12 mint
+    pub async fn mint_bolt12_quote(
+        &self,
+        amount: Option<Amount>,
+        description: Option<String>,
+    ) -> Result<std::sync::Arc<MintQuote>, FfiError> {
+        let quote = self
+            .inner
+            .mint_bolt12_quote(amount.map(Into::into), description)
+            .await?;
+        Ok(std::sync::Arc::new(quote.into()))
+    }
+
+    /// Mint tokens using bolt12
+    pub async fn mint_bolt12(
+        &self,
+        quote_id: String,
+        amount: Option<Amount>,
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> Result<Proofs, FfiError> {
+        let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
+
+        let proofs = self
+            .inner
+            .mint_bolt12(
+                &quote_id,
+                amount.map(Into::into),
+                amount_split_target.into(),
+                conditions,
+            )
+            .await?;
+
+        Ok(proofs
+            .into_iter()
+            .map(|p| std::sync::Arc::new(p.into()))
+            .collect())
+    }
+
+    /// Get a quote for a bolt12 melt
+    pub async fn melt_bolt12_quote(
+        &self,
+        request: String,
+        options: Option<MeltOptions>,
+    ) -> Result<std::sync::Arc<MeltQuote>, FfiError> {
+        let cdk_options = options.map(Into::into);
+        let quote = self.inner.melt_bolt12_quote(request, cdk_options).await?;
+        Ok(std::sync::Arc::new(quote.into()))
+    }
+
     /// Swap proofs
     pub async fn swap(
         &self,
