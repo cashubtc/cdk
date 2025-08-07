@@ -69,6 +69,7 @@ impl Secret {
         message.extend_from_slice(b"Cashu_KDF_HMAC_SHA512");
         message.extend_from_slice(&keyset_id.to_bytes());
         message.extend_from_slice(&(counter as u64).to_be_bytes());
+        message.extend_from_slice(b"\x00");
 
         let mut engine = HmacEngine::<sha512::Hash>::new(seed);
         engine.input(&message);
@@ -103,6 +104,7 @@ impl SecretKey {
         message.extend_from_slice(b"Cashu_KDF_HMAC_SHA512");
         message.extend_from_slice(&keyset_id.to_bytes());
         message.extend_from_slice(&(counter as u64).to_be_bytes());
+        message.extend_from_slice(b"\x01");
 
         let mut engine = HmacEngine::<sha512::Hash>::new(seed);
         engine.input(&message);
@@ -110,7 +112,7 @@ impl SecretKey {
         let result_bytes = hmac_result.to_byte_array();
 
         Ok(Self::from(secp256k1::SecretKey::from_slice(
-            &result_bytes[32..],
+            &result_bytes[..32],
         )?))
     }
 }
