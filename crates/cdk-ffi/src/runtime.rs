@@ -19,13 +19,22 @@
 use std::sync::Arc;
 
 use once_cell::sync::Lazy;
-use tokio::runtime::Runtime;
+use tokio::runtime::{Builder, Runtime};
 
 use crate::error::FfiError;
 
 /// Global Tokio runtime instance
-static RUNTIME: Lazy<Arc<Runtime>> =
-    Lazy::new(|| Arc::new(Runtime::new().expect("Failed to create Tokio runtime")));
+static RUNTIME: Lazy<Arc<Runtime>> = Lazy::new(|| {
+    Arc::new(
+        Builder::new_multi_thread()
+            .worker_threads(4)
+            .max_blocking_threads(8)
+            .thread_name("cdk-ffi-worker")
+            .enable_all()
+            .build()
+            .expect("Failed to create Tokio runtime"),
+    )
+});
 
 /// Initialize the Tokio runtime for FFI usage
 ///
@@ -38,7 +47,11 @@ static RUNTIME: Lazy<Arc<Runtime>> =
 #[uniffi::export]
 pub fn init_runtime() -> Result<(), FfiError> {
     // Force lazy initialization of the runtime
-    let _ = &*RUNTIME;
+    let runtime = &*RUNTIME;
+    
+    // Enter the runtime context to ensure it's available for hyper-util
+    let _guard = runtime.enter();
+    
     Ok(())
 }
 
@@ -49,4 +62,21 @@ pub fn init_runtime() -> Result<(), FfiError> {
 #[allow(dead_code)]
 pub(crate) fn get_runtime() -> Arc<Runtime> {
     RUNTIME.clone()
+}
+
+/// Execute a future within the global runtime context
+///
+/// This function ensures that async operations run within the proper
+/// Tokio runtime context, which is especially important for operations
+/// that create HTTP clients or other components that require runtime context.
+pub(crate) fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    RUNTIME.block_on(future)
+}
+
+/// Get the runtime handle for use in async contexts
+///
+/// This provides access to the runtime handle for spawning tasks
+/// and other operations that require runtime access.
+pub(crate) fn handle() -> tokio::runtime::Handle {
+    RUNTIME.handle().clone()
 }
