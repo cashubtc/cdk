@@ -143,7 +143,7 @@ pub trait QuotesDatabase {
     ) -> Result<Option<MintMintQuote>, Self::Err>;
     /// Get Mint Quotes
     async fn get_mint_quotes(&self) -> Result<Vec<MintMintQuote>, Self::Err>;
-    /// Get Mint Quotes by locking keys (NUT-20)
+    /// Get Mint Quotes by locking keys (NUT-XX)
     async fn get_mint_quotes_by_locking_keys(
         &self,
         pubkeys: &[PublicKey],

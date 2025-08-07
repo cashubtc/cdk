@@ -25,6 +25,7 @@ pub mod nut19;
 pub mod nut20;
 pub mod nut23;
 pub mod nut24;
+pub mod nutXX;
 
 #[cfg(feature = "auth")]
 mod auth;
@@ -64,12 +65,12 @@ pub use nut18::{
     PaymentRequest, PaymentRequestBuilder, PaymentRequestPayload, Transport, TransportBuilder,
     TransportType,
 };
-pub use nut20::{
-    MintQuoteLookupItem, PostMintQuoteLookupRequest, PostMintQuoteLookupResponse,
-    Settings as NUT20Settings,
-};
 pub use nut23::{
     MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintQuoteBolt11Request,
     MintQuoteBolt11Response, QuoteState as MintQuoteState,
 };
 pub use nut24::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
+pub use nutXX::{
+    MintQuoteLookupItem, PostMintQuoteLookupRequest, PostMintQuoteLookupResponse,
+    Settings as NUTXXSettings,
+};

@@ -605,8 +605,6 @@ where
         | ErrorCode::UnitMismatch
         | ErrorCode::ClearAuthRequired
         | ErrorCode::BlindAuthRequired
-        | ErrorCode::MintQuoteSignatureRequired
-        | ErrorCode::MintQuotePubkeyRequired
         | ErrorCode::InvalidPubkeyFormat => StatusCode::BAD_REQUEST,
 
         // Auth failures (401 Unauthorized)

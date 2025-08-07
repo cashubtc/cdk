@@ -836,11 +836,6 @@ impl Mint {
                 lookup_items.push(nuts::MintQuoteLookupItem {
                     pubkey,
                     quote: quote.id.to_string(),
-                    request: quote.request.clone(),
-                    state: quote.state(),
-                    expiry: quote.expiry,
-                    amount: quote.amount.unwrap_or(Amount::ZERO),
-                    unit: quote.unit,
                 });
             }
         }

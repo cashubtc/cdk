@@ -43,12 +43,12 @@ mod swagger_imports {
     pub use cdk::nuts::nut12::{BlindSignatureDleq, ProofDleq};
     pub use cdk::nuts::nut14::HTLCWitness;
     pub use cdk::nuts::nut15::{Mpp, MppMethodSettings};
-    pub use cdk::nuts::nut20::{
-        MintQuoteLookupItem, PostMintQuoteLookupRequest, PostMintQuoteLookupResponse,
-    };
     pub use cdk::nuts::nut23::{
         MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintQuoteBolt11Request,
         MintQuoteBolt11Response,
+    };
+    pub use cdk::nuts::nutXX::{
+        MintQuoteLookupItem, PostMintQuoteLookupRequest, PostMintQuoteLookupResponse,
     };
     #[cfg(feature = "auth")]
     pub use cdk::nuts::MintAuthRequest;

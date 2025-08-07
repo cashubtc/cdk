@@ -128,7 +128,7 @@ pub enum RoutePath {
     /// Bolt11 Mint Quote
     #[serde(rename = "/v1/mint/quote/bolt11")]
     MintQuoteBolt11,
-    /// Mint Quote Lookup (NUT-20)
+    /// Mint Quote Lookup
     #[serde(rename = "/v1/mint/quote/lookup")]
     MintQuoteLookup,
     /// Bolt11 Mint

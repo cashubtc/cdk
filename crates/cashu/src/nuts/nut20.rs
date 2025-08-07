@@ -3,12 +3,9 @@
 use std::str::FromStr;
 
 use bitcoin::secp256k1::schnorr::Signature;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::nut23::QuoteState;
-use super::{CurrencyUnit, MintRequest, PublicKey, SecretKey};
-use crate::Amount;
+use super::{MintRequest, PublicKey, SecretKey};
 
 /// Nut19 Error
 #[derive(Debug, Error)]
@@ -72,62 +69,6 @@ where
 
         Ok(())
     }
-}
-
-/// NUT-20 Settings
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct Settings {
-    /// Whether signature-based mint quotes are supported
-    pub supported: bool,
-    /// Whether the quote lookup API is available
-    pub quote_lookup: bool,
-}
-
-impl Settings {
-    /// Create new [`Settings`]
-    pub fn new(supported: bool, quote_lookup: bool) -> Self {
-        Self {
-            supported,
-            quote_lookup,
-        }
-    }
-}
-
-/// Mint quote lookup request [NUT-20]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct PostMintQuoteLookupRequest {
-    /// Public keys to lookup quotes for
-    pub pubkeys: Vec<PublicKey>,
-}
-
-/// Mint quote lookup response [NUT-20]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct PostMintQuoteLookupResponse {
-    /// Matching quotes
-    pub quotes: Vec<MintQuoteLookupItem>,
-}
-
-/// Individual mint quote lookup item [NUT-20]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-pub struct MintQuoteLookupItem {
-    /// Public key associated with this quote
-    pub pubkey: PublicKey,
-    /// Quote ID
-    pub quote: String,
-    /// Payment request (e.g., bolt11 invoice)
-    pub request: String,
-    /// Quote state
-    pub state: QuoteState,
-    /// Unix timestamp when quote expires
-    pub expiry: u64,
-    /// Amount
-    pub amount: Amount,
-    /// Unit
-    pub unit: CurrencyUnit,
 }
 
 #[cfg(test)]
@@ -206,112 +147,5 @@ mod tests {
 
         // Signature is on a different quote id verification should fail
         assert!(request.verify_signature(pubkey).is_err());
-    }
-
-    #[test]
-    fn test_post_mint_quote_lookup_request_serialization() {
-        let pubkey1 = PublicKey::from_hex(
-            "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
-        )
-        .unwrap();
-        let pubkey2 = PublicKey::from_hex(
-            "02be5a55f03e5c0aaea77595d574bce92c6d57a2a0fb2b5955c0b87e4520e06b53",
-        )
-        .unwrap();
-
-        let request = PostMintQuoteLookupRequest {
-            pubkeys: vec![pubkey1, pubkey2],
-        };
-
-        let json = serde_json::to_string(&request).unwrap();
-        let deserialized: PostMintQuoteLookupRequest = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(request, deserialized);
-        assert_eq!(deserialized.pubkeys.len(), 2);
-        assert_eq!(deserialized.pubkeys[0], pubkey1);
-        assert_eq!(deserialized.pubkeys[1], pubkey2);
-    }
-
-    #[test]
-    fn test_post_mint_quote_lookup_response_serialization() {
-        let pubkey = PublicKey::from_hex(
-            "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
-        )
-        .unwrap();
-
-        let lookup_item = MintQuoteLookupItem {
-            pubkey,
-            quote: "9d745270-1405-46de-b5c5-e2762b4f5e00".to_string(),
-            request: "lnbc100n1pj4apw9...".to_string(),
-            state: QuoteState::Paid,
-            expiry: 1701704757,
-            amount: Amount::from(420),
-            unit: CurrencyUnit::Sat,
-        };
-
-        let response = PostMintQuoteLookupResponse {
-            quotes: vec![lookup_item.clone()],
-        };
-
-        let json = serde_json::to_string(&response).unwrap();
-        let deserialized: PostMintQuoteLookupResponse = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(response, deserialized);
-        assert_eq!(deserialized.quotes.len(), 1);
-        assert_eq!(deserialized.quotes[0], lookup_item);
-    }
-
-    #[test]
-    fn test_mint_quote_lookup_item_serialization() {
-        let pubkey = PublicKey::from_hex(
-            "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
-        )
-        .unwrap();
-
-        let item = MintQuoteLookupItem {
-            pubkey,
-            quote: "85233cdc-02ea-45e6-b96f-dd6dad19d28e".to_string(),
-            request: "lnbc690n1xx2s0d0pp5...".to_string(),
-            state: QuoteState::Paid,
-            expiry: 1754336050,
-            amount: Amount::from(69),
-            unit: CurrencyUnit::Sat,
-        };
-
-        let json = serde_json::to_string(&item).unwrap();
-        let expected_json = r#"{"pubkey":"03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac","quote":"85233cdc-02ea-45e6-b96f-dd6dad19d28e","request":"lnbc690n1xx2s0d0pp5...","state":"PAID","expiry":1754336050,"amount":69,"unit":"sat"}"#;
-
-        assert_eq!(json, expected_json);
-
-        let deserialized: MintQuoteLookupItem = serde_json::from_str(&json).unwrap();
-        assert_eq!(item, deserialized);
-    }
-
-    #[test]
-    fn test_empty_pubkeys_request() {
-        let request = PostMintQuoteLookupRequest { pubkeys: vec![] };
-
-        let json = serde_json::to_string(&request).unwrap();
-        let expected_json = r#"{"pubkeys":[]}"#;
-
-        assert_eq!(json, expected_json);
-
-        let deserialized: PostMintQuoteLookupRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(request, deserialized);
-        assert!(deserialized.pubkeys.is_empty());
-    }
-
-    #[test]
-    fn test_empty_quotes_response() {
-        let response = PostMintQuoteLookupResponse { quotes: vec![] };
-
-        let json = serde_json::to_string(&response).unwrap();
-        let expected_json = r#"{"quotes":[]}"#;
-
-        assert_eq!(json, expected_json);
-
-        let deserialized: PostMintQuoteLookupResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(response, deserialized);
-        assert!(deserialized.quotes.is_empty());
     }
 }

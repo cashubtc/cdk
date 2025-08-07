@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use cdk::nuts::SecretKey;
 use cdk::nuts::{CurrencyUnit, MintQuoteBolt11Request};
@@ -6,7 +6,7 @@ use cdk::Amount;
 use cdk_integration_tests::init_pure_tests::create_and_start_test_mint;
 
 #[tokio::test]
-async fn test_nut20_quote_lookup() -> anyhow::Result<()> {
+async fn test_nutxx_quote_lookup() -> anyhow::Result<()> {
     let mint = create_and_start_test_mint().await?;
 
     // Generate a test key pair for locking the quote
@@ -34,15 +34,13 @@ async fn test_nut20_quote_lookup() -> anyhow::Result<()> {
     let found_quote = &lookup_response[0];
     assert_eq!(found_quote.pubkey, pubkey);
     assert_eq!(found_quote.quote, quote_id);
-    assert_eq!(found_quote.amount, Amount::from(100));
-    assert_eq!(found_quote.unit, CurrencyUnit::Sat);
 
-    println!("✅ NUT-20 quote lookup test passed!");
+    println!("✅ NUT-XX quote lookup test passed!");
     Ok(())
 }
 
 #[tokio::test]
-async fn test_nut20_quote_lookup_multiple_keys() -> anyhow::Result<()> {
+async fn test_nutxx_quote_lookup_multiple_keys() -> anyhow::Result<()> {
     let mint = create_and_start_test_mint().await?;
 
     // Generate multiple test key pairs
@@ -85,20 +83,20 @@ async fn test_nut20_quote_lookup_multiple_keys() -> anyhow::Result<()> {
     // Should find both quotes
     assert_eq!(lookup_response.len(), 2);
 
-    let mut found_amounts = HashMap::new();
+    let mut found_pubkeys = HashSet::new();
     for quote in &lookup_response {
-        found_amounts.insert(quote.pubkey, quote.amount);
+        found_pubkeys.insert(quote.pubkey);
     }
 
-    assert_eq!(found_amounts[&pubkey1], Amount::from(50));
-    assert_eq!(found_amounts[&pubkey2], Amount::from(75));
+    assert!(found_pubkeys.contains(&pubkey1));
+    assert!(found_pubkeys.contains(&pubkey2));
 
-    println!("✅ NUT-20 multiple key lookup test passed!");
+    println!("✅ NUT-XX multiple key lookup test passed!");
     Ok(())
 }
 
 #[tokio::test]
-async fn test_nut20_quote_lookup_empty_result() -> anyhow::Result<()> {
+async fn test_nutxx_quote_lookup_empty_result() -> anyhow::Result<()> {
     let mint = create_and_start_test_mint().await?;
 
     // Generate a key that has no associated quotes
@@ -110,6 +108,6 @@ async fn test_nut20_quote_lookup_empty_result() -> anyhow::Result<()> {
     // Should return empty array
     assert_eq!(lookup_response.len(), 0);
 
-    println!("✅ NUT-20 empty lookup test passed!");
+    println!("✅ NUT-XX empty lookup test passed!");
     Ok(())
 }
