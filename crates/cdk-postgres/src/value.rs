@@ -79,8 +79,8 @@ impl ToSql for PgValue<'_> {
         Self: Sized,
     {
         match self {
-            PgValue::Blob(blob) => blob.to_sql(ty, out),
-            PgValue::Text(text) => text.to_sql(ty, out),
+            PgValue::Blob(blob) => (*blob).to_sql(ty, out),
+            PgValue::Text(text) => (*text).to_sql(ty, out),
             PgValue::Null => Ok(types::IsNull::Yes),
             PgValue::Real(r) => r.to_sql(ty, out),
             PgValue::Integer(i) => match *ty {

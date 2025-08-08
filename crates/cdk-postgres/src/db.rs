@@ -1,7 +1,8 @@
 use cdk_common::database::Error;
 use cdk_sql_common::stmt::{Column, Statement};
 use futures_util::{pin_mut, TryStreamExt};
-use tokio_postgres::{error::SqlState, Client, Error as PgError};
+use tokio_postgres::error::SqlState;
+use tokio_postgres::{Client, Error as PgError};
 
 use crate::value::PgValue;
 
