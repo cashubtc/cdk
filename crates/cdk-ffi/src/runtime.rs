@@ -24,7 +24,8 @@ use tokio::runtime::{Builder, Runtime};
 /// Global Tokio runtime instance
 static RUNTIME: Lazy<Arc<Runtime>> = Lazy::new(|| {
     Arc::new(
-        Builder::new_current_thread()
+        Builder::new_multi_thread()
+            .worker_threads(2)
             .max_blocking_threads(8)
             .thread_name("cdk-ffi-worker")
             .enable_all()
