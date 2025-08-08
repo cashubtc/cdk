@@ -82,6 +82,9 @@ async fn get_current_states<C>(
 where
     C: DatabaseExecutor + Send + Sync,
 {
+    if ys.is_empty() {
+        return Ok(Default::default());
+    }
     query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)?
         .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
         .fetch_all(conn)
