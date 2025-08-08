@@ -2031,7 +2031,7 @@ pub struct ProofInfo {
     /// Mint URL
     pub mint_url: MintUrl,
     /// Proof state
-    pub state: State,
+    pub state: ProofState,
     /// Proof Spending Conditions
     pub spending_condition: Option<SpendingConditions>,
     /// Currency unit
@@ -2051,39 +2051,7 @@ impl From<cdk_common::common::ProofInfo> for ProofInfo {
     }
 }
 
-/// FFI-compatible State (different from ProofState)
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum State {
-    Unspent,
-    Pending,
-    Spent,
-    Reserved,
-    PendingSpent,
-}
-
-impl From<cdk_common::nuts::State> for State {
-    fn from(state: cdk_common::nuts::State) -> Self {
-        match state {
-            cdk_common::nuts::State::Unspent => State::Unspent,
-            cdk_common::nuts::State::Pending => State::Pending,
-            cdk_common::nuts::State::Spent => State::Spent,
-            cdk_common::nuts::State::Reserved => State::Reserved,
-            cdk_common::nuts::State::PendingSpent => State::PendingSpent,
-        }
-    }
-}
-
-impl From<State> for cdk_common::nuts::State {
-    fn from(state: State) -> Self {
-        match state {
-            State::Unspent => cdk_common::nuts::State::Unspent,
-            State::Pending => cdk_common::nuts::State::Pending,
-            State::Spent => cdk_common::nuts::State::Spent,
-            State::Reserved => cdk_common::nuts::State::Reserved,
-            State::PendingSpent => cdk_common::nuts::State::PendingSpent,
-        }
-    }
-}
+// State enum removed - using ProofState instead
 
 /// FFI-compatible Id (for keyset IDs)
 #[derive(Debug, Clone, uniffi::Record)]

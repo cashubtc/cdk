@@ -85,12 +85,12 @@ pub trait WalletDatabase: Send + Sync {
         &self,
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
-        state: Option<Vec<State>>,
+        state: Option<Vec<ProofState>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, FfiError>;
     
     /// Update proofs state in storage
-    async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), FfiError>;
+    async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: ProofState) -> Result<(), FfiError>;
 
     // Keyset Counter Management
     /// Increment Keyset counter
@@ -808,7 +808,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         &self,
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
-        state: Option<Vec<State>>,
+        state: Option<Vec<ProofState>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, FfiError> {
         crate::runtime::block_on(async move {
@@ -829,7 +829,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
     
-    async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), FfiError> {
+    async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: ProofState) -> Result<(), FfiError> {
         crate::runtime::block_on(async move {
             let cdk_ys: Result<Vec<cdk_common::nuts::PublicKey>, FfiError> = ys.into_iter()
                 .map(|pk| pk.try_into())
