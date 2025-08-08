@@ -953,47 +953,51 @@ impl PreparedSend {
         self: std::sync::Arc<Self>,
         memo: Option<String>,
     ) -> Result<Token, FfiError> {
-        let inner = {
-            if let Ok(mut guard) = self.inner.lock() {
-                guard.take()
-            } else {
-                return Err(FfiError::Generic {
-                    msg: "Failed to acquire lock on PreparedSend".to_string(),
-                });
-            }
-        };
+        crate::runtime::block_on(async move {
+            let inner = {
+                if let Ok(mut guard) = self.inner.lock() {
+                    guard.take()
+                } else {
+                    return Err(FfiError::Generic {
+                        msg: "Failed to acquire lock on PreparedSend".to_string(),
+                    });
+                }
+            };
 
-        if let Some(inner) = inner {
-            let send_memo = memo.map(|m| cdk::wallet::SendMemo::for_token(&m));
-            let token = inner.confirm(send_memo).await?;
-            Ok(token.into())
-        } else {
-            Err(FfiError::Generic {
-                msg: "PreparedSend has already been consumed or cancelled".to_string(),
-            })
-        }
+            if let Some(inner) = inner {
+                let send_memo = memo.map(|m| cdk::wallet::SendMemo::for_token(&m));
+                let token = inner.confirm(send_memo).await?;
+                Ok(token.into())
+            } else {
+                Err(FfiError::Generic {
+                    msg: "PreparedSend has already been consumed or cancelled".to_string(),
+                })
+            }
+        })
     }
 
     /// Cancel the prepared send operation
     pub async fn cancel(self: std::sync::Arc<Self>) -> Result<(), FfiError> {
-        let inner = {
-            if let Ok(mut guard) = self.inner.lock() {
-                guard.take()
-            } else {
-                return Err(FfiError::Generic {
-                    msg: "Failed to acquire lock on PreparedSend".to_string(),
-                });
-            }
-        };
+        crate::runtime::block_on(async move {
+            let inner = {
+                if let Ok(mut guard) = self.inner.lock() {
+                    guard.take()
+                } else {
+                    return Err(FfiError::Generic {
+                        msg: "Failed to acquire lock on PreparedSend".to_string(),
+                    });
+                }
+            };
 
-        if let Some(inner) = inner {
-            inner.cancel().await?;
-            Ok(())
-        } else {
-            Err(FfiError::Generic {
-                msg: "PreparedSend has already been consumed or cancelled".to_string(),
-            })
-        }
+            if let Some(inner) = inner {
+                inner.cancel().await?;
+                Ok(())
+            } else {
+                Err(FfiError::Generic {
+                    msg: "PreparedSend has already been consumed or cancelled".to_string(),
+                })
+            }
+        })
     }
 }
 

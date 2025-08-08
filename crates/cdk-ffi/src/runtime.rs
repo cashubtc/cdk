@@ -21,8 +21,6 @@ use std::sync::Arc;
 use once_cell::sync::Lazy;
 use tokio::runtime::{Builder, Runtime};
 
-use crate::error::FfiError;
-
 /// Global Tokio runtime instance
 static RUNTIME: Lazy<Arc<Runtime>> = Lazy::new(|| {
     Arc::new(

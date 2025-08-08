@@ -17,22 +17,26 @@ impl WalletSqliteDatabase {
     /// Create a new WalletSqliteDatabase with the given work directory
     #[uniffi::constructor]
     pub async fn new(work_dir: String) -> Result<Self, FfiError> {
-        let db = CdkWalletSqliteDatabase::new(work_dir.as_str())
-            .await
-            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
-        Ok(Self {
-            inner: Arc::new(db),
+        crate::runtime::block_on(async move {
+            let db = CdkWalletSqliteDatabase::new(work_dir.as_str())
+                .await
+                .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+            Ok(Self {
+                inner: Arc::new(db),
+            })
         })
     }
 
     /// Create an in-memory database
     #[uniffi::constructor]
     pub async fn new_in_memory() -> Result<Self, FfiError> {
-        let db = cdk_sqlite::wallet::memory::empty()
-            .await
-            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
-        Ok(Self {
-            inner: Arc::new(db),
+        crate::runtime::block_on(async move {
+            let db = cdk_sqlite::wallet::memory::empty()
+                .await
+                .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+            Ok(Self {
+                inner: Arc::new(db),
+            })
         })
     }
 }
