@@ -17,13 +17,13 @@ pub struct Wallet {
 
 #[uniffi::export]
 impl Wallet {
-    /// Create a new Wallet from mnemonic using WalletSqliteDatabase
+    /// Create a new Wallet from mnemonic using WalletDatabase trait
     #[uniffi::constructor]
     pub fn new(
         mint_url: String,
         unit: CurrencyUnit,
         mnemonic: String,
-        db: Arc<crate::database::WalletSqliteDatabase>,
+        db: Arc<dyn crate::database::WalletDatabase>,
         config: WalletConfig,
     ) -> Result<Self, FfiError> {
         // Parse mnemonic and generate seed without passphrase
@@ -32,8 +32,8 @@ impl Wallet {
         })?;
         let seed = m.to_seed_normalized("");
 
-        // Use the WalletSqliteDatabase inner directly
-        let localstore = db.inner();
+        // Convert the FFI database trait to a CDK database implementation
+        let localstore = crate::database::create_cdk_database_from_ffi(db);
 
         let wallet = CdkWalletBuilder::new()
             .mint_url(
