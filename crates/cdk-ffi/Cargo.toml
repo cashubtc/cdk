@@ -15,7 +15,9 @@ default = ["auth"]
 auth = ["cdk/auth"]
 
 [dependencies]
+async-trait = { workspace = true }
 bip39 = { workspace = true }
+cashu = { workspace = true }
 cdk = { workspace = true, features = ["wallet"] }
 cdk-common = { workspace = true }
 cdk-sqlite = { workspace = true }

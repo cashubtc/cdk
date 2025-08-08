@@ -568,7 +568,7 @@ pub fn proofs_total_amount(proofs: &Proofs) -> Result<Amount, FfiError> {
 /// FFI-compatible MintQuote
 #[derive(Debug, uniffi::Object)]
 pub struct MintQuote {
-    inner: cdk::wallet::MintQuote,
+    pub(crate) inner: cdk::wallet::MintQuote,
 }
 
 impl From<cdk::wallet::MintQuote> for MintQuote {
@@ -799,7 +799,7 @@ impl MeltQuoteBolt11Response {
 /// FFI-compatible MeltQuote
 #[derive(Debug, uniffi::Object)]
 pub struct MeltQuote {
-    inner: cdk::wallet::MeltQuote,
+    pub(crate) inner: cdk::wallet::MeltQuote,
 }
 
 impl From<cdk::wallet::MeltQuote> for MeltQuote {
@@ -1247,6 +1247,25 @@ impl From<cdk::nuts::MintInfo> for MintInfo {
     }
 }
 
+impl From<MintInfo> for cdk_common::nuts::MintInfo {
+    fn from(info: MintInfo) -> Self {
+        Self {
+            name: info.name,
+            pubkey: info.pubkey.and_then(|p| p.parse().ok()),
+            version: info.version.map(Into::into),
+            description: info.description,
+            description_long: info.description_long,
+            contact: Some(info.contact.into_iter().map(Into::into).collect()),
+            nuts: cdk_common::nuts::Nuts::default(), // Simplified conversion
+            icon_url: info.icon_url,
+            urls: Some(info.urls),
+            motd: info.motd,
+            time: info.time,
+            tos_url: info.tos_url,
+        }
+    }
+}
+
 /// FFI-compatible Conditions (for spending conditions)
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct Conditions {
@@ -1444,6 +1463,8 @@ pub struct Transaction {
     pub fee: Amount,
     /// Currency Unit
     pub unit: CurrencyUnit,
+    /// Proof Ys (Y values from proofs)
+    pub ys: Vec<PublicKey>,
     /// Unix timestamp
     pub timestamp: u64,
     /// Memo
@@ -1461,10 +1482,35 @@ impl From<cdk_common::wallet::Transaction> for Transaction {
             amount: tx.amount.into(),
             fee: tx.fee.into(),
             unit: tx.unit.into(),
+            ys: tx.ys.into_iter().map(Into::into).collect(),
             timestamp: tx.timestamp,
             memo: tx.memo,
             metadata: tx.metadata,
         }
+    }
+}
+
+/// Convert FFI Transaction to CDK Transaction
+impl TryFrom<Transaction> for cdk_common::wallet::Transaction {
+    type Error = FfiError;
+    
+    fn try_from(tx: Transaction) -> Result<Self, Self::Error> {
+        let cdk_ys: Result<Vec<cdk_common::nuts::PublicKey>, _> = tx.ys.into_iter()
+            .map(|pk| pk.try_into())
+            .collect();
+        let cdk_ys = cdk_ys?;
+        
+        Ok(Self {
+            mint_url: tx.mint_url.try_into()?,
+            direction: tx.direction.into(),
+            amount: tx.amount.into(),
+            fee: tx.fee.into(),
+            unit: tx.unit.into(),
+            ys: cdk_ys,
+            timestamp: tx.timestamp,
+            memo: tx.memo,
+            metadata: tx.metadata,
+        })
     }
 }
 
@@ -1804,5 +1850,200 @@ impl From<cdk::nuts::nut07::ProofState> for ProofStateUpdate {
             state: proof_state.state.into(),
             witness: proof_state.witness.map(|w| format!("{:?}", w)),
         }
+    }
+}
+
+/// FFI-compatible KeySetInfo
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct KeySetInfo {
+    pub id: String,
+    pub unit: CurrencyUnit,
+    pub active: bool,
+}
+
+impl From<cdk_common::nuts::KeySetInfo> for KeySetInfo {
+    fn from(keyset: cdk_common::nuts::KeySetInfo) -> Self {
+        Self {
+            id: keyset.id.to_string(),
+            unit: keyset.unit.into(),
+            active: keyset.active,
+        }
+    }
+}
+
+impl From<KeySetInfo> for cdk_common::nuts::KeySetInfo {
+    fn from(keyset: KeySetInfo) -> Self {
+        use std::str::FromStr;
+        Self {
+            id: cdk_common::nuts::Id::from_str(&keyset.id).unwrap_or_else(|_| {
+                // Create a dummy keyset for empty mint keys
+                use std::collections::BTreeMap;
+                let empty_map = BTreeMap::new();
+                let empty_keys = cdk_common::nut01::MintKeys::new(empty_map);
+                cdk_common::nuts::Id::from(&empty_keys)
+            }),
+            unit: keyset.unit.into(),
+            active: keyset.active,
+            final_expiry: None,
+            input_fee_ppk: 0,
+        }
+    }
+}
+
+/// FFI-compatible PublicKey
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PublicKey {
+    /// Hex-encoded public key
+    pub hex: String,
+}
+
+impl From<cdk_common::nuts::PublicKey> for PublicKey {
+    fn from(key: cdk_common::nuts::PublicKey) -> Self {
+        Self {
+            hex: key.to_string(),
+        }
+    }
+}
+
+impl TryFrom<PublicKey> for cdk_common::nuts::PublicKey {
+    type Error = FfiError;
+
+    fn try_from(key: PublicKey) -> Result<Self, Self::Error> {
+        key.hex.parse().map_err(|e| FfiError::InvalidCryptographicKey {
+            msg: format!("Invalid public key: {}", e),
+        })
+    }
+}
+
+/// FFI-compatible Keys (simplified - contains only essential info)
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Keys {
+    /// Keyset ID
+    pub id: String,
+    /// Currency unit
+    pub unit: CurrencyUnit,
+    /// Map of amount to public key hex (simplified from BTreeMap)
+    pub keys: HashMap<u64, String>,
+}
+
+impl From<cdk_common::nuts::Keys> for Keys {
+    fn from(keys: cdk_common::nuts::Keys) -> Self {
+        // Keys doesn't have id and unit - we'll need to get these from context
+        // For now, use placeholder values
+        Self {
+            id: "unknown".to_string(), // This should come from KeySet
+            unit: CurrencyUnit::Sat, // This should come from KeySet
+            keys: keys
+                .keys()
+                .iter()
+                .map(|(amount, pubkey)| (u64::from(*amount), pubkey.to_string()))
+                .collect(),
+        }
+    }
+}
+
+/// FFI-compatible KeySet
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct KeySet {
+    /// The keys
+    pub keys: Keys,
+}
+
+impl From<cashu::KeySet> for KeySet {
+    fn from(keyset: cashu::KeySet) -> Self {
+        Self {
+            keys: keyset.keys.into(),
+        }
+    }
+}
+
+/// FFI-compatible ProofInfo
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ProofInfo {
+    /// Proof
+    pub proof: std::sync::Arc<Proof>,
+    /// Y value (hash_to_curve of secret)
+    pub y: PublicKey,
+    /// Mint URL
+    pub mint_url: MintUrl,
+    /// Proof state
+    pub state: State,
+    /// Proof Spending Conditions
+    pub spending_condition: Option<SpendingConditions>,
+    /// Currency unit
+    pub unit: CurrencyUnit,
+}
+
+impl From<cdk_common::common::ProofInfo> for ProofInfo {
+    fn from(info: cdk_common::common::ProofInfo) -> Self {
+        Self {
+            proof: std::sync::Arc::new(info.proof.into()),
+            y: info.y.into(),
+            mint_url: info.mint_url.into(),
+            state: info.state.into(),
+            spending_condition: info.spending_condition.map(Into::into),
+            unit: info.unit.into(),
+        }
+    }
+}
+
+/// FFI-compatible State (different from ProofState)
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum State {
+    Unspent,
+    Pending,
+    Spent,
+    Reserved,
+    PendingSpent,
+}
+
+impl From<cdk_common::nuts::State> for State {
+    fn from(state: cdk_common::nuts::State) -> Self {
+        match state {
+            cdk_common::nuts::State::Unspent => State::Unspent,
+            cdk_common::nuts::State::Pending => State::Pending,
+            cdk_common::nuts::State::Spent => State::Spent,
+            cdk_common::nuts::State::Reserved => State::Reserved,
+            cdk_common::nuts::State::PendingSpent => State::PendingSpent,
+        }
+    }
+}
+
+impl From<State> for cdk_common::nuts::State {
+    fn from(state: State) -> Self {
+        match state {
+            State::Unspent => cdk_common::nuts::State::Unspent,
+            State::Pending => cdk_common::nuts::State::Pending,
+            State::Spent => cdk_common::nuts::State::Spent,
+            State::Reserved => cdk_common::nuts::State::Reserved,
+            State::PendingSpent => cdk_common::nuts::State::PendingSpent,
+        }
+    }
+}
+
+/// FFI-compatible Id (for keyset IDs)
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Id {
+    pub hex: String,
+}
+
+impl From<cdk_common::nuts::Id> for Id {
+    fn from(id: cdk_common::nuts::Id) -> Self {
+        Self {
+            hex: id.to_string(),
+        }
+    }
+}
+
+impl From<Id> for cdk_common::nuts::Id {
+    fn from(id: Id) -> Self {
+        use std::str::FromStr;
+        Self::from_str(&id.hex).unwrap_or_else(|_| {
+            // Create a dummy keyset for empty mint keys
+            use std::collections::BTreeMap;
+            let empty_map = BTreeMap::new();
+            let empty_keys = cdk_common::nut01::MintKeys::new(empty_map);
+            cdk_common::nuts::Id::from(&empty_keys)
+        })
     }
 }

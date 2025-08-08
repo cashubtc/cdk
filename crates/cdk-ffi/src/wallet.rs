@@ -17,7 +17,7 @@ pub struct Wallet {
 
 #[uniffi::export]
 impl Wallet {
-    /// Create a new Wallet from mnemonic
+    /// Create a new Wallet from mnemonic using WalletSqliteDatabase
     #[uniffi::constructor]
     pub fn new(
         mint_url: String,
@@ -32,7 +32,8 @@ impl Wallet {
         })?;
         let seed = m.to_seed_normalized("");
 
-        let localstore = db.get_inner();
+        // Use the WalletSqliteDatabase inner directly
+        let localstore = db.inner();
 
         let wallet = CdkWalletBuilder::new()
             .mint_url(
