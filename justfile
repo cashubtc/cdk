@@ -342,3 +342,191 @@ docs-strict:
     RUSTDOCFLAGS="-D warnings" cargo doc $arg --all-features --no-deps
     echo
   done
+
+# =============================================================================
+# FFI Commands - CDK Foreign Function Interface bindings
+# =============================================================================
+
+# Build the FFI library
+ffi-build *ARGS="--release":
+  cargo build {{ARGS}} --package cdk-ffi
+
+# Check the FFI library compiles
+ffi-check *ARGS="":
+  cargo check {{ARGS}} --package cdk-ffi
+
+# Run tests for the FFI library  
+ffi-test *ARGS="":
+  cargo test {{ARGS}} --package cdk-ffi
+
+# Run clippy on the FFI library
+ffi-clippy *ARGS="--all-targets":
+  cargo clippy {{ARGS}} --package cdk-ffi
+
+# Format the FFI code
+ffi-format:
+  cargo fmt --package cdk-ffi
+
+# Clean FFI build artifacts
+ffi-clean:
+  cargo clean --package cdk-ffi
+  rm -rf target/bindings
+
+# Generate bindings for all supported languages
+ffi-generate-all: ffi-build
+  @echo "Generating UniFFI bindings for all languages..."
+  just ffi-generate-python
+  just ffi-generate-swift
+  just ffi-generate-kotlin
+  @echo "✅ All bindings generated successfully!"
+
+# Generate Python bindings
+ffi-generate-python: ffi-build
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "🐍 Generating Python bindings..."
+  mkdir -p target/bindings/python
+  
+  # Determine the correct library extension
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    LIB_EXT="dylib"
+  else
+    LIB_EXT="so"
+  fi
+  
+  cargo run --bin uniffi-bindgen generate \
+    --library target/release/libcdk_ffi.$LIB_EXT \
+    --language python \
+    --out-dir target/bindings/python
+  
+  echo "✅ Python bindings generated in target/bindings/python/"
+
+# Generate Swift bindings
+ffi-generate-swift: ffi-build
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "🍎 Generating Swift bindings..."
+  mkdir -p target/bindings/swift
+  
+  # Determine the correct library extension
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    LIB_EXT="dylib"
+  else
+    LIB_EXT="so"
+  fi
+  
+  cargo run --bin uniffi-bindgen generate \
+    --library target/release/libcdk_ffi.$LIB_EXT \
+    --language swift \
+    --out-dir target/bindings/swift
+  
+  echo "✅ Swift bindings generated in target/bindings/swift/"
+
+# Generate Kotlin bindings
+ffi-generate-kotlin: ffi-build
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "🎯 Generating Kotlin bindings..."
+  mkdir -p target/bindings/kotlin
+  
+  # Determine the correct library extension
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    LIB_EXT="dylib"
+  else
+    LIB_EXT="so"
+  fi
+  
+  cargo run --bin uniffi-bindgen generate \
+    --library target/release/libcdk_ffi.$LIB_EXT \
+    --language kotlin \
+    --out-dir target/bindings/kotlin
+  
+  echo "✅ Kotlin bindings generated in target/bindings/kotlin/"
+
+# Generate Ruby bindings
+ffi-generate-ruby: ffi-build
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "💎 Generating Ruby bindings..."
+  mkdir -p target/bindings/ruby
+  
+  # Determine the correct library extension
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    LIB_EXT="dylib"
+  else
+    LIB_EXT="so"
+  fi
+  
+  cargo run --bin uniffi-bindgen generate \
+    --library target/release/libcdk_ffi.$LIB_EXT \
+    --language ruby \
+    --out-dir target/bindings/ruby
+  
+  echo "✅ Ruby bindings generated in target/bindings/ruby/"
+
+# Generate bindings for a specific language
+ffi-generate LANGUAGE: ffi-build
+  #!/usr/bin/env bash
+  set -euo pipefail
+  LANG="{{LANGUAGE}}"
+  echo "Generating $LANG bindings..."
+  mkdir -p target/bindings/$LANG
+  
+  # Determine the correct library extension
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    LIB_EXT="dylib"
+  else
+    LIB_EXT="so"
+  fi
+  
+  cargo run --bin uniffi-bindgen generate \
+    --library target/release/libcdk_ffi.$LIB_EXT \
+    --language $LANG \
+    --out-dir target/bindings/$LANG
+  
+  echo "✅ $LANG bindings generated in target/bindings/$LANG/"
+
+# Build debug version and generate Python bindings quickly (for development)
+ffi-dev-python:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "🐍 Quick Python bindings generation for development..."
+  cargo build --package cdk-ffi
+  mkdir -p target/bindings/python
+  
+  # Determine the correct library extension
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    LIB_EXT="dylib"
+  else
+    LIB_EXT="so"
+  fi
+  
+  cargo run --bin uniffi-bindgen generate \
+    --library target/debug/libcdk_ffi.$LIB_EXT \
+    --language python \
+    --out-dir target/bindings/python
+  
+  echo "✅ Development Python bindings generated!"
+
+# Install Python dependencies for testing FFI bindings
+ffi-install-python-deps:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "📦 Installing Python dependencies for testing..."
+  if command -v pip &> /dev/null; then
+    pip install cffi
+  elif command -v pip3 &> /dev/null; then
+    pip3 install cffi
+  else
+    echo "❌ No pip found. Please install Python and pip first."
+    exit 1
+  fi
+  echo "✅ Python dependencies installed!"
+
+# Test Python bindings with a simple script
+ffi-test-python: ffi-dev-python
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd target/bindings/python
+  echo "🧪 Testing Python bindings..."
+  python3 -c "import cdk_ffi;"
