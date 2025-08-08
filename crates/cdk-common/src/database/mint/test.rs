@@ -110,7 +110,7 @@ where
 
     // Add proofs to database
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs.clone(), Some(quote_id.clone()))
+    tx.add_proofs(proofs.clone(), Some(quote_id))
         .await
         .unwrap();
     assert!(tx.commit().await.is_ok());
