@@ -760,10 +760,11 @@ impl WalletDatabase for WalletRedbDatabase {
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
+    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<u32, Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         let current_counter;
+        let new_counter;
         {
             let table = write_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
             let counter = table
@@ -774,11 +775,12 @@ impl WalletDatabase for WalletRedbDatabase {
                 Some(c) => c.value(),
                 None => 0,
             };
+
+            new_counter = current_counter + count;
         }
 
         {
             let mut table = write_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
-            let new_counter = current_counter + count;
 
             table
                 .insert(keyset_id.to_string().as_str(), new_counter)
@@ -786,19 +788,7 @@ impl WalletDatabase for WalletRedbDatabase {
         }
         write_txn.commit().map_err(Error::from)?;
 
-        Ok(())
-    }
-
-    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<u32, Self::Err> {
-        let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = read_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
-
-        let counter = table
-            .get(keyset_id.to_string().as_str())
-            .map_err(Error::from)?;
-
-        Ok(counter.map_or(0, |c| c.value()))
+        Ok(new_counter)
     }
 
     #[instrument(skip(self))]

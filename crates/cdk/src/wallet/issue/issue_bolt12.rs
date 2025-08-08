@@ -107,11 +107,6 @@ impl Wallet {
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
 
-        let count = self
-            .localstore
-            .get_keyset_counter(&active_keyset_id)
-            .await?;
-
         let amount = match amount {
             Some(amount) => amount,
             None => {
@@ -135,13 +130,33 @@ impl Wallet {
                 &amount_split_target,
                 spending_conditions,
             )?,
-            None => PreMintSecrets::from_seed(
-                active_keyset_id,
-                count,
-                &self.seed,
-                amount,
-                &amount_split_target,
-            )?,
+            None => {
+                // Calculate how many secrets we'll need without generating them
+                let amount_split = amount.split_targeted(&amount_split_target)?;
+                let num_secrets = amount_split.len() as u32;
+
+                tracing::debug!(
+                    "Incrementing keyset {} counter by {}",
+                    active_keyset_id,
+                    num_secrets
+                );
+
+                // Atomically get the counter range we need
+                let new_counter = self
+                    .localstore
+                    .increment_keyset_counter(&active_keyset_id, num_secrets)
+                    .await?;
+
+                let count = new_counter - num_secrets;
+
+                PreMintSecrets::from_seed(
+                    active_keyset_id,
+                    count,
+                    &self.seed,
+                    amount,
+                    &amount_split_target,
+                )?
+            }
         };
 
         let mut request = MintRequest {
@@ -189,13 +204,6 @@ impl Wallet {
         quote_info.amount_issued += proofs.total_amount()?;
 
         self.localstore.add_mint_quote(quote_info.clone()).await?;
-
-        if spending_conditions.is_none() {
-            // Update counter for keyset
-            self.localstore
-                .increment_keyset_counter(&active_keyset_id, proofs.len() as u32)
-                .await?;
-        }
 
         let proof_infos = proofs
             .iter()
