@@ -25,7 +25,7 @@ pub trait WalletDatabase: Send + Sync {
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, FfiError>;
     
     /// Get all mints from storage
-    async fn get_mints(&self) -> Result<HashMap<String, Option<MintInfo>>, FfiError>;
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, FfiError>;
     
     /// Update mint url
     async fn update_mint_url(&self, old_mint_url: MintUrl, new_mint_url: MintUrl) -> Result<(), FfiError>;
@@ -187,10 +187,11 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
 
         let mut cdk_result = HashMap::new();
-        for (url_str, mint_info_opt) in result {
-            if let Ok(cdk_url) = url_str.parse() {
-                cdk_result.insert(cdk_url, mint_info_opt.map(Into::into));
-            }
+        for (ffi_mint_url, mint_info_opt) in result {
+            let cdk_url = ffi_mint_url.try_into().map_err(|e: FfiError| {
+                cdk_common::database::Error::Database(e.to_string().into())
+            })?;
+            cdk_result.insert(cdk_url, mint_info_opt.map(Into::into));
         }
         Ok(cdk_result)
     }
@@ -593,7 +594,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
     
-    async fn get_mints(&self) -> Result<HashMap<String, Option<MintInfo>>, FfiError> {
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, FfiError> {
         crate::runtime::block_on(async move {
             let result = self
                 .inner
@@ -602,7 +603,7 @@ impl WalletDatabase for WalletSqliteDatabase {
                 .map_err(|e| FfiError::Database { msg: e.to_string() })?;
             Ok(result
                 .into_iter()
-                .map(|(k, v)| (k.to_string(), v.map(Into::into)))
+                .map(|(k, v)| (k.into(), v.map(Into::into)))
                 .collect())
         })
     }

@@ -93,7 +93,7 @@ impl From<CurrencyUnit> for CdkCurrencyUnit {
 }
 
 /// FFI-compatible Mint URL
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct MintUrl {
     pub url: String,
 }
