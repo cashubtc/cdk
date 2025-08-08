@@ -65,49 +65,37 @@ impl Wallet {
     /// Get total balance
     pub async fn total_balance(&self) -> Result<Amount, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let balance = inner.total_balance().await?;
             Ok::<Amount, FfiError>(balance.into())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Get total pending balance
     pub async fn total_pending_balance(&self) -> Result<Amount, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let balance = inner.total_pending_balance().await?;
             Ok::<Amount, FfiError>(balance.into())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Get total reserved balance
     pub async fn total_reserved_balance(&self) -> Result<Amount, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let balance = inner.total_reserved_balance().await?;
             Ok::<Amount, FfiError>(balance.into())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Get mint info
     pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let info = inner.get_mint_info().await?;
             Ok::<Option<MintInfo>, FfiError>(info.map(Into::into))
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Receive tokens
@@ -117,40 +105,31 @@ impl Wallet {
         options: ReceiveOptions,
     ) -> Result<Amount, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let amount = inner
                 .receive(&token.to_string(), options.into())
                 .await?;
             Ok::<Amount, FfiError>(amount.into())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Restore wallet from seed
     pub async fn restore(&self) -> Result<Amount, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let amount = inner.restore().await?;
             Ok::<Amount, FfiError>(amount.into())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Verify token DLEQ proofs
     pub async fn verify_token_dleq(&self, token: std::sync::Arc<Token>) -> Result<(), FfiError> {
         let inner = self.inner.clone();
         let cdk_token = token.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             inner.verify_token_dleq(&cdk_token).await?;
             Ok::<(), FfiError>(())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Receive proofs directly
@@ -161,7 +140,7 @@ impl Wallet {
         memo: Option<String>,
     ) -> Result<Amount, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let cdk_proofs: Vec<cdk::nuts::Proof> =
                 proofs.into_iter().map(|p| p.inner.clone()).collect();
 
@@ -169,10 +148,7 @@ impl Wallet {
                 .receive_proofs(cdk_proofs, options.into(), memo)
                 .await?;
             Ok::<Amount, FfiError>(amount.into())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Prepare a send operation
@@ -182,15 +158,12 @@ impl Wallet {
         options: SendOptions,
     ) -> Result<std::sync::Arc<PreparedSend>, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let prepared = inner
                 .prepare_send(amount.into(), options.into())
                 .await?;
             Ok::<std::sync::Arc<PreparedSend>, FfiError>(std::sync::Arc::new(prepared.into()))
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Get a mint quote
@@ -200,13 +173,10 @@ impl Wallet {
         description: Option<String>,
     ) -> Result<std::sync::Arc<MintQuote>, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let quote = inner.mint_quote(amount.into(), description).await?;
             Ok::<std::sync::Arc<MintQuote>, FfiError>(std::sync::Arc::new(quote.into()))
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Mint tokens
@@ -217,7 +187,7 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             // Convert spending conditions if provided
             let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
 
@@ -228,10 +198,7 @@ impl Wallet {
                 .into_iter()
                 .map(|p| std::sync::Arc::new(p.into()))
                 .collect())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Get a melt quote
@@ -241,26 +208,20 @@ impl Wallet {
         options: Option<MeltOptions>,
     ) -> Result<std::sync::Arc<MeltQuote>, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let cdk_options = options.map(Into::into);
             let quote = inner.melt_quote(request, cdk_options).await?;
             Ok::<std::sync::Arc<MeltQuote>, FfiError>(std::sync::Arc::new(quote.into()))
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Melt tokens
     pub async fn melt(&self, quote_id: String) -> Result<Melted, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let melted = inner.melt(&quote_id).await?;
             Ok::<Melted, FfiError>(melted.into())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Get a quote for a bolt12 mint
@@ -270,15 +231,12 @@ impl Wallet {
         description: Option<String>,
     ) -> Result<std::sync::Arc<MintQuote>, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let quote = inner
                 .mint_bolt12_quote(amount.map(Into::into), description)
                 .await?;
             Ok::<std::sync::Arc<MintQuote>, FfiError>(std::sync::Arc::new(quote.into()))
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Mint tokens using bolt12
@@ -290,7 +248,7 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
 
             let proofs = inner
@@ -306,10 +264,7 @@ impl Wallet {
                 .into_iter()
                 .map(|p| std::sync::Arc::new(p.into()))
                 .collect())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Get a quote for a bolt12 melt
@@ -319,14 +274,11 @@ impl Wallet {
         options: Option<MeltOptions>,
     ) -> Result<std::sync::Arc<MeltQuote>, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let cdk_options = options.map(Into::into);
             let quote = inner.melt_bolt12_quote(request, cdk_options).await?;
             Ok::<std::sync::Arc<MeltQuote>, FfiError>(std::sync::Arc::new(quote.into()))
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Swap proofs
@@ -339,7 +291,7 @@ impl Wallet {
         include_fees: bool,
     ) -> Result<Option<Proofs>, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let cdk_proofs: Vec<cdk::nuts::Proof> =
                 input_proofs.into_iter().map(|p| p.inner.clone()).collect();
 
@@ -362,16 +314,13 @@ impl Wallet {
                     .map(|p| std::sync::Arc::new(p.into()))
                     .collect()
             }))
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Get proofs by states
     pub async fn get_proofs_by_states(&self, states: Vec<ProofState>) -> Result<Proofs, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let mut all_proofs = Vec::new();
 
             for state in states {
@@ -393,16 +342,13 @@ impl Wallet {
             }
 
             Ok::<Proofs, FfiError>(all_proofs)
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Check if proofs are spent
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<bool>, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let cdk_proofs: Vec<cdk::nuts::Proof> =
                 proofs.into_iter().map(|p| p.inner.clone()).collect();
 
@@ -418,10 +364,7 @@ impl Wallet {
                 })
                 .collect();
             Ok::<Vec<bool>, FfiError>(spent_bools)
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// List transactions
@@ -430,14 +373,11 @@ impl Wallet {
         direction: Option<TransactionDirection>,
     ) -> Result<Vec<Transaction>, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let cdk_direction = direction.map(Into::into);
             let transactions = inner.list_transactions(cdk_direction).await?;
             Ok::<Vec<Transaction>, FfiError>(transactions.into_iter().map(Into::into).collect())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Get transaction by ID
@@ -446,95 +386,74 @@ impl Wallet {
         id: TransactionId,
     ) -> Result<Option<Transaction>, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let cdk_id = id.try_into()?;
             let transaction = inner.get_transaction(cdk_id).await?;
             Ok::<Option<Transaction>, FfiError>(transaction.map(Into::into))
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Revert a transaction
     pub async fn revert_transaction(&self, id: TransactionId) -> Result<(), FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let cdk_id = id.try_into()?;
             inner.revert_transaction(cdk_id).await?;
             Ok::<(), FfiError>(())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Set Clear Auth Token (CAT) for authentication
     #[cfg(feature = "auth")]
     pub async fn set_cat(&self, cat: String) -> Result<(), FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             inner.set_cat(cat).await?;
             Ok::<(), FfiError>(())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Set refresh token for authentication
     #[cfg(feature = "auth")]
     pub async fn set_refresh_token(&self, refresh_token: String) -> Result<(), FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             inner.set_refresh_token(refresh_token).await?;
             Ok::<(), FfiError>(())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Refresh access token using the stored refresh token
     #[cfg(feature = "auth")]
     pub async fn refresh_access_token(&self) -> Result<(), FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             inner.refresh_access_token().await?;
             Ok::<(), FfiError>(())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Mint blind auth tokens
     #[cfg(feature = "auth")]
     pub async fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let proofs = inner.mint_blind_auth(amount.into()).await?;
             Ok::<Proofs, FfiError>(proofs
                 .into_iter()
                 .map(|p| std::sync::Arc::new(p.into()))
                 .collect())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Get unspent auth proofs
     #[cfg(feature = "auth")]
     pub async fn get_unspent_auth_proofs(&self) -> Result<Vec<AuthProof>, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let auth_proofs = inner.get_unspent_auth_proofs().await?;
             Ok::<Vec<AuthProof>, FfiError>(auth_proofs.into_iter().map(Into::into).collect())
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 
     /// Subscribe to wallet events
@@ -543,17 +462,14 @@ impl Wallet {
         params: SubscribeParams,
     ) -> Result<std::sync::Arc<ActiveSubscription>, FfiError> {
         let inner = self.inner.clone();
-        let handle = runtime::spawn(async move {
+        runtime::block_on(async move {
             let cdk_params: cdk_common::subscription::Params = params.clone().into();
             let sub_id = cdk_params.id.to_string();
             let active_sub = inner.subscribe(cdk_params).await;
             Ok::<std::sync::Arc<ActiveSubscription>, FfiError>(std::sync::Arc::new(ActiveSubscription::new(
                 active_sub, sub_id,
             )))
-        });
-        handle.await.map_err(|e| FfiError::RuntimeTaskJoin { 
-            msg: e.to_string() 
-        })?
+        })
     }
 }
 

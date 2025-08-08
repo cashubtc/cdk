@@ -1713,25 +1713,31 @@ impl ActiveSubscription {
 
     /// Receive the next notification
     pub async fn recv(&self) -> Result<NotificationPayload, FfiError> {
-        let mut guard = self.inner.lock().await;
-        guard
-            .recv()
-            .await
-            .ok_or(FfiError::Generic {
-                msg: "Subscription closed".to_string(),
-            })
-            .map(Into::into)
+        let inner = self.inner.clone();
+        crate::runtime::block_on(async move {
+            let mut guard = inner.lock().await;
+            guard
+                .recv()
+                .await
+                .ok_or(FfiError::Generic {
+                    msg: "Subscription closed".to_string(),
+                })
+                .map(Into::into)
+        })
     }
 
     /// Try to receive a notification without blocking
     pub async fn try_recv(&self) -> Result<Option<NotificationPayload>, FfiError> {
-        let mut guard = self.inner.lock().await;
-        guard
-            .try_recv()
-            .map(|opt| opt.map(Into::into))
-            .map_err(|e| FfiError::Generic {
-                msg: format!("Failed to receive notification: {}", e),
-            })
+        let inner = self.inner.clone();
+        crate::runtime::block_on(async move {
+            let mut guard = inner.lock().await;
+            guard
+                .try_recv()
+                .map(|opt| opt.map(Into::into))
+                .map_err(|e| FfiError::Generic {
+                    msg: format!("Failed to receive notification: {}", e),
+                })
+        })
     }
 }
 

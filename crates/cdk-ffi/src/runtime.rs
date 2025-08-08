@@ -35,25 +35,6 @@ static RUNTIME: Lazy<Arc<Runtime>> = Lazy::new(|| {
     )
 });
 
-/// Initialize the Tokio runtime for FFI usage
-///
-/// This function initializes a global Tokio runtime that will be used
-/// for all async operations in the FFI bindings. It ensures that only
-/// one runtime instance is created and reused across all calls.
-///
-/// This should be called once at application startup before any other
-/// FFI functions are used.
-#[uniffi::export]
-pub fn init_runtime() -> Result<(), FfiError> {
-    // Force lazy initialization of the runtime
-    let runtime = &*RUNTIME;
-
-    // Enter the runtime context to ensure it's available for hyper-util
-    let _guard = runtime.enter();
-
-    Ok(())
-}
-
 /// Get the global runtime instance (for internal use)
 ///
 /// This function is provided for future use cases where we might need
@@ -73,17 +54,17 @@ pub(crate) fn block_on<F: std::future::Future>(future: F) -> F::Output {
     RUNTIME.block_on(future)
 }
 
-/// Spawn a future on the global runtime
+/// Execute a future directly in current-thread runtime
 ///
-/// This function spawns a future on the global runtime and returns a JoinHandle.
-/// Use this for non-blocking async operations in FFI context.
+/// Since we're using current-thread runtime, we don't need to spawn tasks
+/// with Send bounds. This function executes futures directly.
+/// For current-thread runtime, this is more efficient than spawning.
 #[allow(dead_code)]
-pub(crate) fn spawn<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+pub(crate) async fn execute_local<F>(future: F) -> F::Output
 where
-    F: std::future::Future + Send + 'static,
-    F::Output: Send + 'static,
+    F: std::future::Future,
 {
-    RUNTIME.spawn(future)
+    future.await
 }
 
 /// Get the runtime handle for use in async contexts
