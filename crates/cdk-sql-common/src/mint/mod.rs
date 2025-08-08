@@ -314,10 +314,15 @@ where
     // Get payment IDs and timestamps from the mint_quote_payments table
     query(
         r#"
-SELECT payment_id, timestamp, amount
-FROM mint_quote_payments
-WHERE quote_id=:quote_id;
-            "#,
+        SELECT
+            payment_id,
+            timestamp,
+            amount
+        FROM
+            mint_quote_payments
+        WHERE
+            quote_id=:quote_id
+        "#,
     )?
     .bind("quote_id", quote_id.as_hyphenated().to_string())
     .fetch_all(conn)
@@ -662,7 +667,6 @@ where
             UPDATE mint_quote
             SET amount_issued = :amount_issued
             WHERE id = :quote_id
-            FOR UPDATE
             "#,
         )?
         .bind("amount_issued", new_amount_issued.to_i64())

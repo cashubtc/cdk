@@ -325,9 +325,6 @@ where
             return Ok(vec![]);
         }
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        if !ys.is_empty() {
-            return Ok(vec![]);
-        }
         let mut current_states = query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)?
             .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
             .fetch_all(&*conn)
