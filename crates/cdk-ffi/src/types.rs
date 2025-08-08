@@ -1942,18 +1942,82 @@ impl From<cdk_common::nuts::Keys> for Keys {
     }
 }
 
+impl TryFrom<Keys> for cdk_common::nuts::Keys {
+    type Error = FfiError;
+    
+    fn try_from(keys: Keys) -> Result<Self, Self::Error> {
+        use std::str::FromStr;
+        use std::collections::BTreeMap;
+        
+        // Convert the HashMap to BTreeMap with proper types
+        let mut keys_map = BTreeMap::new();
+        for (amount_u64, pubkey_hex) in keys.keys {
+            let amount = cashu::Amount::from(amount_u64);
+            let pubkey = cashu::PublicKey::from_str(&pubkey_hex)
+                .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?;
+            keys_map.insert(amount, pubkey);
+        }
+        
+        Ok(cdk_common::nuts::Keys::new(keys_map))
+    }
+}
+
 /// FFI-compatible KeySet
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct KeySet {
-    /// The keys
-    pub keys: Keys,
+    /// Keyset ID
+    pub id: String,
+    /// Currency unit  
+    pub unit: CurrencyUnit,
+    /// The keys (map of amount to public key hex)
+    pub keys: HashMap<u64, String>,
+    /// Optional expiry timestamp
+    pub final_expiry: Option<u64>,
 }
 
 impl From<cashu::KeySet> for KeySet {
     fn from(keyset: cashu::KeySet) -> Self {
         Self {
-            keys: keyset.keys.into(),
+            id: keyset.id.to_string(),
+            unit: keyset.unit.into(),
+            keys: keyset.keys.keys().iter()
+                .map(|(amount, pubkey)| (u64::from(*amount), pubkey.to_string()))
+                .collect(),
+            final_expiry: keyset.final_expiry,
         }
+    }
+}
+
+impl TryFrom<KeySet> for cashu::KeySet {
+    type Error = FfiError;
+    
+    fn try_from(keyset: KeySet) -> Result<Self, Self::Error> {
+        use std::str::FromStr;
+        use std::collections::BTreeMap;
+        
+        // Convert id
+        let id = cashu::Id::from_str(&keyset.id)
+            .map_err(|e| FfiError::Serialization { msg: e.to_string() })?;
+        
+        // Convert unit
+        let unit: cashu::CurrencyUnit = keyset.unit.into();
+        
+        // Convert keys
+        let mut keys_map = BTreeMap::new();
+        for (amount_u64, pubkey_hex) in keyset.keys {
+            let amount = cashu::Amount::from(amount_u64);
+            let pubkey = cashu::PublicKey::from_str(&pubkey_hex)
+                .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?;
+            keys_map.insert(amount, pubkey);
+        }
+        let keys = cashu::Keys::new(keys_map);
+        
+        Ok(cashu::KeySet {
+            id,
+            unit, 
+            keys,
+            final_expiry: keyset.final_expiry,
+        })
     }
 }
 

@@ -325,7 +325,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
 
     // Keys Management
     async fn add_keys(&self, keyset: cashu::KeySet) -> Result<(), Self::Err> {
-        let ffi_keyset = keyset.into();
+        let ffi_keyset: KeySet = keyset.into();
         self.ffi_db
             .add_keys(ffi_keyset)
             .await
@@ -336,22 +336,19 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         &self,
         id: &cdk_common::nuts::Id,
     ) -> Result<Option<cdk_common::nuts::Keys>, Self::Err> {
-        let ffi_id = id.clone().into();
+        let ffi_id: Id = id.clone().into();
         let result = self
             .ffi_db
             .get_keys(ffi_id)
             .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
         
-        // Converting from FFI Keys back to CDK Keys is complex
-        // For now, return an error indicating this needs implementation
-        if result.is_some() {
-            Err(cdk_common::database::Error::Database(
-                "Converting FFI Keys to CDK Keys not fully implemented yet".to_string().into(),
-            ))
-        } else {
-            Ok(None)
-        }
+        // Convert FFI Keys back to CDK Keys using TryFrom
+        result.map(|ffi_keys| {
+            ffi_keys.try_into().map_err(|e: FfiError| {
+                cdk_common::database::Error::Database(e.to_string().into())
+            })
+        }).transpose()
     }
 
     async fn remove_keys(&self, id: &cdk_common::nuts::Id) -> Result<(), Self::Err> {
@@ -743,13 +740,14 @@ impl WalletDatabase for WalletSqliteDatabase {
     }
 
     // Keys Management
-    async fn add_keys(&self, _keyset: KeySet) -> Result<(), FfiError> {
+    async fn add_keys(&self, keyset: KeySet) -> Result<(), FfiError> {
         crate::runtime::block_on(async move {
             // Convert FFI KeySet to cashu::KeySet
-            // For now, return an error as this requires complex conversion
-            Err(FfiError::Database {
-                msg: "add_keys not fully implemented yet".to_string()
-            })
+            let cashu_keyset: cashu::KeySet = keyset.try_into()?;
+            self.inner
+                .add_keys(cashu_keyset)
+                .await
+                .map_err(|e| FfiError::Database { msg: e.to_string() })
         })
     }
     
