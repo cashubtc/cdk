@@ -182,7 +182,7 @@ where
 
     /// Begin a transaction
     async fn begin(conn: &mut W) -> Result<(), Error> {
-        query("BEGIN")?.execute(conn).await?;
+        query("START TRANSACTION")?.execute(conn).await?;
         Ok(())
     }
 

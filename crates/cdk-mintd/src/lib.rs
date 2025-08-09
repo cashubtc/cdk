@@ -3,7 +3,7 @@
 // std
 #[cfg(feature = "auth")]
 use std::collections::HashMap;
-use std::env;
+use std::env::{self, var};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -39,6 +39,7 @@ use cdk::nuts::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
+use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase};
 #[cfg(feature = "auth")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -154,6 +155,16 @@ async fn setup_database(
             let db = setup_sqlite_database(work_dir, db_password).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
+            Ok((localstore, keystore))
+        }
+        DatabaseEngine::Postgres => {
+            let conn_url = var("PG_DB_URL").map_err(|_| anyhow!("Missing `PG_DB_URL`"))?;
+
+            let pg_db = Arc::new(MintPgDatabase::new(conn_url.as_str()).await?);
+            let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
+                pg_db.clone();
+            let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> =
+                pg_db;
             Ok((localstore, keystore))
         }
     }
@@ -453,6 +464,10 @@ async fn setup_authentication(
                 };
 
                 Arc::new(sqlite_db)
+            }
+            DatabaseEngine::Postgres => {
+                let conn_url = var("PG_DB_URL").map_err(|_| anyhow!("Missing `PG_DB_URL`"))?;
+                Arc::new(MintPgAuthDatabase::new(conn_url.as_str()).await?)
             }
         };
 
