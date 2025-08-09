@@ -79,7 +79,7 @@ where
 }
 
 /// Test the basic storing and retrieving proofs from the database. Probably the database would use
-/// binary/Vec<u8> to store data, that's why this test would quickly identify issues before running
+/// binary/`Vec<u8>` to store data, that's why this test would quickly identify issues before running
 /// other tests
 pub async fn add_and_find_proofs<DB>(db: DB)
 where
@@ -110,9 +110,7 @@ where
 
     // Add proofs to database
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs.clone(), Some(quote_id))
-        .await
-        .unwrap();
+    tx.add_proofs(proofs.clone(), Some(quote_id)).await.unwrap();
     assert!(tx.commit().await.is_ok());
 
     let proofs_from_db = db.get_proofs_by_ys(&[proofs[0].c, proofs[1].c]).await;
