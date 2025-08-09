@@ -255,6 +255,9 @@ where
         ys: &[PublicKey],
         _quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err> {
+        if ys.is_empty() {
+            return Ok(());
+        }
         let total_deleted = query(
             r#"
             DELETE FROM proof WHERE y IN (:ys) AND state NOT IN (:exclude_state)
