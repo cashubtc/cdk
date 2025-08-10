@@ -23,12 +23,7 @@ fn to_pgsql_error(err: PgError) -> Error {
 pub async fn pg_batch(conn: &Client, statement: Statement) -> Result<(), Error> {
     let (sql, _placeholder_values) = statement.to_sql()?;
 
-    run_db_operation(
-        &sql,
-        async { conn.batch_execute(&sql).await },
-        to_pgsql_error,
-    )
-    .await
+    run_db_operation(&sql, conn.batch_execute(&sql), to_pgsql_error).await
 }
 
 #[inline(always)]

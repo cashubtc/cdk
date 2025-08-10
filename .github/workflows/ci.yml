@@ -262,6 +262,8 @@ jobs:
           shared-key: "stable"
       - name: Test fake mint
         run: nix develop -i -L .#stable --command just test-pure ${{ matrix.database }}
+      - name: Install Postgres
+        run: bash -x crates/cdk-postgres/start_db_for_test.sh
       - name: Test mint
         run: nix develop -i -L .#stable --command just test
 
