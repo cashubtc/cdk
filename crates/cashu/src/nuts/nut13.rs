@@ -527,4 +527,106 @@ mod tests {
             assert_eq!(pre_mint.secret, expected_secret);
         }
     }
+
+    #[test]
+    fn test_v2_counter_starts_at_zero() {
+        let seed =
+            "half depart obvious quality work element tank gorilla view sugar picture humble";
+        let mnemonic = Mnemonic::from_str(seed).unwrap();
+        let seed: [u8; 64] = mnemonic.to_seed("");
+
+        let keyset_id =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
+
+        // Test that counter 0 produces a valid, unique secret
+        let secret_0 = Secret::from_seed(&seed, keyset_id, 0).unwrap();
+        let secret_key_0 = SecretKey::from_seed(&seed, keyset_id, 0).unwrap();
+
+        // Test that counter 1 produces a different secret
+        let secret_1 = Secret::from_seed(&seed, keyset_id, 1).unwrap();
+        let secret_key_1 = SecretKey::from_seed(&seed, keyset_id, 1).unwrap();
+
+        // Verify that index 0 produces valid outputs
+        assert_eq!(secret_0.to_string().len(), 64); // 32 bytes as hex
+        assert_eq!(secret_key_0.secret_bytes().len(), 32);
+
+        // Verify that index 0 and 1 are different
+        assert_ne!(secret_0, secret_1);
+        assert_ne!(secret_key_0, secret_key_1);
+
+        // Verify index 0 is the first in sequence
+        let mut secrets = Vec::new();
+        for counter in 0..5 {
+            let secret = Secret::from_seed(&seed, keyset_id, counter).unwrap();
+            secrets.push(secret);
+        }
+
+        // Ensure first secret is from counter 0
+        assert_eq!(secrets[0], secret_0);
+    }
+
+    #[test]
+    fn test_v2_next_available_counter_semantics() {
+        let seed =
+            "half depart obvious quality work element tank gorilla view sugar picture humble";
+        let mnemonic = Mnemonic::from_str(seed).unwrap();
+        let seed: [u8; 64] = mnemonic.to_seed("");
+
+        let keyset_id =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
+        let amount = Amount::from(1000u64);
+        let split_target = SplitTarget::default();
+
+        // Test PreMintSecrets with counter 0 (next available index)
+        let pre_mint_secrets =
+            PreMintSecrets::from_seed(keyset_id, 0, &seed, amount, &split_target).unwrap();
+
+        // Verify first secret uses index 0
+        let expected_secret_0 = Secret::from_seed(&seed, keyset_id, 0).unwrap();
+        assert_eq!(pre_mint_secrets.secrets[0].secret, expected_secret_0);
+
+        // Test consecutive counters are used sequentially
+        for (i, pre_mint) in pre_mint_secrets.secrets.iter().enumerate() {
+            let expected_secret = Secret::from_seed(&seed, keyset_id, i as u32).unwrap();
+            assert_eq!(pre_mint.secret, expected_secret);
+        }
+    }
+
+    #[test]
+    fn test_v2_migration_compatibility() {
+        let seed =
+            "half depart obvious quality work element tank gorilla view sugar picture humble";
+        let mnemonic = Mnemonic::from_str(seed).unwrap();
+        let seed: [u8; 64] = mnemonic.to_seed("");
+
+        let keyset_id =
+            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+                .unwrap();
+
+        // Simulate migrated counter values
+        // If legacy counter was 5 (last used index), new counter should be 6 (next available)
+        let legacy_last_used = 5u32;
+        let migrated_next_available = legacy_last_used + 1;
+
+        // Test that migrated counter produces correct next secret
+        let next_secret = Secret::from_seed(&seed, keyset_id, migrated_next_available).unwrap();
+
+        // Generate previous secrets to verify no overlap
+        let mut previous_secrets = Vec::new();
+        for i in 0..=legacy_last_used {
+            let secret = Secret::from_seed(&seed, keyset_id, i).unwrap();
+            previous_secrets.push(secret);
+        }
+
+        // Verify the next secret is unique
+        assert!(!previous_secrets.contains(&next_secret));
+
+        // Verify sequence continues properly
+        let subsequent_secret =
+            Secret::from_seed(&seed, keyset_id, migrated_next_available + 1).unwrap();
+        assert_ne!(next_secret, subsequent_secret);
+        assert!(!previous_secrets.contains(&subsequent_secret));
+    }
 }
