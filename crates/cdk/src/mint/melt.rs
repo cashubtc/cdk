@@ -662,6 +662,7 @@ impl Mint {
                             "Lightning payment for quote {} failed.",
                             melt_request.quote()
                         );
+                        proof_writer.rollback().await?;
                         return Err(Error::PaymentFailed);
                     }
                     MeltQuoteState::Pending => {
