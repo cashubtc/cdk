@@ -21,6 +21,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Cargo fmt
@@ -53,6 +55,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Run example
@@ -135,6 +139,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Clippy
@@ -162,6 +168,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Test
@@ -187,6 +195,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Clippy
@@ -212,6 +222,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Test fake mint
@@ -238,6 +250,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Test
@@ -274,6 +288,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Build
@@ -302,6 +318,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Build cdk and binding
@@ -330,6 +348,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Build cdk wasm
@@ -351,6 +371,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Start Keycloak with Backup
@@ -377,6 +399,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Run doc tests
@@ -392,6 +416,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Check docs with strict warnings
