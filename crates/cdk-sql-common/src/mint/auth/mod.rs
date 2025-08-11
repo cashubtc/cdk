@@ -144,7 +144,7 @@ where
         y: &PublicKey,
         proofs_state: State,
     ) -> Result<Option<State>, Self::Err> {
-        let current_state = query(r#"SELECT state FROM proof WHERE y = :y"#)?
+        let current_state = query(r#"SELECT state FROM proof WHERE y = :y FOR UPDATE"#)?
             .bind("y", y.to_bytes().to_vec())
             .pluck(&self.inner)
             .await?
@@ -320,6 +320,9 @@ where
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
+        if ys.is_empty() {
+            return Ok(vec![]);
+        }
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mut current_states = query(r#"SELECT y, state FROM proof WHERE y IN (:ys)"#)?
             .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
