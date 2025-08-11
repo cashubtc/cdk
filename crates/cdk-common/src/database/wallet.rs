@@ -100,8 +100,29 @@ pub trait Database: Debug {
     async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), Self::Err>;
 
     /// Increment Keyset counter
+    ///
+    /// Increments the counter for a specific keyset by a given count.
+    /// This is crucial for tracking the next available index for secret generation.
+    ///
+    /// # Arguments
+    /// * `keyset_id` - The unique identifier of the keyset
+    /// * `count` - The number of increments to apply to the counter
+    ///
+    /// # Migration Notes
+    /// In the new semantic, this directly modifies the 'next available index'
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;
     /// Get current Keyset counter
+    ///
+    /// Retrieves the current counter value for a specific keyset.
+    ///
+    /// # Arguments
+    /// * `keyset_id` - The unique identifier of the keyset
+    ///
+    /// # Returns
+    /// * `Option<u32>` - The current counter value, or None if not set
+    ///
+    /// # Migration Notes
+    /// In the new semantic, this returns the 'next available index'
     async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err>;
 
     /// Add transaction to storage
