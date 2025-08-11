@@ -148,12 +148,9 @@ impl Wallet {
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
 
-        let count = self
-            .localstore
-            .get_keyset_counter(&active_keyset_id)
-            .await?;
-
-        let count = count.map_or(0, |c| c + 1);
+        let count =
+            crate::wallet::counter_compat::get_next_counter(&*self.localstore, &active_keyset_id)
+                .await?;
 
         let premint_secrets = PreMintSecrets::from_seed_blank(
             active_keyset_id,

@@ -248,12 +248,9 @@ impl Wallet {
 
         let derived_secret_count;
 
-        let count = self
-            .localstore
-            .get_keyset_counter(&active_keyset_id)
-            .await?;
-
-        let mut count = count.map_or(0, |c| c + 1);
+        let mut count =
+            crate::wallet::counter_compat::get_next_counter(&*self.localstore, &active_keyset_id)
+                .await?;
 
         let (mut desired_messages, change_messages) = match spending_conditions {
             Some(conditions) => {
