@@ -157,8 +157,8 @@ impl ProofWriter {
         };
 
         tracing::info!(
-            "Rollback proofs to their original states {:?} {:?}",
-            ys,
+            "Rollback {} proofs to their original states {:?}",
+            ys.len(),
             original_states
         );
 
