@@ -9,7 +9,7 @@ use cdk_sql_common::mint::SQLMintAuthDatabase;
 use cdk_sql_common::pool::{DatabaseConfig, DatabasePool};
 use cdk_sql_common::stmt::{Column, Statement};
 use cdk_sql_common::{SQLMintDatabase, SQLWalletDatabase};
-use db::{gn_pluck, pg_batch, pg_execute, pg_fetch_all, pg_fetch_one};
+use db::{pg_batch, pg_execute, pg_fetch_all, pg_fetch_one, pg_pluck};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
 use tokio_postgres::{connect, Client, Error as PgError, NoTls};
@@ -213,7 +213,7 @@ impl DatabaseExecutor for PostgresConnection {
     }
 
     async fn pluck(&self, statement: Statement) -> Result<Option<Column>, Error> {
-        gn_pluck(self.inner().await?, statement).await
+        pg_pluck(self.inner().await?, statement).await
     }
 
     async fn batch(&self, statement: Statement) -> Result<(), Error> {
