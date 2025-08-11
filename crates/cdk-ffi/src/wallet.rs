@@ -27,26 +27,24 @@ impl Wallet {
         config: WalletConfig,
     ) -> Result<Self, FfiError> {
         // Parse mnemonic and generate seed without passphrase
-        let m = Mnemonic::parse(&mnemonic).map_err(|e| FfiError::InvalidMnemonic {
-            msg: e.to_string(),
-        })?;
+        let m = Mnemonic::parse(&mnemonic)
+            .map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
         let seed = m.to_seed_normalized("");
 
         // Convert the FFI database trait to a CDK database implementation
         let localstore = crate::database::create_cdk_database_from_ffi(db);
 
-        let wallet = CdkWalletBuilder::new()
-            .mint_url(
-                mint_url
-                    .parse()
-                    .map_err(|e: cdk::mint_url::Error| FfiError::InvalidUrl { msg: e.to_string() })?,
-            )
-            .unit(unit.into())
-            .localstore(localstore)
-            .seed(seed)
-            .target_proof_count(config.target_proof_count.unwrap_or(3) as usize)
-            .build()
-            .map_err(FfiError::from)?;
+        let wallet =
+            CdkWalletBuilder::new()
+                .mint_url(mint_url.parse().map_err(|e: cdk::mint_url::Error| {
+                    FfiError::InvalidUrl { msg: e.to_string() }
+                })?)
+                .unit(unit.into())
+                .localstore(localstore)
+                .seed(seed)
+                .target_proof_count(config.target_proof_count.unwrap_or(3) as usize)
+                .build()
+                .map_err(FfiError::from)?;
 
         Ok(Self {
             inner: Arc::new(wallet),
@@ -107,9 +105,7 @@ impl Wallet {
     ) -> Result<Amount, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
-            let amount = inner
-                .receive(&token.to_string(), options.into())
-                .await?;
+            let amount = inner.receive(&token.to_string(), options.into()).await?;
             Ok::<Amount, FfiError>(amount.into())
         })
     }
@@ -160,9 +156,7 @@ impl Wallet {
     ) -> Result<std::sync::Arc<PreparedSend>, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
-            let prepared = inner
-                .prepare_send(amount.into(), options.into())
-                .await?;
+            let prepared = inner.prepare_send(amount.into(), options.into()).await?;
             Ok::<std::sync::Arc<PreparedSend>, FfiError>(std::sync::Arc::new(prepared.into()))
         })
     }
@@ -195,10 +189,12 @@ impl Wallet {
             let proofs = inner
                 .mint(&quote_id, amount_split_target.into(), conditions)
                 .await?;
-            Ok::<Proofs, FfiError>(proofs
-                .into_iter()
-                .map(|p| std::sync::Arc::new(p.into()))
-                .collect())
+            Ok::<Proofs, FfiError>(
+                proofs
+                    .into_iter()
+                    .map(|p| std::sync::Arc::new(p.into()))
+                    .collect(),
+            )
         })
     }
 
@@ -261,10 +257,12 @@ impl Wallet {
                 )
                 .await?;
 
-            Ok::<Proofs, FfiError>(proofs
-                .into_iter()
-                .map(|p| std::sync::Arc::new(p.into()))
-                .collect())
+            Ok::<Proofs, FfiError>(
+                proofs
+                    .into_iter()
+                    .map(|p| std::sync::Arc::new(p.into()))
+                    .collect(),
+            )
         })
     }
 
@@ -440,10 +438,12 @@ impl Wallet {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let proofs = inner.mint_blind_auth(amount.into()).await?;
-            Ok::<Proofs, FfiError>(proofs
-                .into_iter()
-                .map(|p| std::sync::Arc::new(p.into()))
-                .collect())
+            Ok::<Proofs, FfiError>(
+                proofs
+                    .into_iter()
+                    .map(|p| std::sync::Arc::new(p.into()))
+                    .collect(),
+            )
         })
     }
 
@@ -467,9 +467,9 @@ impl Wallet {
             let cdk_params: cdk_common::subscription::Params = params.clone().into();
             let sub_id = cdk_params.id.to_string();
             let active_sub = inner.subscribe(cdk_params).await;
-            Ok::<std::sync::Arc<ActiveSubscription>, FfiError>(std::sync::Arc::new(ActiveSubscription::new(
-                active_sub, sub_id,
-            )))
+            Ok::<std::sync::Arc<ActiveSubscription>, FfiError>(std::sync::Arc::new(
+                ActiveSubscription::new(active_sub, sub_id),
+            ))
         })
     }
 }
@@ -483,6 +483,7 @@ pub struct WalletConfig {
 /// Generates a new random mnemonic phrase
 #[uniffi::export]
 pub fn generate_mnemonic() -> Result<String, FfiError> {
-    let mnemonic = Mnemonic::generate(12).map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+    let mnemonic =
+        Mnemonic::generate(12).map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
     Ok(mnemonic.to_string())
 }

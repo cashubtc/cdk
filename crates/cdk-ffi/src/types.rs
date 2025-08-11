@@ -7,11 +7,13 @@ use std::sync::Mutex;
 use cdk::nuts::{CurrencyUnit as CdkCurrencyUnit, State as CdkState};
 use cdk::Amount as CdkAmount;
 use cdk_common::pub_sub::SubId;
+use serde::{Deserialize, Serialize};
 
 use crate::error::FfiError;
 
 /// FFI-compatible Amount type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+#[serde(transparent)]
 pub struct Amount {
     pub value: u64,
 }
@@ -55,7 +57,7 @@ impl From<Amount> for CdkAmount {
 }
 
 /// FFI-compatible Currency Unit
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum CurrencyUnit {
     Sat,
     Msat,
@@ -93,7 +95,8 @@ impl From<CurrencyUnit> for CdkCurrencyUnit {
 }
 
 /// FFI-compatible Mint URL
-#[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, uniffi::Record)]
+#[serde(transparent)]
 pub struct MintUrl {
     pub url: String,
 }
@@ -101,9 +104,7 @@ pub struct MintUrl {
 impl MintUrl {
     pub fn new(url: String) -> Result<Self, FfiError> {
         // Validate URL format
-        url::Url::parse(&url).map_err(|e| FfiError::InvalidUrl {
-            msg: e.to_string(),
-        })?;
+        url::Url::parse(&url).map_err(|e| FfiError::InvalidUrl { msg: e.to_string() })?;
 
         Ok(Self { url })
     }
@@ -127,7 +128,7 @@ impl TryFrom<MintUrl> for cdk::mint_url::MintUrl {
 }
 
 /// FFI-compatible Proof state
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum ProofState {
     Unspent,
     Pending,
@@ -227,7 +228,7 @@ impl Token {
 }
 
 /// FFI-compatible SendMemo
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct SendMemo {
     /// Memo text
     pub memo: String,
@@ -253,8 +254,20 @@ impl From<cdk::wallet::SendMemo> for SendMemo {
     }
 }
 
+impl SendMemo {
+    /// Convert SendMemo to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create SendMemo from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
 /// FFI-compatible SplitTarget
-#[derive(Debug, Clone, uniffi::Enum)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 pub enum SplitTarget {
     /// Default target; least amount of proofs
     None,
@@ -291,7 +304,7 @@ impl From<cdk::amount::SplitTarget> for SplitTarget {
 }
 
 /// FFI-compatible SendKind
-#[derive(Debug, Clone, uniffi::Enum)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 pub enum SendKind {
     /// Allow online swap before send if wallet does not have exact amount
     OnlineExact,
@@ -336,7 +349,7 @@ impl From<cdk_common::wallet::SendKind> for SendKind {
 }
 
 /// FFI-compatible Send options
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct SendOptions {
     /// Memo
     pub memo: Option<SendMemo>,
@@ -396,8 +409,21 @@ impl From<cdk::wallet::SendOptions> for SendOptions {
     }
 }
 
+impl SendOptions {
+    /// Convert SendOptions to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create SendOptions from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
 /// FFI-compatible SecretKey
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(transparent)]
 pub struct SecretKey {
     /// Hex-encoded secret key (64 characters)
     pub hex: String,
@@ -449,7 +475,7 @@ impl From<cdk::nuts::SecretKey> for SecretKey {
 }
 
 /// FFI-compatible Receive options
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ReceiveOptions {
     /// Amount split target
     pub amount_split_target: SplitTarget,
@@ -491,6 +517,18 @@ impl From<cdk::wallet::ReceiveOptions> for ReceiveOptions {
             preimages: opts.preimages,
             metadata: opts.metadata,
         }
+    }
+}
+
+impl ReceiveOptions {
+    /// Convert ReceiveOptions to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create ReceiveOptions from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
     }
 }
 
@@ -858,7 +896,7 @@ impl MeltQuote {
 }
 
 /// FFI-compatible QuoteState
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum QuoteState {
     Unpaid,
     Paid,
@@ -1031,7 +1069,7 @@ impl From<cdk_common::common::Melted> for Melted {
 }
 
 /// FFI-compatible MeltOptions
-#[derive(Debug, Clone, uniffi::Enum)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 pub enum MeltOptions {
     /// MPP (Multi-Part Payments) options
     Mpp { amount: Amount },
@@ -1068,7 +1106,7 @@ impl From<cdk::nuts::MeltOptions> for MeltOptions {
 }
 
 /// FFI-compatible MintVersion
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MintVersion {
     /// Mint Software name
     pub name: String,
@@ -1094,8 +1132,20 @@ impl From<MintVersion> for cdk::nuts::MintVersion {
     }
 }
 
+impl MintVersion {
+    /// Convert MintVersion to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create MintVersion from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
 /// FFI-compatible ContactInfo
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ContactInfo {
     /// Contact Method i.e. nostr
     pub method: String,
@@ -1121,8 +1171,21 @@ impl From<ContactInfo> for cdk::nuts::ContactInfo {
     }
 }
 
+impl ContactInfo {
+    /// Convert ContactInfo to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create ContactInfo from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
 /// FFI-compatible SupportedSettings
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(transparent)]
 pub struct SupportedSettings {
     /// Setting supported
     pub supported: bool,
@@ -1145,7 +1208,7 @@ impl From<SupportedSettings> for cdk::nuts::nut06::SupportedSettings {
 }
 
 /// FFI-compatible Nuts settings (simplified - only includes basic boolean flags)
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Nuts {
     /// NUT07 Settings - Token state check
     pub nut07_supported: bool,
@@ -1194,8 +1257,20 @@ impl From<cdk::nuts::Nuts> for Nuts {
     }
 }
 
+impl Nuts {
+    /// Convert Nuts to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create Nuts from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
 /// FFI-compatible MintInfo
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MintInfo {
     /// name of the mint and should be recognizable
     pub name: Option<String>,
@@ -1266,8 +1341,20 @@ impl From<MintInfo> for cdk_common::nuts::MintInfo {
     }
 }
 
+impl MintInfo {
+    /// Convert MintInfo to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create MintInfo from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
 /// FFI-compatible Conditions (for spending conditions)
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Conditions {
     /// Unix locktime after which refund keys can be used
     pub locktime: Option<u64>,
@@ -1366,8 +1453,20 @@ impl TryFrom<Conditions> for cdk::nuts::nut11::Conditions {
     }
 }
 
+impl Conditions {
+    /// Convert Conditions to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create Conditions from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
 /// FFI-compatible Witness
-#[derive(Debug, Clone, uniffi::Enum)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 pub enum Witness {
     /// P2PK Witness
     P2PK {
@@ -1415,7 +1514,7 @@ impl From<Witness> for cdk::nuts::Witness {
 }
 
 /// FFI-compatible SpendingConditions
-#[derive(Debug, Clone, uniffi::Enum)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Enum)]
 pub enum SpendingConditions {
     /// P2PK (Pay to Public Key) conditions
     P2PK {
@@ -1449,7 +1548,7 @@ impl From<cdk::nuts::SpendingConditions> for SpendingConditions {
 }
 
 /// FFI-compatible Transaction
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Transaction {
     /// Transaction ID
     pub id: TransactionId,
@@ -1493,13 +1592,12 @@ impl From<cdk_common::wallet::Transaction> for Transaction {
 /// Convert FFI Transaction to CDK Transaction
 impl TryFrom<Transaction> for cdk_common::wallet::Transaction {
     type Error = FfiError;
-    
+
     fn try_from(tx: Transaction) -> Result<Self, Self::Error> {
-        let cdk_ys: Result<Vec<cdk_common::nuts::PublicKey>, _> = tx.ys.into_iter()
-            .map(|pk| pk.try_into())
-            .collect();
+        let cdk_ys: Result<Vec<cdk_common::nuts::PublicKey>, _> =
+            tx.ys.into_iter().map(|pk| pk.try_into()).collect();
         let cdk_ys = cdk_ys?;
-        
+
         Ok(Self {
             mint_url: tx.mint_url.try_into()?,
             direction: tx.direction.into(),
@@ -1514,8 +1612,20 @@ impl TryFrom<Transaction> for cdk_common::wallet::Transaction {
     }
 }
 
+impl Transaction {
+    /// Convert Transaction to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create Transaction from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
 /// FFI-compatible TransactionDirection
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum TransactionDirection {
     /// Incoming transaction (i.e., receive or mint)
     Incoming,
@@ -1542,7 +1652,8 @@ impl From<TransactionDirection> for cdk_common::wallet::TransactionDirection {
 }
 
 /// FFI-compatible TransactionId
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(transparent)]
 pub struct TransactionId {
     /// Hex-encoded transaction ID (64 characters)
     pub hex: String,
@@ -1597,7 +1708,7 @@ impl TryFrom<TransactionId> for cdk_common::wallet::TransactionId {
 
 /// FFI-compatible AuthProof
 #[cfg(feature = "auth")]
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct AuthProof {
     /// Keyset ID
     pub keyset_id: String,
@@ -1645,15 +1756,30 @@ impl TryFrom<AuthProof> for cdk_common::AuthProof {
     }
 }
 
+#[cfg(feature = "auth")]
+impl AuthProof {
+    /// Convert AuthProof to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create AuthProof from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
 impl TryFrom<SpendingConditions> for cdk::nuts::SpendingConditions {
     type Error = FfiError;
 
     fn try_from(spending_conditions: SpendingConditions) -> Result<Self, Self::Error> {
         match spending_conditions {
             SpendingConditions::P2PK { pubkey, conditions } => {
-                let pubkey = pubkey.parse().map_err(|e| FfiError::InvalidCryptographicKey {
-                    msg: format!("Invalid pubkey: {}", e),
-                })?;
+                let pubkey = pubkey
+                    .parse()
+                    .map_err(|e| FfiError::InvalidCryptographicKey {
+                        msg: format!("Invalid pubkey: {}", e),
+                    })?;
                 let conditions = conditions.map(|c| c.try_into()).transpose()?;
                 Ok(Self::P2PKConditions {
                     data: pubkey,
@@ -1661,9 +1787,11 @@ impl TryFrom<SpendingConditions> for cdk::nuts::SpendingConditions {
                 })
             }
             SpendingConditions::HTLC { hash, conditions } => {
-                let hash = hash.parse().map_err(|e| FfiError::InvalidCryptographicKey {
-                    msg: format!("Invalid hash: {}", e),
-                })?;
+                let hash = hash
+                    .parse()
+                    .map_err(|e| FfiError::InvalidCryptographicKey {
+                        msg: format!("Invalid hash: {}", e),
+                    })?;
                 let conditions = conditions.map(|c| c.try_into()).transpose()?;
                 Ok(Self::HTLCConditions {
                     data: hash,
@@ -1675,7 +1803,7 @@ impl TryFrom<SpendingConditions> for cdk::nuts::SpendingConditions {
 }
 
 /// FFI-compatible SubscriptionKind
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum SubscriptionKind {
     /// Bolt 11 Melt Quote
     Bolt11MeltQuote,
@@ -1706,7 +1834,7 @@ impl From<cdk::nuts::nut17::Kind> for SubscriptionKind {
 }
 
 /// FFI-compatible SubscribeParams
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct SubscribeParams {
     /// Subscription kind
     pub kind: SubscriptionKind,
@@ -1732,6 +1860,18 @@ impl From<SubscribeParams> for cdk_common::subscription::Params {
             filters: params.filters,
             id: sub_id,
         }
+    }
+}
+
+impl SubscribeParams {
+    /// Convert SubscribeParams to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create SubscribeParams from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
     }
 }
 
@@ -1833,7 +1973,7 @@ impl From<cdk::nuts::NotificationPayload<String>> for NotificationPayload {
 }
 
 /// FFI-compatible ProofStateUpdate
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ProofStateUpdate {
     /// Y value (hash_to_curve of secret)
     pub y: String,
@@ -1853,8 +1993,20 @@ impl From<cdk::nuts::nut07::ProofState> for ProofStateUpdate {
     }
 }
 
+impl ProofStateUpdate {
+    /// Convert ProofStateUpdate to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create ProofStateUpdate from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
 /// FFI-compatible KeySetInfo
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct KeySetInfo {
     pub id: String,
     pub unit: CurrencyUnit,
@@ -1890,8 +2042,21 @@ impl From<KeySetInfo> for cdk_common::nuts::KeySetInfo {
     }
 }
 
+impl KeySetInfo {
+    /// Convert KeySetInfo to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create KeySetInfo from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
 /// FFI-compatible PublicKey
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(transparent)]
 pub struct PublicKey {
     /// Hex-encoded public key
     pub hex: String,
@@ -1909,14 +2074,16 @@ impl TryFrom<PublicKey> for cdk_common::nuts::PublicKey {
     type Error = FfiError;
 
     fn try_from(key: PublicKey) -> Result<Self, Self::Error> {
-        key.hex.parse().map_err(|e| FfiError::InvalidCryptographicKey {
-            msg: format!("Invalid public key: {}", e),
-        })
+        key.hex
+            .parse()
+            .map_err(|e| FfiError::InvalidCryptographicKey {
+                msg: format!("Invalid public key: {}", e),
+            })
     }
 }
 
 /// FFI-compatible Keys (simplified - contains only essential info)
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Keys {
     /// Keyset ID
     pub id: String,
@@ -1932,7 +2099,7 @@ impl From<cdk_common::nuts::Keys> for Keys {
         // For now, use placeholder values
         Self {
             id: "unknown".to_string(), // This should come from KeySet
-            unit: CurrencyUnit::Sat, // This should come from KeySet
+            unit: CurrencyUnit::Sat,   // This should come from KeySet
             keys: keys
                 .keys()
                 .iter()
@@ -1944,11 +2111,11 @@ impl From<cdk_common::nuts::Keys> for Keys {
 
 impl TryFrom<Keys> for cdk_common::nuts::Keys {
     type Error = FfiError;
-    
+
     fn try_from(keys: Keys) -> Result<Self, Self::Error> {
-        use std::str::FromStr;
         use std::collections::BTreeMap;
-        
+        use std::str::FromStr;
+
         // Convert the HashMap to BTreeMap with proper types
         let mut keys_map = BTreeMap::new();
         for (amount_u64, pubkey_hex) in keys.keys {
@@ -1957,13 +2124,25 @@ impl TryFrom<Keys> for cdk_common::nuts::Keys {
                 .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?;
             keys_map.insert(amount, pubkey);
         }
-        
+
         Ok(cdk_common::nuts::Keys::new(keys_map))
     }
 }
 
+impl Keys {
+    /// Convert Keys to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create Keys from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
 /// FFI-compatible KeySet
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct KeySet {
     /// Keyset ID
     pub id: String,
@@ -1980,7 +2159,10 @@ impl From<cashu::KeySet> for KeySet {
         Self {
             id: keyset.id.to_string(),
             unit: keyset.unit.into(),
-            keys: keyset.keys.keys().iter()
+            keys: keyset
+                .keys
+                .keys()
+                .iter()
                 .map(|(amount, pubkey)| (u64::from(*amount), pubkey.to_string()))
                 .collect(),
             final_expiry: keyset.final_expiry,
@@ -1990,18 +2172,18 @@ impl From<cashu::KeySet> for KeySet {
 
 impl TryFrom<KeySet> for cashu::KeySet {
     type Error = FfiError;
-    
+
     fn try_from(keyset: KeySet) -> Result<Self, Self::Error> {
-        use std::str::FromStr;
         use std::collections::BTreeMap;
-        
+        use std::str::FromStr;
+
         // Convert id
         let id = cashu::Id::from_str(&keyset.id)
             .map_err(|e| FfiError::Serialization { msg: e.to_string() })?;
-        
+
         // Convert unit
         let unit: cashu::CurrencyUnit = keyset.unit.into();
-        
+
         // Convert keys
         let mut keys_map = BTreeMap::new();
         for (amount_u64, pubkey_hex) in keyset.keys {
@@ -2011,13 +2193,25 @@ impl TryFrom<KeySet> for cashu::KeySet {
             keys_map.insert(amount, pubkey);
         }
         let keys = cashu::Keys::new(keys_map);
-        
+
         Ok(cashu::KeySet {
             id,
-            unit, 
+            unit,
             keys,
             final_expiry: keyset.final_expiry,
         })
+    }
+}
+
+impl KeySet {
+    /// Convert KeySet to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Create KeySet from JSON string
+    pub fn from_json(json: &str) -> Result<Self, FfiError> {
+        Ok(serde_json::from_str(json)?)
     }
 }
 
@@ -2054,7 +2248,8 @@ impl From<cdk_common::common::ProofInfo> for ProofInfo {
 // State enum removed - using ProofState instead
 
 /// FFI-compatible Id (for keyset IDs)
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[serde(transparent)]
 pub struct Id {
     pub hex: String,
 }

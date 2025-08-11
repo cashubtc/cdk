@@ -110,3 +110,11 @@ impl From<cdk_common::nut00::Error> for FfiError {
         }
     }
 }
+
+impl From<serde_json::Error> for FfiError {
+    fn from(err: serde_json::Error) -> Self {
+        FfiError::Serialization {
+            msg: err.to_string(),
+        }
+    }
+}
