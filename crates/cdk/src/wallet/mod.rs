@@ -33,6 +33,7 @@ use crate::OidcClient;
 mod auth;
 mod balance;
 mod builder;
+mod counter_compat;
 mod issue;
 mod keysets;
 mod melt;
