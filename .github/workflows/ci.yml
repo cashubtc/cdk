@@ -25,6 +25,8 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "nightly"
       - name: Cargo fmt
         run: |
           nix develop -i -L .#nightly --command bash -c '
@@ -59,6 +61,8 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Run example
         run: nix develop -i -L .#stable --command cargo r --example ${{ matrix.build-args }}
 
@@ -143,6 +147,8 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Clippy
         run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
       - name: Test
@@ -172,6 +178,8 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Test
         run: nix develop -i -L .#stable --command just itest ${{ matrix.database }}
           
@@ -199,6 +207,8 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Clippy
         run: nix develop -i -L .#stable --command cargo clippy -- -D warnings
       - name: Test fake auth mint
@@ -226,6 +236,8 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Test fake mint
         run: nix develop -i -L .#stable --command just test-pure ${{ matrix.database }}
       - name: Test mint
@@ -254,6 +266,8 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Test
         run: nix develop -i -L .#stable --command just itest-payment-processor ${{matrix.ln}}
 
@@ -292,6 +306,8 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "msrv"
       - name: Build
         run: nix develop -i -L .#msrv --command cargo build ${{ matrix.build-args }}
 
@@ -322,6 +338,8 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Build cdk and binding
         run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
 
@@ -352,6 +370,8 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "msrv"
       - name: Build cdk wasm
         run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
 
@@ -375,6 +395,8 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Start Keycloak with Backup
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml up -d
@@ -403,6 +425,8 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Run doc tests
         run: nix develop -i -L .#stable --command cargo test --doc
         
@@ -420,5 +444,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Check docs with strict warnings
         run: nix develop -i -L .#stable --command just docs-strict
