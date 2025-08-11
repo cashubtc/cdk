@@ -1,6 +1,7 @@
 //! Simple SQLite
 use cdk_common::database::Error;
 use cdk_sql_common::database::{DatabaseConnector, DatabaseExecutor, DatabaseTransaction};
+use cdk_sql_common::run_db_operation_sync;
 use cdk_sql_common::stmt::{query, Column, SqlPart, Statement};
 use rusqlite::{ffi, CachedStatement, Connection, Error as SqliteError, ErrorCode};
 use tokio::sync::Mutex;
@@ -25,7 +26,7 @@ impl AsyncSqlite {
         &self,
         conn: &'a Connection,
         statement: Statement,
-    ) -> Result<CachedStatement<'a>, Error> {
+    ) -> Result<(String, CachedStatement<'a>), Error> {
         let (sql, placeholder_values) = statement.to_sql()?;
 
         let new_sql = sql.trim().trim_end_matches("FOR UPDATE");
@@ -39,7 +40,7 @@ impl AsyncSqlite {
                 .map_err(|e| Error::Database(Box::new(e)))?;
         }
 
-        Ok(stmt)
+        Ok((sql, stmt))
     }
 }
 
@@ -104,68 +105,81 @@ impl DatabaseExecutor for AsyncSqlite {
     async fn execute(&self, statement: Statement) -> Result<usize, Error> {
         let conn = self.inner.lock().await;
 
-        let mut stmt = self
+        let (sql, mut stmt) = self
             .get_stmt(&conn, statement)
             .map_err(|e| Error::Database(Box::new(e)))?;
 
-        Ok(stmt.raw_execute().map_err(to_sqlite_error)?)
+        run_db_operation_sync(&sql, || stmt.raw_execute(), to_sqlite_error)
     }
 
     async fn fetch_one(&self, statement: Statement) -> Result<Option<Vec<Column>>, Error> {
         let conn = self.inner.lock().await;
-        let mut stmt = self
+        let (sql, mut stmt) = self
             .get_stmt(&conn, statement)
             .map_err(|e| Error::Database(Box::new(e)))?;
 
-        let columns = stmt.column_count();
+        run_db_operation_sync(
+            &sql,
+            || {
+                let columns = stmt.column_count();
 
-        let mut rows = stmt.raw_query();
-        rows.next()
-            .map_err(to_sqlite_error)?
-            .map(|row| {
-                (0..columns)
-                    .map(|i| row.get(i).map(from_sqlite))
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()
-            .map_err(to_sqlite_error)
+                let mut rows = stmt.raw_query();
+                rows.next()?
+                    .map(|row| {
+                        (0..columns)
+                            .map(|i| row.get(i).map(from_sqlite))
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .transpose()
+            },
+            to_sqlite_error,
+        )
     }
 
     async fn fetch_all(&self, statement: Statement) -> Result<Vec<Vec<Column>>, Error> {
         let conn = self.inner.lock().await;
-        let mut stmt = self
+        let (sql, mut stmt) = self
             .get_stmt(&conn, statement)
             .map_err(|e| Error::Database(Box::new(e)))?;
 
         let columns = stmt.column_count();
 
-        let mut rows = stmt.raw_query();
-        let mut results = vec![];
+        run_db_operation_sync(
+            &sql,
+            || {
+                let mut rows = stmt.raw_query();
+                let mut results = vec![];
 
-        while let Some(row) = rows.next().map_err(to_sqlite_error)? {
-            results.push(
-                (0..columns)
-                    .map(|i| row.get(i).map(from_sqlite))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(to_sqlite_error)?,
-            )
-        }
+                while let Some(row) = rows.next()? {
+                    results.push(
+                        (0..columns)
+                            .map(|i| row.get(i).map(from_sqlite))
+                            .collect::<Result<Vec<_>, _>>()?,
+                    )
+                }
 
-        Ok(results)
+                Ok(results)
+            },
+            to_sqlite_error,
+        )
     }
 
     async fn pluck(&self, statement: Statement) -> Result<Option<Column>, Error> {
         let conn = self.inner.lock().await;
-        let mut stmt = self
+        let (sql, mut stmt) = self
             .get_stmt(&conn, statement)
             .map_err(|e| Error::Database(Box::new(e)))?;
 
-        let mut rows = stmt.raw_query();
-        rows.next()
-            .map_err(to_sqlite_error)?
-            .map(|row| row.get(0usize).map(from_sqlite))
-            .transpose()
-            .map_err(to_sqlite_error)
+        run_db_operation_sync(
+            &sql,
+            || {
+                let mut rows = stmt.raw_query();
+                rows.next()?
+                    .map(|row| row.get(0usize).map(from_sqlite))
+                    .transpose()
+            },
+            to_sqlite_error,
+        )
     }
 
     async fn batch(&self, mut statement: Statement) -> Result<(), Error> {
@@ -187,11 +201,8 @@ impl DatabaseExecutor for AsyncSqlite {
                 unreachable!()
             }
         };
+        let conn = self.inner.lock().await;
 
-        self.inner
-            .lock()
-            .await
-            .execute_batch(&sql)
-            .map_err(to_sqlite_error)
+        run_db_operation_sync(&sql, || conn.execute_batch(&sql), to_sqlite_error)
     }
 }
