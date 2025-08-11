@@ -124,7 +124,7 @@ pub async fn pg_fetch_all(conn: &Client, statement: Statement) -> Result<Vec<Vec
 }
 
 #[inline(always)]
-pub async fn gn_pluck(conn: &Client, statement: Statement) -> Result<Option<Column>, Error> {
+pub async fn pg_pluck(conn: &Client, statement: Statement) -> Result<Option<Column>, Error> {
     let (sql, placeholder_values) = statement.to_sql()?;
     let prepared_statement = conn.prepare(&sql).await.map_err(to_pgsql_error)?;
 
