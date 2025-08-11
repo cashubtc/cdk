@@ -264,4 +264,23 @@ mod tests {
         let mnemonic_12 = generate_mnemonic().unwrap();
         assert_eq!(mnemonic_12.split_whitespace().count(), 12);
     }
+
+    #[test]
+    fn test_mnemonic_to_entropy() {
+        // Test with generated mnemonic
+        let mnemonic = generate_mnemonic().unwrap();
+        let entropy = mnemonic_to_entropy(mnemonic.clone()).unwrap();
+
+        // For a 12-word mnemonic, entropy should be 16 bytes (128 bits)
+        assert_eq!(entropy.len(), 16);
+
+        // Test that we can recreate the mnemonic from entropy
+        use bip39::Mnemonic;
+        let recreated_mnemonic = Mnemonic::from_entropy(&entropy).unwrap();
+        assert_eq!(recreated_mnemonic.to_string(), mnemonic);
+
+        // Test with invalid mnemonic
+        let invalid_result = mnemonic_to_entropy("invalid mnemonic".to_string());
+        assert!(invalid_result.is_err());
+    }
 }

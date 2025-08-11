@@ -487,3 +487,11 @@ pub fn generate_mnemonic() -> Result<String, FfiError> {
         Mnemonic::generate(12).map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
     Ok(mnemonic.to_string())
 }
+
+/// Converts a mnemonic phrase to its entropy bytes
+#[uniffi::export]
+pub fn mnemonic_to_entropy(mnemonic: String) -> Result<Vec<u8>, FfiError> {
+    let m =
+        Mnemonic::parse(&mnemonic).map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+    Ok(m.to_entropy())
+}
