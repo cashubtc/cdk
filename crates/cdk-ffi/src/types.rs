@@ -817,6 +817,20 @@ impl MintQuote {
     }
 }
 
+/// Decode MintQuote from JSON string
+#[uniffi::export]
+pub fn decode_mint_quote(json: String) -> Result<MintQuote, FfiError> {
+    let quote: cdk::wallet::MintQuote = serde_json::from_str(&json)?;
+    Ok(quote.into())
+}
+
+/// Encode MintQuote to JSON string
+#[uniffi::export]
+pub fn encode_mint_quote(quote: std::sync::Arc<MintQuote>) -> Result<String, FfiError> {
+    let cdk_quote: cdk::wallet::MintQuote = quote.inner.clone();
+    Ok(serde_json::to_string(&cdk_quote)?)
+}
+
 /// FFI-compatible MintQuoteBolt11Response
 #[derive(Debug, uniffi::Object)]
 pub struct MintQuoteBolt11Response {
@@ -1026,6 +1040,20 @@ impl MeltQuote {
     pub fn payment_preimage(&self) -> Option<String> {
         self.inner.payment_preimage.clone()
     }
+}
+
+/// Decode MeltQuote from JSON string
+#[uniffi::export]
+pub fn decode_melt_quote(json: String) -> Result<MeltQuote, FfiError> {
+    let quote: cdk::wallet::MeltQuote = serde_json::from_str(&json)?;
+    Ok(quote.into())
+}
+
+/// Encode MeltQuote to JSON string
+#[uniffi::export]
+pub fn encode_melt_quote(quote: std::sync::Arc<MeltQuote>) -> Result<String, FfiError> {
+    let cdk_quote: cdk::wallet::MeltQuote = quote.inner.clone();
+    Ok(serde_json::to_string(&cdk_quote)?)
 }
 
 /// FFI-compatible QuoteState
@@ -2464,6 +2492,28 @@ impl From<cdk_common::common::ProofInfo> for ProofInfo {
             unit: info.unit.into(),
         }
     }
+}
+
+/// Decode ProofInfo from JSON string
+#[uniffi::export]
+pub fn decode_proof_info(json: String) -> Result<ProofInfo, FfiError> {
+    let info: cdk_common::common::ProofInfo = serde_json::from_str(&json)?;
+    Ok(info.into())
+}
+
+/// Encode ProofInfo to JSON string
+#[uniffi::export]
+pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
+    // Convert to cdk_common::common::ProofInfo for serialization
+    let cdk_info = cdk_common::common::ProofInfo {
+        proof: info.proof.inner.clone(),
+        y: info.y.try_into()?,
+        mint_url: info.mint_url.try_into()?,
+        state: info.state.into(),
+        spending_condition: info.spending_condition.and_then(|c| c.try_into().ok()),
+        unit: info.unit.into(),
+    };
+    Ok(serde_json::to_string(&cdk_info)?)
 }
 
 // State enum removed - using ProofState instead
