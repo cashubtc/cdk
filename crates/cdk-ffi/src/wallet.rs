@@ -1,6 +1,7 @@
 //! FFI Wallet bindings
 
 use std::sync::Arc;
+use std::str::FromStr;
 
 use bip39::Mnemonic;
 use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
@@ -470,6 +471,73 @@ impl Wallet {
             Ok::<std::sync::Arc<ActiveSubscription>, FfiError>(std::sync::Arc::new(
                 ActiveSubscription::new(active_sub, sub_id),
             ))
+        })
+    }
+
+    /// Refresh keysets from the mint
+    pub async fn refresh_keysets(&self) -> Result<Vec<KeySetInfo>, FfiError> {
+        let inner = self.inner.clone();
+        runtime::block_on(async move {
+            let keysets = inner.refresh_keysets().await?;
+            Ok::<Vec<KeySetInfo>, FfiError>(
+                keysets
+                    .into_iter()
+                    .map(Into::into)
+                    .collect()
+            )
+        })
+    }
+
+    /// Get the active keyset for the wallet's unit
+    pub async fn get_active_keyset(&self) -> Result<KeySetInfo, FfiError> {
+        let inner = self.inner.clone();
+        runtime::block_on(async move {
+            let keyset = inner.get_active_keyset().await?;
+            Ok::<KeySetInfo, FfiError>(keyset.into())
+        })
+    }
+
+    /// Get fees for a specific keyset ID
+    pub async fn get_keyset_fees_by_id(&self, keyset_id: String) -> Result<u64, FfiError> {
+        let inner = self.inner.clone();
+        runtime::block_on(async move {
+            let id = cdk::nuts::Id::from_str(&keyset_id)
+                .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+            let fees = inner.get_keyset_fees_by_id(id).await?;
+            Ok::<u64, FfiError>(fees)
+        })
+    }
+
+    /// Reclaim unspent proofs (mark them as unspent in the database)
+    pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), FfiError> {
+        let inner = self.inner.clone();
+        runtime::block_on(async move {
+            let cdk_proofs: Vec<cdk::nuts::Proof> = proofs.iter()
+                .map(|p| p.inner.clone())
+                .collect();
+            inner.reclaim_unspent(cdk_proofs).await?;
+            Ok::<(), FfiError>(())
+        })
+    }
+
+    /// Check all pending proofs and return the total amount reclaimed
+    pub async fn check_all_pending_proofs(&self) -> Result<Amount, FfiError> {
+        let inner = self.inner.clone();
+        runtime::block_on(async move {
+            let amount = inner.check_all_pending_proofs().await?;
+            Ok::<Amount, FfiError>(amount.into())
+        })
+    }
+
+    /// Calculate fee for a given number of proofs with the specified keyset
+    pub async fn calculate_fee(&self, proof_count: u32, keyset_id: String) -> Result<Amount, FfiError> {
+        let inner = self.inner.clone();
+        runtime::block_on(async move {
+            let id = cdk::nuts::Id::from_str(&keyset_id)
+                .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+            let fee_ppk = inner.get_keyset_fees_by_id(id).await?;
+            let total_fee = (proof_count as u64 * fee_ppk) / 1000; // fee is per thousand
+            Ok::<Amount, FfiError>(Amount::new(total_fee))
         })
     }
 }

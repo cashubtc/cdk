@@ -14,6 +14,10 @@ pub enum FfiError {
     #[error("Amount overflow")]
     AmountOverflow,
 
+    /// Division by zero
+    #[error("Division by zero")]
+    DivisionByZero,
+
     /// Amount error
     #[error("Amount error: {msg}")]
     Amount { msg: String },

@@ -40,6 +40,45 @@ impl Amount {
             .convert_unit(&current_unit.into(), &target_unit.into())
             .map(Into::into)?)
     }
+
+    pub fn add(&self, other: Amount) -> Result<Amount, FfiError> {
+        let self_amount = CdkAmount::from(self.value);
+        let other_amount = CdkAmount::from(other.value);
+        self_amount
+            .checked_add(other_amount)
+            .map(Into::into)
+            .ok_or(FfiError::AmountOverflow)
+    }
+
+    pub fn subtract(&self, other: Amount) -> Result<Amount, FfiError> {
+        let self_amount = CdkAmount::from(self.value);
+        let other_amount = CdkAmount::from(other.value);
+        self_amount
+            .checked_sub(other_amount)
+            .map(Into::into)
+            .ok_or(FfiError::AmountOverflow)
+    }
+
+    pub fn multiply(&self, factor: u64) -> Result<Amount, FfiError> {
+        let self_amount = CdkAmount::from(self.value);
+        let factor_amount = CdkAmount::from(factor);
+        self_amount
+            .checked_mul(factor_amount)
+            .map(Into::into)
+            .ok_or(FfiError::AmountOverflow)
+    }
+
+    pub fn divide(&self, divisor: u64) -> Result<Amount, FfiError> {
+        if divisor == 0 {
+            return Err(FfiError::DivisionByZero);
+        }
+        let self_amount = CdkAmount::from(self.value);
+        let divisor_amount = CdkAmount::from(divisor);
+        self_amount
+            .checked_div(divisor_amount)
+            .map(Into::into)
+            .ok_or(FfiError::AmountOverflow)
+    }
 }
 
 impl From<CdkAmount> for Amount {
@@ -224,6 +263,11 @@ impl Token {
             .into_iter()
             .map(|p| std::sync::Arc::new(p.into()))
             .collect())
+    }
+
+    /// Convert token to raw bytes
+    pub fn to_raw_bytes(&self) -> Result<Vec<u8>, FfiError> {
+        Ok(self.inner.to_raw_bytes()?)
     }
 }
 
@@ -612,10 +656,78 @@ impl Proof {
     pub fn y(&self) -> Result<String, FfiError> {
         Ok(self.inner.y()?.to_string())
     }
+
+    /// Get the DLEQ proof if present
+    pub fn dleq(&self) -> Option<ProofDleq> {
+        self.inner.dleq.as_ref().map(|d| d.clone().into())
+    }
+
+    /// Check if proof has DLEQ proof
+    pub fn has_dleq(&self) -> bool {
+        self.inner.dleq.is_some()
+    }
 }
 
 /// FFI-compatible Proofs (vector of Proof)
 pub type Proofs = Vec<std::sync::Arc<Proof>>;
+
+/// FFI-compatible DLEQ proof for proofs
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct ProofDleq {
+    /// e value (hex-encoded SecretKey)
+    pub e: String,
+    /// s value (hex-encoded SecretKey)
+    pub s: String,
+    /// r value - blinding factor (hex-encoded SecretKey)
+    pub r: String,
+}
+
+/// FFI-compatible DLEQ proof for blind signatures
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct BlindSignatureDleq {
+    /// e value (hex-encoded SecretKey)
+    pub e: String,
+    /// s value (hex-encoded SecretKey)
+    pub s: String,
+}
+
+impl From<cdk::nuts::ProofDleq> for ProofDleq {
+    fn from(dleq: cdk::nuts::ProofDleq) -> Self {
+        Self {
+            e: dleq.e.to_secret_hex(),
+            s: dleq.s.to_secret_hex(),
+            r: dleq.r.to_secret_hex(),
+        }
+    }
+}
+
+impl From<ProofDleq> for cdk::nuts::ProofDleq {
+    fn from(dleq: ProofDleq) -> Self {
+        Self {
+            e: cdk::nuts::SecretKey::from_hex(&dleq.e).expect("Invalid e hex"),
+            s: cdk::nuts::SecretKey::from_hex(&dleq.s).expect("Invalid s hex"),
+            r: cdk::nuts::SecretKey::from_hex(&dleq.r).expect("Invalid r hex"),
+        }
+    }
+}
+
+impl From<cdk::nuts::BlindSignatureDleq> for BlindSignatureDleq {
+    fn from(dleq: cdk::nuts::BlindSignatureDleq) -> Self {
+        Self {
+            e: dleq.e.to_secret_hex(),
+            s: dleq.s.to_secret_hex(),
+        }
+    }
+}
+
+impl From<BlindSignatureDleq> for cdk::nuts::BlindSignatureDleq {
+    fn from(dleq: BlindSignatureDleq) -> Self {
+        Self {
+            e: cdk::nuts::SecretKey::from_hex(&dleq.e).expect("Invalid e hex"),
+            s: cdk::nuts::SecretKey::from_hex(&dleq.s).expect("Invalid s hex"),
+        }
+    }
+}
 
 /// Helper functions for Proofs
 pub fn proofs_total_amount(proofs: &Proofs) -> Result<Amount, FfiError> {
@@ -1325,13 +1437,13 @@ pub struct MintInfo {
     /// long description
     pub description_long: Option<String>,
     /// Contact info
-    pub contact: Vec<ContactInfo>,
+    pub contact: Option<Vec<ContactInfo>>,
     /// shows which NUTs the mint supports
     pub nuts: Nuts,
     /// Mint's icon URL
     pub icon_url: Option<String>,
     /// Mint's endpoint URLs
-    pub urls: Vec<String>,
+    pub urls: Option<Vec<String>>,
     /// message of the day that the wallet must display to the user
     pub motd: Option<String>,
     /// server unix timestamp
@@ -1350,13 +1462,10 @@ impl From<cdk::nuts::MintInfo> for MintInfo {
             description_long: info.description_long,
             contact: info
                 .contact
-                .unwrap_or_default()
-                .into_iter()
-                .map(Into::into)
-                .collect(),
+                .map(|contacts| contacts.into_iter().map(Into::into).collect()),
             nuts: info.nuts.into(),
             icon_url: info.icon_url,
-            urls: info.urls.unwrap_or_default(),
+            urls: info.urls,
             motd: info.motd,
             time: info.time,
             tos_url: info.tos_url,
@@ -1372,10 +1481,12 @@ impl From<MintInfo> for cdk_common::nuts::MintInfo {
             version: info.version.map(Into::into),
             description: info.description,
             description_long: info.description_long,
-            contact: Some(info.contact.into_iter().map(Into::into).collect()),
+            contact: info
+                .contact
+                .map(|contacts| contacts.into_iter().map(Into::into).collect()),
             nuts: cdk_common::nuts::Nuts::default(), // Simplified conversion
             icon_url: info.icon_url,
-            urls: Some(info.urls),
+            urls: info.urls,
             motd: info.motd,
             time: info.time,
             tos_url: info.tos_url,
@@ -2097,6 +2208,8 @@ pub struct KeySetInfo {
     pub id: String,
     pub unit: CurrencyUnit,
     pub active: bool,
+    /// Input fee per thousand (ppk)
+    pub input_fee_ppk: u64,
 }
 
 impl From<cdk_common::nuts::KeySetInfo> for KeySetInfo {
@@ -2105,6 +2218,7 @@ impl From<cdk_common::nuts::KeySetInfo> for KeySetInfo {
             id: keyset.id.to_string(),
             unit: keyset.unit.into(),
             active: keyset.active,
+            input_fee_ppk: keyset.input_fee_ppk,
         }
     }
 }
@@ -2123,7 +2237,7 @@ impl From<KeySetInfo> for cdk_common::nuts::KeySetInfo {
             unit: keyset.unit.into(),
             active: keyset.active,
             final_expiry: None,
-            input_fee_ppk: 0,
+            input_fee_ppk: keyset.input_fee_ppk,
         }
     }
 }
