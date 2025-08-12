@@ -259,11 +259,18 @@ impl SendMemo {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create SendMemo from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode SendMemo from JSON string
+#[uniffi::export]
+pub fn decode_send_memo(json: String) -> Result<SendMemo, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode SendMemo to JSON string
+#[uniffi::export]
+pub fn encode_send_memo(memo: SendMemo) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&memo)?)
 }
 
 /// FFI-compatible SplitTarget
@@ -414,11 +421,18 @@ impl SendOptions {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create SendOptions from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode SendOptions from JSON string
+#[uniffi::export]
+pub fn decode_send_options(json: String) -> Result<SendOptions, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode SendOptions to JSON string
+#[uniffi::export]
+pub fn encode_send_options(options: SendOptions) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&options)?)
 }
 
 /// FFI-compatible SecretKey
@@ -525,11 +539,18 @@ impl ReceiveOptions {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create ReceiveOptions from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode ReceiveOptions from JSON string
+#[uniffi::export]
+pub fn decode_receive_options(json: String) -> Result<ReceiveOptions, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode ReceiveOptions to JSON string
+#[uniffi::export]
+pub fn encode_receive_options(options: ReceiveOptions) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&options)?)
 }
 
 /// FFI-compatible Proof
@@ -1137,11 +1158,18 @@ impl MintVersion {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create MintVersion from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode MintVersion from JSON string
+#[uniffi::export]
+pub fn decode_mint_version(json: String) -> Result<MintVersion, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode MintVersion to JSON string
+#[uniffi::export]
+pub fn encode_mint_version(version: MintVersion) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&version)?)
 }
 
 /// FFI-compatible ContactInfo
@@ -1176,11 +1204,18 @@ impl ContactInfo {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create ContactInfo from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode ContactInfo from JSON string
+#[uniffi::export]
+pub fn decode_contact_info(json: String) -> Result<ContactInfo, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode ContactInfo to JSON string
+#[uniffi::export]
+pub fn encode_contact_info(info: ContactInfo) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&info)?)
 }
 
 /// FFI-compatible SupportedSettings
@@ -1262,11 +1297,18 @@ impl Nuts {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create Nuts from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode Nuts from JSON string
+#[uniffi::export]
+pub fn decode_nuts(json: String) -> Result<Nuts, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode Nuts to JSON string
+#[uniffi::export]
+pub fn encode_nuts(nuts: Nuts) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&nuts)?)
 }
 
 /// FFI-compatible MintInfo
@@ -1346,11 +1388,18 @@ impl MintInfo {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create MintInfo from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode MintInfo from JSON string
+#[uniffi::export]
+pub fn decode_mint_info(json: String) -> Result<MintInfo, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode MintInfo to JSON string
+#[uniffi::export]
+pub fn encode_mint_info(info: MintInfo) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&info)?)
 }
 
 /// FFI-compatible Conditions (for spending conditions)
@@ -1458,11 +1507,18 @@ impl Conditions {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create Conditions from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode Conditions from JSON string
+#[uniffi::export]
+pub fn decode_conditions(json: String) -> Result<Conditions, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode Conditions to JSON string
+#[uniffi::export]
+pub fn encode_conditions(conditions: Conditions) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&conditions)?)
 }
 
 /// FFI-compatible Witness
@@ -1617,11 +1673,18 @@ impl Transaction {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create Transaction from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode Transaction from JSON string
+#[uniffi::export]
+pub fn decode_transaction(json: String) -> Result<Transaction, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode Transaction to JSON string
+#[uniffi::export]
+pub fn encode_transaction(transaction: Transaction) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&transaction)?)
 }
 
 /// FFI-compatible TransactionDirection
@@ -1762,11 +1825,20 @@ impl AuthProof {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create AuthProof from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode AuthProof from JSON string
+#[cfg(feature = "auth")]
+#[uniffi::export]
+pub fn decode_auth_proof(json: String) -> Result<AuthProof, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode AuthProof to JSON string
+#[cfg(feature = "auth")]
+#[uniffi::export]
+pub fn encode_auth_proof(proof: AuthProof) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&proof)?)
 }
 
 impl TryFrom<SpendingConditions> for cdk::nuts::SpendingConditions {
@@ -1868,11 +1940,18 @@ impl SubscribeParams {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create SubscribeParams from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode SubscribeParams from JSON string
+#[uniffi::export]
+pub fn decode_subscribe_params(json: String) -> Result<SubscribeParams, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode SubscribeParams to JSON string
+#[uniffi::export]
+pub fn encode_subscribe_params(params: SubscribeParams) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&params)?)
 }
 
 /// FFI-compatible ActiveSubscription
@@ -1998,11 +2077,18 @@ impl ProofStateUpdate {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create ProofStateUpdate from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode ProofStateUpdate from JSON string
+#[uniffi::export]
+pub fn decode_proof_state_update(json: String) -> Result<ProofStateUpdate, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode ProofStateUpdate to JSON string
+#[uniffi::export]
+pub fn encode_proof_state_update(update: ProofStateUpdate) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&update)?)
 }
 
 /// FFI-compatible KeySetInfo
@@ -2047,11 +2133,18 @@ impl KeySetInfo {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create KeySetInfo from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode KeySetInfo from JSON string
+#[uniffi::export]
+pub fn decode_key_set_info(json: String) -> Result<KeySetInfo, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode KeySetInfo to JSON string
+#[uniffi::export]
+pub fn encode_key_set_info(info: KeySetInfo) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&info)?)
 }
 
 /// FFI-compatible PublicKey
@@ -2134,11 +2227,18 @@ impl Keys {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create Keys from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode Keys from JSON string
+#[uniffi::export]
+pub fn decode_keys(json: String) -> Result<Keys, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode Keys to JSON string
+#[uniffi::export]
+pub fn encode_keys(keys: Keys) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&keys)?)
 }
 
 /// FFI-compatible KeySet
@@ -2208,11 +2308,18 @@ impl KeySet {
     pub fn to_json(&self) -> Result<String, FfiError> {
         Ok(serde_json::to_string(self)?)
     }
+}
 
-    /// Create KeySet from JSON string
-    pub fn from_json(json: &str) -> Result<Self, FfiError> {
-        Ok(serde_json::from_str(json)?)
-    }
+/// Decode KeySet from JSON string
+#[uniffi::export]
+pub fn decode_key_set(json: String) -> Result<KeySet, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode KeySet to JSON string
+#[uniffi::export]
+pub fn encode_key_set(keyset: KeySet) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&keyset)?)
 }
 
 /// FFI-compatible ProofInfo
