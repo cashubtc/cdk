@@ -1204,6 +1204,7 @@ async fn test_fake_mint_duplicate_proofs_swap() {
 
     let blinded_message = pre_mint.blinded_messages();
 
+    let inputs = vec![proofs[0].clone()];
     let outputs = vec![blinded_message[0].clone(), blinded_message[0].clone()];
 
     let swap_request = SwapRequest::new(inputs, outputs);

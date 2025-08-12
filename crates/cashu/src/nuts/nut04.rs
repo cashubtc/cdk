@@ -331,7 +331,7 @@ mod tests {
 
         match settings.options {
             Some(MintMethodOptions::Bolt11 { description }) => {
-                assert_eq!(description, true);
+                assert!(description);
             }
             _ => panic!("Expected Bolt11 options with description = true"),
         }
@@ -363,10 +363,7 @@ mod tests {
 
         match settings.options {
             Some(MintMethodOptions::Bolt11 { description }) => {
-                assert_eq!(
-                    description, true,
-                    "Top-level description should take precedence"
-                );
+                assert!(description, "Top-level description should take precedence");
             }
             _ => panic!("Expected Bolt11 options with description = true"),
         }
