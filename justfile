@@ -14,7 +14,7 @@ new-migration target name:
     fi
     
     timestamp=$(date +%Y%m%d%H%M%S)
-    migration_path="./crates/cdk-sqlite/src/{{target}}/migrations/${timestamp}_{{name}}.sql"
+    migration_path="./crates/cdk-sql-common/src/{{target}}/migrations/${timestamp}_{{name}}.sql"
     
     # Create the file
     mkdir -p "$(dirname "$migration_path")"
