@@ -760,13 +760,13 @@ VALUES (:quote_id, :amount, :timestamp);
             (
                 id, unit, amount, request, fee_reserve, state,
                 expiry, payment_preimage, request_lookup_id,
-                created_time, paid_time, options, request_lookup_id_kind
+                created_time, paid_time, options, request_lookup_id_kind, payment_method
             )
             VALUES
             (
                 :id, :unit, :amount, :request, :fee_reserve, :state,
                 :expiry, :payment_preimage, :request_lookup_id,
-                :created_time, :paid_time, :options, :request_lookup_id_kind
+                :created_time, :paid_time, :options, :request_lookup_id_kind, :payment_method
             )
         "#,
         )?
@@ -786,6 +786,7 @@ VALUES (:quote_id, :amount, :timestamp);
             quote.options.map(|o| serde_json::to_string(&o).ok()),
         )
         .bind("request_lookup_id_kind", quote.request_lookup_id.kind())
+        .bind("payment_method", quote.payment_method.to_string())
         .execute(&self.inner)
         .await?;
 
