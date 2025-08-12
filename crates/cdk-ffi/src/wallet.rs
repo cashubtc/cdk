@@ -167,11 +167,11 @@ impl Wallet {
         &self,
         amount: Amount,
         description: Option<String>,
-    ) -> Result<std::sync::Arc<MintQuote>, FfiError> {
+    ) -> Result<MintQuote, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let quote = inner.mint_quote(amount.into(), description).await?;
-            Ok::<std::sync::Arc<MintQuote>, FfiError>(std::sync::Arc::new(quote.into()))
+            Ok::<MintQuote, FfiError>(quote.into())
         })
     }
 
@@ -204,12 +204,12 @@ impl Wallet {
         &self,
         request: String,
         options: Option<MeltOptions>,
-    ) -> Result<std::sync::Arc<MeltQuote>, FfiError> {
+    ) -> Result<MeltQuote, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let cdk_options = options.map(Into::into);
             let quote = inner.melt_quote(request, cdk_options).await?;
-            Ok::<std::sync::Arc<MeltQuote>, FfiError>(std::sync::Arc::new(quote.into()))
+            Ok::<MeltQuote, FfiError>(quote.into())
         })
     }
 
@@ -227,13 +227,13 @@ impl Wallet {
         &self,
         amount: Option<Amount>,
         description: Option<String>,
-    ) -> Result<std::sync::Arc<MintQuote>, FfiError> {
+    ) -> Result<MintQuote, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let quote = inner
                 .mint_bolt12_quote(amount.map(Into::into), description)
                 .await?;
-            Ok::<std::sync::Arc<MintQuote>, FfiError>(std::sync::Arc::new(quote.into()))
+            Ok::<MintQuote, FfiError>(quote.into())
         })
     }
 
@@ -272,12 +272,12 @@ impl Wallet {
         &self,
         request: String,
         options: Option<MeltOptions>,
-    ) -> Result<std::sync::Arc<MeltQuote>, FfiError> {
+    ) -> Result<MeltQuote, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let cdk_options = options.map(Into::into);
             let quote = inner.melt_bolt12_quote(request, cdk_options).await?;
-            Ok::<std::sync::Arc<MeltQuote>, FfiError>(std::sync::Arc::new(quote.into()))
+            Ok::<MeltQuote, FfiError>(quote.into())
         })
     }
 

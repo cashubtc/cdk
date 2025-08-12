@@ -737,83 +737,98 @@ pub fn proofs_total_amount(proofs: &Proofs) -> Result<Amount, FfiError> {
 }
 
 /// FFI-compatible MintQuote
-#[derive(Debug, uniffi::Object)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MintQuote {
-    pub(crate) inner: cdk::wallet::MintQuote,
+    /// Quote ID
+    pub id: String,
+    /// Quote amount
+    pub amount: Option<Amount>,
+    /// Currency unit
+    pub unit: CurrencyUnit,
+    /// Payment request
+    pub request: String,
+    /// Quote state
+    pub state: QuoteState,
+    /// Expiry timestamp
+    pub expiry: u64,
+    /// Mint URL
+    pub mint_url: MintUrl,
+    /// Amount issued
+    pub amount_issued: Amount,
+    /// Amount paid
+    pub amount_paid: Amount,
+    /// Payment method
+    pub payment_method: String,
+    /// Secret key (optional, hex-encoded)
+    pub secret_key: Option<String>,
 }
 
 impl From<cdk::wallet::MintQuote> for MintQuote {
     fn from(quote: cdk::wallet::MintQuote) -> Self {
-        Self { inner: quote }
+        Self {
+            id: quote.id.clone(),
+            amount: quote.amount.map(Into::into),
+            unit: quote.unit.clone().into(),
+            request: quote.request.clone(),
+            state: quote.state.into(),
+            expiry: quote.expiry,
+            mint_url: quote.mint_url.clone().into(),
+            amount_issued: quote.amount_issued.into(),
+            amount_paid: quote.amount_paid.into(),
+            payment_method: quote.payment_method.to_string(),
+            secret_key: quote.secret_key.map(|sk| sk.to_secret_hex()),
+        }
     }
 }
 
-impl From<MintQuote> for cdk::wallet::MintQuote {
-    fn from(quote: MintQuote) -> Self {
-        quote.inner
+impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
+    type Error = FfiError;
+
+    fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
+        let secret_key = quote.secret_key
+            .map(|hex| cdk::nuts::SecretKey::from_hex(&hex))
+            .transpose()
+            .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?;
+        
+        Ok(Self {
+            id: quote.id,
+            amount: quote.amount.map(Into::into),
+            unit: quote.unit.into(),
+            request: quote.request,
+            state: quote.state.into(),
+            expiry: quote.expiry,
+            mint_url: quote.mint_url.try_into()?,
+            amount_issued: quote.amount_issued.into(),
+            amount_paid: quote.amount_paid.into(),
+            payment_method: cdk_common::PaymentMethod::Custom(quote.payment_method),
+            secret_key,
+        })
     }
 }
 
-#[uniffi::export]
 impl MintQuote {
-    /// Get quote ID
-    pub fn id(&self) -> String {
-        self.inner.id.clone()
-    }
-
-    /// Get quote amount
-    pub fn amount(&self) -> Option<Amount> {
-        self.inner.amount.map(Into::into)
-    }
-
-    /// Get currency unit
-    pub fn unit(&self) -> CurrencyUnit {
-        self.inner.unit.clone().into()
-    }
-
-    /// Get payment request
-    pub fn request(&self) -> String {
-        self.inner.request.clone()
-    }
-
-    /// Get quote state
-    pub fn state(&self) -> QuoteState {
-        self.inner.state.into()
-    }
-
-    /// Get expiry timestamp
-    pub fn expiry(&self) -> u64 {
-        self.inner.expiry
-    }
-
-    /// Get mint URL
-    pub fn mint_url(&self) -> MintUrl {
-        self.inner.mint_url.clone().into()
-    }
-
     /// Get total amount (amount + fees)
     pub fn total_amount(&self) -> Amount {
-        self.inner.total_amount().into()
+        if let Some(amount) = self.amount {
+            Amount::new(amount.value + self.amount_paid.value - self.amount_issued.value)
+        } else {
+            Amount::zero()
+        }
     }
 
     /// Check if quote is expired
     pub fn is_expired(&self, current_time: u64) -> bool {
-        self.inner.is_expired(current_time)
+        current_time > self.expiry
     }
 
     /// Get amount that can be minted
     pub fn amount_mintable(&self) -> Amount {
-        self.inner.amount_mintable().into()
+        Amount::new(self.amount_paid.value - self.amount_issued.value)
     }
 
-    /// Get amount issued
-    pub fn amount_issued(&self) -> Amount {
-        self.inner.amount_issued.into()
-    }
-
-    /// Get amount paid
-    pub fn amount_paid(&self) -> Amount {
-        self.inner.amount_paid.into()
+    /// Convert MintQuote to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
     }
 }
 
@@ -826,9 +841,8 @@ pub fn decode_mint_quote(json: String) -> Result<MintQuote, FfiError> {
 
 /// Encode MintQuote to JSON string
 #[uniffi::export]
-pub fn encode_mint_quote(quote: std::sync::Arc<MintQuote>) -> Result<String, FfiError> {
-    let cdk_quote: cdk::wallet::MintQuote = quote.inner.clone();
-    Ok(serde_json::to_string(&cdk_quote)?)
+pub fn encode_mint_quote(quote: MintQuote) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&quote)?)
 }
 
 /// FFI-compatible MintQuoteBolt11Response
@@ -982,63 +996,62 @@ impl MeltQuoteBolt11Response {
 }
 
 /// FFI-compatible MeltQuote
-#[derive(Debug, uniffi::Object)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MeltQuote {
-    pub(crate) inner: cdk::wallet::MeltQuote,
+    /// Quote ID
+    pub id: String,
+    /// Quote amount
+    pub amount: Amount,
+    /// Currency unit
+    pub unit: CurrencyUnit,
+    /// Payment request
+    pub request: String,
+    /// Fee reserve
+    pub fee_reserve: Amount,
+    /// Quote state
+    pub state: QuoteState,
+    /// Expiry timestamp
+    pub expiry: u64,
+    /// Payment preimage
+    pub payment_preimage: Option<String>,
 }
 
 impl From<cdk::wallet::MeltQuote> for MeltQuote {
     fn from(quote: cdk::wallet::MeltQuote) -> Self {
-        Self { inner: quote }
+        Self {
+            id: quote.id.clone(),
+            amount: quote.amount.into(),
+            unit: quote.unit.clone().into(),
+            request: quote.request.clone(),
+            fee_reserve: quote.fee_reserve.into(),
+            state: quote.state.into(),
+            expiry: quote.expiry,
+            payment_preimage: quote.payment_preimage.clone(),
+        }
     }
 }
 
-impl From<MeltQuote> for cdk::wallet::MeltQuote {
-    fn from(quote: MeltQuote) -> Self {
-        quote.inner
+impl TryFrom<MeltQuote> for cdk::wallet::MeltQuote {
+    type Error = FfiError;
+
+    fn try_from(quote: MeltQuote) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: quote.id,
+            amount: quote.amount.into(),
+            unit: quote.unit.into(),
+            request: quote.request,
+            fee_reserve: quote.fee_reserve.into(),
+            state: quote.state.into(),
+            expiry: quote.expiry,
+            payment_preimage: quote.payment_preimage,
+        })
     }
 }
 
-#[uniffi::export]
 impl MeltQuote {
-    /// Get quote ID
-    pub fn id(&self) -> String {
-        self.inner.id.clone()
-    }
-
-    /// Get quote amount
-    pub fn amount(&self) -> Amount {
-        self.inner.amount.into()
-    }
-
-    /// Get currency unit
-    pub fn unit(&self) -> CurrencyUnit {
-        self.inner.unit.clone().into()
-    }
-
-    /// Get payment request
-    pub fn request(&self) -> String {
-        self.inner.request.clone()
-    }
-
-    /// Get fee reserve
-    pub fn fee_reserve(&self) -> Amount {
-        self.inner.fee_reserve.into()
-    }
-
-    /// Get quote state
-    pub fn state(&self) -> QuoteState {
-        self.inner.state.into()
-    }
-
-    /// Get expiry timestamp
-    pub fn expiry(&self) -> u64 {
-        self.inner.expiry
-    }
-
-    /// Get payment preimage
-    pub fn payment_preimage(&self) -> Option<String> {
-        self.inner.payment_preimage.clone()
+    /// Convert MeltQuote to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
     }
 }
 
@@ -1051,9 +1064,8 @@ pub fn decode_melt_quote(json: String) -> Result<MeltQuote, FfiError> {
 
 /// Encode MeltQuote to JSON string
 #[uniffi::export]
-pub fn encode_melt_quote(quote: std::sync::Arc<MeltQuote>) -> Result<String, FfiError> {
-    let cdk_quote: cdk::wallet::MeltQuote = quote.inner.clone();
-    Ok(serde_json::to_string(&cdk_quote)?)
+pub fn encode_melt_quote(quote: MeltQuote) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&quote)?)
 }
 
 /// FFI-compatible QuoteState
@@ -1077,12 +1089,34 @@ impl From<cdk::nuts::nut05::QuoteState> for QuoteState {
     }
 }
 
+impl From<QuoteState> for cdk::nuts::nut05::QuoteState {
+    fn from(state: QuoteState) -> Self {
+        match state {
+            QuoteState::Unpaid => cdk::nuts::nut05::QuoteState::Unpaid,
+            QuoteState::Paid => cdk::nuts::nut05::QuoteState::Paid,
+            QuoteState::Pending => cdk::nuts::nut05::QuoteState::Pending,
+            QuoteState::Issued => cdk::nuts::nut05::QuoteState::Paid, // Map issued to paid for melt quotes
+        }
+    }
+}
+
 impl From<cdk::nuts::MintQuoteState> for QuoteState {
     fn from(state: cdk::nuts::MintQuoteState) -> Self {
         match state {
             cdk::nuts::MintQuoteState::Unpaid => QuoteState::Unpaid,
             cdk::nuts::MintQuoteState::Paid => QuoteState::Paid,
             cdk::nuts::MintQuoteState::Issued => QuoteState::Issued,
+        }
+    }
+}
+
+impl From<QuoteState> for cdk::nuts::MintQuoteState {
+    fn from(state: QuoteState) -> Self {
+        match state {
+            QuoteState::Unpaid => cdk::nuts::MintQuoteState::Unpaid,
+            QuoteState::Paid => cdk::nuts::MintQuoteState::Paid,
+            QuoteState::Issued => cdk::nuts::MintQuoteState::Issued,
+            QuoteState::Pending => cdk::nuts::MintQuoteState::Paid, // Map pending to paid
         }
     }
 }

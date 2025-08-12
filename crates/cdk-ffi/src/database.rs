@@ -57,32 +57,32 @@ pub trait WalletDatabase: Send + Sync {
 
     // Mint Quote Management
     /// Add mint quote to storage
-    async fn add_mint_quote(&self, quote: std::sync::Arc<MintQuote>) -> Result<(), FfiError>;
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError>;
 
     /// Get mint quote from storage
     async fn get_mint_quote(
         &self,
         quote_id: String,
-    ) -> Result<Option<std::sync::Arc<MintQuote>>, FfiError>;
+    ) -> Result<Option<MintQuote>, FfiError>;
 
     /// Get mint quotes from storage
-    async fn get_mint_quotes(&self) -> Result<Vec<std::sync::Arc<MintQuote>>, FfiError>;
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError>;
 
     /// Remove mint quote from storage
     async fn remove_mint_quote(&self, quote_id: String) -> Result<(), FfiError>;
 
     // Melt Quote Management
     /// Add melt quote to storage
-    async fn add_melt_quote(&self, quote: std::sync::Arc<MeltQuote>) -> Result<(), FfiError>;
+    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), FfiError>;
 
     /// Get melt quote from storage
     async fn get_melt_quote(
         &self,
         quote_id: String,
-    ) -> Result<Option<std::sync::Arc<MeltQuote>>, FfiError>;
+    ) -> Result<Option<MeltQuote>, FfiError>;
 
     /// Get melt quotes from storage
-    async fn get_melt_quotes(&self) -> Result<Vec<std::sync::Arc<MeltQuote>>, FfiError>;
+    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, FfiError>;
 
     /// Remove melt quote from storage
     async fn remove_melt_quote(&self, quote_id: String) -> Result<(), FfiError>;
@@ -284,7 +284,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
 
     // Mint Quote Management
     async fn add_mint_quote(&self, quote: cdk_common::wallet::MintQuote) -> Result<(), Self::Err> {
-        let ffi_quote = std::sync::Arc::new(quote.into());
+        let ffi_quote = quote.into();
         self.ffi_db
             .add_mint_quote(ffi_quote)
             .await
@@ -300,7 +300,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .get_mint_quote(quote_id.to_string())
             .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
-        Ok(result.map(|q| q.inner.clone()))
+        Ok(result.map(|q| q.try_into().map_err(|e: FfiError| cdk_common::database::Error::Database(e.to_string().into()))).transpose()?)
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<cdk_common::wallet::MintQuote>, Self::Err> {
@@ -309,7 +309,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .get_mint_quotes()
             .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
-        Ok(result.into_iter().map(|q| q.inner.clone()).collect())
+        Ok(result.into_iter().map(|q| q.try_into().map_err(|e: FfiError| cdk_common::database::Error::Database(e.to_string().into()))).collect::<Result<Vec<_>, _>>()?)
     }
 
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
@@ -321,7 +321,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
 
     // Melt Quote Management
     async fn add_melt_quote(&self, quote: cdk_common::wallet::MeltQuote) -> Result<(), Self::Err> {
-        let ffi_quote = std::sync::Arc::new(quote.into());
+        let ffi_quote = quote.into();
         self.ffi_db
             .add_melt_quote(ffi_quote)
             .await
@@ -337,7 +337,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .get_melt_quote(quote_id.to_string())
             .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
-        Ok(result.map(|q| q.inner.clone()))
+        Ok(result.map(|q| q.try_into().map_err(|e: FfiError| cdk_common::database::Error::Database(e.to_string().into()))).transpose()?)
     }
 
     async fn get_melt_quotes(&self) -> Result<Vec<cdk_common::wallet::MeltQuote>, Self::Err> {
@@ -346,7 +346,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .get_melt_quotes()
             .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
-        Ok(result.into_iter().map(|q| q.inner.clone()).collect())
+        Ok(result.into_iter().map(|q| q.try_into().map_err(|e: FfiError| cdk_common::database::Error::Database(e.to_string().into()))).collect::<Result<Vec<_>, _>>()?)
     }
 
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
@@ -713,9 +713,9 @@ impl WalletDatabase for WalletSqliteDatabase {
     }
 
     // Mint Quote Management
-    async fn add_mint_quote(&self, quote: std::sync::Arc<MintQuote>) -> Result<(), FfiError> {
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError> {
         crate::runtime::block_on(async move {
-            let cdk_quote = quote.inner.clone();
+            let cdk_quote = quote.try_into()?;
             self.inner
                 .add_mint_quote(cdk_quote)
                 .await
@@ -726,18 +726,18 @@ impl WalletDatabase for WalletSqliteDatabase {
     async fn get_mint_quote(
         &self,
         quote_id: String,
-    ) -> Result<Option<std::sync::Arc<MintQuote>>, FfiError> {
+    ) -> Result<Option<MintQuote>, FfiError> {
         crate::runtime::block_on(async move {
             let result = self
                 .inner
                 .get_mint_quote(&quote_id)
                 .await
                 .map_err(|e| FfiError::Database { msg: e.to_string() })?;
-            Ok(result.map(|q| std::sync::Arc::new(q.into())))
+            Ok(result.map(|q| q.into()))
         })
     }
 
-    async fn get_mint_quotes(&self) -> Result<Vec<std::sync::Arc<MintQuote>>, FfiError> {
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
         crate::runtime::block_on(async move {
             let result = self
                 .inner
@@ -746,7 +746,7 @@ impl WalletDatabase for WalletSqliteDatabase {
                 .map_err(|e| FfiError::Database { msg: e.to_string() })?;
             Ok(result
                 .into_iter()
-                .map(|q| std::sync::Arc::new(q.into()))
+                .map(|q| q.into())
                 .collect())
         })
     }
@@ -761,9 +761,9 @@ impl WalletDatabase for WalletSqliteDatabase {
     }
 
     // Melt Quote Management
-    async fn add_melt_quote(&self, quote: std::sync::Arc<MeltQuote>) -> Result<(), FfiError> {
+    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), FfiError> {
         crate::runtime::block_on(async move {
-            let cdk_quote = quote.inner.clone();
+            let cdk_quote = quote.try_into()?;
             self.inner
                 .add_melt_quote(cdk_quote)
                 .await
@@ -774,18 +774,18 @@ impl WalletDatabase for WalletSqliteDatabase {
     async fn get_melt_quote(
         &self,
         quote_id: String,
-    ) -> Result<Option<std::sync::Arc<MeltQuote>>, FfiError> {
+    ) -> Result<Option<MeltQuote>, FfiError> {
         crate::runtime::block_on(async move {
             let result = self
                 .inner
                 .get_melt_quote(&quote_id)
                 .await
                 .map_err(|e| FfiError::Database { msg: e.to_string() })?;
-            Ok(result.map(|q| std::sync::Arc::new(q.into())))
+            Ok(result.map(|q| q.into()))
         })
     }
 
-    async fn get_melt_quotes(&self) -> Result<Vec<std::sync::Arc<MeltQuote>>, FfiError> {
+    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, FfiError> {
         crate::runtime::block_on(async move {
             let result = self
                 .inner
@@ -794,7 +794,7 @@ impl WalletDatabase for WalletSqliteDatabase {
                 .map_err(|e| FfiError::Database { msg: e.to_string() })?;
             Ok(result
                 .into_iter()
-                .map(|q| std::sync::Arc::new(q.into()))
+                .map(|q| q.into())
                 .collect())
         })
     }
