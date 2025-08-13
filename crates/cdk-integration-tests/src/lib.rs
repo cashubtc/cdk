@@ -21,15 +21,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
-use cashu::{Bolt11Invoice, PaymentMethod};
+use cashu::Bolt11Invoice;
 use cdk::amount::{Amount, SplitTarget};
-use cdk::nuts::{MintQuoteState, NotificationPayload, State};
-use cdk::wallet::WalletSubscription;
+use cdk::nuts::State;
 use cdk::Wallet;
 use cdk_fake_wallet::create_fake_invoice;
 use init_regtest::{get_lnd_dir, LND_RPC_ADDR};
 use ln_regtest_rs::ln_client::{LightningClient, LndClient};
-use tokio::time::{sleep, timeout, Duration};
+use tokio::time::Duration;
 
 pub mod cli;
 pub mod init_auth_mint;
@@ -43,9 +42,10 @@ pub async fn fund_wallet(wallet: Arc<Wallet>, amount: Amount) {
         .await
         .expect("Could not get mint quote");
 
-    wait_for_mint_to_be_paid(&wallet, &quote.id, 60)
+    wallet
+        .wait_for_payment(&quote, Duration::from_secs(60))
         .await
-        .expect("Waiting for mint failed");
+        .expect("wait for mint failed");
 
     let _proofs = wallet
         .mint(&quote.id, SplitTarget::default(), None)
@@ -102,88 +102,6 @@ pub async fn attempt_to_swap_pending(wallet: &Wallet) -> Result<()> {
     }
 
     Ok(())
-}
-
-pub async fn wait_for_mint_to_be_paid(
-    wallet: &Wallet,
-    mint_quote_id: &str,
-    timeout_secs: u64,
-) -> Result<()> {
-    let mut subscription = wallet
-        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![
-            mint_quote_id.to_owned(),
-        ]))
-        .await;
-    // Create the timeout future
-    let wait_future = async {
-        while let Some(msg) = subscription.recv().await {
-            if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
-                if response.state == MintQuoteState::Paid {
-                    return Ok(());
-                }
-            } else if let NotificationPayload::MintQuoteBolt12Response(response) = msg {
-                if response.amount_paid > Amount::ZERO {
-                    return Ok(());
-                }
-            }
-        }
-        Err(anyhow!("Subscription ended without quote being paid"))
-    };
-
-    let timeout_future = timeout(Duration::from_secs(timeout_secs), wait_future);
-
-    let check_interval = Duration::from_secs(5);
-
-    let method = wallet
-        .localstore
-        .get_mint_quote(mint_quote_id)
-        .await?
-        .map(|q| q.payment_method)
-        .unwrap_or_default();
-
-    let periodic_task = async {
-        loop {
-            match method {
-                PaymentMethod::Bolt11 => match wallet.mint_quote_state(mint_quote_id).await {
-                    Ok(result) => {
-                        if result.state == MintQuoteState::Paid {
-                            tracing::info!("mint quote paid via poll");
-                            return Ok(());
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Could not check mint quote status: {:?}", e);
-                    }
-                },
-                PaymentMethod::Bolt12 => {
-                    match wallet.mint_bolt12_quote_state(mint_quote_id).await {
-                        Ok(result) => {
-                            if result.amount_paid > Amount::ZERO {
-                                return Ok(());
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Could not check mint quote status: {:?}", e);
-                        }
-                    }
-                }
-                PaymentMethod::Custom(_) => (),
-            }
-            sleep(check_interval).await;
-        }
-    };
-
-    tokio::select! {
-        result = timeout_future => {
-            match result {
-                Ok(payment_result) => payment_result,
-                Err(_) => Err(anyhow!("Timeout waiting for mint quote ({}) to be paid", mint_quote_id)),
-            }
-        }
-        result = periodic_task => {
-            result // Now propagates the result from periodic checks
-        }
-    }
 }
 
 // This is the ln wallet we use to send/receive ln payements as the wallet

@@ -111,6 +111,10 @@ pub enum Error {
     #[error("Could not parse bolt12")]
     Bolt12parse,
 
+    /// Operation timeout
+    #[error("Operation timeout")]
+    Timeout,
+
     /// Internal Error - Send error
     #[error("Internal send error: {0}")]
     SendError(String),
