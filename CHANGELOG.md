@@ -41,6 +41,8 @@
 - cdk-integration-tests: Updated integration tests to use proper temp directory management ([thesimplekid]).
 - cdk-integration-tests: Simplified regtest shell scripts to use new binaries ([thesimplekid]).
 - crates/cdk-mintd: Moved mintd library functions to separate module for better organization and testability ([thesimplekid]).
+- Updated MSRV to 1.85.0 ([thesimplekid]).
+- dev: Simplified Nix flake configuration by removing specific dependency version constraints from MSRV shell hook ([thesimplekid]).
 
 ### Fixed
 - cashu: Fixed CurrencyUnit custom units preserving original case instead of being converted to uppercase ([thesimplekid]).
