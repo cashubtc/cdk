@@ -14,7 +14,7 @@ env:
 jobs:
   pre-commit-checks:
     name: "Cargo fmt, typos"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: checkout
@@ -36,10 +36,10 @@ jobs:
           '
       - name: typos
         run: nix develop -i -L .#nightly --command typos
-  
+
   examples:
     name: "Run examples"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: pre-commit-checks
     strategy:
@@ -68,7 +68,7 @@ jobs:
 
   clippy:
     name: "Stable build, clippy and test"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: pre-commit-checks
     strategy:
@@ -156,7 +156,7 @@ jobs:
 
   regtest-itest:
     name: "Integration regtest tests"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
     strategy:
@@ -165,7 +165,7 @@ jobs:
           [
             -p cdk-integration-tests,
           ]
-        database: 
+        database:
           [
             SQLITE,
           ]
@@ -192,10 +192,10 @@ jobs:
           shared-key: "stable"
       - name: Test
         run: nix develop -i -L .#stable --command just itest ${{ matrix.database }}
-          
+
   fake-mint-itest:
     name: "Integration fake mint tests"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy]
     strategy:
@@ -204,9 +204,9 @@ jobs:
           [
             -p cdk-integration-tests,
           ]
-        database: 
+        database:
           [
-          SQLITE,
+            SQLITE,
           ]
     steps:
       - name: checkout
@@ -233,19 +233,19 @@ jobs:
         run: nix develop -i -L .#stable --command cargo clippy -- -D warnings
       - name: Test fake auth mint
         run: nix develop -i -L .#stable --command just fake-mint-itest ${{ matrix.database }}
-                
+
   pure-itest:
     name: "Integration fake wallet tests"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy]
     strategy:
       matrix:
-        database: 
+        database:
           [
-          memory,
-          sqlite,
-          redb
+            memory,
+            sqlite,
+            redb
           ]
     steps:
       - name: checkout
@@ -253,7 +253,7 @@ jobs:
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
-          tool-cache: true          
+          tool-cache: true
           android: true
           dotnet: true
           haskell: true
@@ -276,16 +276,16 @@ jobs:
 
   payment-processor-itests:
     name: "Payment processor tests"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest, regtest-itest]
     strategy:
       matrix:
-        ln: 
+        ln:
           [
-          FAKEWALLET,
-          CLN,
-          LND
+            FAKEWALLET,
+            CLN,
+            LND
           ]
     steps:
       - name: checkout
@@ -293,7 +293,7 @@ jobs:
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
-          tool-cache: true          
+          tool-cache: true
           android: true
           dotnet: true
           haskell: true
@@ -313,7 +313,7 @@ jobs:
 
   msrv-build:
     name: "MSRV build"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy]
     strategy:
@@ -351,10 +351,10 @@ jobs:
       - name: Build
         run: nix develop -i -L .#msrv --command cargo build ${{ matrix.build-args }}
 
-  
+
   check-wasm:
     name: Check WASM
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy]
     strategy:
@@ -383,10 +383,10 @@ jobs:
       - name: Build cdk and binding
         run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
 
-        
+
   check-wasm-msrv:
     name: Check WASM
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy, msrv-build]
     strategy:
@@ -417,14 +417,14 @@ jobs:
 
   fake-mint-auth-itest:
     name: "Integration fake mint auth tests"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
     strategy:
       matrix:
-        database: 
+        database:
           [
-          SQLITE,
+            SQLITE,
           ]
     steps:
       - name: checkout
@@ -450,10 +450,10 @@ jobs:
       - name: Stop and clean up Docker Compose
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml down
-          
+
   doc-tests:
     name: "Documentation Tests"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: pre-commit-checks
     steps:
@@ -469,10 +469,10 @@ jobs:
           shared-key: "stable"
       - name: Run doc tests
         run: nix develop -i -L .#stable --command cargo test --doc
-        
+
   strict-docs:
     name: "Strict Documentation Check"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: doc-tests
     steps:
