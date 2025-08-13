@@ -211,7 +211,8 @@ async fn main() -> Result<()> {
             let wallet_clone = wallet.clone();
 
             tokio::spawn(async move {
-                if let Err(err) = wallet_clone.get_mint_info().await {
+                // We refresh keysets, this internally gets mint info
+                if let Err(err) = wallet_clone.refresh_keysets().await {
                     tracing::error!(
                         "Could not get mint quote for {}, {}",
                         wallet_clone.mint_url,

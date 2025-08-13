@@ -857,7 +857,7 @@ ON CONFLICT(id) DO UPDATE SET
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
+    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<u32, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -873,7 +873,8 @@ ON CONFLICT(id) DO UPDATE SET
         .pluck(&*conn)
         .await?
         .map(|n| Ok::<_, Error>(column_as_number!(n)))
-        .transpose()?)
+        .transpose()?
+        .unwrap_or(0))
     }
 
     #[instrument(skip(self))]

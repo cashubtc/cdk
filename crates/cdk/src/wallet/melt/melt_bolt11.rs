@@ -153,8 +153,6 @@ impl Wallet {
             .get_keyset_counter(&active_keyset_id)
             .await?;
 
-        let count = count.map_or(0, |c| c + 1);
-
         let premint_secrets = PreMintSecrets::from_seed_blank(
             active_keyset_id,
             count,
