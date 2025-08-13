@@ -41,7 +41,7 @@ jobs:
     name: "Run examples"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy]
+    needs: pre-commit-checks
     strategy:
       matrix:
         build-args:
@@ -172,6 +172,16 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
@@ -201,6 +211,16 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
@@ -230,6 +250,16 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true          
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
@@ -260,6 +290,16 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true          
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
@@ -275,7 +315,7 @@ jobs:
     name: "MSRV build"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy, pure-itest]
+    needs: [pre-commit-checks, clippy]
     strategy:
       matrix:
         build-args:
@@ -316,7 +356,7 @@ jobs:
     name: Check WASM
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy, pure-itest]
+    needs: [pre-commit-checks, clippy]
     strategy:
       matrix:
         rust:
