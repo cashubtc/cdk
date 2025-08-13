@@ -248,12 +248,10 @@ impl Wallet {
 
         let derived_secret_count;
 
-        let count = self
+        let mut count = self
             .localstore
             .get_keyset_counter(&active_keyset_id)
             .await?;
-
-        let mut count = count.map_or(0, |c| c + 1);
 
         let (mut desired_messages, change_messages) = match spending_conditions {
             Some(conditions) => {

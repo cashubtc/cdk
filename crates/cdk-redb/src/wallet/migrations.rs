@@ -11,7 +11,7 @@ use redb::{
 };
 
 use super::Error;
-use crate::wallet::{KEYSETS_TABLE, KEYSET_U32_MAPPING, MINT_KEYS_TABLE};
+use crate::wallet::{KEYSETS_TABLE, KEYSET_COUNTER, KEYSET_U32_MAPPING, MINT_KEYS_TABLE};
 
 // <Mint_url, Info>
 const MINTS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mints_table");
@@ -151,4 +151,52 @@ fn migrate_trim_mint_urls_01_to_02(db: Arc<Database>) -> Result<(), Error> {
     migrate_mints_table_01_to_02(Arc::clone(&db))?;
     migrate_mint_keyset_table_01_to_02(Arc::clone(&db))?;
     Ok(())
+}
+
+pub(crate) fn migrate_03_to_04(db: Arc<Database>) -> Result<u32, Error> {
+    let write_txn = db.begin_write().map_err(Error::from)?;
+
+    // Get all existing keyset IDs from the KEYSET_COUNTER table that have a counter > 0
+    let keyset_ids_to_increment: Vec<(String, u32)>;
+    {
+        let table = write_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
+
+        keyset_ids_to_increment = table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .filter_map(|(keyset_id, counter)| {
+                let counter_value = counter.value();
+                // Only include keysets where counter > 0
+                if counter_value > 0 {
+                    Some((keyset_id.value().to_string(), counter_value))
+                } else {
+                    None
+                }
+            })
+            .collect();
+    }
+
+    // Increment counter by 1 for all keysets where counter > 0
+    {
+        let mut table = write_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
+
+        for (keyset_id, current_counter) in keyset_ids_to_increment {
+            let new_counter = current_counter + 1;
+            table
+                .insert(keyset_id.as_str(), new_counter)
+                .map_err(Error::from)?;
+
+            tracing::info!(
+                "Incremented counter for keyset {} from {} to {}",
+                keyset_id,
+                current_counter,
+                new_counter
+            );
+        }
+    }
+
+    write_txn.commit()?;
+
+    Ok(4)
 }

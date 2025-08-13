@@ -102,7 +102,7 @@ pub trait Database: Debug {
     /// Increment Keyset counter
     async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;
     /// Get current Keyset counter
-    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err>;
+    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<u32, Self::Err>;
 
     /// Add transaction to storage
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), Self::Err>;
