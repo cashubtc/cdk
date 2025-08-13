@@ -404,7 +404,7 @@ mod tests {
         let bolt11 = Bolt11Invoice::from_str(bolt11).unwrap();
 
         let nut10 = SpendingConditions::HTLCConditions {
-            data: bolt11.payment_hash().clone(),
+            data: *bolt11.payment_hash(),
             conditions: None,
         };
 

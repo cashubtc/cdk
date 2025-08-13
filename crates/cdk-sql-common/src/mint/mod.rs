@@ -564,9 +564,8 @@ where
         .bind("quote_id", quote_id.as_hyphenated().to_string())
         .fetch_one(&self.inner)
         .await
-        .map_err(|err| {
-            tracing::error!("SQLite could not get mint quote amount_paid");
-            err
+        .inspect_err(|err| {
+            tracing::error!("SQLite could not get mint quote amount_paid: {}", err);
         })?;
 
         let current_amount_paid = if let Some(current_amount) = current_amount {
@@ -593,9 +592,8 @@ where
         .bind("quote_id", quote_id.as_hyphenated().to_string())
         .execute(&self.inner)
         .await
-        .map_err(|err| {
-            tracing::error!("SQLite could not update mint quote amount_paid");
-            err
+        .inspect_err(|err| {
+            tracing::error!("SQLite could not update mint quote amount_paid: {}", err);
         })?;
 
         // Add payment_id to mint_quote_payments table
@@ -638,9 +636,8 @@ where
         .bind("quote_id", quote_id.as_hyphenated().to_string())
         .fetch_one(&self.inner)
         .await
-        .map_err(|err| {
-            tracing::error!("SQLite could not get mint quote amount_issued");
-            err
+        .inspect_err(|err| {
+            tracing::error!("SQLite could not get mint quote amount_issued: {}", err);
         })?;
 
         let current_amount_issued = if let Some(current_amount) = current_amount {
@@ -668,9 +665,8 @@ where
         .bind("quote_id", quote_id.as_hyphenated().to_string())
         .execute(&self.inner)
         .await
-        .map_err(|err| {
-            tracing::error!("SQLite could not update mint quote amount_issued");
-            err
+        .inspect_err(|err| {
+            tracing::error!("SQLite could not update mint quote amount_issued: {}", err);
         })?;
 
         let current_time = unix_time();

@@ -405,7 +405,7 @@ mod tests {
 
         match settings.options {
             Some(MeltMethodOptions::Bolt11 { amountless }) => {
-                assert_eq!(amountless, true);
+                assert!(amountless);
             }
             _ => panic!("Expected Bolt11 options with amountless = true"),
         }
@@ -437,10 +437,7 @@ mod tests {
 
         match settings.options {
             Some(MeltMethodOptions::Bolt11 { amountless }) => {
-                assert_eq!(
-                    amountless, true,
-                    "Top-level amountless should take precedence"
-                );
+                assert!(amountless, "Top-level amountless should take precedence");
             }
             _ => panic!("Expected Bolt11 options with amountless = true"),
         }
