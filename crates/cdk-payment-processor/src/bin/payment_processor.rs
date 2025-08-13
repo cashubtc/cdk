@@ -115,8 +115,13 @@ async fn main() -> anyhow::Result<()> {
                         percent_fee_reserve: 0.0,
                     };
 
-                    let fake_wallet =
-                        FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
+                    let fake_wallet = FakeWallet::new(
+                        fee_reserve,
+                        HashMap::default(),
+                        HashSet::default(),
+                        0,
+                        cashu::CurrencyUnit::Sat,
+                    );
 
                     Arc::new(fake_wallet)
                 }
