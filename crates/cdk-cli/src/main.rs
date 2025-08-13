@@ -200,7 +200,7 @@ async fn main() -> Result<()> {
                 .mint_url(mint_url_clone.clone())
                 .unit(unit)
                 .localstore(localstore.clone())
-                .seed(&seed);
+                .seed(seed);
 
             if let Some(http_client) = &proxy_client {
                 builder = builder.client(http_client.clone());
@@ -211,7 +211,8 @@ async fn main() -> Result<()> {
             let wallet_clone = wallet.clone();
 
             tokio::spawn(async move {
-                if let Err(err) = wallet_clone.get_mint_info().await {
+                // We refresh keysets, this internally gets mint info
+                if let Err(err) = wallet_clone.refresh_keysets().await {
                     tracing::error!(
                         "Could not get mint quote for {}, {}",
                         wallet_clone.mint_url,
@@ -224,7 +225,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let multi_mint_wallet = MultiMintWallet::new(localstore, Arc::new(seed), wallets);
+    let multi_mint_wallet = MultiMintWallet::new(localstore, seed, wallets);
 
     match &args.command {
         Commands::DecodeToken(sub_command_args) => {

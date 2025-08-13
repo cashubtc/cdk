@@ -248,19 +248,17 @@ impl Wallet {
 
         let derived_secret_count;
 
-        let count = self
+        let mut count = self
             .localstore
             .get_keyset_counter(&active_keyset_id)
             .await?;
 
-        let mut count = count.map_or(0, |c| c + 1);
-
         let (mut desired_messages, change_messages) = match spending_conditions {
             Some(conditions) => {
-                let change_premint_secrets = PreMintSecrets::from_xpriv(
+                let change_premint_secrets = PreMintSecrets::from_seed(
                     active_keyset_id,
                     count,
-                    self.xpriv,
+                    &self.seed,
                     change_amount,
                     &change_split_target,
                 )?;
@@ -278,20 +276,20 @@ impl Wallet {
                 )
             }
             None => {
-                let premint_secrets = PreMintSecrets::from_xpriv(
+                let premint_secrets = PreMintSecrets::from_seed(
                     active_keyset_id,
                     count,
-                    self.xpriv,
+                    &self.seed,
                     send_amount.unwrap_or(Amount::ZERO),
                     &SplitTarget::default(),
                 )?;
 
                 count += premint_secrets.len() as u32;
 
-                let change_premint_secrets = PreMintSecrets::from_xpriv(
+                let change_premint_secrets = PreMintSecrets::from_seed(
                     active_keyset_id,
                     count,
-                    self.xpriv,
+                    &self.seed,
                     change_amount,
                     &change_split_target,
                 )?;

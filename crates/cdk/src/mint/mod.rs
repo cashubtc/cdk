@@ -477,6 +477,7 @@ impl Mint {
                     match result {
                         Ok(mut stream) => {
                             while let Some(request_lookup_id) = stream.next().await {
+                                tracing::debug!("Received payment {:?}", request_lookup_id);
                                 if let Err(e) = Self::handle_payment_notification(
                                     &localstore,
                                     &pubsub_manager,
@@ -518,6 +519,11 @@ impl Mint {
             .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
             .await
         {
+            tracing::debug!(
+                "Received payment {} for quote-id {}",
+                wait_payment_response.payment_identifier,
+                mint_quote.id
+            );
             Self::handle_mint_quote_payment(
                 &mut tx,
                 &mint_quote,
@@ -527,7 +533,7 @@ impl Mint {
             .await?;
         } else {
             tracing::warn!(
-                "Could not get request for request lookup id {:?}.",
+                "Could not get request for request lookup id {:?}",
                 wait_payment_response.payment_identifier
             );
         }
@@ -637,17 +643,12 @@ impl Mint {
     #[tracing::instrument(skip_all)]
     pub async fn blind_sign(
         &self,
-        blinded_message: BlindedMessage,
-    ) -> Result<BlindSignature, Error> {
+        blinded_message: Vec<BlindedMessage>,
+    ) -> Result<Vec<BlindSignature>, Error> {
         #[cfg(feature = "prometheus")]
         global::inc_in_flight_requests("blind_sign");
 
-        let result = self
-            .signatory
-            .blind_sign(vec![blinded_message])
-            .await?
-            .pop()
-            .ok_or(Error::Internal);
+        let result = self.signatory.blind_sign(blinded_message).await;
 
         #[cfg(feature = "prometheus")]
         {
@@ -727,7 +728,6 @@ impl Mint {
                 return Err(Error::Internal);
             }
         };
-        tracing::error!("internal stuff");
 
         // Mint quote has already been settled, proofs should not be burned or held.
         if mint_quote.state() == MintQuoteState::Issued
@@ -744,7 +744,7 @@ impl Mint {
         if let Some(amount) = mint_quote.amount {
             if amount > inputs_amount_quote_unit {
                 tracing::debug!(
-                    "Not enough inuts provided: {} needed {}",
+                    "Not enough inputs provided: {} needed {}",
                     inputs_amount_quote_unit,
                     amount
                 );

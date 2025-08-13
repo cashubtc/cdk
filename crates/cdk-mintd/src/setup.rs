@@ -161,7 +161,7 @@ impl LnBackendSetup for config::FakeWallet {
         &self,
         _router: &mut Vec<Router>,
         _settings: &Settings,
-        _unit: CurrencyUnit,
+        unit: CurrencyUnit,
     ) -> anyhow::Result<cdk_fake_wallet::FakeWallet> {
         let fee_reserve = FeeReserve {
             min_fee_reserve: self.reserve_fee_min,
@@ -177,6 +177,7 @@ impl LnBackendSetup for config::FakeWallet {
             HashMap::default(),
             HashSet::default(),
             delay_time,
+            unit,
         );
 
         Ok(fake_wallet)

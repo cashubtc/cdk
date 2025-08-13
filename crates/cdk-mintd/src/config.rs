@@ -208,30 +208,59 @@ pub struct Database {
     pub engine: DatabaseEngine,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthType {
+    Clear,
+    Blind,
+    #[default]
+    None,
+}
+
+impl std::str::FromStr for AuthType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "clear" => Ok(AuthType::Clear),
+            "blind" => Ok(AuthType::Blind),
+            "none" => Ok(AuthType::None),
+            _ => Err(format!("Unknown auth type: {s}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Auth {
+    #[serde(default)]
+    pub auth_enabled: bool,
     pub openid_discovery: String,
     pub openid_client_id: String,
     pub mint_max_bat: u64,
-    #[serde(default = "default_true")]
-    pub enabled_mint: bool,
-    #[serde(default = "default_true")]
-    pub enabled_melt: bool,
-    #[serde(default = "default_true")]
-    pub enabled_swap: bool,
-    #[serde(default = "default_true")]
-    pub enabled_check_mint_quote: bool,
-    #[serde(default = "default_true")]
-    pub enabled_check_melt_quote: bool,
-    #[serde(default = "default_true")]
-    pub enabled_restore: bool,
-    #[serde(default = "default_true")]
-    pub enabled_check_proof_state: bool,
+    #[serde(default = "default_blind")]
+    pub mint: AuthType,
+    #[serde(default)]
+    pub get_mint_quote: AuthType,
+    #[serde(default)]
+    pub check_mint_quote: AuthType,
+    #[serde(default)]
+    pub melt: AuthType,
+    #[serde(default)]
+    pub get_melt_quote: AuthType,
+    #[serde(default)]
+    pub check_melt_quote: AuthType,
+    #[serde(default = "default_blind")]
+    pub swap: AuthType,
+    #[serde(default = "default_blind")]
+    pub restore: AuthType,
+    #[serde(default)]
+    pub check_proof_state: AuthType,
 }
 
-fn default_true() -> bool {
-    true
+fn default_blind() -> AuthType {
+    AuthType::Blind
 }
+
 /// CDK settings, derived from `config.toml`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {

@@ -112,8 +112,6 @@ impl Wallet {
             .get_keyset_counter(&active_keyset_id)
             .await?;
 
-        let count = count.map_or(0, |c| c + 1);
-
         let amount = match amount {
             Some(amount) => amount,
             None => {
@@ -137,10 +135,10 @@ impl Wallet {
                 &amount_split_target,
                 spending_conditions,
             )?,
-            None => PreMintSecrets::from_xpriv(
+            None => PreMintSecrets::from_seed(
                 active_keyset_id,
                 count,
-                self.xpriv,
+                &self.seed,
                 amount,
                 &amount_split_target,
             )?,

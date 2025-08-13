@@ -2,8 +2,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use bitcoin::bip32::Xpriv;
-use bitcoin::Network;
 use cdk_common::database;
 #[cfg(feature = "auth")]
 use cdk_common::AuthToken;
@@ -27,7 +25,7 @@ pub struct WalletBuilder {
     target_proof_count: Option<usize>,
     #[cfg(feature = "auth")]
     auth_wallet: Option<AuthWallet>,
-    seed: Option<Vec<u8>>,
+    seed: Option<[u8; 64]>,
     client: Option<Arc<dyn MintConnector + Send + Sync>>,
 }
 
@@ -87,8 +85,8 @@ impl WalletBuilder {
     }
 
     /// Set the seed bytes
-    pub fn seed(mut self, seed: &[u8]) -> Self {
-        self.seed = Some(seed.to_vec());
+    pub fn seed(mut self, seed: [u8; 64]) -> Self {
+        self.seed = Some(seed);
         self
     }
 
@@ -122,12 +120,9 @@ impl WalletBuilder {
         let localstore = self
             .localstore
             .ok_or(Error::Custom("Localstore required".to_string()))?;
-        let seed = self
+        let seed: [u8; 64] = self
             .seed
-            .as_ref()
             .ok_or(Error::Custom("Seed required".to_string()))?;
-
-        let xpriv = Xpriv::new_master(Network::Bitcoin, seed)?;
 
         let client = match self.client {
             Some(client) => client,
@@ -153,7 +148,7 @@ impl WalletBuilder {
             target_proof_count: self.target_proof_count.unwrap_or(3),
             #[cfg(feature = "auth")]
             auth_wallet: Arc::new(RwLock::new(self.auth_wallet)),
-            xpriv,
+            seed,
             client: client.clone(),
             subscription: SubscriptionManager::new(client),
         })
