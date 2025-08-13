@@ -55,7 +55,7 @@
         };
 
         # MSRV stable
-        msrv_toolchain = pkgs.rust-bin.stable."1.75.0".default.override {
+        msrv_toolchain = pkgs.rust-bin.stable."1.85.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
         };
 
@@ -139,17 +139,6 @@
             msrv = pkgs.mkShell ({
               shellHook = "
               ${_shellHook}
-              cargo update
-              # cargo update -p async-compression --precise 0.4.3
-              cargo update -p home --precise 0.5.9
-              cargo update -p zerofrom --precise 0.1.5
-              cargo update -p half --precise 2.4.1
-              cargo update -p base64ct --precise 1.7.3
-              cargo update -p url --precise 2.5.2
-              cargo update -p pest_derive --precise 2.8.0
-              cargo update -p pest_generator --precise 2.8.0
-              cargo update -p pest_meta --precise 2.8.0
-              cargo update -p pest --precise 2.8.0
               ";
               buildInputs = buildInputs ++ [ msrv_toolchain ];
               inherit nativeBuildInputs;
