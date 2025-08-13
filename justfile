@@ -323,6 +323,7 @@ release m="":
   args=(
     "-p cashu"
     "-p cdk-common"
+    "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-redb"
     "-p cdk-signatory"
@@ -351,6 +352,7 @@ check-docs:
   args=(
     "-p cashu"
     "-p cdk-common"
+    "-p cdk-sql-common"
     "-p cdk"
     "-p cdk-redb"
     "-p cdk-sqlite"
@@ -360,6 +362,7 @@ check-docs:
     "-p cdk-lnbits"
     "-p cdk-fake-wallet"
     "-p cdk-mint-rpc"
+    "-p cdk-payment-processor"
     "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
@@ -378,6 +381,7 @@ docs-strict:
   args=(
     "-p cashu"
     "-p cdk-common"
+    "-p cdk-sql-common"
     "-p cdk"
     "-p cdk-redb"
     "-p cdk-sqlite"
@@ -388,6 +392,7 @@ docs-strict:
     "-p cdk-fake-wallet"
     "-p cdk-mint-rpc"
     "-p cdk-payment-processor"
+    "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
   )
