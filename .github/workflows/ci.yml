@@ -92,7 +92,6 @@ jobs:
             -p cdk --no-default-features --features mint,
             -p cdk --no-default-features --features auth,
             -p cdk-sql-common,
-            -p cdk-sql-common --no-default-features,
             -p cdk-sql-common --no-default-features --features wallet,
             -p cdk-sql-common --no-default-features --features mint,
             -p cdk-sql-common --no-default-features --features auth,
