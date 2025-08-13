@@ -34,7 +34,13 @@ async fn test_correct_keyset() {
 
     let database = memory::empty().await.expect("valid db instance");
 
-    let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
+    let fake_wallet = FakeWallet::new(
+        fee_reserve,
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    );
 
     let localstore = Arc::new(database);
     let mut mint_builder = MintBuilder::new(localstore.clone());

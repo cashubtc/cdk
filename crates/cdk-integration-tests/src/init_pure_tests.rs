@@ -253,6 +253,7 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         HashMap::default(),
         HashSet::default(),
         0,
+        CurrencyUnit::Sat,
     );
 
     mint_builder
