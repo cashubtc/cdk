@@ -54,6 +54,7 @@ pub struct FakeWallet {
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
     incoming_payments: Arc<RwLock<HashMap<PaymentIdentifier, Vec<WaitPaymentResponse>>>>,
+    unit: CurrencyUnit,
 }
 
 impl FakeWallet {
@@ -63,6 +64,7 @@ impl FakeWallet {
         payment_states: HashMap<String, MeltQuoteState>,
         fail_payment_check: HashSet<String>,
         payment_delay: u64,
+        unit: CurrencyUnit,
     ) -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
 
@@ -76,6 +78,7 @@ impl FakeWallet {
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             incoming_payments: Arc::new(RwLock::new(HashMap::new())),
+            unit,
         }
     }
 }
@@ -112,7 +115,7 @@ impl MintPayment for FakeWallet {
     async fn get_settings(&self) -> Result<Value, Self::Err> {
         Ok(serde_json::to_value(Bolt11Settings {
             mpp: true,
-            unit: CurrencyUnit::Msat,
+            unit: self.unit.clone(),
             invoice_description: true,
             amountless: false,
             bolt12: false,
@@ -141,12 +144,13 @@ impl MintPayment for FakeWallet {
             .take()
             .ok_or(Error::NoReceiver)
             .unwrap();
+        let unit = self.unit.clone();
         let receiver_stream = ReceiverStream::new(receiver);
         Ok(Box::pin(receiver_stream.map(
-            |(request_lookup_id, payment_amount)| WaitPaymentResponse {
+            move |(request_lookup_id, payment_amount)| WaitPaymentResponse {
                 payment_identifier: request_lookup_id.clone(),
                 payment_amount,
-                unit: CurrencyUnit::Sat,
+                unit: unit.clone(),
                 payment_id: request_lookup_id.to_string(),
             },
         )))
@@ -389,6 +393,8 @@ impl MintPayment for FakeWallet {
 
         let incoming_payment = self.incoming_payments.clone();
 
+        let unit = self.unit.clone();
+
         tokio::spawn(async move {
             // Wait for the random delay to elapse
             time::sleep(duration).await;
@@ -396,7 +402,7 @@ impl MintPayment for FakeWallet {
             let response = WaitPaymentResponse {
                 payment_identifier: payment_hash_clone.clone(),
                 payment_amount: final_amount,
-                unit: CurrencyUnit::Sat,
+                unit,
                 payment_id: payment_hash_clone.to_string(),
             };
             let mut incoming = incoming_payment.write().await;

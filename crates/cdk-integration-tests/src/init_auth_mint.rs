@@ -29,7 +29,13 @@ where
         percent_fee_reserve: 1.0,
     };
 
-    let fake_wallet = FakeWallet::new(fee_reserve, HashMap::default(), HashSet::default(), 0);
+    let fake_wallet = FakeWallet::new(
+        fee_reserve,
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    );
 
     let mut mint_builder = MintBuilder::new(Arc::new(database));
 

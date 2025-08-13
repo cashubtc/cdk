@@ -684,6 +684,8 @@ async fn test_fake_mint_multiple_unit_swap() {
     )
     .expect("failed to create new wallet");
 
+    wallet.refresh_keysets().await.unwrap();
+
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
     wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
@@ -703,6 +705,7 @@ async fn test_fake_mint_multiple_unit_swap() {
         None,
     )
     .expect("failed to create usd wallet");
+    wallet_usd.refresh_keysets().await.unwrap();
 
     let mint_quote = wallet_usd.mint_quote(100.into(), None).await.unwrap();
 
