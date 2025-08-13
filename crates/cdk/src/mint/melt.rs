@@ -448,6 +448,7 @@ impl Mint {
     pub async fn verify_melt_request(
         &self,
         tx: &mut Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
+        input_verification: Verification,
         melt_request: &MeltRequest<Uuid>,
     ) -> Result<(ProofWriter, MeltQuote), Error> {
         let (state, quote) = tx
@@ -467,7 +468,7 @@ impl Mint {
         let Verification {
             amount: input_amount,
             unit: input_unit,
-        } = self.verify_inputs(melt_request.inputs()).await?;
+        } = input_verification;
 
         ensure_cdk!(input_unit.is_some(), Error::UnsupportedUnit);
 
@@ -545,10 +546,12 @@ impl Mint {
             }
         }
 
+        let verification = self.verify_inputs(melt_request.inputs()).await?;
+
         let mut tx = self.localstore.begin_transaction().await?;
 
         let (proof_writer, quote) = self
-            .verify_melt_request(&mut tx, melt_request)
+            .verify_melt_request(&mut tx, verification, melt_request)
             .await
             .map_err(|err| {
                 tracing::debug!("Error attempting to verify melt quote: {}", err);
@@ -785,7 +788,6 @@ impl Mint {
                 let change_target = melt_request.inputs_amount()? - total_spent - fee;
 
                 let mut amounts = change_target.split();
-                let mut change_sigs = Vec::with_capacity(amounts.len());
 
                 if outputs.len().lt(&amounts.len()) {
                     tracing::debug!(
@@ -800,14 +802,19 @@ impl Mint {
                     amounts.sort_by(|a, b| b.cmp(a));
                 }
 
-                let mut outputs = outputs;
+                let mut blinded_messages = vec![];
 
-                for (amount, blinded_message) in amounts.iter().zip(&mut outputs) {
+                for (amount, mut blinded_message) in amounts.iter().zip(outputs.clone()) {
                     blinded_message.amount = *amount;
-
-                    let blinded_signature = self.blind_sign(blinded_message.clone()).await?;
-                    change_sigs.push(blinded_signature)
+                    blinded_messages.push(blinded_message);
                 }
+
+                // commit db transaction before calling the signatory
+                tx.commit().await?;
+
+                let change_sigs = self.blind_sign(blinded_messages).await?;
+
+                let mut tx = self.localstore.begin_transaction().await?;
 
                 tx.add_blind_signatures(
                     &outputs[0..change_sigs.len()]
@@ -820,7 +827,16 @@ impl Mint {
                 .await?;
 
                 change = Some(change_sigs);
+
+                proof_writer.commit();
+                tx.commit().await?;
+            } else {
+                proof_writer.commit();
+                tx.commit().await?;
             }
+        } else {
+            proof_writer.commit();
+            tx.commit().await?;
         }
 
         self.pubsub_manager.melt_quote_status(
@@ -829,9 +845,6 @@ impl Mint {
             change.clone(),
             MeltQuoteState::Paid,
         );
-
-        proof_writer.commit();
-        tx.commit().await?;
 
         Ok(MeltQuoteBolt11Response {
             amount: quote.amount,

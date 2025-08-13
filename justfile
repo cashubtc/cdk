@@ -79,8 +79,19 @@ test-all db="memory":
     #!/usr/bin/env bash
     just test {{db}}
     ./misc/itests.sh "{{db}}"
+    status=$?
+    if [ $status -ne 0 ]; then
+       echo "Failed test with status {$status}"
+       exit $status
+    fi
     ./misc/fake_itests.sh "{{db}}" external_signatory
+    status=$?
+    if [ $status -ne 0 ]; then
+       echo "Failed test with status {$status}"
+       exit $status
+    fi
     ./misc/fake_itests.sh "{{db}}"
+    exit $?
     
 test-nutshell:
   #!/usr/bin/env bash
@@ -150,12 +161,19 @@ goose-changelog-commits *COMMITS="5":
 itest db:
   #!/usr/bin/env bash
   ./misc/itests.sh "{{db}}"
+  exit $?
 
   
 fake-mint-itest db:
   #!/usr/bin/env bash
   ./misc/fake_itests.sh "{{db}}" external_signatory
+  status=$?
+  if [ $status -ne 0 ]; then
+     echo "Failed test with status {$status}"
+     exit $status
+  fi
   ./misc/fake_itests.sh "{{db}}"
+  exit $?
 
   
 itest-payment-processor ln:

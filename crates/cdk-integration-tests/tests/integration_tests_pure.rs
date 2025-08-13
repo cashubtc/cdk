@@ -321,8 +321,7 @@ async fn test_attempt_to_swap_by_overflowing() {
             cdk::Error::AmountOverflow => (),
             cdk::Error::AmountError(_) => (),
             _ => {
-                println!("{:?}", err);
-                panic!("Wrong error returned in swap overflow")
+                panic!("Wrong error returned in swap overflow {:?}", err);
             }
         },
     }

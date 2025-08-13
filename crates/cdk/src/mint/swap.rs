@@ -12,10 +12,29 @@ impl Mint {
         &self,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
+        // Do the external call before beginning the db transaction
+        // Check any overflow before talking to the signatory
+        swap_request.input_amount()?;
+        swap_request.output_amount()?;
+
+        let promises = self.blind_sign(swap_request.outputs().to_owned()).await?;
+        let input_verification =
+            self.verify_inputs(swap_request.inputs())
+                .await
+                .map_err(|err| {
+                    tracing::debug!("Input verification failed: {:?}", err);
+                    err
+                })?;
+
         let mut tx = self.localstore.begin_transaction().await?;
 
         if let Err(err) = self
-            .verify_transaction_balanced(&mut tx, swap_request.inputs(), swap_request.outputs())
+            .verify_transaction_balanced(
+                &mut tx,
+                input_verification,
+                swap_request.inputs(),
+                swap_request.outputs(),
+            )
             .await
         {
             tracing::debug!("Attempt to swap unbalanced transaction, aborting: {err}");
@@ -29,13 +48,6 @@ impl Mint {
         let input_ys = proof_writer
             .add_proofs(&mut tx, swap_request.inputs())
             .await?;
-
-        let mut promises = Vec::with_capacity(swap_request.outputs().len());
-
-        for blinded_message in swap_request.outputs() {
-            let blinded_signature = self.blind_sign(blinded_message.clone()).await?;
-            promises.push(blinded_signature);
-        }
 
         proof_writer
             .update_proofs_states(&mut tx, &input_ys, State::Spent)

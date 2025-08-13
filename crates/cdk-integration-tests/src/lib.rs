@@ -177,7 +177,7 @@ pub async fn wait_for_mint_to_be_paid(
         result = timeout_future => {
             match result {
                 Ok(payment_result) => payment_result,
-                Err(_) => Err(anyhow!("Timeout waiting for mint quote to be paid")),
+                Err(_) => Err(anyhow!("Timeout waiting for mint quote ({}) to be paid", mint_quote_id)),
             }
         }
         result = periodic_task => {

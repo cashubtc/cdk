@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
+use tokio::time::Instant;
+
 use crate::database::DatabaseConnector;
 
 /// Pool error
@@ -163,6 +165,7 @@ where
         timeout: Duration,
     ) -> Result<PooledResource<RM>, Error<RM::Error>> {
         let mut resources = self.queue.lock().map_err(|_| Error::Poison)?;
+        let time = Instant::now();
 
         loop {
             if let Some((stale, resource)) = resources.pop() {
@@ -197,6 +200,11 @@ where
                 .map_err(|_| Error::Poison)
                 .and_then(|(lock, timeout_result)| {
                     if timeout_result.timed_out() {
+                        tracing::warn!(
+                            "Timeout waiting for the resource (pool size: {}). Waited {} ms",
+                            self.max_size,
+                            time.elapsed().as_millis()
+                        );
                         Err(Error::Timeout)
                     } else {
                         Ok(lock)

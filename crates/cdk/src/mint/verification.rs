@@ -58,10 +58,7 @@ impl Mint {
     ///
     /// Checks that the outputs are all of the same unit and the keyset is active
     #[instrument(skip_all)]
-    pub async fn verify_outputs_keyset(
-        &self,
-        outputs: &[BlindedMessage],
-    ) -> Result<CurrencyUnit, Error> {
+    pub fn verify_outputs_keyset(&self, outputs: &[BlindedMessage]) -> Result<CurrencyUnit, Error> {
         let mut keyset_units = HashSet::new();
 
         let output_keyset_ids: HashSet<Id> = outputs.iter().map(|p| p.keyset_id).collect();
@@ -189,7 +186,7 @@ impl Mint {
         Mint::check_outputs_unique(outputs)?;
         self.check_output_already_signed(tx, outputs).await?;
 
-        let unit = self.verify_outputs_keyset(outputs).await?;
+        let unit = self.verify_outputs_keyset(outputs)?;
 
         let amount = Amount::try_sum(outputs.iter().map(|o| o.amount).collect::<Vec<Amount>>())?;
 
@@ -221,15 +218,12 @@ impl Mint {
     pub async fn verify_transaction_balanced(
         &self,
         tx: &mut Box<dyn cdk_database::MintTransaction<'_, cdk_database::Error> + Send + Sync + '_>,
+        input_verification: Verification,
         inputs: &Proofs,
         outputs: &[BlindedMessage],
     ) -> Result<(), Error> {
         let output_verification = self.verify_outputs(tx, outputs).await.map_err(|err| {
             tracing::debug!("Output verification failed: {:?}", err);
-            err
-        })?;
-        let input_verification = self.verify_inputs(inputs).await.map_err(|err| {
-            tracing::debug!("Input verification failed: {:?}", err);
             err
         })?;
 

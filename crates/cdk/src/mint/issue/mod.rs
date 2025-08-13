@@ -496,6 +496,12 @@ impl Mint {
 
         self.check_mint_quote_paid(&mut mint_quote).await?;
 
+        // get the blind signatures before having starting the db transaction, if there are any
+        // rollbacks this blind_signatures will be lost, and the signature is stateless. It is not a
+        // good idea to call an external service (which is really a trait, it could be anything
+        // anywhere) while keeping a database transaction on-going
+        let blind_signatures = self.blind_sign(mint_request.outputs.clone()).await?;
+
         let mut tx = self.localstore.begin_transaction().await?;
 
         let mint_quote = tx
@@ -567,13 +573,6 @@ impl Mint {
 
         let unit = unit.ok_or(Error::UnsupportedUnit).unwrap();
         ensure_cdk!(unit == mint_quote.unit, Error::UnsupportedUnit);
-
-        let mut blind_signatures = Vec::with_capacity(mint_request.outputs.len());
-
-        for blinded_message in mint_request.outputs.iter() {
-            let blind_signature = self.blind_sign(blinded_message.clone()).await?;
-            blind_signatures.push(blind_signature);
-        }
 
         tx.add_blind_signatures(
             &mint_request
