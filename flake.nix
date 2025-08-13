@@ -150,6 +150,7 @@
               cargo update -p pest_generator --precise 2.8.0
               cargo update -p pest_meta --precise 2.8.0
               cargo update -p pest --precise 2.8.0
+              cargo update -p native-tls --precise 0.2.13
               ";
               buildInputs = buildInputs ++ [ msrv_toolchain ];
               inherit nativeBuildInputs;

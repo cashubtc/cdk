@@ -46,6 +46,7 @@ struct Args {
 async fn start_fake_mint(
     temp_dir: &Path,
     port: u16,
+    database: &str,
     shutdown: Arc<Notify>,
     external_signatory: bool,
 ) -> Result<tokio::task::JoinHandle<()>> {
@@ -77,8 +78,13 @@ async fn start_fake_mint(
     });
 
     // Create settings struct for fake mint using shared function
-    let settings =
-        shared::create_fake_wallet_settings(port, mnemonic, signatory_config, fake_wallet_config);
+    let settings = shared::create_fake_wallet_settings(
+        port,
+        database,
+        mnemonic,
+        signatory_config,
+        fake_wallet_config,
+    );
 
     println!("Starting fake mintd on port {port}");
 
@@ -129,6 +135,7 @@ async fn main() -> Result<()> {
     let handle = start_fake_mint(
         &temp_dir,
         args.port,
+        &args.database_type,
         shutdown_clone,
         args.external_signatory,
     )
