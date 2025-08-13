@@ -23,4 +23,5 @@ pub static MIGRATIONS: &[(&str, &str, &str)] = &[
     ("sqlite", "20250415093121_drop_keystore_foreign.sql", include_str!(r#"./migrations/sqlite/20250415093121_drop_keystore_foreign.sql"#)),
     ("sqlite", "20250626120251_rename_blind_message_y_to_b.sql", include_str!(r#"./migrations/sqlite/20250626120251_rename_blind_message_y_to_b.sql"#)),
     ("sqlite", "20250706101057_bolt12.sql", include_str!(r#"./migrations/sqlite/20250706101057_bolt12.sql"#)),
+    ("sqlite", "20250812132015_drop_melt_request.sql", include_str!(r#"./migrations/sqlite/20250812132015_drop_melt_request.sql"#)),
 ];
