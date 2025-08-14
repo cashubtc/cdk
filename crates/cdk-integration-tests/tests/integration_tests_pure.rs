@@ -27,7 +27,7 @@ use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
 use serde::{self, Deserialize, Deserializer};
 use starknet_types_core::felt::Felt;
-use starknet_types_core::hash::{Poseidon, StarkHash};
+use stwo_cairo_prover::stwo_prover::core::vcs::blake2_hash::Blake2sHasher;
 use tokio::time::sleep;
 
 /// Tests the token swap and send functionality:
@@ -547,6 +547,16 @@ pub async fn test_cairo_swap() {
             .collect()
     }
 
+    fn hash_array_felt(bytecode: &Vec<Felt>) -> String {
+        let mut hasher = Blake2sHasher::default();
+        for felt in bytecode {
+            for byte in felt.to_bytes_le().iter() {
+                hasher.update(&[*byte]);
+            }
+        }
+        hasher.finalize().to_string()
+    }
+
     setup_tracing();
 
     let mint_bob = create_and_start_test_mint()
@@ -571,11 +581,11 @@ pub async fn test_cairo_swap() {
     // Hash the program bytecode
     let executable_json = include_str!("../../cashu/src/nuts/nutxx/test/is_prime_executable.json"); // is_prime program
     let executable: Executable = serde_json::from_str(executable_json).unwrap();
-    let program_hash = Poseidon::hash_array(&executable.program.bytecode);
+    let program_hash = hash_array_felt(&executable.program.bytecode);
 
     let output_condition = vec![Felt::from(1)]; // program output: true
     let desired_program_output_hash = Some(NutXXConditions {
-        output: Some(Poseidon::hash_array(&output_condition)),
+        output: Some(hash_array_felt(&output_condition)),
     });
 
     let spending_conditions =

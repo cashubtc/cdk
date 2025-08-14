@@ -2,16 +2,13 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/xx.md>
 
-use std::str::FromStr;
-
 use cairo_air::air::PubMemoryValue;
 use cairo_air::verifier::{verify_cairo, CairoVerificationError};
 use cairo_air::{CairoProof, PreProcessedTraceVariant};
 use serde::{Deserialize, Serialize};
-use starknet_types_core::felt::Felt;
-use starknet_types_core::hash::{Poseidon, StarkHash};
 use stwo_cairo_prover::stwo_prover::core::fri::FriConfig;
 use stwo_cairo_prover::stwo_prover::core::pcs::PcsConfig;
+use stwo_cairo_prover::stwo_prover::core::vcs::blake2_hash::Blake2sHasher;
 use stwo_cairo_prover::stwo_prover::core::vcs::blake2_merkle::{
     Blake2sMerkleChannel, Blake2sMerkleHasher,
 };
@@ -37,13 +34,10 @@ pub enum Error {
     CairoVerification(CairoVerificationError),
     /// Program hash verification error
     #[error("Program hash from proof \"{0}\" does not match program hash from secret \"{1}\"")]
-    ProgramHashVerification(Felt, Felt),
+    ProgramHashVerification(String, String),
     /// Output verification error
     #[error("Output hash from proof \"{0}\" does not match output hash from secret \"{1}\"")]
-    OutputHashVerification(Felt, Felt),
-    /// Felt from string error
-    #[error(transparent)]
-    FeltFromStr(<Felt as std::str::FromStr>::Err),
+    OutputHashVerification(String, String),
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
@@ -55,9 +49,9 @@ pub enum Error {
 /// Cairo spending conditions
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Conditions {
-    /// Hash of the output of the program
+    /// Blake2s hash of the output of the program
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub output: Option<Felt>,
+    pub output: Option<String>,
 }
 
 impl From<Conditions> for Vec<Vec<String>> {
@@ -69,7 +63,7 @@ impl From<Conditions> for Vec<Vec<String>> {
         if let Some(output) = output {
             tags.push(vec![
                 TagKind::Custom("program_output".to_string()).to_string(),
-                output.to_string(),
+                output,
             ]);
         }
         tags
@@ -89,7 +83,7 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
             let tag_kind = TagKind::from(&tag[0]);
             match tag_kind {
                 TagKind::Custom(ref kind) if kind == "program_output" => {
-                    output = Some(Felt::from_str(&tag[1]).map_err(|e| Error::FeltFromStr(e))?);
+                    output = Some((&tag[1]).to_string());
                 }
                 _ => {}
             }
@@ -119,20 +113,31 @@ fn secure_pcs_config() -> PcsConfig {
     }
 }
 
-/// Convert a PubMemoryValue to a Felt
-fn pmv_to_felt(pmv: &PubMemoryValue) -> Felt {
+/// Hash an array of Felts in little endian format using Blake2s
+fn hash_array_bytes(bytecode: &Vec<[u8; 32]>) -> String {
+    let mut hasher = Blake2sHasher::default();
+    for felt in bytecode {
+        for byte in felt.iter() {
+            hasher.update(&[*byte]);
+        }
+    }
+    hasher.finalize().to_string()
+}
+
+/// Convert a PubMemoryValue to a Felt in little endian format
+fn pmv_to_bytes(pmv: &PubMemoryValue) -> [u8; 32] {
     let (_id, value) = pmv;
     let mut le_bytes = [0u8; 32];
     for (i, &v) in value.iter().enumerate() {
         let start = i * 4;
         le_bytes[start..start + 4].copy_from_slice(&v.to_le_bytes());
     }
-    Felt::from_bytes_le(&le_bytes)
+    le_bytes
 }
 
-/// Hash an array of PubMemoryValues using Poseidon
-pub fn hash_array_pmv(values: &Vec<PubMemoryValue>) -> Felt {
-    Poseidon::hash_array(&values.iter().map(|v| pmv_to_felt(v)).collect::<Vec<_>>())
+/// Hash an array of PubMemoryValues using Blake2s
+pub fn hash_array_pmv(values: &Vec<PubMemoryValue>) -> String {
+    hash_array_bytes(&values.iter().map(|v| pmv_to_bytes(v)).collect::<Vec<_>>())
 }
 
 impl Proof {
@@ -154,8 +159,7 @@ impl Proof {
             Err(e) => return Err(Error::Serde(e)),
         };
 
-        let program_hash_condition =
-            Felt::from_str(secret.secret_data().data()).map_err(|e| Error::FeltFromStr(e))?;
+        let program_hash_condition = secret.secret_data().data().to_string();
 
         let program: &Vec<PubMemoryValue> = &cairo_proof.claim.public_data.public_memory.program;
         let program_hash = hash_array_pmv(program);
@@ -246,6 +250,16 @@ mod tests {
             .collect()
     }
 
+    fn hash_array_felt(bytecode: &Vec<Felt>) -> String {
+        let mut hasher = Blake2sHasher::default();
+        for felt in bytecode {
+            for byte in felt.to_bytes_le().iter() {
+                hasher.update(&[*byte]);
+            }
+        }
+        hasher.finalize().to_string()
+    }
+
     #[test]
     fn test_verify() {
         let secret_key =
@@ -256,11 +270,11 @@ mod tests {
         // Hash the program bytecode
         let executable_json = include_str!("./test/is_prime_executable.json");
         let executable: Executable = serde_json::from_str(executable_json).unwrap();
-        let program_hash = Poseidon::hash_array(&executable.program.bytecode);
+        let program_hash = hash_array_felt(&executable.program.bytecode);
 
         // Specify output condition
-        let output_false = Poseidon::hash_array(&vec![Felt::from(0)]); // is not prime
-        let output_true = Poseidon::hash_array(&vec![Felt::from(1)]); // is prime
+        let output_false = hash_array_felt(&vec![Felt::from(0)]); // is not prime
+        let output_true = hash_array_felt(&vec![Felt::from(1)]); // is prime
 
         let cond_false = Conditions {
             output: Some(output_false),
@@ -287,7 +301,7 @@ mod tests {
             cairo_proof_json: cairo_proof_is_prime_9,
         };
 
-        // proof that is_prime(7) == true
+        // Proof that is_prime(7) == true
         let mut proof: Proof = Proof {
             amount: Amount::ZERO,                                 // unused in this test
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(), // unused in this test
@@ -299,15 +313,15 @@ mod tests {
         proof.verify_cairo().unwrap();
         assert!(proof.verify_cairo().is_ok());
 
-        // if we change the output condition to false, the verification should fail
+        // If we change the output condition to false, the verification should fail
         proof.secret = secret_is_prime_false.clone();
         assert!(proof.verify_cairo().is_err());
 
-        // if we change the witness to the computation of is_prime(9), it now succeeds
+        // If we change the witness to the computation of is_prime(9), it now succeeds
         proof.witness = Some(Witness::CairoWitness(witness_is_prime_9));
         assert!(proof.verify_cairo().is_ok());
 
-        // if we change the output condition to true, the verification should again fail
+        // If we change the output condition to true, the verification should again fail
         proof.secret = secret_is_prime_true.clone();
         assert!(proof.verify_cairo().is_err());
     }
@@ -315,23 +329,11 @@ mod tests {
     #[test]
     fn test_secret_ser() {
         // Testing the serde serialization of the secret
-
-        // with hex string data
         let conditions = Conditions { output: None };
-        let data = Felt::from_hex("0x1234567890abcdef").unwrap();
-        let secret = Nut10Secret::new(Kind::Cairo, data.to_hex_string(), Some(conditions));
+        let data = Blake2sHasher::hash(b"1234567890abcdef").to_string();
+        let secret = Nut10Secret::new(Kind::Cairo, data, Some(conditions));
         let secret_str = serde_json::to_string(&secret).unwrap();
         let secret_der: Nut10Secret = serde_json::from_str(&secret_str).unwrap();
-
-        assert_eq!(secret, secret_der);
-
-        // with decimal string data
-        let conditions = Conditions { output: None };
-        let data = Felt::from_str("99").unwrap();
-        let secret = Nut10Secret::new(Kind::Cairo, data.to_string(), Some(conditions));
-        let secret_str = serde_json::to_string(&secret).unwrap();
-        let secret_der: Nut10Secret = serde_json::from_str(&secret_str).unwrap();
-
         assert_eq!(secret, secret_der);
     }
 }

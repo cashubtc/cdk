@@ -36,7 +36,6 @@ serde_with.workspace = true
 regex = { workspace = true, optional = true }
 strum = { workspace = true, optional = true }
 strum_macros = { workspace = true, optional = true }
-starknet-types-core = { workspace = true }
 cairo-air = { workspace = true }
 stwo_cairo_prover = { workspace = true }
 
@@ -46,3 +45,4 @@ instant = { workspace = true, features = ["wasm-bindgen", "inaccurate"] }
 [dev-dependencies]
 bip39.workspace = true
 uuid.workspace = true
+starknet-types-core = { workspace = true }

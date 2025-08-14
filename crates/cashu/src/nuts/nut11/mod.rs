@@ -12,7 +12,6 @@ use bitcoin::secp256k1::schnorr::Signature;
 use serde::de::Error as DeserializerError;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use starknet_types_core::felt::Felt;
 use thiserror::Error;
 
 use super::nut00::Witness;
@@ -85,9 +84,6 @@ pub enum Error {
     /// Secret error
     #[error(transparent)]
     Secret(#[from] crate::secret::Error),
-    /// Felt from string error
-    #[error(transparent)]
-    FeltFromStr(<Felt as std::str::FromStr>::Err),
 }
 
 /// P2Pk Witness
@@ -319,8 +315,8 @@ pub enum SpendingConditions {
     /// NUTXX Spending conditions
     /// Defined in [NUTXX](https://github.com/cashubtc/nuts/blob/main/xx.md)
     CairoConditions {
-        /// Program hash
-        data: Felt,
+        /// Blake2s program hash
+        data: String,
         /// Additional Optional Spending [`NutXXConditions`]
         conditions: Option<NutXXConditions>,
     },
@@ -356,7 +352,7 @@ impl SpendingConditions {
     }
 
     /// New Cairo [SpendingConditions]
-    pub fn new_cairo(data: Felt, conditions: Option<NutXXConditions>) -> Self {
+    pub fn new_cairo(data: String, conditions: Option<NutXXConditions>) -> Self {
         Self::CairoConditions { data, conditions }
     }
 
@@ -417,7 +413,7 @@ impl SpendingConditions {
     }
 
     /// Cairo program output hash
-    pub fn output(&self) -> Option<Felt> {
+    pub fn output(&self) -> Option<String> {
         match self {
             Self::P2PKConditions { .. } => None,
             Self::HTLCConditions { .. } => None,
@@ -455,8 +451,7 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
                     .and_then(|t| t.clone().try_into().ok()),
             }),
             Kind::Cairo => Ok(Self::CairoConditions {
-                data: Felt::from_str(secret.secret_data().data())
-                    .map_err(|e| Error::FeltFromStr(e))?,
+                data: secret.secret_data().data().to_string(),
                 conditions: secret
                     .secret_data()
                     .tags()

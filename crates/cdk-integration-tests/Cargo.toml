@@ -60,4 +60,5 @@ cdk = { workspace = true, features = ["mint", "wallet"] }
 cdk-axum = { workspace = true }
 cdk-fake-wallet = { workspace = true }
 tower-http = { workspace = true, features = ["cors"] }
+stwo_cairo_prover = { workspace = true }
 starknet-types-core = { workspace = true }
