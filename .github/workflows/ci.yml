@@ -94,7 +94,6 @@ jobs:
             -p cdk-sql-common,
             -p cdk-sql-common --no-default-features --features wallet,
             -p cdk-sql-common --no-default-features --features mint,
-            -p cdk-sql-common --no-default-features --features auth,
             
             # Database and infrastructure crates
             -p cdk-redb,
