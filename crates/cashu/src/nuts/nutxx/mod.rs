@@ -83,7 +83,7 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
             let tag_kind = TagKind::from(&tag[0]);
             match tag_kind {
                 TagKind::Custom(ref kind) if kind == "program_output" => {
-                    output = Some((&tag[1]).to_string());
+                    output = Some(tag[1].to_string());
                 }
                 _ => {}
             }
@@ -114,7 +114,7 @@ fn secure_pcs_config() -> PcsConfig {
 }
 
 /// Hash an array of Felts in little endian format using Blake2s
-fn hash_array_bytes(bytecode: &Vec<[u8; 32]>) -> String {
+fn hash_array_bytes(bytecode: &[[u8; 32]]) -> String {
     let mut hasher = Blake2sHasher::default();
     for felt in bytecode {
         for byte in felt.iter() {
@@ -136,8 +136,8 @@ fn pmv_to_bytes(pmv: &PubMemoryValue) -> [u8; 32] {
 }
 
 /// Hash an array of PubMemoryValues using Blake2s
-pub fn hash_array_pmv(values: &Vec<PubMemoryValue>) -> String {
-    hash_array_bytes(&values.iter().map(|v| pmv_to_bytes(v)).collect::<Vec<_>>())
+pub fn hash_array_pmv(values: &[PubMemoryValue]) -> String {
+    hash_array_bytes(&values.iter().map(pmv_to_bytes).collect::<Vec<_>>())
 }
 
 impl Proof {
@@ -250,7 +250,7 @@ mod tests {
             .collect()
     }
 
-    fn hash_array_felt(bytecode: &Vec<Felt>) -> String {
+    fn hash_array_felt(bytecode: &[Felt]) -> String {
         let mut hasher = Blake2sHasher::default();
         for felt in bytecode {
             for byte in felt.to_bytes_le().iter() {
