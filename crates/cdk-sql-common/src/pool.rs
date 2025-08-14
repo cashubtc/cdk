@@ -7,7 +7,6 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
-#[cfg(feature = "prometheus")]
 use std::time::Instant;
 
 #[cfg(feature = "prometheus")]

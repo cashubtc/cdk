@@ -6,7 +6,7 @@ use prometheus::{
 };
 
 /// Global metrics instance
-pub static METRICS: Lazy<CdkMetrics> = Lazy::new(CdkMetrics::default);
+pub static METRICS: std::sync::LazyLock<CdkMetrics> = std::sync::LazyLock::new(CdkMetrics::default);
 
 /// Custom metrics for CDK applications
 #[derive(Clone, Debug)]
