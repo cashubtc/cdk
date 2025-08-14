@@ -1,33 +1,47 @@
+version: '3.8'
+
 services:
-  mintd:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: mint
+  # Your CDK Mint service
+  cdk-mintd:
+    build: .
     ports:
-      - "8085:8085"
+      - "3338:3338"
     environment:
-      - CDK_MINTD_URL=https://example.com
-      - CDK_MINTD_LN_BACKEND=fakewallet
-      - CDK_MINTD_LISTEN_HOST=0.0.0.0
-      - CDK_MINTD_LISTEN_PORT=8085
-      - CDK_MINTD_MNEMONIC=
-      - CDK_MINTD_DATABASE=redb
-      - CDK_MINTD_CACHE_BACKEND=memory
-      # - CDK_MINTD_CACHE_REDIS_URL=redis://redis:6379 
-      # - CDK_MINTD_CACHE_REDIS_KEY_PREFIX=cdk-mintd
-    command: ["cdk-mintd"]
-    # depends_on:
-    #   - redis
+      # OpenTelemetry configuration
+      - RUST_LOG=info
+    depends_on:
+      - prometheus
+      - grafana
+    networks:
+      - cdk
 
-#   redis:
-#     image: redis:7-alpine
-#     container_name: mint_redis
-#     ports:
-#       - "6379:6379"
-#     volumes:
-#       - redis_data:/data
-#     command: redis-server --save 60 1 --loglevel warning
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--enable-feature=otlp-write-receiver'
 
-# volumes:
-#    redis_data:
+    networks:
+      - cdk
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3011:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - cdk
+
+networks:
+  cdk:
+    driver: bridge
