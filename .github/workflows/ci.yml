@@ -75,52 +75,52 @@ jobs:
       matrix:
         build-args:
           [
+            # Core crate testing
             -p cashu,
             -p cashu --no-default-features,
             -p cashu --no-default-features --features wallet,
             -p cashu --no-default-features --features mint,
-            -p cashu --no-default-features --features "mint swagger",
             -p cashu --no-default-features --features auth,
-            -p cashu --no-default-features --features "mint auth",
-            -p cashu --no-default-features --features "wallet auth",
             -p cdk-common,
             -p cdk-common --no-default-features,
             -p cdk-common --no-default-features --features wallet,
             -p cdk-common --no-default-features --features mint,
-            -p cdk-common --no-default-features --features "mint swagger",
-            -p cdk-common --no-default-features --features "auth",
-            -p cdk-common --no-default-features --features "mint auth",
-            -p cdk-common --no-default-features --features "wallet auth",
+            -p cdk-common --no-default-features --features auth,
             -p cdk,
             -p cdk --no-default-features,
             -p cdk --no-default-features --features wallet,
             -p cdk --no-default-features --features mint,
-            -p cdk --no-default-features --features "mint swagger",
             -p cdk --no-default-features --features auth,
-            -p cdk --features auth,
-            -p cdk --no-default-features --features "auth mint",
-            -p cdk --no-default-features --features "auth wallet",
+            -p cdk-sql-common,
+            -p cdk-sql-common --no-default-features --features wallet,
+            -p cdk-sql-common --no-default-features --features mint,
+            
+            # Database and infrastructure crates
             -p cdk-redb,
             -p cdk-sqlite,
             -p cdk-sqlite --features sqlcipher,
+            
+            # HTTP/API layer - consolidated
+            -p cdk-axum,
             -p cdk-axum --no-default-features,
-            -p cdk-axum --no-default-features --features swagger,
             -p cdk-axum --no-default-features --features redis,
             -p cdk-axum --no-default-features --features "redis swagger",
-            -p cdk-axum --no-default-features --features "auth redis",
-            -p cdk-axum,
+            
+            # Lightning backends
             -p cdk-cln,
             -p cdk-lnd,
             -p cdk-lnbits,
             -p cdk-fake-wallet,
             -p cdk-payment-processor,
+            -p cdk-mint-rpc,
+            -p cdk-signatory,
+            
+            # Binaries
             --bin cdk-cli,
             --bin cdk-cli --features sqlcipher,
             --bin cdk-cli --features redb,
-            --bin cdk-cli --features "sqlcipher redb",
             --bin cdk-mintd,
             --bin cdk-mintd --features redis,
-            --bin cdk-mintd --features "redis swagger",
             --bin cdk-mintd --features sqlcipher,
             --bin cdk-mintd --no-default-features --features lnd,
             --bin cdk-mintd --no-default-features --features cln,
@@ -128,14 +128,6 @@ jobs:
             --bin cdk-mintd --no-default-features --features fakewallet,
             --bin cdk-mintd --no-default-features --features grpc-processor,
             --bin cdk-mintd --no-default-features --features "management-rpc lnd",
-            --bin cdk-mintd --no-default-features --features "management-rpc cln",
-            --bin cdk-mintd --no-default-features --features "management-rpc lnbits",
-            --bin cdk-mintd --no-default-features --features "management-rpc grpc-processor",
-            --bin cdk-mintd --no-default-features --features "swagger lnd",
-            --bin cdk-mintd --no-default-features --features "swagger cln",
-            --bin cdk-mintd --no-default-features --features "swagger lnbits",
-            --bin cdk-mintd --no-default-features --features "auth lnd",
-            --bin cdk-mintd --no-default-features --features "auth cln",
             --bin cdk-mint-cli,
           ]
     steps:
@@ -322,6 +314,7 @@ jobs:
           [
             -p cashu --no-default-features --features "wallet mint",
             -p cdk-common --no-default-features --features "wallet mint",
+            -p cdk-sql-common,
             -p cdk,
             -p cdk --no-default-features --features "mint auth",
             -p cdk --no-default-features --features "wallet auth",
