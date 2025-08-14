@@ -6,8 +6,7 @@ use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::metrics::METRICS;
