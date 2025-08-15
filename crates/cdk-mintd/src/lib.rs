@@ -97,7 +97,8 @@ async fn initial_setup(
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
 /// Logs to both console and a file in the specified work directory.
-pub fn setup_tracing(work_dir: &Path) -> Result<()> {
+/// Returns a guard that must be kept alive and properly dropped on shutdown.
+pub fn setup_tracing(work_dir: &Path) -> Result<tracing_appender::non_blocking::WorkerGuard> {
     let default_filter = "debug";
     let hyper_filter = "hyper=warn";
     let h2_filter = "h2=warn";
@@ -113,7 +114,7 @@ pub fn setup_tracing(work_dir: &Path) -> Result<()> {
 
     // Set up file appender with daily rotation
     let file_appender = rolling::daily(&logs_dir, "cdk-mintd.log");
-    let (non_blocking_appender, _guard) = non_blocking(file_appender);
+    let (non_blocking_appender, guard) = non_blocking(file_appender);
 
     // Combine console output (INFO level) and file output (DEBUG level)
     let stdout = std::io::stdout.with_max_level(tracing::Level::INFO);
@@ -124,18 +125,12 @@ pub fn setup_tracing(work_dir: &Path) -> Result<()> {
         .with_writer(stdout.and(file_writer))
         .init();
 
-    // Store the guard in a static to keep it alive for the program duration
-    // This prevents the non-blocking writer from being dropped
-    use std::sync::OnceLock;
-    static GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
-    let _ = GUARD.set(_guard);
-
     tracing::info!(
         "Logging initialized: console (INFO+) and file at {}/cdk-mintd.log (DEBUG+)",
         logs_dir.display()
     );
 
-    Ok(())
+    Ok(guard)
 }
 
 /// Retrieves the work directory based on command-line arguments, environment variables, or system defaults.
@@ -841,6 +836,35 @@ pub async fn run_mintd(
     run_mintd_with_shutdown(work_dir, settings, shutdown_signal(), db_password).await
 }
 
+/// Run mintd with proper logging setup and cleanup
+/// This is the recommended way to run mintd as it handles the logging guard properly
+pub async fn run_mintd_with_logging(
+    work_dir: &Path,
+    settings: &config::Settings,
+    db_password: Option<String>,
+    enable_logging: bool,
+) -> Result<()> {
+    let _guard = if enable_logging {
+        Some(setup_tracing(work_dir)?)
+    } else {
+        None
+    };
+
+    let result = run_mintd_with_shutdown(work_dir, settings, shutdown_signal(), db_password).await;
+
+    // Explicitly drop the guard to ensure proper cleanup
+    if let Some(guard) = _guard {
+        tracing::info!("Shutting down logging worker thread");
+        drop(guard);
+        // Give the worker thread a moment to flush any remaining logs
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    tracing::info!("Mintd shutdown");
+
+    result
+}
+
 /// Run mintd with a custom shutdown signal
 pub async fn run_mintd_with_shutdown(
     work_dir: &Path,
@@ -867,7 +891,7 @@ pub async fn run_mintd_with_shutdown(
     // Pending melt quotes where the payment has **failed** inputs are reset to unspent
     mint.check_pending_melt_quotes().await?;
 
-    start_services_with_shutdown(
+    let result = start_services_with_shutdown(
         mint.clone(),
         settings,
         ln_routers,
@@ -875,7 +899,11 @@ pub async fn run_mintd_with_shutdown(
         mint.mint_info().await?,
         shutdown_signal,
     )
-    .await?;
+    .await;
 
-    Ok(())
+    // Ensure any remaining tracing data is flushed
+    // This is particularly important for file-based logging
+    tracing::debug!("Flushing remaining trace data");
+
+    result
 }
