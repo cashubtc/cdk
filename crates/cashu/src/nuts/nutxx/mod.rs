@@ -2,6 +2,8 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/xx.md>
 
+use std::array::TryFromSliceError;
+
 use cairo_air::air::PubMemoryValue;
 use cairo_air::verifier::{verify_cairo, CairoVerificationError};
 use cairo_air::{CairoProof, PreProcessedTraceVariant};
@@ -42,6 +44,12 @@ pub enum Error {
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
+    /// From hex error
+    #[error(transparent)]
+    HexError(#[from] hex::Error),
+    /// Slice Error
+    #[error(transparent)]
+    Slice(#[from] TryFromSliceError),
     /// Not implemented
     #[error("Not implemented")]
     NotImplemented,
@@ -84,7 +92,7 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
             let tag_kind = TagKind::from(&tag[0]);
             match tag_kind {
                 TagKind::Custom(ref kind) if kind == "program_output" => {
-                    output = Some(hex::decode(&tag[1]).unwrap().as_slice().try_into().unwrap());
+                    output = Some(hex::decode(&tag[1])?.as_slice().try_into()?);
                 }
                 _ => {}
             }
@@ -160,11 +168,9 @@ impl Proof {
             Err(e) => return Err(Error::Serde(e)),
         };
 
-        let program_hash_condition: [u8; 32] = hex::decode(secret.secret_data().data())
-            .unwrap()
+        let program_hash_condition: [u8; 32] = hex::decode(secret.secret_data().data())?
             .as_slice()
-            .try_into()
-            .unwrap();
+            .try_into()?;
 
         let program: &Vec<PubMemoryValue> = &cairo_proof.claim.public_data.public_memory.program;
         let program_hash = hash_array_pmv(program);
@@ -281,8 +287,8 @@ mod tests {
         let program_hash = hash_array_felt(&executable.program.bytecode);
 
         // Specify output condition
-        let output_false = hash_array_felt(&vec![Felt::from(0)]); // is not prime
-        let output_true = hash_array_felt(&vec![Felt::from(1)]); // is prime
+        let output_false = hash_array_felt(&[Felt::from(0)]); // is not prime
+        let output_true = hash_array_felt(&[Felt::from(1)]); // is prime
 
         let cond_false = Conditions {
             output: Some(output_false),

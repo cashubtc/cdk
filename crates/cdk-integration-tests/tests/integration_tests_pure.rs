@@ -13,7 +13,6 @@ use std::time::Duration;
 use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
 use cashu::mint_url::MintUrl;
-use cashu::util::hex;
 use cashu::{
     CurrencyUnit, Id, MeltRequest, NotificationPayload, NutXXConditions, PreMintSecrets,
     ProofState, SecretKey, SpendingConditions, State, SwapRequest,

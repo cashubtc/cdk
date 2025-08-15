@@ -2,6 +2,7 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/11.md>
 
+use std::array::TryFromSliceError;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::{fmt, vec};
@@ -72,6 +73,9 @@ pub enum Error {
     /// From hex error
     #[error(transparent)]
     HexError(#[from] hex::Error),
+    /// Slice Error
+    #[error(transparent)]
+    Slice(#[from] TryFromSliceError),
     /// Serde Json error
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
@@ -451,11 +455,9 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
                     .and_then(|t| t.clone().try_into().ok()),
             }),
             Kind::Cairo => Ok(Self::CairoConditions {
-                data: hex::decode(secret.secret_data().data())
-                    .unwrap()
+                data: hex::decode(secret.secret_data().data())?
                     .as_slice()
-                    .try_into()
-                    .unwrap(),
+                    .try_into()?,
                 conditions: secret
                     .secret_data()
                     .tags()
