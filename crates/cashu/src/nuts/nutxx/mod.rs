@@ -17,6 +17,7 @@ use thiserror::Error;
 use super::nut00::Witness;
 use super::{Nut10Secret, Proof};
 use crate::nut11::TagKind;
+use crate::util::hex;
 
 pub mod serde_cairo_witness;
 
@@ -51,7 +52,7 @@ pub enum Error {
 pub struct Conditions {
     /// Blake2s hash of the output of the program
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
+    pub output: Option<[u8; 32]>,
 }
 
 impl From<Conditions> for Vec<Vec<String>> {
@@ -63,7 +64,7 @@ impl From<Conditions> for Vec<Vec<String>> {
         if let Some(output) = output {
             tags.push(vec![
                 TagKind::Custom("program_output".to_string()).to_string(),
-                output,
+                hex::encode(output),
             ]);
         }
         tags
@@ -83,7 +84,7 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
             let tag_kind = TagKind::from(&tag[0]);
             match tag_kind {
                 TagKind::Custom(ref kind) if kind == "program_output" => {
-                    output = Some(tag[1].to_string());
+                    output = Some(hex::decode(&tag[1]).unwrap().as_slice().try_into().unwrap());
                 }
                 _ => {}
             }
@@ -114,14 +115,14 @@ fn secure_pcs_config() -> PcsConfig {
 }
 
 /// Hash an array of Felts in little endian format using Blake2s
-fn hash_array_bytes(bytecode: &[[u8; 32]]) -> String {
+fn hash_array_bytes(bytecode: &[[u8; 32]]) -> [u8; 32] {
     let mut hasher = Blake2sHasher::default();
     for felt in bytecode {
         for byte in felt.iter() {
             hasher.update(&[*byte]);
         }
     }
-    hasher.finalize().to_string()
+    hasher.finalize().into()
 }
 
 /// Convert a PubMemoryValue to a Felt in little endian format
@@ -136,7 +137,7 @@ fn pmv_to_bytes(pmv: &PubMemoryValue) -> [u8; 32] {
 }
 
 /// Hash an array of PubMemoryValues using Blake2s
-pub fn hash_array_pmv(values: &[PubMemoryValue]) -> String {
+pub fn hash_array_pmv(values: &[PubMemoryValue]) -> [u8; 32] {
     hash_array_bytes(&values.iter().map(pmv_to_bytes).collect::<Vec<_>>())
 }
 
@@ -159,15 +160,19 @@ impl Proof {
             Err(e) => return Err(Error::Serde(e)),
         };
 
-        let program_hash_condition = secret.secret_data().data().to_string();
+        let program_hash_condition: [u8; 32] = hex::decode(secret.secret_data().data())
+            .unwrap()
+            .as_slice()
+            .try_into()
+            .unwrap();
 
         let program: &Vec<PubMemoryValue> = &cairo_proof.claim.public_data.public_memory.program;
         let program_hash = hash_array_pmv(program);
 
         if program_hash != program_hash_condition {
             return Err(Error::ProgramHashVerification(
-                program_hash,
-                program_hash_condition,
+                hex::encode(program_hash),
+                hex::encode(program_hash_condition),
             ));
         }
 
@@ -180,7 +185,10 @@ impl Proof {
             // check if the output in the claim matches the output in the conditions
             let output = hash_array_pmv(&cairo_proof.claim.public_data.public_memory.output);
             if output != output_condition {
-                return Err(Error::OutputHashVerification(output, output_condition));
+                return Err(Error::OutputHashVerification(
+                    hex::encode(output),
+                    hex::encode(output_condition),
+                ));
             }
         }
 
@@ -250,14 +258,14 @@ mod tests {
             .collect()
     }
 
-    fn hash_array_felt(bytecode: &[Felt]) -> String {
+    fn hash_array_felt(bytecode: &[Felt]) -> [u8; 32] {
         let mut hasher = Blake2sHasher::default();
         for felt in bytecode {
             for byte in felt.to_bytes_le().iter() {
                 hasher.update(&[*byte]);
             }
         }
-        hasher.finalize().to_string()
+        hasher.finalize().into()
     }
 
     #[test]
@@ -284,11 +292,11 @@ mod tests {
         };
 
         let secret_is_prime_true: Secret =
-            Nut10Secret::new(Kind::Cairo, program_hash.to_string(), Some(cond_true))
+            Nut10Secret::new(Kind::Cairo, hex::encode(program_hash), Some(cond_true))
                 .try_into()
                 .unwrap();
         let secret_is_prime_false: Secret =
-            Nut10Secret::new(Kind::Cairo, program_hash.to_string(), Some(cond_false))
+            Nut10Secret::new(Kind::Cairo, hex::encode(program_hash), Some(cond_false))
                 .try_into()
                 .unwrap();
 

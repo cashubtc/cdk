@@ -13,6 +13,7 @@ use std::time::Duration;
 use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
 use cashu::mint_url::MintUrl;
+use cashu::util::hex;
 use cashu::{
     CurrencyUnit, Id, MeltRequest, NotificationPayload, NutXXConditions, PreMintSecrets,
     ProofState, SecretKey, SpendingConditions, State, SwapRequest,
@@ -547,14 +548,14 @@ pub async fn test_cairo_swap() {
             .collect()
     }
 
-    fn hash_array_felt(bytecode: &Vec<Felt>) -> String {
+    fn hash_array_felt(bytecode: &Vec<Felt>) -> [u8; 32] {
         let mut hasher = Blake2sHasher::default();
         for felt in bytecode {
             for byte in felt.to_bytes_le().iter() {
                 hasher.update(&[*byte]);
             }
         }
-        hasher.finalize().to_string()
+        hasher.finalize().into()
     }
 
     setup_tracing();

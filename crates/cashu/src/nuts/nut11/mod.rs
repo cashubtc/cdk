@@ -316,7 +316,7 @@ pub enum SpendingConditions {
     /// Defined in [NUTXX](https://github.com/cashubtc/nuts/blob/main/xx.md)
     CairoConditions {
         /// Blake2s program hash
-        data: String,
+        data: [u8; 32],
         /// Additional Optional Spending [`NutXXConditions`]
         conditions: Option<NutXXConditions>,
     },
@@ -352,7 +352,7 @@ impl SpendingConditions {
     }
 
     /// New Cairo [SpendingConditions]
-    pub fn new_cairo(data: String, conditions: Option<NutXXConditions>) -> Self {
+    pub fn new_cairo(data: [u8; 32], conditions: Option<NutXXConditions>) -> Self {
         Self::CairoConditions { data, conditions }
     }
 
@@ -413,7 +413,7 @@ impl SpendingConditions {
     }
 
     /// Cairo program output hash
-    pub fn output(&self) -> Option<String> {
+    pub fn output(&self) -> Option<[u8; 32]> {
         match self {
             Self::P2PKConditions { .. } => None,
             Self::HTLCConditions { .. } => None,
@@ -451,7 +451,11 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
                     .and_then(|t| t.clone().try_into().ok()),
             }),
             Kind::Cairo => Ok(Self::CairoConditions {
-                data: secret.secret_data().data().to_string(),
+                data: hex::decode(secret.secret_data().data())
+                    .unwrap()
+                    .as_slice()
+                    .try_into()
+                    .unwrap(),
                 conditions: secret
                     .secret_data()
                     .tags()
@@ -471,7 +475,7 @@ impl From<SpendingConditions> for super::nut10::Secret {
                 super::nut10::Secret::new(Kind::HTLC, data.to_string(), conditions)
             }
             SpendingConditions::CairoConditions { data, conditions } => {
-                super::nut10::Secret::new(Kind::Cairo, data.to_string(), conditions)
+                super::nut10::Secret::new(Kind::Cairo, hex::encode(data), conditions)
             }
         }
     }

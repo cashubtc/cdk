@@ -71,7 +71,7 @@ impl Wallet {
                 let cairo_proof =
                     serde_json::from_str::<CairoProof<Blake2sMerkleHasher>>(p.as_str())?;
                 let program = &cairo_proof.claim.public_data.public_memory.program;
-                Ok::<(String, &String), Error>((hash_array_pmv(program).to_string(), p))
+                Ok::<(String, &String), Error>((hex::encode(hash_array_pmv(program)), p))
             })
             .collect::<Result<HashMap<String, &String>, _>>()?;
 
