@@ -67,7 +67,7 @@ config = { version = "0.15.11", features = ["toml"] }
 futures = { version = "0.3.28", default-features = false, features = ["async-await"] }
 lightning-invoice = { version = "0.33.0", features = ["serde", "std"] }
 lightning = { version = "0.1.2", default-features = false, features = ["std"]}
-ldk-node = { git = "https://github.com/lightningdevkit/ldk-node.git", branch = "release/0.6" }
+ldk-node = "0.6.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = { version = "2" }
