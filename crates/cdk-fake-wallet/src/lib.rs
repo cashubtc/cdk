@@ -118,7 +118,7 @@ impl MintPayment for FakeWallet {
             unit: self.unit.clone(),
             invoice_description: true,
             amountless: false,
-            bolt12: false,
+            bolt12: true,
         })?)
     }
 
