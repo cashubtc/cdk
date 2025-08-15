@@ -54,6 +54,16 @@ pub enum MintQuoteResponse {
     Bolt12(MintQuoteBolt12Response<Uuid>),
 }
 
+impl MintQuoteResponse {
+    /// Get the quote ID as a string
+    pub fn quote_id(&self) -> String {
+        match self {
+            MintQuoteResponse::Bolt11(response) => response.quote.to_string(),
+            MintQuoteResponse::Bolt12(response) => response.quote.to_string(),
+        }
+    }
+}
+
 impl TryFrom<MintQuoteResponse> for MintQuoteBolt11Response<Uuid> {
     type Error = Error;
 
