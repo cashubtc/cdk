@@ -402,3 +402,17 @@ docs-strict:
     RUSTDOCFLAGS="-D warnings" cargo doc $arg --all-features --no-deps
     echo
   done
+
+# Run wallet simulator with configurable parameters
+wallet-sim num_transactions="100" mint_url="http://127.0.0.1:8085" unit="Sat":
+  #!/usr/bin/env bash
+  # Set environment variables for the wallet simulator
+  export TRANSACTION_COUNT="{{num_transactions}}"
+  export MINT_URL="{{mint_url}}"
+  export CURRENCY_UNIT="{{unit}}"
+  
+  # Build the wallet simulator
+  cargo build --bin wallet_simulator
+  
+  # Run the wallet simulator
+  ./target/debug/wallet_simulator
