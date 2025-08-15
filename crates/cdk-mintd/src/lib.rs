@@ -51,6 +51,8 @@ use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::decompression::RequestDecompressionLayer;
 use tower_http::trace::TraceLayer;
+use tracing_appender::{non_blocking, rolling};
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::EnvFilter;
 #[cfg(feature = "swagger")]
 use utoipa::OpenApi;
@@ -94,7 +96,8 @@ async fn initial_setup(
 }
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
-pub fn setup_tracing() {
+/// Logs to both console and a file in the specified work directory.
+pub fn setup_tracing(work_dir: &Path) -> Result<()> {
     let default_filter = "debug";
     let hyper_filter = "hyper=warn";
     let h2_filter = "h2=warn";
@@ -104,7 +107,35 @@ pub fn setup_tracing() {
         "{default_filter},{hyper_filter},{h2_filter},{tower_http}"
     ));
 
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    // Create logs directory in work_dir if it doesn't exist
+    let logs_dir = work_dir.join("logs");
+    std::fs::create_dir_all(&logs_dir)?;
+
+    // Set up file appender with daily rotation
+    let file_appender = rolling::daily(&logs_dir, "cdk-mintd.log");
+    let (non_blocking_appender, _guard) = non_blocking(file_appender);
+
+    // Combine console output (INFO level) and file output (DEBUG level)
+    let stdout = std::io::stdout.with_max_level(tracing::Level::INFO);
+    let file_writer = non_blocking_appender.with_max_level(tracing::Level::DEBUG);
+
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_writer(stdout.and(file_writer))
+        .init();
+
+    // Store the guard in a static to keep it alive for the program duration
+    // This prevents the non-blocking writer from being dropped
+    use std::sync::OnceLock;
+    static GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
+    let _ = GUARD.set(_guard);
+
+    tracing::info!(
+        "Logging initialized: console (INFO+) and file at {}/cdk-mintd.log (DEBUG+)",
+        logs_dir.display()
+    );
+
+    Ok(())
 }
 
 /// Retrieves the work directory based on command-line arguments, environment variables, or system defaults.

@@ -24,11 +24,11 @@ use tokio::main;
 async fn main() -> Result<()> {
     let args = CLIArgs::parse();
 
-    if args.enable_logging {
-        setup_tracing();
-    }
-
     let work_dir = get_work_directory(&args).await?;
+
+    if args.enable_logging {
+        setup_tracing(&work_dir)?;
+    }
 
     let settings = load_settings(&work_dir, args.config)?;
 

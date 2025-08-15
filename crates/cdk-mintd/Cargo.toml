@@ -50,6 +50,7 @@ bitcoin.workspace = true
 tokio = { workspace = true, default-features = false, features = ["signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tracing-appender.workspace = true
 futures.workspace = true
 serde.workspace = true
 bip39.workspace = true
