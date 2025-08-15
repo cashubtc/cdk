@@ -64,6 +64,50 @@ pub struct UsageMetrics {
     pub onchain_outflow_all_time: u64,
 }
 
+/// Get paginated payments with efficient filtering and sorting
+fn get_paginated_payments_streaming(
+    node: &ldk_node::Node,
+    filter: &str,
+    skip: usize,
+    take: usize,
+) -> (Vec<ldk_node::payment::PaymentDetails>, usize) {
+    // Create filter predicate - note LDK expects &&PaymentDetails
+    let filter_fn = match filter {
+        "incoming" => {
+            |p: &&ldk_node::payment::PaymentDetails| p.direction == PaymentDirection::Inbound
+        }
+        "outgoing" => {
+            |p: &&ldk_node::payment::PaymentDetails| p.direction == PaymentDirection::Outbound
+        }
+        _ => |_: &&ldk_node::payment::PaymentDetails| true,
+    };
+
+    // Get filtered payments from LDK
+    let filtered_payments = node.list_payments_with_filter(filter_fn);
+
+    // Create sorted index to avoid cloning payments during sort
+    let mut time_indexed: Vec<_> = filtered_payments
+        .iter()
+        .enumerate()
+        .map(|(idx, payment)| (payment.latest_update_timestamp, idx))
+        .collect();
+
+    // Sort by timestamp (newest first)
+    time_indexed.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+
+    let total_count = time_indexed.len();
+
+    // Extract only the payments we need for this page
+    let page_payments: Vec<_> = time_indexed
+        .into_iter()
+        .skip(skip)
+        .take(take)
+        .map(|(_, idx)| filtered_payments[idx].clone())
+        .collect();
+
+    (page_payments, total_count)
+}
+
 /// Calculate usage metrics from payment history
 fn calculate_usage_metrics(payments: &[ldk_node::payment::PaymentDetails]) -> UsageMetrics {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -179,7 +223,12 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
 
     let balances = node.list_balances();
 
+    // Calculate payment metrics for dashboard
+    let all_payments = node.list_payments_with_filter(|_| true);
+    let metrics = calculate_usage_metrics(&all_payments);
+
     let content = html! {
+        // First row with node info, balance, and quick actions
         div class="grid" {
             (info_card_with_copy(
                 "Node Information",
@@ -220,6 +269,39 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
                     a href="/payments/send" style="text-decoration: none;" {
                         button style="width: 100%;" { "Make Lightning Payment" }
                     }
+                    a href="/payments" style="text-decoration: none;" {
+                        button style="width: 100%;" { "Payment History" }
+                    }
+                }
+            }
+        }
+
+        // Second row with payment activity taking full width
+        div class="card" {
+            h2 { "Lightning Network Activity" }
+            div class="grid" style="margin-top: 1rem;" {
+                (usage_metrics_card(
+                    "Lightning Network",
+                    vec![
+                        ("24h Inflow", format_sats_as_btc(metrics.lightning_inflow_24h)),
+                        ("24h Outflow", format_sats_as_btc(metrics.lightning_outflow_24h)),
+                        ("All-time Inflow", format_sats_as_btc(metrics.lightning_inflow_all_time)),
+                        ("All-time Outflow", format_sats_as_btc(metrics.lightning_outflow_all_time)),
+                    ]
+                ))
+                (usage_metrics_card(
+                    "On-chain",
+                    vec![
+                        ("24h Inflow", format_sats_as_btc(metrics.onchain_inflow_24h)),
+                        ("24h Outflow", format_sats_as_btc(metrics.onchain_outflow_24h)),
+                        ("All-time Inflow", format_sats_as_btc(metrics.onchain_inflow_all_time)),
+                        ("All-time Outflow", format_sats_as_btc(metrics.onchain_outflow_all_time)),
+                    ]
+                ))
+            }
+            div style="margin-top: 1rem; text-align: center;" {
+                a href="/payments" {
+                    button style="width: 100%;" { "View Full Payment History" }
                 }
             }
         }
@@ -1149,40 +1231,18 @@ pub async fn payments_page(
     let page = query.page.unwrap_or(1).max(1);
     let per_page = query.per_page.unwrap_or(25).clamp(10, 100); // Limit between 10-100 items per page
 
-    // Get all payments using list_payments_with_filter
-    let all_payments = state.node.inner.list_payments_with_filter(|_| true);
-
-    // Calculate usage metrics from all payments
-    let metrics = calculate_usage_metrics(&all_payments);
-
-    // Filter payments based on the filter parameter
-    let mut filtered_payments: Vec<_> = match filter {
-        "incoming" => all_payments
-            .into_iter()
-            .filter(|p| p.direction == PaymentDirection::Inbound)
-            .collect(),
-        "outgoing" => all_payments
-            .into_iter()
-            .filter(|p| p.direction == PaymentDirection::Outbound)
-            .collect(),
-        _ => all_payments,
-    };
-
-    // Sort payments by latest_update_timestamp with newest first
-    filtered_payments.sort_by(|a, b| b.latest_update_timestamp.cmp(&a.latest_update_timestamp));
+    // Use efficient pagination function
+    let (current_page_payments, total_count) = get_paginated_payments_streaming(
+        &state.node.inner,
+        filter,
+        ((page - 1) * per_page) as usize,
+        per_page as usize,
+    );
 
     // Calculate pagination
-    let total_payments = filtered_payments.len();
-    let total_pages = ((total_payments as f64) / (per_page as f64)).ceil() as u32;
+    let total_pages = ((total_count as f64) / (per_page as f64)).ceil() as u32;
     let start_index = ((page - 1) * per_page) as usize;
-    let end_index = (start_index + per_page as usize).min(total_payments);
-
-    // Get the current page of payments
-    let current_page_payments = if start_index < total_payments {
-        &filtered_payments[start_index..end_index]
-    } else {
-        &[]
-    };
+    let end_index = (start_index + per_page as usize).min(total_count);
 
     // Helper function to build URL with pagination params
     let build_url = |new_page: u32, new_filter: &str, new_per_page: u32| -> String {
@@ -1207,11 +1267,11 @@ pub async fn payments_page(
     let content = html! {
         div class="card" {
             div class="payment-list-header" {
-                h2 { "All Payments" }
+                h2 { "Payment History" }
                 p style="margin: 0.5rem 0; color: #666; font-size: 0.9rem;" {
                     "Lightning (BOLT11, BOLT12, Spontaneous) and On-chain payments"
-                    @if total_payments > 0 {
-                        " - Showing " (start_index + 1) " to " (end_index) " of " (total_payments) " payments"
+                    @if total_count > 0 {
+                        " - Showing " (start_index + 1) " to " (end_index) " of " (total_count) " payments"
                     }
                 }
                 div class="payment-filter-tabs" {
@@ -1221,34 +1281,9 @@ pub async fn payments_page(
                 }
             }
 
-            // Usage metrics instead of quick actions
-            div style="margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid #eee;" {
-                h3 { "Usage Metrics" }
-                div class="grid" style="margin-top: 1rem;" {
-                    (usage_metrics_card(
-                        "Lightning Network",
-                        vec![
-                            ("24h Inflow", format_sats_as_btc(metrics.lightning_inflow_24h)),
-                            ("24h Outflow", format_sats_as_btc(metrics.lightning_outflow_24h)),
-                            ("All-time Inflow", format_sats_as_btc(metrics.lightning_inflow_all_time)),
-                            ("All-time Outflow", format_sats_as_btc(metrics.lightning_outflow_all_time)),
-                        ]
-                    ))
-                    (usage_metrics_card(
-                        "On-chain",
-                        vec![
-                            ("24h Inflow", format_sats_as_btc(metrics.onchain_inflow_24h)),
-                            ("24h Outflow", format_sats_as_btc(metrics.onchain_outflow_24h)),
-                            ("All-time Inflow", format_sats_as_btc(metrics.onchain_inflow_all_time)),
-                            ("All-time Outflow", format_sats_as_btc(metrics.onchain_outflow_all_time)),
-                        ]
-                    ))
-                }
-            }
-
-            // Payment list
+            // Payment list (no metrics here)
             @if current_page_payments.is_empty() {
-                @if total_payments == 0 {
+                @if total_count == 0 {
                     p { "No payments found." }
                 } @else {
                     p { "No payments found on this page. "
@@ -1256,7 +1291,7 @@ pub async fn payments_page(
                     }
                 }
             } @else {
-                @for payment in current_page_payments {
+                @for payment in &current_page_payments {
                     @let direction_str = match payment.direction {
                         PaymentDirection::Inbound => "Inbound",
                         PaymentDirection::Outbound => "Outbound",
@@ -1355,7 +1390,7 @@ pub async fn payments_page(
             }
 
             // Per-page selector (bottom)
-            @if total_payments > 0 {
+            @if total_count > 0 {
                 div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #eee; display: flex; justify-content: center; align-items: center; gap: 0.5rem;" {
                     label for="per-page" style="font-size: 0.9rem; color: #6c757d;" { "Show:" }
                     select id="per-page" onchange="changePage()" style="padding: 0.25rem; font-size: 0.9rem; border: 1px solid #dee2e6; border-radius: 4px;" {
@@ -1382,7 +1417,7 @@ pub async fn payments_page(
         }
     };
 
-    Ok(Html(layout("Payments", content).into_string()))
+    Ok(Html(layout("Payment History", content).into_string()))
 }
 
 pub async fn send_payments_page(
