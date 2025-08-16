@@ -3,26 +3,6 @@
 //! This module provides functionality for resolving human-readable Bitcoin addresses
 //! according to BIP-353. It allows users to share simple email-like addresses such as
 //! `user@domain.com` instead of complex Bitcoin addresses or Lightning invoices.
-//!
-//! # How it works
-//!
-//! 1. Parse a human-readable address like `alice@example.com`
-//! 2. Query DNS TXT records at `alice.user._bitcoin-payment.example.com`
-//! 3. Extract Bitcoin URIs from the TXT records with DNSSEC validation
-//! 4. Parse payment instructions (Lightning offers, on-chain addresses)
-//!
-//! # Example
-//!
-//! ```rust,no_run
-//! use cdk::bip353::Bip353Address;
-//! use std::str::FromStr;
-//!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let address = Bip353Address::from_str("alice@example.com")?;
-//! let instructions = address.resolve().await?;
-//! # Ok(())
-//! # }
-//! ```
 
 use std::collections::HashMap;
 use std::str::FromStr;
