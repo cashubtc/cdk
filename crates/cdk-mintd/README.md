@@ -87,6 +87,60 @@ engine = "redb"
 ln_backend = "fakewallet"  # Options: cln, lnd, lnbits, fakewallet
 ```
 
+### Logging Configuration
+
+You can configure where mintd outputs its logs using the `[info.logging]` section in your config file or environment variables:
+
+**Config file:**
+```toml
+[info.logging]
+# Where to output logs: "stdout", "file", or "both" (default: "both")
+output = "both"
+# Log level for console output (default: "info")
+console_level = "info"  
+# Log level for file output (default: "debug")
+file_level = "debug"
+```
+
+**Environment variables:**
+```bash
+# Where to output logs: "stdout", "file", or "both" (default: "both")
+export CDK_MINTD_LOGGING_OUTPUT="both"
+# Log level for console output (default: "info")
+export CDK_MINTD_LOGGING_CONSOLE_LEVEL="debug"
+# Log level for file output (default: "debug")
+export CDK_MINTD_LOGGING_FILE_LEVEL="debug"
+```
+
+**Available logging outputs:**
+- `"stdout"` - Output logs only to console/terminal (stderr)
+- `"file"` - Output logs only to rotating daily log files in `<work_dir>/logs/`
+- `"both"` - Output logs to both console and files (default behavior)
+
+**Available log levels:** `error`, `warn`, `info`, `debug`, `trace`
+
+**Examples:**
+
+Console only with debug level:
+```bash
+export CDK_MINTD_LOGGING_OUTPUT="stdout"
+export CDK_MINTD_LOGGING_CONSOLE_LEVEL="debug"
+```
+
+File only with debug level:
+```toml
+[info.logging]
+output = "file"
+file_level = "debug"
+```
+
+Both console (warn) and file (debug):
+```bash
+export CDK_MINTD_LOGGING_OUTPUT="both"
+export CDK_MINTD_LOGGING_CONSOLE_LEVEL="warn"
+export CDK_MINTD_LOGGING_FILE_LEVEL="debug"
+```
+
 ## Usage
 
 ```bash
@@ -98,6 +152,8 @@ cdk-mintd --config /path/to/config.toml
 
 # Start with specific work directory
 cdk-mintd --work-dir /path/to/work/dir
+# Disable logging entirely
+cdk-mintd --enable-logging false
 
 # Show help
 cdk-mintd --help

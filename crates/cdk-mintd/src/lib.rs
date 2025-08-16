@@ -96,9 +96,12 @@ async fn initial_setup(
 }
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
-/// Logs to both console and a file in the specified work directory.
+/// Logs can be configured to output to stdout only, file only, or both.
 /// Returns a guard that must be kept alive and properly dropped on shutdown.
-pub fn setup_tracing(work_dir: &Path) -> Result<tracing_appender::non_blocking::WorkerGuard> {
+pub fn setup_tracing(
+    work_dir: &Path,
+    logging_config: &config::LoggingConfig,
+) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
     let default_filter = "debug";
     let hyper_filter = "hyper=warn";
     let h2_filter = "h2=warn";
@@ -108,29 +111,99 @@ pub fn setup_tracing(work_dir: &Path) -> Result<tracing_appender::non_blocking::
         "{default_filter},{hyper_filter},{h2_filter},{tower_http}"
     ));
 
-    // Create logs directory in work_dir if it doesn't exist
-    let logs_dir = work_dir.join("logs");
-    std::fs::create_dir_all(&logs_dir)?;
+    use config::LoggingOutput;
+    match logging_config.output {
+        LoggingOutput::Stderr => {
+            // Console output only (stderr)
+            let console_level = logging_config
+                .console_level
+                .as_deref()
+                .unwrap_or("info")
+                .parse::<tracing::Level>()
+                .unwrap_or(tracing::Level::INFO);
 
-    // Set up file appender with daily rotation
-    let file_appender = rolling::daily(&logs_dir, "cdk-mintd.log");
-    let (non_blocking_appender, guard) = non_blocking(file_appender);
+            let stderr = std::io::stderr.with_max_level(console_level);
 
-    // Combine console output (INFO level) and file output (DEBUG level)
-    let stdout = std::io::stdout.with_max_level(tracing::Level::INFO);
-    let file_writer = non_blocking_appender.with_max_level(tracing::Level::DEBUG);
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_writer(stderr)
+                .init();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_writer(stdout.and(file_writer))
-        .init();
+            tracing::info!("Logging initialized: console only ({}+)", console_level);
+            Ok(None)
+        }
+        LoggingOutput::File => {
+            // File output only
+            let file_level = logging_config
+                .file_level
+                .as_deref()
+                .unwrap_or("debug")
+                .parse::<tracing::Level>()
+                .unwrap_or(tracing::Level::DEBUG);
 
-    tracing::info!(
-        "Logging initialized: console (INFO+) and file at {}/cdk-mintd.log (DEBUG+)",
-        logs_dir.display()
-    );
+            // Create logs directory in work_dir if it doesn't exist
+            let logs_dir = work_dir.join("logs");
+            std::fs::create_dir_all(&logs_dir)?;
 
-    Ok(guard)
+            // Set up file appender with daily rotation
+            let file_appender = rolling::daily(&logs_dir, "cdk-mintd.log");
+            let (non_blocking_appender, guard) = non_blocking(file_appender);
+
+            let file_writer = non_blocking_appender.with_max_level(file_level);
+
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_writer(file_writer)
+                .init();
+
+            tracing::info!(
+                "Logging initialized: file only at {}/cdk-mintd.log ({}+)",
+                logs_dir.display(),
+                file_level
+            );
+            Ok(Some(guard))
+        }
+        LoggingOutput::Both => {
+            // Both console and file output (stderr + file)
+            let console_level = logging_config
+                .console_level
+                .as_deref()
+                .unwrap_or("info")
+                .parse::<tracing::Level>()
+                .unwrap_or(tracing::Level::INFO);
+            let file_level = logging_config
+                .file_level
+                .as_deref()
+                .unwrap_or("debug")
+                .parse::<tracing::Level>()
+                .unwrap_or(tracing::Level::DEBUG);
+
+            // Create logs directory in work_dir if it doesn't exist
+            let logs_dir = work_dir.join("logs");
+            std::fs::create_dir_all(&logs_dir)?;
+
+            // Set up file appender with daily rotation
+            let file_appender = rolling::daily(&logs_dir, "cdk-mintd.log");
+            let (non_blocking_appender, guard) = non_blocking(file_appender);
+
+            // Combine console output (stderr) and file output
+            let stderr = std::io::stderr.with_max_level(console_level);
+            let file_writer = non_blocking_appender.with_max_level(file_level);
+
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_writer(stderr.and(file_writer))
+                .init();
+
+            tracing::info!(
+                "Logging initialized: console ({}+) and file at {}/cdk-mintd.log ({}+)",
+                console_level,
+                logs_dir.display(),
+                file_level
+            );
+            Ok(Some(guard))
+        }
+    }
 }
 
 /// Retrieves the work directory based on command-line arguments, environment variables, or system defaults.
@@ -731,7 +804,7 @@ async fn start_services_with_shutdown(
             tracing::info!("Mint info already set, not using config file settings.");
         }
     } else {
-        tracing::warn!("RPC not enabled, using mint info from config.");
+        tracing::info!("RPC not enabled, using mint info from config.");
         mint.set_mint_info(mint_builder_info).await?;
         mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
     }
@@ -776,7 +849,7 @@ async fn start_services_with_shutdown(
 
     let listener = tokio::net::TcpListener::bind(socket_addr).await?;
 
-    tracing::debug!("listening on {}", listener.local_addr().unwrap());
+    tracing::info!("listening on {}", listener.local_addr().unwrap());
 
     // Wait for axum server to complete with custom shutdown signal
     let axum_result = axum::serve(listener, mint_service).with_graceful_shutdown(shutdown_signal);
@@ -828,7 +901,7 @@ pub async fn run_mintd(
     enable_logging: bool,
 ) -> Result<()> {
     let _guard = if enable_logging {
-        Some(setup_tracing(work_dir)?)
+        setup_tracing(work_dir, &settings.info.logging)?
     } else {
         None
     };
