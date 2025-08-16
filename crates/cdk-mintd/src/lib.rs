@@ -820,25 +820,8 @@ fn work_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// The main entry point for the application when used as a library.
-///
-/// This asynchronous function performs the following steps:
-/// 1. Executes the initial setup, including loading configurations and initializing the database.
-/// 2. Configures a `MintBuilder` instance with the local store and keystore based on the database.
-/// 3. Applies additional custom configurations and authentication setup for the `MintBuilder`.
-/// 4. Constructs a `Mint` instance from the configured `MintBuilder`.
-/// 5. Checks and resolves the status of any pending mint and melt quotes.
+/// The main entry point for the application when used as a library
 pub async fn run_mintd(
-    work_dir: &Path,
-    settings: &config::Settings,
-    db_password: Option<String>,
-) -> Result<()> {
-    run_mintd_with_shutdown(work_dir, settings, shutdown_signal(), db_password).await
-}
-
-/// Run mintd with proper logging setup and cleanup
-/// This is the recommended way to run mintd as it handles the logging guard properly
-pub async fn run_mintd_with_logging(
     work_dir: &Path,
     settings: &config::Settings,
     db_password: Option<String>,

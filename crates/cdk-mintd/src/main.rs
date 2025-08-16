@@ -33,6 +33,6 @@ async fn main() -> Result<()> {
     #[cfg(not(feature = "sqlcipher"))]
     let password = None;
 
-    // Use the new function that properly handles logging guard cleanup
-    cdk_mintd::run_mintd_with_logging(&work_dir, &settings, password, args.enable_logging).await
+    // Use the main function that handles logging setup and cleanup
+    cdk_mintd::run_mintd(&work_dir, &settings, password, args.enable_logging).await
 }
