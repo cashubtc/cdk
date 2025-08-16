@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
     let args: Cli = Cli::parse();
     let default_filter = args.log_level;
 
-    let sqlx_filter = "sqlx=warn,hyper_util=warn,reqwest=warn";
+    let sqlx_filter = "rustls=warn,hyper_util=warn,reqwest=warn";
 
     let env_filter = EnvFilter::new(format!("{default_filter},{sqlx_filter}"));
 
