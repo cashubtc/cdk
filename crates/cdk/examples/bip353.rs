@@ -35,15 +35,12 @@ use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing for better debugging
-    tracing_subscriber::fmt::init();
-
     println!("BIP-353 CDK Example");
     println!("===================");
 
     // Example BIP-353 address - replace with a real one that has BOLT12 offer
     // For testing, you might need to set up your own DNS records
-    let bip353_address = "pay@example.com"; // This is just an example
+    let bip353_address = "tsk@thesimplekid.com"; // This is just an example
 
     println!("Attempting to use BIP-353 address: {}", bip353_address);
 
@@ -76,13 +73,11 @@ async fn main() -> anyhow::Result<()> {
     // Check quote state (with timeout for demo purposes)
     let timeout = Duration::from_secs(30);
     let start = std::time::Instant::now();
-    let mut quote_paid = false;
 
     while start.elapsed() < timeout {
         let status = wallet.mint_quote_state(&mint_quote.id).await?;
 
         if status.state == MintQuoteState::Paid {
-            quote_paid = true;
             break;
         }
 
@@ -90,81 +85,57 @@ async fn main() -> anyhow::Result<()> {
         sleep(Duration::from_secs(2)).await;
     }
 
-    if quote_paid {
-        // Mint the tokens
-        let proofs = wallet
-            .mint(&mint_quote.id, SplitTarget::default(), None)
-            .await?;
-        let received_amount = proofs.total_amount()?;
-        println!("Successfully minted {} sats", received_amount);
+    // Mint the tokens
+    let proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .await?;
+    let received_amount = proofs.total_amount()?;
+    println!("Successfully minted {} sats", received_amount);
 
-        // Now prepare to pay using the BIP353 address
-        let payment_amount_sats = 100; // Example: paying 100 sats
+    // Now prepare to pay using the BIP353 address
+    let payment_amount_sats = 100; // Example: paying 100 sats
 
-        println!(
-            "Attempting to pay {} sats using BIP-353 address...",
-            payment_amount_sats
-        );
+    println!(
+        "Attempting to pay {} sats using BIP-353 address...",
+        payment_amount_sats
+    );
 
-        // Use the new wallet method to resolve BIP353 address and get melt quote
-        match wallet
-            .melt_bip353_quote(bip353_address, payment_amount_sats * 1_000)
-            .await
-        {
-            Ok(melt_quote) => {
-                println!("BIP-353 melt quote received:");
-                println!("  Quote ID: {}", melt_quote.id);
-                println!("  Amount: {} sats", melt_quote.amount);
-                println!("  Fee Reserve: {} sats", melt_quote.fee_reserve);
-                println!("  State: {}", melt_quote.state);
+    // Use the new wallet method to resolve BIP353 address and get melt quote
+    match wallet
+        .melt_bip353_quote(bip353_address, payment_amount_sats * 1_000)
+        .await
+    {
+        Ok(melt_quote) => {
+            println!("BIP-353 melt quote received:");
+            println!("  Quote ID: {}", melt_quote.id);
+            println!("  Amount: {} sats", melt_quote.amount);
+            println!("  Fee Reserve: {} sats", melt_quote.fee_reserve);
+            println!("  State: {}", melt_quote.state);
 
-                // Execute the payment
-                match wallet.melt(&melt_quote.id).await {
-                    Ok(melt_result) => {
-                        println!("BIP-353 payment successful!");
-                        println!("  State: {}", melt_result.state);
-                        println!("  Amount paid: {} sats", melt_result.amount);
-                        println!("  Fee paid: {} sats", melt_result.fee_paid);
+            // Execute the payment
+            match wallet.melt(&melt_quote.id).await {
+                Ok(melt_result) => {
+                    println!("BIP-353 payment successful!");
+                    println!("  State: {}", melt_result.state);
+                    println!("  Amount paid: {} sats", melt_result.amount);
+                    println!("  Fee paid: {} sats", melt_result.fee_paid);
 
-                        if let Some(preimage) = melt_result.preimage {
-                            println!("  Payment preimage: {}", preimage);
-                        }
-                    }
-                    Err(e) => {
-                        println!("BIP-353 payment failed: {}", e);
+                    if let Some(preimage) = melt_result.preimage {
+                        println!("  Payment preimage: {}", preimage);
                     }
                 }
-            }
-            Err(e) => {
-                println!("Failed to get BIP-353 melt quote: {}", e);
-                println!("This could be because:");
-                println!("1. The BIP-353 address format is invalid");
-                println!("2. DNS resolution failed (expected for this example)");
-                println!("3. No Lightning offer found in the DNS records");
-                println!("4. DNSSEC validation failed");
+                Err(e) => {
+                    println!("BIP-353 payment failed: {}", e);
+                }
             }
         }
-    } else {
-        println!("Mint quote was not paid within the timeout period");
-        println!("In a real application, you would wait longer or check periodically");
-
-        // Even without funding, we can still demonstrate the BIP353 resolution attempt
-        println!("\nDemonstrating BIP-353 resolution (without payment)...");
-
-        let payment_amount_sats = 100;
-        let payment_amount_msat = payment_amount_sats * MSAT_IN_SAT;
-
-        match wallet
-            .melt_bip353_quote(bip353_address, payment_amount_msat)
-            .await
-        {
-            Ok(_) => {
-                println!("BIP-353 resolution successful (unexpected for example address)");
-            }
-            Err(e) => {
-                println!("BIP-353 resolution failed as expected: {}", e);
-                println!("This demonstrates that the wallet method is working correctly");
-            }
+        Err(e) => {
+            println!("Failed to get BIP-353 melt quote: {}", e);
+            println!("This could be because:");
+            println!("1. The BIP-353 address format is invalid");
+            println!("2. DNS resolution failed (expected for this example)");
+            println!("3. No Lightning offer found in the DNS records");
+            println!("4. DNSSEC validation failed");
         }
     }
 
