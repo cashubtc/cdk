@@ -202,7 +202,8 @@ impl Mint {
         );
 
         tracing::debug!(
-            "New melt quote {} for {} {} with request id {}",
+            "New {} melt quote {} for {} {} with request id {}",
+            quote.payment_method,
             quote.id,
             amount_quote_unit,
             unit,
@@ -308,7 +309,8 @@ impl Mint {
         );
 
         tracing::debug!(
-            "New melt quote {} for {} {} with request id {}",
+            "New {} melt quote {} for {} {} with request id {}",
+            quote.payment_method,
             quote.id,
             amount,
             unit,
@@ -578,7 +580,7 @@ impl Mint {
                 // correct and the mint should pay the full invoice amount if inputs
                 // > `then quote.amount` are included. This is checked in the
                 // `verify_melt` method.
-                let partial_amount = match quote.unit {
+                let _partial_amount = match quote.unit {
                     CurrencyUnit::Sat | CurrencyUnit::Msat => {
                         match self.check_melt_expected_ln_fees(&quote, melt_request).await {
                             Ok(amount) => amount,
@@ -590,10 +592,10 @@ impl Mint {
                     }
                     _ => None,
                 };
-                tracing::debug!("partial_amount: {:?}", partial_amount);
+
                 let ln = match self.payment_processors.get(&PaymentProcessorKey::new(
                     quote.unit.clone(),
-                    PaymentMethod::Bolt11,
+                    quote.payment_method.clone(),
                 )) {
                     Some(ln) => ln,
                     None => {
@@ -613,6 +615,7 @@ impl Mint {
                         if pay.status == MeltQuoteState::Unknown
                             || pay.status == MeltQuoteState::Failed =>
                     {
+                        tracing::warn!("Got {} status when paying melt quote {} for {} {}. Checking with backend...", pay.status, quote.id, quote.amount, quote.unit);
                         let check_response =
                             if let Ok(ok) = check_payment_state(Arc::clone(ln), &quote).await {
                                 ok
@@ -733,6 +736,7 @@ impl Mint {
 
         Ok(res)
     }
+
     /// Process melt request marking proofs as spent
     /// The melt request must be verifyed using [`Self::verify_melt_request`]
     /// before calling [`Self::process_melt_request`]
@@ -746,8 +750,6 @@ impl Mint {
         payment_preimage: Option<String>,
         total_spent: Amount,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
-        tracing::debug!("Processing melt quote: {}", melt_request.quote());
-
         let input_ys = melt_request.inputs().ys()?;
 
         proof_writer
@@ -763,8 +765,10 @@ impl Mint {
 
         let mut change = None;
 
+        let inputs_amount = melt_request.inputs_amount()?;
+
         // Check if there is change to return
-        if melt_request.inputs_amount()? > total_spent {
+        if inputs_amount > total_spent {
             // Check if wallet provided change outputs
             if let Some(outputs) = melt_request.outputs().clone() {
                 let blinded_messages: Vec<PublicKey> =
@@ -831,10 +835,17 @@ impl Mint {
                 proof_writer.commit();
                 tx.commit().await?;
             } else {
+                tracing::info!(
+                    "Inputs for {} {} greater then spent on melt {} but change outputs not provided.",
+                    quote.id,
+                    inputs_amount,
+                    total_spent
+                );
                 proof_writer.commit();
                 tx.commit().await?;
             }
         } else {
+            tracing::debug!("No change required for melt {}", quote.id);
             proof_writer.commit();
             tx.commit().await?;
         }
@@ -844,6 +855,18 @@ impl Mint {
             payment_preimage.clone(),
             change.clone(),
             MeltQuoteState::Paid,
+        );
+
+        tracing::debug!(
+            "Melt for quote {} completed total spent {}, total inputs: {}, change given: {}",
+            quote.id,
+            total_spent,
+            inputs_amount,
+            change
+                .as_ref()
+                .map(|c| Amount::try_sum(c.iter().map(|a| a.amount))
+                    .expect("Change cannot overflow"))
+                .unwrap_or_default()
         );
 
         Ok(MeltQuoteBolt11Response {
