@@ -184,6 +184,9 @@ export CDK_MINTD_LISTEN_HOST="127.0.0.1"
 export CDK_MINTD_LISTEN_PORT=8085
 export CDK_MINTD_LN_BACKEND="cln"
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
+export CDK_MINTD_LOGGING_OUTPUT="both"
+export CDK_MINTD_LOGGING_CONSOLE_LEVEL="debug"
+export CDK_MINTD_LOGGING_FILE_LEVEL="debug"
 export RUST_BACKTRACE=1
 export CDK_MINTD_DATABASE="$CDK_MINTD_DATABASE"
 
@@ -192,6 +195,7 @@ echo "Project root: $PROJECT_ROOT"
 echo "Working directory: \$CDK_MINTD_WORK_DIR"
 echo "CLN RPC path: \$CDK_MINTD_CLN_RPC_PATH"
 echo "Database type: \$CDK_MINTD_DATABASE"
+echo "Logging: \$CDK_MINTD_LOGGING_OUTPUT (console: \$CDK_MINTD_LOGGING_CONSOLE_LEVEL, file: \$CDK_MINTD_LOGGING_FILE_LEVEL)"
 echo "---"
 
 exec cargo run --bin cdk-mintd
@@ -209,6 +213,9 @@ export CDK_MINTD_LISTEN_HOST="127.0.0.1"
 export CDK_MINTD_LISTEN_PORT=8087
 export CDK_MINTD_LN_BACKEND="lnd"
 export CDK_MINTD_MNEMONIC="cattle gold bind busy sound reduce tone addict baby spend february strategy"
+export CDK_MINTD_LOGGING_OUTPUT="both"
+export CDK_MINTD_LOGGING_CONSOLE_LEVEL="debug"
+export CDK_MINTD_LOGGING_FILE_LEVEL="debug"
 export RUST_BACKTRACE=1
 export CDK_MINTD_DATABASE="$CDK_MINTD_DATABASE"
 
@@ -217,6 +224,7 @@ echo "Project root: $PROJECT_ROOT"
 echo "Working directory: \$CDK_MINTD_WORK_DIR"
 echo "LND address: \$CDK_MINTD_LND_ADDRESS"
 echo "Database type: \$CDK_MINTD_DATABASE"
+echo "Logging: \$CDK_MINTD_LOGGING_OUTPUT (console: \$CDK_MINTD_LOGGING_CONSOLE_LEVEL, file: \$CDK_MINTD_LOGGING_FILE_LEVEL)"
 echo "---"
 
 exec cargo run --bin cdk-mintd
