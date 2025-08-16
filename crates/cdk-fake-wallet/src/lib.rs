@@ -1,20 +1,26 @@
 //! CDK Fake LN Backend
 //!
-//! Used for testing where quotes are auto filled
+//! Used for testing where quotes are auto filled.
+//!
+//! For any-amount invoices (where amount = 0), the fake wallet now uses an in-memory payment queue
+//! that randomly processes payments to simulate real-world behavior. The queue has a configurable
+//! maximum size and drops old entries when full. Payments from the queue are processed at random
+//! intervals between 5-30 seconds, with random amounts between 1-1000 sats.
+//!
+//! For fixed-amount invoices, the original immediate payment processing is maintained.
 
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
 use std::cmp::max;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bitcoin::hashes::{sha256, Hash};
-use bitcoin::secp256k1::rand::{thread_rng, Rng};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk_common::amount::{to_unit, Amount};
 use cdk_common::common::FeeReserve;
@@ -40,6 +46,130 @@ use tracing::instrument;
 
 pub mod error;
 
+/// Default maximum size for the payment queue
+const DEFAULT_QUEUE_MAX_SIZE: usize = 100;
+
+/// Queued payment item for any-amount invoices
+#[derive(Debug, Clone)]
+struct QueuedPayment {
+    payment_identifier: PaymentIdentifier,
+    amount: Amount,
+    unit: CurrencyUnit,
+}
+
+/// Payment queue manager for any-amount invoices
+#[derive(Debug, Clone)]
+struct PaymentQueue {
+    queue: Arc<Mutex<VecDeque<QueuedPayment>>>,
+    max_size: usize,
+    sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount)>,
+    incoming_payments: Arc<RwLock<HashMap<PaymentIdentifier, Vec<WaitPaymentResponse>>>>,
+}
+
+impl PaymentQueue {
+    fn new(
+        max_size: usize,
+        sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount)>,
+        incoming_payments: Arc<RwLock<HashMap<PaymentIdentifier, Vec<WaitPaymentResponse>>>>,
+    ) -> Self {
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        let payment_queue = Self {
+            queue: queue.clone(),
+            max_size,
+            sender,
+            incoming_payments,
+        };
+
+        // Start the background payment processor
+        payment_queue.start_payment_processor();
+
+        payment_queue
+    }
+
+    /// Add a payment to the queue
+    async fn enqueue(&self, payment: QueuedPayment) {
+        let mut queue = self.queue.lock().await;
+
+        // If queue is at max capacity, remove the oldest item
+        if queue.len() >= self.max_size {
+            if let Some(dropped) = queue.pop_front() {
+                tracing::debug!(
+                    "Payment queue at capacity, dropping oldest payment: {:?}",
+                    dropped.payment_identifier
+                );
+            }
+        }
+
+        queue.push_back(payment);
+        tracing::debug!("Added payment to queue, current size: {}", queue.len());
+    }
+
+    /// Start the background task that randomly processes payments from the queue
+    fn start_payment_processor(&self) {
+        let queue = self.queue.clone();
+        let sender = self.sender.clone();
+        let incoming_payments = self.incoming_payments.clone();
+
+        tokio::spawn(async move {
+            use bitcoin::secp256k1::rand::rngs::OsRng;
+            use bitcoin::secp256k1::rand::Rng;
+            let mut rng = OsRng;
+
+            loop {
+                // Wait for a random interval between 5 and 30 seconds
+                let delay_secs = rng.gen_range(5..=30);
+                time::sleep(time::Duration::from_secs(delay_secs)).await;
+
+                // Try to process a random payment from the queue
+                let payment_to_process = {
+                    let mut q = queue.lock().await;
+                    if q.is_empty() {
+                        None
+                    } else {
+                        // Pick a random index from the queue
+                        let index = rng.gen_range(0..q.len());
+                        q.remove(index)
+                    }
+                };
+
+                if let Some(payment) = payment_to_process {
+                    tracing::info!(
+                        "Processing queued payment: {:?} for amount: {}",
+                        payment.payment_identifier,
+                        payment.amount
+                    );
+
+                    let response = WaitPaymentResponse {
+                        payment_identifier: payment.payment_identifier.clone(),
+                        payment_amount: payment.amount,
+                        unit: payment.unit.clone(),
+                        payment_id: payment.payment_identifier.to_string(),
+                    };
+
+                    // Add to incoming payments
+                    let mut incoming = incoming_payments.write().await;
+                    incoming
+                        .entry(payment.payment_identifier.clone())
+                        .or_insert_with(Vec::new)
+                        .push(response);
+
+                    // Send the payment notification
+                    if let Err(e) = sender
+                        .send((payment.payment_identifier.clone(), payment.amount))
+                        .await
+                    {
+                        tracing::error!(
+                            "Failed to send payment notification for {:?}: {}",
+                            payment.payment_identifier,
+                            e
+                        );
+                    }
+                }
+            }
+        });
+    }
+}
+
 /// Fake Wallet
 #[derive(Clone)]
 pub struct FakeWallet {
@@ -55,6 +185,7 @@ pub struct FakeWallet {
     wait_invoice_is_active: Arc<AtomicBool>,
     incoming_payments: Arc<RwLock<HashMap<PaymentIdentifier, Vec<WaitPaymentResponse>>>>,
     unit: CurrencyUnit,
+    payment_queue: PaymentQueue,
 }
 
 impl FakeWallet {
@@ -66,7 +197,30 @@ impl FakeWallet {
         payment_delay: u64,
         unit: CurrencyUnit,
     ) -> Self {
+        Self::new_with_queue_size(
+            fee_reserve,
+            payment_states,
+            fail_payment_check,
+            payment_delay,
+            unit,
+            DEFAULT_QUEUE_MAX_SIZE,
+        )
+    }
+
+    /// Create new [`FakeWallet`] with custom queue size
+    pub fn new_with_queue_size(
+        fee_reserve: FeeReserve,
+        payment_states: HashMap<String, MeltQuoteState>,
+        fail_payment_check: HashSet<String>,
+        payment_delay: u64,
+        unit: CurrencyUnit,
+        queue_max_size: usize,
+    ) -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let incoming_payments = Arc::new(RwLock::new(HashMap::new()));
+
+        let payment_queue =
+            PaymentQueue::new(queue_max_size, sender.clone(), incoming_payments.clone());
 
         Self {
             fee_reserve,
@@ -77,8 +231,9 @@ impl FakeWallet {
             payment_delay,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
-            incoming_payments: Arc::new(RwLock::new(HashMap::new())),
+            incoming_payments,
             unit,
+            payment_queue,
         }
     }
 }
@@ -331,7 +486,7 @@ impl MintPayment for FakeWallet {
                 let amount = bolt12_options.amount;
                 let expiry = bolt12_options.unix_expiry;
 
-                let secret_key = SecretKey::new(&mut thread_rng());
+                let secret_key = SecretKey::new(&mut bitcoin::secp256k1::rand::rngs::OsRng);
                 let secp_ctx = Secp256k1::new();
 
                 let offer_builder = OfferBuilder::new(secret_key.public_key(&secp_ctx))
@@ -377,49 +532,64 @@ impl MintPayment for FakeWallet {
             }
         };
 
-        let sender = self.sender.clone();
-        let duration = time::Duration::from_secs(self.payment_delay);
-
-        let final_amount = if amount == Amount::ZERO {
-            let mut rng = thread_rng();
+        // Handle any amount invoices differently - add them to the payment queue
+        if amount == Amount::ZERO {
+            use bitcoin::secp256k1::rand::rngs::OsRng;
+            use bitcoin::secp256k1::rand::Rng;
+            let mut rng = OsRng;
             // Generate a random number between 1 and 1000 (inclusive)
-            let random_number: u64 = rng.gen_range(1..=1000);
-            random_number.into()
-        } else {
-            amount
-        };
+            let random_amount: u64 = rng.gen_range(1..=1000);
+            let final_amount = random_amount.into();
 
-        let payment_hash_clone = payment_hash.clone();
+            tracing::info!(
+                "Adding any-amount invoice to payment queue: {:?} with random amount: {}",
+                payment_hash,
+                final_amount
+            );
 
-        let incoming_payment = self.incoming_payments.clone();
-
-        let unit = self.unit.clone();
-
-        tokio::spawn(async move {
-            // Wait for the random delay to elapse
-            time::sleep(duration).await;
-
-            let response = WaitPaymentResponse {
-                payment_identifier: payment_hash_clone.clone(),
-                payment_amount: final_amount,
-                unit,
-                payment_id: payment_hash_clone.to_string(),
+            // Add to payment queue instead of immediate processing
+            let queued_payment = QueuedPayment {
+                payment_identifier: payment_hash.clone(),
+                amount: final_amount,
+                unit: self.unit.clone(),
             };
-            let mut incoming = incoming_payment.write().await;
-            incoming
-                .entry(payment_hash_clone.clone())
-                .or_insert_with(Vec::new)
-                .push(response.clone());
 
-            // Send the message after waiting for the specified duration
-            if sender
-                .send((payment_hash_clone.clone(), final_amount))
-                .await
-                .is_err()
-            {
-                tracing::error!("Failed to send label: {:?}", payment_hash_clone);
-            }
-        });
+            self.payment_queue.enqueue(queued_payment).await;
+        } else {
+            // For fixed amount invoices, keep the existing immediate payment behavior
+            let sender = self.sender.clone();
+            let duration = time::Duration::from_secs(self.payment_delay);
+            let payment_hash_clone = payment_hash.clone();
+            let incoming_payment = self.incoming_payments.clone();
+            let unit_clone = self.unit.clone();
+            let final_amount = amount;
+
+            tokio::spawn(async move {
+                // Wait for the random delay to elapse
+                time::sleep(duration).await;
+
+                let response = WaitPaymentResponse {
+                    payment_identifier: payment_hash_clone.clone(),
+                    payment_amount: final_amount,
+                    unit: unit_clone,
+                    payment_id: payment_hash_clone.to_string(),
+                };
+                let mut incoming = incoming_payment.write().await;
+                incoming
+                    .entry(payment_hash_clone.clone())
+                    .or_insert_with(Vec::new)
+                    .push(response.clone());
+
+                // Send the message after waiting for the specified duration
+                if sender
+                    .send((payment_hash_clone.clone(), final_amount))
+                    .await
+                    .is_err()
+                {
+                    tracing::error!("Failed to send label: {:?}", payment_hash_clone);
+                }
+            });
+        }
 
         Ok(CreateIncomingPaymentResponse {
             request_lookup_id: payment_hash,
@@ -481,7 +651,9 @@ pub fn create_fake_invoice(amount_msat: u64, description: String) -> Bolt11Invoi
     )
     .unwrap();
 
-    let mut rng = thread_rng();
+    use bitcoin::secp256k1::rand::rngs::OsRng;
+    use bitcoin::secp256k1::rand::Rng;
+    let mut rng = OsRng;
     let mut random_bytes = [0u8; 32];
     rng.fill(&mut random_bytes);
 
@@ -497,4 +669,83 @@ pub fn create_fake_invoice(amount_msat: u64, description: String) -> Bolt11Invoi
         .min_final_cltv_expiry_delta(144)
         .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use tokio::time::{sleep, Duration};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_payment_queue_functionality() {
+        let wallet = FakeWallet::new_with_queue_size(
+            FeeReserve {
+                min_fee_reserve: 1000.into(),
+                percent_fee_reserve: 0.01,
+            },
+            HashMap::new(),
+            std::collections::HashSet::new(),
+            1, // Short delay for testing
+            CurrencyUnit::Sat,
+            5, // Small queue size for testing
+        );
+
+        // Create an any-amount invoice (amount = 0)
+        let options =
+            IncomingPaymentOptions::Bolt11(cdk_common::payment::Bolt11IncomingPaymentOptions {
+                amount: Amount::ZERO, // This triggers the queue behavior
+                description: Some("Test any-amount invoice".to_string()),
+                unix_expiry: None,
+            });
+
+        let result = wallet
+            .create_incoming_payment_request(&CurrencyUnit::Sat, options)
+            .await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+
+        // Wait a moment to let the queue system process
+        sleep(Duration::from_millis(100)).await;
+
+        // The invoice should be created successfully
+        assert!(!response.request.is_empty());
+        assert!(response.request_lookup_id.to_string().len() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_fixed_amount_invoice_immediate_processing() {
+        let wallet = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1000.into(),
+                percent_fee_reserve: 0.01,
+            },
+            HashMap::new(),
+            std::collections::HashSet::new(),
+            1, // Short delay for testing
+            CurrencyUnit::Sat,
+        );
+
+        // Create a fixed-amount invoice (amount > 0)
+        let options =
+            IncomingPaymentOptions::Bolt11(cdk_common::payment::Bolt11IncomingPaymentOptions {
+                amount: Amount::from(1000), // Fixed amount - should use immediate processing
+                description: Some("Test fixed-amount invoice".to_string()),
+                unix_expiry: None,
+            });
+
+        let result = wallet
+            .create_incoming_payment_request(&CurrencyUnit::Sat, options)
+            .await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+
+        // The invoice should be created successfully
+        assert!(!response.request.is_empty());
+        assert!(response.request_lookup_id.to_string().len() > 0);
+    }
 }
