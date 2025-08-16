@@ -11,8 +11,7 @@ rust-version.workspace = true
 readme = "README.md"
 
 [features]
-default = ["bip353"]
-bip353 = ["dep:trust-dns-resolver"]
+default = []
 sqlcipher = ["cdk-sqlite/sqlcipher"]
 # MSRV is not tracked with redb enabled
 redb = ["dep:cdk-redb"]
@@ -21,7 +20,7 @@ redb = ["dep:cdk-redb"]
 anyhow.workspace = true
 bip39.workspace = true
 bitcoin.workspace = true
-cdk = { workspace = true, default-features = false, features = ["wallet", "auth"]}
+cdk = { workspace = true, default-features = false, features = ["wallet", "auth", "bip353"]}
 cdk-redb = { workspace = true, features = ["wallet"], optional = true }
 cdk-sqlite = { workspace = true, features = ["wallet"] }
 clap.workspace = true
@@ -40,4 +39,3 @@ reqwest.workspace = true
 url.workspace = true
 serde_with.workspace = true
 lightning.workspace = true
-trust-dns-resolver = { version = "0.23.2", optional = true }
