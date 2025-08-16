@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use cdk::amount::{SplitTarget, MSAT_IN_SAT};
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, MeltOptions, MintQuoteState};
+use cdk::nuts::{CurrencyUnit, MintQuoteState};
 use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
@@ -106,12 +106,9 @@ async fn main() -> anyhow::Result<()> {
             payment_amount_sats
         );
 
-        // Create melt options for an amountless offer
-        let melt_options = MeltOptions::new_amountless(payment_amount_sat * 1_000);
-
         // Use the new wallet method to resolve BIP353 address and get melt quote
         match wallet
-            .melt_bip353_quote(bip353_address, payment_amount_sats)
+            .melt_bip353_quote(bip353_address, payment_amount_sats * 1_000)
             .await
         {
             Ok(melt_quote) => {
@@ -156,10 +153,9 @@ async fn main() -> anyhow::Result<()> {
 
         let payment_amount_sats = 100;
         let payment_amount_msat = payment_amount_sats * MSAT_IN_SAT;
-        let melt_options = MeltOptions::new_amountless(payment_amount_msat);
 
         match wallet
-            .melt_bip353_quote(bip353_address, Some(melt_options))
+            .melt_bip353_quote(bip353_address, payment_amount_msat)
             .await
         {
             Ok(_) => {

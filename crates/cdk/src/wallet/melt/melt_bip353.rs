@@ -10,7 +10,7 @@ use tracing::instrument;
 #[cfg(feature = "bip353")]
 use crate::bip353::{Bip353Address, PaymentType};
 use crate::nuts::MeltOptions;
-use crate::{Error, Wallet};
+use crate::{Amount, Error, Wallet};
 
 impl Wallet {
     /// Melt Quote for BIP353 human-readable address
@@ -21,7 +21,7 @@ impl Wallet {
     /// # Arguments
     ///
     /// * `bip353_address` - Human-readable address in the format "user@domain.com"
-    /// * `options` - Optional melt options (typically for amountless offers)
+    /// * `amount_msat` - Amount to pay in millisatoshis
     ///
     /// # Returns
     ///
@@ -38,22 +38,21 @@ impl Wallet {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use cdk::nuts::MeltOptions;
+    /// use cdk::Amount;
     /// # use cdk::Wallet;
     /// # async fn example(wallet: Wallet) -> Result<(), cdk::Error> {
-    /// let options = MeltOptions::new_amountless(100_000); // 100 sats in msat
     /// let quote = wallet
-    ///     .melt_bip353_quote("alice@example.com", Some(options))
+    ///     .melt_bip353_quote("alice@example.com", Amount::from(100_000)) // 100 sats in msat
     ///     .await?;
     /// # Ok(())
     /// # }
     /// ```
     #[cfg(feature = "bip353")]
-    #[instrument(skip(self), fields(address = %bip353_address))]
+    #[instrument(skip(self, amount_msat), fields(address = %bip353_address))]
     pub async fn melt_bip353_quote(
         &self,
         bip353_address: &str,
-        options: MeltOptions,
+        amount_msat: impl Into<Amount>,
     ) -> Result<MeltQuote, Error> {
         // Parse the BIP353 address
         let address = Bip353Address::from_str(bip353_address).map_err(|e| {
@@ -85,6 +84,9 @@ impl Wallet {
             })?;
 
         tracing::debug!("Found Lightning offer in BIP353 instructions: {}", offer);
+
+        // Create melt options with the provided amount
+        let options = MeltOptions::new_amountless(amount_msat);
 
         // Create a melt quote for the BOLT12 offer
         self.melt_bolt12_quote(offer.clone(), Some(options)).await

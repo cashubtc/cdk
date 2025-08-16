@@ -191,7 +191,10 @@ pub async fn pay(
 
                 // Get melt quote for BIP353 address (internally resolves and gets BOLT12 quote)
                 let quote = wallet
-                    .melt_bip353_quote(&bip353_addr, options.expect("Amount is required"))
+                    .melt_bip353_quote(
+                        &bip353_addr,
+                        options.expect("Amount is required").amount_msat(),
+                    )
                     .await?;
                 process_payment(&wallet, quote).await?;
             }
