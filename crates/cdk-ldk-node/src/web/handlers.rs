@@ -41,6 +41,18 @@ where
     }
 }
 
+// Custom deserializer for optional f64 that handles empty strings
+fn deserialize_optional_f64<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    match opt.as_deref() {
+        None | Some("") => Ok(None),
+        Some(s) => s.parse::<f64>().map(Some).map_err(serde::de::Error::custom),
+    }
+}
+
 use crate::web::templates::{
     balance_card, error_message, form_card, format_msats_as_btc, format_sats_as_btc, info_card,
     info_card_with_copy, layout, payment_list_item, success_message, usage_metrics_card,
@@ -1128,6 +1140,7 @@ pub async fn post_create_bolt11(
 
 #[derive(Deserialize)]
 pub struct CreateBolt12Form {
+    #[serde(deserialize_with = "deserialize_optional_f64")]
     amount_btc: Option<f64>,
     description: Option<String>,
     #[serde(deserialize_with = "deserialize_optional_u32")]
