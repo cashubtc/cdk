@@ -46,19 +46,17 @@ pub async fn ws_main(
     mut on_drop: mpsc::Receiver<SubId>,
     wallet: Arc<Wallet>,
 ) {
-    let url = mint_url
+    let mut url = mint_url
         .join_paths(&["v1", "ws"])
-        .as_mut()
-        .map(|url| {
-            if url.scheme() == "https" {
-                url.set_scheme("wss").expect("Could not set scheme");
-            } else {
-                url.set_scheme("ws").expect("Could not set scheme");
-            }
-            url
-        })
-        .expect("Could not join paths")
-        .to_string();
+        .expect("Could not join paths");
+
+    if url.scheme() == "https" {
+        url.set_scheme("wss").expect("Could not set scheme");
+    } else {
+        url.set_scheme("ws").expect("Could not set scheme");
+    }
+
+    let url = url.to_string();
 
     let mut active_subscriptions = HashMap::<SubId, mpsc::Sender<_>>::new();
     let mut failure_count = 0;

@@ -14,7 +14,7 @@ new-migration target name:
     fi
     
     timestamp=$(date +%Y%m%d%H%M%S)
-    migration_path="./crates/cdk-sqlite/src/{{target}}/migrations/${timestamp}_{{name}}.sql"
+    migration_path="./crates/cdk-sql-common/src/{{target}}/migrations/${timestamp}_{{name}}.sql"
     
     # Create the file
     mkdir -p "$(dirname "$migration_path")"
@@ -79,13 +79,39 @@ test-all db="memory":
     #!/usr/bin/env bash
     just test {{db}}
     ./misc/itests.sh "{{db}}"
+    status=$?
+    if [ $status -ne 0 ]; then
+       echo "Failed test with status {$status}"
+       exit $status
+    fi
     ./misc/fake_itests.sh "{{db}}" external_signatory
+    status=$?
+    if [ $status -ne 0 ]; then
+       echo "Failed test with status {$status}"
+       exit $status
+    fi
     ./misc/fake_itests.sh "{{db}}"
+    exit $?
     
 test-nutshell:
   #!/usr/bin/env bash
+  set -euo pipefail
+  
+  # Function to cleanup docker containers
+  cleanup() {
+    echo "Cleaning up docker containers..."
+    docker stop nutshell 2>/dev/null || true
+    docker rm nutshell 2>/dev/null || true
+    unset CDK_ITESTS_DIR
+  }
+  
+  # Trap to ensure cleanup happens on exit (success or failure)
+  trap cleanup EXIT
+  
   docker run -d -p 3338:3338 --name nutshell -e MINT_LIGHTNING_BACKEND=FakeWallet -e MINT_LISTEN_HOST=0.0.0.0 -e MINT_LISTEN_PORT=3338 -e MINT_PRIVATE_KEY=TEST_PRIVATE_KEY -e MINT_INPUT_FEE_PPK=100  cashubtc/nutshell:latest poetry run mint
   
+  export CDK_ITESTS_DIR=$(mktemp -d)
+
   # Wait for the Nutshell service to be ready
   echo "Waiting for Nutshell to start..."
   max_attempts=30
@@ -94,8 +120,6 @@ test-nutshell:
     attempt=$((attempt+1))
     if [ $attempt -ge $max_attempts ]; then
       echo "Nutshell failed to start after $max_attempts attempts"
-      docker stop nutshell
-      docker rm nutshell
       exit 1
     fi
     echo "Waiting for Nutshell to start (attempt $attempt/$max_attempts)..."
@@ -105,12 +129,34 @@ test-nutshell:
   
   export CDK_TEST_MINT_URL=http://127.0.0.1:3338
   export LN_BACKEND=FAKEWALLET
-  cargo test -p cdk-integration-tests --test happy_path_mint_wallet
-  cargo test -p cdk-integration-tests --test test_fees
+  
+  # Track test results
+  test_exit_code=0
+  
+  # Run first test and capture exit code
+  echo "Running happy_path_mint_wallet test..."
+  if ! cargo test -p cdk-integration-tests --test happy_path_mint_wallet; then
+    echo "ERROR: happy_path_mint_wallet test failed"
+    test_exit_code=1
+  fi
+  
+  # Run second test and capture exit code
+  echo "Running test_fees test..."
+  if ! cargo test -p cdk-integration-tests --test test_fees; then
+    echo "ERROR: test_fees test failed"
+    test_exit_code=1
+  fi
+  
   unset CDK_TEST_MINT_URL
   unset LN_BACKEND
-  docker stop nutshell
-  docker rm nutshell
+  
+  # Exit with error code if any test failed
+  if [ $test_exit_code -ne 0 ]; then
+    echo "One or more tests failed"
+    exit $test_exit_code
+  fi
+  
+  echo "All tests passed successfully"
     
 
 # run `cargo clippy` on everything
@@ -150,12 +196,19 @@ goose-changelog-commits *COMMITS="5":
 itest db:
   #!/usr/bin/env bash
   ./misc/itests.sh "{{db}}"
+  exit $?
 
   
 fake-mint-itest db:
   #!/usr/bin/env bash
   ./misc/fake_itests.sh "{{db}}" external_signatory
+  status=$?
+  if [ $status -ne 0 ]; then
+     echo "Failed test with status {$status}"
+     exit $status
+  fi
   ./misc/fake_itests.sh "{{db}}"
+  exit $?
 
   
 itest-payment-processor ln:

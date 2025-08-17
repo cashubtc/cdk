@@ -97,9 +97,8 @@ impl MintPayment for Cln {
             self.rpc_socket
         );
 
-        let last_pay_index = self.get_last_pay_index().await?.map(|idx| {
+        let last_pay_index = self.get_last_pay_index().await?.inspect(|&idx| {
             tracing::info!("CLN: Found last payment index: {}", idx);
-            idx
         });
 
         tracing::debug!("CLN: Connecting to CLN node...");

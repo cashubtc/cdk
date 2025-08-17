@@ -57,41 +57,48 @@ impl OnNewSubscription for OnSubscription {
             }
         }
 
-        to_return.extend(
-            futures::future::try_join_all(melt_queries)
-                .await
-                .map(|quotes| {
-                    quotes
-                        .into_iter()
-                        .filter_map(|quote| quote.map(|x| x.into()))
-                        .map(|x: MeltQuoteBolt11Response<Uuid>| x.into())
-                        .collect::<Vec<_>>()
-                })
-                .map_err(|e| e.to_string())?,
-        );
-        to_return.extend(
-            futures::future::try_join_all(mint_queries)
-                .await
-                .map(|quotes| {
-                    quotes
-                        .into_iter()
-                        .filter_map(|quote| quote.map(|x| x.into()))
-                        .map(|x: MintQuoteBolt11Response<Uuid>| x.into())
-                        .collect::<Vec<_>>()
-                })
-                .map_err(|e| e.to_string())?,
-        );
+        if !melt_queries.is_empty() {
+            to_return.extend(
+                futures::future::try_join_all(melt_queries)
+                    .await
+                    .map(|quotes| {
+                        quotes
+                            .into_iter()
+                            .filter_map(|quote| quote.map(|x| x.into()))
+                            .map(|x: MeltQuoteBolt11Response<Uuid>| x.into())
+                            .collect::<Vec<_>>()
+                    })
+                    .map_err(|e| e.to_string())?,
+            );
+        }
 
-        to_return.extend(
-            datastore
-                .get_proofs_states(public_keys.as_slice())
-                .await
-                .map_err(|e| e.to_string())?
-                .into_iter()
-                .enumerate()
-                .filter_map(|(idx, state)| state.map(|state| (public_keys[idx], state).into()))
-                .map(|state: ProofState| state.into()),
-        );
+        if !mint_queries.is_empty() {
+            to_return.extend(
+                futures::future::try_join_all(mint_queries)
+                    .await
+                    .map(|quotes| {
+                        quotes
+                            .into_iter()
+                            .filter_map(|quote| quote.map(|x| x.into()))
+                            .map(|x: MintQuoteBolt11Response<Uuid>| x.into())
+                            .collect::<Vec<_>>()
+                    })
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+
+        if !public_keys.is_empty() {
+            to_return.extend(
+                datastore
+                    .get_proofs_states(public_keys.as_slice())
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(idx, state)| state.map(|state| (public_keys[idx], state).into()))
+                    .map(|state: ProofState| state.into()),
+            );
+        }
 
         Ok(to_return)
     }

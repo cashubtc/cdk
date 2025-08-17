@@ -8,9 +8,16 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
+use tokio::time::Instant;
+
+use crate::database::DatabaseConnector;
+
 /// Pool error
-#[derive(thiserror::Error, Debug)]
-pub enum Error<E> {
+#[derive(Debug, thiserror::Error)]
+pub enum Error<E>
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
     /// Mutex Poison Error
     #[error("Internal: PoisonError")]
     Poison,
@@ -24,16 +31,25 @@ pub enum Error<E> {
     Resource(#[from] E),
 }
 
+/// Configuration
+pub trait DatabaseConfig: Clone + Debug + Send + Sync {
+    /// Max resource sizes
+    fn max_size(&self) -> usize;
+
+    /// Default timeout
+    fn default_timeout(&self) -> Duration;
+}
+
 /// Trait to manage resources
-pub trait ResourceManager: Debug {
+pub trait DatabasePool: Debug {
     /// The resource to be pooled
-    type Resource: Debug;
+    type Connection: DatabaseConnector;
 
     /// The configuration that is needed in order to create the resource
-    type Config: Clone + Debug;
+    type Config: DatabaseConfig;
 
     /// The error the resource may return when creating a new instance
-    type Error: Debug;
+    type Error: Debug + std::error::Error + Send + Sync + 'static;
 
     /// Creates a new resource with a given config.
     ///
@@ -43,20 +59,20 @@ pub trait ResourceManager: Debug {
         config: &Self::Config,
         stale: Arc<AtomicBool>,
         timeout: Duration,
-    ) -> Result<Self::Resource, Error<Self::Error>>;
+    ) -> Result<Self::Connection, Error<Self::Error>>;
 
     /// The object is dropped
-    fn drop(_resource: Self::Resource) {}
+    fn drop(_resource: Self::Connection) {}
 }
 
 /// Generic connection pool of resources R
 #[derive(Debug)]
 pub struct Pool<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
     config: RM::Config,
-    queue: Mutex<Vec<(Arc<AtomicBool>, RM::Resource)>>,
+    queue: Mutex<Vec<(Arc<AtomicBool>, RM::Connection)>>,
     in_use: AtomicUsize,
     max_size: usize,
     default_timeout: Duration,
@@ -66,15 +82,24 @@ where
 /// The pooled resource
 pub struct PooledResource<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
-    resource: Option<(Arc<AtomicBool>, RM::Resource)>,
+    resource: Option<(Arc<AtomicBool>, RM::Connection)>,
     pool: Arc<Pool<RM>>,
+}
+
+impl<RM> Debug for PooledResource<RM>
+where
+    RM: DatabasePool,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Resource: {:?}", self.resource)
+    }
 }
 
 impl<RM> Drop for PooledResource<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
     fn drop(&mut self) {
         if let Some(resource) = self.resource.take() {
@@ -90,9 +115,9 @@ where
 
 impl<RM> Deref for PooledResource<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
-    type Target = RM::Resource;
+    type Target = RM::Connection;
 
     fn deref(&self) -> &Self::Target {
         &self.resource.as_ref().expect("resource already dropped").1
@@ -101,7 +126,7 @@ where
 
 impl<RM> DerefMut for PooledResource<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.resource.as_mut().expect("resource already dropped").1
@@ -110,17 +135,17 @@ where
 
 impl<RM> Pool<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
     /// Creates a new pool
-    pub fn new(config: RM::Config, max_size: usize, default_timeout: Duration) -> Arc<Self> {
+    pub fn new(config: RM::Config) -> Arc<Self> {
         Arc::new(Self {
+            default_timeout: config.default_timeout(),
+            max_size: config.max_size(),
             config,
             queue: Default::default(),
             in_use: Default::default(),
             waiter: Default::default(),
-            default_timeout,
-            max_size,
         })
     }
 
@@ -140,6 +165,7 @@ where
         timeout: Duration,
     ) -> Result<PooledResource<RM>, Error<RM::Error>> {
         let mut resources = self.queue.lock().map_err(|_| Error::Poison)?;
+        let time = Instant::now();
 
         loop {
             if let Some((stale, resource)) = resources.pop() {
@@ -174,6 +200,11 @@ where
                 .map_err(|_| Error::Poison)
                 .and_then(|(lock, timeout_result)| {
                     if timeout_result.timed_out() {
+                        tracing::warn!(
+                            "Timeout waiting for the resource (pool size: {}). Waited {} ms",
+                            self.max_size,
+                            time.elapsed().as_millis()
+                        );
                         Err(Error::Timeout)
                     } else {
                         Ok(lock)
@@ -185,7 +216,7 @@ where
 
 impl<RM> Drop for Pool<RM>
 where
-    RM: ResourceManager,
+    RM: DatabasePool,
 {
     fn drop(&mut self) {
         if let Ok(mut resources) = self.queue.lock() {
