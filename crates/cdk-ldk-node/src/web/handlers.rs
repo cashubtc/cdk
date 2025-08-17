@@ -54,8 +54,8 @@ where
 }
 
 use crate::web::templates::{
-    balance_card, error_message, form_card, format_msats_as_btc, format_sats_as_btc, info_card,
-    info_card_with_copy, layout, payment_list_item, success_message, usage_metrics_card,
+    error_message, form_card, format_msats_as_btc, format_sats_as_btc, info_card, layout,
+    payment_list_item, success_message,
 };
 use crate::CdkLdkNode;
 
@@ -194,7 +194,7 @@ fn calculate_usage_metrics(payments: &[ldk_node::payment::PaymentDetails]) -> Us
 pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let node = &state.node.inner;
 
-    let node_id = node.node_id().to_string();
+    let _node_id = node.node_id().to_string();
     let alias = node
         .node_alias()
         .map(|a| a.to_string())
@@ -240,82 +240,139 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
     let metrics = calculate_usage_metrics(&all_payments);
 
     let content = html! {
-        // First row with node info, balance, and quick actions
-        div class="grid" {
-            (info_card_with_copy(
-                "Node Information",
-                vec![
-                    ("Node ID", node_id),
-                    ("Alias", alias),
-                    ("Listening Addresses", listening_addresses.join(", ")),
-                    ("Connected Peers", format!("{num_connected_peers} / {num_peers}")),
-                    ("Active Channels", format!("{} / {}", num_active_channels, num_active_channels + num_inactive_channels)),
-                ]
-            ))
+        h2 style="text-align: center; margin-bottom: 3rem;" { "Dashboard" }
 
-            (balance_card(
-                "Balance Summary",
-                vec![
-                    ("Total Lightning Balance", format_sats_as_btc(balances.total_lightning_balance_sats)),
-                    ("Total On-chain Balance", format_sats_as_btc(balances.total_onchain_balance_sats)),
-                    ("Spendable On-chain Balance", format_sats_as_btc(balances.spendable_onchain_balance_sats)),
-                    ("Combined Total", format_sats_as_btc(balances.total_lightning_balance_sats + balances.total_onchain_balance_sats)),
-                ]
-            ))
+        // Balance Summary as metric cards
+        div class="card" {
+            h2 { "Balance Summary" }
+            div class="metrics-container" {
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats)) }
+                    div class="metric-label" { "Lightning Balance" }
+                }
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
+                    div class="metric-label" { "On-chain Balance" }
+                }
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(balances.spendable_onchain_balance_sats)) }
+                    div class="metric-label" { "Spendable Balance" }
+                }
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats + balances.total_onchain_balance_sats)) }
+                    div class="metric-label" { "Combined Total" }
+                }
+            }
+        }
 
-            div class="card" {
-                h2 { "Quick Actions" }
-                div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 1rem;" {
-                    a href="/balance" style="text-decoration: none;" {
-                        button style="width: 100%;" { "Lightning Balance" }
+        // Node Information - new layout based on Figma design
+        section class="node-info-section" {
+            div class="node-info-main-container" {
+                // Left side - Node avatar and info
+                div class="node-info-left" {
+                    div class="node-avatar" {
+                        img src="/static/images/nut.png" alt="Node Avatar" class="avatar-image";
                     }
-                    a href="/onchain" style="text-decoration: none;" {
-                        button style="width: 100%;" { "On-chain Balance" }
+                    div class="node-details" {
+                        h2 class="node-name" { (alias.clone()) }
+                        p class="node-address" {
+                            "Listening Address: "
+                            (listening_addresses.first().unwrap_or(&"127.0.0.1:8090".to_string()))
+                        }
                     }
-                    a href="/channels/open" style="text-decoration: none;" {
-                        button style="width: 100%;" { "Open Channel" }
+                }
+
+                // Middle - Gray container with spinning globe animation
+                div class="node-content-box" {
+                    div class="globe-container" {
+                        svg aria-hidden="true" style="position: absolute; width: 0; height: 0; overflow: hidden;" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" {
+                            defs {
+                                symbol id="icon-world" viewBox="0 0 216 100" {
+                                    title { "world" }
+                                    g fill-rule="nonzero" {
+                                        path d="M48 94l-3-4-2-14c0-3-1-5-3-8-4-5-6-9-4-11l1-4 1-3c2-1 9 0 11 1l3 2 2 3 1 2 8 2c1 1 2 2 0 7-1 5-2 7-4 7l-2 3-2 4-2 3-2 1c-2 2-2 9 0 10v1l-3-2zM188 90l3-2h1l-4 2zM176 87h2l-1 1-1-1zM195 86l3-2-2 2h-1zM175 83l-1-2-2-1-6 1c-5 1-5 1-5-2l1-4 2-2 4-3c5-4 9-5 9-3 0 3 3 3 4 1s1-2 1 0l3 4c2 4 1 6-2 10-4 3-7 4-8 1zM100 80c-2-4-4-11-3-14l-1-6c-1-1-2-3-1-4 0-2-4-3-9-3-4 0-5 0-7-3-1-2-2-4-1-7l3-6 3-3c1-2 10-4 11-2l6 3 5-1c3 1 4 0 5-1s-1-2-2-2l-4-1c0-1 3-3 6-2 3 0 3 0 2-2-2-2-6-2-7 0l-2 2-1 2-3-2-3-3c-1 0-1 1 1 2l1 2-2-1c-4-3-6-2-8 1-2 2-4 3-5 1-1-1 0-4 2-4l2-2 1-2 3-2 3-2 2 1c3 0 7-3 5-4l-1-3h-1l-1 3-2 2h-1l-2-1c-2-1-2-1 1-4 5-4 6-4 11-3 4 1 4 1 2 2v1l3-1 6-1c5 0 6-1 5-2l2 1c1 2 2 2 2 1-2-4 12-7 14-4l11 1 29 3 1 2-3 3c-2 0-2 0-1 1l1 3h-2c-1-1-2-3-1-4h-4l-6 2c-1 1-1 1 2 2 3 2 4 6 1 8v3c1 3 0 3-3 0s-4-1-2 3c3 4 3 7-2 8-5 2-4 1-2 5 2 3 0 5-3 4l-2-1-2-2-1-1-1-1-2-2c-1-2-1-2-4 0-2 1-3 4-3 5-1 3-1 3-3 1l-2-4c0-2-1-3-2-3l-1-1-4-2-6-1-4-2c-1 1 3 4 5 4h2c1 1 0 2-1 4-3 2-7 4-8 3l-7-10 5 10c2 2 3 3 5 2 3 0 2 1-2 7-4 4-4 5-4 8 1 3 1 4-1 6l-2 3c0 2-6 9-8 9l-3-2zm22-51l-2-3-1-1v-1c-2 0-2 2-1 4 2 3 4 4 4 1z" {}
+                                        path d="M117 75c-1-2 0-6 2-7h2l-2 5c0 2-1 3-2 1zM186 64h-3c-2 0-6-3-5-5 1-1 6 1 7 3l2 3-2-1zM160 62h2c1 1 0 1-1 1l-1-1zM154 57l-1-2c2 2 3 1 2-2l-2-3 2 2 1 4 1 3v2l-3-4zM161 59c-1-1-1-2 1-4 3-3 4-3 4 0 0 4-2 6-5 4zM167 59l1-1 1 1-1 1-1-1zM176 59l1-1v2l-1-1zM141 52l1-1v2l-1-1zM170 52l1-1v2l-1-1zM32 50c-1-2-4-3-6-4-4-1-5-3-7-6l-3-5-2-2c-1-3-1-6 2-9 1-1 2-3 1-5 0-4-3-5-8-4H4l2-2 1-1 1-1 2-1c1-2 7-2 23-1 12 1 12 1 12-1h1c1 1 2 2 3 1l1 1-3 1c-2 0-8 4-8 5l2 1 2 3 4-3c3-4 4-4 5-3l3 1 1 2 1 2c3 0-1 2-4 2-2 0-2 0-2 2 1 1 0 2-2 2-4 1-12 9-12 12 0 2 0 2-1 1 0-2-2-3-6-2-3 0-4 1-4 3-2 4 0 6 3 4 3-1 3-1 2 1s-1 2 1 2l1 2 1 3 1 1-3-2zm8-24l1-1c0-1-4-3-5-2l1 1v2c-1 1-1 1 0 0h3zM167 47v-3l1 2c1 2 0 3-1 1z" {}
+                                        path d="M41 43h2l-1 1-1-1zM37 42v-1l2 1h-2zM16 38l1-1v2l-1-1zM172 32l2-3h1c1 2 0 4-3 4v-1zM173 26h2l-1 1-1-1zM56 22h2l-2 1v-1zM87 19l1-2 1 3-1 1-1-2zM85 19l1-1v1l-1 1v-1zM64 12l1-3c2 0-1-4-3-4s-2 0 0-1V3l-6 2c-3 1-3 1-2-1 2-1 4-2 15-2h14c0 2-6 7-10 9l-5 2-2 1-2-2zM53 12l1-1c2 0-1-3-3-3-2-1-1-1 1-1l4 2c2 1 2 1 1 3-2 1-4 2-4 0zM80 12l1-1 1 1-1 1-1-1zM36 8h-2V7c1-1 7 0 7 1h-5zM116 7l1-1v1l-1 1V7zM50 5h2l-1 1-1-1zM97 5l2-1c0-1 1-1 0 0l-2 1z" {}
+                                    }
+                                }
+                                symbol id="icon-repeated-world" viewBox="0 0 432 100" {
+                                    use href="#icon-world" x="0" {}
+                                    use href="#icon-world" x="189" {}
+                                }
+                            }
+                        }
+                        span class="world" {
+                            span class="images" {
+                                svg { use href="#icon-repeated-world" {} }
+                            }
+                        }
                     }
-                    a href="/invoices" style="text-decoration: none;" {
-                        button style="width: 100%;" { "Create Invoice" }
-                    }
-                    a href="/payments/send" style="text-decoration: none;" {
-                        button style="width: 100%;" { "Make Lightning Payment" }
-                    }
-                    a href="/payments" style="text-decoration: none;" {
-                        button style="width: 100%;" { "Payment History" }
+                }
+            }
+
+            // Right side - Connections metrics
+            aside class="node-metrics" {
+                div class="card" {
+                    h3 { "Connections" }
+                    div class="metrics-container" {
+                        div class="metric-card" {
+                            div class="metric-value" { (format!("{}/{}", num_connected_peers, num_peers)) }
+                            div class="metric-label" { "Connected Peers" }
+                        }
+                        div class="metric-card" {
+                            div class="metric-value" { (format!("{}/{}", num_active_channels, num_active_channels + num_inactive_channels)) }
+                            div class="metric-label" { "Active Channels" }
+                        }
                     }
                 }
             }
         }
 
-        // Second row with payment activity taking full width
+        // Lightning Network Activity as metric cards
         div class="card" {
             h2 { "Lightning Network Activity" }
-            div class="grid" style="margin-top: 1rem;" {
-                (usage_metrics_card(
-                    "Lightning Network",
-                    vec![
-                        ("24h Inflow", format_sats_as_btc(metrics.lightning_inflow_24h)),
-                        ("24h Outflow", format_sats_as_btc(metrics.lightning_outflow_24h)),
-                        ("All-time Inflow", format_sats_as_btc(metrics.lightning_inflow_all_time)),
-                        ("All-time Outflow", format_sats_as_btc(metrics.lightning_outflow_all_time)),
-                    ]
-                ))
-                (usage_metrics_card(
-                    "On-chain",
-                    vec![
-                        ("24h Inflow", format_sats_as_btc(metrics.onchain_inflow_24h)),
-                        ("24h Outflow", format_sats_as_btc(metrics.onchain_outflow_24h)),
-                        ("All-time Inflow", format_sats_as_btc(metrics.onchain_inflow_all_time)),
-                        ("All-time Outflow", format_sats_as_btc(metrics.onchain_outflow_all_time)),
-                    ]
-                ))
-            }
-            div style="margin-top: 1rem; text-align: center;" {
-                a href="/payments" {
-                    button style="width: 100%;" { "View Full Payment History" }
+            div class="metrics-container" {
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(metrics.lightning_inflow_24h)) }
+                    div class="metric-label" { "24h LN Inflow" }
+                }
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(metrics.lightning_outflow_24h)) }
+                    div class="metric-label" { "24h LN Outflow" }
+                }
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(metrics.lightning_inflow_all_time)) }
+                    div class="metric-label" { "All-time LN Inflow" }
+                }
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(metrics.lightning_outflow_all_time)) }
+                    div class="metric-label" { "All-time LN Outflow" }
                 }
             }
+        }
+
+        // On-chain Activity as metric cards
+        div class="card" {
+            h2 { "On-chain Activity" }
+            div class="metrics-container" {
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(metrics.onchain_inflow_24h)) }
+                    div class="metric-label" { "24h On-chain Inflow" }
+                }
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(metrics.onchain_outflow_24h)) }
+                    div class="metric-label" { "24h On-chain Outflow" }
+                }
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(metrics.onchain_inflow_all_time)) }
+                    div class="metric-label" { "All-time On-chain Inflow" }
+                }
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(metrics.onchain_outflow_all_time)) }
+                    div class="metric-label" { "All-time On-chain Outflow" }
+                }
+            }
+
         }
     };
 
@@ -374,79 +431,96 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
 
     let content = if channels.is_empty() {
         html! {
+            h2 style="text-align: center; margin-bottom: 3rem;" { "Lightning" }
+
+            // Quick Actions section - matching dashboard style
+            div class="card" style="margin-bottom: 2rem;" {
+                h2 { "Quick Actions" }
+                div style="display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap;" {
+                    a href="/channels/open" style="text-decoration: none; flex: 1; min-width: 200px;" {
+                        button class="button-primary" style="width: 100%;" { "Open Channel" }
+                    }
+                    a href="/invoices" style="text-decoration: none; flex: 1; min-width: 200px;" {
+                        button class="button-primary" style="width: 100%;" { "Create Invoice" }
+                    }
+                    a href="/payments/send" style="text-decoration: none; flex: 1; min-width: 200px;" {
+                        button class="button-primary" style="width: 100%;" { "Make Lightning Payment" }
+                    }
+                }
+            }
+
+            // Balance Information as metric cards
             div class="card" {
-                h2 { "Lightning Channels" }
-
-                // Quick Actions moved to the top
-                div style="margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid #eee;" {
-                    h3 { "Quick Actions" }
-                    div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 1rem;" {
-                        a href="/invoices" style="text-decoration: none;" {
-                            button style="width: 100%;" { "Create Lightning Invoice" }
-                        }
-                        a href="/payments/send" style="text-decoration: none;" {
-                            button style="width: 100%;" { "Make Lightning Payment" }
-                        }
-                        a href="/channels/open" style="text-decoration: none;" {
-                            button style="width: 100%;" { "Open New Channel" }
-                        }
-                        a href="/onchain" style="text-decoration: none;" {
-                            button style="width: 100%;" { "View On-chain Balance" }
-                        }
+                h2 { "Balance Information" }
+                div class="metrics-container" {
+                    div class="metric-card" {
+                        div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats)) }
+                        div class="metric-label" { "Lightning Balance" }
+                    }
+                    div class="metric-card" {
+                        div class="metric-value" { (format!("{}", num_active_channels + num_inactive_channels)) }
+                        div class="metric-label" { "Total Channels" }
+                    }
+                    div class="metric-card" {
+                        div class="metric-value" { (format!("{}", num_active_channels)) }
+                        div class="metric-label" { "Active Channels" }
+                    }
+                    div class="metric-card" {
+                        div class="metric-value" { (format!("{}", num_inactive_channels)) }
+                        div class="metric-label" { "Inactive Channels" }
                     }
                 }
+            }
 
-                // Balance information
-                (balance_card(
-                    "Balance Information",
-                    vec![
-                        ("Total Lightning Balance", format_sats_as_btc(balances.total_lightning_balance_sats)),
-                        ("Active Channels", format!("{} / {}", num_active_channels, num_active_channels + num_inactive_channels)),
-                    ]
-                ))
-
+            div class="card" {
                 p { "No channels found. Create your first channel to start using Lightning Network." }
-
-                // Add Open New Channel button at the bottom of the card
-                div style="margin-top: 1rem; border-top: 1px solid #eee; padding-top: 1rem;" {
-                    a href="/channels/open" {
-                        button style="width: 100%;" { "Open New Channel" }
-                    }
-                }
             }
         }
     } else {
         html! {
-            div class="card" {
-                h2 { "Lightning Channels" }
+            h2 style="text-align: center; margin-bottom: 3rem;" { "Lightning" }
 
-                // Quick Actions moved to the top
-                div style="margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid #eee;" {
-                    h3 { "Quick Actions" }
-                    div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 1rem;" {
-                        a href="/invoices" style="text-decoration: none;" {
-                            button style="width: 100%;" { "Create Lightning Invoice" }
-                        }
-                        a href="/payments/send" style="text-decoration: none;" {
-                            button style="width: 100%;" { "Make Lightning Payment" }
-                        }
-                        a href="/channels/open" style="text-decoration: none;" {
-                            button style="width: 100%;" { "Open New Channel" }
-                        }
-                        a href="/onchain" style="text-decoration: none;" {
-                            button style="width: 100%;" { "View On-chain Balance" }
-                        }
+            // Quick Actions section - matching dashboard style
+            div class="card" style="margin-bottom: 2rem;" {
+                h2 { "Quick Actions" }
+                div style="display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap;" {
+                    a href="/channels/open" style="text-decoration: none; flex: 1; min-width: 200px;" {
+                        button class="button-primary" style="width: 100%;" { "Open Channel" }
+                    }
+                    a href="/invoices" style="text-decoration: none; flex: 1; min-width: 200px;" {
+                        button class="button-primary" style="width: 100%;" { "Create Invoice" }
+                    }
+                    a href="/payments/send" style="text-decoration: none; flex: 1; min-width: 200px;" {
+                        button class="button-primary" style="width: 100%;" { "Make Lightning Payment" }
                     }
                 }
+            }
 
-                // Balance information
-                (balance_card(
-                    "Balance Information",
-                    vec![
-                        ("Total Lightning Balance", format_sats_as_btc(balances.total_lightning_balance_sats)),
-                        ("Active Channels", format!("{} / {}", num_active_channels, num_active_channels + num_inactive_channels)),
-                    ]
-                ))
+            // Balance Information as metric cards
+            div class="card" {
+                h2 { "Balance Information" }
+                div class="metrics-container" {
+                    div class="metric-card" {
+                        div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats)) }
+                        div class="metric-label" { "Lightning Balance" }
+                    }
+                    div class="metric-card" {
+                        div class="metric-value" { (format!("{}", num_active_channels + num_inactive_channels)) }
+                        div class="metric-label" { "Total Channels" }
+                    }
+                    div class="metric-card" {
+                        div class="metric-value" { (format!("{}", num_active_channels)) }
+                        div class="metric-label" { "Active Channels" }
+                    }
+                    div class="metric-card" {
+                        div class="metric-value" { (format!("{}", num_inactive_channels)) }
+                        div class="metric-label" { "Inactive Channels" }
+                    }
+                }
+            }
+
+            div class="card" {
+                h2 { "Channel Details" }
 
                 // Channels list
                 @for channel in &channels {
@@ -493,12 +567,6 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                     }
                 }
 
-                // Add Open New Channel button at the bottom of the card
-                div style="margin-top: 1rem; border-top: 1px solid #eee; padding-top: 1rem;" {
-                    a href="/channels/open" {
-                        button style="width: 100%;" { "Open New Channel" }
-                    }
-                }
             }
         }
     };
@@ -525,21 +593,57 @@ pub async fn onchain_page(
         .unwrap_or("overview");
 
     let mut content = html! {
-        // Balance overview for onchain
-        (balance_card(
-            "On-chain Balance",
-            vec![
-                ("Total On-chain Balance", format_sats_as_btc(balances.total_onchain_balance_sats)),
-                ("Spendable On-chain Balance", format_sats_as_btc(balances.spendable_onchain_balance_sats)),
-            ]
-        ))
+        h2 style="text-align: center; margin-bottom: 3rem;" { "On-chain" }
+
+        // Quick Actions section - matching dashboard style
+        div class="card" style="margin-bottom: 2rem;" {
+            h2 { "Quick Actions" }
+            div style="display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap;" {
+                a href="/onchain?action=receive" style="text-decoration: none; flex: 1; min-width: 200px;" {
+                    button class="button-primary" style="width: 100%;" { "Receive Bitcoin" }
+                }
+                a href="/onchain?action=send" style="text-decoration: none; flex: 1; min-width: 200px;" {
+                    button class="button-primary" style="width: 100%;" { "Send Bitcoin" }
+                }
+            }
+        }
+
+        // On-chain Balance as metric cards
+        div class="card" {
+            h2 { "On-chain Balance" }
+            div class="metrics-container" {
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
+                    div class="metric-label" { "Total Balance" }
+                }
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(balances.spendable_onchain_balance_sats)) }
+                    div class="metric-label" { "Spendable Balance" }
+                }
+            }
+        }
     };
 
     match action {
         "send" => {
-            // Show send form
+            // Show send form above balance section
             content = html! {
-                (content)
+                h2 style="text-align: center; margin-bottom: 3rem;" { "On-chain" }
+
+                // Quick Actions section - matching dashboard style
+                div class="card" style="margin-bottom: 2rem;" {
+                    h2 { "Quick Actions" }
+                    div style="display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap;" {
+                        a href="/onchain?action=receive" style="text-decoration: none; flex: 1; min-width: 200px;" {
+                            button class="button-primary" style="width: 100%;" { "Receive Bitcoin" }
+                        }
+                        a href="/onchain?action=send" style="text-decoration: none; flex: 1; min-width: 200px;" {
+                            button class="button-primary" style="width: 100%;" { "Send Bitcoin" }
+                        }
+                    }
+                }
+
+                // Send form above balance
                 (form_card(
                     "Send On-chain Payment",
                     html! {
@@ -553,63 +657,84 @@ pub async fn onchain_page(
                                 input type="number" id="amount_sat" name="amount_sat" placeholder="0" {}
                             }
                             input type="hidden" id="send_action" name="send_action" value="send" {}
-                            button type="submit" onclick="document.getElementById('send_action').value='send'" { "Send Payment" }
-                            " "
-                            button type="submit" onclick="document.getElementById('send_action').value='send_all'; document.getElementById('amount_sat').value=''" { "Send All" }
-                            " "
-                            a href="/onchain" { button type="button" { "Cancel" } }
-                        }
-                    }
-                ))
-            };
-        }
-        "receive" => {
-            // Show generate address form
-            content = html! {
-                (content)
-                (form_card(
-                    "Generate New Address",
-                    html! {
-                        form method="post" action="/onchain/new-address" {
-                            p { "Click the button below to generate a new Bitcoin address for receiving on-chain payments." }
-                            button type="submit" { "Generate New Address" }
-                            " "
-                            a href="/onchain" { button type="button" { "Cancel" } }
-                        }
-                    }
-                ))
-            };
-        }
-        _ => {
-            // Show actions overview
-            content = html! {
-                (content)
-                div class="grid" {
-                    div class="card card-flex" {
-                        div class="card-flex-content" {
-                            h2 { "Receive Bitcoin" }
-                            p { "Generate a new Bitcoin address to receive on-chain payments." }
-                        }
-                        div class="card-flex-button" {
-                            a href="/onchain?action=receive" {
-                                button style="width: 100%;" { "Generate New Address" }
+                            div style="display: flex; justify-content: space-between; gap: 1rem; margin-top: 2rem;" {
+                                a href="/onchain" { button type="button" { "Cancel" } }
+                                div style="display: flex; gap: 0.5rem;" {
+                                    button type="submit" onclick="document.getElementById('send_action').value='send'" { "Send Payment" }
+                                    button type="submit" onclick="document.getElementById('send_action').value='send_all'; document.getElementById('amount_sat').value=''" { "Send All" }
+                                }
                             }
                         }
                     }
+                ))
 
-                    div class="card card-flex" {
-                        div class="card-flex-content" {
-                            h2 { "Send Bitcoin" }
-                            p { "Send Bitcoin to any address on the network." }
+                // On-chain Balance as metric cards
+                div class="card" {
+                    h2 { "On-chain Balance" }
+                    div class="metrics-container" {
+                        div class="metric-card" {
+                            div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
+                            div class="metric-label" { "Total Balance" }
                         }
-                        div class="card-flex-button" {
-                            a href="/onchain?action=send" {
-                                button style="width: 100%;" { "Send Payment" }
-                            }
+                        div class="metric-card" {
+                            div class="metric-value" { (format_sats_as_btc(balances.spendable_onchain_balance_sats)) }
+                            div class="metric-label" { "Spendable Balance" }
                         }
                     }
                 }
             };
+        }
+        "receive" => {
+            // Show generate address form above balance section
+            content = html! {
+                h2 style="text-align: center; margin-bottom: 3rem;" { "On-chain" }
+
+                // Quick Actions section - matching dashboard style
+                div class="card" style="margin-bottom: 2rem;" {
+                    h2 { "Quick Actions" }
+                    div style="display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap;" {
+                        a href="/onchain?action=receive" style="text-decoration: none; flex: 1; min-width: 200px;" {
+                            button class="button-primary" style="width: 100%;" { "Receive Bitcoin" }
+                        }
+                        a href="/onchain?action=send" style="text-decoration: none; flex: 1; min-width: 200px;" {
+                            button class="button-primary" style="width: 100%;" { "Send Bitcoin" }
+                        }
+                    }
+                }
+
+                // Generate address form above balance
+                (form_card(
+                    "Generate New Address",
+                    html! {
+                        form method="post" action="/onchain/new-address" {
+                            p style="margin-bottom: 2rem;" { "Click the button below to generate a new Bitcoin address for receiving on-chain payments." }
+                            div style="display: flex; justify-content: space-between; gap: 1rem;" {
+                                a href="/onchain" { button type="button" { "Cancel" } }
+                                button class="button-primary" type="submit" { "Generate New Address" }
+                            }
+                        }
+                    }
+                ))
+
+                // On-chain Balance as metric cards
+                div class="card" {
+                    h2 { "On-chain Balance" }
+                    div class="metrics-container" {
+                        div class="metric-card" {
+                            div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
+                            div class="metric-label" { "Total Balance" }
+                        }
+                        div class="metric-card" {
+                            div class="metric-value" { (format_sats_as_btc(balances.spendable_onchain_balance_sats)) }
+                            div class="metric-label" { "Spendable Balance" }
+                        }
+                    }
+                }
+            };
+        }
+        _ => {
+            // Show overview with just the balance and quick actions at the top
+            // No additional content needed since quick actions are now at the top
         }
     }
 
@@ -979,6 +1104,7 @@ pub async fn post_close_channel(
 
 pub async fn invoices_page(State(_state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let content = html! {
+        h2 style="text-align: center; margin-bottom: 3rem;" { "Invoices" }
         div class="grid" {
             (form_card(
                 "Create BOLT11 Invoice",
@@ -1278,13 +1404,15 @@ pub async fn payments_page(
     };
 
     let content = html! {
+        h2 style="text-align: center; margin-bottom: 3rem;" { "Payments" }
         div class="card" {
             div class="payment-list-header" {
-                h2 { "Payment History" }
-                p style="margin: 0.5rem 0; color: #666; font-size: 0.9rem;" {
-                    "Lightning (BOLT11, BOLT12, Spontaneous) and On-chain payments"
+                div {
+                    h2 { "Payment History" }
                     @if total_count > 0 {
-                        " - Showing " (start_index + 1) " to " (end_index) " of " (total_count) " payments"
+                        p style="margin: 0.25rem 0 0 0; color: #666; font-size: 0.9rem;" {
+                            "Showing " (start_index + 1) " to " (end_index) " of " (total_count) " payments"
+                        }
                     }
                 }
                 div class="payment-filter-tabs" {
@@ -1402,17 +1530,17 @@ pub async fn payments_page(
                 }
             }
 
-            // Per-page selector (bottom)
+            // Compact per-page selector integrated with pagination
             @if total_count > 0 {
-                div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #eee; display: flex; justify-content: center; align-items: center; gap: 0.5rem;" {
-                    label for="per-page" style="font-size: 0.9rem; color: #6c757d;" { "Show:" }
-                    select id="per-page" onchange="changePage()" style="padding: 0.25rem; font-size: 0.9rem; border: 1px solid #dee2e6; border-radius: 4px;" {
+                div class="per-page-selector" {
+                    label for="per-page" { "Show:" }
+                    select id="per-page" onchange="changePage()" {
                         option value="10" selected[per_page == 10] { "10" }
                         option value="25" selected[per_page == 25] { "25" }
                         option value="50" selected[per_page == 50] { "50" }
                         option value="100" selected[per_page == 100] { "100" }
                     }
-                    span style="font-size: 0.9rem; color: #6c757d;" { "payments per page" }
+                    span { "per page" }
                 }
             }
         }
@@ -1437,6 +1565,7 @@ pub async fn send_payments_page(
     State(_state): State<AppState>,
 ) -> Result<Html<String>, StatusCode> {
     let content = html! {
+        h2 style="text-align: center; margin-bottom: 3rem;" { "Send Payment" }
         div class="grid" {
             (form_card(
                 "Pay BOLT11 Invoice",

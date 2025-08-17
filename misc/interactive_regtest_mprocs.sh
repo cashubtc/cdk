@@ -144,7 +144,7 @@ done < "$CDK_ITESTS_DIR/progress_pipe") &
 
 # Wait for regtest setup (up to 120 seconds)
 echo "Waiting for regtest network to be ready..."
-for ((i=0; i<120; i++)); do
+for ((i=0; i<220; i++)); do
     if [ -f "$CDK_ITESTS_DIR/signal_received" ]; then
         break
     fi
