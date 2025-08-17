@@ -3,7 +3,7 @@
 set -e
 
 # Configuration
-MINT_PORT=8085
+MINT_PORT=8666
 WALLET_PORT=4448
 MINT_CONTAINER_NAME="nutshell-mint"
 WALLET_CONTAINER_NAME="nutshell-wallet"
@@ -49,7 +49,7 @@ echo "Created temporary directory for mintd: $CDK_ITESTS"
 export CDK_MINTD_URL="$MINT_URL"
 export CDK_MINTD_WORK_DIR="$CDK_ITESTS"
 export CDK_MINTD_LISTEN_HOST="127.0.0.1"
-export CDK_MINTD_LISTEN_PORT="8085"
+export CDK_MINTD_LISTEN_PORT="$MINT_PORT"
 export CDK_MINTD_LN_BACKEND="fakewallet"
 export CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS="sat,usd"
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"

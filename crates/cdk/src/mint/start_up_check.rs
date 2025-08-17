@@ -10,12 +10,17 @@ use crate::types::PaymentProcessorKey;
 impl Mint {
     /// Checks the states of melt quotes that are **PENDING** or **UNKNOWN** to the mint with the ln node
     pub async fn check_pending_melt_quotes(&self) -> Result<(), Error> {
-        let melt_quotes = self.localstore.get_melt_quotes().await.unwrap();
+        // TODO: We should have a db query to do this filtering
+        let melt_quotes = self.localstore.get_melt_quotes().await?;
         let pending_quotes: Vec<MeltQuote> = melt_quotes
             .into_iter()
             .filter(|q| q.state == MeltQuoteState::Pending || q.state == MeltQuoteState::Unknown)
             .collect();
         tracing::info!("There are {} pending melt quotes.", pending_quotes.len());
+
+        if pending_quotes.is_empty() {
+            return Ok(());
+        }
 
         let mut tx = self.localstore.begin_transaction().await?;
 
