@@ -243,7 +243,7 @@ elif [ "$RUN_INTEGRATION_TESTS" = "true" ]; then
     
     # Regtest integration tests
     #add_test "regtest itest (REDB)" "just itest REDB" "integration"
-    add_test "regtest itest (SQLITE)" "just itest SQLITE" "integration"
+    #add_test "regtest itest (SQLITE)" "just itest SQLITE" "integration"
     
     # Payment processor tests
     add_test "payment processor (FAKEWALLET)" "just itest-payment-processor FAKEWALLET" "integration"

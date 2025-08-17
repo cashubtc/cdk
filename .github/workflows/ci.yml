@@ -248,5 +248,5 @@ jobs:
         run: nix develop -i -L .#stable --command just fake-auth-mint-itest ${{ matrix.database }} http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration
       - name: Stop and clean up Docker Compose
         run: |
-          rm -rf misc/keycloak/postgres_data
+          sudo rm -rf misc/keycloak/postgres_data
           docker compose -f misc/keycloak/docker-compose-recover.yml down
