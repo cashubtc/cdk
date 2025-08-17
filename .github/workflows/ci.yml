@@ -31,8 +31,12 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "nightly"
       - name: Cargo fmt
         run: |
           nix develop -i -L .#nightly --command bash -c '
@@ -42,6 +46,35 @@ jobs:
           '
       - name: typos
         run: nix develop -i -L .#nightly --command typos
+  
+  examples:
+    name: "Run examples"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    strategy:
+      matrix:
+        build-args:
+          [
+            mint-token,
+            melt-token,
+            p2pk,
+            proof-selection,
+            wallet
+          ]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
+      - name: Run example
+        run: nix develop -i -L .#stable --command cargo r --example ${{ matrix.build-args }}
 
   clippy:
     name: "Stable build, clippy and test"
@@ -58,8 +91,12 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Run small test matrix (PR)
         if: github.event_name == 'pull_request'
         run: nix develop -i -L .#stable --command bash -c 'TEST_SUBSET=small ./misc/test_matrix.sh'
@@ -82,10 +119,24 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Run WASM tests
         run: nix develop -i -L .#stable --command bash -c 'RUN_WASM_TESTS=true ./misc/test_matrix.sh'
 
@@ -101,10 +152,24 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Run MSRV tests
         run: nix develop -i -L .#msrv --command bash -c 'RUN_MSRV_TESTS=true ./misc/test_matrix.sh'
 
@@ -124,8 +189,12 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Run integration tests
         run: nix develop -i -L .#stable --command bash -c 'RUN_INTEGRATION_TESTS=true ./misc/test_matrix.sh'
 
@@ -149,8 +218,12 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
       - name: Start Keycloak with Backup
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml up -d
