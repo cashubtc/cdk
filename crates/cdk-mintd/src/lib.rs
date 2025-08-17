@@ -377,7 +377,7 @@ async fn configure_lightning_backend(
     settings: &config::Settings,
     mut mint_builder: MintBuilder,
     ln_routers: &mut Vec<Router>,
-    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     work_dir: &Path,
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
@@ -496,7 +496,7 @@ async fn configure_lightning_backend(
             tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
 
             let ldk_node = ldk_node_settings
-                .setup(ln_routers, settings, CurrencyUnit::Sat, runtime, work_dir)
+                .setup(ln_routers, settings, CurrencyUnit::Sat, _runtime, work_dir)
                 .await?;
 
             mint_builder = configure_backend_for_unit(
