@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::nut17::Notification;
-use cdk_common::NotificationPayload;
+use cdk_common::{Amount, MintQuoteBolt12Response, NotificationPayload};
 use uuid::Uuid;
 
 use super::OnSubscription;
@@ -58,6 +58,21 @@ impl PubSubManager {
         event.state = new_state;
 
         self.broadcast(event.into());
+    }
+
+    /// Helper function to emit a MintQuoteBolt11Response status
+    pub fn mint_quote_bolt12_status<E: TryInto<MintQuoteBolt12Response<Uuid>>>(
+        &self,
+        quote: E,
+        payment_amount: Amount,
+    ) {
+        if let Ok(mut event) = quote.try_into() {
+            event.amount_paid += payment_amount;
+
+            self.broadcast(event.into());
+        } else {
+            tracing::warn!("Could not convert quote to MintQuoteResponse");
+        }
     }
 
     /// Helper function to emit a MeltQuoteBolt11Response status

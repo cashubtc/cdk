@@ -433,8 +433,21 @@ impl Mint {
                 )
                 .await?;
 
-                self.pubsub_manager
-                    .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
+                match mint_quote.payment_method {
+                    PaymentMethod::Bolt11 => {
+                        self.pubsub_manager
+                            .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
+                    }
+                    PaymentMethod::Bolt12 => {
+                        self.pubsub_manager.mint_quote_bolt12_status(
+                            mint_quote.clone(),
+                            wait_payment_response.payment_amount,
+                        );
+                    }
+                    _ => {
+                        // We don't send ws updates for unknown methods
+                    }
+                }
             }
         } else {
             tracing::info!("Received payment notification for already seen payment.");
