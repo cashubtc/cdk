@@ -56,6 +56,7 @@ cdk-mint-rpc = { path = "./crates/cdk-mint-rpc", version = "=0.11.0" }
 cdk-redb = { path = "./crates/cdk-redb", default-features = true, version = "=0.11.0" }
 cdk-sql-common = { path = "./crates/cdk-sql-common", default-features = true, version = "=0.11.0" }
 cdk-sqlite = { path = "./crates/cdk-sqlite", default-features = true, version = "=0.11.0" }
+cdk-postgres = { path = "./crates/cdk-postgres", default-features = true, version = "=0.11.0" }
 cdk-signatory = { path = "./crates/cdk-signatory", version = "=0.11.0", default-features = false }
 cdk-mintd = { path = "./crates/cdk-mintd", version = "=0.11.0", default-features = false }
 clap = { version = "4.5.31", features = ["derive"] }
@@ -75,7 +76,7 @@ tokio-stream = "0.1.15"
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 url = "2.3"
-uuid = { version = "=1.12.1", features = ["v4", "serde"] }
+uuid = { version = "1.17", features = ["v4", "serde"] }
 utoipa = { version = "5.3.1", features = [
     "preserve_order",
     "preserve_path_order",
@@ -101,7 +102,7 @@ prost = "0.13.1"
 tonic-build = "0.13.1"
 strum = "0.27.1"
 strum_macros = "0.27.1"
-rustls = { version = "0.23.28", default-features = false, features = ["ring"] }
+rustls = { version = "0.23.27", default-features = false, features = ["ring"] }
 
 
 
