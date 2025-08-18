@@ -541,6 +541,7 @@ impl Mint {
     }
 
     /// Handle payment for a specific mint quote (extracted from pay_mint_quote)
+    #[instrument(skip_all)]
     async fn handle_mint_quote_payment(
         tx: &mut Box<dyn database::MintTransaction<'_, database::Error> + Send + Sync + '_>,
         mint_quote: &MintQuote,
