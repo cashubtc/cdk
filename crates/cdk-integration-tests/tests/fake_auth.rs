@@ -331,13 +331,7 @@ async fn test_mint_with_auth() {
     let mint_amount: Amount = 100.into();
 
     let (_, proofs) = wallet
-        .mint_once_paid(
-            mint_amount,
-            None,
-            SplitTarget::default(),
-            None,
-            Duration::from_secs(10),
-        )
+        .mint_once_paid(mint_amount, None, Duration::from_secs(10))
         .await
         .unwrap();
 

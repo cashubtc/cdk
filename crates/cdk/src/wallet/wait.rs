@@ -42,6 +42,7 @@ impl From<WaitableEvent> for WalletSubscription {
 }
 
 impl Wallet {
+    #[inline(always)]
     async fn wait_and_mint_quote(
         &self,
         quote: MintQuote,
@@ -57,6 +58,23 @@ impl Wallet {
     /// Mints an amount and returns the invoice to be paid, and a BoxFuture that will finalize the
     /// mint once the invoice has been paid
     pub async fn mint_once_paid(
+        &self,
+        amount: Amount,
+        description: Option<String>,
+        timeout_duration: Duration,
+    ) -> Result<(String, impl Future<Output = Result<Proofs, Error>> + '_), Error> {
+        self.mint_once_paid_ex(
+            amount,
+            description,
+            Default::default(),
+            None,
+            timeout_duration,
+        )
+        .await
+    }
+
+    /// Similar function to mint_once_paid but with no default options
+    pub async fn mint_once_paid_ex(
         &self,
         amount: Amount,
         description: Option<String>,
