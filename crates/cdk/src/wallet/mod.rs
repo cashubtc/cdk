@@ -249,7 +249,7 @@ impl Wallet {
 
     /// Query mint for current mint information
     #[instrument(skip(self))]
-    pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, Error> {
+    pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, Error> {
         match self.client.get_mint_info().await {
             Ok(mint_info) => {
                 // If mint provides time make sure it is accurate
@@ -382,7 +382,7 @@ impl Wallet {
             .await?
             .is_none()
         {
-            self.get_mint_info().await?;
+            self.fetch_mint_info().await?;
         }
 
         let keysets = self.load_mint_keysets().await?;
