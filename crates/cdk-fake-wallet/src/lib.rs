@@ -140,7 +140,7 @@ impl SecondaryRepaymentQueue {
 
                     // Create a unique hash combining the original payment identifier, timestamp, and random bytes
                     let mut hasher_input = Vec::new();
-                    hasher_input.extend_from_slice(&payment.to_string().as_bytes());
+                    hasher_input.extend_from_slice(payment.to_string().as_bytes());
                     hasher_input.extend_from_slice(&timestamp.to_le_bytes());
                     hasher_input.extend_from_slice(&random_bytes);
 
