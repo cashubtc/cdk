@@ -22,3 +22,6 @@ tracing.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }
