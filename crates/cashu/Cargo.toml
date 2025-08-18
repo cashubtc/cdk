@@ -39,6 +39,7 @@ strum_macros = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 instant = { workspace = true, features = ["wasm-bindgen", "inaccurate"] }
+uuid = { workspace = true, features = ["js"], optional = true }
 
 [dev-dependencies]
 bip39.workspace = true
