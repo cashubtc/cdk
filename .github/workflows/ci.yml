@@ -160,6 +160,7 @@ jobs:
         database: 
           [
             SQLITE,
+            POSTGRES
           ]
     steps:
       - name: checkout

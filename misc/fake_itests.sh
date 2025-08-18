@@ -77,7 +77,12 @@ if [ "${CDK_MINTD_DATABASE}" = "POSTGRES" ]; then
       postgres:16
     export PG_DB_URL="host=localhost user=${DB_USER} password=${DB_PASS} dbname=${DB_NAME} port=${DB_PORT}"
 
-    echo "Starting fresh PostgreSQL container..."
+    echo "Waiting for PostgreSQL to be ready and database '${DB_NAME}' to exist..."
+    until docker exec -e PGPASSWORD="${DB_PASS}" "${CONTAINER_NAME}" \
+        psql -U "${DB_USER}" -d "${DB_NAME}" -c "SELECT 1;" >/dev/null 2>&1; do
+      sleep 0.5
+    done
+    echo "PostgreSQL container is ready"
 fi
 
 if [ "$2" = "external_signatory" ]; then
