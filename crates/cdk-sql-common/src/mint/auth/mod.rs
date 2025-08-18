@@ -262,9 +262,10 @@ where
             FROM
                 keyset
             WHERE
-                active = 1;
+                active = :active;
             "#,
         )?
+        .bind("active", true)
         .pluck(&*conn)
         .await?
         .map(|id| Ok::<_, Error>(column_as_string!(id, Id::from_str, Id::from_bytes)))

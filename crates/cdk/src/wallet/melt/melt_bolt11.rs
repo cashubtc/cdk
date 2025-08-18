@@ -344,7 +344,7 @@ impl Wallet {
                 .swap(
                     Some(exact_amount),
                     SplitTarget::None,
-                    vec![proof.clone()],
+                    vec![proof],
                     None,
                     false,
                 )

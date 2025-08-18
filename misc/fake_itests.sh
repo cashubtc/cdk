@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Script to run fake mint tests with proper handling of race conditions
-# This script ensures the .env file is properly created and available 
+# This script ensures the .env file is properly created and available
 # before running tests
 
 # Function to perform cleanup
@@ -26,6 +26,10 @@ cleanup() {
     if [ -n "$CDK_ITESTS_DIR" ] && [ -d "$CDK_ITESTS_DIR" ]; then
         rm -rf "$CDK_ITESTS_DIR"
         echo "Temp directory removed: $CDK_ITESTS_DIR"
+    fi
+
+    if [ -n "$CONTAINER_NAME" ]; then
+        docker rm "${CONTAINER_NAME}" -f
     fi
 
     # Unset all environment variables
@@ -56,6 +60,31 @@ cargo build -p cdk-integration-tests
 
 # Start the fake mint binary with the new Rust-based approach
 echo "Starting fake mint using Rust binary..."
+
+if [ "${CDK_MINTD_DATABASE}" = "POSTGRES" ]; then
+    export CONTAINER_NAME="rust-fake-test-pg"
+    DB_USER="test"
+    DB_PASS="test"
+    DB_NAME="testdb"
+    DB_PORT="15433"
+
+    docker run -d --rm \
+      --name "${CONTAINER_NAME}" \
+      -e POSTGRES_USER="${DB_USER}" \
+      -e POSTGRES_PASSWORD="${DB_PASS}" \
+      -e POSTGRES_DB="${DB_NAME}" \
+      -p ${DB_PORT}:5432 \
+      postgres:16
+    export CDK_MINTD_DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@localhost:${DB_PORT}/${DB_NAME}"
+
+    echo "Waiting for PostgreSQL to be ready and database '${DB_NAME}' to exist..."
+    until docker exec -e PGPASSWORD="${DB_PASS}" "${CONTAINER_NAME}" \
+        psql -U "${DB_USER}" -d "${DB_NAME}" -c "SELECT 1;" >/dev/null 2>&1; do
+      sleep 0.5
+    done
+    echo "PostgreSQL container is ready"
+fi
+
 if [ "$2" = "external_signatory" ]; then
     echo "Starting with external signatory support"
 
@@ -64,7 +93,7 @@ if [ "$2" = "external_signatory" ]; then
     cargo run --bin signatory -- -w $CDK_ITESTS_DIR -u "sat" -u "usd"  &
     export CDK_SIGNATORY_PID=$!
     sleep 5
-    
+
     cargo run --bin start_fake_mint -- --enable-logging --external-signatory "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR" &
 else
     cargo run --bin start_fake_mint -- --enable-logging "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR" &

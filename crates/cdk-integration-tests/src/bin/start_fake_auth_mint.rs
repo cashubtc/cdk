@@ -45,6 +45,7 @@ struct Args {
 /// Start a fake mint with authentication using the library
 async fn start_fake_auth_mint(
     temp_dir: &Path,
+    database: &str,
     port: u16,
     openid_discovery: String,
     shutdown: Arc<Notify>,
@@ -62,6 +63,7 @@ async fn start_fake_auth_mint(
 
     let mut settings = shared::create_fake_wallet_settings(
         port,
+        database,
         Some(Mnemonic::generate(12)?.to_string()),
         None,
         Some(fake_wallet_config),
@@ -123,6 +125,7 @@ async fn main() -> Result<()> {
 
     let handle = start_fake_auth_mint(
         &temp_dir,
+        &args.database_type,
         args.port,
         args.openid_discovery.clone(),
         shutdown_clone,

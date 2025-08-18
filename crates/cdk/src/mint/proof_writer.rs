@@ -193,7 +193,9 @@ async fn reset_proofs_to_original_state(
         tx.update_proofs_states(&ys, state).await?;
     }
 
-    tx.remove_proofs(&unknown_proofs, None).await?;
+    if !unknown_proofs.is_empty() {
+        tx.remove_proofs(&unknown_proofs, None).await?;
+    }
 
     Ok(())
 }
