@@ -552,23 +552,36 @@ impl Mint {
             mint_request.verify_signature(pubkey)?;
         }
 
-        let Verification { amount, unit } =
-            match self.verify_outputs(&mut tx, &mint_request.outputs).await {
-                Ok(verification) => verification,
-                Err(err) => {
-                    tracing::debug!("Could not verify mint outputs");
+        let Verification {
+            amount: outputs_amount,
+            unit,
+        } = match self.verify_outputs(&mut tx, &mint_request.outputs).await {
+            Ok(verification) => verification,
+            Err(err) => {
+                tracing::debug!("Could not verify mint outputs");
 
-                    return Err(err);
-                }
-            };
+                return Err(err);
+            }
+        };
 
-        // We check the total value of blinded messages == mint quote
-        if amount != mint_amount {
-            return Err(Error::TransactionUnbalanced(
-                mint_amount.into(),
-                mint_request.total_amount()?.into(),
-                0,
-            ));
+        if mint_quote.payment_method == PaymentMethod::Bolt11 {
+            // For bolt11 we enforce that mint amount == quote amount
+            if outputs_amount != mint_amount {
+                return Err(Error::TransactionUnbalanced(
+                    mint_amount.into(),
+                    mint_request.total_amount()?.into(),
+                    0,
+                ));
+            }
+        } else {
+            // For other payments we just make sure outputs is not more then mint amount
+            if outputs_amount > mint_amount {
+                return Err(Error::TransactionUnbalanced(
+                    mint_amount.into(),
+                    mint_request.total_amount()?.into(),
+                    0,
+                ));
+            }
         }
 
         let unit = unit.ok_or(Error::UnsupportedUnit).unwrap();
