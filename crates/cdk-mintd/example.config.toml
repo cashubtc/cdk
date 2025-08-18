@@ -38,8 +38,12 @@ tti = 60
 
 
 [database]
-# Database engine (sqlite/redb) defaults to sqlite
+# Database engine (sqlite/postgres/redb) defaults to sqlite
 # engine = "sqlite"
+
+# PostgreSQL configuration (when engine = "postgres")
+# Set PG_DB_URL environment variable for connection string
+# Example: PG_DB_URL="host=localhost user=postgres password=password dbname=cdk-mint port=5432"
 
 [ln]
 # Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits'
