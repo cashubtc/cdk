@@ -2,12 +2,10 @@
 //!
 //! Used for testing where quotes are auto filled.
 //!
-//! For any-amount invoices (where amount = 0), the fake wallet now uses an in-memory payment queue
-//! that randomly processes payments to simulate real-world behavior. The queue has a configurable
-//! maximum size and drops old entries when full. Payments from the queue are processed at random
-//! intervals between 5-30 seconds, with random amounts between 1-1000 sats.
-//!
-//! For fixed-amount invoices, the original immediate payment processing is maintained.
+//! The fake wallet now includes a secondary repayment system that randomly repays any-amount
+//! invoices (amount = 0) multiple times at intervals less than 3 minutes to simulate real-world
+//! behavior where invoices might get multiple payments. This is in addition to the original
+//! immediate payment processing which is maintained for all invoice types.
 
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
@@ -46,66 +44,69 @@ use tracing::instrument;
 
 pub mod error;
 
-/// Default maximum size for the payment queue
-const DEFAULT_QUEUE_MAX_SIZE: usize = 100;
+/// Default maximum size for the secondary repayment queue
+const DEFAULT_REPAY_QUEUE_MAX_SIZE: usize = 100;
 
-/// Queued payment item for any-amount invoices
+/// Queued payment item for secondary repayments
 #[derive(Debug, Clone)]
-struct QueuedPayment {
+struct SecondaryPayment {
     payment_identifier: PaymentIdentifier,
     amount: Amount,
     unit: CurrencyUnit,
 }
 
-/// Payment queue manager for any-amount invoices
+/// Secondary repayment queue manager for any-amount invoices
 #[derive(Debug, Clone)]
-struct PaymentQueue {
-    queue: Arc<Mutex<VecDeque<QueuedPayment>>>,
+struct SecondaryRepaymentQueue {
+    queue: Arc<Mutex<VecDeque<SecondaryPayment>>>,
     max_size: usize,
     sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount)>,
     incoming_payments: Arc<RwLock<HashMap<PaymentIdentifier, Vec<WaitPaymentResponse>>>>,
 }
 
-impl PaymentQueue {
+impl SecondaryRepaymentQueue {
     fn new(
         max_size: usize,
         sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount)>,
         incoming_payments: Arc<RwLock<HashMap<PaymentIdentifier, Vec<WaitPaymentResponse>>>>,
     ) -> Self {
         let queue = Arc::new(Mutex::new(VecDeque::new()));
-        let payment_queue = Self {
+        let repayment_queue = Self {
             queue: queue.clone(),
             max_size,
             sender,
             incoming_payments,
         };
 
-        // Start the background payment processor
-        payment_queue.start_payment_processor();
+        // Start the background secondary repayment processor
+        repayment_queue.start_secondary_repayment_processor();
 
-        payment_queue
+        repayment_queue
     }
 
-    /// Add a payment to the queue
-    async fn enqueue(&self, payment: QueuedPayment) {
+    /// Add a payment to the secondary repayment queue
+    async fn enqueue_for_repayment(&self, payment: SecondaryPayment) {
         let mut queue = self.queue.lock().await;
 
         // If queue is at max capacity, remove the oldest item
         if queue.len() >= self.max_size {
             if let Some(dropped) = queue.pop_front() {
                 tracing::debug!(
-                    "Payment queue at capacity, dropping oldest payment: {:?}",
+                    "Secondary repayment queue at capacity, dropping oldest payment: {:?}",
                     dropped.payment_identifier
                 );
             }
         }
 
         queue.push_back(payment);
-        tracing::debug!("Added payment to queue, current size: {}", queue.len());
+        tracing::debug!(
+            "Added payment to secondary repayment queue, current size: {}",
+            queue.len()
+        );
     }
 
-    /// Start the background task that randomly processes payments from the queue
-    fn start_payment_processor(&self) {
+    /// Start the background task that randomly processes secondary repayments from the queue
+    fn start_secondary_repayment_processor(&self) {
         let queue = self.queue.clone();
         let sender = self.sender.clone();
         let incoming_payments = self.incoming_payments.clone();
@@ -116,8 +117,8 @@ impl PaymentQueue {
             let mut rng = OsRng;
 
             loop {
-                // Wait for a random interval between 5 and 30 seconds
-                let delay_secs = rng.gen_range(5..=30);
+                // Wait for a random interval between 30 seconds and 3 minutes (180 seconds)
+                let delay_secs = rng.gen_range(30..=180);
                 time::sleep(time::Duration::from_secs(delay_secs)).await;
 
                 // Try to process a random payment from the queue
@@ -134,7 +135,7 @@ impl PaymentQueue {
 
                 if let Some(payment) = payment_to_process {
                     tracing::info!(
-                        "Processing queued payment: {:?} for amount: {}",
+                        "Processing secondary repayment: {:?} for amount: {}",
                         payment.payment_identifier,
                         payment.amount
                     );
@@ -159,7 +160,7 @@ impl PaymentQueue {
                         .await
                     {
                         tracing::error!(
-                            "Failed to send payment notification for {:?}: {}",
+                            "Failed to send secondary repayment notification for {:?}: {}",
                             payment.payment_identifier,
                             e
                         );
@@ -185,7 +186,7 @@ pub struct FakeWallet {
     wait_invoice_is_active: Arc<AtomicBool>,
     incoming_payments: Arc<RwLock<HashMap<PaymentIdentifier, Vec<WaitPaymentResponse>>>>,
     unit: CurrencyUnit,
-    payment_queue: PaymentQueue,
+    secondary_repayment_queue: SecondaryRepaymentQueue,
 }
 
 impl FakeWallet {
@@ -197,30 +198,33 @@ impl FakeWallet {
         payment_delay: u64,
         unit: CurrencyUnit,
     ) -> Self {
-        Self::new_with_queue_size(
+        Self::new_with_repay_queue_size(
             fee_reserve,
             payment_states,
             fail_payment_check,
             payment_delay,
             unit,
-            DEFAULT_QUEUE_MAX_SIZE,
+            DEFAULT_REPAY_QUEUE_MAX_SIZE,
         )
     }
 
-    /// Create new [`FakeWallet`] with custom queue size
-    pub fn new_with_queue_size(
+    /// Create new [`FakeWallet`] with custom secondary repayment queue size
+    pub fn new_with_repay_queue_size(
         fee_reserve: FeeReserve,
         payment_states: HashMap<String, MeltQuoteState>,
         fail_payment_check: HashSet<String>,
         payment_delay: u64,
         unit: CurrencyUnit,
-        queue_max_size: usize,
+        repay_queue_max_size: usize,
     ) -> Self {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
         let incoming_payments = Arc::new(RwLock::new(HashMap::new()));
 
-        let payment_queue =
-            PaymentQueue::new(queue_max_size, sender.clone(), incoming_payments.clone());
+        let secondary_repayment_queue = SecondaryRepaymentQueue::new(
+            repay_queue_max_size,
+            sender.clone(),
+            incoming_payments.clone(),
+        );
 
         Self {
             fee_reserve,
@@ -233,7 +237,7 @@ impl FakeWallet {
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             incoming_payments,
             unit,
-            payment_queue,
+            secondary_repayment_queue,
         }
     }
 }
@@ -532,63 +536,68 @@ impl MintPayment for FakeWallet {
             }
         };
 
-        // Handle any amount invoices differently - add them to the payment queue
-        if amount == Amount::ZERO {
+        // ALL invoices get immediate payment processing (original behavior)
+        let sender = self.sender.clone();
+        let duration = time::Duration::from_secs(self.payment_delay);
+        let payment_hash_clone = payment_hash.clone();
+        let incoming_payment = self.incoming_payments.clone();
+        let unit_clone = self.unit.clone();
+
+        let final_amount = if amount == Amount::ZERO {
+            // For any-amount invoices, generate a random amount for the initial payment
             use bitcoin::secp256k1::rand::rngs::OsRng;
             use bitcoin::secp256k1::rand::Rng;
             let mut rng = OsRng;
-            // Generate a random number between 1 and 1000 (inclusive)
             let random_amount: u64 = rng.gen_range(1..=1000);
-            let final_amount = random_amount.into();
+            random_amount.into()
+        } else {
+            amount
+        };
 
+        // Schedule the immediate payment (original behavior maintained)
+        tokio::spawn(async move {
+            // Wait for the random delay to elapse
+            time::sleep(duration).await;
+
+            let response = WaitPaymentResponse {
+                payment_identifier: payment_hash_clone.clone(),
+                payment_amount: final_amount,
+                unit: unit_clone,
+                payment_id: payment_hash_clone.to_string(),
+            };
+            let mut incoming = incoming_payment.write().await;
+            incoming
+                .entry(payment_hash_clone.clone())
+                .or_insert_with(Vec::new)
+                .push(response.clone());
+
+            // Send the message after waiting for the specified duration
+            if sender
+                .send((payment_hash_clone.clone(), final_amount))
+                .await
+                .is_err()
+            {
+                tracing::error!("Failed to send label: {:?}", payment_hash_clone);
+            }
+        });
+
+        // For any-amount invoices ONLY, also add to the secondary repayment queue
+        if amount == Amount::ZERO {
             tracing::info!(
-                "Adding any-amount invoice to payment queue: {:?} with random amount: {}",
-                payment_hash,
-                final_amount
+                "Adding any-amount invoice to secondary repayment queue: {:?}",
+                payment_hash
             );
 
-            // Add to payment queue instead of immediate processing
-            let queued_payment = QueuedPayment {
+            // Create secondary payment with a potentially different random amount
+            let secondary_payment = SecondaryPayment {
                 payment_identifier: payment_hash.clone(),
-                amount: final_amount,
+                amount: final_amount, // Use the same amount as the initial payment for consistency
                 unit: self.unit.clone(),
             };
 
-            self.payment_queue.enqueue(queued_payment).await;
-        } else {
-            // For fixed amount invoices, keep the existing immediate payment behavior
-            let sender = self.sender.clone();
-            let duration = time::Duration::from_secs(self.payment_delay);
-            let payment_hash_clone = payment_hash.clone();
-            let incoming_payment = self.incoming_payments.clone();
-            let unit_clone = self.unit.clone();
-            let final_amount = amount;
-
-            tokio::spawn(async move {
-                // Wait for the random delay to elapse
-                time::sleep(duration).await;
-
-                let response = WaitPaymentResponse {
-                    payment_identifier: payment_hash_clone.clone(),
-                    payment_amount: final_amount,
-                    unit: unit_clone,
-                    payment_id: payment_hash_clone.to_string(),
-                };
-                let mut incoming = incoming_payment.write().await;
-                incoming
-                    .entry(payment_hash_clone.clone())
-                    .or_insert_with(Vec::new)
-                    .push(response.clone());
-
-                // Send the message after waiting for the specified duration
-                if sender
-                    .send((payment_hash_clone.clone(), final_amount))
-                    .await
-                    .is_err()
-                {
-                    tracing::error!("Failed to send label: {:?}", payment_hash_clone);
-                }
-            });
+            self.secondary_repayment_queue
+                .enqueue_for_repayment(secondary_payment)
+                .await;
         }
 
         Ok(CreateIncomingPaymentResponse {
@@ -680,8 +689,8 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_payment_queue_functionality() {
-        let wallet = FakeWallet::new_with_queue_size(
+    async fn test_any_amount_invoice_with_secondary_repayment() {
+        let wallet = FakeWallet::new_with_repay_queue_size(
             FeeReserve {
                 min_fee_reserve: 1000.into(),
                 percent_fee_reserve: 0.01,
@@ -696,7 +705,7 @@ mod tests {
         // Create an any-amount invoice (amount = 0)
         let options =
             IncomingPaymentOptions::Bolt11(cdk_common::payment::Bolt11IncomingPaymentOptions {
-                amount: Amount::ZERO, // This triggers the queue behavior
+                amount: Amount::ZERO, // This triggers both immediate and secondary repayment
                 description: Some("Test any-amount invoice".to_string()),
                 unix_expiry: None,
             });
@@ -708,7 +717,7 @@ mod tests {
         assert!(result.is_ok());
         let response = result.unwrap();
 
-        // Wait a moment to let the queue system process
+        // Wait a moment for immediate payment processing
         sleep(Duration::from_millis(100)).await;
 
         // The invoice should be created successfully
