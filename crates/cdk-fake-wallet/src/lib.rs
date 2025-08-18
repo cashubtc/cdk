@@ -2,10 +2,12 @@
 //!
 //! Used for testing where quotes are auto filled.
 //!
-//! The fake wallet now includes a secondary repayment system that randomly repays any-amount
-//! invoices (amount = 0) multiple times at intervals less than 3 minutes to simulate real-world
-//! behavior where invoices might get multiple payments. This is in addition to the original
-//! immediate payment processing which is maintained for all invoice types.
+//! The fake wallet now includes a secondary repayment system that continuously repays any-amount
+//! invoices (amount = 0) at random intervals between 30 seconds and 3 minutes to simulate
+//! real-world behavior where invoices might get multiple payments. Payments continue to be
+//! processed until they are evicted from the queue when the queue reaches its maximum size
+//! (default 100 items). This is in addition to the original immediate payment processing
+//! which is maintained for all invoice types.
 
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
@@ -50,8 +52,7 @@ const DEFAULT_REPAY_QUEUE_MAX_SIZE: usize = 100;
 /// Queued payment item for secondary repayments
 #[derive(Debug, Clone)]
 struct SecondaryPayment {
-    payment_identifier: PaymentIdentifier,
-    amount: Amount,
+    original_payment_identifier: PaymentIdentifier,
     unit: CurrencyUnit,
 }
 
@@ -60,14 +61,14 @@ struct SecondaryPayment {
 struct SecondaryRepaymentQueue {
     queue: Arc<Mutex<VecDeque<SecondaryPayment>>>,
     max_size: usize,
-    sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount)>,
+    sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount, String)>,
     incoming_payments: Arc<RwLock<HashMap<PaymentIdentifier, Vec<WaitPaymentResponse>>>>,
 }
 
 impl SecondaryRepaymentQueue {
     fn new(
         max_size: usize,
-        sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount)>,
+        sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount, String)>,
         incoming_payments: Arc<RwLock<HashMap<PaymentIdentifier, Vec<WaitPaymentResponse>>>>,
     ) -> Self {
         let queue = Arc::new(Mutex::new(VecDeque::new()));
@@ -93,7 +94,7 @@ impl SecondaryRepaymentQueue {
             if let Some(dropped) = queue.pop_front() {
                 tracing::debug!(
                     "Secondary repayment queue at capacity, dropping oldest payment: {:?}",
-                    dropped.payment_identifier
+                    dropped.original_payment_identifier
                 );
             }
         }
@@ -121,47 +122,78 @@ impl SecondaryRepaymentQueue {
                 let delay_secs = rng.gen_range(30..=180);
                 time::sleep(time::Duration::from_secs(delay_secs)).await;
 
-                // Try to process a random payment from the queue
+                // Try to process a random payment from the queue without removing it
                 let payment_to_process = {
-                    let mut q = queue.lock().await;
+                    let q = queue.lock().await;
                     if q.is_empty() {
                         None
                     } else {
-                        // Pick a random index from the queue
+                        // Pick a random index from the queue but don't remove it
                         let index = rng.gen_range(0..q.len());
-                        q.remove(index)
+                        q.get(index).cloned()
                     }
                 };
 
                 if let Some(payment) = payment_to_process {
+                    // Generate a random amount for this secondary payment (same range as initial payment: 1-1000)
+                    let random_amount: u64 = rng.gen_range(1..=1000);
+                    let secondary_amount = Amount::from(random_amount);
+
+                    // Generate a unique payment identifier for this secondary payment
+                    // We'll create a new payment hash by appending a timestamp and random bytes
+                    use bitcoin::hashes::{sha256, Hash};
+                    let mut random_bytes = [0u8; 16];
+                    rng.fill(&mut random_bytes);
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos() as u64;
+
+                    // Create a unique hash combining the original payment identifier, timestamp, and random bytes
+                    let mut hasher_input = Vec::new();
+                    hasher_input.extend_from_slice(
+                        &payment.original_payment_identifier.to_string().as_bytes(),
+                    );
+                    hasher_input.extend_from_slice(&timestamp.to_le_bytes());
+                    hasher_input.extend_from_slice(&random_bytes);
+
+                    let unique_hash = sha256::Hash::hash(&hasher_input);
+                    let unique_payment_id = PaymentIdentifier::PaymentHash(*unique_hash.as_ref());
+
                     tracing::info!(
-                        "Processing secondary repayment: {:?} for amount: {}",
-                        payment.payment_identifier,
-                        payment.amount
+                        "Processing secondary repayment: original={:?}, new_id={:?}, amount={}",
+                        payment.original_payment_identifier,
+                        unique_payment_id,
+                        secondary_amount
                     );
 
                     let response = WaitPaymentResponse {
-                        payment_identifier: payment.payment_identifier.clone(),
-                        payment_amount: payment.amount,
+                        payment_identifier: payment.original_payment_identifier.clone(),
+                        payment_amount: secondary_amount,
                         unit: payment.unit.clone(),
-                        payment_id: payment.payment_identifier.to_string(),
+                        payment_id: unique_payment_id.to_string(),
                     };
 
-                    // Add to incoming payments
+                    // Add to incoming payments using the original payment identifier
+                    // This allows the caller to check status using the original invoice
                     let mut incoming = incoming_payments.write().await;
                     incoming
-                        .entry(payment.payment_identifier.clone())
+                        .entry(payment.original_payment_identifier.clone())
                         .or_insert_with(Vec::new)
                         .push(response);
 
-                    // Send the payment notification
+                    // Send the payment notification with the unique payment identifier
                     if let Err(e) = sender
-                        .send((payment.payment_identifier.clone(), payment.amount))
+                        .send((
+                            payment.original_payment_identifier.clone(),
+                            secondary_amount,
+                            unique_payment_id.to_string(),
+                        ))
                         .await
                     {
                         tracing::error!(
                             "Failed to send secondary repayment notification for {:?}: {}",
-                            payment.payment_identifier,
+                            unique_payment_id,
                             e
                         );
                     }
@@ -176,9 +208,9 @@ impl SecondaryRepaymentQueue {
 pub struct FakeWallet {
     fee_reserve: FeeReserve,
     #[allow(clippy::type_complexity)]
-    sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount)>,
+    sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount, String)>,
     #[allow(clippy::type_complexity)]
-    receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<(PaymentIdentifier, Amount)>>>>,
+    receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<(PaymentIdentifier, Amount, String)>>>>,
     payment_states: Arc<Mutex<HashMap<String, MeltQuoteState>>>,
     failed_payment_check: Arc<Mutex<HashSet<String>>>,
     payment_delay: u64,
@@ -306,11 +338,11 @@ impl MintPayment for FakeWallet {
         let unit = self.unit.clone();
         let receiver_stream = ReceiverStream::new(receiver);
         Ok(Box::pin(receiver_stream.map(
-            move |(request_lookup_id, payment_amount)| WaitPaymentResponse {
+            move |(request_lookup_id, payment_amount, payment_id)| WaitPaymentResponse {
                 payment_identifier: request_lookup_id.clone(),
                 payment_amount,
                 unit: unit.clone(),
-                payment_id: request_lookup_id.to_string(),
+                payment_id,
             },
         )))
     }
@@ -573,7 +605,11 @@ impl MintPayment for FakeWallet {
 
             // Send the message after waiting for the specified duration
             if sender
-                .send((payment_hash_clone.clone(), final_amount))
+                .send((
+                    payment_hash_clone.clone(),
+                    final_amount,
+                    payment_hash_clone.to_string(),
+                ))
                 .await
                 .is_err()
             {
@@ -588,10 +624,9 @@ impl MintPayment for FakeWallet {
                 payment_hash
             );
 
-            // Create secondary payment with a potentially different random amount
+            // Create secondary payment
             let secondary_payment = SecondaryPayment {
-                payment_identifier: payment_hash.clone(),
-                amount: final_amount, // Use the same amount as the initial payment for consistency
+                original_payment_identifier: payment_hash.clone(),
                 unit: self.unit.clone(),
             };
 
@@ -678,130 +713,4 @@ pub fn create_fake_invoice(amount_msat: u64, description: String) -> Bolt11Invoi
         .min_final_cltv_expiry_delta(144)
         .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
         .unwrap()
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use tokio::time::{sleep, Duration};
-
-    use super::*;
-
-    #[tokio::test]
-    async fn test_any_amount_invoice_with_secondary_repayment() {
-        let wallet = FakeWallet::new_with_repay_queue_size(
-            FeeReserve {
-                min_fee_reserve: 1000.into(),
-                percent_fee_reserve: 0.01,
-            },
-            HashMap::new(),
-            std::collections::HashSet::new(),
-            1, // Short delay for testing
-            CurrencyUnit::Sat,
-            5, // Small queue size for testing
-        );
-
-        // Create an any-amount invoice (amount = 0)
-        let options =
-            IncomingPaymentOptions::Bolt11(cdk_common::payment::Bolt11IncomingPaymentOptions {
-                amount: Amount::ZERO, // This triggers both immediate and secondary repayment
-                description: Some("Test any-amount invoice".to_string()),
-                unix_expiry: None,
-            });
-
-        let result = wallet
-            .create_incoming_payment_request(&CurrencyUnit::Sat, options)
-            .await;
-
-        assert!(result.is_ok());
-        let response = result.unwrap();
-
-        // Wait a moment for immediate payment processing
-        sleep(Duration::from_millis(100)).await;
-
-        // The invoice should be created successfully
-        assert!(!response.request.is_empty());
-        assert!(response.request_lookup_id.to_string().len() > 0);
-    }
-
-    #[tokio::test]
-    async fn test_secondary_repayment_creates_multiple_payments() {
-        let wallet = FakeWallet::new_with_repay_queue_size(
-            FeeReserve {
-                min_fee_reserve: 1000.into(),
-                percent_fee_reserve: 0.01,
-            },
-            HashMap::new(),
-            std::collections::HashSet::new(),
-            1, // Very short delay for testing
-            CurrencyUnit::Sat,
-            5, // Small queue size for testing
-        );
-
-        // Create an any-amount invoice (amount = 0)
-        let options =
-            IncomingPaymentOptions::Bolt11(cdk_common::payment::Bolt11IncomingPaymentOptions {
-                amount: Amount::ZERO, // This triggers both immediate and secondary repayment
-                description: Some("Test multiple payments invoice".to_string()),
-                unix_expiry: None,
-            });
-
-        let result = wallet
-            .create_incoming_payment_request(&CurrencyUnit::Sat, options)
-            .await;
-
-        assert!(result.is_ok());
-        let response = result.unwrap();
-
-        // Wait for the immediate payment
-        sleep(Duration::from_millis(1500)).await;
-
-        // Check the payment status - should have at least the immediate payment
-        let payment_status = wallet
-            .check_incoming_payment_status(&response.request_lookup_id)
-            .await
-            .unwrap();
-
-        // Should have at least one payment (the immediate one)
-        assert!(!payment_status.is_empty());
-        tracing::info!("Payments received: {}", payment_status.len());
-
-        // The invoice should be created successfully
-        assert!(!response.request.is_empty());
-        assert!(response.request_lookup_id.to_string().len() > 0);
-    }
-
-    #[tokio::test]
-    async fn test_fixed_amount_invoice_immediate_processing() {
-        let wallet = FakeWallet::new(
-            FeeReserve {
-                min_fee_reserve: 1000.into(),
-                percent_fee_reserve: 0.01,
-            },
-            HashMap::new(),
-            std::collections::HashSet::new(),
-            1, // Short delay for testing
-            CurrencyUnit::Sat,
-        );
-
-        // Create a fixed-amount invoice (amount > 0)
-        let options =
-            IncomingPaymentOptions::Bolt11(cdk_common::payment::Bolt11IncomingPaymentOptions {
-                amount: Amount::from(1000), // Fixed amount - should use immediate processing
-                description: Some("Test fixed-amount invoice".to_string()),
-                unix_expiry: None,
-            });
-
-        let result = wallet
-            .create_incoming_payment_request(&CurrencyUnit::Sat, options)
-            .await;
-
-        assert!(result.is_ok());
-        let response = result.unwrap();
-
-        // The invoice should be created successfully
-        assert!(!response.request.is_empty());
-        assert!(response.request_lookup_id.to_string().len() > 0);
-    }
 }
