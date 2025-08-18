@@ -49,34 +49,24 @@ pub mod error;
 /// Default maximum size for the secondary repayment queue
 const DEFAULT_REPAY_QUEUE_MAX_SIZE: usize = 100;
 
-/// Queued payment item for secondary repayments
-#[derive(Debug, Clone)]
-struct SecondaryPayment {
-    original_payment_identifier: PaymentIdentifier,
-    unit: CurrencyUnit,
-}
-
 /// Secondary repayment queue manager for any-amount invoices
 #[derive(Debug, Clone)]
 struct SecondaryRepaymentQueue {
-    queue: Arc<Mutex<VecDeque<SecondaryPayment>>>,
+    queue: Arc<Mutex<VecDeque<PaymentIdentifier>>>,
     max_size: usize,
     sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount, String)>,
-    incoming_payments: Arc<RwLock<HashMap<PaymentIdentifier, Vec<WaitPaymentResponse>>>>,
 }
 
 impl SecondaryRepaymentQueue {
     fn new(
         max_size: usize,
         sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount, String)>,
-        incoming_payments: Arc<RwLock<HashMap<PaymentIdentifier, Vec<WaitPaymentResponse>>>>,
     ) -> Self {
         let queue = Arc::new(Mutex::new(VecDeque::new()));
         let repayment_queue = Self {
             queue: queue.clone(),
             max_size,
             sender,
-            incoming_payments,
         };
 
         // Start the background secondary repayment processor
@@ -86,7 +76,7 @@ impl SecondaryRepaymentQueue {
     }
 
     /// Add a payment to the secondary repayment queue
-    async fn enqueue_for_repayment(&self, payment: SecondaryPayment) {
+    async fn enqueue_for_repayment(&self, payment: PaymentIdentifier) {
         let mut queue = self.queue.lock().await;
 
         // If queue is at max capacity, remove the oldest item
@@ -94,7 +84,7 @@ impl SecondaryRepaymentQueue {
             if let Some(dropped) = queue.pop_front() {
                 tracing::debug!(
                     "Secondary repayment queue at capacity, dropping oldest payment: {:?}",
-                    dropped.original_payment_identifier
+                    dropped
                 );
             }
         }
@@ -110,7 +100,6 @@ impl SecondaryRepaymentQueue {
     fn start_secondary_repayment_processor(&self) {
         let queue = self.queue.clone();
         let sender = self.sender.clone();
-        let incoming_payments = self.incoming_payments.clone();
 
         tokio::spawn(async move {
             use bitcoin::secp256k1::rand::rngs::OsRng;
@@ -151,9 +140,7 @@ impl SecondaryRepaymentQueue {
 
                     // Create a unique hash combining the original payment identifier, timestamp, and random bytes
                     let mut hasher_input = Vec::new();
-                    hasher_input.extend_from_slice(
-                        &payment.original_payment_identifier.to_string().as_bytes(),
-                    );
+                    hasher_input.extend_from_slice(&payment.to_string().as_bytes());
                     hasher_input.extend_from_slice(&timestamp.to_le_bytes());
                     hasher_input.extend_from_slice(&random_bytes);
 
@@ -162,30 +149,16 @@ impl SecondaryRepaymentQueue {
 
                     tracing::info!(
                         "Processing secondary repayment: original={:?}, new_id={:?}, amount={}",
-                        payment.original_payment_identifier,
+                        payment,
                         unique_payment_id,
                         secondary_amount
                     );
 
-                    let response = WaitPaymentResponse {
-                        payment_identifier: payment.original_payment_identifier.clone(),
-                        payment_amount: secondary_amount,
-                        unit: payment.unit.clone(),
-                        payment_id: unique_payment_id.to_string(),
-                    };
-
-                    // Add to incoming payments using the original payment identifier
-                    // This allows the caller to check status using the original invoice
-                    let mut incoming = incoming_payments.write().await;
-                    incoming
-                        .entry(payment.original_payment_identifier.clone())
-                        .or_insert_with(Vec::new)
-                        .push(response);
-
-                    // Send the payment notification with the unique payment identifier
+                    // Send the payment notification using the original payment identifier
+                    // The mint will process this through the normal payment stream
                     if let Err(e) = sender
                         .send((
-                            payment.original_payment_identifier.clone(),
+                            payment.clone(),
                             secondary_amount,
                             unique_payment_id.to_string(),
                         ))
@@ -252,11 +225,8 @@ impl FakeWallet {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
         let incoming_payments = Arc::new(RwLock::new(HashMap::new()));
 
-        let secondary_repayment_queue = SecondaryRepaymentQueue::new(
-            repay_queue_max_size,
-            sender.clone(),
-            incoming_payments.clone(),
-        );
+        let secondary_repayment_queue =
+            SecondaryRepaymentQueue::new(repay_queue_max_size, sender.clone());
 
         Self {
             fee_reserve,
@@ -624,14 +594,8 @@ impl MintPayment for FakeWallet {
                 payment_hash
             );
 
-            // Create secondary payment
-            let secondary_payment = SecondaryPayment {
-                original_payment_identifier: payment_hash.clone(),
-                unit: self.unit.clone(),
-            };
-
             self.secondary_repayment_queue
-                .enqueue_for_repayment(secondary_payment)
+                .enqueue_for_repayment(payment_hash.clone())
                 .await;
         }
 
