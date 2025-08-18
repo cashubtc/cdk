@@ -1,6 +1,7 @@
 use std::env;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bip39::Mnemonic;
 use cashu::{MintAuthRequest, MintInfo};
@@ -15,7 +16,7 @@ use cdk::nuts::{
 use cdk::wallet::{AuthHttpClient, AuthMintConnector, HttpClient, MintConnector, WalletBuilder};
 use cdk::{Error, OidcClient};
 use cdk_fake_wallet::create_fake_invoice;
-use cdk_integration_tests::{fund_wallet, wait_for_mint_to_be_paid};
+use cdk_integration_tests::fund_wallet;
 use cdk_sqlite::wallet::memory;
 
 const MINT_URL: &str = "http://127.0.0.1:8087";
@@ -329,19 +330,12 @@ async fn test_mint_with_auth() {
 
     let mint_amount: Amount = 100.into();
 
-    let mint_quote = wallet
-        .mint_quote(mint_amount, None)
+    let (_, proofs) = wallet
+        .mint_once_paid(mint_amount, None, Duration::from_secs(10))
         .await
-        .expect("failed to get mint quote");
+        .unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
-        .await
-        .expect("failed to wait for payment");
-
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await
-        .expect("could not mint");
+    let proofs = proofs.await.expect("could not mint");
 
     assert!(proofs.total_amount().expect("Could not get proofs amount") == mint_amount);
 }
