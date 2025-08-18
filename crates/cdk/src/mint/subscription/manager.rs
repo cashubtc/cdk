@@ -64,10 +64,12 @@ impl PubSubManager {
     pub fn mint_quote_bolt12_status<E: TryInto<MintQuoteBolt12Response<Uuid>>>(
         &self,
         quote: E,
-        payment_amount: Amount,
+        amount_paid: Amount,
+        amount_issued: Amount,
     ) {
         if let Ok(mut event) = quote.try_into() {
-            event.amount_paid += payment_amount;
+            event.amount_paid += amount_paid;
+            event.amount_issued += amount_issued;
 
             self.broadcast(event.into());
         } else {

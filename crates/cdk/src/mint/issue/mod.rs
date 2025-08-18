@@ -442,6 +442,7 @@ impl Mint {
                         self.pubsub_manager.mint_quote_bolt12_status(
                             mint_quote.clone(),
                             wait_payment_response.payment_amount,
+                            Amount::ZERO,
                         );
                     }
                     _ => {
@@ -603,8 +604,22 @@ impl Mint {
 
         tx.commit().await?;
 
-        self.pubsub_manager
-            .mint_quote_bolt11_status(mint_quote, MintQuoteState::Issued);
+        match mint_quote.payment_method {
+            PaymentMethod::Bolt11 => {
+                self.pubsub_manager
+                    .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Issued);
+            }
+            PaymentMethod::Bolt12 => {
+                self.pubsub_manager.mint_quote_bolt12_status(
+                    mint_quote.clone(),
+                    Amount::ZERO,
+                    mint_request.total_amount()?,
+                );
+            }
+            PaymentMethod::Custom(_) => {
+                // We don't send ws updates for unknown methods
+            }
+        }
 
         Ok(MintResponse {
             signatures: blind_signatures,

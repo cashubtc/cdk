@@ -2,7 +2,7 @@ use cdk_common::amount::to_unit;
 use cdk_common::common::PaymentProcessorKey;
 use cdk_common::mint::MintQuote;
 use cdk_common::util::unix_time;
-use cdk_common::{MintQuoteState, PaymentMethod};
+use cdk_common::{Amount, MintQuoteState, PaymentMethod};
 use tracing::instrument;
 
 use super::Mint;
@@ -39,6 +39,10 @@ impl Mint {
             .check_incoming_payment_status(&quote.request_lookup_id)
             .await?;
 
+        if ln_status.is_empty() {
+            return Ok(());
+        }
+
         let mut tx = self.localstore.begin_transaction().await?;
 
         for payment in ln_status {
@@ -52,8 +56,22 @@ impl Mint {
                 tx.increment_mint_quote_amount_paid(&quote.id, amount_paid, payment.payment_id)
                     .await?;
 
-                self.pubsub_manager
-                    .mint_quote_bolt11_status(quote.clone(), MintQuoteState::Paid);
+                match quote.payment_method {
+                    PaymentMethod::Bolt11 => {
+                        self.pubsub_manager
+                            .mint_quote_bolt11_status(quote.clone(), MintQuoteState::Paid);
+                    }
+                    PaymentMethod::Bolt12 => {
+                        self.pubsub_manager.mint_quote_bolt12_status(
+                            quote.clone(),
+                            amount_paid,
+                            Amount::ZERO,
+                        );
+                    }
+                    PaymentMethod::Custom(_) => {
+                        // We don't send ws updates for unknown methods
+                    }
+                }
             }
         }
 
