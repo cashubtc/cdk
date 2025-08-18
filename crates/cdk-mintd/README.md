@@ -40,7 +40,7 @@ cdk-mintd
 ```bash
 # Set environment variables
 export CDK_MINTD_DATABASE=postgres
-export PG_DB_URL="host=localhost user=postgres password=password dbname=cdk_mint port=5432"
+export CDK_MINTD_DATABASE_URL="postgresql://postgres:password@localhost:5432/cdk_mint"
 
 # Start the mint
 cdk-mintd
@@ -72,7 +72,7 @@ engine = "sqlite"
 [database]
 engine = "postgres"
 ```
-Set `PG_DB_URL` environment variable for connection string.
+Set `CDK_MINTD_DATABASE_URL` environment variable for connection string.
 
 #### ReDB
 ```toml
@@ -108,7 +108,7 @@ cdk-mintd --help
 Key environment variables:
 
 - `CDK_MINTD_DATABASE`: Database engine (sqlite/postgres/redb)
-- `PG_DB_URL`: PostgreSQL connection string
+- `CDK_MINTD_DATABASE_URL`: PostgreSQL connection string
 - `CDK_MINTD_LN_BACKEND`: Lightning backend type
 - `CDK_MINTD_LISTEN_HOST`: Host to bind to
 - `CDK_MINTD_LISTEN_PORT`: Port to bind to

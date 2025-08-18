@@ -243,7 +243,8 @@ mod test {
 
     async fn provide_db() -> MintPgDatabase {
         let m = MIGRATION_LOCK.lock().await;
-        let db_url = std::env::var("PG_DB_URL")
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL")) // Fallback for compatibility
             .unwrap_or("host=localhost user=test password=test dbname=testdb port=5433".to_owned());
         let db = MintPgDatabase::new(db_url.as_str())
             .await

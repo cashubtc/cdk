@@ -3,7 +3,7 @@
 // std
 #[cfg(feature = "auth")]
 use std::collections::HashMap;
-use std::env::{self, var};
+use std::env::{self};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -158,9 +158,16 @@ async fn setup_database(
             Ok((localstore, keystore))
         }
         DatabaseEngine::Postgres => {
-            let conn_url = var("PG_DB_URL").map_err(|_| anyhow!("Missing `PG_DB_URL`"))?;
+            // Get the PostgreSQL configuration, ensuring it exists
+            let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
+                anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
+            })?;
 
-            let pg_db = Arc::new(MintPgDatabase::new(conn_url.as_str()).await?);
+            if pg_config.url.is_empty() {
+                bail!("PostgreSQL URL is required. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
+            }
+
+            let pg_db = Arc::new(MintPgDatabase::new(pg_config.url.as_str()).await?);
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
                 pg_db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> =
@@ -466,8 +473,16 @@ async fn setup_authentication(
                 Arc::new(sqlite_db)
             }
             DatabaseEngine::Postgres => {
-                let conn_url = var("PG_DB_URL").map_err(|_| anyhow!("Missing `PG_DB_URL`"))?;
-                Arc::new(MintPgAuthDatabase::new(conn_url.as_str()).await?)
+                // Get the PostgreSQL configuration, ensuring it exists
+                let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
+                    anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
+                })?;
+
+                if pg_config.url.is_empty() {
+                    bail!("PostgreSQL URL is required for auth database. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
+                }
+
+                Arc::new(MintPgAuthDatabase::new(pg_config.url.as_str()).await?)
             }
         };
 

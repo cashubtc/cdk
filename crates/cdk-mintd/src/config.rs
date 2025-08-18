@@ -208,6 +208,26 @@ impl std::str::FromStr for DatabaseEngine {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Database {
     pub engine: DatabaseEngine,
+    pub postgres: Option<PostgresConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostgresConfig {
+    pub url: String,
+    pub tls_mode: Option<String>,
+    pub max_connections: Option<usize>,
+    pub connection_timeout_seconds: Option<u64>,
+}
+
+impl Default for PostgresConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            tls_mode: Some("disable".to_string()),
+            max_connections: Some(20),
+            connection_timeout_seconds: Some(10),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

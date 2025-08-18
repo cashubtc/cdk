@@ -186,6 +186,7 @@ pub fn create_fake_wallet_settings(
         grpc_processor: None,
         database: Database {
             engine: DatabaseEngine::from_str(database).expect("valid database"),
+            postgres: None,
         },
         mint_management_rpc: None,
         auth: None,

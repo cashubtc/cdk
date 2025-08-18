@@ -75,7 +75,7 @@ if [ "${CDK_MINTD_DATABASE}" = "POSTGRES" ]; then
       -e POSTGRES_DB="${DB_NAME}" \
       -p ${DB_PORT}:5432 \
       postgres:16
-    export PG_DB_URL="host=localhost user=${DB_USER} password=${DB_PASS} dbname=${DB_NAME} port=${DB_PORT}"
+    export CDK_MINTD_DATABASE_URL="postgresql://${DB_USER}:${DB_PASS}@localhost:${DB_PORT}/${DB_NAME}"
 
     echo "Waiting for PostgreSQL to be ready and database '${DB_NAME}' to exist..."
     until docker exec -e PGPASSWORD="${DB_PASS}" "${CONTAINER_NAME}" \

@@ -38,12 +38,21 @@ tti = 60
 
 
 [database]
-# Database engine (sqlite/postgres/redb) defaults to sqlite
-# engine = "sqlite"
+# Database engine (sqlite/postgres) defaults to sqlite
+engine = "sqlite"
 
 # PostgreSQL configuration (when engine = "postgres")
-# Set PG_DB_URL environment variable for connection string
-# Example: PG_DB_URL="host=localhost user=postgres password=password dbname=cdk-mint port=5432"
+[database.postgres]
+# PostgreSQL connection URL
+# Can also be set via CDK_MINTD_POSTGRES_URL or CDK_MINTD_DATABASE_URL environment variables
+# Environment variables take precedence over config file settings
+url = "postgresql://user:password@localhost:5432/cdk_mint"
+# TLS mode: "disable", "prefer", "require" (optional, defaults to "disable")
+tls_mode = "disable"
+# Maximum number of connections in the pool (optional, defaults to 20)
+max_connections = 20
+# Connection timeout in seconds (optional, defaults to 10)
+connection_timeout_seconds = 10
 
 [ln]
 # Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits'

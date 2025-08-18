@@ -12,7 +12,7 @@ services:
       - CDK_MINTD_LN_BACKEND=fakewallet
       - CDK_MINTD_LISTEN_HOST=0.0.0.0
       - CDK_MINTD_LISTEN_PORT=8085
-      - CDK_MINTD_MNEMONIC=cable media banner lounge run method regret genre rebel turkey yellow gravity
+      - CDK_MINTD_MNEMONIC=
       # Database configuration - choose one:
       # Option 1: SQLite (embedded, no additional setup needed)
       - CDK_MINTD_DATABASE=sqlite
@@ -20,7 +20,7 @@ services:
       # - CDK_MINTD_DATABASE=redb
       # Option 3: PostgreSQL (requires postgres service, enable with: docker-compose --profile postgres up)
       # - CDK_MINTD_DATABASE=postgres
-      # - PG_DB_URL=host=postgres user=cdk_user password=cdk_password dbname=cdk_mint port=5432
+      # - CDK_MINTD_DATABASE_URL=postgresql://cdk_user:cdk_password@postgres:5432/cdk_mint
       # Cache configuration
       - CDK_MINTD_CACHE_BACKEND=memory
       # For Redis cache (requires redis service, enable with: docker-compose --profile redis up):
@@ -56,25 +56,25 @@ services:
 
   # Redis cache service (optional)
   # Enable with: docker-compose --profile redis up
-  # redis:
-  #   image: redis:7-alpine
-  #   container_name: mint_redis
-  #   restart: unless-stopped
-  #   profiles:
-  #     - redis
-  #   ports:
-  #     - "6379:6379"
-  #   volumes:
-  #     - redis_data:/data
-  #   command: redis-server --save 60 1 --loglevel warning
-  #   healthcheck:
-  #     test: ["CMD", "redis-cli", "ping"]
-  #     interval: 10s
-  #     timeout: 3s
-  #     retries: 5
+#   redis:
+#     image: redis:7-alpine
+#     container_name: mint_redis
+#     restart: unless-stopped
+#     profiles:
+#       - redis
+#     ports:
+#       - "6379:6379"
+#     volumes:
+#       - redis_data:/data
+#     command: redis-server --save 60 1 --loglevel warning
+#     healthcheck:
+#       test: ["CMD", "redis-cli", "ping"]
+#       interval: 10s
+#       timeout: 3s
+#       retries: 5
 
-# volumes:
-#   postgres_data:
-#     driver: local
+volumes:
+  postgres_data:
+    driver: local
 #   redis_data:
 #     driver: local
