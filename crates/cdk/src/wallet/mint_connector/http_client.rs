@@ -270,7 +270,7 @@ impl HttpClient {
             match result.as_ref() {
                 Err(Error::HttpError(status_code, _)) => {
                     let status_code = status_code.to_owned().unwrap_or_default();
-                    if status_code <= 400 && status_code >= 499 {
+                    if status_code >= 400 && status_code <= 499 {
                         // 4xx errors won't be 'solved' by retrying
                         return result;
                     }
