@@ -78,7 +78,7 @@ impl MultiMintWallet {
             target_proof_count,
         )?;
 
-        wallet.get_mint_info().await?;
+        wallet.fetch_mint_info().await?;
 
         self.add_wallet(wallet.clone()).await;
 
