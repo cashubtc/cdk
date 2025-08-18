@@ -3,7 +3,7 @@
 // std
 #[cfg(feature = "auth")]
 use std::collections::HashMap;
-use std::env;
+use std::env::{self};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -39,6 +39,7 @@ use cdk::nuts::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
+use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase};
 #[cfg(feature = "auth")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 use cdk_sqlite::MintSqliteDatabase;
@@ -154,6 +155,23 @@ async fn setup_database(
             let db = setup_sqlite_database(work_dir, db_password).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
+            Ok((localstore, keystore))
+        }
+        DatabaseEngine::Postgres => {
+            // Get the PostgreSQL configuration, ensuring it exists
+            let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
+                anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
+            })?;
+
+            if pg_config.url.is_empty() {
+                bail!("PostgreSQL URL is required. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
+            }
+
+            let pg_db = Arc::new(MintPgDatabase::new(pg_config.url.as_str()).await?);
+            let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
+                pg_db.clone();
+            let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> =
+                pg_db;
             Ok((localstore, keystore))
         }
     }
@@ -453,6 +471,18 @@ async fn setup_authentication(
                 };
 
                 Arc::new(sqlite_db)
+            }
+            DatabaseEngine::Postgres => {
+                // Get the PostgreSQL configuration, ensuring it exists
+                let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
+                    anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
+                })?;
+
+                if pg_config.url.is_empty() {
+                    bail!("PostgreSQL URL is required for auth database. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
+                }
+
+                Arc::new(MintPgAuthDatabase::new(pg_config.url.as_str()).await?)
             }
         };
 
