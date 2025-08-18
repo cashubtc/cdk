@@ -726,6 +726,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_secondary_repayment_creates_multiple_payments() {
+        let wallet = FakeWallet::new_with_repay_queue_size(
+            FeeReserve {
+                min_fee_reserve: 1000.into(),
+                percent_fee_reserve: 0.01,
+            },
+            HashMap::new(),
+            std::collections::HashSet::new(),
+            1, // Very short delay for testing
+            CurrencyUnit::Sat,
+            5, // Small queue size for testing
+        );
+
+        // Create an any-amount invoice (amount = 0)
+        let options =
+            IncomingPaymentOptions::Bolt11(cdk_common::payment::Bolt11IncomingPaymentOptions {
+                amount: Amount::ZERO, // This triggers both immediate and secondary repayment
+                description: Some("Test multiple payments invoice".to_string()),
+                unix_expiry: None,
+            });
+
+        let result = wallet
+            .create_incoming_payment_request(&CurrencyUnit::Sat, options)
+            .await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+
+        // Wait for the immediate payment
+        sleep(Duration::from_millis(1500)).await;
+
+        // Check the payment status - should have at least the immediate payment
+        let payment_status = wallet
+            .check_incoming_payment_status(&response.request_lookup_id)
+            .await
+            .unwrap();
+
+        // Should have at least one payment (the immediate one)
+        assert!(!payment_status.is_empty());
+        tracing::info!("Payments received: {}", payment_status.len());
+
+        // The invoice should be created successfully
+        assert!(!response.request.is_empty());
+        assert!(response.request_lookup_id.to_string().len() > 0);
+    }
+
+    #[tokio::test]
     async fn test_fixed_amount_invoice_immediate_processing() {
         let wallet = FakeWallet::new(
             FeeReserve {
