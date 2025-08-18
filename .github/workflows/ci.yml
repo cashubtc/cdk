@@ -174,7 +174,89 @@ jobs:
           shared-key: "stable"
       - name: Run MSRV tests
         run: nix develop -i -L .#msrv --command bash -c 'RUN_MSRV_TESTS=true ./misc/test_matrix.sh'
-
+  regtest-itest:
+    name: "Integration regtest tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [ pre-commit-checks, clippy ]
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
+    strategy:
+      matrix:
+        build-args:
+          [
+            -p cdk-integration-tests,
+          ]
+        database:
+          [
+            SQLITE,
+          ]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
+      - name: Test
+        run: nix develop -i -L .#stable --command just itest ${{ matrix.database }}
+  payment-processor-itests:
+    name: "Payment processor tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [ pre-commit-checks, clippy]
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
+    strategy:
+      matrix:
+        ln:
+          [
+            CLN,
+            LND
+          ]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
+      - name: Test
+        run: nix develop -i -L .#stable --command just itest-payment-processor ${{matrix.ln}}
   integration-tests:
     name: "Integration tests"
     runs-on: ubuntu-latest

@@ -241,14 +241,14 @@ elif [ "$RUN_INTEGRATION_TESTS" = "true" ]; then
     add_test "fake mint itest (REDB)" "just fake-mint-itest REDB" "integration"
     add_test "fake mint itest (SQLITE)" "just fake-mint-itest SQLITE" "integration"
     
-    # Regtest integration tests
+    # Regtest integration tests (running in ubuntu)
     #add_test "regtest itest (REDB)" "just itest REDB" "integration"
     #add_test "regtest itest (SQLITE)" "just itest SQLITE" "integration"
     
-    # Payment processor tests
+    # Payment processor tests (running most in ubuntu)
     add_test "payment processor (FAKEWALLET)" "just itest-payment-processor FAKEWALLET" "integration"
-    add_test "payment processor (CLN)" "just itest-payment-processor CLN" "integration"
-    add_test "payment processor (LND)" "just itest-payment-processor LND" "integration"
+    #add_test "payment processor (CLN)" "just itest-payment-processor CLN" "integration"
+    #add_test "payment processor (LND)" "just itest-payment-processor LND" "integration"
 
 
 # MSRV Build Tests (from msrv-build job)
