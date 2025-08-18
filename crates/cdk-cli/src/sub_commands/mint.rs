@@ -89,14 +89,14 @@ pub async fn mint(
                 println!("Please pay: {}", quote.request);
 
                 let mut subscription = wallet
-                    .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
+                    .subscribe(WalletSubscription::Bolt12MintQuoteState(vec![quote
                         .id
                         .clone()]))
                     .await;
 
                 while let Some(msg) = subscription.recv().await {
-                    if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
-                        if response.state == MintQuoteState::Paid {
+                    if let NotificationPayload::MintQuoteBolt12Response(response) = msg {
+                        if response.amount_paid > response.amount_issued {
                             break;
                         }
                     }
