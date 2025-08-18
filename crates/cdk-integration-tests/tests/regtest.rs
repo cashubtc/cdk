@@ -27,9 +27,7 @@ use cdk::nuts::{
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
 use cdk_integration_tests::init_regtest::{get_lnd_dir, LND_RPC_ADDR};
-use cdk_integration_tests::{
-    get_mint_url_from_env, get_second_mint_url_from_env, wait_for_mint_to_be_paid,
-};
+use cdk_integration_tests::{get_mint_url_from_env, get_second_mint_url_from_env};
 use cdk_sqlite::wallet::{self, memory};
 use futures::join;
 use ln_regtest_rs::ln_client::{LightningClient, LndClient};
@@ -84,11 +82,12 @@ async fn test_internal_payment() {
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
     lnd_client
-        .pay_invoice(mint_quote.request)
+        .pay_invoice(mint_quote.request.clone())
         .await
         .expect("failed to pay invoice");
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+    wallet
+        .wait_for_payment(&mint_quote, Duration::from_secs(60))
         .await
         .unwrap();
 
@@ -119,7 +118,8 @@ async fn test_internal_payment() {
 
     let _melted = wallet.melt(&melt.id).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet_2, &mint_quote.id, 60)
+    wallet_2
+        .wait_for_payment(&mint_quote, Duration::from_secs(60))
         .await
         .unwrap();
 
@@ -261,7 +261,8 @@ async fn test_multimint_melt() {
         .pay_invoice(quote.request.clone())
         .await
         .expect("failed to pay invoice");
-    wait_for_mint_to_be_paid(&wallet1, &quote.id, 60)
+    wallet1
+        .wait_for_payment(&quote, Duration::from_secs(60))
         .await
         .unwrap();
     wallet1
@@ -274,7 +275,8 @@ async fn test_multimint_melt() {
         .pay_invoice(quote.request.clone())
         .await
         .expect("failed to pay invoice");
-    wait_for_mint_to_be_paid(&wallet2, &quote.id, 60)
+    wallet2
+        .wait_for_payment(&quote, Duration::from_secs(60))
         .await
         .unwrap();
     wallet2
@@ -334,7 +336,8 @@ async fn test_cached_mint() {
         .await
         .expect("failed to pay invoice");
 
-    wait_for_mint_to_be_paid(&wallet, &quote.id, 60)
+    wallet
+        .wait_for_payment(&quote, Duration::from_secs(60))
         .await
         .unwrap();
 

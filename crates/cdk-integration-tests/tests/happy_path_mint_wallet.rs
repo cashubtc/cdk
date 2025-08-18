@@ -22,9 +22,7 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, State};
 use cdk::wallet::{HttpClient, MintConnector, Wallet};
-use cdk_integration_tests::{
-    create_invoice_for_env, get_mint_url_from_env, pay_if_regtest, wait_for_mint_to_be_paid,
-};
+use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
 use futures::{SinkExt, StreamExt};
 use lightning_invoice::Bolt11Invoice;
@@ -111,7 +109,8 @@ async fn test_happy_mint_melt_round_trip() {
         .await
         .unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 10)
+    wallet
+        .wait_for_payment(&mint_quote, Duration::from_secs(60))
         .await
         .unwrap();
 
@@ -234,7 +233,8 @@ async fn test_happy_mint() {
         .await
         .unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+    wallet
+        .wait_for_payment(&mint_quote, Duration::from_secs(60))
         .await
         .unwrap();
 
@@ -281,7 +281,8 @@ async fn test_restore() {
         .await
         .unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+    wallet
+        .wait_for_payment(&mint_quote, Duration::from_secs(60))
         .await
         .unwrap();
 
@@ -360,7 +361,8 @@ async fn test_fake_melt_change_in_quote() {
 
     pay_if_regtest(&get_test_temp_dir(), &bolt11).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+    wallet
+        .wait_for_payment(&mint_quote, Duration::from_secs(60))
         .await
         .unwrap();
 
@@ -431,7 +433,8 @@ async fn test_pay_invoice_twice() {
         .await
         .unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+    wallet
+        .wait_for_payment(&mint_quote, Duration::from_secs(60))
         .await
         .unwrap();
 

@@ -1,5 +1,6 @@
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bip39::Mnemonic;
 use cashu::{Bolt11Invoice, ProofsMethods};
@@ -7,9 +8,7 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{ReceiveOptions, SendKind, SendOptions, Wallet};
 use cdk_integration_tests::init_regtest::get_temp_dir;
-use cdk_integration_tests::{
-    create_invoice_for_env, get_mint_url_from_env, pay_if_regtest, wait_for_mint_to_be_paid,
-};
+use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -29,7 +28,8 @@ async fn test_swap() {
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_temp_dir(), &invoice).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 10)
+    wallet
+        .wait_for_payment(&mint_quote, Duration::from_secs(60))
         .await
         .unwrap();
 
@@ -96,7 +96,8 @@ async fn test_fake_melt_change_in_quote() {
 
     pay_if_regtest(&get_temp_dir(), &bolt11).await.unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60)
+    wallet
+        .wait_for_payment(&mint_quote, Duration::from_secs(60))
         .await
         .unwrap();
 
