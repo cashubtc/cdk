@@ -4,7 +4,7 @@ use std::time::Duration;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{SendOptions, Wallet};
-use cdk::Amount;
+use cdk::{Amount, StreamExt};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -25,24 +25,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
 
     let quote = wallet.mint_quote(amount, None).await?;
-    let proofs = wallet
-        .wait_and_mint_quote(
-            quote,
-            Default::default(),
-            Default::default(),
-            Duration::from_secs(10),
-        )
-        .await?;
 
-    // Mint the received amount
-    let receive_amount = proofs.total_amount()?;
-    println!("Minted {}", receive_amount);
+    let mut proof_streams = wallet.proof_stream(
+        quote,
+        Default::default(),
+        Default::default(),
+        Duration::from_secs(10),
+    );
 
-    // Send the token
-    let prepared_send = wallet.prepare_send(amount, SendOptions::default()).await?;
-    let token = prepared_send.confirm(None).await?;
+    while let Some(proofs) = proof_streams.next().await {
+        // Mint the received amount
+        let receive_amount = proofs?.total_amount()?;
+        println!("Minted {}", receive_amount);
 
-    println!("{}", token);
+        // Send the token
+        let prepared_send = wallet.prepare_send(amount, SendOptions::default()).await?;
+        let token = prepared_send.confirm(None).await?;
+
+        println!("{}", token);
+    }
 
     Ok(())
 }

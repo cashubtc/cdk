@@ -7,6 +7,7 @@ use cashu::{Bolt11Invoice, ProofsMethods};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{ReceiveOptions, SendKind, SendOptions, Wallet};
+use cdk::StreamExt;
 use cdk_integration_tests::init_regtest::get_temp_dir;
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
@@ -28,15 +29,18 @@ async fn test_swap() {
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_temp_dir(), &invoice).await.unwrap();
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await
-        .unwrap();
+    let mut proof_streams = wallet.proof_stream(
+        mint_quote.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
 
-    let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+    let _proofs = proof_streams
+        .next()
         .await
-        .unwrap();
+        .expect("payment")
+        .expect("no error");
 
     let proofs: Vec<Amount> = wallet
         .get_unspent_proofs()
@@ -96,15 +100,18 @@ async fn test_fake_melt_change_in_quote() {
 
     pay_if_regtest(&get_temp_dir(), &bolt11).await.unwrap();
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await
-        .unwrap();
+    let mut proof_streams = wallet.proof_stream(
+        mint_quote.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
 
-    let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+    let _proofs = proof_streams
+        .next()
         .await
-        .unwrap();
+        .expect("payment")
+        .expect("no error");
 
     let invoice_amount = 9;
 

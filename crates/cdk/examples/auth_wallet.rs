@@ -8,6 +8,7 @@ use cdk::{Amount, OidcClient};
 use cdk_common::amount::SplitTarget;
 use cdk_common::{MintInfo, ProofsMethods};
 use cdk_sqlite::wallet::memory;
+use futures::StreamExt;
 use rand::Rng;
 use tracing_subscriber::EnvFilter;
 
@@ -60,9 +61,11 @@ async fn main() -> Result<(), Error> {
 
     let quote = wallet.mint_quote(amount, None).await.unwrap();
     let proofs = wallet
-        .wait_and_mint_quote(quote, SplitTarget::default(), None, Duration::from_secs(10))
+        .proof_stream(quote, SplitTarget::default(), None, Duration::from_secs(10))
+        .next()
         .await
-        .unwrap();
+        .expect("Some payment")
+        .expect("No error");
 
     println!("Received: {}", proofs.total_amount()?);
 

@@ -14,7 +14,7 @@ use cdk::nuts::{
     SwapRequest,
 };
 use cdk::wallet::{AuthHttpClient, AuthMintConnector, HttpClient, MintConnector, WalletBuilder};
-use cdk::{Error, OidcClient};
+use cdk::{Error, OidcClient, StreamExt};
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::fund_wallet;
 use cdk_sqlite::wallet::memory;
@@ -331,15 +331,19 @@ async fn test_mint_with_auth() {
     let mint_amount: Amount = 100.into();
 
     let quote = wallet.mint_quote(mint_amount, None).await.unwrap();
-    let proofs = wallet
-        .wait_and_mint_quote(
-            quote,
-            Default::default(),
-            Default::default(),
-            Duration::from_secs(10),
-        )
+
+    let mut proof_streams = wallet.proof_stream(
+        quote.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
+
+    let proofs = proof_streams
+        .next()
         .await
-        .unwrap();
+        .expect("payment")
+        .expect("no error");
 
     assert!(proofs.total_amount().expect("Could not get proofs amount") == mint_amount);
 }

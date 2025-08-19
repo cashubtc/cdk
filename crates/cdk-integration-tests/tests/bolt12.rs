@@ -9,6 +9,7 @@ use cashu::amount::SplitTarget;
 use cashu::nut23::Amountless;
 use cashu::{Amount, CurrencyUnit, MintRequest, PreMintSecrets, ProofsMethods};
 use cdk::wallet::{HttpClient, MintConnector, Wallet};
+use cdk::StreamExt;
 use cdk_integration_tests::get_mint_url_from_env;
 use cdk_integration_tests::init_regtest::{get_cln_dir, get_temp_dir};
 use cdk_sqlite::wallet::memory;
@@ -116,16 +117,14 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
         .await
         .unwrap();
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await?;
+    let mut proof_streams = wallet.proof_stream(
+        mint_quote.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
 
-    wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
-
-    let proofs = wallet
-        .mint_bolt12(&mint_quote.id, None, SplitTarget::default(), None)
-        .await
-        .unwrap();
+    let proofs = proof_streams.next().await.expect("payment")?;
 
     assert_eq!(proofs.total_amount().unwrap(), 10.into());
 
@@ -134,16 +133,7 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
         .await
         .unwrap();
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await?;
-
-    wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
-
-    let proofs = wallet
-        .mint_bolt12(&mint_quote.id, None, SplitTarget::default(), None)
-        .await
-        .unwrap();
+    let proofs = proof_streams.next().await.expect("payment")?;
 
     assert_eq!(proofs.total_amount().unwrap(), 11.into());
 
@@ -187,13 +177,14 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
         .pay_bolt12_offer(None, quote_one.request.clone())
         .await?;
 
-    wallet_one
-        .wait_for_payment(&quote_one, Duration::from_secs(60))
-        .await?;
+    let mut proof_streams_one = wallet_one.proof_stream(
+        quote_one.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
 
-    let proofs_one = wallet_one
-        .mint_bolt12(&quote_one.id, None, SplitTarget::default(), None)
-        .await?;
+    let proofs_one = proof_streams_one.next().await.expect("payment")?;
 
     assert_eq!(proofs_one.total_amount()?, 10_000.into());
 
@@ -205,13 +196,15 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
         .pay_bolt12_offer(None, quote_two.request.clone())
         .await?;
 
-    wallet_two
-        .wait_for_payment(&quote_two, Duration::from_secs(60))
-        .await?;
+    let mut proof_streams_two = wallet_two.proof_stream(
+        quote_two.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
 
-    let proofs_two = wallet_two
-        .mint_bolt12(&quote_two.id, None, SplitTarget::default(), None)
-        .await?;
+    let proofs_two = proof_streams_two.next().await.expect("payment")?;
+
     assert_eq!(proofs_two.total_amount()?, 15_000.into());
 
     let offer = cln_client
@@ -281,18 +274,18 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
         .await?;
 
     // Wait for payment to be processed
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await?;
+    let mut proof_streams = wallet.proof_stream(
+        mint_quote.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
 
     let offer = cln_client
         .get_bolt12_offer(Some(10_000), true, "hhhhhhhh".to_string())
         .await?;
 
-    let _proofs = wallet
-        .mint_bolt12(&mint_quote.id, None, SplitTarget::default(), None)
-        .await
-        .unwrap();
+    let _proofs = proof_streams.next().await.expect("payment")?;
 
     let quote = wallet.melt_bolt12_quote(offer.to_string(), None).await?;
 
@@ -340,9 +333,9 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         .pay_bolt12_offer(Some(pay_amount_msats), mint_quote.request.clone())
         .await?;
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(10))
-        .await?;
+    let mut payment_streams = wallet.payment_stream(&mint_quote, Duration::from_secs(60));
+
+    let _ = payment_streams.next().await;
 
     let state = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
 

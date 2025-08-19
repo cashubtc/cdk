@@ -26,6 +26,7 @@ use cdk::nuts::{
     NotificationPayload, PreMintSecrets,
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
+use cdk::StreamExt;
 use cdk_integration_tests::init_regtest::{get_lnd_dir, LND_RPC_ADDR};
 use cdk_integration_tests::{get_mint_url_from_env, get_second_mint_url_from_env};
 use cdk_sqlite::wallet::{self, memory};
@@ -86,15 +87,18 @@ async fn test_internal_payment() {
         .await
         .expect("failed to pay invoice");
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await
-        .unwrap();
+    let mut proof_streams = wallet.proof_stream(
+        mint_quote.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
 
-    let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+    let _proofs = proof_streams
+        .next()
         .await
-        .unwrap();
+        .expect("payment")
+        .expect("no error");
 
     assert!(wallet.total_balance().await.unwrap() == 100.into());
 
@@ -118,15 +122,18 @@ async fn test_internal_payment() {
 
     let _melted = wallet.melt(&melt.id).await.unwrap();
 
-    wallet_2
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await
-        .unwrap();
+    let mut proof_streams = wallet_2.proof_stream(
+        mint_quote.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
 
-    let _wallet_2_mint = wallet_2
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+    let _proofs = proof_streams
+        .next()
         .await
-        .unwrap();
+        .expect("payment")
+        .expect("no error");
 
     // let check_paid = match get_mint_port("0") {
     //     8085 => {
@@ -261,28 +268,38 @@ async fn test_multimint_melt() {
         .pay_invoice(quote.request.clone())
         .await
         .expect("failed to pay invoice");
-    wallet1
-        .wait_for_payment(&quote, Duration::from_secs(60))
+
+    let mut proof_streams = wallet1.proof_stream(
+        quote.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
+
+    let _proofs = proof_streams
+        .next()
         .await
-        .unwrap();
-    wallet1
-        .mint(&quote.id, SplitTarget::default(), None)
-        .await
-        .unwrap();
+        .expect("payment")
+        .expect("no error");
 
     let quote = wallet2.mint_quote(mint_amount, None).await.unwrap();
     lnd_client
         .pay_invoice(quote.request.clone())
         .await
         .expect("failed to pay invoice");
-    wallet2
-        .wait_for_payment(&quote, Duration::from_secs(60))
+
+    let mut proof_streams = wallet2.proof_stream(
+        quote.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
+
+    let _proofs = proof_streams
+        .next()
         .await
-        .unwrap();
-    wallet2
-        .mint(&quote.id, SplitTarget::default(), None)
-        .await
-        .unwrap();
+        .expect("payment")
+        .expect("no error");
 
     // Get an invoice
     let invoice = lnd_client.create_invoice(Some(50)).await.unwrap();
@@ -336,10 +353,9 @@ async fn test_cached_mint() {
         .await
         .expect("failed to pay invoice");
 
-    wallet
-        .wait_for_payment(&quote, Duration::from_secs(60))
-        .await
-        .unwrap();
+    let mut payment_streams = wallet.payment_stream(&quote, Duration::from_secs(60));
+
+    let _ = payment_streams.next().await;
 
     let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
     let http_client = HttpClient::new(get_mint_url_from_env().parse().unwrap(), None);

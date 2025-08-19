@@ -7,7 +7,7 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::MultiMintWallet;
-use cdk::Amount;
+use cdk::{Amount, StreamExt};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
@@ -96,26 +96,22 @@ pub async fn mint(
 
     let mut amount_minted = Amount::ZERO;
 
-    loop {
-        let proofs = wallet
-            .wait_and_mint_quote(
-                quote.clone(),
-                SplitTarget::default(),
-                None,
-                Duration::from_secs(sub_command_args.wait_duration),
-            )
-            .await?;
+    let mut proof_streams = wallet.proof_stream(
+        quote,
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(sub_command_args.wait_duration),
+    );
 
+    while let Some(proofs) = proof_streams.next().await {
+        let proofs = match proofs {
+            Ok(proofs) => proofs,
+            Err(err) => {
+                tracing::error!("Proof streams ended with {:?}", err);
+                break;
+            }
+        };
         amount_minted += proofs.total_amount()?;
-
-        if sub_command_args.quote_id.is_none() || quote.payment_method == PaymentMethod::Bolt11 {
-            break;
-        } else {
-            println!(
-                "Minted {} waiting for next payment.",
-                proofs.total_amount()?
-            );
-        }
     }
 
     println!("Received {amount_minted} from mint {mint_url}");

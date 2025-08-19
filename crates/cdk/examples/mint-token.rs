@@ -5,7 +5,7 @@ use cdk::error::Error;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{SendOptions, Wallet};
-use cdk::Amount;
+use cdk::{Amount, StreamExt};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 use tracing_subscriber::EnvFilter;
@@ -36,24 +36,32 @@ async fn main() -> Result<(), Error> {
     let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
 
     let quote = wallet.mint_quote(amount, None).await?;
-    let proofs = wallet
-        .wait_and_mint_quote(
-            quote,
-            Default::default(),
-            Default::default(),
-            Duration::from_secs(10),
-        )
-        .await?;
+    let mut proof_streams = wallet.proof_stream(
+        quote,
+        Default::default(),
+        Default::default(),
+        Duration::from_secs(10),
+    );
 
-    // Mint the received amount
-    let receive_amount = proofs.total_amount()?;
-    println!("Received {} from mint {}", receive_amount, mint_url);
+    while let Some(proofs) = proof_streams.next().await {
+        let proofs = match proofs {
+            Ok(proofs) => proofs,
+            Err(err) => {
+                tracing::error!("Proof stream ended with {:?}", err);
+                break;
+            }
+        };
 
-    // Send a token with the specified amount
-    let prepared_send = wallet.prepare_send(amount, SendOptions::default()).await?;
-    let token = prepared_send.confirm(None).await?;
-    println!("Token:");
-    println!("{}", token);
+        // Mint the received amount
+        let receive_amount = proofs.total_amount()?;
+        println!("Received {} from mint {}", receive_amount, mint_url);
+
+        // Send a token with the specified amount
+        let prepared_send = wallet.prepare_send(amount, SendOptions::default()).await?;
+        let token = prepared_send.confirm(None).await?;
+        println!("Token:");
+        println!("{}", token);
+    }
 
     Ok(())
 }

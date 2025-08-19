@@ -109,15 +109,18 @@ async fn test_happy_mint_melt_round_trip() {
         .await
         .unwrap();
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await
-        .unwrap();
+    let mut proof_streams = wallet.proof_stream(
+        mint_quote.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
 
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+    let proofs = proof_streams
+        .next()
         .await
-        .unwrap();
+        .expect("payment")
+        .expect("no error");
 
     let mint_amount = proofs.total_amount().unwrap();
 
@@ -233,15 +236,18 @@ async fn test_happy_mint() {
         .await
         .unwrap();
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await
-        .unwrap();
+    let mut proof_streams = wallet.proof_stream(
+        mint_quote.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
 
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+    let proofs = proof_streams
+        .next()
         .await
-        .unwrap();
+        .expect("payment")
+        .expect("no error");
 
     let mint_amount = proofs.total_amount().unwrap();
 
@@ -281,15 +287,18 @@ async fn test_restore() {
         .await
         .unwrap();
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await
-        .unwrap();
+    let mut proof_streams = wallet.proof_stream(
+        mint_quote.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
 
-    let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+    let _proofs = proof_streams
+        .next()
         .await
-        .unwrap();
+        .expect("payment")
+        .expect("no error");
 
     assert_eq!(wallet.total_balance().await.unwrap(), 100.into());
 
@@ -361,15 +370,18 @@ async fn test_fake_melt_change_in_quote() {
 
     pay_if_regtest(&get_test_temp_dir(), &bolt11).await.unwrap();
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await
-        .unwrap();
+    let mut proof_streams = wallet.proof_stream(
+        mint_quote.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
 
-    let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+    let _proofs = proof_streams
+        .next()
         .await
-        .unwrap();
+        .expect("payment")
+        .expect("no error");
 
     let invoice = create_invoice_for_env(&get_test_temp_dir(), Some(9))
         .await
@@ -433,15 +445,18 @@ async fn test_pay_invoice_twice() {
         .await
         .unwrap();
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await
-        .unwrap();
+    let mut proof_streams = wallet.proof_stream(
+        mint_quote.clone(),
+        SplitTarget::default(),
+        None,
+        Duration::from_secs(60),
+    );
 
-    let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+    let proofs = proof_streams
+        .next()
         .await
-        .unwrap();
+        .expect("payment")
+        .expect("no error");
 
     let mint_amount = proofs.total_amount().unwrap();
 
