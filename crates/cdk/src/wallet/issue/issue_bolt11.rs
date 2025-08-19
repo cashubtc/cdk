@@ -52,6 +52,8 @@ impl Wallet {
         let mint_url = self.mint_url.clone();
         let unit = self.unit.clone();
 
+        self.refresh_keysets().await?;
+
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
             let settings = self
@@ -194,15 +196,7 @@ impl Wallet {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
-        // Check that mint is in store of mints
-        if self
-            .localstore
-            .get_mint(self.mint_url.clone())
-            .await?
-            .is_none()
-        {
-            self.get_mint_info().await?;
-        }
+        self.refresh_keysets().await?;
 
         let quote_info = self
             .localstore

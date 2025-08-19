@@ -27,18 +27,8 @@ impl Wallet {
         memo: Option<String>,
     ) -> Result<Amount, Error> {
         let mint_url = &self.mint_url;
-        // Add mint if it does not exist in the store
-        if self
-            .localstore
-            .get_mint(self.mint_url.clone())
-            .await?
-            .is_none()
-        {
-            tracing::debug!("Mint not in localstore fetching info for: {mint_url}");
-            self.get_mint_info().await?;
-        }
 
-        let _ = self.fetch_active_keyset().await?;
+        self.refresh_keysets().await?;
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
 

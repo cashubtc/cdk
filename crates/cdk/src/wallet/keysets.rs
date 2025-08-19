@@ -82,7 +82,7 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn refresh_keysets(&self) -> Result<KeySetInfos, Error> {
         tracing::debug!("Refreshing keysets and ensuring we have keys");
-        let _ = self.get_mint_info().await?;
+        let _ = self.fetch_mint_info().await?;
 
         // Fetch all current keysets from mint
         let keysets_response = self.client.get_mint_keysets().await?;

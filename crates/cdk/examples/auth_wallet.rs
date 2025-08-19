@@ -37,7 +37,7 @@ async fn main() -> Result<(), Error> {
     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None)?;
 
     let mint_info = wallet
-        .get_mint_info()
+        .fetch_mint_info()
         .await
         .expect("mint info")
         .expect("could not get mint info");

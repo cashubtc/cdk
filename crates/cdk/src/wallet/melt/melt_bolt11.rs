@@ -48,6 +48,8 @@ impl Wallet {
         request: String,
         options: Option<MeltOptions>,
     ) -> Result<MeltQuote, Error> {
+        self.refresh_keysets().await?;
+
         let invoice = Bolt11Invoice::from_str(&request)?;
 
         let quote_request = MeltQuoteBolt11Request {
