@@ -10,6 +10,7 @@ use tokio::time::{timeout, Duration};
 use super::{Wallet, WalletSubscription};
 
 #[allow(private_bounds)]
+#[allow(clippy::enum_variant_names)]
 enum WaitableEvent {
     MeltQuote(String),
     MintQuote(String),
