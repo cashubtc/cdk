@@ -64,10 +64,20 @@ impl HttpClientCore {
         let response = request
             .send()
             .await
-            .map_err(|e| Error::HttpError(e.to_string()))?
+            .map_err(|e| {
+                Error::HttpError(
+                    e.status().map(|status_code| status_code.as_u16()),
+                    e.to_string(),
+                )
+            })?
             .text()
             .await
-            .map_err(|e| Error::HttpError(e.to_string()))?;
+            .map_err(|e| {
+                Error::HttpError(
+                    e.status().map(|status_code| status_code.as_u16()),
+                    e.to_string(),
+                )
+            })?;
 
         serde_json::from_str::<R>(&response).map_err(|err| {
             tracing::warn!("Http Response error: {}", err);
@@ -90,15 +100,19 @@ impl HttpClientCore {
             request = request.header(auth.header_key(), auth.to_string());
         }
 
-        let response = request
-            .send()
-            .await
-            .map_err(|e| Error::HttpError(e.to_string()))?;
+        let response = request.send().await.map_err(|e| {
+            Error::HttpError(
+                e.status().map(|status_code| status_code.as_u16()),
+                e.to_string(),
+            )
+        })?;
 
-        let response = response
-            .text()
-            .await
-            .map_err(|e| Error::HttpError(e.to_string()))?;
+        let response = response.text().await.map_err(|e| {
+            Error::HttpError(
+                e.status().map(|status_code| status_code.as_u16()),
+                e.to_string(),
+            )
+        })?;
 
         serde_json::from_str::<R>(&response).map_err(|err| {
             tracing::warn!("Http Response error: {}", err);
@@ -189,7 +203,12 @@ impl HttpClient {
             }))
             .danger_accept_invalid_certs(accept_invalid_certs) // Allow self-signed certs
             .build()
-            .map_err(|e| Error::HttpError(e.to_string()))?;
+            .map_err(|e| {
+                Error::HttpError(
+                    e.status().map(|status_code| status_code.as_u16()),
+                    e.to_string(),
+                )
+            })?;
 
         Ok(Self {
             core: HttpClientCore { inner: client },
@@ -249,7 +268,13 @@ impl HttpClient {
             }
 
             match result.as_ref() {
-                Err(Error::Database(_) | Error::HttpError(_) | Error::Custom(_)) => {
+                Err(Error::HttpError(status_code, _)) => {
+                    let status_code = status_code.to_owned().unwrap_or_default();
+                    if (400..=499).contains(&status_code) {
+                        // 4xx errors won't be 'solved' by retrying
+                        return result;
+                    }
+
                     // retry request, if possible
                     tracing::error!("Failed http_request {:?}", result.as_ref().err());
 
