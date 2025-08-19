@@ -84,7 +84,6 @@ jobs:
     if: >
       github.event_name == 'push' ||
       github.event_name == 'pull_request' ||
-      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
     steps:
       - name: checkout
@@ -114,7 +113,6 @@ jobs:
     needs: pre-commit-checks
     if: >
       github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
       github.event_name == 'pull_request' ||
       (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
     steps:
@@ -148,7 +146,6 @@ jobs:
     needs: pre-commit-checks
     if: >
       github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
       github.event_name == 'pull_request' ||
       (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
     steps:
@@ -219,7 +216,6 @@ jobs:
     if: >
       github.event_name == 'push' ||
       github.event_name == 'pull_request' ||
-      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
     strategy:
       matrix:
