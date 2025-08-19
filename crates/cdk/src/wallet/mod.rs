@@ -94,6 +94,8 @@ pub enum WalletSubscription {
     Bolt11MintQuoteState(Vec<String>),
     /// Melt quote subscription
     Bolt11MeltQuoteState(Vec<String>),
+    /// Mint bolt12 quote subscription
+    Bolt12MintQuoteState(Vec<String>),
 }
 
 impl From<WalletSubscription> for Params {
@@ -124,6 +126,11 @@ impl From<WalletSubscription> for Params {
             WalletSubscription::Bolt11MeltQuoteState(filters) => Params {
                 filters,
                 kind: Kind::Bolt11MeltQuote,
+                id: id.into(),
+            },
+            WalletSubscription::Bolt12MintQuoteState(filters) => Params {
+                filters,
+                kind: Kind::Bolt12MintQuote,
                 id: id.into(),
             },
         }

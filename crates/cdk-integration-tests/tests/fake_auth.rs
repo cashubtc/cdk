@@ -330,12 +330,16 @@ async fn test_mint_with_auth() {
 
     let mint_amount: Amount = 100.into();
 
-    let (_, proofs) = wallet
-        .mint_once_paid(mint_amount, None, Duration::from_secs(10))
+    let quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    let proofs = wallet
+        .wait_and_mint_quote(
+            quote,
+            Default::default(),
+            Default::default(),
+            Duration::from_secs(10),
+        )
         .await
         .unwrap();
-
-    let proofs = proofs.await.expect("could not mint");
 
     assert!(proofs.total_amount().expect("Could not get proofs amount") == mint_amount);
 }
