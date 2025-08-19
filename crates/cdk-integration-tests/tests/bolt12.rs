@@ -266,8 +266,6 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
         None,
     )?;
 
-    wallet.get_mint_info().await?;
-
     let mint_amount = Amount::from(20_000);
 
     // Create a single-use BOLT12 quote
@@ -322,8 +320,6 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         Mnemonic::generate(12)?.to_seed_normalized(""),
         None,
     )?;
-
-    wallet.get_mint_info().await?;
 
     // Create a single-use BOLT12 quote
     let mint_quote = wallet.mint_bolt12_quote(None, None).await?;
