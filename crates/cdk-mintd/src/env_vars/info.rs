@@ -1,9 +1,10 @@
 //! Info environment variables
 
 use std::env;
+use std::str::FromStr;
 
 use super::common::*;
-use crate::config::Info;
+use crate::config::{Info, LoggingOutput};
 
 impl Info {
     pub fn from_env(mut self) -> Self {
@@ -56,6 +57,26 @@ impl Info {
             if let Ok(enable) = swagger_str.parse() {
                 self.enable_swagger_ui = Some(enable);
             }
+        }
+
+        // Logging configuration
+        if let Ok(output_str) = env::var(ENV_LOGGING_OUTPUT) {
+            if let Ok(output) = LoggingOutput::from_str(&output_str) {
+                self.logging.output = output;
+            } else {
+                tracing::warn!(
+                    "Invalid logging output '{}' in environment variable. Valid options: stdout, file, both",
+                    output_str
+                );
+            }
+        }
+
+        if let Ok(console_level) = env::var(ENV_LOGGING_CONSOLE_LEVEL) {
+            self.logging.console_level = Some(console_level);
+        }
+
+        if let Ok(file_level) = env::var(ENV_LOGGING_FILE_LEVEL) {
+            self.logging.file_level = Some(file_level);
         }
 
         self.http_cache = self.http_cache.from_env();
