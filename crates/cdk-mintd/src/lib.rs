@@ -39,9 +39,11 @@ use cdk::nuts::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
+#[cfg(feature = "postgres")]
 use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase};
-#[cfg(feature = "auth")]
+#[cfg(all(feature = "auth", feature = "sqlite"))]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
+#[cfg(feature = "sqlite")]
 use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
 use config::{AuthType, DatabaseEngine, LnBackend};
@@ -243,19 +245,21 @@ pub fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<co
 
 async fn setup_database(
     settings: &config::Settings,
-    work_dir: &Path,
-    db_password: Option<String>,
+    _work_dir: &Path,
+    _db_password: Option<String>,
 ) -> Result<(
     Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
 )> {
     match settings.database.engine {
+        #[cfg(feature = "sqlite")]
         DatabaseEngine::Sqlite => {
-            let db = setup_sqlite_database(work_dir, db_password).await?;
+            let db = setup_sqlite_database(_work_dir, _db_password).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
             Ok((localstore, keystore))
         }
+        #[cfg(feature = "postgres")]
         DatabaseEngine::Postgres => {
             // Get the PostgreSQL configuration, ensuring it exists
             let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
@@ -266,16 +270,33 @@ async fn setup_database(
                 bail!("PostgreSQL URL is required. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
             }
 
+            #[cfg(feature = "postgres")]
             let pg_db = Arc::new(MintPgDatabase::new(pg_config.url.as_str()).await?);
+            #[cfg(feature = "postgres")]
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
                 pg_db.clone();
-            let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> =
-                pg_db;
-            Ok((localstore, keystore))
+            #[cfg(feature = "postgres")]
+            let keystore: Arc<
+                dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync,
+            > = pg_db;
+            #[cfg(feature = "postgres")]
+            return Ok((localstore, keystore));
+
+            #[cfg(not(feature = "postgres"))]
+            bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
+        }
+        #[cfg(not(feature = "sqlite"))]
+        DatabaseEngine::Sqlite => {
+            bail!("SQLite support not compiled in. Enable the 'sqlite' feature to use SQLite database.")
+        }
+        #[cfg(not(feature = "postgres"))]
+        DatabaseEngine::Postgres => {
+            bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
         }
     }
 }
 
+#[cfg(feature = "sqlite")]
 async fn setup_sqlite_database(
     work_dir: &Path,
     _password: Option<String>,
@@ -529,8 +550,17 @@ async fn configure_backend_for_unit(
         mint_builder.set_unit_fee(&unit, input_fee)?;
     }
 
-    let nut17_supported = SupportedMethods::default_bolt11(unit);
-    mint_builder = mint_builder.with_supported_websockets(nut17_supported);
+    #[cfg(any(
+        feature = "cln",
+        feature = "lnbits",
+        feature = "lnd",
+        feature = "fakewallet",
+        feature = "grpc-processor"
+    ))]
+    {
+        let nut17_supported = SupportedMethods::default_bolt11(unit);
+        mint_builder = mint_builder.with_supported_websockets(nut17_supported);
+    }
 
     Ok(mint_builder)
 }
@@ -550,7 +580,7 @@ fn configure_cache(settings: &config::Settings, mint_builder: MintBuilder) -> Mi
 #[cfg(feature = "auth")]
 async fn setup_authentication(
     settings: &config::Settings,
-    work_dir: &Path,
+    _work_dir: &Path,
     mut mint_builder: MintBuilder,
     _password: Option<String>,
 ) -> Result<MintBuilder> {
@@ -559,29 +589,53 @@ async fn setup_authentication(
         let auth_localstore: Arc<
             dyn cdk_database::MintAuthDatabase<Err = cdk_database::Error> + Send + Sync,
         > = match settings.database.engine {
+            #[cfg(feature = "sqlite")]
             DatabaseEngine::Sqlite => {
-                let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
-                #[cfg(not(feature = "sqlcipher"))]
-                let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
-                #[cfg(feature = "sqlcipher")]
-                let sqlite_db = {
-                    // Get password from command line arguments for sqlcipher
-                    MintSqliteAuthDatabase::new((sql_db_path, _password.unwrap())).await?
-                };
+                #[cfg(feature = "sqlite")]
+                {
+                    let sql_db_path = _work_dir.join("cdk-mintd-auth.sqlite");
+                    #[cfg(not(feature = "sqlcipher"))]
+                    let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
+                    #[cfg(feature = "sqlcipher")]
+                    let sqlite_db = {
+                        // Get password from command line arguments for sqlcipher
+                        MintSqliteAuthDatabase::new((sql_db_path, _password.unwrap())).await?
+                    };
 
-                Arc::new(sqlite_db)
-            }
-            DatabaseEngine::Postgres => {
-                // Get the PostgreSQL configuration, ensuring it exists
-                let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
-                    anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
-                })?;
-
-                if pg_config.url.is_empty() {
-                    bail!("PostgreSQL URL is required for auth database. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
+                    Arc::new(sqlite_db)
                 }
+                #[cfg(not(feature = "sqlite"))]
+                {
+                    bail!("SQLite support not compiled in. Enable the 'sqlite' feature to use SQLite database.")
+                }
+            }
+            #[cfg(feature = "postgres")]
+            DatabaseEngine::Postgres => {
+                #[cfg(feature = "postgres")]
+                {
+                    // Get the PostgreSQL configuration, ensuring it exists
+                    let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
+                        anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
+                    })?;
 
-                Arc::new(MintPgAuthDatabase::new(pg_config.url.as_str()).await?)
+                    if pg_config.url.is_empty() {
+                        bail!("PostgreSQL URL is required for auth database. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
+                    }
+
+                    Arc::new(MintPgAuthDatabase::new(pg_config.url.as_str()).await?)
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
+                }
+            }
+            #[cfg(not(feature = "sqlite"))]
+            DatabaseEngine::Sqlite => {
+                bail!("SQLite support not compiled in. Enable the 'sqlite' feature to use SQLite database.")
+            }
+            #[cfg(not(feature = "postgres"))]
+            DatabaseEngine::Postgres => {
+                bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
             }
         };
 
