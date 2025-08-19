@@ -114,6 +114,7 @@ jobs:
     needs: pre-commit-checks
     if: >
       github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
       github.event_name == 'pull_request' ||
       (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
     steps:
@@ -147,6 +148,7 @@ jobs:
     needs: pre-commit-checks
     if: >
       github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
       github.event_name == 'pull_request' ||
       (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
     steps:
@@ -177,7 +179,7 @@ jobs:
     name: "Integration tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy]
+    #needs: [pre-commit-checks, clippy]
     if: >
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
@@ -217,6 +219,7 @@ jobs:
     if: >
       github.event_name == 'push' ||
       github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
     strategy:
       matrix:
