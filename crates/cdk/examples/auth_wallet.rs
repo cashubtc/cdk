@@ -5,6 +5,7 @@ use cdk::error::Error;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{SendOptions, Wallet};
 use cdk::{Amount, OidcClient};
+use cdk_common::amount::SplitTarget;
 use cdk_common::{MintInfo, ProofsMethods};
 use cdk_sqlite::wallet::memory;
 use rand::Rng;
@@ -57,14 +58,13 @@ async fn main() -> Result<(), Error> {
         .await
         .expect("Could not mint blind auth");
 
-    let (_invoice_to_pay, proofs) = wallet
-        .mint_once_paid(amount, None, Duration::from_secs(10))
-        .await?;
+    let quote = wallet.mint_quote(amount, None).await.unwrap();
+    let proofs = wallet
+        .wait_and_mint_quote(quote, SplitTarget::default(), None, Duration::from_secs(10))
+        .await
+        .unwrap();
 
-    // Mint the received amount
-    let receive_amount = proofs.await?;
-
-    println!("Received: {}", receive_amount.total_amount()?);
+    println!("Received: {}", proofs.total_amount()?);
 
     // Get the total balance of the wallet
     let balance = wallet.total_balance().await?;

@@ -51,6 +51,9 @@ impl TryFrom<IndexableParams> for Vec<Index<Notification>> {
                         Notification::MintQuoteBolt11(Uuid::from_str(&filter)?)
                     }
                     Kind::ProofState => Notification::ProofState(PublicKey::from_str(&filter)?),
+                    Kind::Bolt12MintQuote => {
+                        Notification::MintQuoteBolt12(Uuid::from_str(&filter)?)
+                    }
                 };
 
                 Ok(Index::from((idx, params.id.clone(), sub_id)))

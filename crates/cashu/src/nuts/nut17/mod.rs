@@ -174,6 +174,8 @@ pub enum Kind {
     Bolt11MintQuote,
     /// Proof State
     ProofState,
+    /// Bolt 12 Mint Quote
+    Bolt12MintQuote,
 }
 
 impl<I> AsRef<I> for Params<I> {

@@ -108,7 +108,7 @@ impl SecondaryRepaymentQueue {
 
             loop {
                 // Wait for a random interval between 30 seconds and 3 minutes (180 seconds)
-                let delay_secs = rng.gen_range(30..=180);
+                let delay_secs = rng.gen_range(1..=3);
                 time::sleep(time::Duration::from_secs(delay_secs)).await;
 
                 // Try to process a random payment from the queue without removing it
