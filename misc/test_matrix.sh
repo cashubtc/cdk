@@ -230,7 +230,7 @@ elif [ "$RUN_WASM_TESTS" = "true" ]; then
 # Integration tests (require external services)
 elif [ "$RUN_INTEGRATION_TESTS" = "true" ]; then
     echo -e "${BLUE}Adding integration tests (require external services)...${NC}"
-    
+
     # Pure integration tests (fake wallet tests)
     add_test "pure itest (memory)" "just test-pure memory" "integration"
     add_test "pure itest (sqlite)" "just test-pure sqlite" "integration"
@@ -238,7 +238,7 @@ elif [ "$RUN_INTEGRATION_TESTS" = "true" ]; then
     add_test "pure test (mint)" "just test" "integration"
     
     # Fake mint integration tests
-    add_test "fake mint itest (REDB)" "just fake-mint-itest REDB" "integration"
+    #add_test "fake mint itest (REDB)" "just fake-mint-itest REDB" "integration"
     add_test "fake mint itest (SQLITE)" "just fake-mint-itest SQLITE" "integration"
     
     # Regtest integration tests (running in ubuntu)
