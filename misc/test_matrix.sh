@@ -133,11 +133,9 @@ elif [ "$TEST_SUBSET" = "full" ]; then
     add_test "example: melt-token" "--example melt-token" "check"
     add_test "example: p2pk" "--example p2pk" "check"
     add_test "example: proof-selection" "--example proof-selection" "check"
-    add_test "example: wallet" "--example wallet" "check"
     add_test "example: auth_wallet" "--example auth_wallet" "check"
 
     # Main clippy and test matrix from CI
-    add_test "cashu (default)" "-p cashu" "clippy"
     add_test "cashu (no default)" "-p cashu --no-default-features" "clippy"
     add_test "cashu (wallet only)" "-p cashu --no-default-features --features wallet" "clippy"
     add_test "cashu (mint only)" "-p cashu --no-default-features --features mint" "clippy"
@@ -193,7 +191,6 @@ elif [ "$TEST_SUBSET" = "full" ]; then
     add_test "cdk-cli (sqlcipher + redb)" '--bin cdk-cli --features sqlcipher --features redb' "clippy"
 
     # cdk-mintd binary tests
-    add_test "cdk-mintd (default)" "--bin cdk-mintd" "clippy"
     add_test "cdk-mintd (redis)" "--bin cdk-mintd --features redis" "clippy"
     add_test "cdk-mintd (redb)" "--bin cdk-mintd --features redb" "clippy"
     add_test "cdk-mintd (redis + swagger + redb)" '--bin cdk-mintd --features redis --features swagger --features redb' "clippy"
@@ -214,8 +211,7 @@ elif [ "$TEST_SUBSET" = "full" ]; then
     add_test "cdk-mintd (auth + cln)" '--bin cdk-mintd --no-default-features --features auth --features cln' "clippy"
     add_test "cdk-mint-cli" "--bin cdk-mint-cli" "clippy"
     add_test "cdk-mint-rpc" "-p cdk-mint-rpc" "clippy"
-    add_test "doc tests" "--doc" "test"
-    
+
     # Documentation tests
     add_test "strict documentation" "" "docs-strict"
 

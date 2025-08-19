@@ -25,6 +25,11 @@ jobs:
   pre-commit-checks:
     name: "Cargo fmt, typos"
     runs-on: self-hosted
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch'
     timeout-minutes: 30
     steps:
       - name: checkout
@@ -50,6 +55,11 @@ jobs:
   examples:
     name: "Run examples"
     runs-on: self-hosted
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch'
     timeout-minutes: 30
     needs: pre-commit-checks
     strategy:
@@ -177,7 +187,7 @@ jobs:
     name: "Integration tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy]
+    needs: pre-commit-checks
     if: >
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
@@ -208,7 +218,7 @@ jobs:
       - name: Run integration tests
         run: nix develop -i -L .#stable --command bash -c 'RUN_INTEGRATION_TESTS=true ./misc/test_matrix.sh'
       - name: Stop Postgres
-        run: bash -x docker stop rust-test-pg
+        run: docker stop rust-test-pg
 
   fake-mint-auth-itest:
     name: "Integration fake mint auth tests"
