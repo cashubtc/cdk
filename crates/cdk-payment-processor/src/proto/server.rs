@@ -232,27 +232,27 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                 let bolt11: cdk_common::Bolt11Invoice =
                     request.request.parse().map_err(Error::Invoice)?;
 
-                cdk_common::payment::OutgoingPaymentOptions::Bolt11(
+                cdk_common::payment::OutgoingPaymentOptions::Bolt11(Box::new(
                     cdk_common::payment::Bolt11OutgoingPaymentOptions {
                         bolt11,
                         max_fee_amount: None,
                         timeout_secs: None,
                         melt_options: request.options.map(Into::into),
                     },
-                )
+                ))
             }
             OutgoingPaymentRequestType::Bolt12Offer => {
                 // Parse offer to verify it's valid, but store as string
                 let _: Offer = request.request.parse().map_err(|_| Error::Bolt12Parse)?;
 
-                cdk_common::payment::OutgoingPaymentOptions::Bolt12(
+                cdk_common::payment::OutgoingPaymentOptions::Bolt12(Box::new(
                     cdk_common::payment::Bolt12OutgoingPaymentOptions {
                         offer: Offer::from_str(&request.request).unwrap(),
                         max_fee_amount: None,
                         timeout_secs: None,
                         melt_options: request.options.map(Into::into),
                     },
-                )
+                ))
             }
         };
 
@@ -287,12 +287,12 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     opts.bolt11.parse().map_err(Error::Invoice)?;
 
                 let payment_options = cdk_common::payment::OutgoingPaymentOptions::Bolt11(
-                    cdk_common::payment::Bolt11OutgoingPaymentOptions {
+                    Box::new(cdk_common::payment::Bolt11OutgoingPaymentOptions {
                         bolt11,
                         max_fee_amount: opts.max_fee_amount.map(Into::into),
                         timeout_secs: opts.timeout_secs,
                         melt_options: opts.melt_options.map(Into::into),
-                    },
+                    }),
                 );
 
                 (CurrencyUnit::Msat, payment_options)
@@ -303,12 +303,12 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     .unwrap();
 
                 let payment_options = cdk_common::payment::OutgoingPaymentOptions::Bolt12(
-                    cdk_common::payment::Bolt12OutgoingPaymentOptions {
+                    Box::new(cdk_common::payment::Bolt12OutgoingPaymentOptions {
                         offer,
                         max_fee_amount: opts.max_fee_amount.map(Into::into),
                         timeout_secs: opts.timeout_secs,
                         melt_options: opts.melt_options.map(Into::into),
-                    },
+                    }),
                 );
 
                 (CurrencyUnit::Msat, payment_options)

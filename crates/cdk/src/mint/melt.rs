@@ -171,7 +171,10 @@ impl Mint {
         };
 
         let payment_quote = ln
-            .get_payment_quote(&melt_request.unit, OutgoingPaymentOptions::Bolt11(bolt11))
+            .get_payment_quote(
+                &melt_request.unit,
+                OutgoingPaymentOptions::Bolt11(Box::new(bolt11)),
+            )
             .await
             .map_err(|err| {
                 tracing::error!(
@@ -271,7 +274,7 @@ impl Mint {
         let payment_quote = ln
             .get_payment_quote(
                 &melt_request.unit,
-                OutgoingPaymentOptions::Bolt12(outgoing_payment_options),
+                OutgoingPaymentOptions::Bolt12(Box::new(outgoing_payment_options)),
             )
             .await
             .map_err(|err| {

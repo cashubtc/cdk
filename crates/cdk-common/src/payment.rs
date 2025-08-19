@@ -201,9 +201,9 @@ pub struct Bolt12OutgoingPaymentOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum OutgoingPaymentOptions {
     /// BOLT11 payment options
-    Bolt11(Bolt11OutgoingPaymentOptions),
+    Bolt11(Box<Bolt11OutgoingPaymentOptions>),
     /// BOLT12 payment options
-    Bolt12(Bolt12OutgoingPaymentOptions),
+    Bolt12(Box<Bolt12OutgoingPaymentOptions>),
 }
 
 impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
@@ -211,14 +211,14 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
 
     fn try_from(melt_quote: crate::mint::MeltQuote) -> Result<Self, Self::Error> {
         match melt_quote.request {
-            MeltPaymentRequest::Bolt11 { bolt11 } => Ok(OutgoingPaymentOptions::Bolt11(
+            MeltPaymentRequest::Bolt11 { bolt11 } => Ok(OutgoingPaymentOptions::Bolt11(Box::new(
                 Bolt11OutgoingPaymentOptions {
                     max_fee_amount: Some(melt_quote.fee_reserve),
                     timeout_secs: None,
                     bolt11,
                     melt_options: melt_quote.options,
                 },
-            )),
+            ))),
             MeltPaymentRequest::Bolt12 { offer } => {
                 let melt_options = match melt_quote.options {
                     None => None,
@@ -226,14 +226,14 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
                     Some(options) => Some(options),
                 };
 
-                Ok(OutgoingPaymentOptions::Bolt12(
+                Ok(OutgoingPaymentOptions::Bolt12(Box::new(
                     Bolt12OutgoingPaymentOptions {
                         max_fee_amount: Some(melt_quote.fee_reserve),
                         timeout_secs: None,
                         offer: *offer,
                         melt_options,
                     },
-                ))
+                )))
             }
         }
     }
