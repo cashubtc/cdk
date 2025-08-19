@@ -244,7 +244,8 @@ elif [ "$RUN_INTEGRATION_TESTS" = "true" ]; then
     # Regtest integration tests (running in ubuntu)
     #add_test "regtest itest (REDB)" "just itest REDB" "integration"
     add_test "regtest itest (SQLITE)" "just itest SQLITE" "integration"
-    
+    add_test "regtest itest (PSQL)" "just itest POSTGRES" "integration"
+
     # Payment processor tests (running most in ubuntu)
     add_test "payment processor (FAKEWALLET)" "just itest-payment-processor FAKEWALLET" "integration"
     add_test "payment processor (CLN)" "just itest-payment-processor CLN" "integration"
