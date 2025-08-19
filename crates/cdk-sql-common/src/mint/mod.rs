@@ -700,7 +700,6 @@ VALUES (:quote_id, :amount, :timestamp);
 
     #[instrument(skip_all)]
     async fn add_mint_quote(&mut self, quote: MintQuote) -> Result<(), Self::Err> {
-        tracing::debug!("Adding quote with: {}", quote.payment_method);
         query(
             r#"
                 INSERT INTO mint_quote (

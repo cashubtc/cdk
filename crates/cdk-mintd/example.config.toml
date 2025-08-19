@@ -6,6 +6,15 @@ mnemonic = ""
 # input_fee_ppk = 0
 # enable_swagger_ui = false
 
+[info.logging]
+# Where to output logs: "stdout", "file", or "both" (default: "both")
+# Note: "stdout" actually outputs to stderr (standard error stream)
+# output = "both"
+# Log level for console output (default: "info")
+# console_level = "info"  
+# Log level for file output (default: "debug")
+# file_level = "debug"
+
 [mint_management_rpc]
 enabled = false
 # address = "127.0.0.1"

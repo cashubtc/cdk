@@ -7,6 +7,44 @@ use cdk_axum::cache;
 use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LoggingOutput {
+    /// Log to stderr only
+    Stderr,
+    /// Log to file only
+    File,
+    /// Log to both stderr and file (default)
+    #[default]
+    Both,
+}
+
+impl std::str::FromStr for LoggingOutput {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "stderr" => Ok(LoggingOutput::Stderr),
+            "file" => Ok(LoggingOutput::File),
+            "both" => Ok(LoggingOutput::Both),
+            _ => Err(format!(
+                "Unknown logging output: {s}. Valid options: stdout, file, both"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LoggingConfig {
+    /// Where to output logs: stdout, file, or both
+    #[serde(default)]
+    pub output: LoggingOutput,
+    /// Log level for console output (when stdout or both)
+    pub console_level: Option<String>,
+    /// Log level for file output (when file or both)
+    pub file_level: Option<String>,
+}
+
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Info {
     pub url: String,
@@ -18,6 +56,10 @@ pub struct Info {
     pub input_fee_ppk: Option<u64>,
 
     pub http_cache: cache::Config,
+
+    /// Logging configuration
+    #[serde(default)]
+    pub logging: LoggingConfig,
 
     /// When this is set to true, the mint exposes a Swagger UI for it's API at
     /// `[listen_host]:[listen_port]/swagger-ui`
@@ -45,6 +87,7 @@ impl std::fmt::Debug for Info {
             .field("mnemonic", &mnemonic_display)
             .field("input_fee_ppk", &self.input_fee_ppk)
             .field("http_cache", &self.http_cache)
+            .field("logging", &self.logging)
             .field("enable_swagger_ui", &self.enable_swagger_ui)
             .finish()
     }
@@ -422,6 +465,8 @@ impl Settings {
 #[cfg(test)]
 mod tests {
 
+    use std::str::FromStr;
+
     use super::*;
 
     #[test]
@@ -487,5 +532,46 @@ mod tests {
         // The mnemonic with special chars should be hashed
         assert!(!debug_output.contains("特殊字符 !@#$%^&*()"));
         assert!(debug_output.contains("<hashed: "));
+    }
+
+    #[test]
+    fn test_logging_output_from_str() {
+        assert_eq!(
+            LoggingOutput::from_str("stderr").unwrap(),
+            LoggingOutput::Stderr
+        );
+        assert_eq!(
+            LoggingOutput::from_str("file").unwrap(),
+            LoggingOutput::File
+        );
+        assert_eq!(
+            LoggingOutput::from_str("both").unwrap(),
+            LoggingOutput::Both
+        );
+
+        // Test case insensitive
+        assert_eq!(
+            LoggingOutput::from_str("STDERR").unwrap(),
+            LoggingOutput::Stderr
+        );
+        assert_eq!(
+            LoggingOutput::from_str("File").unwrap(),
+            LoggingOutput::File
+        );
+        assert_eq!(
+            LoggingOutput::from_str("BOTH").unwrap(),
+            LoggingOutput::Both
+        );
+
+        // Test invalid input
+        assert!(LoggingOutput::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn test_logging_config_defaults() {
+        let config = LoggingConfig::default();
+        assert_eq!(config.output, LoggingOutput::Both);
+        assert_eq!(config.console_level, None);
+        assert_eq!(config.file_level, None);
     }
 }

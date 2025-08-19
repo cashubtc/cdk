@@ -51,6 +51,8 @@ use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::decompression::RequestDecompressionLayer;
 use tower_http::trace::TraceLayer;
+use tracing_appender::{non_blocking, rolling};
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::EnvFilter;
 #[cfg(feature = "swagger")]
 use utoipa::OpenApi;
@@ -94,7 +96,12 @@ async fn initial_setup(
 }
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
-pub fn setup_tracing() {
+/// Logs can be configured to output to stdout only, file only, or both.
+/// Returns a guard that must be kept alive and properly dropped on shutdown.
+pub fn setup_tracing(
+    work_dir: &Path,
+    logging_config: &config::LoggingConfig,
+) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
     let default_filter = "debug";
     let hyper_filter = "hyper=warn";
     let h2_filter = "h2=warn";
@@ -104,7 +111,99 @@ pub fn setup_tracing() {
         "{default_filter},{hyper_filter},{h2_filter},{tower_http}"
     ));
 
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    use config::LoggingOutput;
+    match logging_config.output {
+        LoggingOutput::Stderr => {
+            // Console output only (stderr)
+            let console_level = logging_config
+                .console_level
+                .as_deref()
+                .unwrap_or("info")
+                .parse::<tracing::Level>()
+                .unwrap_or(tracing::Level::INFO);
+
+            let stderr = std::io::stderr.with_max_level(console_level);
+
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_writer(stderr)
+                .init();
+
+            tracing::info!("Logging initialized: console only ({}+)", console_level);
+            Ok(None)
+        }
+        LoggingOutput::File => {
+            // File output only
+            let file_level = logging_config
+                .file_level
+                .as_deref()
+                .unwrap_or("debug")
+                .parse::<tracing::Level>()
+                .unwrap_or(tracing::Level::DEBUG);
+
+            // Create logs directory in work_dir if it doesn't exist
+            let logs_dir = work_dir.join("logs");
+            std::fs::create_dir_all(&logs_dir)?;
+
+            // Set up file appender with daily rotation
+            let file_appender = rolling::daily(&logs_dir, "cdk-mintd.log");
+            let (non_blocking_appender, guard) = non_blocking(file_appender);
+
+            let file_writer = non_blocking_appender.with_max_level(file_level);
+
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_writer(file_writer)
+                .init();
+
+            tracing::info!(
+                "Logging initialized: file only at {}/cdk-mintd.log ({}+)",
+                logs_dir.display(),
+                file_level
+            );
+            Ok(Some(guard))
+        }
+        LoggingOutput::Both => {
+            // Both console and file output (stderr + file)
+            let console_level = logging_config
+                .console_level
+                .as_deref()
+                .unwrap_or("info")
+                .parse::<tracing::Level>()
+                .unwrap_or(tracing::Level::INFO);
+            let file_level = logging_config
+                .file_level
+                .as_deref()
+                .unwrap_or("debug")
+                .parse::<tracing::Level>()
+                .unwrap_or(tracing::Level::DEBUG);
+
+            // Create logs directory in work_dir if it doesn't exist
+            let logs_dir = work_dir.join("logs");
+            std::fs::create_dir_all(&logs_dir)?;
+
+            // Set up file appender with daily rotation
+            let file_appender = rolling::daily(&logs_dir, "cdk-mintd.log");
+            let (non_blocking_appender, guard) = non_blocking(file_appender);
+
+            // Combine console output (stderr) and file output
+            let stderr = std::io::stderr.with_max_level(console_level);
+            let file_writer = non_blocking_appender.with_max_level(file_level);
+
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_writer(stderr.and(file_writer))
+                .init();
+
+            tracing::info!(
+                "Logging initialized: console ({}+) and file at {}/cdk-mintd.log ({}+)",
+                console_level,
+                logs_dir.display(),
+                file_level
+            );
+            Ok(Some(guard))
+        }
+    }
 }
 
 /// Retrieves the work directory based on command-line arguments, environment variables, or system defaults.
@@ -705,7 +804,7 @@ async fn start_services_with_shutdown(
             tracing::info!("Mint info already set, not using config file settings.");
         }
     } else {
-        tracing::warn!("RPC not enabled, using mint info from config.");
+        tracing::info!("RPC not enabled, using mint info from config.");
         mint.set_mint_info(mint_builder_info).await?;
         mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
     }
@@ -750,7 +849,7 @@ async fn start_services_with_shutdown(
 
     let listener = tokio::net::TcpListener::bind(socket_addr).await?;
 
-    tracing::debug!("listening on {}", listener.local_addr().unwrap());
+    tracing::info!("listening on {}", listener.local_addr().unwrap());
 
     // Wait for axum server to complete with custom shutdown signal
     let axum_result = axum::serve(listener, mint_service).with_graceful_shutdown(shutdown_signal);
@@ -794,20 +893,32 @@ fn work_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// The main entry point for the application when used as a library.
-///
-/// This asynchronous function performs the following steps:
-/// 1. Executes the initial setup, including loading configurations and initializing the database.
-/// 2. Configures a `MintBuilder` instance with the local store and keystore based on the database.
-/// 3. Applies additional custom configurations and authentication setup for the `MintBuilder`.
-/// 4. Constructs a `Mint` instance from the configured `MintBuilder`.
-/// 5. Checks and resolves the status of any pending mint and melt quotes.
+/// The main entry point for the application when used as a library
 pub async fn run_mintd(
     work_dir: &Path,
     settings: &config::Settings,
     db_password: Option<String>,
+    enable_logging: bool,
 ) -> Result<()> {
-    run_mintd_with_shutdown(work_dir, settings, shutdown_signal(), db_password).await
+    let _guard = if enable_logging {
+        setup_tracing(work_dir, &settings.info.logging)?
+    } else {
+        None
+    };
+
+    let result = run_mintd_with_shutdown(work_dir, settings, shutdown_signal(), db_password).await;
+
+    // Explicitly drop the guard to ensure proper cleanup
+    if let Some(guard) = _guard {
+        tracing::info!("Shutting down logging worker thread");
+        drop(guard);
+        // Give the worker thread a moment to flush any remaining logs
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    tracing::info!("Mintd shutdown");
+
+    result
 }
 
 /// Run mintd with a custom shutdown signal
@@ -836,7 +947,7 @@ pub async fn run_mintd_with_shutdown(
     // Pending melt quotes where the payment has **failed** inputs are reset to unspent
     mint.check_pending_melt_quotes().await?;
 
-    start_services_with_shutdown(
+    let result = start_services_with_shutdown(
         mint.clone(),
         settings,
         ln_routers,
@@ -844,7 +955,11 @@ pub async fn run_mintd_with_shutdown(
         mint.mint_info().await?,
         shutdown_signal,
     )
-    .await?;
+    .await;
 
-    Ok(())
+    // Ensure any remaining tracing data is flushed
+    // This is particularly important for file-based logging
+    tracing::debug!("Flushing remaining trace data");
+
+    result
 }

@@ -293,7 +293,7 @@ impl Mint {
             quote.id,
             amount,
             unit,
-            create_invoice_response.request_lookup_id,
+            create_invoice_response.request_lookup_id.to_string(),
         );
 
         let mut tx = self.localstore.begin_transaction().await?;
@@ -364,7 +364,7 @@ impl Mint {
         if wait_payment_response.payment_amount == Amount::ZERO {
             tracing::warn!(
                 "Received payment response with 0 amount with payment id {}.",
-                wait_payment_response.payment_id
+                wait_payment_response.payment_id.to_string()
             );
 
             return Err(Error::AmountUndefined);
@@ -413,7 +413,7 @@ impl Mint {
             "Received payment notification of {} for mint quote {} with payment id {}",
             wait_payment_response.payment_amount,
             mint_quote.id,
-            wait_payment_response.payment_id
+            wait_payment_response.payment_id.to_string()
         );
 
         let quote_state = mint_quote.state();
