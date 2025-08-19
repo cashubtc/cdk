@@ -108,11 +108,11 @@ where
         if let Some(resource) = self.resource.take() {
             let mut active_resource = self.pool.queue.lock().expect("active_resource");
             active_resource.push(resource);
+            let _in_use = self.pool.in_use.fetch_sub(1, Ordering::AcqRel);
 
             #[cfg(feature = "prometheus")]
             {
-                let in_use = self.pool.in_use.fetch_sub(1, Ordering::AcqRel);
-                METRICS.set_db_connections_active(in_use as i64);
+                METRICS.set_db_connections_active(_in_use as i64);
 
                 let duration = self.start_time.elapsed().as_secs_f64();
 
@@ -123,6 +123,8 @@ where
             self.pool.waiter.notify_one();
         }
     }
+    
+
 }
 
 impl<RM> Deref for PooledResource<RM>
@@ -166,6 +168,18 @@ where
     pub fn get(self: &Arc<Self>) -> Result<PooledResource<RM>, Error<RM::Error>> {
         self.get_timeout(self.default_timeout)
     }
+  
+    /// Increments the in_use connection counter and updates the metric
+    fn increment_connection_counter(&self) -> usize {
+        let in_use = self.in_use.fetch_add(1, Ordering::AcqRel);
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.set_db_connections_active(in_use as i64);
+        }
+
+        in_use
+    }
 
     /// Get a new resource or fail after timeout is reached.
     ///
@@ -182,12 +196,8 @@ where
         loop {
             if let Some((stale, resource)) = resources.pop() {
                 if !stale.load(Ordering::SeqCst) {
-                    #[cfg(feature = "prometheus")]
-                    {
-                        let in_use = self.in_use.fetch_add(1, Ordering::AcqRel);
-                        METRICS.set_db_connections_active(in_use as i64);
-                    }
                     drop(resources);
+                    self.increment_connection_counter();
 
                     return Ok(PooledResource {
                         resource: Some((stale, resource)),
@@ -200,11 +210,7 @@ where
 
             if self.in_use.load(Ordering::Relaxed) < self.max_size {
                 drop(resources);
-                #[cfg(feature = "prometheus")]
-                {
-                    let in_use = self.in_use.fetch_add(1, Ordering::AcqRel);
-                    METRICS.set_db_connections_active(in_use as i64);
-                }
+                self.increment_connection_counter();
                 let stale: Arc<AtomicBool> = Arc::new(false.into());
 
                 return Ok(PooledResource {
