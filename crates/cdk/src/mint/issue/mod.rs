@@ -293,14 +293,14 @@ impl Mint {
                 vec![],
             );
 
-            tracing::debug!(
-                "New {} mint quote {} for {:?} {} with request id {:?}",
-                payment_method,
-                quote.id,
-                amount,
-                unit,
-                create_invoice_response.request_lookup_id,
-            );
+        tracing::debug!(
+            "New {} mint quote {} for {:?} {} with request id {:?}",
+            payment_method,
+            quote.id,
+            amount,
+            unit,
+            create_invoice_response.request_lookup_id.to_string(),
+        );
 
             let mut tx = self.localstore.begin_transaction().await?;
             tx.add_mint_quote(quote.clone()).await?;
@@ -419,7 +419,7 @@ impl Mint {
             if wait_payment_response.payment_amount == Amount::ZERO {
                 tracing::warn!(
                     "Received payment response with 0 amount with payment id {}.",
-                    wait_payment_response.payment_id
+                    wait_payment_response.payment_id.to_string()
                 );
                 return Err(Error::AmountUndefined);
             }
@@ -484,7 +484,7 @@ impl Mint {
                 "Received payment notification of {} for mint quote {} with payment id {}",
                 wait_payment_response.payment_amount,
                 mint_quote.id,
-                wait_payment_response.payment_id
+                wait_payment_response.payment_id.to_string()
             );
 
             let quote_state = mint_quote.state();
@@ -505,8 +505,22 @@ impl Mint {
                     )
                     .await?;
 
-                    self.pubsub_manager
-                        .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
+                    match mint_quote.payment_method {
+                        PaymentMethod::Bolt11 => {
+                            self.pubsub_manager
+                                .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
+                        }
+                        PaymentMethod::Bolt12 => {
+                            self.pubsub_manager.mint_quote_bolt12_status(
+                                mint_quote.clone(),
+                                wait_payment_response.payment_amount,
+                                Amount::ZERO,
+                            );
+                        }
+                        _ => {
+                            // We don't send ws updates for unknown methods
+                        }
+                    }
                 }
             } else {
                 tracing::info!("Received payment notification for already seen payment.");
@@ -656,24 +670,37 @@ impl Mint {
                 mint_request.verify_signature(pubkey)?;
             }
 
-            let Verification { amount, unit } =
-                match self.verify_outputs(&mut tx, &mint_request.outputs).await {
-                    Ok(verification) => verification,
-                    Err(err) => {
-                        tracing::debug!("Could not verify mint outputs");
+        let Verification {
+            amount: outputs_amount,
+            unit,
+        } = match self.verify_outputs(&mut tx, &mint_request.outputs).await {
+            Ok(verification) => verification,
+            Err(err) => {
+                tracing::debug!("Could not verify mint outputs");
 
-                        return Err(err);
-                    }
-                };
+                return Err(err);
+            }
+        };
 
-            // We check the total value of blinded messages == mint quote
-            if amount != mint_amount {
+        if mint_quote.payment_method == PaymentMethod::Bolt11 {
+            // For bolt11 we enforce that mint amount == quote amount
+            if outputs_amount != mint_amount {
                 return Err(Error::TransactionUnbalanced(
                     mint_amount.into(),
                     mint_request.total_amount()?.into(),
                     0,
                 ));
             }
+        } else {
+            // For other payments we just make sure outputs is not more then mint amount
+            if outputs_amount > mint_amount {
+                return Err(Error::TransactionUnbalanced(
+                    mint_amount.into(),
+                    mint_request.total_amount()?.into(),
+                    0,
+                ));
+            }
+        }
 
             let unit = unit.ok_or(Error::UnsupportedUnit).unwrap();
             ensure_cdk!(unit == mint_quote.unit, Error::UnsupportedUnit);
@@ -694,8 +721,22 @@ impl Mint {
 
             tx.commit().await?;
 
-            self.pubsub_manager
-                .mint_quote_bolt11_status(mint_quote, MintQuoteState::Issued);
+        match mint_quote.payment_method {
+            PaymentMethod::Bolt11 => {
+                self.pubsub_manager
+                    .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Issued);
+            }
+            PaymentMethod::Bolt12 => {
+                self.pubsub_manager.mint_quote_bolt12_status(
+                    mint_quote.clone(),
+                    Amount::ZERO,
+                    mint_request.total_amount()?,
+                );
+            }
+            PaymentMethod::Custom(_) => {
+                // We don't send ws updates for unknown methods
+            }
+        }
 
             Ok(MintResponse {
                 signatures: blind_signatures,

@@ -443,7 +443,7 @@ impl Mint {
             loop {
                 tokio::select! {
                     _ = shutdown.notified() => {
-                        println!("Shutting down payment processors");
+                        tracing::info!("Shutting down payment processors");
                         break;
                     }
                     Some(result) = join_set.join_next() => {
@@ -477,7 +477,6 @@ impl Mint {
                     match result {
                         Ok(mut stream) => {
                             while let Some(request_lookup_id) = stream.next().await {
-                                tracing::debug!("Received payment {:?}", request_lookup_id);
                                 if let Err(e) = Self::handle_payment_notification(
                                     &localstore,
                                     &pubsub_manager,
@@ -519,11 +518,6 @@ impl Mint {
             .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
             .await
         {
-            tracing::debug!(
-                "Received payment {} for quote-id {}",
-                wait_payment_response.payment_identifier,
-                mint_quote.id
-            );
             Self::handle_mint_quote_payment(
                 &mut tx,
                 &mint_quote,
@@ -543,6 +537,7 @@ impl Mint {
     }
 
     /// Handle payment for a specific mint quote (extracted from pay_mint_quote)
+    #[instrument(skip_all)]
     async fn handle_mint_quote_payment(
         tx: &mut Box<dyn database::MintTransaction<'_, database::Error> + Send + Sync + '_>,
         mint_quote: &MintQuote,
@@ -573,7 +568,22 @@ impl Mint {
                 )
                 .await?;
 
-                pubsub_manager.mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
+                match mint_quote.payment_method {
+                    PaymentMethod::Bolt11 => {
+                        pubsub_manager
+                            .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
+                    }
+                    PaymentMethod::Bolt12 => {
+                        pubsub_manager.mint_quote_bolt12_status(
+                            mint_quote.clone(),
+                            wait_payment_response.payment_amount,
+                            Amount::ZERO,
+                        );
+                    }
+                    _ => {
+                        // We don't send ws updates for unknown methods
+                    }
+                }
             }
         } else {
             tracing::info!("Received payment notification for already seen payment.");
@@ -730,8 +740,9 @@ impl Mint {
         };
 
         // Mint quote has already been settled, proofs should not be burned or held.
-        if mint_quote.state() == MintQuoteState::Issued
-            || mint_quote.state() == MintQuoteState::Paid
+        if (mint_quote.state() == MintQuoteState::Issued
+            || mint_quote.state() == MintQuoteState::Paid)
+            && mint_quote.payment_method == PaymentMethod::Bolt11
         {
             return Err(Error::RequestAlreadyPaid);
         }
@@ -756,6 +767,12 @@ impl Mint {
 
         tx.increment_mint_quote_amount_paid(&mint_quote.id, amount, melt_quote.id.to_string())
             .await?;
+
+        tracing::info!(
+            "Melt quote {} paid Mint quote {}",
+            melt_quote.id,
+            mint_quote.id
+        );
 
         Ok(Some(amount))
     }

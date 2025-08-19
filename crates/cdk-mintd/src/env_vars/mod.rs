@@ -4,6 +4,7 @@
 //! organized by component.
 
 mod common;
+mod database;
 mod info;
 mod ln;
 mod mint_info;
@@ -32,6 +33,7 @@ pub use auth::*;
 #[cfg(feature = "cln")]
 pub use cln::*;
 pub use common::*;
+pub use database::*;
 #[cfg(feature = "fakewallet")]
 pub use fake_wallet::*;
 #[cfg(feature = "grpc-processor")]
@@ -45,13 +47,24 @@ pub use lnd::*;
 pub use management_rpc::*;
 pub use mint_info::*;
 
-use crate::config::{Database, DatabaseEngine, LnBackend, Settings};
+use crate::config::{DatabaseEngine, LnBackend, Settings};
 
 impl Settings {
     pub fn from_env(&mut self) -> Result<Self> {
         if let Ok(database) = env::var(DATABASE_ENV_VAR) {
             let engine = DatabaseEngine::from_str(&database).map_err(|err| anyhow!(err))?;
-            self.database = Database { engine };
+            self.database.engine = engine;
+        }
+
+        // Parse PostgreSQL-specific configuration from environment variables
+        if self.database.engine == DatabaseEngine::Postgres {
+            self.database.postgres = Some(
+                self.database
+                    .postgres
+                    .clone()
+                    .unwrap_or_default()
+                    .from_env(),
+            );
         }
 
         self.info = self.info.clone().from_env();

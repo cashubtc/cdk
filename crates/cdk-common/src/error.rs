@@ -111,6 +111,10 @@ pub enum Error {
     #[error("Could not parse bolt12")]
     Bolt12parse,
 
+    /// Operation timeout
+    #[error("Operation timeout")]
+    Timeout,
+
     /// Internal Error - Send error
     #[error("Internal send error: {0}")]
     SendError(String),
@@ -286,8 +290,8 @@ pub enum Error {
     #[error(transparent)]
     HexError(#[from] hex::Error),
     /// Http transport error
-    #[error("Http transport error: {0}")]
-    HttpError(String),
+    #[error("Http transport error {0:?}: {1}")]
+    HttpError(Option<u16>, String),
     #[cfg(feature = "wallet")]
     // Crate error conversions
     /// Cashu Url Error

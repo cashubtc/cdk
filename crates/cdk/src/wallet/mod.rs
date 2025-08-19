@@ -45,6 +45,7 @@ pub mod subscription;
 mod swap;
 mod transactions;
 pub mod util;
+mod wait;
 
 #[cfg(feature = "auth")]
 pub use auth::{AuthMintConnector, AuthWallet};
@@ -93,6 +94,8 @@ pub enum WalletSubscription {
     Bolt11MintQuoteState(Vec<String>),
     /// Melt quote subscription
     Bolt11MeltQuoteState(Vec<String>),
+    /// Mint bolt12 quote subscription
+    Bolt12MintQuoteState(Vec<String>),
 }
 
 impl From<WalletSubscription> for Params {
@@ -123,6 +126,11 @@ impl From<WalletSubscription> for Params {
             WalletSubscription::Bolt11MeltQuoteState(filters) => Params {
                 filters,
                 kind: Kind::Bolt11MeltQuote,
+                id: id.into(),
+            },
+            WalletSubscription::Bolt12MintQuoteState(filters) => Params {
+                filters,
+                kind: Kind::Bolt12MintQuote,
                 id: id.into(),
             },
         }
@@ -241,7 +249,7 @@ impl Wallet {
 
     /// Query mint for current mint information
     #[instrument(skip(self))]
-    pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, Error> {
+    pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, Error> {
         match self.client.get_mint_info().await {
             Ok(mint_info) => {
                 // If mint provides time make sure it is accurate
@@ -374,7 +382,7 @@ impl Wallet {
             .await?
             .is_none()
         {
-            self.get_mint_info().await?;
+            self.fetch_mint_info().await?;
         }
 
         let keysets = self.load_mint_keysets().await?;

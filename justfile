@@ -8,6 +8,7 @@ default:
 # Create a new SQL migration file
 new-migration target name:
     #!/usr/bin/env bash
+    set -euo pipefail
     if [ "{{target}}" != "mint" ] && [ "{{target}}" != "wallet" ]; then
         echo "Error: target must be either 'mint' or 'wallet'"
         exit 1
@@ -77,21 +78,11 @@ test-pure db="memory": build
 
 test-all db="memory":
     #!/usr/bin/env bash
+    set -euo pipefail
     just test {{db}}
     ./misc/itests.sh "{{db}}"
-    status=$?
-    if [ $status -ne 0 ]; then
-       echo "Failed test with status {$status}"
-       exit $status
-    fi
     ./misc/fake_itests.sh "{{db}}" external_signatory
-    status=$?
-    if [ $status -ne 0 ]; then
-       echo "Failed test with status {$status}"
-       exit $status
-    fi
     ./misc/fake_itests.sh "{{db}}"
-    exit $?
     
 test-nutshell:
   #!/usr/bin/env bash
@@ -127,6 +118,7 @@ test-nutshell:
   done
   echo "Nutshell is ready!"
   
+  # Set environment variables and run tests
   export CDK_TEST_MINT_URL=http://127.0.0.1:3338
   export LN_BACKEND=FAKEWALLET
   
@@ -180,53 +172,52 @@ typos-fix:
 # Update changelog from staged changes using Goose AI  
 goose-git-msg:
   #!/usr/bin/env bash
+  set -euo pipefail
   goose run --recipe ./misc/recipes/git-commit-message.yaml --interactive
 
 # Create git message from staged changes using Goose AI
 goose-changelog-staged:
   #!/usr/bin/env bash
+  set -euo pipefail
   goose run --recipe ./misc/recipes/changelog-update.yaml --interactive
 
 # Update changelog from recent commits using Goose AI
 # Usage: just goose-changelog-commits [number_of_commits]
 goose-changelog-commits *COMMITS="5":
   #!/usr/bin/env bash
+  set -euo pipefail
   COMMITS={{COMMITS}} goose run --recipe ./misc/recipes/changelog-from-commits.yaml --interactive
 
 itest db:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/itests.sh "{{db}}"
-  exit $?
 
-  
 fake-mint-itest db:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/fake_itests.sh "{{db}}" external_signatory
-  status=$?
-  if [ $status -ne 0 ]; then
-     echo "Failed test with status {$status}"
-     exit $status
-  fi
   ./misc/fake_itests.sh "{{db}}"
-  exit $?
 
-  
 itest-payment-processor ln:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/mintd_payment_processor.sh "{{ln}}"
 
-  
 fake-auth-mint-itest db openid_discovery:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/fake_auth_itests.sh "{{db}}" "{{openid_discovery}}"
 
 nutshell-wallet-itest:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/nutshell_wallet_itest.sh
 
 # Start interactive regtest environment (Bitcoin + 4 LN nodes + 2 CDK mints)
 regtest db="sqlite":
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/interactive_regtest_mprocs.sh {{db}}
 
 # Lightning Network Commands (require regtest environment to be running)
@@ -234,56 +225,67 @@ regtest db="sqlite":
 # Get CLN node 1 info
 ln-cln1 *ARGS:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/regtest_helper.sh ln-cln1 {{ARGS}}
 
 # Get CLN node 2 info  
 ln-cln2 *ARGS:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/regtest_helper.sh ln-cln2 {{ARGS}}
 
 # Get LND node 1 info
 ln-lnd1 *ARGS:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/regtest_helper.sh ln-lnd1 {{ARGS}}
 
 # Get LND node 2 info
 ln-lnd2 *ARGS:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/regtest_helper.sh ln-lnd2 {{ARGS}}
 
 # Bitcoin regtest commands
 btc *ARGS:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/regtest_helper.sh btc {{ARGS}}
 
 # Mine blocks in regtest
 btc-mine blocks="10":
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/regtest_helper.sh btc-mine {{blocks}}
 
 # Show mint information
 mint-info:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/regtest_helper.sh mint-info
 
 # Run integration tests against regtest environment
 mint-test:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/regtest_helper.sh mint-test
 
 # Restart mints after recompiling (useful for development)
 restart-mints:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/regtest_helper.sh restart-mints
 
 # Show regtest environment status
 regtest-status:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/regtest_helper.sh show-status
 
 # Show regtest environment logs
 regtest-logs:
   #!/usr/bin/env bash
+  set -euo pipefail
   ./misc/regtest_helper.sh show-logs
 
 run-examples:
@@ -321,6 +323,7 @@ release m="":
   args=(
     "-p cashu"
     "-p cdk-common"
+    "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-redb"
     "-p cdk-signatory"
@@ -349,6 +352,7 @@ check-docs:
   args=(
     "-p cashu"
     "-p cdk-common"
+    "-p cdk-sql-common"
     "-p cdk"
     "-p cdk-redb"
     "-p cdk-sqlite"
@@ -358,6 +362,7 @@ check-docs:
     "-p cdk-lnbits"
     "-p cdk-fake-wallet"
     "-p cdk-mint-rpc"
+    "-p cdk-payment-processor"
     "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
@@ -376,6 +381,7 @@ docs-strict:
   args=(
     "-p cashu"
     "-p cdk-common"
+    "-p cdk-sql-common"
     "-p cdk"
     "-p cdk-redb"
     "-p cdk-sqlite"
@@ -386,6 +392,7 @@ docs-strict:
     "-p cdk-fake-wallet"
     "-p cdk-mint-rpc"
     "-p cdk-payment-processor"
+    "-p cdk-signatory"
     "-p cdk-cli"
     "-p cdk-mintd"
   )

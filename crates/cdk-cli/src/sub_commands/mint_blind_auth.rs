@@ -47,7 +47,7 @@ pub async fn mint_blind_auth(
         }
     };
 
-    wallet.get_mint_info().await?;
+    wallet.fetch_mint_info().await?;
 
     // Try to get the token from the provided argument or from the stored file
     let cat = match &sub_command_args.cat {
@@ -83,7 +83,7 @@ pub async fn mint_blind_auth(
             println!("Attempting to refresh the access token...");
 
             // Get the mint info to access OIDC configuration
-            if let Some(mint_info) = wallet.get_mint_info().await? {
+            if let Some(mint_info) = wallet.fetch_mint_info().await? {
                 match refresh_access_token(&mint_info, &token_data.refresh_token).await {
                     Ok((new_access_token, new_refresh_token)) => {
                         println!("Successfully refreshed access token");
@@ -137,7 +137,7 @@ pub async fn mint_blind_auth(
         Some(amount) => amount,
         None => {
             let mint_info = wallet
-                .get_mint_info()
+                .fetch_mint_info()
                 .await?
                 .ok_or(anyhow!("Unknown mint info"))?;
             mint_info

@@ -36,7 +36,7 @@ cdk = { workspace = true, features = [
 cdk-sqlite = { workspace = true, features = [
     "mint", "prometheus"
 ] }
-
+cdk-postgres = { workspace = true, features = ["mint"]}
 cdk-cln = { workspace = true, optional = true }
 cdk-lnbits = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }
@@ -53,6 +53,8 @@ bitcoin.workspace = true
 tokio = { workspace = true, default-features = false, features = ["signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+futures.workspace = true
 serde.workspace = true
 bip39.workspace = true
 tower-http = { workspace = true, features = ["compression-full", "decompression-full"] }

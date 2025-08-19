@@ -1,0 +1,52 @@
+# Docker Compose configuration for CDK Mint with PostgreSQL
+# Usage: docker-compose -f docker-compose.postgres.yaml up
+
+services:
+  # CDK Mint service with PostgreSQL
+  mintd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mint
+    ports:
+      - "8085:8085"
+    environment:
+      - CDK_MINTD_URL=https://example.com
+      - CDK_MINTD_LN_BACKEND=fakewallet
+      - CDK_MINTD_LISTEN_HOST=0.0.0.0
+      - CDK_MINTD_LISTEN_PORT=8085
+      - CDK_MINTD_MNEMONIC=
+      # PostgreSQL database configuration
+      - CDK_MINTD_DATABASE=postgres
+      - CDK_MINTD_DATABASE_URL=postgresql://cdk_user:cdk_password@postgres:5432/cdk_mint
+      # Cache configuration
+      - CDK_MINTD_CACHE_BACKEND=memory
+    command: ["cdk-mintd"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # PostgreSQL database service
+  postgres:
+    image: postgres:16-alpine
+    container_name: mint_postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=cdk_user
+      - POSTGRES_PASSWORD=cdk_password
+      - POSTGRES_DB=cdk_mint
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cdk_user -d cdk_mint"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  postgres_data:
+    driver: local

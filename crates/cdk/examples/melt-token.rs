@@ -1,13 +1,13 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::hex::prelude::FromHex;
 use bitcoin::secp256k1::Secp256k1;
-use cdk::amount::SplitTarget;
 use cdk::error::Error;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload, SecretKey};
-use cdk::wallet::{Wallet, WalletSubscription};
+use cdk::nuts::{CurrencyUnit, SecretKey};
+use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
@@ -29,28 +29,16 @@ async fn main() -> Result<(), Error> {
     // Create a new wallet
     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None)?;
 
-    // Request a mint quote from the wallet
     let quote = wallet.mint_quote(amount, None).await?;
-    println!("Quote: {:#?}", quote);
+    let proofs = wallet
+        .wait_and_mint_quote(
+            quote,
+            Default::default(),
+            Default::default(),
+            Duration::from_secs(10),
+        )
+        .await?;
 
-    // Subscribe to updates on the mint quote state
-    let mut subscription = wallet
-        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
-            .id
-            .clone()]))
-        .await;
-
-    // Wait for the mint quote to be paid
-    while let Some(msg) = subscription.recv().await {
-        if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
-            if response.state == MintQuoteState::Paid {
-                break;
-            }
-        }
-    }
-
-    // Mint the received amount
-    let proofs = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
     let receive_amount = proofs.total_amount()?;
     println!("Received {} from mint {}", receive_amount, mint_url);
 

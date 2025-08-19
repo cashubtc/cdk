@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
-use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
-use cdk::wallet::{Wallet, WalletSubscription};
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::Wallet;
 use cdk::Amount;
 use cdk_common::nut02::KeySetInfosMethods;
 use cdk_sqlite::wallet::memory;
@@ -31,28 +31,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for amount in [64] {
         let amount = Amount::from(amount);
 
-        // Request a mint quote from the wallet
         let quote = wallet.mint_quote(amount, None).await?;
-        println!("Pay request: {}", quote.request);
-
-        // Subscribe to the wallet for updates on the mint quote state
-        let mut subscription = wallet
-            .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
-                .id
-                .clone()]))
-            .await;
-
-        // Wait for the mint quote to be paid
-        while let Some(msg) = subscription.recv().await {
-            if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
-                if response.state == MintQuoteState::Paid {
-                    break;
-                }
-            }
-        }
+        let proofs = wallet
+            .wait_and_mint_quote(
+                quote,
+                Default::default(),
+                Default::default(),
+                Duration::from_secs(10),
+            )
+            .await?;
 
         // Mint the received amount
-        let proofs = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
         let receive_amount = proofs.total_amount()?;
         println!("Minted {}", receive_amount);
     }
