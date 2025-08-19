@@ -85,14 +85,11 @@ pub async fn mint(
                 todo!()
             }
         },
-        Some(quote_id) => {
-            let quote = wallet
-                .localstore
-                .get_mint_quote(quote_id)
-                .await?
-                .ok_or(anyhow!("Unknown quote"))?;
-            quote
-        }
+        Some(quote_id) => wallet
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(anyhow!("Unknown quote"))?,
     };
 
     tracing::debug!("Attempting mint for: {}", payment_method);
