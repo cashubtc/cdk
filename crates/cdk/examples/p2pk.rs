@@ -34,18 +34,20 @@ async fn main() -> Result<(), Error> {
     // Create a new wallet
     let wallet = Wallet::new(mint_url, unit, localstore, seed, None).unwrap();
 
-    let (_invoice_to_pay, proofs) = wallet
-        .mint_once_paid(amount, None, Duration::from_secs(10))
+    let quote = wallet.mint_quote(amount, None).await?;
+    let proofs = wallet
+        .wait_and_mint_quote(
+            quote,
+            Default::default(),
+            Default::default(),
+            Duration::from_secs(10),
+        )
         .await?;
 
     // Mint the received amount
-    let received_proofs = proofs.await?;
     println!(
         "Minted nuts: {:?}",
-        received_proofs
-            .into_iter()
-            .map(|p| p.amount)
-            .collect::<Vec<_>>()
+        proofs.into_iter().map(|p| p.amount).collect::<Vec<_>>()
     );
 
     // Generate a secret key for spending conditions
