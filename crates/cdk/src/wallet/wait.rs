@@ -1,9 +1,8 @@
-use std::future::Future;
-
 use cdk_common::amount::SplitTarget;
 use cdk_common::wallet::{MeltQuote, MintQuote};
 use cdk_common::{
-    Amount, Error, MeltQuoteState, MintQuoteState, NotificationPayload, Proofs, SpendingConditions,
+    Amount, Error, MeltQuoteState, MintQuoteState, NotificationPayload, PaymentMethod, Proofs,
+    SpendingConditions,
 };
 use futures::future::BoxFuture;
 use tokio::time::{timeout, Duration};
@@ -14,6 +13,7 @@ use super::{Wallet, WalletSubscription};
 enum WaitableEvent {
     MeltQuote(String),
     MintQuote(String),
+    Bolt12MintQuote(String),
 }
 
 impl From<&MeltQuote> for WaitableEvent {
@@ -24,7 +24,11 @@ impl From<&MeltQuote> for WaitableEvent {
 
 impl From<&MintQuote> for WaitableEvent {
     fn from(event: &MintQuote) -> Self {
-        WaitableEvent::MintQuote(event.id.to_owned())
+        match event.payment_method {
+            PaymentMethod::Bolt11 => WaitableEvent::MintQuote(event.id.to_owned()),
+            PaymentMethod::Bolt12 => WaitableEvent::Bolt12MintQuote(event.id.to_owned()),
+            PaymentMethod::Custom(_) => WaitableEvent::MintQuote(event.id.to_owned()),
+        }
     }
 }
 
@@ -37,62 +41,38 @@ impl From<WaitableEvent> for WalletSubscription {
             WaitableEvent::MintQuote(quote_id) => {
                 WalletSubscription::Bolt11MintQuoteState(vec![quote_id])
             }
+            WaitableEvent::Bolt12MintQuote(quote_id) => {
+                WalletSubscription::Bolt12MintQuoteState(vec![quote_id])
+            }
         }
     }
 }
 
 impl Wallet {
     #[inline(always)]
-    async fn wait_and_mint_quote(
+    /// Mints a mint quote once it is paid
+    pub async fn wait_and_mint_quote(
         &self,
         quote: MintQuote,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
         timeout_duration: Duration,
     ) -> Result<Proofs, Error> {
-        self.wait_for_payment(&quote, timeout_duration).await?;
-        self.mint(&quote.id, amount_split_target, spending_conditions)
-            .await
-    }
+        let amount = self.wait_for_payment(&quote, timeout_duration).await?;
 
-    /// Mints an amount and returns the invoice to be paid, and a BoxFuture that will finalize the
-    /// mint once the invoice has been paid
-    pub async fn mint_once_paid(
-        &self,
-        amount: Amount,
-        description: Option<String>,
-        timeout_duration: Duration,
-    ) -> Result<(String, impl Future<Output = Result<Proofs, Error>> + '_), Error> {
-        self.mint_once_paid_ex(
-            amount,
-            description,
-            Default::default(),
-            None,
-            timeout_duration,
-        )
-        .await
-    }
+        tracing::debug!("Received payment notification for {}. Minting...", quote.id);
 
-    /// Similar function to mint_once_paid but with no default options
-    pub async fn mint_once_paid_ex(
-        &self,
-        amount: Amount,
-        description: Option<String>,
-        amount_split_target: SplitTarget,
-        spending_conditions: Option<SpendingConditions>,
-        timeout_duration: Duration,
-    ) -> Result<(String, impl Future<Output = Result<Proofs, Error>> + '_), Error> {
-        let quote = self.mint_quote(amount, description).await?;
-
-        Ok((
-            quote.request.clone(),
-            self.wait_and_mint_quote(
-                quote,
-                amount_split_target,
-                spending_conditions,
-                timeout_duration,
-            ),
-        ))
+        match quote.payment_method {
+            PaymentMethod::Bolt11 => {
+                self.mint(&quote.id, amount_split_target, spending_conditions)
+                    .await
+            }
+            PaymentMethod::Bolt12 => {
+                self.mint_bolt12(&quote.id, amount, amount_split_target, spending_conditions)
+                    .await
+            }
+            _ => Err(Error::UnsupportedPaymentMethod),
+        }
     }
 
     /// Returns a BoxFuture that will wait for payment on the given event with a timeout check
@@ -101,7 +81,7 @@ impl Wallet {
         &self,
         event: T,
         timeout_duration: Duration,
-    ) -> BoxFuture<'_, Result<(), Error>>
+    ) -> BoxFuture<'_, Result<Option<Amount>, Error>>
     where
         T: Into<WaitableEvent>,
     {
@@ -114,17 +94,17 @@ impl Wallet {
                     match subscription.recv().await.ok_or(Error::Internal)? {
                         NotificationPayload::MintQuoteBolt11Response(info) => {
                             if info.state == MintQuoteState::Paid {
-                                return Ok(());
+                                return Ok(None);
                             }
                         }
                         NotificationPayload::MintQuoteBolt12Response(info) => {
-                            if info.amount_paid > Amount::ZERO {
-                                return Ok(());
+                            if info.amount_paid - info.amount_issued > Amount::ZERO {
+                                return Ok(Some(info.amount_paid - info.amount_issued));
                             }
                         }
                         NotificationPayload::MeltQuoteBolt11Response(info) => {
                             if info.state == MeltQuoteState::Paid {
-                                return Ok(());
+                                return Ok(None);
                             }
                         }
                         _ => {}
