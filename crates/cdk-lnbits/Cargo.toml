@@ -23,3 +23,4 @@ tracing.workspace = true
 thiserror.workspace = true
 lnbits-rs = "0.6.0"
 serde_json.workspace = true
+rustls.workspace = true
