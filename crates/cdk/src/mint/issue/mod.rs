@@ -293,14 +293,14 @@ impl Mint {
                 vec![],
             );
 
-        tracing::debug!(
-            "New {} mint quote {} for {:?} {} with request id {:?}",
-            payment_method,
-            quote.id,
-            amount,
-            unit,
-            create_invoice_response.request_lookup_id.to_string(),
-        );
+            tracing::debug!(
+                "New {} mint quote {} for {:?} {} with request id {:?}",
+                payment_method,
+                quote.id,
+                amount,
+                unit,
+                create_invoice_response.request_lookup_id.to_string(),
+            );
 
             let mut tx = self.localstore.begin_transaction().await?;
             tx.add_mint_quote(quote.clone()).await?;

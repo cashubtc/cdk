@@ -123,8 +123,6 @@ where
             self.pool.waiter.notify_one();
         }
     }
-    
-
 }
 
 impl<RM> Deref for PooledResource<RM>
@@ -168,7 +166,7 @@ where
     pub fn get(self: &Arc<Self>) -> Result<PooledResource<RM>, Error<RM::Error>> {
         self.get_timeout(self.default_timeout)
     }
-  
+
     /// Increments the in_use connection counter and updates the metric
     fn increment_connection_counter(&self) -> usize {
         let in_use = self.in_use.fetch_add(1, Ordering::AcqRel);
