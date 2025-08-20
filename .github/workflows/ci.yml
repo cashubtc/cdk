@@ -199,7 +199,7 @@ jobs:
           ]
         database:
           [
-            SQLITE,
+          SQLITE,
           ]
     steps:
       - name: checkout
@@ -236,9 +236,9 @@ jobs:
       matrix:
         database:
           [
-            memory,
-            sqlite,
-            redb
+          memory,
+          sqlite,
+          redb
           ]
     steps:
       - name: checkout
@@ -278,9 +278,9 @@ jobs:
       matrix:
         ln:
           [
-            FAKEWALLET,
-            CLN,
-            LND
+          FAKEWALLET,
+          CLN,
+          LND
           ]
     steps:
       - name: checkout
@@ -420,7 +420,7 @@ jobs:
       matrix:
         database:
           [
-            SQLITE,
+          SQLITE,
           ]
     steps:
       - name: checkout
