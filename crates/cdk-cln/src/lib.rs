@@ -193,7 +193,6 @@ impl MintPayment for Cln {
                                     continue;
                                 }
                             };
-                            let amount_sats = amount_msats.msat() / 1000;
 
                             let payment_hash = Hash::from_bytes_ref(payment_hash.as_ref());
 
@@ -212,7 +211,7 @@ impl MintPayment for Cln {
                                         Ok(Some(invoice)) => {
                                             if let Some(local_offer_id) = invoice.local_offer_id {
                                                 tracing::info!("CLN: Received bolt12 payment of {} sats for offer {}", 
-                                                             amount_sats, local_offer_id);
+                                                             amount_msats.msat(), local_offer_id);
                                                 PaymentIdentifier::OfferId(local_offer_id.to_string())
                                             } else {
                                                 tracing::warn!("CLN: BOLT12 invoice has no local_offer_id, skipping");
@@ -239,11 +238,11 @@ impl MintPayment for Cln {
 
                             let response = WaitPaymentResponse {
                                 payment_identifier: request_lookup_id,
-                                payment_amount: amount_sats.into(),
-                                unit: CurrencyUnit::Sat,
+                                payment_amount: amount_msats.msat().into(),
+                                unit: CurrencyUnit::Msat,
                                 payment_id: payment_hash.to_string()
                             };
-                            tracing::info!("CLN: Created WaitPaymentResponse with amount {} sats", amount_sats);
+                            tracing::info!("CLN: Created WaitPaymentResponse with amount {} msats", amount_msats.msat());
 
                             break Some((response, (cln_client, last_pay_idx, cancel_token, is_active)));
                                 }
