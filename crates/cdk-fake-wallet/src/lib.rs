@@ -43,6 +43,7 @@ use tokio::time;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
+use uuid::Uuid;
 
 pub mod error;
 
@@ -354,7 +355,7 @@ impl MintPayment for FakeWallet {
                 };
                 let payment_id =
                     PaymentIdentifier::PaymentHash(*bolt11_options.bolt11.payment_hash().as_ref());
-                (amount_msat, payment_id)
+                (amount_msat, Some(payment_id))
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
                 let offer = bolt12_options.offer;
@@ -369,10 +370,7 @@ impl MintPayment for FakeWallet {
                         _ => return Err(Error::UnknownInvoiceAmount.into()),
                     }
                 };
-                (
-                    amount_msat,
-                    PaymentIdentifier::OfferId(offer.id().to_string()),
-                )
+                (amount_msat, None)
             }
         };
 
@@ -390,7 +388,6 @@ impl MintPayment for FakeWallet {
             amount,
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
-            options: None,
             unit: unit.clone(),
         })
     }
@@ -471,7 +468,7 @@ impl MintPayment for FakeWallet {
 
                 Ok(MakePaymentResponse {
                     payment_proof: Some("".to_string()),
-                    payment_lookup_id: PaymentIdentifier::OfferId(bolt12.id().to_string()),
+                    payment_lookup_id: PaymentIdentifier::CustomId(Uuid::new_v4().to_string()),
                     status: MeltQuoteState::Paid,
                     total_spent: total_spent + 1.into(),
                     unit: unit.clone(),
