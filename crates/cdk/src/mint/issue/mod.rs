@@ -1,3 +1,4 @@
+use cdk_common::amount::to_unit;
 use cdk_common::mint::MintQuote;
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
@@ -410,8 +411,9 @@ impl Mint {
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
         tracing::debug!(
-            "Received payment notification of {} for mint quote {} with payment id {}",
+            "Received payment notification of {} {} for mint quote {} with payment id {}",
             wait_payment_response.payment_amount,
+            wait_payment_response.unit,
             mint_quote.id,
             wait_payment_response.payment_id.to_string()
         );
@@ -426,9 +428,21 @@ impl Mint {
             {
                 tracing::info!("Received payment notification for already seen payment.");
             } else {
+                let payment_amount_quote_unit = to_unit(
+                    wait_payment_response.payment_amount,
+                    &wait_payment_response.unit,
+                    &mint_quote.unit,
+                )?;
+
+                tracing::debug!(
+                    "Payment received amount in quote unit {} {}",
+                    mint_quote.unit,
+                    payment_amount_quote_unit
+                );
+
                 tx.increment_mint_quote_amount_paid(
                     &mint_quote.id,
-                    wait_payment_response.payment_amount,
+                    payment_amount_quote_unit,
                     wait_payment_response.payment_id,
                 )
                 .await?;
