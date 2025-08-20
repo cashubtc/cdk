@@ -9,7 +9,7 @@ use cdk_common::nut00::ProofsMethods;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::{
     Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, OutgoingPaymentOptions,
-    PaymentQuoteOptions,
+    PaymentIdentifier,
 };
 use cdk_common::{MeltOptions, MeltQuoteBolt12Request};
 use lightning::offers::offer::Offer;
@@ -202,7 +202,7 @@ impl Mint {
         );
 
         tracing::debug!(
-            "New {} melt quote {} for {} {} with request id {}",
+            "New {} melt quote {} for {} {} with request id {:?}",
             quote.payment_method,
             quote.id,
             amount_quote_unit,
@@ -269,7 +269,6 @@ impl Mint {
             max_fee_amount: None,
             timeout_secs: None,
             melt_options: *options,
-            invoice: None,
         };
 
         let payment_quote = ln
@@ -288,13 +287,8 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
-        let invoice = payment_quote.options.and_then(|options| match options {
-            PaymentQuoteOptions::Bolt12 { invoice } => invoice,
-        });
-
         let payment_request = MeltPaymentRequest::Bolt12 {
             offer: Box::new(offer),
-            invoice,
         };
 
         let quote = MeltQuote::new(
@@ -309,7 +303,7 @@ impl Mint {
         );
 
         tracing::debug!(
-            "New {} melt quote {} for {} {} with request id {}",
+            "New {} melt quote {} for {} {} with request id {:?}",
             quote.payment_method,
             quote.id,
             amount,
@@ -382,7 +376,7 @@ impl Mint {
                     .ok_or(Error::InvoiceAmountUndefined)?
                     .amount_msat(),
             },
-            MeltPaymentRequest::Bolt12 { offer, invoice: _ } => match offer.amount() {
+            MeltPaymentRequest::Bolt12 { offer } => match offer.amount() {
                 Some(amount) => {
                     let (amount, currency) = match amount {
                         lightning::offers::offer::Amount::Bitcoin { amount_msats } => {
@@ -529,18 +523,15 @@ impl Mint {
         use std::sync::Arc;
         async fn check_payment_state(
             ln: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
-            melt_quote: &MeltQuote,
+            lookup_id: &PaymentIdentifier,
         ) -> anyhow::Result<MakePaymentResponse> {
-            match ln
-                .check_outgoing_payment(&melt_quote.request_lookup_id)
-                .await
-            {
+            match ln.check_outgoing_payment(lookup_id).await {
                 Ok(response) => Ok(response),
                 Err(check_err) => {
                     // If we cannot check the status of the payment we keep the proofs stuck as pending.
                     tracing::error!(
                         "Could not check the status of payment for {},. Proofs stuck as pending",
-                        melt_quote.id
+                        lookup_id
                     );
                     tracing::error!("Checking payment error: {}", check_err);
                     bail!("Could not check payment status")
@@ -616,12 +607,13 @@ impl Mint {
                             || pay.status == MeltQuoteState::Failed =>
                     {
                         tracing::warn!("Got {} status when paying melt quote {} for {} {}. Checking with backend...", pay.status, quote.id, quote.amount, quote.unit);
-                        let check_response =
-                            if let Ok(ok) = check_payment_state(Arc::clone(ln), &quote).await {
-                                ok
-                            } else {
-                                return Err(Error::Internal);
-                            };
+                        let check_response = if let Ok(ok) =
+                            check_payment_state(Arc::clone(ln), &pay.payment_lookup_id).await
+                        {
+                            ok
+                        } else {
+                            return Err(Error::Internal);
+                        };
 
                         if check_response.status == MeltQuoteState::Paid {
                             tracing::warn!("Pay invoice returned {} but check returned {}. Proofs stuck as pending", pay.status.to_string(), check_response.status.to_string());
@@ -644,8 +636,16 @@ impl Mint {
 
                         tracing::error!("Error returned attempting to pay: {} {}", quote.id, err);
 
+                        let lookup_id = quote.request_lookup_id.as_ref().ok_or_else(|| {
+                            tracing::error!(
+                                "No payment id could not lookup payment for {} after error.",
+                                quote.id
+                            );
+                            Error::Internal
+                        })?;
+
                         let check_response =
-                            if let Ok(ok) = check_payment_state(Arc::clone(ln), &quote).await {
+                            if let Ok(ok) = check_payment_state(Arc::clone(ln), lookup_id).await {
                                 ok
                             } else {
                                 proof_writer.commit();
@@ -690,21 +690,18 @@ impl Mint {
                 let payment_lookup_id = pre.payment_lookup_id;
                 let mut tx = self.localstore.begin_transaction().await?;
 
-                if payment_lookup_id != quote.request_lookup_id {
+                if Some(payment_lookup_id.clone()).as_ref() != quote.request_lookup_id.as_ref() {
                     tracing::info!(
-                        "Payment lookup id changed post payment from {} to {}",
-                        quote.request_lookup_id,
+                        "Payment lookup id changed post payment from {:?} to {}",
+                        &quote.request_lookup_id,
                         payment_lookup_id
                     );
 
                     let mut melt_quote = quote;
-                    melt_quote.request_lookup_id = payment_lookup_id;
+                    melt_quote.request_lookup_id = Some(payment_lookup_id.clone());
 
                     if let Err(err) = tx
-                        .update_melt_quote_request_lookup_id(
-                            &melt_quote.id,
-                            &melt_quote.request_lookup_id,
-                        )
+                        .update_melt_quote_request_lookup_id(&melt_quote.id, &payment_lookup_id)
                         .await
                     {
                         tracing::warn!("Could not update payment lookup id: {}", err);

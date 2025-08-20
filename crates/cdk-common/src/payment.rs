@@ -193,8 +193,6 @@ pub struct Bolt12OutgoingPaymentOptions {
     pub max_fee_amount: Option<Amount>,
     /// Optional timeout in seconds
     pub timeout_secs: Option<u64>,
-    /// Bolt12 Invoice
-    pub invoice: Option<Vec<u8>>,
     /// Melt options
     pub melt_options: Option<MeltOptions>,
 }
@@ -221,7 +219,7 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
                     melt_options: melt_quote.options,
                 },
             ))),
-            MeltPaymentRequest::Bolt12 { offer, invoice } => {
+            MeltPaymentRequest::Bolt12 { offer } => {
                 let melt_options = match melt_quote.options {
                     None => None,
                     Some(MeltOptions::Mpp { mpp: _ }) => return Err(Error::UnsupportedUnit),
@@ -233,7 +231,6 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
                         max_fee_amount: Some(melt_quote.fee_reserve),
                         timeout_secs: None,
                         offer: *offer,
-                        invoice,
                         melt_options,
                     },
                 )))
@@ -343,7 +340,7 @@ pub struct MakePaymentResponse {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentQuoteResponse {
     /// Request look up id
-    pub request_lookup_id: PaymentIdentifier,
+    pub request_lookup_id: Option<PaymentIdentifier>,
     /// Amount
     pub amount: Amount,
     /// Fee required for melt
@@ -352,18 +349,6 @@ pub struct PaymentQuoteResponse {
     pub unit: CurrencyUnit,
     /// Status
     pub state: MeltQuoteState,
-    /// Payment Quote Options
-    pub options: Option<PaymentQuoteOptions>,
-}
-
-/// Payment quote options
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PaymentQuoteOptions {
-    /// Bolt12 payment options
-    Bolt12 {
-        /// Bolt12 invoice
-        invoice: Option<Vec<u8>>,
-    },
 }
 
 /// Ln backend settings

@@ -250,7 +250,6 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         offer: Offer::from_str(&request.request).unwrap(),
                         max_fee_amount: None,
                         timeout_secs: None,
-                        invoice: None,
                         melt_options: request.options.map(Into::into),
                     },
                 ))
@@ -308,7 +307,6 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         offer,
                         max_fee_amount: opts.max_fee_amount.map(Into::into),
                         timeout_secs: opts.timeout_secs,
-                        invoice: opts.invoice,
                         melt_options: opts.melt_options.map(Into::into),
                     }),
                 );

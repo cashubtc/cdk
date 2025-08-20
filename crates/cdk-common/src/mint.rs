@@ -246,7 +246,7 @@ pub struct MeltQuote {
     /// Payment preimage
     pub payment_preimage: Option<String>,
     /// Value used by ln backend to look up state of request
-    pub request_lookup_id: PaymentIdentifier,
+    pub request_lookup_id: Option<PaymentIdentifier>,
     /// Payment options
     ///
     /// Used for amountless invoices and MPP payments
@@ -270,7 +270,7 @@ impl MeltQuote {
         amount: Amount,
         fee_reserve: Amount,
         expiry: u64,
-        request_lookup_id: PaymentIdentifier,
+        request_lookup_id: Option<PaymentIdentifier>,
         options: Option<MeltOptions>,
         payment_method: PaymentMethod,
     ) -> Self {
@@ -433,8 +433,6 @@ pub enum MeltPaymentRequest {
         /// Offer
         #[serde(with = "offer_serde")]
         offer: Box<Offer>,
-        /// Invoice
-        invoice: Option<Vec<u8>>,
     },
 }
 
@@ -442,7 +440,7 @@ impl std::fmt::Display for MeltPaymentRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MeltPaymentRequest::Bolt11 { bolt11 } => write!(f, "{bolt11}"),
-            MeltPaymentRequest::Bolt12 { offer, invoice: _ } => write!(f, "{offer}"),
+            MeltPaymentRequest::Bolt12 { offer } => write!(f, "{offer}"),
         }
     }
 }
