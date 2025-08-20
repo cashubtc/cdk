@@ -43,7 +43,6 @@ async fn test_correct_keyset() {
     );
 
     let localstore = Arc::new(database);
-
     let mut mint_builder = MintBuilder::new(localstore.clone());
 
     mint_builder = mint_builder
