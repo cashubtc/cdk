@@ -368,13 +368,7 @@ impl MintPayment for LNbits {
                 unit: CurrencyUnit::Msat,
                 payment_id: payment.details.payment_hash,
             }]),
-
-            false => Ok(vec![WaitPaymentResponse {
-                payment_identifier: payment_identifier.clone(),
-                payment_amount: Amount::ZERO,
-                unit: CurrencyUnit::Msat,
-                payment_id: payment.details.payment_hash,
-            }]),
+            false => Ok(vec![]),
         }
     }
 
