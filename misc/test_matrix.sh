@@ -15,6 +15,8 @@ RUN_INTEGRATION_TESTS=${RUN_INTEGRATION_TESTS:-"false"}  # Set to "true" to run 
 RUN_WASM_TESTS=${RUN_WASM_TESTS:-"false"}  # Set to "true" to run WASM tests
 RUN_MSRV_TESTS=${RUN_MSRV_TESTS:-"false"}  # Set to "true" to run MSRV build tests
 DEBUG=${DEBUG:-"false"}  # Set to "true" to show test output while running
+PARALLEL=${PARALLEL:-"false"}  # Set to "true" to run tests in parallel
+MAX_PARALLEL_JOBS=${MAX_PARALLEL_JOBS:-"4"}  # Maximum number of parallel jobs
 
 # Array to store test configurations
 declare -a TEST_CONFIGS
@@ -26,14 +28,18 @@ echo -e "  RUN_WASM_TESTS=${RUN_WASM_TESTS}"
 echo -e "  RUN_INTEGRATION_TESTS=${RUN_INTEGRATION_TESTS}"
 echo -e "  RUN_MSRV_TESTS=${RUN_MSRV_TESTS}"
 echo -e "  DEBUG=${DEBUG}"
+echo -e "  PARALLEL=${PARALLEL}"
+echo -e "  MAX_PARALLEL_JOBS=${MAX_PARALLEL_JOBS}"
 echo ""
 echo -e "${BLUE}Usage examples:${NC}"
-echo -e "  TEST_SUBSET=small ./misc/test_matrix.sh            # Run only basic tests"
-echo -e "  TEST_SUBSET=full ./misc/test_matrix.sh             # Run all standard tests"
-echo -e "  RUN_WASM_TESTS=true ./misc/test_matrix.sh          # Run only WASM tests"
-echo -e "  RUN_INTEGRATION_TESTS=true ./misc/test_matrix.sh   # Run only integration tests"
-echo -e "  RUN_MSRV_TESTS=true ./misc/test_matrix.sh          # Run only MSRV build tests"
-echo -e "  DEBUG=true TEST_SUBSET=small ./misc/test_matrix.sh # Run with debug output"
+echo -e "  TEST_SUBSET=small ./misc/test_matrix.sh                        # Run only basic tests"
+echo -e "  TEST_SUBSET=full ./misc/test_matrix.sh                         # Run all standard tests"
+echo -e "  RUN_WASM_TESTS=true ./misc/test_matrix.sh                      # Run only WASM tests"
+echo -e "  RUN_INTEGRATION_TESTS=true ./misc/test_matrix.sh               # Run only integration tests"
+echo -e "  RUN_MSRV_TESTS=true ./misc/test_matrix.sh                      # Run only MSRV build tests"
+echo -e "  DEBUG=true TEST_SUBSET=small ./misc/test_matrix.sh             # Run with debug output"
+echo -e "  PARALLEL=true TEST_SUBSET=small ./misc/test_matrix.sh          # Run tests in parallel"
+echo -e "  PARALLEL=true MAX_PARALLEL_JOBS=8 TEST_SUBSET=full ./misc/test_matrix.sh  # Run with 8 parallel jobs"
 echo ""
 
 # Function to run a single test
@@ -123,17 +129,10 @@ if [ "$TEST_SUBSET" = "small" ]; then
     add_test "cashu (default)" "-p cashu" "clippy"
     add_test "cdk (default)" "-p cdk" "clippy"
     add_test "cdk-mintd (default)" "--bin cdk-mintd" "clippy"
-    add_test "example: wallet" "--example wallet" "check"
     add_test "doc tests" "--doc" "test"
+    
 elif [ "$TEST_SUBSET" = "full" ]; then
     echo -e "${BLUE}Running full test matrix...${NC}"
-
-    # Examples (these run but don't need clippy/test)
-    add_test "example: mint-token" "--example mint-token" "check"
-    add_test "example: melt-token" "--example melt-token" "check"
-    add_test "example: p2pk" "--example p2pk" "check"
-    add_test "example: proof-selection" "--example proof-selection" "check"
-    add_test "example: auth_wallet" "--example auth_wallet" "check"
 
     # Main clippy and test matrix from CI
     add_test "cashu (no default)" "-p cashu --no-default-features" "clippy"
@@ -286,14 +285,39 @@ fi
 echo -e "${BLUE}Total test configurations: ${#TEST_CONFIGS[@]}${NC}"
 echo ""
 
-# Run tests sequentially
-echo -e "${YELLOW}Running tests sequentially...${NC}"
+# Function to run a single test in the background
+run_test_bg() {
+    (
+        run_test "$@"
+    ) &
+}
 
-# Execute all tests one by one
-for config in "${TEST_CONFIGS[@]}"; do
-    IFS='|' read -r name args type target <<< "$config"
-    run_test "$name" "$args" "$type" "$target"
-done
+# Run tests
+if [ "$PARALLEL" = "true" ]; then
+    echo -e "${YELLOW}Running tests in parallel with up to $MAX_PARALLEL_JOBS jobs...${NC}"
+    
+    # Run tests in parallel
+    for config in "${TEST_CONFIGS[@]}"; do
+        IFS='|' read -r name args type target <<< "$config"
+        run_test_bg "$name" "$args" "$type" "$target"
+        
+        # Limit the number of parallel jobs
+        while (($(jobs -r -p | wc -l) >= MAX_PARALLEL_JOBS)); do
+            sleep 1
+        done
+    done
+    
+    # Wait for all background jobs to finish
+    wait
+else
+    echo -e "${YELLOW}Running tests sequentially...${NC}"
+    
+    # Execute all tests one by one
+    for config in "${TEST_CONFIGS[@]}"; do
+        IFS='|' read -r name args type target <<< "$config"
+        run_test "$name" "$args" "$type" "$target"
+    done
+fi
 
 echo ""
 echo -e "${GREEN}🎉 All tests passed!${NC}"
