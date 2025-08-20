@@ -295,20 +295,44 @@ run_test_bg() {
 # Run tests
 if [ "$PARALLEL" = "true" ]; then
     echo -e "${YELLOW}Running tests in parallel with up to $MAX_PARALLEL_JOBS jobs...${NC}"
-    
-    # Run tests in parallel
+
+    FAIL=0
+    # On exit, kill all child processes of this script
+    trap 'kill $(jobs -p)' EXIT
+
     for config in "${TEST_CONFIGS[@]}"; do
         IFS='|' read -r name args type target <<< "$config"
         run_test_bg "$name" "$args" "$type" "$target"
-        
-        # Limit the number of parallel jobs
-        while (($(jobs -r -p | wc -l) >= MAX_PARALLEL_JOBS)); do
-            sleep 1
-        done
+
+        # If we've hit the job limit, wait for one to finish before continuing
+        if (($(jobs -r -p | wc -l) >= MAX_PARALLEL_JOBS)); then
+            # wait -n waits for the next background job to terminate
+            # If it failed, its exit code will be non-zero, triggering the OR condition
+            wait -n || { FAIL=1; break; }
+        fi
     done
-    
-    # Wait for all background jobs to finish
-    wait
+
+    # If no failure has occurred yet, wait for the remaining jobs
+    if [ "$FAIL" -eq 0 ]; then
+        # This loop waits for each remaining job.
+        # It will break on the first failure.
+        for job in $(jobs -p); do
+            wait "$job" || { FAIL=1; break; }
+        done
+    fi
+
+    # If FAIL is 1, a test failed. Exit with a non-zero status.
+    # The trap will kill any remaining running jobs.
+    if [ "$FAIL" -ne 0 ]; then
+        echo ""
+        echo -e "${RED}A test failed. All other running tests have been terminated.${NC}"
+        # The script will exit here, and the trap will run.
+        exit 1
+    fi
+
+    # If we reached here, it means all tests passed.
+    # Disable the trap so we don't kill anything on a successful exit.
+    trap - EXIT
 else
     echo -e "${YELLOW}Running tests sequentially...${NC}"
     
