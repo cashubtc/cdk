@@ -62,7 +62,7 @@ impl DatabasePool for SqliteConnectionManager {
             pragma journal_mode = WAL;
             pragma synchronous = normal;
             pragma temp_store = memory;
-            pragma mmap_size = 30000000000;
+            pragma mmap_size = 5242880;
             pragma cache = shared;
             "#,
         )?;
