@@ -72,6 +72,9 @@ impl LNbits {
 
     /// Subscribe to lnbits ws
     pub async fn subscribe_ws(&self) -> Result<(), Error> {
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
         self.lnbits_api
             .subscribe_to_websocket()
             .await
@@ -134,7 +137,7 @@ impl MintPayment for LNbits {
                                                             let response = WaitPaymentResponse {
                                                                 payment_identifier: PaymentIdentifier::PaymentHash(hash),
                                                                 payment_amount: Amount::from(payment.details.amount as u64),
-                                                                unit: CurrencyUnit::Sat,
+                                                                unit: CurrencyUnit::Msat,
                                                                 payment_id: msg.clone()
                                                             };
                                                             Some((response, (api, cancel_token, is_active)))
@@ -247,9 +250,9 @@ impl MintPayment for LNbits {
                     })?;
 
                 let status = if invoice_info.paid {
-                    MeltQuoteState::Unpaid
-                } else {
                     MeltQuoteState::Paid
+                } else {
+                    MeltQuoteState::Unpaid
                 };
 
                 let total_spent = Amount::from(
@@ -271,7 +274,7 @@ impl MintPayment for LNbits {
                     payment_proof: Some(invoice_info.details.payment_hash),
                     status,
                     total_spent,
-                    unit: CurrencyUnit::Sat,
+                    unit: CurrencyUnit::Msat,
                 })
             }
             OutgoingPaymentOptions::Bolt12(_) => {
@@ -352,12 +355,27 @@ impl MintPayment for LNbits {
                 Self::Err::Anyhow(anyhow!("Could not check invoice status"))
             })?;
 
-        Ok(vec![WaitPaymentResponse {
-            payment_identifier: payment_identifier.clone(),
-            payment_amount: Amount::from(payment.details.amount as u64),
-            unit: CurrencyUnit::Sat,
-            payment_id: payment.details.payment_hash,
-        }])
+        let amount = payment.details.amount;
+
+        if amount == i64::MIN {
+            return Err(Error::AmountOverflow.into());
+        }
+
+        match payment.paid {
+            true => Ok(vec![WaitPaymentResponse {
+                payment_identifier: payment_identifier.clone(),
+                payment_amount: Amount::from(amount.unsigned_abs()),
+                unit: CurrencyUnit::Msat,
+                payment_id: payment.details.payment_hash,
+            }]),
+
+            false => Ok(vec![WaitPaymentResponse {
+                payment_identifier: payment_identifier.clone(),
+                payment_amount: Amount::ZERO,
+                unit: CurrencyUnit::Msat,
+                payment_id: payment.details.payment_hash,
+            }]),
+        }
     }
 
     async fn check_outgoing_payment(
@@ -379,10 +397,9 @@ impl MintPayment for LNbits {
             payment_proof: payment.preimage,
             status: lnbits_to_melt_status(&payment.details.status, payment.details.pending),
             total_spent: Amount::from(
-                payment.details.amount.unsigned_abs()
-                    + payment.details.fee.unsigned_abs() / MSAT_IN_SAT,
+                payment.details.amount.unsigned_abs() + payment.details.fee.unsigned_abs(),
             ),
-            unit: self.settings.unit.clone(),
+            unit: CurrencyUnit::Msat,
         };
 
         Ok(pay_response)

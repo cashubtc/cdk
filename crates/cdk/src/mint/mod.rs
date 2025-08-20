@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use cdk_common::amount::to_unit;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
@@ -543,10 +544,11 @@ impl Mint {
         pubsub_manager: &Arc<PubSubManager>,
     ) -> Result<(), Error> {
         tracing::debug!(
-            "Received payment notification of {} for mint quote {} with payment id {}",
+            "Received payment notification of {} {} for mint quote {} with payment id {}",
             wait_payment_response.payment_amount,
+            wait_payment_response.unit,
             mint_quote.id,
-            wait_payment_response.payment_id
+            wait_payment_response.payment_id.to_string()
         );
 
         let quote_state = mint_quote.state();
@@ -559,9 +561,21 @@ impl Mint {
             {
                 tracing::info!("Received payment notification for already issued quote.");
             } else {
+                let payment_amount_quote_unit = to_unit(
+                    wait_payment_response.payment_amount,
+                    &wait_payment_response.unit,
+                    &mint_quote.unit,
+                )?;
+
+                tracing::debug!(
+                    "Payment received amount in quote unit {} {}",
+                    mint_quote.unit,
+                    payment_amount_quote_unit
+                );
+
                 tx.increment_mint_quote_amount_paid(
                     &mint_quote.id,
-                    wait_payment_response.payment_amount,
+                    payment_amount_quote_unit,
                     wait_payment_response.payment_id,
                 )
                 .await?;
