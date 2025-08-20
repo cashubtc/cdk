@@ -9,13 +9,13 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
   pull_request_review:
-    types: [submitted]
+    types: [ submitted ]
   release:
-    types: [created]
+    types: [ created ]
   workflow_dispatch:
 
 env:
@@ -121,7 +121,7 @@ jobs:
     name: "WASM tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: [ pre-commit-checks,clippy ]
     if: >
       github.event_name == 'push' ||
       github.event_name == 'pull_request' ||
@@ -155,7 +155,7 @@ jobs:
     name: "MSRV tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: [ pre-commit-checks,clippy ]
     if: >
       github.event_name == 'push' ||
       github.event_name == 'pull_request' ||
@@ -219,7 +219,7 @@ jobs:
       - name: Start Postgres
         run: bash -x crates/cdk-postgres/start_db_for_test.sh
       - name: Run integration tests
-        run: nix develop -i -L .#stable --command bash -c 'PARALLEL=true MAX_PARALLEL_JOBS=8 RUN_INTEGRATION_TESTS=true ./misc/test_matrix.sh'
+        run: nix develop -i -L .#stable --command bash -c 'RUN_INTEGRATION_TESTS=true ./misc/test_matrix.sh'
       - name: Stop Postgres
         run: docker stop rust-test-pg
 
@@ -227,16 +227,16 @@ jobs:
     name: "Integration fake mint auth tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy]
+    needs: [ pre-commit-checks, clippy ]
     if: >
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
     strategy:
       matrix:
-        database: 
+        database:
           [
-          SQLITE,
+            SQLITE,
           ]
     steps:
       - name: checkout
