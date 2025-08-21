@@ -588,7 +588,7 @@ impl Mint {
                     PaymentMethod::Bolt12 => {
                         pubsub_manager.mint_quote_bolt12_status(
                             mint_quote.clone(),
-                            wait_payment_response.payment_amount,
+                            payment_amount_quote_unit,
                             Amount::ZERO,
                         );
                     }
