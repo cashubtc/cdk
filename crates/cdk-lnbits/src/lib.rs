@@ -79,6 +79,64 @@ impl LNbits {
                 Error::Anyhow(err)
             })
     }
+
+    /// Process an incoming message from the websocket receiver
+    async fn process_message(
+        msg_option: Option<String>,
+        api: &LNBitsClient,
+        _is_active: &Arc<AtomicBool>,
+    ) -> Option<WaitPaymentResponse> {
+        let msg = msg_option?;
+
+        let payment = match api.get_payment_info(&msg).await {
+            Ok(payment) => payment,
+            Err(_) => return None,
+        };
+
+        if !payment.paid {
+            tracing::warn!(
+                "Received payment notification but payment not paid for {}",
+                msg
+            );
+            return None;
+        }
+
+        Self::create_payment_response(&msg, &payment).unwrap_or_else(|e| {
+            tracing::error!("Failed to create payment response: {}", e);
+            None
+        })
+    }
+
+    /// Create a payment response from payment info
+    fn create_payment_response(
+        msg: &str,
+        payment: &lnbits_rs::api::payment::Payment,
+    ) -> Result<Option<WaitPaymentResponse>, Error> {
+        let amount = payment.details.amount;
+
+        if amount == i64::MIN {
+            return Ok(None);
+        }
+
+        let hash = Self::decode_payment_hash(msg)?;
+
+        Ok(Some(WaitPaymentResponse {
+            payment_identifier: PaymentIdentifier::PaymentHash(hash),
+            payment_amount: Amount::from(amount.unsigned_abs()),
+            unit: CurrencyUnit::Msat,
+            payment_id: msg.to_string(),
+        }))
+    }
+
+    /// Decode a hex payment hash string into a byte array
+    fn decode_payment_hash(hash_str: &str) -> Result<[u8; 32], Error> {
+        let decoded = hex::decode(hash_str)
+            .map_err(|e| Error::Anyhow(anyhow!("Failed to decode payment hash: {}", e)))?;
+
+        decoded
+            .try_into()
+            .map_err(|_| Error::Anyhow(anyhow!("Invalid payment hash length")))
+    }
 }
 
 #[async_trait]
@@ -114,60 +172,14 @@ impl MintPayment for LNbits {
 
                 tokio::select! {
                     _ = cancel_token.cancelled() => {
-                        // Stream is cancelled
                         is_active.store(false, Ordering::SeqCst);
                         tracing::info!("Waiting for lnbits invoice ending");
                         None
                     }
                     msg_option = receiver.recv() => {
-                        match msg_option {
-                            Some(msg) => {
-                                let check = api.get_payment_info(&msg).await;
-                                match check {
-                                    Ok(payment) => {
-                                        if payment.paid {
-                                            match hex::decode(msg.clone()) {
-                                                Ok(decoded) => {
-                                                    match decoded.try_into() {
-                                                        Ok(hash) => {
-                                                            let amount = payment.details.amount;
-
-                                                            if amount == i64::MIN {
-                                                                return None;
-                                                            }
-
-                                                            let response = WaitPaymentResponse {
-                                                                payment_identifier: PaymentIdentifier::PaymentHash(hash),
-                                                                payment_amount: Amount::from(amount.unsigned_abs()),
-                                                                unit: CurrencyUnit::Msat,
-                                                                payment_id: msg.clone()
-                                                            };
-                                                            Some((response, (api, cancel_token, is_active)))
-                                                        },
-                                                        Err(e) => {
-                                                            tracing::error!("Failed to convert payment hash bytes to array: {:?}", e);
-                                                            None
-                                                        }
-                                                    }
-                                                },
-                                                Err(e) => {
-                                                    tracing::error!("Failed to decode payment hash hex string: {}", e);
-                                                    None
-                                                }
-                                            }
-                                        } else {
-                                            tracing::warn!("Received payment notification but could not check payment for {}", msg);
-                                            None
-                                        }
-                                    },
-                                    Err(_) => None
-                                }
-                            },
-                            None => {
-                                is_active.store(false, Ordering::SeqCst);
-                                None
-                            }
-                        }
+                        Self::process_message(msg_option, &api, &is_active)
+                            .await
+                            .map(|response| (response, (api, cancel_token, is_active)))
                     }
                 }
             },
