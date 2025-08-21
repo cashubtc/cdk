@@ -210,7 +210,7 @@ impl MintPayment for Cln {
                                     {
                                         Ok(Some(invoice)) => {
                                             if let Some(local_offer_id) = invoice.local_offer_id {
-                                                tracing::info!("CLN: Received bolt12 payment of {} sats for offer {}", 
+                                                tracing::info!("CLN: Received bolt12 payment of {} msats for offer {}", 
                                                              amount_msats.msat(), local_offer_id);
                                                 PaymentIdentifier::OfferId(local_offer_id.to_string())
                                             } else {
