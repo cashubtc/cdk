@@ -11,6 +11,7 @@ use subscription::{ActiveSubscription, SubscriptionManager};
 #[cfg(feature = "auth")]
 use tokio::sync::RwLock;
 use tracing::instrument;
+use zeroize::Zeroize;
 
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
@@ -655,5 +656,11 @@ impl Wallet {
         }
 
         Ok(())
+    }
+}
+
+impl Drop for Wallet {
+    fn drop(&mut self) {
+        self.seed.zeroize();
     }
 }

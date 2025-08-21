@@ -6,6 +6,7 @@ use std::str::FromStr;
 use bitcoin::secp256k1::rand::{self, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use zeroize::Zeroize;
 
 use crate::util::hex;
 
@@ -118,6 +119,12 @@ impl TryFrom<Secret> for crate::nuts::nut10::Secret {
 
     fn try_from(unchecked_secret: Secret) -> Result<crate::nuts::nut10::Secret, Self::Error> {
         serde_json::from_str(&unchecked_secret.0)
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        self.0.zeroize();
     }
 }
 
