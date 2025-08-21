@@ -80,8 +80,7 @@ reserve_fee_min = 4
 # admin_api_key = ""
 # invoice_api_key = ""
 # lnbits_api = ""
-# To be set true to support pre v1 lnbits api
-# retro_api=false
+# Note: Only LNBits v1 API is supported (websocket-based)
 
 # [lnd]
 # address = "https://domain:port"

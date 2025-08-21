@@ -10,8 +10,6 @@ use axum::Router;
 #[cfg(feature = "fakewallet")]
 use bip39::rand::{thread_rng, Rng};
 use cdk::cdk_payment::MintPayment;
-#[cfg(feature = "lnbits")]
-use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 #[cfg(any(
     feature = "lnbits",
@@ -67,33 +65,16 @@ impl LnBackendSetup for config::Cln {
 impl LnBackendSetup for config::LNbits {
     async fn setup(
         &self,
-        routers: &mut Vec<Router>,
-        settings: &Settings,
+        _routers: &mut Vec<Router>,
+        _settings: &Settings,
         _unit: CurrencyUnit,
     ) -> anyhow::Result<cdk_lnbits::LNbits> {
         let admin_api_key = &self.admin_api_key;
         let invoice_api_key = &self.invoice_api_key;
 
-        // Channel used for lnbits web hook
-        let webhook_endpoint = "/webhook/lnbits/sat/invoice";
-
         let fee_reserve = FeeReserve {
             min_fee_reserve: self.reserve_fee_min,
             percent_fee_reserve: self.fee_percent,
-        };
-
-        let webhook_url = if settings
-            .lnbits
-            .as_ref()
-            .expect("Lnbits must be defined")
-            .retro_api
-        {
-            let mint_url: MintUrl = settings.info.url.parse()?;
-            let webhook_url = mint_url.join(webhook_endpoint)?;
-
-            Some(webhook_url.to_string())
-        } else {
-            None
         };
 
         let lnbits = cdk_lnbits::LNbits::new(
@@ -101,24 +82,11 @@ impl LnBackendSetup for config::LNbits {
             invoice_api_key.clone(),
             self.lnbits_api.clone(),
             fee_reserve,
-            webhook_url,
         )
         .await?;
 
-        if settings
-            .lnbits
-            .as_ref()
-            .expect("Lnbits must be defined")
-            .retro_api
-        {
-            let router = lnbits
-                .create_invoice_webhook_router(webhook_endpoint)
-                .await?;
-
-            routers.push(router);
-        } else {
-            lnbits.subscribe_ws().await?;
-        };
+        // Use v1 websocket API
+        lnbits.subscribe_ws().await?;
 
         Ok(lnbits)
     }

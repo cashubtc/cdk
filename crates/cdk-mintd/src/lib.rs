@@ -103,7 +103,7 @@ pub fn setup_tracing(
     logging_config: &config::LoggingConfig,
 ) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
     let default_filter = "debug";
-    let hyper_filter = "hyper=warn";
+    let hyper_filter = "hyper=warn,rustls=warn,reqwest=warn";
     let h2_filter = "h2=warn";
     let tower_http = "tower_http=warn";
 
