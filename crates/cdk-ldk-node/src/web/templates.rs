@@ -164,6 +164,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                 style {
                     "
                     :root {
+                        /* Light mode (default) */
                         --background: 0 0% 100%;
                         --foreground: 222.2 84% 4.9%;
                         --card: 0 0% 100%;
@@ -202,6 +203,43 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         /* Colors */
                         --fg-primary: #0f172a;
                         --fg-muted: #6b7280;
+                        
+                        /* Header text colors for light mode */
+                        --header-title: #000000;
+                        --header-subtitle: #333333;
+                    }
+
+                    /* Dark mode using system preference */
+                    @media (prefers-color-scheme: dark) {
+                        :root {
+                            --background: 222.2 84% 4.9%;
+                            --foreground: 210 40% 98%;
+                            --card: 222.2 84% 4.9%;
+                            --card-foreground: 210 40% 98%;
+                            --popover: 222.2 84% 4.9%;
+                            --popover-foreground: 210 40% 98%;
+                            --primary: 210 40% 98%;
+                            --primary-foreground: 222.2 84% 4.9%;
+                            --secondary: 217.2 32.6% 17.5%;
+                            --secondary-foreground: 210 40% 98%;
+                            --muted: 217.2 32.6% 17.5%;
+                            --muted-foreground: 215 20.2% 65.1%;
+                            --accent: 217.2 32.6% 17.5%;
+                            --accent-foreground: 210 40% 98%;
+                            --destructive: 0 62.8% 30.6%;
+                            --destructive-foreground: 210 40% 98%;
+                            --border: 217.2 32.6% 17.5%;
+                            --input: 217.2 32.6% 17.5%;
+                            --ring: 212.7 26.8% 83.9%;
+                            
+                            /* Dark mode colors */
+                            --fg-primary: #f8fafc;
+                            --fg-muted: #94a3b8;
+                            
+                            /* Header text colors for dark mode */
+                            --header-title: #ffffff;
+                            --header-subtitle: #e2e8f0;
+                        }
                     }
                     
                     * {
@@ -257,6 +295,21 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         justify-content: center;
                     }
                     
+                    /* Dark mode header background - using CSS filter or overlay */
+                    @media (prefers-color-scheme: dark) {
+                        header {
+                            /* Option 1: Add dark overlay */
+                            background-image: 
+                                linear-gradient(rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.6)),
+                                url('/static/images/bg.jpg?v=3');
+                        }
+                        
+                        /* Alternative: Use CSS filter to darken/invert the image */
+                        /* header {
+                            filter: brightness(0.3) contrast(1.2);
+                        } */
+                    }
+                    
                     /* Ensure text is positioned properly */
                     header .container {
                         position: absolute;
@@ -274,13 +327,13 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         font-weight: 700;
                         line-height: 1.1;
                         letter-spacing: -0.02em;
-                        color: #000000;
+                        color: var(--header-title);
                         margin-bottom: 1rem;
                     }
                     
                     .subtitle {
                         font-size: 1.25rem;
-                        color: #333333;
+                        color: var(--header-subtitle);
                         font-weight: 400;
                         max-width: 600px;
                         margin: 0 auto;
@@ -1390,6 +1443,14 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                     @media (max-width: 480px) {
                         .node-name {
                             font-size: 0.8125rem;
+                        }
+                    }
+
+                    /* Dark mode adjustments for globe animation */
+                    @media (prefers-color-scheme: dark) {
+                        .node-content-box .world {
+                            border-color: rgba(156, 163, 175, 0.4);
+                            fill: rgba(156, 163, 175, 0.2);
                         }
                     }
                     "

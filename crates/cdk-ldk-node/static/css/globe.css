@@ -13,6 +13,20 @@
   --globe-module-bg: hsl(var(--globe-hue), var(--globe-module-bg-sat), var(--globe-module-bg-lum));
 }
 
+/* Dark mode adjustments for globe */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --globe-hue: 220deg;
+    --globe-base-bg-sat: 25%;
+    --globe-base-bg-lum: 15%;
+    --globe-base-fg-sat: 60%;
+    --globe-base-fg-lum: 85%;
+    --globe-filter-fg: saturate(120%) brightness(110%);
+    --globe-module-bg-sat: 22%;
+    --globe-module-bg-lum: 30%;
+  }
+}
+
 /* Globe Container - fits inside the gray content box */
 .globe-container {
   display: block;
@@ -37,6 +51,14 @@
   box-sizing: border-box;
   background-image: url(#icon-world);
   filter: var(--globe-filter-fg);
+}
+
+/* Dark mode globe styling */
+@media (prefers-color-scheme: dark) {
+  .world {
+    fill: rgba(156, 163, 175, 0.2);
+    border-color: rgba(156, 163, 175, 0.4);
+  }
 }
 
 .world svg {
