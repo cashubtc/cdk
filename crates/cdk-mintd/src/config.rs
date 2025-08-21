@@ -50,6 +50,8 @@ pub struct Info {
     pub url: String,
     pub listen_host: String,
     pub listen_port: u16,
+    /// Overrides mnemonic
+    pub seed: Option<String>,
     pub mnemonic: Option<String>,
     pub signatory_url: Option<String>,
     pub signatory_certs: Option<String>,
@@ -88,7 +90,7 @@ impl Default for Info {
 impl std::fmt::Debug for Info {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Use a fallback approach that won't panic
-        let mnemonic_display = {
+        let mnemonic_display: String = {
             if let Some(mnemonic) = self.mnemonic.as_ref() {
                 let hash = sha256::Hash::hash(mnemonic.as_bytes());
                 format!("<hashed: {hash}>")

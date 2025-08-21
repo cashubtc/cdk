@@ -805,6 +805,9 @@ async fn build_mint(
                 .await?,
             ))
             .await?)
+    } else if let Some(seed) = settings.info.seed.clone() {
+        let seed_bytes: Vec<u8> = seed.into();
+        Ok(mint_builder.build_with_seed(keystore, &seed_bytes).await?)
     } else if let Some(mnemonic) = settings
         .info
         .mnemonic
