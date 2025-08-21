@@ -5,7 +5,6 @@ use axum::routing::{get, post};
 use axum::Router;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
-use tower_http::services::ServeDir;
 
 use crate::web::handlers::{
     balance_page, channels_page, close_channel_page, dashboard, get_new_address, invoices_page,
@@ -13,6 +12,7 @@ use crate::web::handlers::{
     post_create_bolt12, post_open_channel, post_pay_bolt11, post_pay_bolt12, post_send_onchain,
     send_payments_page, AppState,
 };
+use crate::web::static_files::static_handler;
 use crate::CdkLdkNode;
 
 pub struct WebServer {
@@ -29,8 +29,7 @@ impl WebServer {
             node: self.node.clone(),
         };
 
-        // Use a simple path for the static files
-        let static_files = ServeDir::new("crates/cdk-ldk-node/static");
+        tracing::debug!("Serving static files from embedded assets");
 
         Router::new()
             // Dashboard
@@ -55,8 +54,8 @@ impl WebServer {
             .route("/payments/send", get(send_payments_page))
             .route("/payments/bolt11", post(post_pay_bolt11))
             .route("/payments/bolt12", post(post_pay_bolt12))
-            // Static files
-            .nest_service("/static", static_files)
+            // Static files - now embedded
+            .route("/static/{*file}", get(static_handler))
             .layer(ServiceBuilder::new().layer(CorsLayer::permissive()))
             .with_state(state)
     }
