@@ -21,37 +21,48 @@
 
     crane = {
       url = "github:ipetkov/crane";
-      inputs.nixpkgs.follows = "nixpkgs";
     };
 
     pre-commit-hooks.url = "github:cachix/pre-commit-hooks.nix";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils, pre-commit-hooks, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    { self
+    , nixpkgs
+    , rust-overlay
+    , flake-utils
+    , pre-commit-hooks
+    , ...
+    }@inputs:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         overlays = [ (import rust-overlay) ];
         lib = pkgs.lib;
         stdenv = pkgs.stdenv;
         isDarwin = stdenv.isDarwin;
-        libsDarwin = with pkgs; lib.optionals isDarwin [
-          # Additional darwin specific inputs can be set here
-          darwin.apple_sdk.frameworks.Security
-          darwin.apple_sdk.frameworks.SystemConfiguration
-        ];
+        libsDarwin =
+          with pkgs;
+          lib.optionals isDarwin [
+            # Additional darwin specific inputs can be set here
+            darwin.apple_sdk.frameworks.Security
+            darwin.apple_sdk.frameworks.SystemConfiguration
+          ];
 
         # Dependencies
         pkgs = import nixpkgs {
           inherit system overlays;
         };
 
-
-
         # Toolchains
         # latest stable
         stable_toolchain = pkgs.rust-bin.stable."1.86.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
-          extensions = [ "rustfmt" "clippy" "rust-analyzer" ];
+          extensions = [
+            "rustfmt"
+            "clippy"
+            "rust-analyzer"
+          ];
         };
 
         # MSRV stable
@@ -60,38 +71,53 @@
         };
 
         # Nightly used for formatting
-        nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
-          extensions = [ "rustfmt" "clippy" "rust-analyzer" "rust-src" ];
-          targets = [ "wasm32-unknown-unknown" ]; # wasm
-        });
+        nightly_toolchain = pkgs.rust-bin.selectLatestNightlyWith (
+          toolchain:
+          toolchain.default.override {
+            extensions = [
+              "rustfmt"
+              "clippy"
+              "rust-analyzer"
+              "rust-src"
+            ];
+            targets = [ "wasm32-unknown-unknown" ]; # wasm
+          }
+        );
 
         # Common inputs
-        envVars = { };
-        buildInputs = with pkgs; [
-          # Add additional build inputs here
-          git
-          pkg-config
-          curl
-          just
-          protobuf
-          nixpkgs-fmt
-          typos
-          lnd
-          clightning
-          bitcoind
-          sqlx-cli
-          cargo-outdated
-          mprocs
+        envVars = {
+          # rust analyzer needs  NIX_PATH for some reason.
+          NIX_PATH = "nixpkgs=${inputs.nixpkgs}";
+        };
+        buildInputs =
+          with pkgs;
+          [
+            # Add additional build inputs here
+            git
+            pkg-config
+            curl
+            just
+            protobuf
+            nixpkgs-fmt
+            typos
+            lnd
+            clightning
+            bitcoind
+            sqlx-cli
+            cargo-outdated
+            mprocs
 
-          # Needed for github ci
-          libz
-        ] ++ libsDarwin;
-
+            # Needed for github ci
+            libz
+          ]
+          ++ libsDarwin;
 
         # Common arguments can be set here to avoid repeating them later
         nativeBuildInputs = [
+          pkgs.rust-analyzer
           #Add additional build inputs here
-        ] ++ lib.optionals isDarwin [
+        ]
+        ++ lib.optionals isDarwin [
           # Additional darwin specific native inputs can be set here
         ];
       in
@@ -108,7 +134,10 @@
                 inherit (_rust) meta;
                 buildInputs = [ pkgs.makeWrapper ];
                 paths = [ _rust ];
-                pathsToLink = [ "/" "/bin" ];
+                pathsToLink = [
+                  "/"
+                  "/bin"
+                ];
                 postBuild = ''
                   for i in $out/bin/*; do
                     wrapProgram "$i" --prefix PATH : "$out/bin"
@@ -136,57 +165,75 @@
             _shellHook = (self.checks.${system}.pre-commit-check.shellHook or "");
 
             # devShells
-            msrv = pkgs.mkShell ({
-              shellHook = "
+            msrv = pkgs.mkShell (
+              {
+                shellHook = "
               ${_shellHook}
               ";
-              buildInputs = buildInputs ++ [ msrv_toolchain ];
-              inherit nativeBuildInputs;
-            } // envVars);
+                buildInputs = buildInputs ++ [ msrv_toolchain ];
+                inherit nativeBuildInputs;
+              }
+              // envVars
+            );
 
-            stable = pkgs.mkShell ({
-              shellHook = ''${_shellHook}'';
-              buildInputs = buildInputs ++ [ stable_toolchain ];
-              inherit nativeBuildInputs;
-            } // envVars);
+            stable = pkgs.mkShell (
+              {
+                shellHook = ''${_shellHook}'';
+                buildInputs = buildInputs ++ [ stable_toolchain ];
+                inherit nativeBuildInputs;
 
+              }
+              // envVars
+            );
 
-            nightly = pkgs.mkShell ({
-              shellHook = ''
-                ${_shellHook}
-                # Needed for github ci
-                export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [
-                  pkgs.zlib
-                  ]}:$LD_LIBRARY_PATH
-                export RUST_SRC_PATH=${nightly_toolchain}/lib/rustlib/src/rust/library
-              '';
-              buildInputs = buildInputs ++ [ nightly_toolchain ];
-              inherit nativeBuildInputs;
-            } // envVars);
+            nightly = pkgs.mkShell (
+              {
+                shellHook = ''
+                  ${_shellHook}
+                  # Needed for github ci
+                  export LD_LIBRARY_PATH=${
+                    pkgs.lib.makeLibraryPath [
+                      pkgs.zlib
+                    ]
+                  }:$LD_LIBRARY_PATH
+                '';
+                buildInputs = buildInputs ++ [ nightly_toolchain ];
+                inherit nativeBuildInputs;
+              }
+              // envVars
+            );
 
             # Shell with Docker for integration tests
-            integration = pkgs.mkShell ({
-              shellHook = ''
-                ${_shellHook}
-                # Ensure Docker is available
-                if ! command -v docker &> /dev/null; then
-                  echo "Docker is not installed or not in PATH"
-                  echo "Please install Docker to run integration tests"
-                  exit 1
-                fi
-                echo "Docker is available at $(which docker)"
-                echo "Docker version: $(docker --version)"
-              '';
-              buildInputs = buildInputs ++ [
-                stable_toolchain
-                pkgs.docker-client
-              ];
-              inherit nativeBuildInputs;
-            } // envVars);
+            integration = pkgs.mkShell (
+              {
+                shellHook = ''
+                  ${_shellHook}
+                  # Ensure Docker is available
+                  if ! command -v docker &> /dev/null; then
+                    echo "Docker is not installed or not in PATH"
+                    echo "Please install Docker to run integration tests"
+                    exit 1
+                  fi
+                  echo "Docker is available at $(which docker)"
+                  echo "Docker version: $(docker --version)"
+                '';
+                buildInputs = buildInputs ++ [
+                  stable_toolchain
+                  pkgs.docker-client
+                ];
+                inherit nativeBuildInputs;
+              }
+              // envVars
+            );
 
           in
           {
-            inherit msrv stable nightly integration;
+            inherit
+              msrv
+              stable
+              nightly
+              integration
+              ;
             default = stable;
           };
       }
