@@ -14,6 +14,10 @@ compile_error!(
     "At least one lightning backend feature must be enabled: cln, lnbits, lnd, fakewallet, or grpc-processor"
 );
 
+// Ensure at least one database backend is enabled at compile time
+#[cfg(not(any(feature = "sqlite", feature = "postgres")))]
+compile_error!("At least one database backend feature must be enabled: sqlite or postgres");
+
 use anyhow::Result;
 use cdk_mintd::cli::CLIArgs;
 use cdk_mintd::{get_work_directory, load_settings};
