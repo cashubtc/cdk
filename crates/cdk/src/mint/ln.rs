@@ -61,25 +61,11 @@ impl Mint {
                 quote.increment_amount_paid(amount_paid)?;
                 quote.add_payment(amount_paid, payment.payment_id.clone(), unix_time())?;
 
-                tx.increment_mint_quote_amount_paid(&quote.id, amount_paid, payment.payment_id)
+                let total_paid = tx
+                    .increment_mint_quote_amount_paid(&quote.id, amount_paid, payment.payment_id)
                     .await?;
 
-                match quote.payment_method {
-                    PaymentMethod::Bolt11 => {
-                        self.pubsub_manager
-                            .mint_quote_bolt11_status(quote.clone(), MintQuoteState::Paid);
-                    }
-                    PaymentMethod::Bolt12 => {
-                        self.pubsub_manager.mint_quote_bolt12_status(
-                            quote.clone(),
-                            amount_paid,
-                            Amount::ZERO,
-                        );
-                    }
-                    PaymentMethod::Custom(_) => {
-                        // We don't send ws updates for unknown methods
-                    }
-                }
+                self.pubsub_manager.mint_quote_payment(quote, total_paid);
             }
         }
 

@@ -573,29 +573,14 @@ impl Mint {
                     payment_amount_quote_unit
                 );
 
-                tx.increment_mint_quote_amount_paid(
-                    &mint_quote.id,
-                    payment_amount_quote_unit,
-                    wait_payment_response.payment_id,
-                )
-                .await?;
-
-                match mint_quote.payment_method {
-                    PaymentMethod::Bolt11 => {
-                        pubsub_manager
-                            .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
-                    }
-                    PaymentMethod::Bolt12 => {
-                        pubsub_manager.mint_quote_bolt12_status(
-                            mint_quote.clone(),
-                            payment_amount_quote_unit,
-                            Amount::ZERO,
-                        );
-                    }
-                    _ => {
-                        // We don't send ws updates for unknown methods
-                    }
-                }
+                let total_paid = tx
+                    .increment_mint_quote_amount_paid(
+                        &mint_quote.id,
+                        payment_amount_quote_unit,
+                        wait_payment_response.payment_id,
+                    )
+                    .await?;
+                pubsub_manager.mint_quote_payment(mint_quote, total_paid);
             }
         } else {
             tracing::info!("Received payment notification for already seen payment.");
@@ -752,8 +737,12 @@ impl Mint {
 
         let amount = melt_quote.amount;
 
-        tx.increment_mint_quote_amount_paid(&mint_quote.id, amount, melt_quote.id.to_string())
+        let total_paid = tx
+            .increment_mint_quote_amount_paid(&mint_quote.id, amount, melt_quote.id.to_string())
             .await?;
+
+        self.pubsub_manager
+            .mint_quote_payment(&mint_quote, total_paid);
 
         tracing::info!(
             "Melt quote {} paid Mint quote {}",
