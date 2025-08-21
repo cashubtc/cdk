@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use cdk::amount::{amount_for_offer, Amount, MSAT_IN_SAT};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MeltOptions};
@@ -12,7 +12,6 @@ use clap::{Args, ValueEnum};
 use lightning::offers::offer::Offer;
 use tokio::task::JoinSet;
 
-use crate::bip353::{Bip353Address, PaymentType as Bip353PaymentType};
 use crate::sub_commands::balance::mint_balances;
 use crate::utils::{
     get_number_input, get_user_input, get_wallet_by_index, get_wallet_by_mint_url,
@@ -184,22 +183,19 @@ pub async fn pay(
             }
             PaymentType::Bip353 => {
                 let bip353_addr = get_user_input("Enter Bip353 address.")?;
-                let bip353_addr = Bip353Address::from_str(&bip353_addr)?;
-
-                let payment_instructions = bip353_addr.resolve().await?;
-
-                let offer = payment_instructions
-                    .parameters
-                    .get(&Bip353PaymentType::LightningOffer)
-                    .ok_or(anyhow!("Offer not defined"))?;
 
                 let prompt =
                     "Enter the amount you would like to pay in sats for this amountless offer:";
                 // BIP353 payments are always amountless for now
                 let options = create_melt_options(available_funds, None, prompt)?;
 
-                // Get melt quote for BOLT12
-                let quote = wallet.melt_bolt12_quote(offer.to_string(), options).await?;
+                // Get melt quote for BIP353 address (internally resolves and gets BOLT12 quote)
+                let quote = wallet
+                    .melt_bip353_quote(
+                        &bip353_addr,
+                        options.expect("Amount is required").amount_msat(),
+                    )
+                    .await?;
                 process_payment(&wallet, quote).await?;
             }
         }
