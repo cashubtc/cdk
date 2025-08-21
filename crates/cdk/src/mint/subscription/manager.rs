@@ -3,8 +3,9 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use cdk_common::database::{self, MintDatabase};
+use cdk_common::mint::MintQuote;
 use cdk_common::nut17::Notification;
-use cdk_common::{Amount, MintQuoteBolt12Response, NotificationPayload};
+use cdk_common::{Amount, MintQuoteBolt12Response, NotificationPayload, PaymentMethod};
 use uuid::Uuid;
 
 use super::OnSubscription;
@@ -46,6 +47,44 @@ impl PubSubManager {
     /// Helper function to emit a ProofState status
     pub fn proof_state<E: Into<ProofState>>(&self, event: E) {
         self.broadcast(event.into().into());
+    }
+
+    /// Helper function to publish even of a mint quote being paid
+    pub fn mint_quote_issue(&self, mint_quote: &MintQuote, total_issued: Amount) {
+        match mint_quote.payment_method {
+            PaymentMethod::Bolt11 => {
+                self.mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Issued);
+            }
+            PaymentMethod::Bolt12 => {
+                self.mint_quote_bolt12_status(
+                    mint_quote.clone(),
+                    mint_quote.amount_paid(),
+                    total_issued,
+                );
+            }
+            _ => {
+                // We don't send ws updates for unknown methods
+            }
+        }
+    }
+
+    /// Helper function to publish even of a mint quote being paid
+    pub fn mint_quote_payment(&self, mint_quote: &MintQuote, total_paid: Amount) {
+        match mint_quote.payment_method {
+            PaymentMethod::Bolt11 => {
+                self.mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
+            }
+            PaymentMethod::Bolt12 => {
+                self.mint_quote_bolt12_status(
+                    mint_quote.clone(),
+                    total_paid,
+                    mint_quote.amount_issued(),
+                );
+            }
+            _ => {
+                // We don't send ws updates for unknown methods
+            }
+        }
     }
 
     /// Helper function to emit a MintQuoteBolt11Response status
