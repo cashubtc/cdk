@@ -8,6 +8,8 @@
 
 LNBits backend implementation for the Cashu Development Kit (CDK). This provides integration with [LNBits](https://lnbits.com/) for Lightning Network functionality.
 
+**Note: Only LNBits v1 API is supported.** This backend uses the websocket-based v1 API for real-time payment notifications.
+
 ## Installation
 
 Add this to your `Cargo.toml`:

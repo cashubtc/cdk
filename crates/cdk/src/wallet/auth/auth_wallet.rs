@@ -23,7 +23,7 @@ use crate::{Amount, Error, OidcClient};
 
 /// JWT Claims structure for decoding tokens
 #[derive(Debug, Serialize, Deserialize)]
-struct Claims {
+struct _Claims {
     /// Subject
     sub: Option<String>,
     /// Expiration time (as UTC timestamp)
