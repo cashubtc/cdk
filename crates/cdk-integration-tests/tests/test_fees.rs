@@ -1,6 +1,5 @@
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bip39::Mnemonic;
 use cashu::{Bolt11Invoice, ProofsMethods};
@@ -29,12 +28,7 @@ async fn test_swap() {
     let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
     pay_if_regtest(&get_temp_dir(), &invoice).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
         .next()
@@ -100,12 +94,7 @@ async fn test_fake_melt_change_in_quote() {
 
     pay_if_regtest(&get_temp_dir(), &bolt11).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
         .next()

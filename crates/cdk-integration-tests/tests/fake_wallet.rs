@@ -15,7 +15,6 @@
 //! - Duplicate proof detection
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use bip39::Mnemonic;
 use cashu::Amount;
@@ -48,12 +47,7 @@ async fn test_fake_tokens_pending() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
         .next()
@@ -94,12 +88,7 @@ async fn test_fake_melt_payment_fail() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
         .next()
@@ -163,12 +152,7 @@ async fn test_fake_melt_payment_fail_and_check() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
         .next()
@@ -215,12 +199,7 @@ async fn test_fake_melt_payment_return_fail_status() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
         .next()
@@ -282,12 +261,7 @@ async fn test_fake_melt_payment_error_unknown() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
         .next()
@@ -349,12 +323,7 @@ async fn test_fake_melt_payment_err_paid() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
         .next()
@@ -394,12 +363,7 @@ async fn test_fake_melt_change_in_quote() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
         .next()
@@ -467,12 +431,7 @@ async fn test_fake_mint_with_witness() {
     .expect("failed to create new wallet");
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let proofs = proof_streams
         .next()
@@ -499,7 +458,7 @@ async fn test_fake_mint_without_witness() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut payment_streams = wallet.payment_stream(&mint_quote, Duration::from_secs(60));
+    let mut payment_streams = wallet.payment_stream(&mint_quote);
 
     payment_streams
         .next()
@@ -543,7 +502,7 @@ async fn test_fake_mint_with_wrong_witness() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut payment_streams = wallet.payment_stream(&mint_quote, Duration::from_secs(60));
+    let mut payment_streams = wallet.payment_stream(&mint_quote);
 
     payment_streams
         .next()
@@ -593,7 +552,7 @@ async fn test_fake_mint_inflated() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut payment_streams = wallet.payment_stream(&mint_quote, Duration::from_secs(60));
+    let mut payment_streams = wallet.payment_stream(&mint_quote);
 
     payment_streams
         .next()
@@ -655,7 +614,7 @@ async fn test_fake_mint_multiple_units() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut payment_streams = wallet.payment_stream(&mint_quote, Duration::from_secs(60));
+    let mut payment_streams = wallet.payment_stream(&mint_quote);
 
     payment_streams
         .next()
@@ -738,12 +697,7 @@ async fn test_fake_mint_multiple_unit_swap() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let proofs = proof_streams
         .next()
@@ -763,12 +717,8 @@ async fn test_fake_mint_multiple_unit_swap() {
 
     let mint_quote = wallet_usd.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet_usd.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams =
+        wallet_usd.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let usd_proofs = proof_streams
         .next()
@@ -860,12 +810,7 @@ async fn test_fake_mint_multiple_unit_melt() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let proofs = proof_streams
         .next()
@@ -887,12 +832,8 @@ async fn test_fake_mint_multiple_unit_melt() {
     let mint_quote = wallet_usd.mint_quote(100.into(), None).await.unwrap();
     println!("Minted quote usd");
 
-    let mut proof_streams = wallet_usd.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams =
+        wallet_usd.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let usd_proofs = proof_streams
         .next()
@@ -986,12 +927,7 @@ async fn test_fake_mint_input_output_mismatch() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let proofs = proof_streams
         .next()
@@ -1048,12 +984,7 @@ async fn test_fake_mint_swap_inflated() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let proofs = proof_streams
         .next()
@@ -1097,12 +1028,7 @@ async fn test_fake_mint_swap_spend_after_fail() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let proofs = proof_streams
         .next()
@@ -1173,12 +1099,7 @@ async fn test_fake_mint_melt_spend_after_fail() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let proofs = proof_streams
         .next()
@@ -1250,12 +1171,7 @@ async fn test_fake_mint_duplicate_proofs_swap() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let proofs = proof_streams
         .next()
@@ -1334,12 +1250,7 @@ async fn test_fake_mint_duplicate_proofs_melt() {
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let proofs = proof_streams
         .next()

@@ -87,12 +87,7 @@ async fn test_internal_payment() {
         .await
         .expect("failed to pay invoice");
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
         .next()
@@ -122,12 +117,7 @@ async fn test_internal_payment() {
 
     let _melted = wallet.melt(&melt.id).await.unwrap();
 
-    let mut proof_streams = wallet_2.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet_2.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
         .next()
@@ -269,12 +259,7 @@ async fn test_multimint_melt() {
         .await
         .expect("failed to pay invoice");
 
-    let mut proof_streams = wallet1.proof_stream(
-        quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet1.proof_stream(quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
         .next()
@@ -288,12 +273,7 @@ async fn test_multimint_melt() {
         .await
         .expect("failed to pay invoice");
 
-    let mut proof_streams = wallet2.proof_stream(
-        quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet2.proof_stream(quote.clone(), SplitTarget::default(), None);
 
     let _proofs = proof_streams
         .next()
@@ -353,7 +333,7 @@ async fn test_cached_mint() {
         .await
         .expect("failed to pay invoice");
 
-    let mut payment_streams = wallet.payment_stream(&quote, Duration::from_secs(60));
+    let mut payment_streams = wallet.payment_stream(&quote);
 
     let _ = payment_streams.next().await;
 

@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use cdk::error::Error;
 use cdk::nuts::CurrencyUnit;
@@ -61,7 +60,7 @@ async fn main() -> Result<(), Error> {
 
     let quote = wallet.mint_quote(amount, None).await.unwrap();
     let proofs = wallet
-        .proof_stream(quote, SplitTarget::default(), None, Duration::from_secs(10))
+        .proof_stream(quote, SplitTarget::default(), None)
         .next()
         .await
         .expect("Some payment")

@@ -50,6 +50,7 @@ sync_wrapper = "0.1.2"
 bech32 = "0.9.1"
 arc-swap = "1.7.1"
 zeroize = "1"
+tokio-util.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = [

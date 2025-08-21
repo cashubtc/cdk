@@ -7,7 +7,6 @@ use cdk_common::wallet::{MeltQuote, MintQuote};
 use cdk_common::{PaymentMethod, SpendingConditions};
 use payment::PaymentStream;
 use proof::ProofStream;
-use tokio::time::Duration;
 
 use super::{Wallet, WalletSubscription};
 
@@ -69,23 +68,16 @@ impl Wallet {
         quote: MintQuote,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
-        timeout_duration: Duration,
     ) -> ProofStream<'_> {
-        ProofStream::new(
-            self,
-            quote,
-            amount_split_target,
-            spending_conditions,
-            timeout_duration,
-        )
+        ProofStream::new(self, quote, amount_split_target, spending_conditions)
     }
 
     /// Returns a BoxFuture that will wait for payment on the given event with a timeout check
     #[allow(private_bounds)]
-    pub fn payment_stream<T>(&self, event: T, timeout: Duration) -> PaymentStream<'_>
+    pub fn payment_stream<T>(&self, event: T) -> PaymentStream<'_>
     where
         T: Into<WaitableEvent>,
     {
-        PaymentStream::new(self, event.into().into(), timeout)
+        PaymentStream::new(self, event.into().into())
     }
 }

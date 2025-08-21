@@ -3,7 +3,6 @@ use std::fmt::{Debug, Formatter};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 use std::{env, fs};
 
 use anyhow::{anyhow, bail, Result};
@@ -362,12 +361,7 @@ pub async fn fund_wallet(
     let quote = wallet.mint_quote(desired_amount, None).await?;
 
     Ok(wallet
-        .proof_stream(
-            quote,
-            split_target.unwrap_or_default(),
-            None,
-            Duration::from_secs(60),
-        )
+        .proof_stream(quote, split_target.unwrap_or_default(), None)
         .next()
         .await
         .expect("proofs")?

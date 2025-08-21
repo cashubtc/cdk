@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use cdk::error::Error;
 use cdk::nuts::nut00::ProofsMethods;
@@ -36,12 +35,7 @@ async fn main() -> Result<(), Error> {
     let wallet = Wallet::new(mint_url, unit, localstore, seed, None)?;
 
     let quote = wallet.mint_quote(amount, None).await?;
-    let mut proof_streams = wallet.proof_stream(
-        quote,
-        Default::default(),
-        Default::default(),
-        Duration::from_secs(10),
-    );
+    let mut proof_streams = wallet.proof_stream(quote, Default::default(), Default::default());
 
     while let Some(proofs) = proof_streams.next().await {
         let proofs = match proofs {

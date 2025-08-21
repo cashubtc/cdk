@@ -28,7 +28,6 @@ use cdk::{StreamExt, Wallet};
 use cdk_fake_wallet::create_fake_invoice;
 use init_regtest::{get_lnd_dir, LND_RPC_ADDR};
 use ln_regtest_rs::ln_client::{LightningClient, LndClient};
-use tokio::time::Duration;
 
 pub mod cli;
 pub mod init_auth_mint;
@@ -43,7 +42,7 @@ pub async fn fund_wallet(wallet: Arc<Wallet>, amount: Amount) {
         .expect("Could not get mint quote");
 
     let _proofs = wallet
-        .proof_stream(quote, SplitTarget::default(), None, Duration::from_secs(60))
+        .proof_stream(quote, SplitTarget::default(), None)
         .next()
         .await
         .expect("proofs")

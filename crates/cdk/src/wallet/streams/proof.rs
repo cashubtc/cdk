@@ -5,12 +5,12 @@
 //! Bolt11 will mint once
 
 use std::task::Poll;
-use std::time::Duration;
 
 use cdk_common::amount::SplitTarget;
 use cdk_common::wallet::MintQuote;
 use cdk_common::{Error, PaymentMethod, Proofs, SpendingConditions};
 use futures::{FutureExt, Stream, StreamExt};
+use tokio_util::sync::CancellationToken;
 
 use super::payment::PaymentStream;
 use super::{RecvFuture, WaitableEvent};
@@ -33,17 +33,21 @@ impl<'a> ProofStream<'a> {
         mint_quote: MintQuote,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
-        timeout: Duration,
     ) -> Self {
         let filter: WaitableEvent = (&mint_quote).into();
         Self {
-            payment_stream: PaymentStream::new(wallet, filter.into(), timeout),
+            payment_stream: PaymentStream::new(wallet, filter.into()),
             wallet,
             amount_split_target,
             spending_conditions,
             mint_quote,
             minting_future: None,
         }
+    }
+
+    /// Get cancellation token
+    pub fn get_cancel_token(&self) -> CancellationToken {
+        self.payment_stream.get_cancel_token()
     }
 }
 

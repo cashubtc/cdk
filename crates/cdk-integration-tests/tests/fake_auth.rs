@@ -1,7 +1,6 @@
 use std::env;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bip39::Mnemonic;
 use cashu::{MintAuthRequest, MintInfo};
@@ -332,12 +331,7 @@ async fn test_mint_with_auth() {
 
     let quote = wallet.mint_quote(mint_amount, None).await.unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(quote.clone(), SplitTarget::default(), None);
 
     let proofs = proof_streams
         .next()

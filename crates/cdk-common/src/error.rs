@@ -111,10 +111,6 @@ pub enum Error {
     #[error("Could not parse bolt12")]
     Bolt12parse,
 
-    /// Operation timeout
-    #[error("Operation timeout")]
-    Timeout,
-
     /// BIP353 address parsing error
     #[error("Failed to parse BIP353 address: {0}")]
     Bip353Parse(String),

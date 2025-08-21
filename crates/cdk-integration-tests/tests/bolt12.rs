@@ -1,7 +1,6 @@
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
@@ -117,12 +116,7 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
         .await
         .unwrap();
 
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let proofs = proof_streams.next().await.expect("payment")?;
 
@@ -177,12 +171,8 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
         .pay_bolt12_offer(None, quote_one.request.clone())
         .await?;
 
-    let mut proof_streams_one = wallet_one.proof_stream(
-        quote_one.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams_one =
+        wallet_one.proof_stream(quote_one.clone(), SplitTarget::default(), None);
 
     let proofs_one = proof_streams_one.next().await.expect("payment")?;
 
@@ -196,12 +186,8 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
         .pay_bolt12_offer(None, quote_two.request.clone())
         .await?;
 
-    let mut proof_streams_two = wallet_two.proof_stream(
-        quote_two.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams_two =
+        wallet_two.proof_stream(quote_two.clone(), SplitTarget::default(), None);
 
     let proofs_two = proof_streams_two.next().await.expect("payment")?;
 
@@ -274,12 +260,7 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
         .await?;
 
     // Wait for payment to be processed
-    let mut proof_streams = wallet.proof_stream(
-        mint_quote.clone(),
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(60),
-    );
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
     let offer = cln_client
         .get_bolt12_offer(Some(10_000), true, "hhhhhhhh".to_string())
@@ -333,7 +314,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         .pay_bolt12_offer(Some(pay_amount_msats), mint_quote.request.clone())
         .await?;
 
-    let mut payment_streams = wallet.payment_stream(&mint_quote, Duration::from_secs(60));
+    let mut payment_streams = wallet.payment_stream(&mint_quote);
 
     let _ = payment_streams.next().await;
 

@@ -1,5 +1,4 @@
 use std::str::FromStr;
-use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use cdk::amount::SplitTarget;
@@ -96,12 +95,7 @@ pub async fn mint(
 
     let mut amount_minted = Amount::ZERO;
 
-    let mut proof_streams = wallet.proof_stream(
-        quote,
-        SplitTarget::default(),
-        None,
-        Duration::from_secs(sub_command_args.wait_duration),
-    );
+    let mut proof_streams = wallet.proof_stream(quote, SplitTarget::default(), None);
 
     while let Some(proofs) = proof_streams.next().await {
         let proofs = match proofs {

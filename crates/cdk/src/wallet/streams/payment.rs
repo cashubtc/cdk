@@ -4,12 +4,11 @@
 //! but it will eventually error on a Timeout.
 //!
 //! Bolt11 will emit a single event.
-use std::pin::Pin;
 use std::task::Poll;
 
 use cdk_common::{Amount, Error, MeltQuoteState, MintQuoteState, NotificationPayload};
 use futures::{FutureExt, Stream};
-use tokio::time::{sleep, Duration, Sleep};
+use tokio_util::sync::CancellationToken;
 
 use super::RecvFuture;
 use crate::wallet::subscription::ActiveSubscription;
@@ -20,27 +19,33 @@ pub struct PaymentStream<'a> {
     wallet: Option<(&'a Wallet, WalletSubscription)>,
     is_finalized: bool,
     active_subscription: Option<ActiveSubscription>,
-    timeout: Duration,
+
+    cancel_token: CancellationToken,
 
     // Future events
     subscriber_future: Option<RecvFuture<'a, ActiveSubscription>>,
     subscription_receiver_future:
         Option<RecvFuture<'static, (Option<NotificationPayload<String>>, ActiveSubscription)>>,
-    timeout_future: Option<Pin<Box<Sleep>>>,
+    cancellation_future: Option<RecvFuture<'a, ()>>,
 }
 
 impl<'a> PaymentStream<'a> {
     /// Creates a new instance of the
-    pub fn new(wallet: &'a Wallet, filter: WalletSubscription, timeout: Duration) -> Self {
+    pub fn new(wallet: &'a Wallet, filter: WalletSubscription) -> Self {
         Self {
             wallet: Some((wallet, filter)),
             is_finalized: false,
             active_subscription: None,
-            timeout,
+            cancel_token: Default::default(),
             subscriber_future: None,
             subscription_receiver_future: None,
-            timeout_future: None,
+            cancellation_future: None,
         }
+    }
+
+    /// Get cancellation token
+    pub fn get_cancel_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
     }
 
     /// Creating a wallet subscription is an async event, this may change in the future, but for now,
@@ -65,22 +70,18 @@ impl<'a> PaymentStream<'a> {
         }
     }
 
-    /// Checks if the timeout has been reached, or starts a new timer that will be executed if no
-    /// event is produced before
-    ///
-    /// When an event is produced this timeout is dropped and it starts again whenever the new event
-    /// is polled.
-    fn poll_timeout(&mut self, cx: &mut std::task::Context<'_>) -> bool {
-        let mut timeout = self
-            .timeout_future
-            .take()
-            .unwrap_or_else(|| Box::pin(sleep(self.timeout)));
+    /// Checks if the stream has been externally cancelled
+    fn poll_cancel(&mut self, cx: &mut std::task::Context<'_>) -> bool {
+        let mut cancellation_future = self.cancellation_future.take().unwrap_or_else(|| {
+            let cancel_token = self.cancel_token.clone();
+            Box::pin(async move { cancel_token.cancelled().await })
+        });
 
-        if timeout.poll_unpin(cx).is_ready() {
+        if cancellation_future.poll_unpin(cx).is_ready() {
             self.subscription_receiver_future = None;
             true
         } else {
-            self.timeout_future = Some(timeout);
+            self.cancellation_future = Some(cancellation_future);
             false
         }
     }
@@ -118,7 +119,7 @@ impl<'a> PaymentStream<'a> {
                 // This future is now fulfilled, put the active_subscription again back to object. Next time next().await is called,
                 // the future will be created in subscription_receiver_future.
                 self.active_subscription = Some(subscription);
-                self.timeout_future = None; // resets timeout
+                self.cancellation_future = None; // resets timeout
                 match notification {
                     None => {
                         self.is_finalized = true;
@@ -172,8 +173,8 @@ impl Stream for PaymentStream<'_> {
             return Poll::Ready(None);
         }
 
-        if this.poll_timeout(cx) {
-            return Poll::Ready(Some(Err(Error::Timeout)));
+        if this.poll_cancel(cx) {
+            return Poll::Ready(None);
         }
 
         if this.poll_init_subscription(cx).is_some() {

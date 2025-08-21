@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::hex::prelude::FromHex;
@@ -31,12 +30,7 @@ async fn main() -> Result<(), Error> {
 
     let quote = wallet.mint_quote(amount, None).await?;
 
-    let mut proof_streams = wallet.proof_stream(
-        quote,
-        Default::default(),
-        Default::default(),
-        Duration::from_secs(10),
-    );
+    let mut proof_streams = wallet.proof_stream(quote, Default::default(), Default::default());
 
     while let Some(proofs) = proof_streams.next().await {
         let receive_amount = proofs?.total_amount()?;
