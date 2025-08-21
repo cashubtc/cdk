@@ -15,7 +15,7 @@ async-trait.workspace = true
 axum.workspace = true
 cdk-common = { workspace = true, features = ["mint"] }
 futures.workspace = true
-tokio.workspace = true
+tokio.workspace = true 
 tokio-util.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
@@ -26,6 +26,7 @@ serde_json.workspace = true
 maud = "0.27.0"
 tower.workspace = true
 tower-http.workspace = true
+rust-embed = "8.5.0"
 
 
 
