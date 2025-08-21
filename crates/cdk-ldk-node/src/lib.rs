@@ -810,7 +810,7 @@ impl MintPayment for CdkLdkNode {
                 let total_spent = to_unit(total_spent, &CurrencyUnit::Msat, unit)?;
 
                 Ok(MakePaymentResponse {
-                    payment_lookup_id: PaymentIdentifier::OfferId(offer.id().to_string()),
+                    payment_lookup_id: PaymentIdentifier::PaymentId(payment_id.0),
                     payment_proof,
                     status,
                     total_spent,
@@ -934,7 +934,7 @@ impl MintPayment for CdkLdkNode {
                 )
                 .first()
                 .cloned(),
-            PaymentIdentifier::CustomId(id) => self.inner.payment(&PaymentId(
+            PaymentIdentifier::PaymentId(id) => self.inner.payment(&PaymentId(
                 hex::decode(id)?
                     .try_into()
                     .map_err(|_| payment::Error::Custom("Invalid hex".to_string()))?,

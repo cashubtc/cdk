@@ -91,6 +91,8 @@ pub enum PaymentIdentifier {
     PaymentHash([u8; 32]),
     /// Bolt12 payment hash
     Bolt12PaymentHash([u8; 32]),
+    /// Payment id
+    PaymentId([u8; 32]),
     /// Custom Payment ID
     CustomId(String),
 }
@@ -112,6 +114,11 @@ impl PaymentIdentifier {
                     .map_err(|_| Error::InvalidHash)?,
             )),
             "custom" => Ok(Self::CustomId(identifier.to_string())),
+            "payment_id" => Ok(Self::PaymentId(
+                hex::decode(identifier)?
+                    .try_into()
+                    .map_err(|_| Error::InvalidHash)?,
+            )),
             _ => Err(Error::UnsupportedPaymentOption),
         }
     }
@@ -123,6 +130,7 @@ impl PaymentIdentifier {
             Self::OfferId(_) => "offer_id".to_string(),
             Self::PaymentHash(_) => "payment_hash".to_string(),
             Self::Bolt12PaymentHash(_) => "bolt12_payment_hash".to_string(),
+            Self::PaymentId(_) => "payment_id".to_string(),
             Self::CustomId(_) => "custom".to_string(),
         }
     }
@@ -135,6 +143,7 @@ impl std::fmt::Display for PaymentIdentifier {
             Self::OfferId(o) => write!(f, "{o}"),
             Self::PaymentHash(h) => write!(f, "{}", hex::encode(h)),
             Self::Bolt12PaymentHash(h) => write!(f, "{}", hex::encode(h)),
+            Self::PaymentId(h) => write!(f, "{}", hex::encode(h)),
             Self::CustomId(c) => write!(f, "{c}"),
         }
     }
