@@ -115,6 +115,16 @@ pub enum Error {
     #[error("Operation timeout")]
     Timeout,
 
+    /// BIP353 address parsing error
+    #[error("Failed to parse BIP353 address: {0}")]
+    Bip353Parse(String),
+    /// BIP353 address resolution error
+    #[error("Failed to resolve BIP353 address: {0}")]
+    Bip353Resolve(String),
+    /// BIP353 no Lightning offer found
+    #[error("No Lightning offer found in BIP353 payment instructions")]
+    Bip353NoLightningOffer,
+
     /// Internal Error - Send error
     #[error("Internal send error: {0}")]
     SendError(String),
