@@ -295,19 +295,11 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         justify-content: center;
                     }
                     
-                    /* Dark mode header background - using CSS filter or overlay */
+                    /* Dark mode header background - using different image */
                     @media (prefers-color-scheme: dark) {
                         header {
-                            /* Option 1: Add dark overlay */
-                            background-image: 
-                                linear-gradient(rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.6)),
-                                url('/static/images/bg.jpg?v=3');
+                            background-image: url('/static/images/bg-dark.jpg?v=3');
                         }
-                        
-                        /* Alternative: Use CSS filter to darken/invert the image */
-                        /* header {
-                            filter: brightness(0.3) contrast(1.2);
-                        } */
                     }
                     
                     /* Ensure text is positioned properly */
