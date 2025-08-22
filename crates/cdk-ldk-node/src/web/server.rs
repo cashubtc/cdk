@@ -7,9 +7,10 @@ use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 
 use crate::web::handlers::{
-    balance_page, channels_page, close_channel_page, dashboard, get_new_address, invoices_page,
-    onchain_confirm_page, onchain_page, open_channel_page, payments_page, post_close_channel,
-    post_create_bolt11, post_create_bolt12, post_open_channel, post_pay_bolt11, post_pay_bolt12,
+    balance_page, channels_page, close_channel_page, dashboard, force_close_channel_page,
+    get_new_address, invoices_page, onchain_confirm_page, onchain_page, open_channel_page,
+    payments_page, post_close_channel, post_create_bolt11, post_create_bolt12,
+    post_force_close_channel, post_open_channel, post_pay_bolt11, post_pay_bolt12,
     post_send_onchain, send_payments_page, AppState,
 };
 use crate::web::static_files::static_handler;
@@ -46,6 +47,8 @@ impl WebServer {
             .route("/channels/open", post(post_open_channel))
             .route("/channels/close", get(close_channel_page))
             .route("/channels/close", post(post_close_channel))
+            .route("/channels/force-close", get(force_close_channel_page))
+            .route("/channels/force-close", post(post_force_close_channel))
             // Invoice creation
             .route("/invoices", get(invoices_page))
             .route("/invoices/bolt11", post(post_create_bolt11))

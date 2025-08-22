@@ -53,6 +53,8 @@ where
     }
 }
 
+use cdk_common::util::hex;
+
 use crate::web::templates::{
     error_message, form_card, format_msats_as_btc, format_sats_as_btc, info_card, layout,
     payment_list_item, success_message,
@@ -558,9 +560,12 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                             }
                         }
                         @if channel.is_usable {
-                            div style="margin-top: 1rem;" {
+                            div style="margin-top: 1rem; display: flex; gap: 0.5rem;" {
                                 a href=(format!("/channels/close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
                                     button style="background: #dc3545;" { "Close Channel" }
+                                }
+                                a href=(format!("/channels/force-close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
+                                    button style="background: #d63384;" title="Force close should not be used if normal close is preferred. Force close will broadcast the latest commitment transaction immediately." { "Force Close" }
                                 }
                             }
                         }
@@ -899,9 +904,20 @@ async fn execute_onchain_transaction(
     State(state): State<AppState>,
     form: ConfirmOnchainForm,
 ) -> Result<Response, StatusCode> {
+    tracing::info!(
+        "Web interface: Executing on-chain transaction to address={}, send_action={}, amount_sat={:?}",
+        form.address,
+        form.send_action,
+        form.amount_sat
+    );
+
     let address = match Address::from_str(&form.address) {
         Ok(addr) => addr,
         Err(e) => {
+            tracing::warn!(
+                "Web interface: Invalid address for on-chain transaction: {}",
+                e
+            );
             let content = html! {
                 (error_message(&format!("Invalid address: {e}")))
                 div class="card" {
@@ -920,6 +936,10 @@ async fn execute_onchain_transaction(
 
     // Handle send all action
     let txid_result = if form.send_action == "send_all" {
+        tracing::info!(
+            "Web interface: Sending all available funds to {}",
+            form.address
+        );
         // Use send_all_to_address function
         state.node.inner.onchain_payment().send_all_to_address(
             address.assume_checked_ref(),
@@ -927,16 +947,34 @@ async fn execute_onchain_transaction(
             None,
         )
     } else {
+        let amount_sats = form.amount_sat.ok_or(StatusCode::BAD_REQUEST)?;
+        tracing::info!(
+            "Web interface: Sending {} sats to {}",
+            amount_sats,
+            form.address
+        );
         // Use regular send_to_address function
         state.node.inner.onchain_payment().send_to_address(
             address.assume_checked_ref(),
-            form.amount_sat.ok_or(StatusCode::BAD_REQUEST)?,
+            amount_sats,
             None,
         )
     };
 
     let content = match txid_result {
         Ok(txid) => {
+            if form.send_action == "send_all" {
+                tracing::info!(
+                    "Web interface: Successfully sent all available funds, txid={}",
+                    txid
+                );
+            } else {
+                tracing::info!(
+                    "Web interface: Successfully sent {} sats, txid={}",
+                    form.amount_sat.unwrap_or(0),
+                    txid
+                );
+            }
             let amount = form.amount_sat;
             html! {
                         (success_message("Transaction sent successfully!"))
@@ -958,6 +996,7 @@ async fn execute_onchain_transaction(
             }
         }
         Err(e) => {
+            tracing::error!("Web interface: Failed to send on-chain transaction: {}", e);
             html! {
                 (error_message(&format!("Failed to send payment: {e}")))
                 div class="card" {
@@ -1033,9 +1072,19 @@ pub async fn post_open_channel(
     State(state): State<AppState>,
     Form(form): Form<OpenChannelForm>,
 ) -> Result<Response, StatusCode> {
+    tracing::info!(
+        "Web interface: Attempting to open channel to node_id={}, address={}:{}, amount_sats={}, push_btc={:?}",
+        form.node_id,
+        form.address,
+        form.port,
+        form.amount_sats,
+        form.push_btc
+    );
+
     let pubkey = match PublicKey::from_str(&form.node_id) {
         Ok(pk) => pk,
         Err(e) => {
+            tracing::warn!("Web interface: Invalid node public key provided: {}", e);
             let content = html! {
                 (error_message(&format!("Invalid node public key: {e}")))
                 div class="card" {
@@ -1055,6 +1104,7 @@ pub async fn post_open_channel(
     let socket_addr = match SocketAddress::from_str(&format!("{}:{}", form.address, form.port)) {
         Ok(addr) => addr,
         Err(e) => {
+            tracing::warn!("Web interface: Invalid address:port combination: {}", e);
             let content = html! {
                 (error_message(&format!("Invalid address:port combination: {e}")))
                 div class="card" {
@@ -1072,7 +1122,13 @@ pub async fn post_open_channel(
     };
 
     // First connect to the peer
+    tracing::info!(
+        "Web interface: Connecting to peer {} at {}",
+        pubkey,
+        socket_addr
+    );
     if let Err(e) = state.node.inner.connect(pubkey, socket_addr.clone(), true) {
+        tracing::error!("Web interface: Failed to connect to peer {}: {}", pubkey, e);
         let content = html! {
             (error_message(&format!("Failed to connect to peer: {e}")))
             div class="card" {
@@ -1091,6 +1147,12 @@ pub async fn post_open_channel(
     // Convert Bitcoin to millisatoshis (1 BTC = 100,000,000,000 msats)
 
     // Then open the channel
+    tracing::info!(
+        "Web interface: Opening announced channel to {} with amount {} sats and push amount {:?} msats",
+        pubkey,
+        form.amount_sats,
+        form.push_btc.map(|a| a * 1000)
+    );
     let channel_result = state.node.inner.open_announced_channel(
         pubkey,
         socket_addr,
@@ -1101,6 +1163,11 @@ pub async fn post_open_channel(
 
     let content = match channel_result {
         Ok(user_channel_id) => {
+            tracing::info!(
+                "Web interface: Successfully initiated channel opening with user_channel_id={} to {}",
+                user_channel_id.0,
+                pubkey
+            );
             html! {
                 (success_message("Channel opening initiated successfully!"))
                 (info_card(
@@ -1119,6 +1186,7 @@ pub async fn post_open_channel(
             }
         }
         Err(e) => {
+            tracing::error!("Web interface: Failed to open channel to {}: {}", pubkey, e);
             html! {
                 (error_message(&format!("Failed to open channel: {e}")))
                 div class="card" {
@@ -1178,6 +1246,58 @@ pub async fn close_channel_page(
     Ok(Html(layout("Close Channel", content).into_string()))
 }
 
+pub async fn force_close_channel_page(
+    State(_state): State<AppState>,
+    query: Query<HashMap<String, String>>,
+) -> Result<Html<String>, StatusCode> {
+    let channel_id = query.get("channel_id").unwrap_or(&"".to_string()).clone();
+    let node_id = query.get("node_id").unwrap_or(&"".to_string()).clone();
+
+    if channel_id.is_empty() || node_id.is_empty() {
+        let content = html! {
+            (error_message("Missing channel ID or node ID"))
+            div class="card" {
+                a href="/balance" { button { "← Back to Lightning" } }
+            }
+        };
+        return Ok(Html(
+            layout("Force Close Channel Error", content).into_string(),
+        ));
+    }
+
+    let content = form_card(
+        "Force Close Channel",
+        html! {
+            div style="border: 2px solid #d63384; background-color: rgba(214, 51, 132, 0.1); padding: 1rem; margin-bottom: 1rem; border-radius: 0.5rem;" {
+                h4 style="color: #d63384; margin: 0 0 0.5rem 0;" { "⚠️ Warning: Force Close" }
+                p style="color: #d63384; margin: 0; font-size: 0.9rem;" {
+                    "Force close should NOT be used if normal close is preferred. "
+                    "Force close will immediately broadcast the latest commitment transaction and may result in delayed fund recovery. "
+                    "Only use this if the channel counterparty is unresponsive or there are other issues preventing normal closure."
+                }
+            }
+            p { "Are you sure you want to force close this channel?" }
+            div class="info-item" {
+                span class="info-label" { "User Channel ID:" }
+                span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (channel_id) }
+            }
+            div class="info-item" {
+                span class="info-label" { "Node ID:" }
+                span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (node_id) }
+            }
+            form method="post" action="/channels/force-close" style="margin-top: 1rem;" {
+                input type="hidden" name="channel_id" value=(channel_id) {}
+                input type="hidden" name="node_id" value=(node_id) {}
+                button type="submit" style="background: #d63384;" { "Force Close Channel" }
+                " "
+                a href="/balance" { button type="button" { "Cancel" } }
+            }
+        },
+    );
+
+    Ok(Html(layout("Force Close Channel", content).into_string()))
+}
+
 #[derive(Deserialize)]
 pub struct CloseChannelForm {
     channel_id: String,
@@ -1188,9 +1308,19 @@ pub async fn post_close_channel(
     State(state): State<AppState>,
     Form(form): Form<CloseChannelForm>,
 ) -> Result<Response, StatusCode> {
+    tracing::info!(
+        "Web interface: Attempting to close channel_id={} with node_id={}",
+        form.channel_id,
+        form.node_id
+    );
+
     let node_pubkey = match PublicKey::from_str(&form.node_id) {
         Ok(pk) => pk,
         Err(e) => {
+            tracing::warn!(
+                "Web interface: Invalid node public key for channel close: {}",
+                e
+            );
             let content = html! {
                 (error_message(&format!("Invalid node public key: {e}")))
                 div class="card" {
@@ -1210,6 +1340,7 @@ pub async fn post_close_channel(
     let channel_id: u128 = match form.channel_id.parse() {
         Ok(id) => id,
         Err(e) => {
+            tracing::warn!("Web interface: Invalid channel ID for channel close: {}", e);
             let content = html! {
                 (error_message(&format!("Invalid channel ID: {e}")))
                 div class="card" {
@@ -1227,6 +1358,11 @@ pub async fn post_close_channel(
     };
 
     let user_channel_id = UserChannelId(channel_id);
+    tracing::info!(
+        "Web interface: Initiating cooperative close for channel {} with {}",
+        channel_id,
+        node_pubkey
+    );
     let close_result = state
         .node
         .inner
@@ -1234,6 +1370,11 @@ pub async fn post_close_channel(
 
     let content = match close_result {
         Ok(()) => {
+            tracing::info!(
+                "Web interface: Successfully initiated cooperative close for channel {} with {}",
+                channel_id,
+                node_pubkey
+            );
             html! {
                 (success_message("Channel closing initiated successfully!"))
                 div class="card" {
@@ -1243,6 +1384,12 @@ pub async fn post_close_channel(
             }
         }
         Err(e) => {
+            tracing::error!(
+                "Web interface: Failed to close channel {} with {}: {}",
+                channel_id,
+                node_pubkey,
+                e
+            );
             html! {
                 (error_message(&format!("Failed to close channel: {e}")))
                 div class="card" {
@@ -1256,6 +1403,111 @@ pub async fn post_close_channel(
         .header("content-type", "text/html")
         .body(Body::from(
             layout("Close Channel Result", content).into_string(),
+        ))
+        .unwrap())
+}
+
+pub async fn post_force_close_channel(
+    State(state): State<AppState>,
+    Form(form): Form<CloseChannelForm>,
+) -> Result<Response, StatusCode> {
+    tracing::info!(
+        "Web interface: Attempting to FORCE CLOSE channel_id={} with node_id={}",
+        form.channel_id,
+        form.node_id
+    );
+
+    let node_pubkey = match PublicKey::from_str(&form.node_id) {
+        Ok(pk) => pk,
+        Err(e) => {
+            tracing::warn!(
+                "Web interface: Invalid node public key for force close: {}",
+                e
+            );
+            let content = html! {
+                (error_message(&format!("Invalid node public key: {e}")))
+                div class="card" {
+                    a href="/channels" { button { "← Back to Channels" } }
+                }
+            };
+            return Ok(Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "text/html")
+                .body(Body::from(
+                    layout("Force Close Channel Error", content).into_string(),
+                ))
+                .unwrap());
+        }
+    };
+
+    let channel_id: u128 = match form.channel_id.parse() {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::warn!("Web interface: Invalid channel ID for force close: {}", e);
+            let content = html! {
+                (error_message(&format!("Invalid channel ID: {e}")))
+                div class="card" {
+                    a href="/channels" { button { "← Back to Channels" } }
+                }
+            };
+            return Ok(Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "text/html")
+                .body(Body::from(
+                    layout("Force Close Channel Error", content).into_string(),
+                ))
+                .unwrap());
+        }
+    };
+
+    let user_channel_id = UserChannelId(channel_id);
+    tracing::warn!("Web interface: Initiating FORCE CLOSE for channel {} with {} - this will broadcast the latest commitment transaction", channel_id, node_pubkey);
+    let force_close_result =
+        state
+            .node
+            .inner
+            .force_close_channel(&user_channel_id, node_pubkey, None);
+
+    let content = match force_close_result {
+        Ok(()) => {
+            tracing::info!(
+                "Web interface: Successfully initiated force close for channel {} with {}",
+                channel_id,
+                node_pubkey
+            );
+            html! {
+                (success_message("Channel force close initiated successfully!"))
+                div class="card" style="border: 1px solid #d63384; background-color: rgba(214, 51, 132, 0.1);" {
+                    h4 style="color: #d63384;" { "Force Close Complete" }
+                    p { "The channel has been force closed. The latest commitment transaction has been broadcast to the network." }
+                    p style="color: #d63384; font-size: 0.9rem;" {
+                        "Note: Your funds may be subject to a time delay before they can be spent. "
+                        "This delay depends on the channel configuration and may be several blocks."
+                    }
+                    a href="/balance" { button { "← Back to Lightning" } }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(
+                "Web interface: Failed to force close channel {} with {}: {}",
+                channel_id,
+                node_pubkey,
+                e
+            );
+            html! {
+                (error_message(&format!("Failed to force close channel: {e}")))
+                div class="card" {
+                    a href="/balance" { button { "← Back to Lightning" } }
+                }
+            }
+        }
+    };
+
+    Ok(Response::builder()
+        .header("content-type", "text/html")
+        .body(Body::from(
+            layout("Force Close Channel Result", content).into_string(),
         ))
         .unwrap())
 }
@@ -1325,6 +1577,13 @@ pub async fn post_create_bolt11(
 ) -> Result<Response, StatusCode> {
     use ldk_node::lightning_invoice::{Bolt11InvoiceDescription, Description};
 
+    tracing::info!(
+        "Web interface: Creating BOLT11 invoice for amount={} sats, description={:?}, expiry={}s",
+        form.amount_btc,
+        form.description,
+        form.expiry_seconds.unwrap_or(3600)
+    );
+
     // Handle optional description
     let description_text = form.description.clone().unwrap_or_else(|| "".to_string());
     let description = if description_text.is_empty() {
@@ -1341,6 +1600,10 @@ pub async fn post_create_bolt11(
         match Description::new(description_text.clone()) {
             Ok(desc) => Bolt11InvoiceDescription::Direct(desc),
             Err(e) => {
+                tracing::warn!(
+                    "Web interface: Invalid description for BOLT11 invoice: {}",
+                    e
+                );
                 let content = html! {
                     (error_message(&format!("Invalid description: {e}")))
                     div class="card" {
@@ -1371,6 +1634,10 @@ pub async fn post_create_bolt11(
 
     let content = match invoice_result {
         Ok(invoice) => {
+            tracing::info!(
+                "Web interface: Successfully created BOLT11 invoice with payment_hash={}",
+                invoice.payment_hash()
+            );
             let current_time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -1405,6 +1672,7 @@ pub async fn post_create_bolt11(
             }
         }
         Err(e) => {
+            tracing::error!("Web interface: Failed to create BOLT11 invoice: {}", e);
             html! {
                 (error_message(&format!("Failed to create invoice: {e}")))
                 div class="card" {
@@ -1438,6 +1706,13 @@ pub async fn post_create_bolt12(
     let expiry_seconds = form.expiry_seconds.unwrap_or(3600);
     let description_text = form.description.unwrap_or_else(|| "".to_string());
 
+    tracing::info!(
+        "Web interface: Creating BOLT12 offer for amount={:?} btc, description={:?}, expiry={}s",
+        form.amount_btc,
+        description_text,
+        expiry_seconds
+    );
+
     let offer_result = if let Some(amount_btc) = form.amount_btc {
         // Convert Bitcoin to millisatoshis (1 BTC = 100,000,000,000 msats)
         let amount_msats = (amount_btc * 100_000_000_000.0) as u64;
@@ -1457,6 +1732,10 @@ pub async fn post_create_bolt12(
 
     let content = match offer_result {
         Ok(offer) => {
+            tracing::info!(
+                "Web interface: Successfully created BOLT12 offer with offer_id={}",
+                offer.id()
+            );
             let current_time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -1496,6 +1775,7 @@ pub async fn post_create_bolt12(
             }
         }
         Err(e) => {
+            tracing::error!("Web interface: Failed to create BOLT12 offer: {}", e);
             html! {
                 (error_message(&format!("Failed to create offer: {e}")))
                 div class="card" {
@@ -1780,10 +2060,10 @@ pub async fn post_pay_bolt11(
     State(state): State<AppState>,
     Form(form): Form<PayBolt11Form>,
 ) -> Result<Response, StatusCode> {
-    println!("{form:?}");
     let invoice = match Bolt11Invoice::from_str(form.invoice.trim()) {
         Ok(inv) => inv,
         Err(e) => {
+            tracing::warn!("Web interface: Invalid BOLT11 invoice provided: {}", e);
             let content = html! {
                 (error_message(&format!("Invalid BOLT11 invoice: {e}")))
                 div class="card" {
@@ -1798,6 +2078,12 @@ pub async fn post_pay_bolt11(
         }
     };
 
+    tracing::info!(
+        "Web interface: Attempting to pay BOLT11 invoice payment_hash={}, amount_override={:?}",
+        invoice.payment_hash(),
+        form.amount_btc
+    );
+
     let payment_id = if let Some(amount_btc) = form.amount_btc {
         // Convert Bitcoin to millisatoshis
         let amount_msats = amount_btc * 1000;
@@ -1811,8 +2097,15 @@ pub async fn post_pay_bolt11(
     };
 
     let payment_id = match payment_id {
-        Ok(id) => id,
+        Ok(id) => {
+            tracing::info!(
+                "Web interface: BOLT11 payment initiated with payment_id={}",
+                hex::encode(id.0)
+            );
+            id
+        }
         Err(e) => {
+            tracing::error!("Web interface: Failed to initiate BOLT11 payment: {}", e);
             let content = html! {
                 (error_message(&format!("Failed to initiate payment: {e}")))
                 div class="card" {
@@ -1835,13 +2128,25 @@ pub async fn post_pay_bolt11(
         if let Some(details) = state.node.inner.payment(&payment_id) {
             match details.status {
                 PaymentStatus::Succeeded => {
+                    tracing::info!(
+                        "Web interface: BOLT11 payment succeeded for payment_hash={}",
+                        invoice.payment_hash()
+                    );
                     break Ok(details);
                 }
                 PaymentStatus::Failed => {
+                    tracing::error!(
+                        "Web interface: BOLT11 payment failed for payment_hash={}",
+                        invoice.payment_hash()
+                    );
                     break Err("Payment failed".to_string());
                 }
                 PaymentStatus::Pending => {
                     if start.elapsed() > timeout {
+                        tracing::warn!(
+                            "Web interface: BOLT11 payment timeout for payment_hash={}",
+                            invoice.payment_hash()
+                        );
                         break Err("Payment is still pending after timeout".to_string());
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1913,6 +2218,7 @@ pub async fn post_pay_bolt12(
     let offer = match Offer::from_str(form.offer.trim()) {
         Ok(offer) => offer,
         Err(e) => {
+            tracing::warn!("Web interface: Invalid BOLT12 offer provided: {:?}", e);
             let content = html! {
                 (error_message(&format!("Invalid BOLT12 offer: {e:?}")))
                 div class="card" {
@@ -1927,6 +2233,12 @@ pub async fn post_pay_bolt12(
         }
     };
 
+    tracing::info!(
+        "Web interface: Attempting to pay BOLT12 offer offer_id={}, amount_override={:?}",
+        offer.id(),
+        form.amount_btc
+    );
+
     // Determine payment method based on offer type and user input
     let payment_id = match offer.amount() {
         Some(_) => {
@@ -1938,6 +2250,7 @@ pub async fn post_pay_bolt12(
             let amount_btc = match form.amount_btc {
                 Some(amount) => amount,
                 None => {
+                    tracing::warn!("Web interface: Amount required for variable amount BOLT12 offer but not provided");
                     let content = html! {
                         (error_message("Amount is required for variable amount offers. This offer does not have a fixed amount, so you must specify how much you want to pay."))
                         div class="card" {
@@ -1961,8 +2274,15 @@ pub async fn post_pay_bolt12(
     };
 
     let payment_id = match payment_id {
-        Ok(id) => id,
+        Ok(id) => {
+            tracing::info!(
+                "Web interface: BOLT12 payment initiated with payment_id={}",
+                hex::encode(id.0)
+            );
+            id
+        }
         Err(e) => {
+            tracing::error!("Web interface: Failed to initiate BOLT12 payment: {}", e);
             let content = html! {
                 (error_message(&format!("Failed to initiate payment: {e}")))
                 div class="card" {
@@ -1985,13 +2305,25 @@ pub async fn post_pay_bolt12(
         if let Some(details) = state.node.inner.payment(&payment_id) {
             match details.status {
                 PaymentStatus::Succeeded => {
+                    tracing::info!(
+                        "Web interface: BOLT12 payment succeeded for offer_id={}",
+                        offer.id()
+                    );
                     break Ok(details);
                 }
                 PaymentStatus::Failed => {
+                    tracing::error!(
+                        "Web interface: BOLT12 payment failed for offer_id={}",
+                        offer.id()
+                    );
                     break Err("Payment failed".to_string());
                 }
                 PaymentStatus::Pending => {
                     if start.elapsed() > timeout {
+                        tracing::warn!(
+                            "Web interface: BOLT12 payment timeout for offer_id={}",
+                            offer.id()
+                        );
                         break Err("Payment is still pending after timeout".to_string());
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
