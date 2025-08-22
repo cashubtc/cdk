@@ -1,7 +1,7 @@
 //! FFI Wallet bindings
 
-use std::sync::Arc;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use bip39::Mnemonic;
 use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
@@ -479,12 +479,7 @@ impl Wallet {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let keysets = inner.refresh_keysets().await?;
-            Ok::<Vec<KeySetInfo>, FfiError>(
-                keysets
-                    .into_iter()
-                    .map(Into::into)
-                    .collect()
-            )
+            Ok::<Vec<KeySetInfo>, FfiError>(keysets.into_iter().map(Into::into).collect())
         })
     }
 
@@ -512,9 +507,8 @@ impl Wallet {
     pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
-            let cdk_proofs: Vec<cdk::nuts::Proof> = proofs.iter()
-                .map(|p| p.inner.clone())
-                .collect();
+            let cdk_proofs: Vec<cdk::nuts::Proof> =
+                proofs.iter().map(|p| p.inner.clone()).collect();
             inner.reclaim_unspent(cdk_proofs).await?;
             Ok::<(), FfiError>(())
         })
@@ -530,7 +524,11 @@ impl Wallet {
     }
 
     /// Calculate fee for a given number of proofs with the specified keyset
-    pub async fn calculate_fee(&self, proof_count: u32, keyset_id: String) -> Result<Amount, FfiError> {
+    pub async fn calculate_fee(
+        &self,
+        proof_count: u32,
+        keyset_id: String,
+    ) -> Result<Amount, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let id = cdk::nuts::Id::from_str(&keyset_id)

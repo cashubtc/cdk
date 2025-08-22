@@ -785,11 +785,12 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
     type Error = FfiError;
 
     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
-        let secret_key = quote.secret_key
+        let secret_key = quote
+            .secret_key
             .map(|hex| cdk::nuts::SecretKey::from_hex(&hex))
             .transpose()
             .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?;
-        
+
         Ok(Self {
             id: quote.id,
             amount: quote.amount.map(Into::into),

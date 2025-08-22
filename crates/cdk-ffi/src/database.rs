@@ -60,10 +60,7 @@ pub trait WalletDatabase: Send + Sync {
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError>;
 
     /// Get mint quote from storage
-    async fn get_mint_quote(
-        &self,
-        quote_id: String,
-    ) -> Result<Option<MintQuote>, FfiError>;
+    async fn get_mint_quote(&self, quote_id: String) -> Result<Option<MintQuote>, FfiError>;
 
     /// Get mint quotes from storage
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError>;
@@ -76,10 +73,7 @@ pub trait WalletDatabase: Send + Sync {
     async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), FfiError>;
 
     /// Get melt quote from storage
-    async fn get_melt_quote(
-        &self,
-        quote_id: String,
-    ) -> Result<Option<MeltQuote>, FfiError>;
+    async fn get_melt_quote(&self, quote_id: String) -> Result<Option<MeltQuote>, FfiError>;
 
     /// Get melt quotes from storage
     async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, FfiError>;
@@ -300,7 +294,13 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .get_mint_quote(quote_id.to_string())
             .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
-        Ok(result.map(|q| q.try_into().map_err(|e: FfiError| cdk_common::database::Error::Database(e.to_string().into()))).transpose()?)
+        Ok(result
+            .map(|q| {
+                q.try_into().map_err(|e: FfiError| {
+                    cdk_common::database::Error::Database(e.to_string().into())
+                })
+            })
+            .transpose()?)
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<cdk_common::wallet::MintQuote>, Self::Err> {
@@ -309,7 +309,14 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .get_mint_quotes()
             .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
-        Ok(result.into_iter().map(|q| q.try_into().map_err(|e: FfiError| cdk_common::database::Error::Database(e.to_string().into()))).collect::<Result<Vec<_>, _>>()?)
+        Ok(result
+            .into_iter()
+            .map(|q| {
+                q.try_into().map_err(|e: FfiError| {
+                    cdk_common::database::Error::Database(e.to_string().into())
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?)
     }
 
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
@@ -337,7 +344,13 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .get_melt_quote(quote_id.to_string())
             .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
-        Ok(result.map(|q| q.try_into().map_err(|e: FfiError| cdk_common::database::Error::Database(e.to_string().into()))).transpose()?)
+        Ok(result
+            .map(|q| {
+                q.try_into().map_err(|e: FfiError| {
+                    cdk_common::database::Error::Database(e.to_string().into())
+                })
+            })
+            .transpose()?)
     }
 
     async fn get_melt_quotes(&self) -> Result<Vec<cdk_common::wallet::MeltQuote>, Self::Err> {
@@ -346,7 +359,14 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .get_melt_quotes()
             .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
-        Ok(result.into_iter().map(|q| q.try_into().map_err(|e: FfiError| cdk_common::database::Error::Database(e.to_string().into()))).collect::<Result<Vec<_>, _>>()?)
+        Ok(result
+            .into_iter()
+            .map(|q| {
+                q.try_into().map_err(|e: FfiError| {
+                    cdk_common::database::Error::Database(e.to_string().into())
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?)
     }
 
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
@@ -723,10 +743,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn get_mint_quote(
-        &self,
-        quote_id: String,
-    ) -> Result<Option<MintQuote>, FfiError> {
+    async fn get_mint_quote(&self, quote_id: String) -> Result<Option<MintQuote>, FfiError> {
         crate::runtime::block_on(async move {
             let result = self
                 .inner
@@ -744,10 +761,7 @@ impl WalletDatabase for WalletSqliteDatabase {
                 .get_mint_quotes()
                 .await
                 .map_err(|e| FfiError::Database { msg: e.to_string() })?;
-            Ok(result
-                .into_iter()
-                .map(|q| q.into())
-                .collect())
+            Ok(result.into_iter().map(|q| q.into()).collect())
         })
     }
 
@@ -771,10 +785,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn get_melt_quote(
-        &self,
-        quote_id: String,
-    ) -> Result<Option<MeltQuote>, FfiError> {
+    async fn get_melt_quote(&self, quote_id: String) -> Result<Option<MeltQuote>, FfiError> {
         crate::runtime::block_on(async move {
             let result = self
                 .inner
@@ -792,10 +803,7 @@ impl WalletDatabase for WalletSqliteDatabase {
                 .get_melt_quotes()
                 .await
                 .map_err(|e| FfiError::Database { msg: e.to_string() })?;
-            Ok(result
-                .into_iter()
-                .map(|q| q.into())
-                .collect())
+            Ok(result.into_iter().map(|q| q.into()).collect())
         })
     }
 
