@@ -174,12 +174,12 @@ where
                 r#"
                        INSERT
                        INTO blind_signature
-                       (y, amount, keyset_id, c)
+                       (blinded_message, amount, keyset_id, c)
                        VALUES
-                       (:y, :amount, :keyset_id, :c)
+                       (:blinded_message, :amount, :keyset_id, :c)
                    "#,
             )?
-            .bind("y", message.to_bytes().to_vec())
+            .bind("blinded_message", message.to_bytes().to_vec())
             .bind("amount", u64::from(signature.amount) as i64)
             .bind("keyset_id", signature.keyset_id.to_string())
             .bind("c", signature.c.to_bytes().to_vec())
@@ -353,17 +353,17 @@ where
                 c,
                 dleq_e,
                 dleq_s,
-                y
+                blinded_message,
             FROM
                 blind_signature
-            WHERE y IN (:y)
+            WHERE blinded_message IN (:blinded_message)
             "#,
         )?
         .bind_vec(
-            "y",
+            "blinded_message",
             blinded_messages
                 .iter()
-                .map(|y| y.to_bytes().to_vec())
+                .map(|bm| bm.to_bytes().to_vec())
                 .collect(),
         )
         .fetch_all(&*conn)
@@ -382,7 +382,7 @@ where
         .collect::<Result<HashMap<_, _>, Error>>()?;
         Ok(blinded_messages
             .iter()
-            .map(|y| blinded_signatures.remove(y))
+            .map(|bm| blinded_signatures.remove(bm))
             .collect())
     }
 
