@@ -264,7 +264,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         &self,
         keyset_id: &cdk_common::nuts::Id,
     ) -> Result<Option<cdk_common::nuts::KeySetInfo>, Self::Err> {
-        let ffi_id = keyset_id.clone().into();
+        let ffi_id = (*keyset_id).into();
         let result = self
             .ffi_db
             .get_keyset_by_id(ffi_id)
@@ -386,7 +386,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         &self,
         id: &cdk_common::nuts::Id,
     ) -> Result<Option<cdk_common::nuts::Keys>, Self::Err> {
-        let ffi_id: Id = id.clone().into();
+        let ffi_id: Id = (*id).into();
         let result = self
             .ffi_db
             .get_keys(ffi_id)
@@ -404,7 +404,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
     }
 
     async fn remove_keys(&self, id: &cdk_common::nuts::Id) -> Result<(), Self::Err> {
-        let ffi_id = id.clone().into();
+        let ffi_id = (*id).into();
         self.ffi_db
             .remove_keys(ffi_id)
             .await
@@ -494,7 +494,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         keyset_id: &cdk_common::nuts::Id,
         count: u32,
     ) -> Result<u32, Self::Err> {
-        let ffi_id = keyset_id.clone().into();
+        let ffi_id = (*keyset_id).into();
         self.ffi_db
             .increment_keyset_counter(ffi_id, count)
             .await
