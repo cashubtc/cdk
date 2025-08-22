@@ -117,10 +117,7 @@ pub trait WalletDatabase: Send + Sync {
 
     // Keyset Counter Management
     /// Increment Keyset counter
-    async fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<(), FfiError>;
-
-    /// Get current Keyset counter
-    async fn get_keyset_counter(&self, keyset_id: Id) -> Result<Option<u32>, FfiError>;
+    async fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<u32, FfiError>;
 
     // Transaction Management
     /// Add transaction to storage
@@ -496,21 +493,10 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         &self,
         keyset_id: &cdk_common::nuts::Id,
         count: u32,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<u32, Self::Err> {
         let ffi_id = keyset_id.clone().into();
         self.ffi_db
             .increment_keyset_counter(ffi_id, count)
-            .await
-            .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
-    }
-
-    async fn get_keyset_counter(
-        &self,
-        keyset_id: &cdk_common::nuts::Id,
-    ) -> Result<Option<u32>, Self::Err> {
-        let ffi_id = keyset_id.clone().into();
-        self.ffi_db
-            .get_keyset_counter(ffi_id)
             .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
@@ -936,21 +922,11 @@ impl WalletDatabase for WalletSqliteDatabase {
     }
 
     // Keyset Counter Management
-    async fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<(), FfiError> {
+    async fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<u32, FfiError> {
         crate::runtime::block_on(async move {
             let cdk_id = keyset_id.into();
             self.inner
                 .increment_keyset_counter(&cdk_id, count)
-                .await
-                .map_err(|e| FfiError::Database { msg: e.to_string() })
-        })
-    }
-
-    async fn get_keyset_counter(&self, keyset_id: Id) -> Result<Option<u32>, FfiError> {
-        crate::runtime::block_on(async move {
-            let cdk_id = keyset_id.into();
-            self.inner
-                .get_keyset_counter(&cdk_id)
                 .await
                 .map_err(|e| FfiError::Database { msg: e.to_string() })
         })

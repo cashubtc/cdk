@@ -93,7 +93,7 @@ impl Wallet {
     pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
-            let info = inner.get_mint_info().await?;
+            let info = inner.fetch_mint_info().await?;
             Ok::<Option<MintInfo>, FfiError>(info.map(Into::into))
         })
     }

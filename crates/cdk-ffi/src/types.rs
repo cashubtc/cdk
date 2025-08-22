@@ -2055,6 +2055,8 @@ pub enum SubscriptionKind {
     Bolt11MeltQuote,
     /// Bolt 11 Mint Quote
     Bolt11MintQuote,
+    /// Bolt 12 Mint Quote
+    Bolt12MintQuote,
     /// Proof State
     ProofState,
 }
@@ -2064,6 +2066,7 @@ impl From<SubscriptionKind> for cdk::nuts::nut17::Kind {
         match kind {
             SubscriptionKind::Bolt11MeltQuote => cdk::nuts::nut17::Kind::Bolt11MeltQuote,
             SubscriptionKind::Bolt11MintQuote => cdk::nuts::nut17::Kind::Bolt11MintQuote,
+            SubscriptionKind::Bolt12MintQuote => cdk::nuts::nut17::Kind::Bolt12MintQuote,
             SubscriptionKind::ProofState => cdk::nuts::nut17::Kind::ProofState,
         }
     }
@@ -2074,6 +2077,7 @@ impl From<cdk::nuts::nut17::Kind> for SubscriptionKind {
         match kind {
             cdk::nuts::nut17::Kind::Bolt11MeltQuote => SubscriptionKind::Bolt11MeltQuote,
             cdk::nuts::nut17::Kind::Bolt11MintQuote => SubscriptionKind::Bolt11MintQuote,
+            cdk::nuts::nut17::Kind::Bolt12MintQuote => SubscriptionKind::Bolt12MintQuote,
             cdk::nuts::nut17::Kind::ProofState => SubscriptionKind::ProofState,
         }
     }
