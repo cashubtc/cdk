@@ -7,9 +7,8 @@ use std::sync::Arc;
 
 use crate::amount::Amount;
 use crate::mint_url::MintUrl;
-use crate::nuts::{CurrencyUnit, MeltOptions, SpendingConditions, Token};
+use crate::nuts::{MeltOptions, SpendingConditions, Token};
 use crate::types::Melted;
-use crate::wallet::types::WalletKey;
 use crate::wallet::{MultiMintWallet, SendOptions};
 
 use super::Error;
@@ -18,7 +17,6 @@ use super::Error;
 pub struct SendBuilder {
     wallet: Arc<MultiMintWallet>,
     amount: Amount,
-    unit: CurrencyUnit,
     options: SendOptions,
     preferred_mint: Option<MintUrl>,
     fallback_to_any: bool,
@@ -27,11 +25,10 @@ pub struct SendBuilder {
 
 impl SendBuilder {
     /// Create a new SendBuilder
-    pub fn new(wallet: Arc<MultiMintWallet>, amount: Amount, unit: CurrencyUnit) -> Self {
+    pub fn new(wallet: Arc<MultiMintWallet>, amount: Amount) -> Self {
         Self {
             wallet,
             amount,
-            unit,
             options: SendOptions::default(),
             preferred_mint: None,
             fallback_to_any: true,
@@ -79,9 +76,7 @@ impl SendBuilder {
     pub async fn send(self) -> Result<Token, Error> {
         // Try preferred mint first if specified
         if let Some(mint_url) = self.preferred_mint {
-            let wallet_key = WalletKey::new(mint_url, self.unit.clone());
-            
-            match self.wallet.send_from_wallet(&wallet_key, self.amount, self.options.clone()).await {
+            match self.wallet.send_from_wallet(&mint_url, self.amount, self.options.clone()).await {
                 Ok(token) => return Ok(token),
                 Err(e) if !self.fallback_to_any => return Err(e),
                 Err(_) => {
@@ -92,7 +87,7 @@ impl SendBuilder {
         }
 
         // Use automatic wallet selection
-        self.wallet.send(self.amount, &self.unit, self.options).await
+        self.wallet.send(self.amount, self.options).await
     }
 }
 
@@ -100,7 +95,6 @@ impl SendBuilder {
 pub struct MeltBuilder {
     wallet: Arc<MultiMintWallet>,
     bolt11: String,
-    unit: CurrencyUnit,
     options: Option<MeltOptions>,
     preferred_mint: Option<MintUrl>,
     enable_mpp: bool,
@@ -110,11 +104,10 @@ pub struct MeltBuilder {
 
 impl MeltBuilder {
     /// Create a new MeltBuilder
-    pub fn new(wallet: Arc<MultiMintWallet>, bolt11: String, unit: CurrencyUnit) -> Self {
+    pub fn new(wallet: Arc<MultiMintWallet>, bolt11: String) -> Self {
         Self {
             wallet,
             bolt11,
-            unit,
             options: None,
             preferred_mint: None,
             enable_mpp: true,
@@ -157,10 +150,8 @@ impl MeltBuilder {
     pub async fn pay(self) -> Result<Melted, Error> {
         // Try preferred mint first if specified
         if let Some(mint_url) = self.preferred_mint {
-            let wallet_key = WalletKey::new(mint_url, self.unit.clone());
-            
             match self.wallet.melt_from_wallet(
-                &wallet_key, 
+                &mint_url, 
                 &self.bolt11, 
                 self.options.clone(), 
                 self.max_fee
@@ -175,14 +166,13 @@ impl MeltBuilder {
         }
 
         // Use automatic wallet selection (with MPP if enabled)
-        self.wallet.melt(&self.bolt11, &self.unit, self.options, self.max_fee).await
+        self.wallet.melt(&self.bolt11, self.options, self.max_fee).await
     }
 }
 
 /// Builder for complex swap operations
 pub struct SwapBuilder {
     wallet: Arc<MultiMintWallet>,
-    unit: CurrencyUnit,
     amount: Option<Amount>,
     conditions: Option<SpendingConditions>,
     preferred_mint: Option<MintUrl>,
@@ -191,10 +181,9 @@ pub struct SwapBuilder {
 
 impl SwapBuilder {
     /// Create a new SwapBuilder
-    pub fn new(wallet: Arc<MultiMintWallet>, unit: CurrencyUnit) -> Self {
+    pub fn new(wallet: Arc<MultiMintWallet>) -> Self {
         Self {
             wallet,
-            unit,
             amount: None,
             conditions: None,
             preferred_mint: None,
@@ -230,37 +219,37 @@ impl SwapBuilder {
     pub async fn swap(self) -> Result<Option<crate::nuts::Proofs>, Error> {
         if self.consolidate {
             // If consolidation is requested, do that instead
-            self.wallet.consolidate(&self.unit).await?;
+            self.wallet.consolidate().await?;
             return Ok(None);
         }
 
         // Use automatic wallet selection for swap
-        self.wallet.swap(&self.unit, self.amount, self.conditions).await
+        self.wallet.swap(self.amount, self.conditions).await
     }
 }
 
 /// Extension trait to add builder methods to MultiMintWallet
 pub trait MultiMintWalletBuilderExt {
     /// Create a send builder
-    fn send_builder(&self, amount: Amount, unit: CurrencyUnit) -> SendBuilder;
+    fn send_builder(&self, amount: Amount) -> SendBuilder;
     
     /// Create a melt builder
-    fn melt_builder(&self, bolt11: String, unit: CurrencyUnit) -> MeltBuilder;
+    fn melt_builder(&self, bolt11: String) -> MeltBuilder;
     
     /// Create a swap builder
-    fn swap_builder(&self, unit: CurrencyUnit) -> SwapBuilder;
+    fn swap_builder(&self) -> SwapBuilder;
 }
 
 impl MultiMintWalletBuilderExt for Arc<MultiMintWallet> {
-    fn send_builder(&self, amount: Amount, unit: CurrencyUnit) -> SendBuilder {
-        SendBuilder::new(self.clone(), amount, unit)
+    fn send_builder(&self, amount: Amount) -> SendBuilder {
+        SendBuilder::new(self.clone(), amount)
     }
 
-    fn melt_builder(&self, bolt11: String, unit: CurrencyUnit) -> MeltBuilder {
-        MeltBuilder::new(self.clone(), bolt11, unit)
+    fn melt_builder(&self, bolt11: String) -> MeltBuilder {
+        MeltBuilder::new(self.clone(), bolt11)
     }
 
-    fn swap_builder(&self, unit: CurrencyUnit) -> SwapBuilder {
-        SwapBuilder::new(self.clone(), unit)
+    fn swap_builder(&self) -> SwapBuilder {
+        SwapBuilder::new(self.clone())
     }
 }

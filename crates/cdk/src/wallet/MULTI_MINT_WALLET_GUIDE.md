@@ -1,69 +1,272 @@
 # MultiMintWallet Unified Interface Guide
 
-The MultiMintWallet has been enhanced with a unified interface that makes it easier to use by providing direct mint, melt, send, and receive functions similar to the single Wallet interface.
+The MultiMintWallet has been enhanced with a unified interface that supports only one currency unit per wallet instance, making it simpler to use by eliminating the need to specify both mint URL and currency unit for operations.
 
 ## Overview
 
-Previously, MultiMintWallet was primarily a container for multiple Wallet instances, requiring manual wallet selection and management. The new unified interface provides:
+The MultiMintWallet now operates on a single currency unit and manages multiple wallets for different mints that all use the same currency. Key changes include:
 
+- **Single Currency Unit**: Each MultiMintWallet instance supports only one currency unit
+- **MintUrl-based Operations**: Functions now take MintUrl instead of WalletKey parameters
 - **Automatic wallet selection** based on balance, fees, and network conditions
-- **Direct operations** without manual WalletKey management
-- **Builder patterns** for complex operations
+- **Advanced mint control** with MultiMintSendOptions for fine-grained send operations
+- **Mint prioritization** with preferred/excluded mint lists and selection strategies
+- **Cross-mint sends** for splitting large payments across multiple mints
+- **Direct operations** without manual mint/unit pair management
 - **Multi-Path Payment (MPP)** support for large payments
-- **Backward compatibility** with existing methods
+- **SQLite in-memory database** for testing
+- **MultiMintPreparedSend** struct for cross-wallet send operations
 
 ## Key Methods
 
-### Balance Operations
+## Constructor
 
-#### `total_balance(unit: &CurrencyUnit) -> Result<Amount, Error>`
-Get the total balance across all wallets for a specific currency unit.
+The MultiMintWallet constructor now requires a currency unit to be specified:
 
 ```rust
-// Get total SAT balance across all wallets
-let total_sats = multi_wallet.total_balance(&CurrencyUnit::Sat).await?;
-println!("Total balance: {} sats", total_sats);
+use cdk::wallet::MultiMintWallet;
+use cdk::nuts::CurrencyUnit;
+
+// Create a new MultiMintWallet that only supports SAT
+let multi_wallet = MultiMintWallet::new(
+    localstore, 
+    seed, 
+    CurrencyUnit::Sat,  // All wallets must use this unit
+    initial_wallets
+)?;
+```
+
+### Balance Operations
+
+#### `total_balance() -> Result<Amount, Error>`
+Get the total balance across all wallets (since all use the same currency unit).
+
+```rust
+// Get total balance across all wallets
+let total_balance = multi_wallet.total_balance().await?;
+println!("Total balance: {} units", total_balance);
+```
+
+#### `get_balances() -> Result<BTreeMap<MintUrl, Amount>, Error>`
+Get balances for individual mints.
+
+```rust
+// Get balance for each mint
+let balances = multi_wallet.get_balances().await?;
+for (mint_url, amount) in balances {
+    println!("Mint {}: {} units", mint_url, amount);
+}
 ```
 
 ### Send Operations
 
-#### `send(amount: Amount, unit: &CurrencyUnit, opts: SendOptions) -> Result<Token, Error>`
-Send tokens with automatic wallet selection. The wallet with sufficient balance and best conditions is automatically selected.
+#### `send(amount: Amount, opts: SendOptions) -> Result<Token, Error>`
+Send tokens with automatic wallet selection using default options (single mint, highest balance first).
 
 ```rust
 use cdk::wallet::SendOptions;
 
 let token = multi_wallet.send(
     Amount::from(1000),
-    &CurrencyUnit::Sat,
     SendOptions::default(),
 ).await?;
 
 println!("Token: {}", token);
 ```
 
-#### `send_from_wallet(wallet_key: &WalletKey, amount: Amount, opts: SendOptions) -> Result<Token, Error>`
+#### `send_with_options(amount: Amount, options: MultiMintSendOptions) -> Result<Token, Error>`
+Send tokens with advanced mint selection and priority control.
+
+```rust
+use cdk::wallet::{MultiMintSendOptions, MintSelectionStrategy};
+
+let options = MultiMintSendOptions::new()
+    .max_mints(2)
+    .selection_strategy(MintSelectionStrategy::LowestBalanceFirst)
+    .prefer_mint(trusted_mint_url);
+
+let token = multi_wallet.send_with_options(
+    Amount::from(1000),
+    options
+).await?;
+```
+
+#### `send_from_wallet(mint_url: &MintUrl, amount: Amount, opts: SendOptions) -> Result<Token, Error>`
 Send tokens from a specific wallet for explicit control.
 
 ```rust
-let wallet_key = WalletKey::new(mint_url, CurrencyUnit::Sat);
+use cdk::mint_url::MintUrl;
+
+let mint_url = MintUrl::from_str("https://mint.example.com")?;
 let token = multi_wallet.send_from_wallet(
-    &wallet_key,
+    &mint_url,
     Amount::from(1000),
     SendOptions::default(),
 ).await?;
 ```
 
+### MultiMintPreparedSend
+
+The `MultiMintPreparedSend` struct allows for preparing cross-wallet sends:
+
+```rust
+use cdk::wallet::MultiMintPreparedSend;
+
+// This would be created internally when implementing cross-wallet sends
+let prepared_sends = vec![prepared_send_1, prepared_send_2];
+let multi_prepared = MultiMintPreparedSend::new(prepared_sends, CurrencyUnit::Sat)?;
+
+println!("Total amount: {}", multi_prepared.amount());
+println!("Total fee: {}", multi_prepared.fee());
+println!("Wallets involved: {}", multi_prepared.wallet_count());
+
+// Confirm all sends
+let token = multi_prepared.confirm(None).await?;
+```
+
+### Advanced Send Options
+
+The `MultiMintSendOptions` struct provides fine-grained control over which mints to use for sending:
+
+#### Basic Usage
+
+```rust
+use cdk::wallet::{MultiMintSendOptions, MintSelectionStrategy};
+
+// Simple send with specific mint preference
+let options = MultiMintSendOptions::new()
+    .prefer_mint(mint_url_1)
+    .prefer_mint(mint_url_2);  // mint_url_1 has higher priority
+
+let token = multi_wallet.send_with_options(
+    Amount::from(1000),
+    options
+).await?;
+```
+
+#### Maximum Mint Control
+
+```rust
+// Limit to using at most 2 mints
+let options = MultiMintSendOptions::new()
+    .max_mints(2);
+
+// Allow unlimited mints (for large cross-mint sends)
+let options = MultiMintSendOptions::new()
+    .unlimited_mints()
+    .allow_cross_mint(true);
+```
+
+#### Mint Exclusion
+
+```rust
+// Exclude specific mints (e.g., due to high fees or unreliability)
+let options = MultiMintSendOptions::new()
+    .exclude_mint(unreliable_mint_url)
+    .exclude_mint(high_fee_mint_url);
+
+let token = multi_wallet.send_with_options(amount, options).await?;
+```
+
+#### Selection Strategies
+
+```rust
+// Use mint with highest balance first (default)
+let options = MultiMintSendOptions::new()
+    .selection_strategy(MintSelectionStrategy::HighestBalanceFirst);
+
+// Use mint with lowest balance first (good for consolidation)
+let options = MultiMintSendOptions::new()
+    .selection_strategy(MintSelectionStrategy::LowestBalanceFirst);
+
+// Use mints with lowest fees first
+let options = MultiMintSendOptions::new()
+    .selection_strategy(MintSelectionStrategy::LowestFeesFirst);
+
+// Random mint selection
+let options = MultiMintSendOptions::new()
+    .selection_strategy(MintSelectionStrategy::Random);
+
+// Round-robin across mints
+let options = MultiMintSendOptions::new()
+    .selection_strategy(MintSelectionStrategy::RoundRobin);
+```
+
+#### Cross-Mint Sends
+
+```rust
+// Enable cross-mint sends (split a large payment across multiple mints)
+let options = MultiMintSendOptions::new()
+    .max_mints(3)                    // Use up to 3 mints
+    .allow_cross_mint(true)          // Allow splitting across mints
+    .preferred_mints(vec![mint1, mint2]); // Prefer these mints first
+
+// This will automatically split the amount across selected mints
+let token = multi_wallet.send_with_options(
+    Amount::from(10000),  // Large amount
+    options
+).await?;
+```
+
+#### Complete Example
+
+```rust
+use cdk::wallet::{MultiMintSendOptions, MintSelectionStrategy, SendOptions};
+
+let options = MultiMintSendOptions::new()
+    .max_mints(2)                           // Use at most 2 mints
+    .prefer_mint(trusted_mint_url)          // Prefer this mint first
+    .exclude_mint(slow_mint_url)            // Never use this mint
+    .selection_strategy(MintSelectionStrategy::LowestFeesFirst)
+    .allow_cross_mint(true)                 // Allow splitting if needed
+    .send_options(SendOptions::default());  // Base send options
+
+let token = multi_wallet.send_with_options(
+    Amount::from(5000),
+    options
+).await?;
+
+println!("Sent token: {}", token);
+```
+
+### Selection Strategy Use Cases
+
+Different selection strategies are optimal for different scenarios:
+
+#### HighestBalanceFirst (Default)
+- **Best for**: General use, reliability
+- **When to use**: When you want to use mints with the most available funds first
+- **Benefits**: Reduces fragmentation, typically more reliable
+
+#### LowestBalanceFirst  
+- **Best for**: Consolidating small balances, cleanup
+- **When to use**: When you want to empty out smaller mint balances first
+- **Benefits**: Helps consolidate funds, reduces number of active mint connections
+
+#### LowestFeesFirst
+- **Best for**: Cost optimization
+- **When to use**: When minimizing fees is the primary concern
+- **Benefits**: Reduces transaction costs
+
+#### Random
+- **Best for**: Privacy, load distribution
+- **When to use**: When you want to avoid predictable patterns
+- **Benefits**: Better privacy, helps distribute load across mints
+
+#### RoundRobin
+- **Best for**: Even distribution, fairness
+- **When to use**: When you want to use all mints equally over time
+- **Benefits**: Balanced usage across all available mints
+
 ### Payment Operations (Melt)
 
-#### `melt(bolt11: &str, unit: &CurrencyUnit, options: Option<MeltOptions>, max_fee: Option<Amount>) -> Result<Melted, Error>`
+#### `melt(bolt11: &str, options: Option<MeltOptions>, max_fee: Option<Amount>) -> Result<Melted, Error>`
 Pay a Lightning invoice with automatic wallet selection and Multi-Path Payment support.
 
 ```rust
 let invoice = "lnbc10u1p3pj257pp5yztkwjcz5ftl5laxkav23zmzpsjd6gs7r3q33s6grge...";
 let result = multi_wallet.melt(
     invoice,
-    &CurrencyUnit::Sat,
     None,  // MeltOptions
     Some(Amount::from(10)), // max_fee
 ).await?;
@@ -71,28 +274,37 @@ let result = multi_wallet.melt(
 println!("Payment successful: {:?}", result);
 ```
 
-#### `melt_from_wallet(wallet_key: &WalletKey, bolt11: &str, options: Option<MeltOptions>, max_fee: Option<Amount>) -> Result<Melted, Error>`
+#### `melt_from_wallet(mint_url: &MintUrl, bolt11: &str, options: Option<MeltOptions>, max_fee: Option<Amount>) -> Result<Melted, Error>`
 Pay from a specific wallet.
+
+```rust
+let mint_url = MintUrl::from_str("https://mint.example.com")?;
+let result = multi_wallet.melt_from_wallet(
+    &mint_url,
+    invoice,
+    None,
+    Some(Amount::from(10))
+).await?;
+```
 
 ### Optimization Operations
 
-#### `swap(unit: &CurrencyUnit, amount: Option<Amount>, conditions: Option<SpendingConditions>) -> Result<Option<Proofs>, Error>`
+#### `swap(amount: Option<Amount>, conditions: Option<SpendingConditions>) -> Result<Option<Proofs>, Error>`
 Swap proofs with automatic wallet selection.
 
 ```rust
 let swapped_proofs = multi_wallet.swap(
-    &CurrencyUnit::Sat,
     Some(Amount::from(500)),
     None, // SpendingConditions
 ).await?;
 ```
 
-#### `consolidate(unit: &CurrencyUnit) -> Result<Amount, Error>`
+#### `consolidate() -> Result<Amount, Error>`
 Consolidate proofs across wallets to optimize performance by combining smaller proofs into larger ones.
 
 ```rust
-let consolidated_amount = multi_wallet.consolidate(&CurrencyUnit::Sat).await?;
-println!("Consolidated {} sats worth of proofs", consolidated_amount);
+let consolidated_amount = multi_wallet.consolidate().await?;
+println!("Consolidated {} units worth of proofs", consolidated_amount);
 ```
 
 ## Builder Patterns
@@ -102,39 +314,35 @@ For complex operations, use the builder patterns which provide a fluent interfac
 ### Send Builder
 
 ```rust
-use cdk::wallet::MultiMintWalletBuilderExt;
-
-let token = multi_wallet
-    .send_builder(Amount::from(1000), CurrencyUnit::Sat)
-    .include_fee(true)
-    .prefer_mint(specific_mint_url)
-    .fallback_to_any(true)
-    .max_fee(Amount::from(10))
-    .send()
-    .await?;
+// Builder patterns are planned for future implementation
+// For now, use direct methods:
+let token = multi_wallet.send(
+    Amount::from(1000),
+    SendOptions::default()
+).await?;
 ```
 
 ### Melt Builder
 
 ```rust
-let result = multi_wallet
-    .melt_builder(invoice_string, CurrencyUnit::Sat)
-    .enable_mpp(true)
-    .max_fee(Amount::from(20))
-    .max_mpp_parts(3)
-    .pay()
-    .await?;
+// Builder patterns are planned for future implementation
+// For now, use direct methods:
+let result = multi_wallet.melt(
+    invoice_string,
+    None, // MeltOptions
+    Some(Amount::from(20)) // max_fee
+).await?;
 ```
 
 ### Swap Builder
 
 ```rust
-let proofs = multi_wallet
-    .swap_builder(CurrencyUnit::Sat)
-    .amount(Amount::from(500))
-    .consolidate(true)
-    .swap()
-    .await?;
+// Builder patterns are planned for future implementation
+// For now, use direct methods:
+let proofs = multi_wallet.swap(
+    Some(Amount::from(500)),
+    None // SpendingConditions
+).await?;
 ```
 
 ## Multi-Path Payment (MPP)
@@ -170,31 +378,48 @@ The unified interface provides clear error messages:
 
 ## Migration from Old Interface
 
-### Before (Container Approach)
+### Before (WalletKey-based)
 ```rust
-// Manual wallet selection required
-let wallets = multi_wallet.get_wallets().await;
-let wallet = wallets.first().unwrap();
-let prepared = wallet.prepare_send(amount, options).await?;
+// Required specifying both mint URL and currency unit
+let wallet_key = WalletKey::new(mint_url, CurrencyUnit::Sat);
+let prepared = multi_wallet.prepare_send(&wallet_key, amount, options).await?;
 let token = prepared.confirm(None).await?;
+
+// Getting balance required unit parameter
+let balance = multi_wallet.total_balance(&CurrencyUnit::Sat).await?;
 ```
 
-### After (Unified Interface)
+### After (Single Currency Unit)
 ```rust
-// Automatic wallet selection
-let token = multi_wallet.send(amount, &unit, options).await?;
+// Create wallet with fixed currency unit
+let multi_wallet = MultiMintWallet::new(
+    localstore, 
+    seed, 
+    CurrencyUnit::Sat,  // Fixed for this wallet instance
+    initial_wallets
+)?;
+
+// Automatic wallet selection - no unit needed
+let token = multi_wallet.send(amount, options).await?;
+
+// Balance operations don't need unit specification
+let balance = multi_wallet.total_balance().await?;
+
+// Mint-specific operations use MintUrl directly
+let mint_url = MintUrl::from_str("https://mint.example.com")?;
+let prepared = multi_wallet.prepare_send(&mint_url, amount, options).await?;
 ```
 
 ## CLI Usage
 
-The CLI commands have been updated to use the new unified interface:
+The CLI commands work with the new single-currency-unit interface:
 
 ### Send Command
 ```bash
-# Automatic wallet selection
+# Automatic wallet selection (uses configured currency unit)
 cdk-cli send --amount 1000
 
-# With specific mint (still supported)
+# With specific mint
 cdk-cli send --amount 1000 --mint-url https://mint.example.com
 ```
 
@@ -203,26 +428,42 @@ cdk-cli send --amount 1000 --mint-url https://mint.example.com
 # Automatic wallet selection with MPP support
 cdk-cli melt --bolt11 lnbc...
 
-# With MPP explicitly enabled
-cdk-cli melt --mpp --bolt11 lnbc...
+# From specific mint
+cdk-cli melt --mint-url https://mint.example.com --bolt11 lnbc...
 ```
 
 ### Balance Command
 ```bash
-# Shows individual mint balances plus total
+# Shows individual mint balances plus total (all in same currency unit)
 cdk-cli balance
 ```
 
-## Backward Compatibility
+## Breaking Changes
 
-All existing methods continue to work:
-- `get_wallets()`
-- `get_wallet(wallet_key)`
-- `prepare_send(wallet_key, amount, opts)`
-- `pay_invoice_for_wallet()`
+**Note: This is a breaking change from the previous interface.**
+
+Methods that previously took `WalletKey` now take `MintUrl`:
+- `get_wallet(mint_url)` - previously `get_wallet(wallet_key)`
+- `prepare_send(mint_url, amount, opts)` - previously `prepare_send(wallet_key, amount, opts)`
+- `pay_invoice_for_wallet(bolt11, options, mint_url, max_fee)` - previously used `wallet_key`
 - etc.
 
-The new unified interface is additive and doesn't break existing code.
+Methods that previously required currency unit parameters no longer need them:
+- `total_balance()` - previously `total_balance(unit)`
+- `send(amount, opts)` - previously `send(amount, unit, opts)`
+- `melt(bolt11, options, max_fee)` - previously `melt(bolt11, unit, options, max_fee)`
+
+The constructor now requires a currency unit parameter:
+- `MultiMintWallet::new(localstore, seed, unit, wallets)` - previously `new(localstore, seed, wallets)`
+
+## New Features
+
+**New methods added:**
+- `send_with_options(amount, MultiMintSendOptions)` - Advanced send control with mint selection
+- `MultiMintSendOptions` - Fine-grained control over mint selection and priority
+- `MintSelectionStrategy` - Various strategies for automatic mint selection
+- Cross-mint send support (when enabled via `allow_cross_mint(true)`)
+- `MultiMintPreparedSend` - For handling multi-wallet prepared sends
 
 ## Performance Considerations
 
@@ -246,8 +487,39 @@ See the `examples/multi_mint_wallet_unified.rs` file for comprehensive usage exa
 
 ## Testing
 
-The new methods include comprehensive tests. Run them with:
+The MultiMintWallet now uses SQLite in-memory database for testing, providing better test isolation and performance:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    async fn create_test_multi_wallet() -> MultiMintWallet {
+        let localstore = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("Failed to create in-memory database")
+        );
+        let seed = [0u8; 64];
+        let wallets = vec![];
+
+        MultiMintWallet::new(localstore, seed, CurrencyUnit::Sat, wallets)
+            .expect("Failed to create MultiMintWallet")
+    }
+    
+    #[tokio::test]
+    async fn test_total_balance_empty() {
+        let multi_wallet = create_test_multi_wallet().await;
+        let balance = multi_wallet.total_balance().await.unwrap();
+        assert_eq!(balance, Amount::ZERO);
+    }
+}
+```
+
+Run the tests with:
 
 ```bash
 cargo test --package cdk multi_mint_wallet
 ```
+
+The in-memory database ensures tests run quickly and don't interfere with each other.
