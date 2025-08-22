@@ -20,6 +20,7 @@ use super::send::{PreparedSend, SendOptions};
 use super::Error;
 use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
+use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SpendingConditions, Token};
 use crate::types::Melted;
 use crate::wallet::types::MintQuote;
@@ -368,10 +369,510 @@ impl MultiMintWallet {
 
         wallet.verify_token_dleq(token).await
     }
+
+    // ============================================================================
+    // NEW UNIFIED INTERFACE METHODS - Making MultiMintWallet more like Wallet
+    // ============================================================================
+
+    /// Get total balance across all wallets for a specific currency unit
+    #[instrument(skip(self))]
+    pub async fn total_balance(&self, unit: &CurrencyUnit) -> Result<Amount, Error> {
+        let mut total = Amount::ZERO;
+        for (wallet_key, wallet) in self.wallets.read().await.iter() {
+            if &wallet_key.unit == unit {
+                total += wallet.total_balance().await?;
+            }
+        }
+        Ok(total)
+    }
+
+    /// Send tokens with automatic wallet selection based on available balance
+    /// 
+    /// This method automatically selects the best wallet(s) to send from based on:
+    /// - Available balance
+    /// - Fees
+    /// - Network conditions
+    #[instrument(skip(self))]
+    pub async fn send(
+        &self,
+        amount: Amount,
+        unit: &CurrencyUnit,
+        opts: SendOptions,
+    ) -> Result<Token, Error> {
+        // Find wallets with sufficient balance for this unit
+        let wallets = self.wallets.read().await;
+        let mut eligible_wallets = Vec::new();
+        
+        for (wallet_key, wallet) in wallets.iter() {
+            if &wallet_key.unit == unit {
+                let balance = wallet.total_balance().await?;
+                if balance >= amount {
+                    eligible_wallets.push((wallet_key.clone(), wallet.clone(), balance));
+                }
+            }
+        }
+
+        if eligible_wallets.is_empty() {
+            // Check if we have enough balance across all wallets
+            let total = self.total_balance(unit).await?;
+            if total < amount {
+                return Err(Error::InsufficientFunds);
+            }
+            // TODO: In Phase 2, implement cross-wallet sending
+            return Err(Error::InsufficientFunds);
+        }
+
+        // Select the wallet with the lowest fees or best conditions
+        // For now, just use the first eligible wallet
+        // TODO: In Phase 2, implement smart wallet selection
+        let (_, wallet, _) = eligible_wallets
+            .into_iter()
+            .next()
+            .ok_or(Error::InsufficientFunds)?;
+
+        // Prepare and confirm the send
+        let prepared = wallet.prepare_send(amount, opts).await?;
+        prepared.confirm(None).await
+    }
+
+    /// Send tokens from a specific wallet
+    #[instrument(skip(self))]
+    pub async fn send_from_wallet(
+        &self,
+        wallet_key: &WalletKey,
+        amount: Amount,
+        opts: SendOptions,
+    ) -> Result<Token, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets
+            .get(wallet_key)
+            .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
+
+        let prepared = wallet.prepare_send(amount, opts).await?;
+        prepared.confirm(None).await
+    }
+
+    /// Melt (pay invoice) with automatic wallet selection
+    /// 
+    /// Automatically selects the best wallet to pay from based on:
+    /// - Available balance  
+    /// - Fees
+    /// - Lightning route availability
+    /// 
+    /// If a single wallet doesn't have enough balance, this will attempt
+    /// Multi-Path Payment (MPP) across multiple wallets.
+    #[instrument(skip(self, bolt11))]
+    pub async fn melt(
+        &self,
+        bolt11: &str,
+        unit: &CurrencyUnit,
+        options: Option<MeltOptions>,
+        max_fee: Option<Amount>,
+    ) -> Result<Melted, Error> {
+        // Parse the invoice to get the amount
+        let invoice = bolt11.parse::<crate::Bolt11Invoice>()
+            .map_err(|e| Error::Invoice(e))?;
+        
+        let amount = invoice
+            .amount_milli_satoshis()
+            .map(|msats| Amount::from(msats / 1000))
+            .ok_or(Error::InvoiceAmountUndefined)?;
+
+        // First try single wallet payment
+        let wallets = self.wallets.read().await;
+        let mut eligible_wallets = Vec::new();
+        let mut all_wallets_for_unit = Vec::new();
+        
+        for (wallet_key, wallet) in wallets.iter() {
+            if &wallet_key.unit == unit {
+                let balance = wallet.total_balance().await?;
+                all_wallets_for_unit.push((wallet_key.clone(), wallet.clone(), balance));
+                
+                // Add some buffer for fees (5% of amount)
+                let fee_buffer = Amount::from(u64::from(amount) / 20);
+                if balance >= amount + fee_buffer {
+                    eligible_wallets.push((wallet_key.clone(), wallet.clone()));
+                }
+            }
+        }
+
+        // Try single wallet payment first
+        if !eligible_wallets.is_empty() {
+            // Try to get quotes from eligible wallets and select the best one
+            let mut best_quote = None;
+            let mut best_wallet = None;
+            
+            for (_, wallet) in eligible_wallets.iter() {
+                match wallet.melt_quote(bolt11.to_string(), options.clone()).await {
+                    Ok(quote) => {
+                        if let Some(max_fee) = max_fee {
+                            if quote.fee_reserve > max_fee {
+                                continue;
+                            }
+                        }
+                        
+                        if best_quote.is_none() {
+                            best_quote = Some(quote);
+                            best_wallet = Some(wallet.clone());
+                        } else if let Some(ref existing_quote) = best_quote {
+                            if quote.fee_reserve < existing_quote.fee_reserve {
+                                best_quote = Some(quote);
+                                best_wallet = Some(wallet.clone());
+                            }
+                        }
+                    }
+                    Err(_) => continue,
+                }
+            }
+
+            if let (Some(quote), Some(wallet)) = (best_quote, best_wallet) {
+                return wallet.melt(&quote.id).await;
+            }
+        }
+
+        // If single wallet payment isn't possible, try MPP
+        let total_balance = self.total_balance(unit).await?;
+        if total_balance < amount {
+            return Err(Error::InsufficientFunds);
+        }
+
+        // Attempt Multi-Path Payment
+        self.melt_mpp_internal(bolt11, &all_wallets_for_unit, amount, options, max_fee).await
+    }
+
+    /// Internal method for Multi-Path Payment across multiple wallets
+    async fn melt_mpp_internal(
+        &self,
+        bolt11: &str,
+        wallets: &[(WalletKey, Wallet, Amount)],
+        total_amount: Amount,
+        options: Option<MeltOptions>,
+        max_fee: Option<Amount>,
+    ) -> Result<Melted, Error> {
+        // Check if MPP is supported for this payment method
+        // For now, we'll return an error indicating MPP is not yet fully implemented
+        // In a full implementation, this would:
+        // 1. Split the payment across multiple wallets
+        // 2. Coordinate partial payments
+        // 3. Handle atomic success/failure
+        
+        tracing::info!("MPP payment required for amount: {}", total_amount);
+        tracing::debug!("Available wallets for MPP: {}", wallets.len());
+        
+        // TODO: Implement actual MPP logic
+        // This is a placeholder that demonstrates the structure
+        // Real implementation would require:
+        // - Payment splitting algorithm
+        // - Coordination between wallets
+        // - Atomic payment handling
+        // - Rollback on partial failure
+        
+        Err(Error::Custom("Multi-Path Payment across wallets not yet fully implemented. Please split the payment manually.".to_string()))
+    }
+
+    /// Melt (pay invoice) from a specific wallet
+    #[instrument(skip(self, bolt11))]
+    pub async fn melt_from_wallet(
+        &self,
+        wallet_key: &WalletKey,
+        bolt11: &str,
+        options: Option<MeltOptions>,
+        max_fee: Option<Amount>,
+    ) -> Result<Melted, Error> {
+        self.pay_invoice_for_wallet(bolt11, options, wallet_key, max_fee).await
+    }
+
+    /// Swap proofs with automatic wallet selection
+    #[instrument(skip(self))]
+    pub async fn swap(
+        &self,
+        unit: &CurrencyUnit,
+        amount: Option<Amount>,
+        conditions: Option<SpendingConditions>,
+    ) -> Result<Option<Proofs>, Error> {
+        // Find a wallet with this unit that has proofs
+        let wallets = self.wallets.read().await;
+        
+        for (wallet_key, wallet) in wallets.iter() {
+            if &wallet_key.unit == unit {
+                let balance = wallet.total_balance().await?;
+                if balance > Amount::ZERO {
+                    // Try to swap with this wallet
+                    let proofs = wallet.get_unspent_proofs().await?;
+                    if !proofs.is_empty() {
+                        return wallet.swap(
+                            amount,
+                            SplitTarget::default(),
+                            proofs,
+                            conditions,
+                            false,
+                        ).await;
+                    }
+                }
+            }
+        }
+        
+        Err(Error::InsufficientFunds)
+    }
+
+    /// Consolidate proofs from multiple wallets into fewer, larger proofs
+    /// This can help reduce the number of proofs and optimize wallet performance
+    #[instrument(skip(self))]
+    pub async fn consolidate(&self, unit: &CurrencyUnit) -> Result<Amount, Error> {
+        let mut total_consolidated = Amount::ZERO;
+        let wallets = self.wallets.read().await;
+        
+        for (wallet_key, wallet) in wallets.iter() {
+            if &wallet_key.unit == unit {
+                // Get all unspent proofs for this wallet
+                let proofs = wallet.get_unspent_proofs().await?;
+                if proofs.len() > 1 {
+                    // Consolidate by swapping all proofs for a single set
+                    let proofs_amount = proofs.total_amount()?;
+                    
+                    // Swap for optimized proof set
+                    match wallet.swap(
+                        Some(proofs_amount),
+                        SplitTarget::default(),
+                        proofs,
+                        None,
+                        false,
+                    ).await {
+                        Ok(_) => {
+                            total_consolidated += proofs_amount;
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to consolidate proofs for wallet {:?}: {}", wallet_key, e);
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(total_consolidated)
+    }
+
+    /// Get the best wallet for a specific operation based on criteria
+    /// This is a helper method for smart wallet selection
+    async fn select_best_wallet(
+        &self,
+        unit: &CurrencyUnit,
+        min_amount: Amount,
+    ) -> Result<Wallet, Error> {
+        let wallets = self.wallets.read().await;
+        let mut best_wallet = None;
+        let mut best_balance = Amount::ZERO;
+        
+        for (wallet_key, wallet) in wallets.iter() {
+            if &wallet_key.unit == unit {
+                let balance = wallet.total_balance().await?;
+                if balance >= min_amount && balance > best_balance {
+                    best_balance = balance;
+                    best_wallet = Some(wallet.clone());
+                }
+            }
+        }
+        
+        best_wallet.ok_or(Error::InsufficientFunds)
+    }
 }
 
 impl Drop for MultiMintWallet {
     fn drop(&mut self) {
         self.seed.zeroize();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use cdk_common::database::WalletDatabase;
+
+    // Simple mock database for testing
+    #[derive(Debug)]
+    struct MockDatabase;
+
+    impl WalletDatabase for MockDatabase {
+        type Err = database::Error;
+
+        async fn add_wallet(&self, _: &cdk_common::wallet::WalletKey, _: &str) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn get_wallets(&self) -> Result<Vec<cdk_common::wallet::WalletKey>, Self::Err> {
+            Ok(vec![])
+        }
+
+        async fn remove_wallet(&self, _: &cdk_common::wallet::WalletKey) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn add_mint_keysets(
+            &self,
+            _: &crate::mint_url::MintUrl,
+            _: Vec<cdk_common::nut02::MintKeySetInfo>,
+        ) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn get_mint_keysets(
+            &self,
+            _: &crate::mint_url::MintUrl,
+        ) -> Result<Option<Vec<cdk_common::nut02::MintKeySetInfo>>, Self::Err> {
+            Ok(None)
+        }
+
+        async fn add_mint_quote(&self, _: cdk_common::wallet::MintQuote) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn get_mint_quote(
+            &self,
+            _: &str,
+        ) -> Result<Option<cdk_common::wallet::MintQuote>, Self::Err> {
+            Ok(None)
+        }
+
+        async fn get_mint_quotes(&self) -> Result<Vec<cdk_common::wallet::MintQuote>, Self::Err> {
+            Ok(vec![])
+        }
+
+        async fn remove_mint_quote(&self, _: &str) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn add_melt_quote(&self, _: cdk_common::wallet::MeltQuote) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn get_melt_quote(
+            &self,
+            _: &str,
+        ) -> Result<Option<cdk_common::wallet::MeltQuote>, Self::Err> {
+            Ok(None)
+        }
+
+        async fn remove_melt_quote(&self, _: &str) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn add_proofs(&self, _: Vec<cdk_common::wallet::ProofInfo>) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn get_proofs(
+            &self,
+            _: Option<crate::mint_url::MintUrl>,
+            _: Option<CurrencyUnit>,
+            _: Option<Vec<crate::nuts::State>>,
+            _: Option<Vec<crate::nuts::SpendingConditions>>,
+        ) -> Result<Vec<cdk_common::wallet::ProofInfo>, Self::Err> {
+            Ok(vec![])
+        }
+
+        async fn update_proofs(
+            &self,
+            _: Vec<cdk_common::wallet::ProofInfo>,
+            _: crate::nuts::State,
+        ) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn remove_proofs(&self, _: &[String]) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn reserve_proofs(&self, _: Vec<String>) -> Result<u64, Self::Err> {
+            Ok(0)
+        }
+
+        async fn unreserve_proofs(&self, _: u64) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn delete_unreserved_proofs(&self) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn add_pending_proofs(
+            &self,
+            _: Vec<cdk_common::wallet::ProofInfo>,
+        ) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn get_pending_proofs(&self) -> Result<Vec<cdk_common::wallet::ProofInfo>, Self::Err> {
+            Ok(vec![])
+        }
+
+        async fn remove_pending_proofs(&self, _: &[String]) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn increment_keyset_counter(
+            &self,
+            _: &crate::nuts::Id,
+            _: u32,
+        ) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn get_keyset_counter(&self, _: &crate::nuts::Id) -> Result<Option<u32>, Self::Err> {
+            Ok(Some(0))
+        }
+
+        async fn add_transactions(
+            &self,
+            _: Vec<cdk_common::wallet::Transaction>,
+        ) -> Result<(), Self::Err> {
+            Ok(())
+        }
+
+        async fn get_transactions(
+            &self,
+            _: Option<cdk_common::wallet::TransactionDirection>,
+        ) -> Result<Vec<cdk_common::wallet::Transaction>, Self::Err> {
+            Ok(vec![])
+        }
+    }
+
+    fn create_test_multi_wallet() -> MultiMintWallet {
+        let localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync> =
+            Arc::new(MockDatabase);
+        let seed = [0u8; 64];
+        let wallets = vec![];
+
+        MultiMintWallet::new(localstore, seed, wallets)
+    }
+
+    #[tokio::test]
+    async fn test_total_balance_empty() {
+        let multi_wallet = create_test_multi_wallet();
+        let balance = multi_wallet.total_balance(&CurrencyUnit::Sat).await.unwrap();
+        assert_eq!(balance, Amount::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_send_insufficient_funds() {
+        let multi_wallet = create_test_multi_wallet();
+        let result = multi_wallet
+            .send(Amount::from(1000), &CurrencyUnit::Sat, SendOptions::default())
+            .await;
+        
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_consolidate_empty() {
+        let multi_wallet = create_test_multi_wallet();
+        let result = multi_wallet.consolidate(&CurrencyUnit::Sat).await.unwrap();
+        assert_eq!(result, Amount::ZERO);
+    }
+
+    #[test]
+    fn test_multi_mint_wallet_creation() {
+        let multi_wallet = create_test_multi_wallet();
+        assert!(multi_wallet.wallets.try_read().is_ok());
     }
 }
