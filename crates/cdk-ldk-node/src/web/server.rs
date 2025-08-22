@@ -8,9 +8,9 @@ use tower_http::cors::CorsLayer;
 
 use crate::web::handlers::{
     balance_page, channels_page, close_channel_page, dashboard, get_new_address, invoices_page,
-    onchain_page, open_channel_page, payments_page, post_close_channel, post_create_bolt11,
-    post_create_bolt12, post_open_channel, post_pay_bolt11, post_pay_bolt12, post_send_onchain,
-    send_payments_page, AppState,
+    onchain_confirm_page, onchain_page, open_channel_page, payments_page, post_close_channel,
+    post_create_bolt11, post_create_bolt12, post_open_channel, post_pay_bolt11, post_pay_bolt12,
+    post_send_onchain, send_payments_page, AppState,
 };
 use crate::web::static_files::static_handler;
 use crate::CdkLdkNode;
@@ -38,6 +38,7 @@ impl WebServer {
             .route("/balance", get(balance_page))
             .route("/onchain", get(onchain_page))
             .route("/onchain/send", post(post_send_onchain))
+            .route("/onchain/confirm", get(onchain_confirm_page))
             .route("/onchain/new-address", post(get_new_address))
             // Channel management
             .route("/channels", get(channels_page))

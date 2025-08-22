@@ -27,6 +27,8 @@ maud = "0.27.0"
 tower.workspace = true
 tower-http.workspace = true
 rust-embed = "8.5.0"
+serde_urlencoded = "0.7"
+urlencoding = "2.1"
 
 
 

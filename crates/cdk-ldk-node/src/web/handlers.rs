@@ -15,7 +15,7 @@ use ldk_node::lightning_invoice::Bolt11Invoice;
 use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus};
 use ldk_node::UserChannelId;
 use maud::html;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 // Custom deserializer for optional u32 that handles empty strings
 fn deserialize_optional_u32<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
@@ -574,7 +574,7 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
     Ok(Html(layout("Lightning", content).into_string()))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct SendOnchainActionForm {
     address: String,
     #[serde(deserialize_with = "deserialize_optional_u64")]
@@ -742,11 +742,164 @@ pub async fn onchain_page(
 }
 
 pub async fn post_send_onchain(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Form(form): Form<SendOnchainActionForm>,
 ) -> Result<Response, StatusCode> {
-    let address_result = Address::from_str(&form.address);
-    let address = match address_result {
+    // Show confirmation screen first, then redirect to the confirmation handler
+    let encoded_form =
+        serde_urlencoded::to_string(&form).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Response::builder()
+        .status(StatusCode::FOUND)
+        .header("Location", format!("/onchain/confirm?{}", encoded_form))
+        .body(Body::empty())
+        .unwrap())
+}
+
+#[derive(Deserialize)]
+pub struct ConfirmOnchainForm {
+    address: String,
+    // #[serde(deserialize_with = "deserialize_optional_u64")]
+    amount_sat: Option<u64>,
+    send_action: String,
+    confirmed: Option<String>,
+}
+
+pub async fn onchain_confirm_page(
+    State(state): State<AppState>,
+    query: Query<ConfirmOnchainForm>,
+) -> Result<Response, StatusCode> {
+    let form = query.0;
+
+    // If user confirmed, execute the transaction
+    if form.confirmed.as_deref() == Some("true") {
+        return execute_onchain_transaction(State(state), form).await;
+    }
+
+    // Validate address
+    let _address = match Address::from_str(&form.address) {
+        Ok(addr) => addr,
+        Err(e) => {
+            let content = html! {
+                (error_message(&format!("Invalid address: {e}")))
+                div class="card" {
+                    a href="/onchain?action=send" { button { "← Back" } }
+                }
+            };
+            return Ok(Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "text/html")
+                .body(Body::from(
+                    layout("Send On-chain Error", content).into_string(),
+                ))
+                .unwrap());
+        }
+    };
+
+    let balances = state.node.inner.list_balances();
+    let spendable_balance = balances.spendable_onchain_balance_sats;
+
+    // Calculate transaction details
+    let (amount_to_send, is_send_all) = if form.send_action == "send_all" {
+        (spendable_balance, true)
+    } else {
+        let amount = form.amount_sat.unwrap_or(0);
+        if amount > spendable_balance {
+            let content = html! {
+                (error_message(&format!("Insufficient funds. Requested: {}, Available: {}",
+                    format_sats_as_btc(amount), format_sats_as_btc(spendable_balance))))
+                div class="card" {
+                    a href="/onchain?action=send" { button { "← Back" } }
+                }
+            };
+            return Ok(Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "text/html")
+                .body(Body::from(
+                    layout("Send On-chain Error", content).into_string(),
+                ))
+                .unwrap());
+        }
+        (amount, false)
+    };
+
+    let confirmation_url = if form.send_action == "send_all" {
+        format!(
+            "/onchain/confirm?address={}&send_action={}&confirmed=true",
+            urlencoding::encode(&form.address),
+            form.send_action
+        )
+    } else {
+        format!(
+            "/onchain/confirm?address={}&amount_sat={}&send_action={}&confirmed=true",
+            urlencoding::encode(&form.address),
+            form.amount_sat.unwrap_or(0),
+            form.send_action
+        )
+    };
+
+    let content = html! {
+        h2 style="text-align: center; margin-bottom: 3rem;" { "Confirm On-chain Transaction" }
+
+        div class="card" style="border: 2px solid hsl(var(--primary)); background-color: hsl(var(--primary) / 0.05);" {
+            h2 { "⚠️ Transaction Confirmation" }
+            p style="color: hsl(var(--muted-foreground)); margin-bottom: 1.5rem;" {
+                "Please review the transaction details carefully before proceeding. This action cannot be undone."
+            }
+        }
+
+        (info_card(
+            "Transaction Details",
+            vec![
+                ("Recipient Address", form.address.clone()),
+                ("Amount to Send", if is_send_all {
+                    format!("{} (All available funds)", format_sats_as_btc(amount_to_send))
+                } else {
+                    format_sats_as_btc(amount_to_send)
+                }),
+                ("Current Spendable Balance", format_sats_as_btc(spendable_balance)),
+            ]
+        ))
+
+        @if is_send_all {
+            div class="card" style="border: 1px solid hsl(32.6 75.4% 55.1%); background-color: hsl(32.6 75.4% 55.1% / 0.1);" {
+                h3 style="color: hsl(32.6 75.4% 55.1%);" { "Send All Notice" }
+                p style="color: hsl(32.6 75.4% 55.1%);" {
+                    "This transaction will send all available funds to the recipient address. "
+                    "Network fees will be deducted from the total amount automatically."
+                }
+            }
+        }
+
+        div class="card" {
+            div style="display: flex; justify-content: space-between; gap: 1rem; margin-top: 2rem;" {
+                a href="/onchain?action=send" {
+                    button type="button" class="button-secondary" { "← Cancel" }
+                }
+                div style="display: flex; gap: 0.5rem;" {
+                    a href=(confirmation_url) {
+                        button class="button-primary" {
+                            "✓ Confirm & Send Transaction"
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    Ok(Response::builder()
+        .header("content-type", "text/html")
+        .body(Body::from(
+            layout("Confirm Transaction", content).into_string(),
+        ))
+        .unwrap())
+}
+
+async fn execute_onchain_transaction(
+    State(state): State<AppState>,
+    form: ConfirmOnchainForm,
+) -> Result<Response, StatusCode> {
+    let address = match Address::from_str(&form.address) {
         Ok(addr) => addr,
         Err(e) => {
             let content = html! {
@@ -784,19 +937,24 @@ pub async fn post_send_onchain(
 
     let content = match txid_result {
         Ok(txid) => {
+            let amount = form.amount_sat;
             html! {
-                (success_message("Transaction sent successfully!"))
-                (info_card(
-                    "Transaction Details",
-                    vec![
-                        ("Transaction ID", txid.to_string()),
-                        ("Amount", if form.send_action == "send_all" { "All available funds".to_string() } else { format_sats_as_btc(form.amount_sat.unwrap_or(0)) }),
-                        ("Recipient", form.address),
-                    ]
-                ))
-                div class="card" {
-                    a href="/onchain" { button { "← Back to On-chain" } }
-                }
+                        (success_message("Transaction sent successfully!"))
+                        (info_card(
+                            "Transaction Details",
+                            vec![
+                                ("Transaction ID", txid.to_string()),
+                                ("Amount", if form.send_action == "send_all" {
+                                    format!("{} (All available funds)", format_msats_as_btc(amount.unwrap_or(0)))
+                                } else {
+                                    format_sats_as_btc(form.amount_sat.unwrap_or(0))
+                                }),
+                                ("Recipient", form.address),
+                            ]
+                        ))
+                        div class="card" {
+                            a href="/onchain" { button { "← Back to On-chain" } }
+                        }
             }
         }
         Err(e) => {
