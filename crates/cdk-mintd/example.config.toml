@@ -64,7 +64,7 @@ max_connections = 20
 connection_timeout_seconds = 10
 
 [ln]
-# Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits', 'ldk-node'
+# Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits', 'ldknode'
 ln_backend = "fakewallet"
 # min_mint=1
 # max_mint=500000

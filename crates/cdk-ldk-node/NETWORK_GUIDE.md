@@ -101,26 +101,6 @@ webserver_port = 8091
    - Only use `127.0.0.1` (localhost) 
    - Use VPN, SSH tunneling, or reverse proxy with authentication for remote access
 
-2. **Network Security**: 
-   - Use HTTPS with reverse proxy (nginx/Apache) and SSL certificates
-   - Configure proper firewall rules
-   - Consider IP whitelisting for critical services
-
-3. **Data Security**:
-   - PostgreSQL database with authentication and encryption
-   - Regular encrypted backups of wallet data and database
-   - Secure storage of backup encryption keys
-
-4. **Access Control**:
-   - Restrict SSH access with key-based authentication
-   - Use VPN for remote management
-   - Monitor access logs regularly
-
-5. **Monitoring & Alerting**:
-   - Set up logging and monitoring for production environment
-   - Configure alerts for unusual activity
-   - Regular security audits
-
 ## Regtest (Development)
 
 ```toml
