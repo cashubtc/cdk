@@ -255,6 +255,9 @@ where
         ys: &[PublicKey],
         _quote_id: Option<Uuid>,
     ) -> Result<(), Self::Err> {
+        if ys.is_empty() {
+            return Ok(());
+        }
         let total_deleted = query(
             r#"
             DELETE FROM proof WHERE y IN (:ys) AND state NOT IN (:exclude_state)
@@ -314,10 +317,15 @@ where
     // Get payment IDs and timestamps from the mint_quote_payments table
     query(
         r#"
-SELECT payment_id, timestamp, amount
-FROM mint_quote_payments
-WHERE quote_id=:quote_id;
-            "#,
+        SELECT
+            payment_id,
+            timestamp,
+            amount
+        FROM
+            mint_quote_payments
+        WHERE
+            quote_id=:quote_id
+        "#,
     )?
     .bind("quote_id", quote_id.as_hyphenated().to_string())
     .fetch_all(conn)
@@ -407,12 +415,12 @@ where
     }
 
     async fn set_active_keyset(&mut self, unit: CurrencyUnit, id: Id) -> Result<(), Error> {
-        query(r#"UPDATE keyset SET active=FALSE WHERE unit IS :unit"#)?
+        query(r#"UPDATE keyset SET active=FALSE WHERE unit = :unit"#)?
             .bind("unit", unit.to_string())
             .execute(&self.inner)
             .await?;
 
-        query(r#"UPDATE keyset SET active=TRUE WHERE unit IS :unit AND id IS :id"#)?
+        query(r#"UPDATE keyset SET active=TRUE WHERE unit = :unit AND id = :id"#)?
             .bind("unit", unit.to_string())
             .bind("id", id.to_string())
             .execute(&self.inner)
@@ -443,7 +451,8 @@ where
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(
-            query(r#" SELECT id FROM keyset WHERE active = 1 AND unit IS :unit"#)?
+            query(r#" SELECT id FROM keyset WHERE active = :active AND unit = :unit"#)?
+                .bind("active", true)
                 .bind("unit", unit.to_string())
                 .pluck(&*conn)
                 .await?
@@ -458,17 +467,20 @@ where
 
     async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(r#"SELECT id, unit FROM keyset WHERE active = 1"#)?
-            .fetch_all(&*conn)
-            .await?
-            .into_iter()
-            .map(|row| {
-                Ok((
-                    column_as_string!(&row[1], CurrencyUnit::from_str),
-                    column_as_string!(&row[0], Id::from_str, Id::from_bytes),
-                ))
-            })
-            .collect::<Result<HashMap<_, _>, Error>>()?)
+        Ok(
+            query(r#"SELECT id, unit FROM keyset WHERE active = :active"#)?
+                .bind("active", true)
+                .fetch_all(&*conn)
+                .await?
+                .into_iter()
+                .map(|row| {
+                    Ok((
+                        column_as_string!(&row[1], CurrencyUnit::from_str),
+                        column_as_string!(&row[0], Id::from_str, Id::from_bytes),
+                    ))
+                })
+                .collect::<Result<HashMap<_, _>, Error>>()?,
+        )
     }
 
     async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
@@ -564,9 +576,8 @@ where
         .bind("quote_id", quote_id.as_hyphenated().to_string())
         .fetch_one(&self.inner)
         .await
-        .map_err(|err| {
-            tracing::error!("SQLite could not get mint quote amount_paid");
-            err
+        .inspect_err(|err| {
+            tracing::error!("SQLite could not get mint quote amount_paid: {}", err);
         })?;
 
         let current_amount_paid = if let Some(current_amount) = current_amount {
@@ -593,9 +604,8 @@ where
         .bind("quote_id", quote_id.as_hyphenated().to_string())
         .execute(&self.inner)
         .await
-        .map_err(|err| {
-            tracing::error!("SQLite could not update mint quote amount_paid");
-            err
+        .inspect_err(|err| {
+            tracing::error!("SQLite could not update mint quote amount_paid: {}", err);
         })?;
 
         // Add payment_id to mint_quote_payments table
@@ -638,9 +648,8 @@ where
         .bind("quote_id", quote_id.as_hyphenated().to_string())
         .fetch_one(&self.inner)
         .await
-        .map_err(|err| {
-            tracing::error!("SQLite could not get mint quote amount_issued");
-            err
+        .inspect_err(|err| {
+            tracing::error!("SQLite could not get mint quote amount_issued: {}", err);
         })?;
 
         let current_amount_issued = if let Some(current_amount) = current_amount {
@@ -661,16 +670,14 @@ where
             UPDATE mint_quote
             SET amount_issued = :amount_issued
             WHERE id = :quote_id
-            FOR UPDATE
             "#,
         )?
         .bind("amount_issued", new_amount_issued.to_i64())
         .bind("quote_id", quote_id.as_hyphenated().to_string())
         .execute(&self.inner)
         .await
-        .map_err(|err| {
-            tracing::error!("SQLite could not update mint quote amount_issued");
-            err
+        .inspect_err(|err| {
+            tracing::error!("SQLite could not update mint quote amount_issued: {}", err);
         })?;
 
         let current_time = unix_time();
@@ -693,8 +700,6 @@ VALUES (:quote_id, :amount, :timestamp);
 
     #[instrument(skip_all)]
     async fn add_mint_quote(&mut self, quote: MintQuote) -> Result<(), Self::Err> {
-        tracing::debug!("Adding quote with: {}", quote.payment_method.to_string());
-        println!("Adding quote with: {}", quote.payment_method.to_string());
         query(
             r#"
                 INSERT INTO mint_quote (
@@ -734,24 +739,6 @@ VALUES (:quote_id, :amount, :timestamp);
 
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
         // First try to find and replace any expired UNPAID quotes with the same request_lookup_id
-        let current_time = unix_time();
-        let row_affected = query(
-            r#"
-            DELETE FROM melt_quote
-            WHERE request_lookup_id = :request_lookup_id
-            AND state = :state
-            AND expiry < :current_time
-            "#,
-        )?
-        .bind("request_lookup_id", quote.request_lookup_id.to_string())
-        .bind("state", MeltQuoteState::Unpaid.to_string())
-        .bind("current_time", current_time as i64)
-        .execute(&self.inner)
-        .await?;
-
-        if row_affected > 0 {
-            tracing::info!("Received new melt quote for existing invoice with expired quote.");
-        }
 
         // Now insert the new quote
         query(
@@ -760,13 +747,13 @@ VALUES (:quote_id, :amount, :timestamp);
             (
                 id, unit, amount, request, fee_reserve, state,
                 expiry, payment_preimage, request_lookup_id,
-                created_time, paid_time, options, request_lookup_id_kind
+                created_time, paid_time, options, request_lookup_id_kind, payment_method
             )
             VALUES
             (
                 :id, :unit, :amount, :request, :fee_reserve, :state,
                 :expiry, :payment_preimage, :request_lookup_id,
-                :created_time, :paid_time, :options, :request_lookup_id_kind
+                :created_time, :paid_time, :options, :request_lookup_id_kind, :payment_method
             )
         "#,
         )?
@@ -778,14 +765,21 @@ VALUES (:quote_id, :amount, :timestamp);
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry as i64)
         .bind("payment_preimage", quote.payment_preimage)
-        .bind("request_lookup_id", quote.request_lookup_id.to_string())
+        .bind(
+            "request_lookup_id",
+            quote.request_lookup_id.as_ref().map(|id| id.to_string()),
+        )
         .bind("created_time", quote.created_time as i64)
         .bind("paid_time", quote.paid_time.map(|t| t as i64))
         .bind(
             "options",
             quote.options.map(|o| serde_json::to_string(&o).ok()),
         )
-        .bind("request_lookup_id_kind", quote.request_lookup_id.kind())
+        .bind(
+            "request_lookup_id_kind",
+            quote.request_lookup_id.map(|id| id.kind()),
+        )
+        .bind("payment_method", quote.payment_method.to_string())
         .execute(&self.inner)
         .await?;
 
@@ -1707,19 +1701,24 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
     let unit = column_as_string!(unit);
     let request = column_as_string!(request);
 
-    let mut request_lookup_id_kind = column_as_string!(request_lookup_id_kind);
+    let request_lookup_id_kind = column_as_nullable_string!(request_lookup_id_kind);
 
-    let request_lookup_id = column_as_nullable_string!(&request_lookup_id).unwrap_or_else(|| {
+    let request_lookup_id = column_as_nullable_string!(&request_lookup_id).or_else(|| {
         Bolt11Invoice::from_str(&request)
+            .ok()
             .map(|invoice| invoice.payment_hash().to_string())
-            .unwrap_or_else(|_| {
-                request_lookup_id_kind = "custom".to_string();
-                request.clone()
-            })
     });
 
-    let request_lookup_id = PaymentIdentifier::new(&request_lookup_id_kind, &request_lookup_id)
-        .map_err(|_| ConversionError::MissingParameter("Payment id".to_string()))?;
+    let request_lookup_id = if let (Some(id_kind), Some(request_lookup_id)) =
+        (request_lookup_id_kind, request_lookup_id)
+    {
+        Some(
+            PaymentIdentifier::new(&id_kind, &request_lookup_id)
+                .map_err(|_| ConversionError::MissingParameter("Payment id".to_string()))?,
+        )
+    } else {
+        None
+    };
 
     let request = match serde_json::from_str(&request) {
         Ok(req) => req,

@@ -99,10 +99,8 @@ pub trait Database: Debug {
     /// Update proofs state in storage
     async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), Self::Err>;
 
-    /// Increment Keyset counter
-    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err>;
-    /// Get current Keyset counter
-    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err>;
+    /// Atomically increment Keyset counter and return new value
+    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<u32, Self::Err>;
 
     /// Add transaction to storage
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), Self::Err>;

@@ -143,13 +143,28 @@ impl ProofWriter {
     }
 
     /// Rollback all changes in this ProofWriter consuming it.
-    pub async fn rollback(mut self, tx: &mut Tx<'_, '_>) -> Result<(), Error> {
+    pub async fn rollback(mut self) -> Result<(), Error> {
+        let db = if let Some(db) = self.db.take() {
+            db
+        } else {
+            return Ok(());
+        };
+        let mut tx = db.begin_transaction().await?;
         let (ys, original_states) = if let Some(proofs) = self.proof_original_states.take() {
             proofs.into_iter().unzip::<_, _, Vec<_>, Vec<_>>()
         } else {
             return Ok(());
         };
-        reset_proofs_to_original_state(tx, &ys, original_states).await?;
+
+        tracing::info!(
+            "Rollback {} proofs to their original states {:?}",
+            ys.len(),
+            original_states
+        );
+
+        reset_proofs_to_original_state(&mut tx, &ys, original_states).await?;
+        tx.commit().await?;
+
         Ok(())
     }
 }
@@ -178,7 +193,9 @@ async fn reset_proofs_to_original_state(
         tx.update_proofs_states(&ys, state).await?;
     }
 
-    tx.remove_proofs(&unknown_proofs, None).await?;
+    if !unknown_proofs.is_empty() {
+        tx.remove_proofs(&unknown_proofs, None).await?;
+    }
 
     Ok(())
 }

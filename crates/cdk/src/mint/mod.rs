@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use cdk_common::amount::to_unit;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::MintAuthDatabase;
@@ -201,7 +202,7 @@ impl Mint {
     /// - Invoice payment monitoring across all configured payment processors
     ///
     /// Future services may include:
-    /// - Quote cleanup and expiration management  
+    /// - Quote cleanup and expiration management
     /// - Periodic database maintenance
     /// - Health check monitoring
     /// - Metrics collection
@@ -441,7 +442,7 @@ impl Mint {
             loop {
                 tokio::select! {
                     _ = shutdown.notified() => {
-                        println!("Shutting down payment processors");
+                        tracing::info!("Shutting down payment processors");
                         break;
                     }
                     Some(result) = join_set.join_next() => {
@@ -525,7 +526,7 @@ impl Mint {
             .await?;
         } else {
             tracing::warn!(
-                "Could not get request for request lookup id {:?}.",
+                "Could not get request for request lookup id {:?}",
                 wait_payment_response.payment_identifier
             );
         }
@@ -535,6 +536,7 @@ impl Mint {
     }
 
     /// Handle payment for a specific mint quote (extracted from pay_mint_quote)
+    #[instrument(skip_all)]
     async fn handle_mint_quote_payment(
         tx: &mut Box<dyn database::MintTransaction<'_, database::Error> + Send + Sync + '_>,
         mint_quote: &MintQuote,
@@ -542,10 +544,11 @@ impl Mint {
         pubsub_manager: &Arc<PubSubManager>,
     ) -> Result<(), Error> {
         tracing::debug!(
-            "Received payment notification of {} for mint quote {} with payment id {}",
+            "Received payment notification of {} {} for mint quote {} with payment id {}",
             wait_payment_response.payment_amount,
+            wait_payment_response.unit,
             mint_quote.id,
-            wait_payment_response.payment_id
+            wait_payment_response.payment_id.to_string()
         );
 
         let quote_state = mint_quote.state();
@@ -558,14 +561,26 @@ impl Mint {
             {
                 tracing::info!("Received payment notification for already issued quote.");
             } else {
-                tx.increment_mint_quote_amount_paid(
-                    &mint_quote.id,
+                let payment_amount_quote_unit = to_unit(
                     wait_payment_response.payment_amount,
-                    wait_payment_response.payment_id,
-                )
-                .await?;
+                    &wait_payment_response.unit,
+                    &mint_quote.unit,
+                )?;
 
-                pubsub_manager.mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
+                tracing::debug!(
+                    "Payment received amount in quote unit {} {}",
+                    mint_quote.unit,
+                    payment_amount_quote_unit
+                );
+
+                let total_paid = tx
+                    .increment_mint_quote_amount_paid(
+                        &mint_quote.id,
+                        payment_amount_quote_unit,
+                        wait_payment_response.payment_id,
+                    )
+                    .await?;
+                pubsub_manager.mint_quote_payment(mint_quote, total_paid);
             }
         } else {
             tracing::info!("Received payment notification for already seen payment.");
@@ -635,13 +650,9 @@ impl Mint {
     #[tracing::instrument(skip_all)]
     pub async fn blind_sign(
         &self,
-        blinded_message: BlindedMessage,
-    ) -> Result<BlindSignature, Error> {
-        self.signatory
-            .blind_sign(vec![blinded_message])
-            .await?
-            .pop()
-            .ok_or(Error::Internal)
+        blinded_messages: Vec<BlindedMessage>,
+    ) -> Result<Vec<BlindSignature>, Error> {
+        self.signatory.blind_sign(blinded_messages).await
     }
 
     /// Verify [`Proof`] meets conditions and is signed
@@ -699,11 +710,11 @@ impl Mint {
                 return Err(Error::Internal);
             }
         };
-        tracing::error!("internal stuff");
 
         // Mint quote has already been settled, proofs should not be burned or held.
-        if mint_quote.state() == MintQuoteState::Issued
-            || mint_quote.state() == MintQuoteState::Paid
+        if (mint_quote.state() == MintQuoteState::Issued
+            || mint_quote.state() == MintQuoteState::Paid)
+            && mint_quote.payment_method == PaymentMethod::Bolt11
         {
             return Err(Error::RequestAlreadyPaid);
         }
@@ -716,7 +727,7 @@ impl Mint {
         if let Some(amount) = mint_quote.amount {
             if amount > inputs_amount_quote_unit {
                 tracing::debug!(
-                    "Not enough inuts provided: {} needed {}",
+                    "Not enough inputs provided: {} needed {}",
                     inputs_amount_quote_unit,
                     amount
                 );
@@ -726,8 +737,18 @@ impl Mint {
 
         let amount = melt_quote.amount;
 
-        tx.increment_mint_quote_amount_paid(&mint_quote.id, amount, melt_quote.id.to_string())
+        let total_paid = tx
+            .increment_mint_quote_amount_paid(&mint_quote.id, amount, melt_quote.id.to_string())
             .await?;
+
+        self.pubsub_manager
+            .mint_quote_payment(&mint_quote, total_paid);
+
+        tracing::info!(
+            "Melt quote {} paid Mint quote {}",
+            melt_quote.id,
+            mint_quote.id
+        );
 
         Ok(Some(amount))
     }

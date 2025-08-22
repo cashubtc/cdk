@@ -248,13 +248,12 @@ impl MintPayment for Lnd {
                 let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
                 Ok(PaymentQuoteResponse {
-                    request_lookup_id: PaymentIdentifier::PaymentHash(
+                    request_lookup_id: Some(PaymentIdentifier::PaymentHash(
                         *bolt11_options.bolt11.payment_hash().as_ref(),
-                    ),
+                    )),
                     amount,
                     fee: fee.into(),
                     state: MeltQuoteState::Unpaid,
-                    options: None,
                     unit: unit.clone(),
                 })
             }

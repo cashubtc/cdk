@@ -36,9 +36,11 @@ serde_with.workspace = true
 regex = { workspace = true, optional = true }
 strum = { workspace = true, optional = true }
 strum_macros = { workspace = true, optional = true }
+zeroize = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 instant = { workspace = true, features = ["wasm-bindgen", "inaccurate"] }
+uuid = { workspace = true, features = ["js"], optional = true }
 
 [dev-dependencies]
 bip39.workspace = true

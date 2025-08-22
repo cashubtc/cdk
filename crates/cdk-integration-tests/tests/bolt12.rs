@@ -1,6 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
@@ -8,8 +9,8 @@ use cashu::amount::SplitTarget;
 use cashu::nut23::Amountless;
 use cashu::{Amount, CurrencyUnit, MintRequest, PreMintSecrets, ProofsMethods};
 use cdk::wallet::{HttpClient, MintConnector, Wallet};
+use cdk_integration_tests::get_mint_url_from_env;
 use cdk_integration_tests::init_regtest::{get_cln_dir, get_temp_dir};
-use cdk_integration_tests::{get_mint_url_from_env, wait_for_mint_to_be_paid};
 use cdk_sqlite::wallet::memory;
 use ln_regtest_rs::ln_client::ClnClient;
 
@@ -115,7 +116,9 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
         .await
         .unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wallet
+        .wait_for_payment(&mint_quote, Duration::from_secs(60))
+        .await?;
 
     wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
 
@@ -127,11 +130,13 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
     assert_eq!(proofs.total_amount().unwrap(), 10.into());
 
     cln_client
-        .pay_bolt12_offer(Some(11_000), mint_quote.request)
+        .pay_bolt12_offer(Some(11_000), mint_quote.request.clone())
         .await
         .unwrap();
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wallet
+        .wait_for_payment(&mint_quote, Duration::from_secs(60))
+        .await?;
 
     wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
 
@@ -181,7 +186,11 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
     cln_client
         .pay_bolt12_offer(None, quote_one.request.clone())
         .await?;
-    wait_for_mint_to_be_paid(&wallet_one, &quote_one.id, 60).await?;
+
+    wallet_one
+        .wait_for_payment(&quote_one, Duration::from_secs(60))
+        .await?;
+
     let proofs_one = wallet_one
         .mint_bolt12(&quote_one.id, None, SplitTarget::default(), None)
         .await?;
@@ -195,7 +204,10 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
     cln_client
         .pay_bolt12_offer(None, quote_two.request.clone())
         .await?;
-    wait_for_mint_to_be_paid(&wallet_two, &quote_two.id, 60).await?;
+
+    wallet_two
+        .wait_for_payment(&quote_two, Duration::from_secs(60))
+        .await?;
 
     let proofs_two = wallet_two
         .mint_bolt12(&quote_two.id, None, SplitTarget::default(), None)
@@ -254,8 +266,6 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
         None,
     )?;
 
-    wallet.get_mint_info().await?;
-
     let mint_amount = Amount::from(20_000);
 
     // Create a single-use BOLT12 quote
@@ -271,7 +281,9 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
         .await?;
 
     // Wait for payment to be processed
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 60).await?;
+    wallet
+        .wait_for_payment(&mint_quote, Duration::from_secs(60))
+        .await?;
 
     let offer = cln_client
         .get_bolt12_offer(Some(10_000), true, "hhhhhhhh".to_string())
@@ -309,8 +321,6 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         None,
     )?;
 
-    wallet.get_mint_info().await?;
-
     // Create a single-use BOLT12 quote
     let mint_quote = wallet.mint_bolt12_quote(None, None).await?;
 
@@ -330,7 +340,9 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         .pay_bolt12_offer(Some(pay_amount_msats), mint_quote.request.clone())
         .await?;
 
-    wait_for_mint_to_be_paid(&wallet, &mint_quote.id, 10).await?;
+    wallet
+        .wait_for_payment(&mint_quote, Duration::from_secs(10))
+        .await?;
 
     let state = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
 

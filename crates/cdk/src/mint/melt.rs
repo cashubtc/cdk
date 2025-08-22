@@ -9,7 +9,7 @@ use cdk_common::nut00::ProofsMethods;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::{
     Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, OutgoingPaymentOptions,
-    PaymentQuoteOptions,
+    PaymentIdentifier,
 };
 use cdk_common::{MeltOptions, MeltQuoteBolt12Request};
 use lightning::offers::offer::Offer;
@@ -202,7 +202,8 @@ impl Mint {
         );
 
         tracing::debug!(
-            "New melt quote {} for {} {} with request id {}",
+            "New {} melt quote {} for {} {} with request id {:?}",
+            quote.payment_method,
             quote.id,
             amount_quote_unit,
             unit,
@@ -268,7 +269,6 @@ impl Mint {
             max_fee_amount: None,
             timeout_secs: None,
             melt_options: *options,
-            invoice: None,
         };
 
         let payment_quote = ln
@@ -287,13 +287,8 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
-        let invoice = payment_quote.options.and_then(|options| match options {
-            PaymentQuoteOptions::Bolt12 { invoice } => invoice,
-        });
-
         let payment_request = MeltPaymentRequest::Bolt12 {
             offer: Box::new(offer),
-            invoice,
         };
 
         let quote = MeltQuote::new(
@@ -308,7 +303,8 @@ impl Mint {
         );
 
         tracing::debug!(
-            "New melt quote {} for {} {} with request id {}",
+            "New {} melt quote {} for {} {} with request id {:?}",
+            quote.payment_method,
             quote.id,
             amount,
             unit,
@@ -380,7 +376,7 @@ impl Mint {
                     .ok_or(Error::InvoiceAmountUndefined)?
                     .amount_msat(),
             },
-            MeltPaymentRequest::Bolt12 { offer, invoice: _ } => match offer.amount() {
+            MeltPaymentRequest::Bolt12 { offer } => match offer.amount() {
                 Some(amount) => {
                     let (amount, currency) = match amount {
                         lightning::offers::offer::Amount::Bitcoin { amount_msats } => {
@@ -448,6 +444,7 @@ impl Mint {
     pub async fn verify_melt_request(
         &self,
         tx: &mut Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
+        input_verification: Verification,
         melt_request: &MeltRequest<Uuid>,
     ) -> Result<(ProofWriter, MeltQuote), Error> {
         let (state, quote) = tx
@@ -467,7 +464,7 @@ impl Mint {
         let Verification {
             amount: input_amount,
             unit: input_unit,
-        } = self.verify_inputs(melt_request.inputs()).await?;
+        } = input_verification;
 
         ensure_cdk!(input_unit.is_some(), Error::UnsupportedUnit);
 
@@ -526,18 +523,15 @@ impl Mint {
         use std::sync::Arc;
         async fn check_payment_state(
             ln: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
-            melt_quote: &MeltQuote,
+            lookup_id: &PaymentIdentifier,
         ) -> anyhow::Result<MakePaymentResponse> {
-            match ln
-                .check_outgoing_payment(&melt_quote.request_lookup_id)
-                .await
-            {
+            match ln.check_outgoing_payment(lookup_id).await {
                 Ok(response) => Ok(response),
                 Err(check_err) => {
                     // If we cannot check the status of the payment we keep the proofs stuck as pending.
                     tracing::error!(
                         "Could not check the status of payment for {},. Proofs stuck as pending",
-                        melt_quote.id
+                        lookup_id
                     );
                     tracing::error!("Checking payment error: {}", check_err);
                     bail!("Could not check payment status")
@@ -545,10 +539,12 @@ impl Mint {
             }
         }
 
+        let verification = self.verify_inputs(melt_request.inputs()).await?;
+
         let mut tx = self.localstore.begin_transaction().await?;
 
         let (proof_writer, quote) = self
-            .verify_melt_request(&mut tx, melt_request)
+            .verify_melt_request(&mut tx, verification, melt_request)
             .await
             .map_err(|err| {
                 tracing::debug!("Error attempting to verify melt quote: {}", err);
@@ -575,7 +571,7 @@ impl Mint {
                 // correct and the mint should pay the full invoice amount if inputs
                 // > `then quote.amount` are included. This is checked in the
                 // `verify_melt` method.
-                let partial_amount = match quote.unit {
+                let _partial_amount = match quote.unit {
                     CurrencyUnit::Sat | CurrencyUnit::Msat => {
                         match self.check_melt_expected_ln_fees(&quote, melt_request).await {
                             Ok(amount) => amount,
@@ -587,10 +583,10 @@ impl Mint {
                     }
                     _ => None,
                 };
-                tracing::debug!("partial_amount: {:?}", partial_amount);
+
                 let ln = match self.payment_processors.get(&PaymentProcessorKey::new(
                     quote.unit.clone(),
-                    PaymentMethod::Bolt11,
+                    quote.payment_method.clone(),
                 )) {
                     Some(ln) => ln,
                     None => {
@@ -610,12 +606,14 @@ impl Mint {
                         if pay.status == MeltQuoteState::Unknown
                             || pay.status == MeltQuoteState::Failed =>
                     {
-                        let check_response =
-                            if let Ok(ok) = check_payment_state(Arc::clone(ln), &quote).await {
-                                ok
-                            } else {
-                                return Err(Error::Internal);
-                            };
+                        tracing::warn!("Got {} status when paying melt quote {} for {} {}. Checking with backend...", pay.status, quote.id, quote.amount, quote.unit);
+                        let check_response = if let Ok(ok) =
+                            check_payment_state(Arc::clone(ln), &pay.payment_lookup_id).await
+                        {
+                            ok
+                        } else {
+                            return Err(Error::Internal);
+                        };
 
                         if check_response.status == MeltQuoteState::Paid {
                             tracing::warn!("Pay invoice returned {} but check returned {}. Proofs stuck as pending", pay.status.to_string(), check_response.status.to_string());
@@ -638,8 +636,16 @@ impl Mint {
 
                         tracing::error!("Error returned attempting to pay: {} {}", quote.id, err);
 
+                        let lookup_id = quote.request_lookup_id.as_ref().ok_or_else(|| {
+                            tracing::error!(
+                                "No payment id could not lookup payment for {} after error.",
+                                quote.id
+                            );
+                            Error::Internal
+                        })?;
+
                         let check_response =
-                            if let Ok(ok) = check_payment_state(Arc::clone(ln), &quote).await {
+                            if let Ok(ok) = check_payment_state(Arc::clone(ln), lookup_id).await {
                                 ok
                             } else {
                                 proof_writer.commit();
@@ -662,6 +668,7 @@ impl Mint {
                             "Lightning payment for quote {} failed.",
                             melt_request.quote()
                         );
+                        proof_writer.rollback().await?;
                         return Err(Error::PaymentFailed);
                     }
                     MeltQuoteState::Pending => {
@@ -683,21 +690,18 @@ impl Mint {
                 let payment_lookup_id = pre.payment_lookup_id;
                 let mut tx = self.localstore.begin_transaction().await?;
 
-                if payment_lookup_id != quote.request_lookup_id {
+                if Some(payment_lookup_id.clone()).as_ref() != quote.request_lookup_id.as_ref() {
                     tracing::info!(
-                        "Payment lookup id changed post payment from {} to {}",
-                        quote.request_lookup_id,
+                        "Payment lookup id changed post payment from {:?} to {}",
+                        &quote.request_lookup_id,
                         payment_lookup_id
                     );
 
                     let mut melt_quote = quote;
-                    melt_quote.request_lookup_id = payment_lookup_id;
+                    melt_quote.request_lookup_id = Some(payment_lookup_id.clone());
 
                     if let Err(err) = tx
-                        .update_melt_quote_request_lookup_id(
-                            &melt_quote.id,
-                            &melt_quote.request_lookup_id,
-                        )
+                        .update_melt_quote_request_lookup_id(&melt_quote.id, &payment_lookup_id)
                         .await
                     {
                         tracing::warn!("Could not update payment lookup id: {}", err);
@@ -729,6 +733,7 @@ impl Mint {
 
         Ok(res)
     }
+
     /// Process melt request marking proofs as spent
     /// The melt request must be verifyed using [`Self::verify_melt_request`]
     /// before calling [`Self::process_melt_request`]
@@ -742,8 +747,6 @@ impl Mint {
         payment_preimage: Option<String>,
         total_spent: Amount,
     ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
-        tracing::debug!("Processing melt quote: {}", melt_request.quote());
-
         let input_ys = melt_request.inputs().ys()?;
 
         proof_writer
@@ -759,8 +762,10 @@ impl Mint {
 
         let mut change = None;
 
+        let inputs_amount = melt_request.inputs_amount()?;
+
         // Check if there is change to return
-        if melt_request.inputs_amount()? > total_spent {
+        if inputs_amount > total_spent {
             // Check if wallet provided change outputs
             if let Some(outputs) = melt_request.outputs().clone() {
                 let blinded_messages: Vec<PublicKey> =
@@ -784,7 +789,6 @@ impl Mint {
                 let change_target = melt_request.inputs_amount()? - total_spent - fee;
 
                 let mut amounts = change_target.split();
-                let mut change_sigs = Vec::with_capacity(amounts.len());
 
                 if outputs.len().lt(&amounts.len()) {
                     tracing::debug!(
@@ -799,14 +803,19 @@ impl Mint {
                     amounts.sort_by(|a, b| b.cmp(a));
                 }
 
-                let mut outputs = outputs;
+                let mut blinded_messages = vec![];
 
-                for (amount, blinded_message) in amounts.iter().zip(&mut outputs) {
+                for (amount, mut blinded_message) in amounts.iter().zip(outputs.clone()) {
                     blinded_message.amount = *amount;
-
-                    let blinded_signature = self.blind_sign(blinded_message.clone()).await?;
-                    change_sigs.push(blinded_signature)
+                    blinded_messages.push(blinded_message);
                 }
+
+                // commit db transaction before calling the signatory
+                tx.commit().await?;
+
+                let change_sigs = self.blind_sign(blinded_messages).await?;
+
+                let mut tx = self.localstore.begin_transaction().await?;
 
                 tx.add_blind_signatures(
                     &outputs[0..change_sigs.len()]
@@ -819,7 +828,23 @@ impl Mint {
                 .await?;
 
                 change = Some(change_sigs);
+
+                proof_writer.commit();
+                tx.commit().await?;
+            } else {
+                tracing::info!(
+                    "Inputs for {} {} greater then spent on melt {} but change outputs not provided.",
+                    quote.id,
+                    inputs_amount,
+                    total_spent
+                );
+                proof_writer.commit();
+                tx.commit().await?;
             }
+        } else {
+            tracing::debug!("No change required for melt {}", quote.id);
+            proof_writer.commit();
+            tx.commit().await?;
         }
 
         self.pubsub_manager.melt_quote_status(
@@ -829,8 +854,17 @@ impl Mint {
             MeltQuoteState::Paid,
         );
 
-        proof_writer.commit();
-        tx.commit().await?;
+        tracing::debug!(
+            "Melt for quote {} completed total spent {}, total inputs: {}, change given: {}",
+            quote.id,
+            total_spent,
+            inputs_amount,
+            change
+                .as_ref()
+                .map(|c| Amount::try_sum(c.iter().map(|a| a.amount))
+                    .expect("Change cannot overflow"))
+                .unwrap_or_default()
+        );
 
         Ok(MeltQuoteBolt11Response {
             amount: quote.amount,

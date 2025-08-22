@@ -123,6 +123,8 @@ export CDK_PAYMENT_PROCESSOR_LISTEN_PORT="8090";
 
 echo "$CDK_PAYMENT_PROCESSOR_CLN_RPC_PATH"
 
+cargo b --bin cdk-payment-processor
+
 cargo run --bin cdk-payment-processor &
 
 CDK_PAYMENT_PROCESSOR_PID=$!

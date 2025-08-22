@@ -21,6 +21,8 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<Option<Proofs>, Error> {
+        self.refresh_keysets().await?;
+
         tracing::info!("Swapping");
         let mint_url = &self.mint_url;
         let unit = &self.unit;
@@ -51,10 +53,6 @@ impl Wallet {
             pre_swap.pre_mint_secrets.secrets(),
             &active_keys,
         )?;
-
-        self.localstore
-            .increment_keyset_counter(&active_keyset_id, pre_swap.derived_secret_count)
-            .await?;
 
         let mut added_proofs = Vec::new();
         let change_proofs;
@@ -248,12 +246,42 @@ impl Wallet {
 
         let derived_secret_count;
 
-        let count = self
-            .localstore
-            .get_keyset_counter(&active_keyset_id)
-            .await?;
+        // Calculate total secrets needed and atomically reserve counter range
+        let total_secrets_needed = match spending_conditions {
+            Some(_) => {
+                // For spending conditions, we only need to count change secrets
+                change_amount.split_targeted(&change_split_target)?.len() as u32
+            }
+            None => {
+                // For no spending conditions, count both send and change secrets
+                let send_count = send_amount
+                    .unwrap_or(Amount::ZERO)
+                    .split_targeted(&SplitTarget::default())?
+                    .len() as u32;
+                let change_count = change_amount.split_targeted(&change_split_target)?.len() as u32;
+                send_count + change_count
+            }
+        };
 
-        let mut count = count.map_or(0, |c| c + 1);
+        // Atomically get the counter range we need
+        let starting_counter = if total_secrets_needed > 0 {
+            tracing::debug!(
+                "Incrementing keyset {} counter by {}",
+                active_keyset_id,
+                total_secrets_needed
+            );
+
+            let new_counter = self
+                .localstore
+                .increment_keyset_counter(&active_keyset_id, total_secrets_needed)
+                .await?;
+
+            new_counter - total_secrets_needed
+        } else {
+            0 // No secrets needed, don't increment the counter
+        };
+
+        let mut count = starting_counter;
 
         let (mut desired_messages, change_messages) = match spending_conditions {
             Some(conditions) => {

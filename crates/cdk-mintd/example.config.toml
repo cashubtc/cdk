@@ -6,6 +6,15 @@ mnemonic = ""
 # input_fee_ppk = 0
 # enable_swagger_ui = false
 
+[info.logging]
+# Where to output logs: "stdout", "file", or "both" (default: "both")
+# Note: "stdout" actually outputs to stderr (standard error stream)
+# output = "both"
+# Log level for console output (default: "info")
+# console_level = "info"  
+# Log level for file output (default: "debug")
+# file_level = "debug"
+
 [mint_management_rpc]
 enabled = false
 # address = "127.0.0.1"
@@ -38,8 +47,21 @@ tti = 60
 
 
 [database]
-# Database engine (sqlite/redb) defaults to sqlite
-# engine = "sqlite"
+# Database engine (sqlite/postgres) defaults to sqlite
+engine = "sqlite"
+
+# PostgreSQL configuration (when engine = "postgres")
+[database.postgres]
+# PostgreSQL connection URL
+# Can also be set via CDK_MINTD_POSTGRES_URL or CDK_MINTD_DATABASE_URL environment variables
+# Environment variables take precedence over config file settings
+url = "postgresql://user:password@localhost:5432/cdk_mint"
+# TLS mode: "disable", "prefer", "require" (optional, defaults to "disable")
+tls_mode = "disable"
+# Maximum number of connections in the pool (optional, defaults to 20)
+max_connections = 20
+# Connection timeout in seconds (optional, defaults to 10)
+connection_timeout_seconds = 10
 
 [ln]
 # Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits'
@@ -58,8 +80,7 @@ reserve_fee_min = 4
 # admin_api_key = ""
 # invoice_api_key = ""
 # lnbits_api = ""
-# To be set true to support pre v1 lnbits api
-# retro_api=false
+# Note: Only LNBits v1 API is supported (websocket-based)
 
 # [lnd]
 # address = "https://domain:port"

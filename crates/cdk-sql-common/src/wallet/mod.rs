@@ -839,41 +839,44 @@ ON CONFLICT(id) DO UPDATE SET
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<(), Self::Err> {
+    async fn increment_keyset_counter(&self, keyset_id: &Id, count: u32) -> Result<u32, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let tx = ConnectionWithTransaction::new(conn).await?;
+
+        // Lock the row and get current counter
+        let current_counter = query(
+            r#"
+            SELECT counter
+            FROM keyset
+            WHERE id=:id
+            FOR UPDATE
+            "#,
+        )?
+        .bind("id", keyset_id.to_string())
+        .pluck(&tx)
+        .await?
+        .map(|n| Ok::<_, Error>(column_as_number!(n)))
+        .transpose()?
+        .unwrap_or(0);
+
+        let new_counter = current_counter + count;
+
+        // Update with the new counter value
         query(
             r#"
             UPDATE keyset
-            SET counter=counter+:count
+            SET counter=:new_counter
             WHERE id=:id
             "#,
         )?
-        .bind("count", count)
+        .bind("new_counter", new_counter)
         .bind("id", keyset_id.to_string())
-        .execute(&*conn)
+        .execute(&tx)
         .await?;
 
-        Ok(())
-    }
+        tx.commit().await?;
 
-    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keyset_counter(&self, keyset_id: &Id) -> Result<Option<u32>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT
-                counter
-            FROM
-                keyset
-            WHERE
-                id=:id
-            "#,
-        )?
-        .bind("id", keyset_id.to_string())
-        .pluck(&*conn)
-        .await?
-        .map(|n| Ok::<_, Error>(column_as_number!(n)))
-        .transpose()?)
+        Ok(new_counter)
     }
 
     #[instrument(skip(self))]

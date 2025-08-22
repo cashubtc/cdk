@@ -18,8 +18,6 @@ use tracing::Level;
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
-#[cfg(feature = "bip353")]
-mod bip353;
 mod nostr_storage;
 mod sub_commands;
 mod token_storage;
@@ -102,9 +100,9 @@ async fn main() -> Result<()> {
     let args: Cli = Cli::parse();
     let default_filter = args.log_level;
 
-    let sqlx_filter = "sqlx=warn,hyper_util=warn,reqwest=warn";
+    let filter = "rustls=warn,hyper_util=warn,reqwest=warn";
 
-    let env_filter = EnvFilter::new(format!("{default_filter},{sqlx_filter}"));
+    let env_filter = EnvFilter::new(format!("{default_filter},{filter}"));
 
     // Parse input
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
@@ -211,7 +209,8 @@ async fn main() -> Result<()> {
             let wallet_clone = wallet.clone();
 
             tokio::spawn(async move {
-                if let Err(err) = wallet_clone.get_mint_info().await {
+                // We refresh keysets, this internally gets mint info
+                if let Err(err) = wallet_clone.refresh_keysets().await {
                     tracing::error!(
                         "Could not get mint quote for {}, {}",
                         wallet_clone.mint_url,

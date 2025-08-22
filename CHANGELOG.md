@@ -18,8 +18,11 @@
 - cdk-integration-tests: New binary `start_fake_mint` for testing fake mint instances ([thesimplekid]).
 - cdk-integration-tests: New binary `start_regtest_mints` for testing regtest mints ([thesimplekid]).
 - cdk-integration-tests: Shared utilities module for common integration test functionality ([thesimplekid]).
+- cdk-redb: Database migration to increment keyset counters by 1 for existing keysets with counter > 0 ([thesimplekid]).
+- cdk-sql-common: Database migration to increment keyset counters by 1 for existing keysets with counter > 0 ([thesimplekid]).
 
 ### Changed
+- cdk-common: Modified `Database::get_keyset_counter` trait method to return `u32` instead of `Option<u32>` for simpler keyset counter handling ([thesimplekid]).
 - cdk: Refactored wallet keyset management methods for better clarity and separation of concerns ([thesimplekid]).
 - cdk: Renamed `get_keyset_keys` to `fetch_keyset_keys` to indicate network operation ([thesimplekid]).
 - cdk: Renamed `get_active_mint_keyset` to `fetch_active_keyset` for consistency ([thesimplekid]).
@@ -38,6 +41,8 @@
 - cdk-integration-tests: Updated integration tests to use proper temp directory management ([thesimplekid]).
 - cdk-integration-tests: Simplified regtest shell scripts to use new binaries ([thesimplekid]).
 - crates/cdk-mintd: Moved mintd library functions to separate module for better organization and testability ([thesimplekid]).
+- Updated MSRV to 1.85.0 ([thesimplekid]).
+- dev: Simplified Nix flake configuration by removing specific dependency version constraints from MSRV shell hook ([thesimplekid]).
 
 ### Fixed
 - cashu: Fixed CurrencyUnit custom units preserving original case instead of being converted to uppercase ([thesimplekid]).

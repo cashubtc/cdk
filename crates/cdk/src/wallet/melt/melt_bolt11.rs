@@ -15,7 +15,7 @@ use crate::nuts::{
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
 use crate::wallet::MeltQuote;
-use crate::{ensure_cdk, Error, Wallet};
+use crate::{ensure_cdk, Amount, Error, Wallet};
 
 impl Wallet {
     /// Melt Quote
@@ -48,6 +48,8 @@ impl Wallet {
         request: String,
         options: Option<MeltOptions>,
     ) -> Result<MeltQuote, Error> {
+        self.refresh_keysets().await?;
+
         let invoice = Bolt11Invoice::from_str(&request)?;
 
         let quote_request = MeltQuoteBolt11Request {
@@ -148,19 +150,32 @@ impl Wallet {
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
 
-        let count = self
-            .localstore
-            .get_keyset_counter(&active_keyset_id)
-            .await?;
+        let change_amount = proofs_total - quote_info.amount;
 
-        let count = count.map_or(0, |c| c + 1);
+        let premint_secrets = if change_amount <= Amount::ZERO {
+            PreMintSecrets::new(active_keyset_id)
+        } else {
+            // TODO: consolidate this calculation with from_seed_blank into a shared function
+            // Calculate how many secrets will be needed using the same logic as from_seed_blank
+            let num_secrets =
+                ((u64::from(change_amount) as f64).log2().ceil() as u64).max(1) as u32;
 
-        let premint_secrets = PreMintSecrets::from_seed_blank(
-            active_keyset_id,
-            count,
-            &self.seed,
-            proofs_total - quote_info.amount,
-        )?;
+            tracing::debug!(
+                "Incrementing keyset {} counter by {}",
+                active_keyset_id,
+                num_secrets
+            );
+
+            // Atomically get the counter range we need
+            let new_counter = self
+                .localstore
+                .increment_keyset_counter(&active_keyset_id, num_secrets)
+                .await?;
+
+            let count = new_counter - num_secrets;
+
+            PreMintSecrets::from_seed_blank(active_keyset_id, count, &self.seed, change_amount)?
+        };
 
         let request = MeltRequest::new(
             quote_id.to_string(),
@@ -227,11 +242,6 @@ impl Wallet {
                     "Change amount returned from melt: {}",
                     change_proofs.total_amount()?
                 );
-
-                // Update counter for keyset
-                self.localstore
-                    .increment_keyset_counter(&active_keyset_id, change_proofs.len() as u32)
-                    .await?;
 
                 change_proofs
                     .into_iter()
@@ -336,7 +346,7 @@ impl Wallet {
                 .swap(
                     Some(exact_amount),
                     SplitTarget::None,
-                    vec![proof.clone()],
+                    vec![proof],
                     None,
                     false,
                 )

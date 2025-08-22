@@ -2,7 +2,7 @@ use cdk_common::amount::to_unit;
 use cdk_common::common::PaymentProcessorKey;
 use cdk_common::mint::MintQuote;
 use cdk_common::util::unix_time;
-use cdk_common::{MintQuoteState, PaymentMethod};
+use cdk_common::{Amount, MintQuoteState, PaymentMethod};
 use tracing::instrument;
 
 use super::Mint;
@@ -39,21 +39,33 @@ impl Mint {
             .check_incoming_payment_status(&quote.request_lookup_id)
             .await?;
 
+        if ln_status.is_empty() {
+            return Ok(());
+        }
+
         let mut tx = self.localstore.begin_transaction().await?;
 
         for payment in ln_status {
-            if !quote.payment_ids().contains(&&payment.payment_id) {
-                tracing::debug!("Found payment for quote {} when checking.", quote.id);
+            if !quote.payment_ids().contains(&&payment.payment_id)
+                && payment.payment_amount > Amount::ZERO
+            {
+                tracing::debug!(
+                    "Found payment of {} {} for quote {} when checking.",
+                    payment.payment_amount,
+                    payment.unit,
+                    quote.id
+                );
+
                 let amount_paid = to_unit(payment.payment_amount, &payment.unit, &quote.unit)?;
 
                 quote.increment_amount_paid(amount_paid)?;
                 quote.add_payment(amount_paid, payment.payment_id.clone(), unix_time())?;
 
-                tx.increment_mint_quote_amount_paid(&quote.id, amount_paid, payment.payment_id)
+                let total_paid = tx
+                    .increment_mint_quote_amount_paid(&quote.id, amount_paid, payment.payment_id)
                     .await?;
 
-                self.pubsub_manager
-                    .mint_quote_bolt11_status(quote.clone(), MintQuoteState::Paid);
+                self.pubsub_manager.mint_quote_payment(quote, total_paid);
             }
         }
 

@@ -28,7 +28,7 @@ cdk-sqlite = { workspace = true }
 cdk-redb = { workspace = true }
 cdk-fake-wallet = { workspace = true }
 cdk-common = { workspace = true, features = ["mint", "wallet", "auth"] }
-cdk-mintd = { workspace = true, features = ["cln", "lnd", "fakewallet", "grpc-processor", "auth", "lnbits", "management-rpc"] }
+cdk-mintd = { workspace = true, features = ["cln", "lnd", "fakewallet", "grpc-processor", "auth", "lnbits", "management-rpc", "sqlite", "postgres"] }
 futures = { workspace = true, default-features = false, features = [
     "executor",
 ] }
@@ -55,6 +55,7 @@ tokio.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 getrandom = { version = "0.2", features = ["js"] }
 instant = { workspace = true, features = ["wasm-bindgen", "inaccurate"] }
+uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 bip39 = { workspace = true, features = ["rand"] }

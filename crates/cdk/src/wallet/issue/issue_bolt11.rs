@@ -52,6 +52,8 @@ impl Wallet {
         let mint_url = self.mint_url.clone();
         let unit = self.unit.clone();
 
+        self.refresh_keysets().await?;
+
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
             let settings = self
@@ -194,15 +196,7 @@ impl Wallet {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
-        // Check that mint is in store of mints
-        if self
-            .localstore
-            .get_mint(self.mint_url.clone())
-            .await?
-            .is_none()
-        {
-            self.get_mint_info().await?;
-        }
+        self.refresh_keysets().await?;
 
         let quote_info = self
             .localstore
@@ -229,13 +223,6 @@ impl Wallet {
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
 
-        let count = self
-            .localstore
-            .get_keyset_counter(&active_keyset_id)
-            .await?;
-
-        let count = count.map_or(0, |c| c + 1);
-
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
                 active_keyset_id,
@@ -243,13 +230,33 @@ impl Wallet {
                 &amount_split_target,
                 spending_conditions,
             )?,
-            None => PreMintSecrets::from_seed(
-                active_keyset_id,
-                count,
-                &self.seed,
-                amount_mintable,
-                &amount_split_target,
-            )?,
+            None => {
+                // Calculate how many secrets we'll need
+                let amount_split = amount_mintable.split_targeted(&amount_split_target)?;
+                let num_secrets = amount_split.len() as u32;
+
+                tracing::debug!(
+                    "Incrementing keyset {} counter by {}",
+                    active_keyset_id,
+                    num_secrets
+                );
+
+                // Atomically get the counter range we need
+                let new_counter = self
+                    .localstore
+                    .increment_keyset_counter(&active_keyset_id, num_secrets)
+                    .await?;
+
+                let count = new_counter - num_secrets;
+
+                PreMintSecrets::from_seed(
+                    active_keyset_id,
+                    count,
+                    &self.seed,
+                    amount_mintable,
+                    &amount_split_target,
+                )?
+            }
         };
 
         let mut request = MintRequest {
@@ -287,19 +294,6 @@ impl Wallet {
 
         // Remove filled quote from store
         self.localstore.remove_mint_quote(&quote_info.id).await?;
-
-        if spending_conditions.is_none() {
-            tracing::debug!(
-                "Incrementing keyset {} counter by {}",
-                active_keyset_id,
-                proofs.len()
-            );
-
-            // Update counter for keyset
-            self.localstore
-                .increment_keyset_counter(&active_keyset_id, proofs.len() as u32)
-                .await?;
-        }
 
         let proof_infos = proofs
             .iter()

@@ -3,6 +3,7 @@ use std::fmt::{Debug, Formatter};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{env, fs};
 
 use anyhow::{anyhow, bail, Result};
@@ -27,8 +28,6 @@ use cdk_fake_wallet::FakeWallet;
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
-
-use crate::wait_for_mint_to_be_paid;
 
 pub struct DirectMintConnection {
     pub mint: Mint,
@@ -253,6 +252,7 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         HashMap::default(),
         HashSet::default(),
         0,
+        CurrencyUnit::Sat,
     );
 
     mint_builder
@@ -361,7 +361,9 @@ pub async fn fund_wallet(
     let desired_amount = Amount::from(amount);
     let quote = wallet.mint_quote(desired_amount, None).await?;
 
-    wait_for_mint_to_be_paid(&wallet, &quote.id, 60).await?;
+    wallet
+        .wait_for_payment(&quote, Duration::from_secs(60))
+        .await?;
 
     Ok(wallet
         .mint(&quote.id, split_target.unwrap_or_default(), None)

@@ -1,10 +1,11 @@
 use std::sync::Arc;
+use std::time::Duration;
 
-use cdk::amount::SplitTarget;
 use cdk::error::Error;
-use cdk::nuts::{CurrencyUnit, MintQuoteState, NotificationPayload};
-use cdk::wallet::{SendOptions, Wallet, WalletSubscription};
+use cdk::nuts::CurrencyUnit;
+use cdk::wallet::{SendOptions, Wallet};
 use cdk::{Amount, OidcClient};
+use cdk_common::amount::SplitTarget;
 use cdk_common::{MintInfo, ProofsMethods};
 use cdk_sqlite::wallet::memory;
 use rand::Rng;
@@ -36,7 +37,7 @@ async fn main() -> Result<(), Error> {
     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None)?;
 
     let mint_info = wallet
-        .get_mint_info()
+        .fetch_mint_info()
         .await
         .expect("mint info")
         .expect("could not get mint info");
@@ -57,29 +58,13 @@ async fn main() -> Result<(), Error> {
         .await
         .expect("Could not mint blind auth");
 
-    // Request a mint quote from the wallet
-    let quote = wallet.mint_quote(amount, None).await?;
+    let quote = wallet.mint_quote(amount, None).await.unwrap();
+    let proofs = wallet
+        .wait_and_mint_quote(quote, SplitTarget::default(), None, Duration::from_secs(10))
+        .await
+        .unwrap();
 
-    // Subscribe to updates on the mint quote state
-    let mut subscription = wallet
-        .subscribe(WalletSubscription::Bolt11MintQuoteState(vec![quote
-            .id
-            .clone()]))
-        .await;
-
-    // Wait for the mint quote to be paid
-    while let Some(msg) = subscription.recv().await {
-        if let NotificationPayload::MintQuoteBolt11Response(response) = msg {
-            if response.state == MintQuoteState::Paid {
-                break;
-            }
-        }
-    }
-
-    // Mint the received amount
-    let receive_amount = wallet.mint(&quote.id, SplitTarget::default(), None).await?;
-
-    println!("Received: {}", receive_amount.total_amount()?);
+    println!("Received: {}", proofs.total_amount()?);
 
     // Get the total balance of the wallet
     let balance = wallet.total_balance().await?;

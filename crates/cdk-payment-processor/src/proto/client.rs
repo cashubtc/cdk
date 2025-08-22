@@ -229,7 +229,6 @@ impl MintPayment for PaymentProcessorClient {
                             offer: opts.offer.to_string(),
                             max_fee_amount: opts.max_fee_amount.map(Into::into),
                             timeout_secs: opts.timeout_secs,
-                            invoice: opts.invoice,
                             melt_options: opts.melt_options.map(Into::into),
                         },
                     )),

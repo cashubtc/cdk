@@ -196,7 +196,7 @@ async fn test_mint_nut06() {
 
     let initial_mint_url = wallet_alice.mint_url.clone();
     let mint_info_before = wallet_alice
-        .get_mint_info()
+        .fetch_mint_info()
         .await
         .expect("Failed to get mint info")
         .unwrap();
@@ -321,8 +321,7 @@ async fn test_attempt_to_swap_by_overflowing() {
             cdk::Error::AmountOverflow => (),
             cdk::Error::AmountError(_) => (),
             _ => {
-                println!("{:?}", err);
-                panic!("Wrong error returned in swap overflow")
+                panic!("Wrong error returned in swap overflow {:?}", err);
             }
         },
     }
