@@ -57,15 +57,19 @@ pub enum Error {
     NotImplemented,
 }
 
+/// Cairo Executable
 #[derive(Deserialize)]
 pub struct Executable {
-    program: Program,
+    /// Cairo program
+    pub program: Program,
 }
 
+/// Cairo Program
 #[derive(Deserialize)]
 pub struct Program {
     #[serde(deserialize_with = "deserialize_felt_vec")]
-    bytecode: Vec<Felt>,
+    /// Cairo program bytecode
+    pub bytecode: Vec<Felt>,
 }
 
 fn deserialize_felt_vec<'de, D>(deserializer: D) -> Result<Vec<Felt>, D::Error>
@@ -90,6 +94,17 @@ where
             Ok(corrected_felt)
         })
         .collect()
+}
+
+/// Hash an array of Felts in little endian format using Blake2s
+pub fn hash_array_felt(bytecode: &[Felt]) -> [u8; 32] {
+    let mut hasher = Blake2sHasher::default();
+    for felt in bytecode {
+        for byte in felt.to_bytes_le().iter() {
+            hasher.update(&[*byte]);
+        }
+    }
+    hasher.finalize().into()
 }
 
 /// Cairo spending conditions
@@ -262,16 +277,6 @@ mod tests {
     use super::*;
     use crate::secret::Secret;
     use crate::{Amount, Id, Kind, Nut10Secret, SecretKey};
-
-    fn hash_array_felt(bytecode: &[Felt]) -> [u8; 32] {
-        let mut hasher = Blake2sHasher::default();
-        for felt in bytecode {
-            for byte in felt.to_bytes_le().iter() {
-                hasher.update(&[*byte]);
-            }
-        }
-        hasher.finalize().into()
-    }
 
     #[test]
     fn test_verify() {

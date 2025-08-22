@@ -1,11 +1,15 @@
 use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
+use cashu::nutxx::{hash_array_felt, Executable};
+use cashu::util::hex;
+use cashu::NutXXConditions;
 use cdk::nuts::{Conditions, CurrencyUnit, PublicKey, SpendingConditions};
 use cdk::wallet::types::SendKind;
 use cdk::wallet::{MultiMintWallet, SendMemo, SendOptions};
 use cdk::Amount;
 use clap::Args;
+use starknet_types_core::felt::Felt;
 
 use crate::sub_commands::balance::mint_balances;
 use crate::utils::{
@@ -32,6 +36,14 @@ pub struct SendSubCommand {
     /// Pubkey to lock proofs to
     #[arg(short, long, action = clap::ArgAction::Append)]
     pubkey: Vec<String>,
+    // Cairo executable required to generate proofs
+    // <cairo_executable> n_args <arg1> <arg2> ...
+    #[arg(long, conflicts_with = "cairo_program_hash")]
+    cairo_executable: Option<Vec<String>>,
+    // Alternative to cairo executable, the hash of the cairo program
+    // <program_hash> n_args <arg1> <arg2> ...
+    #[arg(long, conflicts_with = "cairo_executable")]
+    cairo_program_hash: Option<Vec<String>>,
     /// Refund keys that can be used after locktime
     #[arg(long, action = clap::ArgAction::Append)]
     refund_keys: Vec<String>,
@@ -84,12 +96,14 @@ pub async fn send(
 
     check_sufficient_funds(mint_amount, token_amount)?;
 
-    let conditions = match (&sub_command_args.preimage, &sub_command_args.hash) {
-        (Some(_), Some(_)) => {
-            // This case shouldn't be reached due to Clap's conflicts_with attribute
-            unreachable!("Both preimage and hash were provided despite conflicts_with attribute")
-        }
-        (Some(preimage), None) => {
+    let conditions = match (
+        &sub_command_args.preimage,
+        &sub_command_args.hash,
+        &sub_command_args.cairo_program_hash,
+        &sub_command_args.cairo_executable,
+    ) {
+        // HTLC with preimage
+        (Some(preimage), None, None, None) => {
             let pubkeys = match sub_command_args.pubkey.is_empty() {
                 true => None,
                 false => Some(
@@ -100,7 +114,6 @@ pub async fn send(
                         .collect(),
                 ),
             };
-
             let refund_keys = match sub_command_args.refund_keys.is_empty() {
                 true => None,
                 false => Some(
@@ -127,8 +140,10 @@ pub async fn send(
                 Some(conditions),
             )?)
         }
-        (None, Some(hash)) => {
-            let pubkeys = match sub_command_args.pubkey.is_empty() {
+
+        // HTLC with hash
+        (None, Some(hash), None, None) => {
+            let pubkeys: Option<Vec<PublicKey>> = match sub_command_args.pubkey.is_empty() {
                 true => None,
                 false => Some(
                     sub_command_args
@@ -161,7 +176,113 @@ pub async fn send(
 
             Some(SpendingConditions::new_htlc_hash(hash, Some(conditions))?)
         }
-        (None, None) => match sub_command_args.pubkey.is_empty() {
+
+        // Cairo conditions from program hash directly
+        (None, None, Some(program_hash_args), None) => {
+            if program_hash_args.len() < 3 {
+                return Err(anyhow!("Not enough arguments for cairo program hash"));
+            }
+
+            let program_hash: [u8; 32] = hex::decode(program_hash_args[0].clone())?
+                .as_slice()
+                .try_into()
+                .map_err(|_| {
+                    anyhow!(
+                        "Program hash must be a 32-byte hex string, got: {}",
+                        program_hash_args[0]
+                    )
+                })?;
+
+            let narg_output = program_hash_args[1]
+                .parse::<usize>()
+                .map_err(|_| anyhow!("Invalid output length argument"))?;
+
+            let output_conditions = program_hash_args[2..]
+                .iter()
+                .map(|o| Felt::from_hex(o))
+                .collect::<Result<Vec<Felt>, _>>()?;
+
+            if output_conditions.len() != narg_output {
+                return Err(anyhow!(
+                    "Number of outputs does not match the expected output length"
+                ));
+            }
+
+            //TODO: remove this once we support multiple output hashes
+            if output_conditions.len() > 1 {
+                return Err(anyhow!(
+                    "Multiple outputs are not supported yet, found: {}",
+                    output_conditions.len()
+                ));
+            }
+
+            let output_condition = Some(NutXXConditions {
+                output: Some(hash_array_felt(&output_conditions)),
+            });
+
+            Some(SpendingConditions::CairoConditions {
+                data: program_hash,
+                conditions: output_condition,
+            })
+        }
+
+        //from executable
+        (None, None, None, Some(cairo_executable_args)) => {
+            match cairo_executable_args.is_empty() {
+                true => None,
+                false => {
+                    // find the executable file
+                    let exec_path = std::path::Path::new(&cairo_executable_args[0]);
+                    if !exec_path.exists() {
+                        return Err(anyhow!(
+                            "Cairo executable file not found: {}",
+                            exec_path.display()
+                        ));
+                    }
+                    let narg_output = cairo_executable_args[1]
+                        .parse::<usize>()
+                        .map_err(|_| anyhow!("Invalid output length argument"))?;
+
+                    // this won't have to change when we support multiple outputs
+                    let output_conditions = cairo_executable_args[2..]
+                        .iter()
+                        .map(|o| Felt::from_hex(o))
+                        .collect::<Result<Vec<Felt>, _>>()?;
+
+                    //TODO: remove this once we support multiple output hashes
+                    if output_conditions.len() > 1 {
+                        return Err(anyhow!(
+                            "Multiple outputs are not supported yet, found: {}",
+                            output_conditions.len()
+                        ));
+                    }
+
+                    if output_conditions.len() != narg_output {
+                        return Err(anyhow!(
+                            "Number of outputs does not match the specified output length: {} != {}",
+                            output_conditions.len(),
+                            narg_output
+                        ));
+                    }
+                    let executable: Executable =
+                        serde_json::from_str::<Executable>(&std::fs::read_to_string(exec_path)?)
+                            .map_err(|e| anyhow!("Failed to parse Cairo executable: {}", e))?;
+                    let program_hash = hash_array_felt(&executable.program.bytecode);
+
+                    // TODO: support multiple outputs
+                    let output_condition = Some(NutXXConditions {
+                        output: Some(hash_array_felt(&output_conditions)),
+                    });
+
+                    Some(SpendingConditions::CairoConditions {
+                        data: program_hash,
+                        conditions: output_condition,
+                    })
+                }
+            }
+        }
+
+        (None, None, None, None) => match sub_command_args.pubkey.is_empty() {
             true => None,
             false => {
                 let pubkeys: Vec<PublicKey> = sub_command_args
@@ -197,6 +318,8 @@ pub async fn send(
                 })
             }
         },
+
+        _ => None,
     };
 
     let send_kind = match (sub_command_args.offline, sub_command_args.tolerance) {
