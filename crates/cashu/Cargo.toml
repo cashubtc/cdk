@@ -38,6 +38,7 @@ strum = { workspace = true, optional = true }
 strum_macros = { workspace = true, optional = true }
 cairo-air = { workspace = true }
 stwo_cairo_prover = { workspace = true }
+starknet-types-core = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 instant = { workspace = true, features = ["wasm-bindgen", "inaccurate"] }

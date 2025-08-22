@@ -7,7 +7,9 @@ use std::array::TryFromSliceError;
 use cairo_air::air::PubMemoryValue;
 use cairo_air::verifier::{verify_cairo, CairoVerificationError};
 use cairo_air::{CairoProof, PreProcessedTraceVariant};
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
+use starknet_types_core::felt::Felt;
 use stwo_cairo_prover::stwo_prover::core::fri::FriConfig;
 use stwo_cairo_prover::stwo_prover::core::pcs::PcsConfig;
 use stwo_cairo_prover::stwo_prover::core::vcs::blake2_hash::Blake2sHasher;
@@ -53,6 +55,41 @@ pub enum Error {
     /// Not implemented
     #[error("Not implemented")]
     NotImplemented,
+}
+
+#[derive(Deserialize)]
+pub struct Executable {
+    program: Program,
+}
+
+#[derive(Deserialize)]
+pub struct Program {
+    #[serde(deserialize_with = "deserialize_felt_vec")]
+    bytecode: Vec<Felt>,
+}
+
+fn deserialize_felt_vec<'de, D>(deserializer: D) -> Result<Vec<Felt>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let hex_strings: Vec<String> = Vec::deserialize(deserializer)?;
+    hex_strings
+        .into_iter()
+        .map(|s| {
+            // This is a hack because `Felt::from_hex` doesn't work with negative numbers.
+            // This is ok because we only need to parse executables during testing and thus
+            // using cairo_lang_executable is not worth having an extra dependency
+            let is_negative = s.starts_with('-');
+            let normalized_hex = if is_negative {
+                s.trim_start_matches('-').to_string()
+            } else {
+                s.clone()
+            };
+            let felt = Felt::from_hex(&normalized_hex).map_err(de::Error::custom)?;
+            let corrected_felt = if is_negative { -felt } else { felt };
+            Ok(corrected_felt)
+        })
+        .collect()
 }
 
 /// Cairo spending conditions
@@ -222,47 +259,9 @@ mod tests {
     use std::convert::TryInto;
     use std::str::FromStr;
 
-    use serde::de::{self, Deserializer};
-    use starknet_types_core::felt::Felt;
-
     use super::*;
     use crate::secret::Secret;
     use crate::{Amount, Id, Kind, Nut10Secret, SecretKey};
-
-    #[derive(Deserialize)]
-    struct Executable {
-        program: Program,
-    }
-
-    #[derive(Deserialize)]
-    struct Program {
-        #[serde(deserialize_with = "deserialize_felt_vec")]
-        bytecode: Vec<Felt>,
-    }
-
-    fn deserialize_felt_vec<'de, D>(deserializer: D) -> Result<Vec<Felt>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let hex_strings: Vec<String> = Vec::deserialize(deserializer)?;
-        hex_strings
-            .into_iter()
-            .map(|s| {
-                // This is a hack because `Felt::from_hex` doesn't work with negative numbers.
-                // This is ok because we only need to parse executables during testing and thus
-                // using cairo_lang_executable is not worth having an extra dependency
-                let is_negative = s.starts_with('-');
-                let normalized_hex = if is_negative {
-                    s.trim_start_matches('-').to_string()
-                } else {
-                    s.clone()
-                };
-                let felt = Felt::from_hex(&normalized_hex).map_err(de::Error::custom)?;
-                let corrected_felt = if is_negative { -felt } else { felt };
-                Ok(corrected_felt)
-            })
-            .collect()
-    }
 
     fn hash_array_felt(bytecode: &[Felt]) -> [u8; 32] {
         let mut hasher = Blake2sHasher::default();
