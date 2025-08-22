@@ -7,33 +7,37 @@
 use std::task::Poll;
 
 use cdk_common::{Amount, Error, MeltQuoteState, MintQuoteState, NotificationPayload};
-use futures::{FutureExt, Stream};
+use futures::future::join_all;
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt, Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 
 use super::RecvFuture;
 use crate::wallet::subscription::ActiveSubscription;
 use crate::{Wallet, WalletSubscription};
 
+type SubscribeReceived = (Option<NotificationPayload<String>>, Vec<ActiveSubscription>);
+type PaymentValue = (String, Option<Amount>);
+
 /// PaymentWaiter
 pub struct PaymentStream<'a> {
-    wallet: Option<(&'a Wallet, WalletSubscription)>,
+    wallet: Option<(&'a Wallet, Vec<WalletSubscription>)>,
     is_finalized: bool,
-    active_subscription: Option<ActiveSubscription>,
+    active_subscription: Option<Vec<ActiveSubscription>>,
 
     cancel_token: CancellationToken,
 
     // Future events
-    subscriber_future: Option<RecvFuture<'a, ActiveSubscription>>,
-    subscription_receiver_future:
-        Option<RecvFuture<'static, (Option<NotificationPayload<String>>, ActiveSubscription)>>,
+    subscriber_future: Option<RecvFuture<'a, Vec<ActiveSubscription>>>,
+    subscription_receiver_future: Option<RecvFuture<'static, SubscribeReceived>>,
     cancellation_future: Option<RecvFuture<'a, ()>>,
 }
 
 impl<'a> PaymentStream<'a> {
     /// Creates a new instance of the
-    pub fn new(wallet: &'a Wallet, filter: WalletSubscription) -> Self {
+    pub fn new(wallet: &'a Wallet, filters: Vec<WalletSubscription>) -> Self {
         Self {
-            wallet: Some((wallet, filter)),
+            wallet: Some((wallet, filters)),
             is_finalized: false,
             active_subscription: None,
             cancel_token: Default::default(),
@@ -52,8 +56,10 @@ impl<'a> PaymentStream<'a> {
     /// creating a new Subscription should be polled, as any other async event. This function will
     /// return None if the subscription is already active, Some(()) otherwise
     fn poll_init_subscription(&mut self, cx: &mut std::task::Context<'_>) -> Option<()> {
-        if let Some((wallet, filter)) = self.wallet.take() {
-            self.subscriber_future = Some(Box::pin(async move { wallet.subscribe(filter).await }));
+        if let Some((wallet, filters)) = self.wallet.take() {
+            self.subscriber_future = Some(Box::pin(async move {
+                join_all(filters.into_iter().map(|w| wallet.subscribe(w))).await
+            }));
         }
 
         let mut subscriber_future = self.subscriber_future.take()?;
@@ -90,7 +96,7 @@ impl<'a> PaymentStream<'a> {
     fn poll_event(
         &mut self,
         cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Result<Option<Amount>, Error>>> {
+    ) -> Poll<Option<Result<PaymentValue, Error>>> {
         let (subscription_receiver_future, active_subscription) = (
             self.subscription_receiver_future.take(),
             self.active_subscription.take(),
@@ -106,7 +112,20 @@ impl<'a> PaymentStream<'a> {
             let mut subscription_receiver =
                 active_subscription.expect("active subscription object");
 
-            Box::pin(async move { (subscription_receiver.recv().await, subscription_receiver) })
+            Box::pin(async move {
+                let mut futures: FuturesUnordered<_> = subscription_receiver
+                    .iter_mut()
+                    .map(|sub| sub.recv())
+                    .collect();
+
+                if let Some(Some(winner)) = futures.next().await {
+                    drop(futures);
+                    return (Some(winner), subscription_receiver);
+                }
+
+                drop(futures);
+                (None, subscription_receiver)
+            })
         });
 
         match receiver.poll_unpin(cx) {
@@ -130,19 +149,19 @@ impl<'a> PaymentStream<'a> {
                             NotificationPayload::MintQuoteBolt11Response(info) => {
                                 if info.state == MintQuoteState::Paid {
                                     self.is_finalized = true;
-                                    return Poll::Ready(Some(Ok(None)));
+                                    return Poll::Ready(Some(Ok((info.quote, None))));
                                 }
                             }
                             NotificationPayload::MintQuoteBolt12Response(info) => {
                                 let to_be_issued = info.amount_paid - info.amount_issued;
                                 if to_be_issued > Amount::ZERO {
-                                    return Poll::Ready(Some(Ok(Some(to_be_issued))));
+                                    return Poll::Ready(Some(Ok((info.quote, Some(to_be_issued)))));
                                 }
                             }
                             NotificationPayload::MeltQuoteBolt11Response(info) => {
                                 if info.state == MeltQuoteState::Paid {
                                     self.is_finalized = true;
-                                    return Poll::Ready(Some(Ok(None)));
+                                    return Poll::Ready(Some(Ok((info.quote, None))));
                                 }
                             }
                             _ => {}
@@ -160,7 +179,7 @@ impl<'a> PaymentStream<'a> {
 }
 
 impl Stream for PaymentStream<'_> {
-    type Item = Result<Option<Amount>, Error>;
+    type Item = Result<PaymentValue, Error>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,

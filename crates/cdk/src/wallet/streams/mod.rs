@@ -1,4 +1,4 @@
-//! Wallet waiter APIs
+//! Wallet waiter APIn
 use std::future::Future;
 use std::pin::Pin;
 
@@ -6,7 +6,7 @@ use cdk_common::amount::SplitTarget;
 use cdk_common::wallet::{MeltQuote, MintQuote};
 use cdk_common::{PaymentMethod, SpendingConditions};
 use payment::PaymentStream;
-use proof::ProofStream;
+use proof::{MultipleMintQuoteProofStream, SingleMintQuoteProofStream};
 
 use super::{Wallet, WalletSubscription};
 
@@ -23,61 +23,103 @@ type RecvFuture<'a, Ret> = Pin<Box<dyn Future<Output = Ret> + 'a>>;
 #[allow(private_bounds)]
 #[allow(clippy::enum_variant_names)]
 enum WaitableEvent {
-    MeltQuote(String),
-    MintQuote(String),
-    Bolt12MintQuote(String),
+    MeltQuote(Vec<String>),
+    MintQuote(Vec<(String, PaymentMethod)>),
+}
+
+impl From<&[MeltQuote]> for WaitableEvent {
+    fn from(events: &[MeltQuote]) -> Self {
+        WaitableEvent::MeltQuote(events.iter().map(|event| event.id.to_owned()).collect())
+    }
 }
 
 impl From<&MeltQuote> for WaitableEvent {
     fn from(event: &MeltQuote) -> Self {
-        WaitableEvent::MeltQuote(event.id.to_owned())
+        WaitableEvent::MeltQuote(vec![event.id.to_owned()])
+    }
+}
+
+impl From<&[MintQuote]> for WaitableEvent {
+    fn from(events: &[MintQuote]) -> Self {
+        WaitableEvent::MintQuote(
+            events
+                .iter()
+                .map(|event| (event.id.to_owned(), event.payment_method.clone()))
+                .collect(),
+        )
     }
 }
 
 impl From<&MintQuote> for WaitableEvent {
     fn from(event: &MintQuote) -> Self {
-        match event.payment_method {
-            PaymentMethod::Bolt11 => WaitableEvent::MintQuote(event.id.to_owned()),
-            PaymentMethod::Bolt12 => WaitableEvent::Bolt12MintQuote(event.id.to_owned()),
-            PaymentMethod::Custom(_) => WaitableEvent::MintQuote(event.id.to_owned()),
-        }
+        WaitableEvent::MintQuote(vec![(event.id.to_owned(), event.payment_method.clone())])
     }
 }
 
-impl From<WaitableEvent> for WalletSubscription {
-    fn from(val: WaitableEvent) -> Self {
-        match val {
-            WaitableEvent::MeltQuote(quote_id) => {
-                WalletSubscription::Bolt11MeltQuoteState(vec![quote_id])
+impl WaitableEvent {
+    fn into_subscription(self) -> Vec<WalletSubscription> {
+        match self {
+            WaitableEvent::MeltQuote(quotes) => {
+                vec![WalletSubscription::Bolt11MeltQuoteState(quotes)]
             }
-            WaitableEvent::MintQuote(quote_id) => {
-                WalletSubscription::Bolt11MintQuoteState(vec![quote_id])
-            }
-            WaitableEvent::Bolt12MintQuote(quote_id) => {
-                WalletSubscription::Bolt12MintQuoteState(vec![quote_id])
+            WaitableEvent::MintQuote(quotes) => {
+                let (bolt11, bolt12) = quotes.into_iter().fold(
+                    (Vec::new(), Vec::new()),
+                    |mut acc, (quote_id, payment_method)| {
+                        match payment_method {
+                            PaymentMethod::Bolt11 => acc.0.push(quote_id),
+                            PaymentMethod::Bolt12 => acc.1.push(quote_id),
+                            PaymentMethod::Custom(_) => acc.0.push(quote_id),
+                        }
+                        acc
+                    },
+                );
+
+                let mut subscriptions = Vec::new();
+
+                if !bolt11.is_empty() {
+                    subscriptions.push(WalletSubscription::Bolt11MintQuoteState(bolt11));
+                }
+
+                if !bolt12.is_empty() {
+                    subscriptions.push(WalletSubscription::Bolt12MintQuoteState(bolt12));
+                }
+
+                subscriptions
             }
         }
     }
 }
 
 impl Wallet {
+    /// Streams all proofs from a single mint quote
     #[inline(always)]
-    /// Mints a mint quote once it is paid
     pub fn proof_stream(
         &self,
         quote: MintQuote,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
-    ) -> ProofStream<'_> {
-        ProofStream::new(self, quote, amount_split_target, spending_conditions)
+    ) -> SingleMintQuoteProofStream<'_> {
+        SingleMintQuoteProofStream::new(self, quote, amount_split_target, spending_conditions)
+    }
+
+    /// Streams all new proofs for a set of mints
+    #[inline(always)]
+    pub fn mints_proof_stream(
+        &self,
+        quotes: Vec<MintQuote>,
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> MultipleMintQuoteProofStream<'_> {
+        MultipleMintQuoteProofStream::new(self, quotes, amount_split_target, spending_conditions)
     }
 
     /// Returns a BoxFuture that will wait for payment on the given event with a timeout check
     #[allow(private_bounds)]
-    pub fn payment_stream<T>(&self, event: T) -> PaymentStream<'_>
+    pub fn payment_stream<T>(&self, events: T) -> PaymentStream<'_>
     where
         T: Into<WaitableEvent>,
     {
-        PaymentStream::new(self, event.into().into())
+        PaymentStream::new(self, events.into().into_subscription())
     }
 }
