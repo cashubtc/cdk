@@ -40,6 +40,22 @@ The project is split up into several crates in the `crates/` directory:
 
 For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVELOPMENT.md)
 
+## LDK Node Network Configuration
+
+For detailed configuration examples for running CDK with LDK Node on different Bitcoin networks (Mutinynet, Testnet, Mainnet), see [LDK Node Network Guide](./crates/cdk-ldk-node/NETWORK_GUIDE.md).
+
+**Quick Start with Mutinynet (Recommended for Testing):**
+```toml
+[ln]
+ln_backend = "ldk-node"
+
+[ldk_node]
+bitcoin_network = "signet"
+esplora_url = "https://mutinynet.com/api"
+rgs_url = "https://rgs.mutinynet.com/snapshot/0"
+gossip_source_type = "rgs"
+```
+
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
 ### Mandatory

@@ -8,105 +8,77 @@ CDK lightning backend for ldk-node, providing Lightning Network functionality fo
 - Channel management
 - Payment processing for Cashu mint operations
 - Web management interface
+- Support for multiple Bitcoin networks (Mainnet, Testnet, Signet/Mutinynet, Regtest)
+- RGS (Rapid Gossip Sync) and P2P gossip support
+
+## Quick Start
+
+### Mutinynet (Recommended for Testing)
+
+```bash
+# Using environment variables (simplest)
+export CDK_MINTD_LN_BACKEND="ldk-node"
+export CDK_MINTD_LDK_NODE_BITCOIN_NETWORK="signet"
+export CDK_MINTD_LDK_NODE_ESPLORA_URL="https://mutinynet.com/api"
+export CDK_MINTD_LDK_NODE_RGS_URL="https://rgs.mutinynet.com/snapshot/0"
+export CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE="rgs"
+
+cdk-mintd
+```
+
+After starting:
+- Mint API: <http://127.0.0.1:8085>
+- LDK management interface: <http://127.0.0.1:8091>
+- Get test sats: [mutinynet.com](https://mutinynet.com)
+
+**For complete network configuration examples, Docker setup, and production deployment, see [NETWORK_GUIDE.md](./NETWORK_GUIDE.md).**
 
 ## Web Management Interface
 
-The CDK LDK Node includes a built-in web management interface that provides:
+The CDK LDK Node includes a built-in web management interface accessible at `http://127.0.0.1:8091` by default.
 
-- **Dashboard**: Overview of node status, balance, and recent activity
-- **Balance & On-chain**: View balances and manage on-chain transactions
+⚠️ **SECURITY WARNING**: The web management interface has **NO AUTHENTICATION** and allows sending funds and managing channels. **NEVER expose it publicly** without proper authentication/authorization in front of it. Only bind to localhost (`127.0.0.1`) for security.
+
+### Key Features
+- **Dashboard**: Node status, balance, and recent activity
 - **Channel Management**: Open and close Lightning channels
-- **Invoice Creation**: Create Bolt11 and Bolt12 invoices
-- **Payment Sending**: Send Lightning payments
-- **Payment History**: Paginated view of all Lightning and on-chain payments
-
-### Payment History Pagination
-
-The payment history page includes comprehensive pagination support to efficiently handle large numbers of payments:
-
-#### Features:
-- **Bottom-only pagination**: Clean interface with pagination controls only at the bottom after viewing payments
-- **Page-based navigation**: Navigate through payments using Previous/Next buttons and page numbers
-- **Customizable page size**: Choose between 10, 25, 50, or 100 payments per page (selector at bottom)
-- **Smart pagination**: Shows ellipsis (...) for large page ranges with quick access to first/last pages
-- **Filtering**: Filter payments by direction (All, Incoming, Outgoing) while maintaining pagination state
-- **Payment counter**: Shows current range (e.g., "Showing 1 to 25 of 147 payments")
-- **Responsive design**: Optimized for both desktop and mobile devices
-
-#### URL Parameters:
-- `page`: Current page number (default: 1)
-- `per_page`: Number of payments per page (default: 25, range: 10-100)
-- `filter`: Payment direction filter ("all", "incoming", "outgoing")
-
-#### Example URLs:
-- `/payments` - First page with default settings
-- `/payments?page=3&per_page=50&filter=outgoing` - Page 3, 50 per page, outgoing only
-- `/payments?filter=incoming` - Incoming payments only, first page
-
-#### Performance:
-While the current implementation loads all payments and applies pagination in-memory, the pagination structure is designed to be easily upgraded to use database-level pagination for better performance with very large payment histories.
+- **Payment Management**: Create invoices, send payments, view history with pagination
+- **On-chain Operations**: View balances and manage transactions
 
 ### Configuration
 
-The web server can be configured through the configuration file or environment variables:
-
-#### Config file (TOML):
 ```toml
 [ldk_node]
-# Web management interface configuration
-webserver_host = "127.0.0.1"  # Default: 127.0.0.1
-webserver_port = 8091
+webserver_host = "127.0.0.1"  # IMPORTANT: Only localhost for security
+webserver_port = 8091  # 0 = auto-assign port
 ```
 
-#### Environment variables:
-- `CDK_MINTD_LDK_NODE_WEBSERVER_HOST`: Host address for the web interface
-- `CDK_MINTD_LDK_NODE_WEBSERVER_PORT`: Port for the web interface
+Or via environment variables:
+- `CDK_MINTD_LDK_NODE_WEBSERVER_HOST`
+- `CDK_MINTD_LDK_NODE_WEBSERVER_PORT`
 
-### Defaults
+## Basic Configuration
 
-- **Host**: `127.0.0.1` (localhost)
-- **Port**: `0` (automatically assigns an unused port)
-
-When the port is set to `0`, the system will automatically find and assign an available port, which is logged when the server starts.
-
-### Accessing the Interface
-
-Once cdk-mintd is running with the LDK node backend, the web interface will be available at:
-```sh
-http://<webserver_host>:<assigned_port>
-```
-
-The actual port used will be displayed in the logs when the service starts.
-
-## Configuration Example
+### Config File Example
 
 ```toml
 [ln]
 ln_backend = "ldk-node"
 
 [ldk_node]
-fee_percent = 0.04
-reserve_fee_min = 4
-bitcoin_network = "regtest"
-chain_source_type = "esplora"
+bitcoin_network = "signet"  # mainnet, testnet, signet, regtest
 esplora_url = "https://mutinynet.com/api"
-storage_dir_path = "~/.cdk-ldk-node/ldk-node"
-ldk_node_host = "127.0.0.1"
-ldk_node_port = 8090
-gossip_source_type = "p2p"
-
-# Web management interface
-webserver_host = "127.0.0.1"
+rgs_url = "https://rgs.mutinynet.com/snapshot/0"
+gossip_source_type = "rgs"  # rgs or p2p
 webserver_port = 8091
 ```
 
-## Environment Variables
+### Environment Variables
 
-All configuration options can be set via environment variables with the `CDK_MINTD_LDK_NODE_` prefix:
-
-- `CDK_MINTD_LDK_NODE_FEE_PERCENT`
-- `CDK_MINTD_LDK_NODE_RESERVE_FEE_MIN`
+All options can be set with `CDK_MINTD_LDK_NODE_` prefix:
 - `CDK_MINTD_LDK_NODE_BITCOIN_NETWORK`
-- `CDK_MINTD_LDK_NODE_WEBSERVER_HOST`
-- `CDK_MINTD_LDK_NODE_WEBSERVER_PORT`
-- ... (and other LDK node settings)
+- `CDK_MINTD_LDK_NODE_ESPLORA_URL`
+- `CDK_MINTD_LDK_NODE_RGS_URL`
+- `CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE`
+
+**For detailed network configurations, Docker setup, production deployment, and troubleshooting, see [NETWORK_GUIDE.md](./NETWORK_GUIDE.md).**

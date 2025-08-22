@@ -92,9 +92,26 @@ reserve_fee_min = 4
 # [ldk_node]
 # fee_percent = 0.04
 # reserve_fee_min = 4
-# bitcoin_network = "regtest"  # mainnet, testnet, signet, regtest
+# bitcoin_network = "signet"  # mainnet, testnet, signet, regtest
 # chain_source_type = "esplora"  # esplora, bitcoinrpc  
+# 
+# # Mutinynet configuration (recommended for testing)
 # esplora_url = "https://mutinynet.com/api"
+# gossip_source_type = "rgs"  # Use RGS for better performance
+# rgs_url = "https://rgs.mutinynet.com/snapshot/0"
+# storage_dir_path = "~/.cdk-ldk-node/mutinynet"
+# 
+# # Testnet configuration
+# # bitcoin_network = "testnet"
+# # esplora_url = "https://blockstream.info/testnet/api"
+# # rgs_url = "https://rapidsync.lightningdevkit.org/snapshot"
+# # storage_dir_path = "~/.cdk-ldk-node/testnet"
+# 
+# # Mainnet configuration (CAUTION: Real Bitcoin!)
+# # bitcoin_network = "mainnet"
+# # esplora_url = "https://blockstream.info/api"  
+# # rgs_url = "https://rapidsync.lightningdevkit.org/snapshot"
+# # storage_dir_path = "~/.cdk-ldk-node/mainnet"
 # 
 # # Bitcoin RPC configuration (when chain_source_type = "bitcoinrpc")
 # bitcoind_rpc_host = "127.0.0.1"
@@ -102,18 +119,16 @@ reserve_fee_min = 4
 # bitcoind_rpc_user = "testuser" 
 # bitcoind_rpc_password = "testpass"
 # 
-# # Storage and node configuration
-# storage_dir_path = "~/.cdk-ldk-node/ldk-node"
+# # Node configuration
 # ldk_node_host = "127.0.0.1"
 # ldk_node_port = 8090
 # 
 # # Gossip source configuration  
-# gossip_source_type = "p2p"  # p2p, rgs
-# rgs_url = "https://mutinynet.com/api/graphql"
+# gossip_source_type = "p2p"  # p2p (direct peer-to-peer) or rgs (rapid gossip sync)
 # 
 # # Webserver configuration for LDK node management interface
 # webserver_host = "127.0.0.1"  # Default: 127.0.0.1
-# webserver_port = 0
+# webserver_port = 0  # 0 = auto-assign available port
 
 # [fake_wallet]
 # supported_units = ["sat"]
