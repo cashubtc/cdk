@@ -36,13 +36,11 @@ pub struct SendSubCommand {
     /// Pubkey to lock proofs to
     #[arg(short, long, action = clap::ArgAction::Append)]
     pubkey: Vec<String>,
-    // Cairo executable required to generate proofs
-    // <cairo_executable> n_args <arg1> <arg2> ...
-    #[arg(long, conflicts_with = "cairo_program_hash")]
+    // Cairo executable required to generate proofs, and accepted program outputs <cairo_executable> n_outputs <output1> <output2> ...
+    #[arg(long, action = clap::ArgAction::Append, num_args = 1.., conflicts_with = "cairo_program_hash")]
     cairo_executable: Option<Vec<String>>,
-    // Alternative to cairo executable, the hash of the cairo program
-    // <program_hash> n_args <arg1> <arg2> ...
-    #[arg(long, conflicts_with = "cairo_executable")]
+    // Alternative to cairo executable, the hash of the cairo program: --cairo_program_hash <program_hash (hex format)> n_output <output1> <output2> ...
+    #[arg(long, action = clap::ArgAction::Append, num_args = 1.., conflicts_with = "cairo_executable")]
     cairo_program_hash: Option<Vec<String>>,
     /// Refund keys that can be used after locktime
     #[arg(long, action = clap::ArgAction::Append)]

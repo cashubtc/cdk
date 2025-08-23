@@ -1,9 +1,12 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::str::FromStr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
+use cairo_lang_runner::Arg;
+use cairo_prove::execute::execute;
+use cairo_prove::prove::{prove, prover_input_from_runner};
 use cdk::nuts::{SecretKey, Token};
 use cdk::util::unix_time;
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
@@ -13,6 +16,9 @@ use cdk::Amount;
 use clap::Args;
 use nostr_sdk::nips::nip04;
 use nostr_sdk::{Filter, Keys, Kind, Timestamp};
+use starknet_types_core::felt::Felt;
+use stwo_cairo_prover::stwo_prover::core::fri::FriConfig;
+use stwo_cairo_prover::stwo_prover::core::pcs::PcsConfig;
 
 use crate::nostr_storage;
 use crate::utils::get_or_create_wallet;
@@ -36,7 +42,46 @@ pub struct ReceiveSubCommand {
     /// Preimage
     #[arg(short, long,  action = clap::ArgAction::Append)]
     preimage: Vec<String>,
-    // TODO: add cairo proofs argument (path to json)
+    /// Generate proof from Cairo executable
+    /// <cairo_executable> <n_inputs> <input1> <input2> ...
+    #[arg(long, action = clap::ArgAction::Append, num_args = 1.., value_terminator = "--")]
+    cairo: Vec<String>,
+}
+
+fn cairo_prove(executable_path: &Path, args: Vec<String>) -> String {
+    let executable = serde_json::from_reader(
+        std::fs::File::open(executable_path).expect("Failed to open Cairo executable file"),
+    )
+    .expect("Failed to parse Cairo executable JSON");
+
+    let args: Vec<Arg> = args
+        .iter()
+        .map(|a| {
+            Felt::from_hex(a)
+                .expect("Invalid argument for Cairo proof")
+                .into()
+        })
+        .collect();
+
+    let runner = execute(executable, args);
+    let prover_input = prover_input_from_runner(&runner);
+
+    let pcs_config = PcsConfig {
+        pow_bits: 26,
+        fri_config: FriConfig {
+            log_last_layer_degree_bound: 0,
+            log_blowup_factor: 1,
+            n_queries: 70,
+        },
+    };
+
+    let start = Instant::now();
+    let cairo_proof = prove(prover_input, pcs_config);
+    println!(
+        "[cairo_prove fn] Cairo proof generated successfully in {} ms",
+        start.elapsed().as_millis()
+    );
+    return serde_json::to_string(&cairo_proof).unwrap(); // returns a json serialized CairoProof
 }
 
 pub async fn receive(
@@ -63,6 +108,40 @@ pub async fn receive(
         signing_keys.append(&mut s_keys);
     }
 
+    let mut cairo_proofs_json: Vec<String> = Vec::new();
+    if !sub_command_args.cairo.is_empty() {
+        let cairo_args = &sub_command_args.cairo;
+        if cairo_args.len() < 2 {
+            return Err(anyhow!(
+                "Cairo arguments must include at least the executable path and number of inputs"
+            ));
+        }
+        let exec_path = Path::new(&cairo_args[0]);
+        if !exec_path.exists() {
+            return Err(anyhow!(
+                "Cairo executable file note found: {}",
+                exec_path.display()
+            ));
+        }
+        let n_inputs: usize = cairo_args[1]
+            .parse::<usize>()
+            .map_err(|_| anyhow!("Invalid number of inputs"))?;
+        if cairo_args.len() != 2 + n_inputs {
+            return Err(anyhow!(
+                "Given number of Cairo input arguments does not match the specified number of inputs"
+            ));
+        }
+        let mut input_args = Vec::new();
+        for arg in &cairo_args[2..2 + n_inputs] {
+            if Felt::from_hex(arg).is_err() {
+                return Err(anyhow!("Could not parse program input: {} as a Felt", arg));
+            }
+            input_args.push(arg.clone());
+        }
+
+        cairo_proofs_json.push(cairo_prove(exec_path, input_args));
+    }
+
     let amount = match &sub_command_args.token {
         Some(token_str) => {
             receive_token(
@@ -70,6 +149,7 @@ pub async fn receive(
                 token_str,
                 &signing_keys,
                 &sub_command_args.preimage,
+                &cairo_proofs_json,
             )
             .await?
         }
@@ -110,6 +190,7 @@ pub async fn receive(
                     token_str,
                     &signing_keys,
                     &sub_command_args.preimage,
+                    &cairo_proofs_json,
                 )
                 .await
                 {
@@ -136,6 +217,7 @@ async fn receive_token(
     token_str: &str,
     signing_keys: &[SecretKey],
     preimage: &[String],
+    cairo_proofs_json: &[String],
 ) -> Result<Amount> {
     let token: Token = Token::from_str(token_str)?;
 
@@ -156,7 +238,7 @@ async fn receive_token(
             ReceiveOptions {
                 p2pk_signing_keys: signing_keys.to_vec(),
                 preimages: preimage.to_vec(),
-                // TODO: add cairo_proofs here
+                cairo_proofs: cairo_proofs_json.to_vec(),
                 ..Default::default()
             },
         )
