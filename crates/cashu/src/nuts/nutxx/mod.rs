@@ -57,6 +57,62 @@ pub enum Error {
     NotImplemented,
 }
 
+/// Mint Info CairoProverConfig field
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CairoProverConfig {
+    pub version: String,
+    pub merkle_hasher: String,
+}
+/// Mint Info optional features bootloader field
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BootloaderFeature {
+    pub supported: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+}
+/// Mint Info optional features
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct NutXXOptionalFeatures {
+    pub bootloader: BootloaderFeature,
+}
+impl Default for BootloaderFeature {
+    /// Default bootloader feature is unsupported with no version or hash
+    fn default() -> Self {
+        Self {
+            supported: false,
+            version: None,
+            hash: None,
+        }
+    }
+}
+
+/// Mint Info NUT-XX settings
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NutXXSettings {
+    pub supported: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optional_features: Option<NutXXOptionalFeatures>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cairo_prover_config: Option<CairoProverConfig>,
+}
+
+impl Default for NutXXSettings {
+    /// Default NUT-XX settings
+    fn default() -> Self {
+        Self {
+            // NUT-XX advertised by default unless explicitly disabled in config
+            supported: true,
+            // Show bootloader as present but disabled by default
+            optional_features: Some(NutXXOptionalFeatures {
+                bootloader: BootloaderFeature::default(),
+            }),
+            cairo_prover_config: None,
+        }
+    }
+}
+
 /// Cairo Executable
 #[derive(Deserialize)]
 pub struct Executable {

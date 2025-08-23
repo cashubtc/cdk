@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use bitcoin::hashes::{sha256, Hash};
+use cdk::nuts::nutxx::NutXXSettings;
 use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
@@ -251,6 +252,7 @@ pub struct Settings {
     #[cfg(feature = "management-rpc")]
     pub mint_management_rpc: Option<MintManagementRpc>,
     pub auth: Option<Auth>,
+    pub nutxx: Option<NutXXSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
