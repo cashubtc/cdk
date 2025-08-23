@@ -47,6 +47,9 @@ mod swagger_imports {
         MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintQuoteBolt11Request,
         MintQuoteBolt11Response,
     };
+    pub use cdk::nuts::nutXX::{
+        MintQuoteLookupItem, PostMintQuoteLookupRequest, PostMintQuoteLookupResponse,
+    };
     #[cfg(feature = "auth")]
     pub use cdk::nuts::MintAuthRequest;
     pub use cdk::nuts::{nut04, nut05, nut15, MeltQuoteState, MintQuoteState};
@@ -290,6 +293,7 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/keys/{keyset_id}", get(get_keyset_pubkeys))
         .route("/swap", post(cache_post_swap))
         .route("/mint/quote/bolt11", post(post_mint_bolt11_quote))
+        .route("/mint/quote/lookup", post(post_mint_quote_lookup))
         .route(
             "/mint/quote/bolt11/{quote_id}",
             get(get_check_mint_bolt11_quote),

@@ -658,6 +658,8 @@ pub enum ErrorCode {
     BlindAuthRequired,
     /// Blind Auth Failed
     BlindAuthFailed,
+    /// Invalid public key format provided in lookup request (NUT-XX)
+    InvalidPubkeyFormat,
     /// Unknown error code
     Unknown(u16),
 }
@@ -687,6 +689,7 @@ impl ErrorCode {
             20006 => Self::InvoiceAlreadyPaid,
             20007 => Self::QuoteExpired,
             20008 => Self::WitnessMissingOrInvalid,
+            20011 => Self::InvalidPubkeyFormat,
             30001 => Self::ClearAuthRequired,
             30002 => Self::ClearAuthFailed,
             31001 => Self::BlindAuthRequired,
@@ -719,6 +722,7 @@ impl ErrorCode {
             Self::InvoiceAlreadyPaid => 20006,
             Self::QuoteExpired => 20007,
             Self::WitnessMissingOrInvalid => 20008,
+            Self::InvalidPubkeyFormat => 20011,
             Self::ClearAuthRequired => 30001,
             Self::ClearAuthFailed => 30002,
             Self::BlindAuthRequired => 31001,
