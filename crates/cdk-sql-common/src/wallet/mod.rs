@@ -656,6 +656,7 @@ ON CONFLICT(id) DO UPDATE SET
             (id, keys, keyset_u32)
             VALUES
             (:id, :keys, :keyset_u32)
+            ON CONFLICT(id) DO NOTHING
         "#,
         )?
         .bind("id", keyset.id.to_string())

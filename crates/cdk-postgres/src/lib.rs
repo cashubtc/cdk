@@ -254,4 +254,76 @@ mod test {
     }
 
     mint_db_test!(provide_db);
+
+    async fn provide_wallet_db() -> WalletPgDatabase {
+        let m = MIGRATION_LOCK.lock().await;
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL")) // Fallback for compatibility
+            .unwrap_or("host=localhost user=test password=test dbname=testdb port=5433".to_owned());
+        let db = WalletPgDatabase::new(db_url.as_str())
+            .await
+            .expect("database");
+        drop(m);
+        db
+    }
+
+    #[tokio::test]
+    async fn test_add_keys_idempotent_postgres() {
+        use cdk_common::database::WalletDatabase;
+        use cdk_common::nuts::{CurrencyUnit, Keys};
+        use cdk_common::{Amount, Id, KeySet, PublicKey};
+        use std::collections::BTreeMap;
+
+        let db = provide_wallet_db().await;
+
+        // Create a test keyset with known keys
+        let mut keys_map = BTreeMap::new();
+        keys_map.insert(
+            Amount::from(1u64),
+            PublicKey::from_hex(
+                "02deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+            .unwrap(),
+        );
+        keys_map.insert(
+            Amount::from(2u64),
+            PublicKey::from_hex(
+                "03deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+            .unwrap(),
+        );
+
+        let keys = Keys::new(keys_map);
+        let keyset = KeySet {
+            id: Id::v1_from_keys(&keys),
+            keys,
+            unit: CurrencyUnit::Sat,
+            final_expiry: None,
+        };
+
+        // First call to add_keys should succeed
+        let result1 = db.add_keys(keyset.clone()).await;
+        assert!(result1.is_ok(), "First add_keys call should succeed");
+
+        // Second call to add_keys should also succeed (idempotent behavior)
+        let result2 = db.add_keys(keyset.clone()).await;
+        assert!(
+            result2.is_ok(),
+            "Second add_keys call should succeed (idempotent)"
+        );
+
+        // Verify the keys can be retrieved correctly
+        let retrieved_keys = db.get_keys(&keyset.id).await.unwrap();
+        assert!(
+            retrieved_keys.is_some(),
+            "Keys should be retrievable from database"
+        );
+
+        let retrieved_keys = retrieved_keys.unwrap();
+        assert_eq!(retrieved_keys.len(), 2, "Should have 2 keys stored");
+        assert_eq!(
+            retrieved_keys, keyset.keys,
+            "Retrieved keys should match original"
+        );
+    }
 }

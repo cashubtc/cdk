@@ -612,10 +612,10 @@ impl WalletDatabase for WalletRedbDatabase {
         }
 
         if existing_keys || existing_u32 {
-            tracing::warn!("Keys already exist for keyset id");
+            tracing::debug!("Keys already exist for keyset id, ignoring");
             write_txn.abort().map_err(Error::from)?;
 
-            return Err(database::Error::Duplicate);
+            return Ok(());
         }
 
         write_txn.commit().map_err(Error::from)?;
@@ -880,5 +880,74 @@ impl WalletDatabase for WalletRedbDatabase {
         write_txn.commit().map_err(Error::from)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cdk_common::database::WalletDatabase;
+    use cdk_common::nuts::{CurrencyUnit, Keys};
+    use cdk_common::Amount;
+    use std::collections::BTreeMap;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_add_keys_idempotent() {
+        // Create a temporary directory for the ReDB database
+        let temp_dir = tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.redb");
+
+        let db = WalletRedbDatabase::new(&db_path).unwrap();
+
+        // Create a test keyset with known keys
+        let mut keys_map = BTreeMap::new();
+        keys_map.insert(
+            Amount::from(1u64),
+            PublicKey::from_hex(
+                "02deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+            .unwrap(),
+        );
+        keys_map.insert(
+            Amount::from(2u64),
+            PublicKey::from_hex(
+                "03deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+            .unwrap(),
+        );
+
+        let keys = Keys::new(keys_map);
+        let keyset = KeySet {
+            id: Id::v1_from_keys(&keys),
+            keys,
+            unit: CurrencyUnit::Sat,
+            final_expiry: None,
+        };
+
+        // First call to add_keys should succeed
+        let result1 = db.add_keys(keyset.clone()).await;
+        assert!(result1.is_ok(), "First add_keys call should succeed");
+
+        // Second call to add_keys should also succeed (idempotent behavior)
+        let result2 = db.add_keys(keyset.clone()).await;
+        assert!(
+            result2.is_ok(),
+            "Second add_keys call should succeed (idempotent)"
+        );
+
+        // Verify the keys can be retrieved correctly
+        let retrieved_keys = db.get_keys(&keyset.id).await.unwrap();
+        assert!(
+            retrieved_keys.is_some(),
+            "Keys should be retrievable from database"
+        );
+
+        let retrieved_keys = retrieved_keys.unwrap();
+        assert_eq!(retrieved_keys.len(), 2, "Should have 2 keys stored");
+        assert_eq!(
+            retrieved_keys, keyset.keys,
+            "Retrieved keys should match original"
+        );
     }
 }
