@@ -1,7 +1,8 @@
 use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
-use cashu::nutxx::{hash_array_felt, Executable};
+use cairo_lang_executable::executable::Executable;
+use cashu::nutxx::hash_array_bytes;
 use cashu::util::hex;
 use cashu::NutXXConditions;
 use cdk::nuts::{Conditions, CurrencyUnit, PublicKey, SpendingConditions};
@@ -10,6 +11,7 @@ use cdk::wallet::{MultiMintWallet, SendMemo, SendOptions};
 use cdk::Amount;
 use clap::Args;
 use starknet_types_core::felt::Felt;
+use stwo_cairo_prover::witness::prelude::Felt252;
 
 use crate::sub_commands::balance::mint_balances;
 use crate::utils::{
@@ -36,12 +38,15 @@ pub struct SendSubCommand {
     /// Pubkey to lock proofs to
     #[arg(short, long, action = clap::ArgAction::Append)]
     pubkey: Vec<String>,
-    // Cairo executable required to generate proofs, and accepted program outputs <cairo_executable> n_outputs <output1> <output2> ...
+
+    /// Cairo executable required to generate proofs, and accepted program outputs <cairo_executable> n_outputs <output1> <output2> ...
     #[arg(long, action = clap::ArgAction::Append, num_args = 1.., conflicts_with = "cairo_program_hash")]
     cairo_executable: Option<Vec<String>>,
-    // Alternative to cairo executable, the hash of the cairo program: --cairo_program_hash <program_hash (hex format)> n_output <output1> <output2> ...
+
+    /// Alternative to cairo executable, the hash of the cairo program: --cairo_program_hash <program_hash (hex format)> n_output <output1> <output2> ...
     #[arg(long, action = clap::ArgAction::Append, num_args = 1.., conflicts_with = "cairo_executable")]
     cairo_program_hash: Option<Vec<String>>,
+
     /// Refund keys that can be used after locktime
     #[arg(long, action = clap::ArgAction::Append)]
     refund_keys: Vec<String>,
@@ -197,7 +202,7 @@ pub async fn send(
 
             let output_conditions = program_hash_args[2..]
                 .iter()
-                .map(|o| Felt::from_hex(o))
+                .map(|o| Felt::from_dec_str(o))
                 .collect::<Result<Vec<Felt>, _>>()?;
 
             if output_conditions.len() != narg_output {
@@ -214,8 +219,13 @@ pub async fn send(
                 ));
             }
 
+            let packed_output_conditions: Vec<[u8; 32]> =
+                output_conditions.iter().map(|f| f.to_bytes_le()).collect();
+
+            let hashed_output_conditions = hash_array_bytes(&packed_output_conditions);
+
             let output_condition = Some(NutXXConditions {
-                output: Some(hash_array_felt(&output_conditions)),
+                output: Some(hashed_output_conditions),
             });
 
             Some(SpendingConditions::CairoConditions {
@@ -237,6 +247,13 @@ pub async fn send(
                             exec_path.display()
                         ));
                     }
+
+                    let executable: Executable = serde_json::from_reader(
+                        std::fs::File::open(exec_path)
+                            .expect("Failed to open Cairo executable file"),
+                    )
+                    .expect("Failed to parse Cairo executable JSON");
+
                     let narg_output = cairo_executable_args[1]
                         .parse::<usize>()
                         .map_err(|_| anyhow!("Invalid output length argument"))?;
@@ -244,7 +261,7 @@ pub async fn send(
                     // this won't have to change when we support multiple outputs
                     let output_conditions = cairo_executable_args[2..]
                         .iter()
-                        .map(|o| Felt::from_hex(o))
+                        .map(|o| Felt::from_dec_str(o))
                         .collect::<Result<Vec<Felt>, _>>()?;
 
                     //TODO: remove this once we support multiple output hashes
@@ -262,14 +279,30 @@ pub async fn send(
                             narg_output
                         ));
                     }
-                    let executable: Executable =
-                        serde_json::from_str::<Executable>(&std::fs::read_to_string(exec_path)?)
-                            .map_err(|e| anyhow!("Failed to parse Cairo executable: {}", e))?;
-                    let program_hash = hash_array_felt(&executable.program.bytecode);
+
+                    let packed_exec: Vec<[u8; 32]> = executable
+                        .program
+                        .bytecode
+                        .iter()
+                        .map(|b| {
+                            let f = Felt::from_dec_str(b.to_string().as_str())
+                                .expect("Could not convert bytecode, byte to Felt");
+                            f.to_bytes_le()
+                        })
+                        .collect();
+
+                    let exec_bytes = &packed_exec;
+
+                    let program_hash = hash_array_bytes(exec_bytes);
+
+                    let packed_output_conditions: Vec<[u8; 32]> =
+                        output_conditions.iter().map(|f| f.to_bytes_le()).collect();
+
+                    let hashed_output_conditions = hash_array_bytes(&packed_output_conditions);
 
                     // TODO: support multiple outputs
                     let output_condition = Some(NutXXConditions {
-                        output: Some(hash_array_felt(&output_conditions)),
+                        output: Some(hashed_output_conditions),
                     });
 
                     Some(SpendingConditions::CairoConditions {

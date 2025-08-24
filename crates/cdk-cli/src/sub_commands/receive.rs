@@ -42,7 +42,7 @@ pub struct ReceiveSubCommand {
     /// Preimage
     #[arg(short, long,  action = clap::ArgAction::Append)]
     preimage: Vec<String>,
-    /// Generate proof from Cairo executable
+    /// Generate witness from Cairo executable
     /// <cairo_executable> <n_inputs> <input1> <input2> ...
     #[arg(long, action = clap::ArgAction::Append, num_args = 1.., value_terminator = "--")]
     cairo: Vec<String>,
@@ -57,7 +57,7 @@ fn cairo_prove(executable_path: &Path, args: Vec<String>) -> String {
     let args: Vec<Arg> = args
         .iter()
         .map(|a| {
-            Felt::from_hex(a)
+            Felt::from_dec_str(a)
                 .expect("Invalid argument for Cairo proof")
                 .into()
         })
@@ -133,7 +133,7 @@ pub async fn receive(
         }
         let mut input_args = Vec::new();
         for arg in &cairo_args[2..2 + n_inputs] {
-            if Felt::from_hex(arg).is_err() {
+            if Felt::from_dec_str(arg).is_err() {
                 return Err(anyhow!("Could not parse program input: {} as a Felt", arg));
             }
             input_args.push(arg.clone());

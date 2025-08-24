@@ -49,4 +49,4 @@ stwo_cairo_prover = { workspace = true }
 cairo-lang-runner = { workspace = true }
 starknet-types-core = { workspace = true }
 cairo-prove = { workspace = true }
-
+cairo-lang-executable = { workspace = true }

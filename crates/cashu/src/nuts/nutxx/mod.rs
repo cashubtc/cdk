@@ -7,9 +7,7 @@ use std::array::TryFromSliceError;
 use cairo_air::air::PubMemoryValue;
 use cairo_air::verifier::{verify_cairo, CairoVerificationError};
 use cairo_air::{CairoProof, PreProcessedTraceVariant};
-use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
-use starknet_types_core::felt::Felt;
 use stwo_cairo_prover::stwo_prover::core::fri::FriConfig;
 use stwo_cairo_prover::stwo_prover::core::pcs::PcsConfig;
 use stwo_cairo_prover::stwo_prover::core::vcs::blake2_hash::Blake2sHasher;
@@ -61,7 +59,6 @@ pub enum Error {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CairoProverConfig {
     pub version: String,
-    pub merkle_hasher: String,
 }
 /// Mint Info optional features bootloader field
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -111,56 +108,6 @@ impl Default for NutXXSettings {
             cairo_prover_config: None,
         }
     }
-}
-
-/// Cairo Executable
-#[derive(Deserialize)]
-pub struct Executable {
-    /// Cairo program
-    pub program: Program,
-}
-
-/// Cairo Program
-#[derive(Deserialize)]
-pub struct Program {
-    #[serde(deserialize_with = "deserialize_felt_vec")]
-    /// Cairo program bytecode
-    pub bytecode: Vec<Felt>,
-}
-
-fn deserialize_felt_vec<'de, D>(deserializer: D) -> Result<Vec<Felt>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let hex_strings: Vec<String> = Vec::deserialize(deserializer)?;
-    hex_strings
-        .into_iter()
-        .map(|s| {
-            // This is a hack because `Felt::from_hex` doesn't work with negative numbers.
-            // This is ok because we only need to parse executables during testing and thus
-            // using cairo_lang_executable is not worth having an extra dependency
-            let is_negative = s.starts_with('-');
-            let normalized_hex = if is_negative {
-                s.trim_start_matches('-').to_string()
-            } else {
-                s.clone()
-            };
-            let felt = Felt::from_hex(&normalized_hex).map_err(de::Error::custom)?;
-            let corrected_felt = if is_negative { -felt } else { felt };
-            Ok(corrected_felt)
-        })
-        .collect()
-}
-
-/// Hash an array of Felts in little endian format using Blake2s
-pub fn hash_array_felt(bytecode: &[Felt]) -> [u8; 32] {
-    let mut hasher = Blake2sHasher::default();
-    for felt in bytecode {
-        for byte in felt.to_bytes_le().iter() {
-            hasher.update(&[*byte]);
-        }
-    }
-    hasher.finalize().into()
 }
 
 /// Cairo spending conditions
@@ -231,7 +178,7 @@ fn secure_pcs_config() -> PcsConfig {
 }
 
 /// Hash an array of Felts in little endian format using Blake2s
-fn hash_array_bytes(bytecode: &[[u8; 32]]) -> [u8; 32] {
+pub fn hash_array_bytes(bytecode: &[[u8; 32]]) -> [u8; 32] {
     let mut hasher = Blake2sHasher::default();
     for felt in bytecode {
         for byte in felt.iter() {
@@ -330,9 +277,62 @@ mod tests {
     use std::convert::TryInto;
     use std::str::FromStr;
 
+    use serde::de::{self, Deserializer};
+    use starknet_types_core::felt::Felt;
+
     use super::*;
     use crate::secret::Secret;
     use crate::{Amount, Id, Kind, Nut10Secret, SecretKey};
+
+    /// Cairo Executable
+    #[derive(Deserialize)]
+    pub struct Executable {
+        /// Cairo program
+        pub program: Program,
+    }
+
+    /// Cairo Program
+    #[derive(Deserialize)]
+    pub struct Program {
+        #[serde(deserialize_with = "deserialize_felt_vec")]
+        /// Cairo program bytecode
+        pub bytecode: Vec<Felt>,
+    }
+
+    fn deserialize_felt_vec<'de, D>(deserializer: D) -> Result<Vec<Felt>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let hex_strings: Vec<String> = Vec::deserialize(deserializer)?;
+        hex_strings
+            .into_iter()
+            .map(|s| {
+                // This is a hack because `Felt::from_hex` doesn't work with negative numbers.
+                // This is ok because we only need to parse executables during testing and thus
+                // using cairo_lang_executable is not worth having an extra dependency
+                let is_negative = s.starts_with('-');
+                let normalized_hex = if is_negative {
+                    s.trim_start_matches('-').to_string()
+                } else {
+                    s.clone()
+                };
+                let felt = Felt::from_hex(&normalized_hex).map_err(de::Error::custom)?;
+                let corrected_felt = if is_negative { -felt } else { felt };
+                Ok(corrected_felt)
+            })
+            .collect()
+    }
+
+    /// Hash an array of Felts in little endian format using Blake2s
+    pub fn hash_array_felt(bytecode: &[Felt]) -> [u8; 32] {
+        let mut hasher = Blake2sHasher::default();
+        for felt in bytecode {
+            for byte in felt.to_bytes_le().iter() {
+                hasher.update(&[*byte]);
+            }
+        }
+        hasher.finalize().into()
+    }
 
     #[test]
     fn test_verify() {
