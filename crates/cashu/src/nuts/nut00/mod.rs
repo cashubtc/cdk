@@ -649,6 +649,8 @@ pub enum PaymentMethod {
     Bolt11,
     /// Bolt12
     Bolt12,
+    /// Onchain
+    Onchain,
     /// Custom
     Custom(String),
 }
@@ -659,6 +661,7 @@ impl FromStr for PaymentMethod {
         match value.to_lowercase().as_str() {
             "bolt11" => Ok(Self::Bolt11),
             "bolt12" => Ok(Self::Bolt12),
+            "onchain" => Ok(Self::Onchain),
             c => Ok(Self::Custom(c.to_string())),
         }
     }
@@ -669,6 +672,7 @@ impl fmt::Display for PaymentMethod {
         match self {
             PaymentMethod::Bolt11 => write!(f, "bolt11"),
             PaymentMethod::Bolt12 => write!(f, "bolt12"),
+            PaymentMethod::Onchain => write!(f, "onchain"),
             PaymentMethod::Custom(p) => write!(f, "{p}"),
         }
     }

@@ -7,8 +7,9 @@ use cdk_common::payment::{
 use cdk_common::util::unix_time;
 use cdk_common::{
     database, ensure_cdk, Amount, CurrencyUnit, Error, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response, MintQuoteState,
-    MintRequest, MintResponse, NotificationPayload, PaymentMethod, PublicKey,
+    MintQuoteBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response,
+    MintQuoteOnchainRequest, MintQuoteOnchainResponse, MintQuoteState, MintRequest, MintResponse,
+    NotificationPayload, PaymentMethod, PublicKey,
 };
 use tracing::instrument;
 use uuid::Uuid;
@@ -29,6 +30,8 @@ pub enum MintQuoteRequest {
     Bolt11(MintQuoteBolt11Request),
     /// Lightning Network BOLT12 offer request
     Bolt12(MintQuoteBolt12Request),
+    /// Onchain payment request
+    Onchain(MintQuoteOnchainRequest),
 }
 
 impl From<MintQuoteBolt11Request> for MintQuoteRequest {
@@ -43,6 +46,12 @@ impl From<MintQuoteBolt12Request> for MintQuoteRequest {
     }
 }
 
+impl From<MintQuoteOnchainRequest> for MintQuoteRequest {
+    fn from(request: MintQuoteOnchainRequest) -> Self {
+        MintQuoteRequest::Onchain(request)
+    }
+}
+
 /// Response for a mint quote request
 ///
 /// This enum represents the different types of payment responses that can be returned
@@ -53,6 +62,8 @@ pub enum MintQuoteResponse {
     Bolt11(MintQuoteBolt11Response<Uuid>),
     /// Lightning Network BOLT12 offer response
     Bolt12(MintQuoteBolt12Response<Uuid>),
+    /// Onchain payment response
+    Onchain(MintQuoteOnchainResponse<Uuid>),
 }
 
 impl TryFrom<MintQuoteResponse> for MintQuoteBolt11Response<Uuid> {
@@ -77,6 +88,17 @@ impl TryFrom<MintQuoteResponse> for MintQuoteBolt12Response<Uuid> {
     }
 }
 
+impl TryFrom<MintQuoteResponse> for MintQuoteOnchainResponse<Uuid> {
+    type Error = Error;
+
+    fn try_from(response: MintQuoteResponse) -> Result<Self, Self::Error> {
+        match response {
+            MintQuoteResponse::Onchain(onchain_response) => Ok(onchain_response),
+            _ => Err(Error::InvalidPaymentMethod),
+        }
+    }
+}
+
 impl TryFrom<MintQuote> for MintQuoteResponse {
     type Error = Error;
 
@@ -89,6 +111,10 @@ impl TryFrom<MintQuote> for MintQuoteResponse {
             PaymentMethod::Bolt12 => {
                 let bolt12_response = MintQuoteBolt12Response::try_from(quote)?;
                 Ok(MintQuoteResponse::Bolt12(bolt12_response))
+            }
+            PaymentMethod::Onchain => {
+                let onchain_response = MintQuoteOnchainResponse::try_from(quote)?;
+                Ok(MintQuoteResponse::Onchain(onchain_response))
             }
             PaymentMethod::Custom(_) => Err(Error::InvalidPaymentMethod),
         }
@@ -270,6 +296,27 @@ impl Mint {
                         Error::InvalidPaymentRequest
                     })?
             }
+            MintQuoteRequest::Onchain(onchain_request) => {
+                unit = onchain_request.unit;
+                amount = None;
+                pubkey = Some(onchain_request.pubkey);
+                payment_method = PaymentMethod::Onchain;
+
+                self.check_mint_request_acceptable(amount, &unit, &payment_method)
+                    .await?;
+
+                let processor = self.get_payment_processor(unit.clone(), payment_method.clone())?;
+
+                let incoming_options = IncomingPaymentOptions::Onchain;
+
+                processor
+                    .create_incoming_payment_request(&unit, incoming_options)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!("Could not create onchain payment request: {}", err);
+                        Error::InvalidPaymentRequest
+                    })?
+            }
         };
 
         let quote = MintQuote::new(
@@ -280,6 +327,7 @@ impl Mint {
             create_invoice_response.expiry.unwrap_or(0),
             create_invoice_response.request_lookup_id.clone(),
             pubkey,
+            Amount::ZERO,
             Amount::ZERO,
             Amount::ZERO,
             payment_method.clone(),
@@ -311,6 +359,11 @@ impl Mint {
                 let res: MintQuoteBolt12Response<Uuid> = quote.clone().try_into()?;
                 self.pubsub_manager
                     .broadcast(NotificationPayload::MintQuoteBolt12Response(res));
+            }
+            PaymentMethod::Onchain => {
+                let res: MintQuoteOnchainResponse<Uuid> = quote.clone().try_into()?;
+                self.pubsub_manager
+                    .broadcast(NotificationPayload::MintQuoteOnchainResponse(res));
             }
             PaymentMethod::Custom(_) => {}
         }
@@ -545,9 +598,25 @@ impl Mint {
             return Err(Error::SignatureMissingOrInvalid);
         }
 
+        if mint_quote.payment_method == PaymentMethod::Onchain && mint_quote.pubkey.is_none() {
+            tracing::warn!("Onchain mint quote created without pubkey");
+            return Err(Error::SignatureMissingOrInvalid);
+        }
+
         let mint_amount = match mint_quote.payment_method {
             PaymentMethod::Bolt11 => mint_quote.amount.ok_or(Error::AmountUndefined)?,
             PaymentMethod::Bolt12 => {
+                if mint_quote.amount_issued() > mint_quote.amount_paid() {
+                    tracing::error!(
+                        "Quote state should not be issued if issued {} is > paid {}.",
+                        mint_quote.amount_issued(),
+                        mint_quote.amount_paid()
+                    );
+                    return Err(Error::UnpaidQuote);
+                }
+                mint_quote.amount_paid() - mint_quote.amount_issued()
+            }
+            PaymentMethod::Onchain => {
                 if mint_quote.amount_issued() > mint_quote.amount_paid() {
                     tracing::error!(
                         "Quote state should not be issued if issued {} is > paid {}.",

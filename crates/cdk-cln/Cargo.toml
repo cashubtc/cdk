@@ -12,6 +12,7 @@ readme = "README.md"
 
 [dependencies]
 async-trait.workspace = true
+anyhow.workspace = true
 bitcoin.workspace = true
 cdk-common = { workspace = true, features = ["mint"] }
 cln-rpc = "0.4.0"

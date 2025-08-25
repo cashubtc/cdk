@@ -33,6 +33,10 @@ impl From<CdkPaymentIdentifier> for PaymentIdentifier {
                 r#type: PaymentIdentifierType::Bolt12PaymentHash.into(),
                 value: Some(payment_identifier::Value::Hash(hex::encode(hash))),
             },
+            CdkPaymentIdentifier::OnchainAddress(address) => Self {
+                r#type: PaymentIdentifierType::OnchainAddress.into(),
+                value: Some(payment_identifier::Value::Id(address)),
+            },
             CdkPaymentIdentifier::CustomId(id) => Self {
                 r#type: PaymentIdentifierType::CustomId.into(),
                 value: Some(payment_identifier::Value::Id(id)),
@@ -69,6 +73,10 @@ impl TryFrom<PaymentIdentifier> for CdkPaymentIdentifier {
                     .map_err(|_| crate::error::Error::InvalidHash)?;
                 Ok(CdkPaymentIdentifier::Bolt12PaymentHash(hash_array))
             }
+            (
+                PaymentIdentifierType::OnchainAddress,
+                Some(payment_identifier::Value::Id(address)),
+            ) => Ok(CdkPaymentIdentifier::OnchainAddress(address)),
             (PaymentIdentifierType::CustomId, Some(payment_identifier::Value::Id(id))) => {
                 Ok(CdkPaymentIdentifier::CustomId(id))
             }
@@ -238,6 +246,7 @@ impl From<WaitPaymentResponse> for WaitIncomingPaymentResponse {
             payment_amount: value.payment_amount.into(),
             unit: value.unit.to_string(),
             payment_id: value.payment_id,
+            is_confirmed: value.is_confirmed,
         }
     }
 }
@@ -256,6 +265,7 @@ impl TryFrom<WaitIncomingPaymentResponse> for WaitPaymentResponse {
             payment_amount: value.payment_amount.into(),
             unit: CurrencyUnit::from_str(&value.unit)?,
             payment_id: value.payment_id,
+            is_confirmed: value.is_confirmed,
         })
     }
 }

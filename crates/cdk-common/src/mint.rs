@@ -1,10 +1,11 @@
 //! Mint types
 
 use bitcoin::bip32::DerivationPath;
+use bitcoin::Address;
 use cashu::util::unix_time;
 use cashu::{
-    Bolt11Invoice, MeltOptions, MeltQuoteBolt11Response, MintQuoteBolt11Response,
-    MintQuoteBolt12Response, PaymentMethod,
+    Bolt11Invoice, MeltOptions, MeltQuoteBolt11Response, MeltQuoteOnchainResponse,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteOnchainResponse, PaymentMethod,
 };
 use lightning::offers::offer::Offer;
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,9 @@ pub struct MintQuote {
     /// Payment of payment(s) that filled quote
     #[serde(default)]
     pub issuance: Vec<Issuance>,
+    /// Amount unconfirmed on the block chain for onchain payments
+    #[serde(default)]
+    pub amount_unconfirmed: Amount,
 }
 
 impl MintQuote {
@@ -65,6 +69,7 @@ impl MintQuote {
         pubkey: Option<PublicKey>,
         amount_paid: Amount,
         amount_issued: Amount,
+        amount_unconfirmed: Amount,
         payment_method: PaymentMethod,
         created_time: u64,
         payments: Vec<IncomingPayment>,
@@ -83,6 +88,7 @@ impl MintQuote {
             created_time,
             amount_paid,
             amount_issued,
+            amount_unconfirmed,
             payment_method,
             payments,
             issuance,
@@ -106,6 +112,12 @@ impl MintQuote {
     #[instrument(skip(self))]
     pub fn amount_paid(&self) -> Amount {
         self.amount_paid
+    }
+
+    /// Amount unconfirmed
+    #[instrument(skip(self))]
+    pub fn amount_unconfirmed(&self) -> Amount {
+        self.amount_unconfirmed
     }
 
     /// Increment the amount issued on the mint quote by a given amount
@@ -244,6 +256,8 @@ pub struct MeltQuote {
     /// Expiration time of quote
     pub expiry: u64,
     /// Payment preimage
+    /// TODO: for now I'm also storing transaction id for onchain payments on the preimage field
+    /// TODO: should we add a new field for transaction id? or make new OnchainMeltQuote struct and db table?
     pub payment_preimage: Option<String>,
     /// Value used by ln backend to look up state of request
     pub request_lookup_id: Option<PaymentIdentifier>,
@@ -385,6 +399,33 @@ impl TryFrom<MintQuote> for MintQuoteBolt12Response<String> {
     }
 }
 
+impl TryFrom<crate::mint::MintQuote> for MintQuoteOnchainResponse<Uuid> {
+    type Error = crate::Error;
+
+    fn try_from(mint_quote: crate::mint::MintQuote) -> Result<Self, Self::Error> {
+        Ok(MintQuoteOnchainResponse {
+            quote: mint_quote.id,
+            request: mint_quote.request,
+            unit: mint_quote.unit,
+            expiry: Some(mint_quote.expiry),
+            pubkey: mint_quote.pubkey.ok_or(crate::Error::PubkeyRequired)?,
+            amount_paid: mint_quote.amount_paid,
+            amount_issued: mint_quote.amount_issued,
+            amount_unconfirmed: mint_quote.amount_unconfirmed,
+        })
+    }
+}
+
+impl TryFrom<MintQuote> for MintQuoteOnchainResponse<String> {
+    type Error = crate::Error;
+
+    fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
+        let quote: MintQuoteOnchainResponse<Uuid> = quote.try_into()?;
+
+        Ok(quote.into())
+    }
+}
+
 impl From<&MeltQuote> for MeltQuoteBolt11Response<Uuid> {
     fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response<Uuid> {
         MeltQuoteBolt11Response {
@@ -420,6 +461,38 @@ impl From<MeltQuote> for MeltQuoteBolt11Response<Uuid> {
     }
 }
 
+impl From<&MeltQuote> for MeltQuoteOnchainResponse<Uuid> {
+    fn from(melt_quote: &MeltQuote) -> MeltQuoteOnchainResponse<Uuid> {
+        MeltQuoteOnchainResponse {
+            quote: melt_quote.id,
+            amount: melt_quote.amount,
+            fee_reserve: melt_quote.fee_reserve,
+            state: melt_quote.state,
+            expiry: melt_quote.expiry,
+            transaction_id: melt_quote.payment_preimage.clone(),
+            change: None,
+            request: melt_quote.request.to_string(),
+            unit: melt_quote.unit.clone(),
+        }
+    }
+}
+
+impl From<MeltQuote> for MeltQuoteOnchainResponse<Uuid> {
+    fn from(melt_quote: MeltQuote) -> MeltQuoteOnchainResponse<Uuid> {
+        MeltQuoteOnchainResponse {
+            quote: melt_quote.id,
+            amount: melt_quote.amount,
+            fee_reserve: melt_quote.fee_reserve,
+            state: melt_quote.state,
+            expiry: melt_quote.expiry,
+            transaction_id: melt_quote.payment_preimage,
+            change: None,
+            request: melt_quote.request.to_string(),
+            unit: melt_quote.unit,
+        }
+    }
+}
+
 /// Payment request
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MeltPaymentRequest {
@@ -434,6 +507,12 @@ pub enum MeltPaymentRequest {
         #[serde(with = "offer_serde")]
         offer: Box<Offer>,
     },
+    /// Onchain Payment
+    Onchain {
+        /// Onchain address to send to
+        #[serde(with = "onchain_address_serde")]
+        address: Address,
+    },
 }
 
 impl std::fmt::Display for MeltPaymentRequest {
@@ -441,6 +520,7 @@ impl std::fmt::Display for MeltPaymentRequest {
         match self {
             MeltPaymentRequest::Bolt11 { bolt11 } => write!(f, "{bolt11}"),
             MeltPaymentRequest::Bolt12 { offer } => write!(f, "{offer}"),
+            MeltPaymentRequest::Onchain { address } => write!(f, "{address}"),
         }
     }
 }
@@ -468,5 +548,32 @@ mod offer_serde {
         Ok(Box::new(Offer::from_str(&s).map_err(|_| {
             serde::de::Error::custom("Invalid Bolt12 Offer")
         })?))
+    }
+}
+
+mod onchain_address_serde {
+    use std::str::FromStr;
+
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    use super::Address;
+
+    pub fn serialize<S>(address: &Address, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let s = address.to_string();
+        serializer.serialize_str(&s)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Address, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        // TODO: should we validate network against the network of the backend?
+        Ok(Address::from_str(&s)
+            .map_err(|_| serde::de::Error::custom("Invalid Onchain Address"))?
+            .assume_checked())
     }
 }

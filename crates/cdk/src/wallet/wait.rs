@@ -29,6 +29,7 @@ impl From<&MintQuote> for WaitableEvent {
             PaymentMethod::Bolt11 => WaitableEvent::MintQuote(event.id.to_owned()),
             PaymentMethod::Bolt12 => WaitableEvent::Bolt12MintQuote(event.id.to_owned()),
             PaymentMethod::Custom(_) => WaitableEvent::MintQuote(event.id.to_owned()),
+            _ => unreachable!("Unsupported payment method"),
         }
     }
 }

@@ -3,22 +3,22 @@ use std::str::FromStr;
 use anyhow::bail;
 use cdk_common::amount::amount_for_offer;
 use cdk_common::database::{self, MintTransaction};
-use cdk_common::melt::MeltQuoteRequest;
+use cdk_common::melt::{MeltQuoteRequest, MeltQuoteResponse};
 use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::{
-    Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, OutgoingPaymentOptions,
-    PaymentIdentifier,
+    Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, OnchainOutgoingPaymentOptions,
+    OutgoingPaymentOptions, PaymentIdentifier,
 };
-use cdk_common::{MeltOptions, MeltQuoteBolt12Request};
+use cdk_common::{MeltOptions, MeltQuoteBolt12Request, MeltQuoteOnchainRequest};
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 use uuid::Uuid;
 
 use super::{
-    CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, Mint,
-    PaymentMethod, PublicKey, State,
+    CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    MeltQuoteOnchainResponse, MeltRequest, Mint, PaymentMethod, PublicKey, State,
 };
 use crate::amount::to_unit;
 use crate::cdk_payment::{MakePaymentResponse, MintPayment};
@@ -114,13 +114,19 @@ impl Mint {
     pub async fn get_melt_quote(
         &self,
         melt_quote_request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+    ) -> Result<MeltQuoteResponse, Error> {
         match melt_quote_request {
             MeltQuoteRequest::Bolt11(bolt11_request) => {
-                self.get_melt_bolt11_quote_impl(&bolt11_request).await
+                let response = self.get_melt_bolt11_quote_impl(&bolt11_request).await?;
+                Ok(MeltQuoteResponse::Bolt11(response))
             }
             MeltQuoteRequest::Bolt12(bolt12_request) => {
-                self.get_melt_bolt12_quote_impl(&bolt12_request).await
+                let response = self.get_melt_bolt12_quote_impl(&bolt12_request).await?;
+                Ok(MeltQuoteResponse::Bolt12(response))
+            }
+            MeltQuoteRequest::Onchain(onchain_request) => {
+                let response = self.get_melt_onchain_quote_impl(&onchain_request).await?;
+                Ok(MeltQuoteResponse::Onchain(response))
             }
         }
     }
@@ -318,12 +324,99 @@ impl Mint {
         Ok(quote.into())
     }
 
+    /// Implementation of get_melt_onchain_quote
+    #[instrument(skip_all)]
+    async fn get_melt_onchain_quote_impl(
+        &self,
+        melt_request: &MeltQuoteOnchainRequest,
+    ) -> Result<MeltQuoteOnchainResponse<Uuid>, Error> {
+        use std::str::FromStr;
+
+        use bitcoin::Address;
+
+        let MeltQuoteOnchainRequest {
+            request,
+            unit,
+            amount,
+        } = melt_request;
+
+        // Parse the bitcoin address from the request string
+        let address = Address::from_str(request)
+            .map_err(|_| Error::InvalidPaymentRequest)?
+            .assume_checked();
+
+        self.check_melt_request_acceptable(
+            *amount,
+            unit.clone(),
+            PaymentMethod::Onchain,
+            request.clone(),
+            None,
+        )
+        .await?;
+
+        let payment_processor = self
+            .payment_processors
+            .get(&PaymentProcessorKey::new(
+                unit.clone(),
+                PaymentMethod::Onchain,
+            ))
+            .ok_or_else(|| {
+                tracing::info!("Could not get onchain backend for {}", unit);
+                Error::UnsupportedUnit
+            })?;
+
+        let outgoing_payment_options = OnchainOutgoingPaymentOptions {
+            address: address.clone(),
+            amount: *amount,
+            max_fee_amount: None,
+        };
+
+        let payment_quote = payment_processor
+            .get_payment_quote(
+                &melt_request.unit,
+                OutgoingPaymentOptions::Onchain(Box::new(outgoing_payment_options)),
+            )
+            .await
+            .map_err(|err| {
+                tracing::error!(
+                    "Could not get payment quote for onchain melt quote, {} onchain, {}",
+                    unit,
+                    err
+                );
+                Error::UnsupportedUnit
+            })?;
+
+        let payment_request = MeltPaymentRequest::Onchain { address };
+
+        let quote = MeltQuote::new(
+            payment_request,
+            unit.clone(),
+            payment_quote.amount,
+            payment_quote.fee,
+            unix_time() + self.quote_ttl().await?.melt_ttl,
+            payment_quote.request_lookup_id.clone(),
+            None,
+            PaymentMethod::Onchain,
+        );
+
+        tracing::debug!(
+            "New onchain melt quote {} for {} {} with request id {:?}",
+            quote.id,
+            amount,
+            unit,
+            payment_quote.request_lookup_id
+        );
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.add_melt_quote(quote.clone()).await?;
+        tx.commit().await?;
+
+        Ok(quote.into())
+    }
+
     /// Check melt quote status
     #[instrument(skip(self))]
-    pub async fn check_melt_quote(
-        &self,
-        quote_id: &Uuid,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+    pub async fn check_melt_quote(&self, quote_id: &Uuid) -> Result<MeltQuoteResponse, Error> {
         let quote = self
             .localstore
             .get_melt_quote(quote_id)
@@ -337,18 +430,23 @@ impl Mint {
 
         let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
 
-        Ok(MeltQuoteBolt11Response {
-            quote: quote.id,
-            paid: Some(quote.state == MeltQuoteState::Paid),
-            state: quote.state,
-            expiry: quote.expiry,
-            amount: quote.amount,
-            fee_reserve: quote.fee_reserve,
-            payment_preimage: quote.payment_preimage,
-            change,
-            request: Some(quote.request.to_string()),
-            unit: Some(quote.unit.clone()),
-        })
+        let mut response: MeltQuoteResponse = quote.clone().try_into()?;
+
+        match &mut response {
+            MeltQuoteResponse::Bolt11(ref mut bolt11_response) => {
+                bolt11_response.change = change;
+                bolt11_response.paid = Some(quote.state == MeltQuoteState::Paid);
+            }
+            MeltQuoteResponse::Bolt12(ref mut bolt12_response) => {
+                bolt12_response.change = change;
+                bolt12_response.paid = Some(quote.state == MeltQuoteState::Paid);
+            }
+            MeltQuoteResponse::Onchain(ref mut onchain_response) => {
+                onchain_response.change = change;
+            }
+        }
+
+        Ok(response)
     }
 
     /// Get melt quotes
@@ -399,6 +497,10 @@ impl Mint {
                     .ok_or(Error::InvoiceAmountUndefined)?
                     .amount_msat(),
             },
+            // For onchain payments, the amount is specified in the quote directly
+            // since Bitcoin addresses don't contain amount information
+            // TODO: should we add  amount to the onchain payment request struct directly?
+            MeltPaymentRequest::Onchain { address: _ } => quote_msats,
         };
 
         let partial_amount = match invoice_amount_msats > quote_msats {
@@ -516,10 +618,7 @@ impl Mint {
 
     /// Melt Bolt11
     #[instrument(skip_all)]
-    pub async fn melt(
-        &self,
-        melt_request: &MeltRequest<Uuid>,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+    pub async fn melt(&self, melt_request: &MeltRequest<Uuid>) -> Result<MeltQuoteResponse, Error> {
         use std::sync::Arc;
         async fn check_payment_state(
             ln: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
@@ -746,7 +845,7 @@ impl Mint {
         melt_request: &MeltRequest<Uuid>,
         payment_preimage: Option<String>,
         total_spent: Amount,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+    ) -> Result<MeltQuoteResponse, Error> {
         let input_ys = melt_request.inputs().ys()?;
 
         proof_writer
@@ -866,17 +965,25 @@ impl Mint {
                 .unwrap_or_default()
         );
 
-        Ok(MeltQuoteBolt11Response {
-            amount: quote.amount,
-            paid: Some(true),
-            payment_preimage,
-            change,
-            quote: quote.id,
-            fee_reserve: quote.fee_reserve,
-            state: MeltQuoteState::Paid,
-            expiry: quote.expiry,
-            request: Some(quote.request.to_string()),
-            unit: Some(quote.unit.clone()),
-        })
+        let mut response: MeltQuoteResponse = quote.clone().try_into()?;
+
+        match &mut response {
+            MeltQuoteResponse::Bolt11(ref mut bolt11_response) => {
+                bolt11_response.paid = Some(true);
+                bolt11_response.state = MeltQuoteState::Paid;
+                bolt11_response.change = change;
+            }
+            MeltQuoteResponse::Bolt12(ref mut bolt12_response) => {
+                bolt12_response.paid = Some(true);
+                bolt12_response.state = MeltQuoteState::Paid;
+                bolt12_response.change = change;
+            }
+            MeltQuoteResponse::Onchain(ref mut onchain_response) => {
+                onchain_response.state = MeltQuoteState::Paid;
+                onchain_response.change = change;
+            }
+        }
+
+        Ok(response)
     }
 }

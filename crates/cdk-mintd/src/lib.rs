@@ -537,6 +537,19 @@ async fn configure_backend_for_unit(
         }
     }
 
+    if let Some(onchain) = payment_settings.get("onchain") {
+        if onchain.as_bool().unwrap_or_default() {
+            mint_builder
+                .add_payment_processor(
+                    unit.clone(),
+                    PaymentMethod::Onchain,
+                    mint_melt_limits,
+                    Arc::clone(&backend),
+                )
+                .await?;
+        }
+    }
+
     mint_builder
         .add_payment_processor(
             unit.clone(),
@@ -870,9 +883,16 @@ async fn start_services_with_shutdown(
     let bolt12_supported = nut04_methods.contains(&&PaymentMethod::Bolt12)
         || nut05_methods.contains(&&PaymentMethod::Bolt12);
 
-    let v1_service =
-        cdk_axum::create_mint_router_with_custom_cache(Arc::clone(&mint), cache, bolt12_supported)
-            .await?;
+    let onchain_supported = nut04_methods.contains(&&PaymentMethod::Onchain)
+        || nut05_methods.contains(&&PaymentMethod::Onchain);
+
+    let v1_service = cdk_axum::create_mint_router_with_custom_cache(
+        Arc::clone(&mint),
+        cache,
+        bolt12_supported,
+        onchain_supported,
+    )
+    .await?;
 
     let mut mint_service = Router::new()
         .merge(v1_service)

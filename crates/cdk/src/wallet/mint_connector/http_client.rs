@@ -3,7 +3,11 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use cdk_common::{nut19, MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
+use cdk_common::{
+    nut19, MeltQuoteBolt12Request, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse,
+    MintQuoteBolt12Request, MintQuoteBolt12Response, MintQuoteOnchainRequest,
+    MintQuoteOnchainResponse,
+};
 #[cfg(feature = "auth")]
 use cdk_common::{Method, ProtectedEndpoint, RoutePath};
 use reqwest::{Client, IntoUrl};
@@ -626,6 +630,103 @@ impl MintConnector for HttpClient {
             &request,
         )
         .await
+    }
+
+    /// Mint Quote Onchain [NUT-26]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn post_mint_onchain_quote(
+        &self,
+        request: MintQuoteOnchainRequest,
+    ) -> Result<MintQuoteOnchainResponse<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", "onchain"])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MintQuoteOnchain)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+
+        self.core.http_post(url, auth_token, &request).await
+    }
+
+    /// Mint Quote Onchain status [NUT-26]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_quote_onchain_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteOnchainResponse<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", "onchain", quote_id])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Get, RoutePath::MintQuoteOnchain)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.core.http_get(url, auth_token).await
+    }
+
+    /// Melt Quote Onchain [NUT-26]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_melt_onchain_quote(
+        &self,
+        request: MeltQuoteOnchainRequest,
+    ) -> Result<MeltQuoteOnchainResponse<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "melt", "quote", "onchain"])?;
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MeltQuoteOnchain)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.core.http_post(url, auth_token, &request).await
+    }
+
+    /// Melt Quote Onchain Status [NUT-26]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_melt_onchain_quote_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MeltQuoteOnchainResponse<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "melt", "quote", "onchain", quote_id])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Get, RoutePath::MeltQuoteOnchain)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.core.http_get(url, auth_token).await
+    }
+
+    /// Melt Onchain [NUT-26]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_melt_onchain(
+        &self,
+        request: MeltRequest<String>,
+    ) -> Result<MeltQuoteOnchainResponse<String>, Error> {
+        let url = self.mint_url.join_paths(&["v1", "melt", "onchain"])?;
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MeltOnchain)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.core.http_post(url, auth_token, &request).await
     }
 }
 

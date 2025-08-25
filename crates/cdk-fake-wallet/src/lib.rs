@@ -22,6 +22,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
+use bitcoin::{Address, CompressedPublicKey, Network, PrivateKey};
 use cdk_common::amount::{to_unit, Amount};
 use cdk_common::common::FeeReserve;
 use cdk_common::ensure_cdk;
@@ -281,6 +282,7 @@ impl MintPayment for FakeWallet {
             invoice_description: true,
             amountless: false,
             bolt12: true,
+            onchain: true,
         })?)
     }
 
@@ -314,6 +316,7 @@ impl MintPayment for FakeWallet {
                 payment_amount,
                 unit: unit.clone(),
                 payment_id,
+                is_confirmed: true,
             },
         )))
     }
@@ -371,6 +374,12 @@ impl MintPayment for FakeWallet {
                     }
                 };
                 (amount_msat, None)
+            }
+            OutgoingPaymentOptions::Onchain(onchain_options) => {
+                let amount_sat: u64 = onchain_options.amount.into();
+                let payment_id =
+                    PaymentIdentifier::OnchainAddress(onchain_options.address.to_string());
+                (amount_sat * 1000, Some(payment_id))
             }
         };
 
@@ -474,6 +483,23 @@ impl MintPayment for FakeWallet {
                     unit: unit.clone(),
                 })
             }
+            OutgoingPaymentOptions::Onchain(onchain_options) => {
+                let address = onchain_options.address.to_string();
+                let amount_sat: u64 = onchain_options.amount.into();
+
+                let mut payment_states = self.payment_states.lock().await;
+                payment_states.insert(address.clone(), MeltQuoteState::Paid);
+
+                let total_spent = to_unit(amount_sat * 1000, &CurrencyUnit::Msat, unit)?;
+
+                Ok(MakePaymentResponse {
+                    payment_proof: Some(format!("fake_tx_id_{}", address)),
+                    payment_lookup_id: PaymentIdentifier::OnchainAddress(address),
+                    status: MeltQuoteState::Paid,
+                    total_spent: total_spent + 1.into(),
+                    unit: unit.clone(),
+                })
+            }
         }
     }
 
@@ -483,7 +509,7 @@ impl MintPayment for FakeWallet {
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        let (payment_hash, request, amount, expiry) = match options {
+        let (payment_identifier, request, amount, expiry) = match options {
             IncomingPaymentOptions::Bolt12(bolt12_options) => {
                 let description = bolt12_options.description.unwrap_or_default();
                 let amount = bolt12_options.amount;
@@ -533,12 +559,22 @@ impl MintPayment for FakeWallet {
                     expiry,
                 )
             }
+            IncomingPaymentOptions::Onchain => {
+                let address = create_unique_bitcoin_address();
+
+                (
+                    PaymentIdentifier::OnchainAddress(address.clone()),
+                    address,
+                    Amount::from(1000),
+                    None,
+                )
+            }
         };
 
         // ALL invoices get immediate payment processing (original behavior)
         let sender = self.sender.clone();
         let duration = time::Duration::from_secs(self.payment_delay);
-        let payment_hash_clone = payment_hash.clone();
+        let payment_identifier_clone = payment_identifier.clone();
         let incoming_payment = self.incoming_payments.clone();
         let unit_clone = self.unit.clone();
 
@@ -559,28 +595,29 @@ impl MintPayment for FakeWallet {
             time::sleep(duration).await;
 
             let response = WaitPaymentResponse {
-                payment_identifier: payment_hash_clone.clone(),
+                payment_identifier: payment_identifier_clone.clone(),
                 payment_amount: final_amount,
                 unit: unit_clone,
-                payment_id: payment_hash_clone.to_string(),
+                payment_id: payment_identifier_clone.to_string(),
+                is_confirmed: true,
             };
             let mut incoming = incoming_payment.write().await;
             incoming
-                .entry(payment_hash_clone.clone())
+                .entry(payment_identifier_clone.clone())
                 .or_insert_with(Vec::new)
                 .push(response.clone());
 
             // Send the message after waiting for the specified duration
             if sender
                 .send((
-                    payment_hash_clone.clone(),
+                    payment_identifier_clone.clone(),
                     final_amount,
-                    payment_hash_clone.to_string(),
+                    payment_identifier_clone.to_string(),
                 ))
                 .await
                 .is_err()
             {
-                tracing::error!("Failed to send label: {:?}", payment_hash_clone);
+                tracing::error!("Failed to send label: {:?}", payment_identifier_clone);
             }
         });
 
@@ -588,16 +625,16 @@ impl MintPayment for FakeWallet {
         if amount == Amount::ZERO {
             tracing::info!(
                 "Adding any-amount invoice to secondary repayment queue: {:?}",
-                payment_hash
+                payment_identifier
             );
 
             self.secondary_repayment_queue
-                .enqueue_for_repayment(payment_hash.clone())
+                .enqueue_for_repayment(payment_identifier.clone())
                 .await;
         }
 
         Ok(CreateIncomingPaymentResponse {
-            request_lookup_id: payment_hash,
+            request_lookup_id: payment_identifier,
             request,
             expiry,
         })
@@ -642,6 +679,20 @@ impl MintPayment for FakeWallet {
             unit: CurrencyUnit::Msat,
         })
     }
+}
+
+/// Create unique bitcoin address using bitcoin::Address
+#[instrument]
+pub fn create_unique_bitcoin_address() -> String {
+    let secp = Secp256k1::new();
+    let secret_key = SecretKey::new(&mut bitcoin::secp256k1::rand::rngs::OsRng);
+    let private_key = PrivateKey::new(secret_key, Network::Testnet);
+    let compressed_public_key = CompressedPublicKey::from_private_key(&secp, &private_key)
+        .expect("Failed to create compressed public key");
+
+    let address = Address::p2wpkh(&compressed_public_key, Network::Testnet);
+
+    address.to_string()
 }
 
 /// Create fake invoice

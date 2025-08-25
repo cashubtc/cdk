@@ -657,6 +657,7 @@ impl CdkMint for MintRPCServer {
                     payment_amount: mint_quote.amount_paid(),
                     unit: mint_quote.unit.clone(),
                     payment_identifier: mint_quote.request_lookup_id.clone(),
+                    is_confirmed: true,
                 };
 
                 let localstore = self.mint.localstore();
@@ -686,6 +687,7 @@ impl CdkMint for MintRPCServer {
                     mint_quote.pubkey,                    // pubkey
                     mint_quote.amount_issued(),           // amount_issued
                     mint_quote.amount_paid(),             // amount_paid
+                    mint_quote.amount_unconfirmed(),      // amount_unconfirmed
                     mint_quote.payment_method.clone(),    // method
                     0,                                    // created_at
                     vec![],                               // blinded_messages

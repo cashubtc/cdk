@@ -25,6 +25,7 @@ pub mod nut19;
 pub mod nut20;
 pub mod nut23;
 pub mod nut24;
+pub mod nut26;
 
 #[cfg(feature = "auth")]
 mod auth;
@@ -69,3 +70,7 @@ pub use nut23::{
     MintQuoteBolt11Response, QuoteState as MintQuoteState,
 };
 pub use nut24::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
+pub use nut26::{
+    MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MintQuoteOnchainRequest,
+    MintQuoteOnchainResponse,
+};

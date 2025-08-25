@@ -112,6 +112,7 @@ impl Lnd {
                 invoice_description: true,
                 amountless: true,
                 bolt12: false,
+                onchain: false,
             },
         })
     }
@@ -192,6 +193,7 @@ impl MintPayment for Lnd {
                                                 payment_identifier: PaymentIdentifier::PaymentHash(hash_slice), payment_amount: Amount::from(msg.amt_paid_msat as u64),
                                                 unit: CurrencyUnit::Msat,
                                                 payment_id: hash,
+                                                is_confirmed: true,
                                             };
                                             tracing::info!("LND: Created WaitPaymentResponse with amount {} msat", 
                                                          msg.amt_paid_msat);
@@ -259,6 +261,9 @@ impl MintPayment for Lnd {
             }
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
+            }
+            OutgoingPaymentOptions::Onchain(_) => {
+                Err(Self::Err::Anyhow(anyhow!("Onchain not supported by LND")))
             }
         }
     }
@@ -458,6 +463,9 @@ impl MintPayment for Lnd {
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
             }
+            OutgoingPaymentOptions::Onchain(_) => {
+                Err(Self::Err::Anyhow(anyhow!("Onchain not supported by LND")))
+            }
         }
     }
 
@@ -504,6 +512,9 @@ impl MintPayment for Lnd {
             IncomingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
             }
+            IncomingPaymentOptions::Onchain => {
+                Err(Self::Err::Anyhow(anyhow!("Onchain not supported by LND")))
+            }
         }
     }
 
@@ -532,6 +543,7 @@ impl MintPayment for Lnd {
                 payment_amount: Amount::from(invoice.amt_paid_msat as u64),
                 unit: CurrencyUnit::Msat,
                 payment_id: hex::encode(invoice.r_hash),
+                is_confirmed: true,
             }])
         } else {
             Ok(vec![])
