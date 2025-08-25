@@ -188,17 +188,7 @@ mod tests {
         use std::collections::BTreeMap;
 
         // Create in-memory SQLite database for testing
-        let path = std::env::temp_dir()
-            .to_path_buf()
-            .join(format!("cdk-test-add-keys-{}.sqlite", uuid::Uuid::new_v4()));
-
-        #[cfg(feature = "sqlcipher")]
-        let db = WalletSqliteDatabase::new((path, "password".to_string()))
-            .await
-            .unwrap();
-
-        #[cfg(not(feature = "sqlcipher"))]
-        let db = WalletSqliteDatabase::new(path).await.unwrap();
+        let db = super::memory::empty().await.unwrap();
 
         // Create a test keyset with known keys
         let mut keys_map = BTreeMap::new();
