@@ -147,6 +147,44 @@ impl Proof {
 
         let mut pubkeys = spending_conditions.pubkeys.clone().unwrap_or_default();
 
+        match (
+            spending_conditions.locktime,
+            spending_conditions.refund_keys,
+        ) {
+            (Some(locktime), Some(refund_keys)) => {
+                let needed_refund_sigs = spending_conditions.num_sigs_refund.unwrap_or(1) as usize;
+
+                let mut valid_pubkeys = HashSet::new();
+
+                // If lock time has passed check if refund witness signature is valid
+                if unix_time() >= locktime {
+                    for s in witness_signatures.iter() {
+                        for v in &refund_keys {
+                            let sig =
+                                Signature::from_str(s).map_err(|_| Error::InvalidSignature)?;
+
+                            if v.verify(msg, &sig).is_ok() {
+                                valid_pubkeys.insert(v);
+
+                                if valid_pubkeys.len() >= needed_refund_sigs {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+
+                    // If locktime and refund keys were specified they must sign after locktime
+                    return Err(Error::SpendConditionsNotMet);
+                }
+            }
+            (Some(locktime), _) => {
+                if unix_time() >= locktime {
+                    return Ok(());
+                }
+            }
+            _ => (),
+        }
+
         if secret.kind().eq(&Kind::P2PK) {
             pubkeys.push(PublicKey::from_str(secret.secret_data().data())?);
         }
@@ -173,34 +211,6 @@ impl Proof {
 
         if valid_sigs >= spending_conditions.num_sigs.unwrap_or(1) {
             return Ok(());
-        }
-
-        if let (Some(locktime), Some(refund_keys)) = (
-            spending_conditions.locktime,
-            spending_conditions.refund_keys,
-        ) {
-            let needed_refund_sigs = spending_conditions.num_sigs_refund.unwrap_or(1) as usize;
-
-            let mut valid_pubkeys = HashSet::new();
-
-            // If lock time has passed check if refund witness signature is valid
-            if locktime.lt(&unix_time()) {
-                for s in witness_signatures.iter() {
-                    for v in &refund_keys {
-                        let sig = Signature::from_str(s).map_err(|_| Error::InvalidSignature)?;
-
-                        if v.verify(msg, &sig).is_ok() {
-                            if !valid_pubkeys.insert(v) {
-                                return Err(Error::DuplicateSignature);
-                            }
-
-                            if valid_pubkeys.len() >= needed_refund_sigs {
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         Err(Error::SpendConditionsNotMet)
