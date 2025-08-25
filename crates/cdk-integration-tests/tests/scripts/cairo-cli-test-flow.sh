@@ -157,6 +157,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ---------- Build cdk-cli (release) ----------
+need cargo
+info "Building cdk-cli (release)..."
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if ! ( cd "$REPO_ROOT" && cargo build --release -p cdk-cli ); then
+  die "Failed to build cdk-cli"
+fi
+# Point CLI to the freshly built binary if default or missing
+if [[ "$CLI" == "./target/release/cdk-cli" || ! -x "$CLI" ]]; then
+  CLI="$REPO_ROOT/target/release/cdk-cli"
+fi
+
 # ---------- Welcome & Setup ----------
 echo "Cairo CLI Integration Test"
 echo "Testing Cairo proof functionality in CDK CLI"
