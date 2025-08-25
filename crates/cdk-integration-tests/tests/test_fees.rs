@@ -108,9 +108,7 @@ async fn test_fake_melt_change_in_quote() {
 
     let invoice_amount = 9;
 
-    let invoice = create_invoice_for_env(&get_temp_dir(), Some(invoice_amount))
-        .await
-        .unwrap();
+    let invoice = create_invoice_for_env(Some(invoice_amount)).await.unwrap();
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 

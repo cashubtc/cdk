@@ -53,7 +53,7 @@ format:
   nixpkgs-fmt $(echo **.nix)
 
 # run doc tests
-test: build
+test:
   #!/usr/bin/env bash
   set -euo pipefail
   if [ ! -f Cargo.toml ]; then

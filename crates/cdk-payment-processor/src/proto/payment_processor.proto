@@ -46,6 +46,7 @@ enum PaymentIdentifierType {
   LABEL = 2;
   BOLT12_PAYMENT_HASH = 3;
   CUSTOM_ID = 4;
+  PAYMENT_ID = 5;
 }
 
 message PaymentIdentifier {

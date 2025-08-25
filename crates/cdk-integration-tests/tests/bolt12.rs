@@ -385,3 +385,66 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_attempt_to_mint_unpaid() {
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let mint_amount = Amount::from(100);
+
+    let mint_quote = wallet
+        .mint_bolt12_quote(Some(mint_amount), None)
+        .await
+        .unwrap();
+
+    assert_eq!(mint_quote.amount, Some(mint_amount));
+
+    let proofs = wallet
+        .mint_bolt12(&mint_quote.id, None, SplitTarget::default(), None)
+        .await;
+
+    match proofs {
+        Err(err) => {
+            if !matches!(err, cdk::Error::UnpaidQuote) {
+                panic!("Wrong error quote should be unpaid: {}", err);
+            }
+        }
+        Ok(_) => {
+            panic!("Minting should not be allowed");
+        }
+    }
+
+    let mint_quote = wallet
+        .mint_bolt12_quote(Some(mint_amount), None)
+        .await
+        .unwrap();
+
+    let state = wallet
+        .mint_bolt12_quote_state(&mint_quote.id)
+        .await
+        .unwrap();
+
+    assert!(state.amount_paid == Amount::ZERO);
+
+    let proofs = wallet
+        .mint_bolt12(&mint_quote.id, None, SplitTarget::default(), None)
+        .await;
+
+    match proofs {
+        Err(err) => {
+            if !matches!(err, cdk::Error::UnpaidQuote) {
+                panic!("Wrong error quote should be unpaid: {}", err);
+            }
+        }
+        Ok(_) => {
+            panic!("Minting should not be allowed");
+        }
+    }
+}

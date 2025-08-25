@@ -17,7 +17,7 @@
 //! - Proof state management utilities
 
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
@@ -27,8 +27,10 @@ use cdk::nuts::State;
 use cdk::Wallet;
 use cdk_fake_wallet::create_fake_invoice;
 use init_regtest::{get_lnd_dir, LND_RPC_ADDR};
-use ln_regtest_rs::ln_client::{LightningClient, LndClient};
+use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 use tokio::time::Duration;
+
+use crate::init_regtest::get_cln_dir;
 
 pub mod cli;
 pub mod init_auth_mint;
@@ -118,11 +120,18 @@ pub async fn init_lnd_client(work_dir: &Path) -> LndClient {
 ///
 /// This is useful for tests that need to pay invoices in regtest mode but
 /// should be skipped in other environments.
-pub async fn pay_if_regtest(work_dir: &Path, invoice: &Bolt11Invoice) -> Result<()> {
+pub async fn pay_if_regtest(_work_dir: &Path, invoice: &Bolt11Invoice) -> Result<()> {
     // Check if the invoice is for the regtest network
     if invoice.network() == bitcoin::Network::Regtest {
-        let lnd_client = init_lnd_client(work_dir).await;
-        lnd_client.pay_invoice(invoice.to_string()).await?;
+        let client = get_test_client().await;
+        let mut tries = 0;
+        while let Err(err) = client.pay_invoice(invoice.to_string()).await {
+            println!("Could not pay invoice.retrying {err}");
+            tries += 1;
+            if tries > 10 {
+                bail!("Could not pay invoice");
+            }
+        }
         Ok(())
     } else {
         // Not a regtest invoice, just return Ok
@@ -149,11 +158,10 @@ pub fn is_regtest_env() -> bool {
 ///
 /// Uses the is_regtest_env() function to determine whether to
 /// create a real regtest invoice or a fake one for testing.
-pub async fn create_invoice_for_env(work_dir: &Path, amount_sat: Option<u64>) -> Result<String> {
+pub async fn create_invoice_for_env(amount_sat: Option<u64>) -> Result<String> {
     if is_regtest_env() {
-        // In regtest mode, create a real invoice
-        let lnd_client = init_lnd_client(work_dir).await;
-        lnd_client
+        let client = get_test_client().await;
+        client
             .create_invoice(amount_sat)
             .await
             .map_err(|e| anyhow!("Failed to create regtest invoice: {}", e))
@@ -164,5 +172,82 @@ pub async fn create_invoice_for_env(work_dir: &Path, amount_sat: Option<u64>) ->
             "".to_string(),
         );
         Ok(fake_invoice.to_string())
+    }
+}
+
+// This is the ln wallet we use to send/receive ln payements as the wallet
+async fn _get_lnd_client() -> LndClient {
+    let temp_dir = get_work_dir();
+
+    // The LND mint uses the second LND node (LND_TWO_RPC_ADDR = localhost:10010)
+    let lnd_dir = get_lnd_dir(&temp_dir, "one");
+    let cert_file = lnd_dir.join("tls.cert");
+    let macaroon_file = lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon");
+
+    println!("Looking for LND cert file: {cert_file:?}");
+    println!("Looking for LND macaroon file: {macaroon_file:?}");
+    println!("Connecting to LND at: https://{LND_RPC_ADDR}");
+
+    // Connect to LND
+    LndClient::new(
+        format!("https://{LND_RPC_ADDR}"),
+        cert_file.clone(),
+        macaroon_file.clone(),
+    )
+    .await
+    .expect("Could not connect to lnd rpc")
+}
+
+/// Returns a Lightning client based on the CDK_TEST_LIGHTNING_CLIENT environment variable.
+///
+/// Reads the CDK_TEST_LIGHTNING_CLIENT environment variable:
+/// - "cln" or "CLN": returns a CLN client
+/// - Anything else (or unset): returns an LND client (default)
+pub async fn get_test_client() -> Box<dyn LightningClient> {
+    match env::var("CDK_TEST_LIGHTNING_CLIENT") {
+        Ok(val) => {
+            let val = val.to_lowercase();
+            match val.as_str() {
+                "cln" => Box::new(create_cln_client_with_retry().await),
+                _ => Box::new(_get_lnd_client().await),
+            }
+        }
+        Err(_) => Box::new(_get_lnd_client().await), // Default to LND
+    }
+}
+
+fn get_work_dir() -> PathBuf {
+    match env::var("CDK_ITESTS_DIR") {
+        Ok(dir) => {
+            let path = PathBuf::from(dir);
+            println!("Using temp directory from CDK_ITESTS_DIR: {path:?}");
+            path
+        }
+        Err(_) => {
+            panic!("Unknown temp dir");
+        }
+    }
+}
+
+// Helper function to create CLN client with retries
+async fn create_cln_client_with_retry() -> ClnClient {
+    let mut retries = 0;
+    let max_retries = 10;
+
+    let cln_dir = get_cln_dir(&get_work_dir(), "one");
+    loop {
+        match ClnClient::new(cln_dir.clone(), None).await {
+            Ok(client) => return client,
+            Err(e) => {
+                retries += 1;
+                if retries >= max_retries {
+                    panic!("Could not connect to CLN client after {max_retries} retries: {e}");
+                }
+                println!(
+                    "Failed to connect to CLN (attempt {retries}/{max_retries}): {e}. Retrying in 7 seconds..."
+                );
+                tokio::time::sleep(tokio::time::Duration::from_secs(7)).await;
+            }
+        }
     }
 }

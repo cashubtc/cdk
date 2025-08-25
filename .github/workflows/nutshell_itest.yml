@@ -10,6 +10,16 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
@@ -29,6 +39,16 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
       - name: Pull Nutshell Docker image
         run: docker pull cashubtc/nutshell:latest
       - name: Install Nix

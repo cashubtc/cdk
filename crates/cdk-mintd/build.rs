@@ -15,7 +15,8 @@ fn main() {
         || cfg!(feature = "lnd")
         || cfg!(feature = "lnbits")
         || cfg!(feature = "fakewallet")
-        || cfg!(feature = "grpc-processor");
+        || cfg!(feature = "grpc-processor")
+        || cfg!(feature = "ldk-node");
 
     if !has_lightning_backend {
         panic!(

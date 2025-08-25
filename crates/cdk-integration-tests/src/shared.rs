@@ -14,6 +14,7 @@ use cdk_axum::cache;
 use cdk_mintd::config::{Database, DatabaseEngine};
 use tokio::signal;
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 use crate::cli::{init_logging, CommonArgs};
 
@@ -26,8 +27,12 @@ const DEFAULT_MIN_MELT: u64 = 1;
 /// Default maximum melt amount for test mints
 const DEFAULT_MAX_MELT: u64 = 500_000;
 
-/// Wait for mint to be ready by checking its info endpoint
-pub async fn wait_for_mint_ready(port: u16, timeout_secs: u64) -> Result<()> {
+/// Wait for mint to be ready by checking its info endpoint, with optional shutdown signal
+pub async fn wait_for_mint_ready_with_shutdown(
+    port: u16,
+    timeout_secs: u64,
+    shutdown_notify: Arc<CancellationToken>,
+) -> Result<()> {
     let url = format!("http://127.0.0.1:{port}/v1/info");
     let start_time = std::time::Instant::now();
 
@@ -39,26 +44,43 @@ pub async fn wait_for_mint_ready(port: u16, timeout_secs: u64) -> Result<()> {
             return Err(anyhow::anyhow!("Timeout waiting for mint on port {}", port));
         }
 
-        // Try to make a request to the mint info endpoint
-        match reqwest::get(&url).await {
-            Ok(response) => {
-                if response.status().is_success() {
-                    println!("Mint on port {port} is ready");
-                    return Ok(());
-                } else {
-                    println!(
-                        "Mint on port {} returned status: {}",
-                        port,
-                        response.status()
-                    );
-                }
-            }
-            Err(e) => {
-                println!("Error connecting to mint on port {port}: {e}");
-            }
+        if shutdown_notify.is_cancelled() {
+            return Err(anyhow::anyhow!("Canceled waiting for {}", port));
         }
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::select! {
+            // Try to make a request to the mint info endpoint
+            result = reqwest::get(&url) => {
+                match result {
+                    Ok(response) => {
+                        if response.status().is_success() {
+                            println!("Mint on port {port} is ready");
+                            return Ok(());
+                        } else {
+                            println!(
+                                "Mint on port {} returned status: {}",
+                                port,
+                                response.status()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        println!("Error connecting to mint on port {port}: {e}");
+                    }
+                }
+            }
+
+            // Check for shutdown signal
+            _ = shutdown_notify.cancelled() => {
+                return Err(anyhow::anyhow!(
+                    "Shutdown requested while waiting for mint on port {}",
+                    port
+                ));
+            }
+
+
+
+        }
     }
 }
 
@@ -187,6 +209,7 @@ pub fn create_fake_wallet_settings(
         cln: None,
         lnbits: None,
         lnd: None,
+        ldk_node: None,
         fake_wallet: fake_wallet_config,
         grpc_processor: None,
         database: Database {
@@ -234,6 +257,7 @@ pub fn create_cln_settings(
         cln: Some(cln_config),
         lnbits: None,
         lnd: None,
+        ldk_node: None,
         fake_wallet: None,
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
@@ -276,6 +300,7 @@ pub fn create_lnd_settings(
         },
         cln: None,
         lnbits: None,
+        ldk_node: None,
         lnd: Some(lnd_config),
         fake_wallet: None,
         grpc_processor: None,

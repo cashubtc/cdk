@@ -199,13 +199,8 @@ impl Mint {
     /// # Background Services
     ///
     /// Currently manages:
+    /// - Payment processor initialization and startup
     /// - Invoice payment monitoring across all configured payment processors
-    ///
-    /// Future services may include:
-    /// - Quote cleanup and expiration management
-    /// - Periodic database maintenance
-    /// - Health check monitoring
-    /// - Metrics collection
     pub async fn start(&self) -> Result<(), Error> {
         let mut task_state = self.task_state.lock().await;
 
@@ -213,6 +208,33 @@ impl Mint {
         if task_state.shutdown_notify.is_some() {
             return Err(Error::Internal); // Already started
         }
+
+        // Start all payment processors first
+        tracing::info!("Starting payment processors...");
+        let mut seen_processors = Vec::new();
+        for (key, processor) in &self.payment_processors {
+            // Skip if we've already spawned a task for this processor instance
+            if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
+                continue;
+            }
+
+            seen_processors.push(Arc::clone(processor));
+
+            tracing::info!("Starting payment wait task for {:?}", key);
+
+            match processor.start().await {
+                Ok(()) => {
+                    tracing::debug!("Successfully started payment processor for {:?}", key);
+                }
+                Err(e) => {
+                    // Log the error but continue with other processors
+                    tracing::error!("Failed to start payment processor for {:?}: {}", key, e);
+                    return Err(e.into());
+                }
+            }
+        }
+
+        tracing::info!("Payment processor startup completed");
 
         // Create shutdown signal
         let shutdown_notify = Arc::new(Notify::new());
@@ -266,7 +288,8 @@ impl Mint {
             (Some(notify), Some(handle)) => (notify, handle),
             _ => {
                 tracing::debug!("Stop called but no background services were running");
-                return Ok(()); // Nothing to stop
+                // Still try to stop payment processors
+                return self.stop_payment_processors().await;
             }
         };
 
@@ -279,7 +302,7 @@ impl Mint {
         shutdown_notify.notify_waiters();
 
         // Wait for supervisor to complete
-        match supervisor_handle.await {
+        let result = match supervisor_handle.await {
             Ok(result) => {
                 tracing::info!("Mint background services stopped");
                 result
@@ -288,7 +311,39 @@ impl Mint {
                 tracing::error!("Background service task panicked: {:?}", join_error);
                 Err(Error::Internal)
             }
+        };
+
+        // Stop all payment processors
+        self.stop_payment_processors().await?;
+
+        result
+    }
+
+    /// Stop all payment processors
+    async fn stop_payment_processors(&self) -> Result<(), Error> {
+        tracing::info!("Stopping payment processors...");
+        let mut seen_processors = Vec::new();
+
+        for (key, processor) in &self.payment_processors {
+            // Skip if we've already spawned a task for this processor instance
+            if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
+                continue;
+            }
+
+            seen_processors.push(Arc::clone(processor));
+
+            match processor.stop().await {
+                Ok(()) => {
+                    tracing::debug!("Successfully stopped payment processor for {:?}", key);
+                }
+                Err(e) => {
+                    // Log the error but continue with other processors
+                    tracing::error!("Failed to stop payment processor for {:?}: {}", key, e);
+                }
+            }
         }
+        tracing::info!("Payment processor shutdown completed");
+        Ok(())
     }
 
     /// Get the payment processor for the given unit and payment method
@@ -460,6 +515,7 @@ impl Mint {
     }
 
     /// Handles payment waiting for a single processor
+    #[instrument(skip_all)]
     async fn wait_for_processor_payments(
         processor: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
@@ -498,6 +554,7 @@ impl Mint {
 
     /// Handle payment notification without needing full Mint instance
     /// This is a helper function that can be called with just the required components
+    #[instrument(skip_all)]
     async fn handle_payment_notification(
         localstore: &Arc<dyn MintDatabase<database::Error> + Send + Sync>,
         pubsub_manager: &Arc<PubSubManager>,
@@ -566,6 +623,11 @@ impl Mint {
                     &wait_payment_response.unit,
                     &mint_quote.unit,
                 )?;
+
+                if payment_amount_quote_unit == Amount::ZERO {
+                    tracing::error!("Zero amount payments should not be recorded.");
+                    return Err(Error::AmountUndefined);
+                }
 
                 tracing::debug!(
                     "Payment received amount in quote unit {} {}",
@@ -736,6 +798,12 @@ impl Mint {
         }
 
         let amount = melt_quote.amount;
+
+        tracing::info!(
+            "Mint quote {} paid {} from internal payment.",
+            mint_quote.id,
+            amount
+        );
 
         let total_paid = tx
             .increment_mint_quote_amount_paid(&mint_quote.id, amount, melt_quote.id.to_string())

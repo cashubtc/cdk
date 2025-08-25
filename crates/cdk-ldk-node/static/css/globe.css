@@ -1,0 +1,75 @@
+/* Spinning Globe Animation CSS - Replaces radar */
+:root {
+  --globe-hue: 220deg;
+  --globe-base-bg-sat: 20%;
+  --globe-base-bg-lum: 12%;
+  --globe-base-bg: hsl(var(--globe-hue), var(--globe-base-bg-sat), var(--globe-base-bg-lum));
+  --globe-base-fg-sat: 50%;
+  --globe-base-fg-lum: 80%;
+  --globe-base-fg: hsl(var(--globe-hue), var(--globe-base-fg-sat), var(--globe-base-fg-lum));
+  --globe-filter-fg: saturate(100%) brightness(100%);
+  --globe-module-bg-sat: 18%;
+  --globe-module-bg-lum: 27%;
+  --globe-module-bg: hsl(var(--globe-hue), var(--globe-module-bg-sat), var(--globe-module-bg-lum));
+}
+
+/* Dark mode adjustments for globe */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --globe-hue: 220deg;
+    --globe-base-bg-sat: 25%;
+    --globe-base-bg-lum: 15%;
+    --globe-base-fg-sat: 60%;
+    --globe-base-fg-lum: 85%;
+    --globe-filter-fg: saturate(120%) brightness(110%);
+    --globe-module-bg-sat: 22%;
+    --globe-module-bg-lum: 30%;
+  }
+}
+
+/* Globe Container - fits inside the gray content box */
+.globe-container {
+  display: block;
+  width: 100%;
+  height: 200px;
+  position: relative;
+  overflow: hidden;
+}
+
+.world {
+  fill: rgba(107, 114, 128, 0.1); /* Gray color with reduced opacity */
+  width: 40em;
+  height: 40em;
+  position: absolute;
+  left: 50%;
+  top: 0%;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 2px solid rgba(156, 163, 175, 0.2); /* Light gray border with reduced opacity */
+  box-sizing: border-box;
+  background-image: url(#icon-world);
+  filter: var(--globe-filter-fg);
+}
+
+/* Dark mode globe styling */
+@media (prefers-color-scheme: dark) {
+  .world {
+    fill: rgba(156, 163, 175, 0.2);
+    border-color: rgba(156, 163, 175, 0.4);
+  }
+}
+
+.world svg {
+  width: 160em; 
+  height: 40em;
+  margin-top: calc(-2px + -0.05em);
+  display: inline;
+  animation: world-scroll 8s linear infinite;
+}
+
+@keyframes world-scroll {
+  from { margin-left: -110em; }
+  to { margin-left: -40em; }
+}

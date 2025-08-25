@@ -19,6 +19,7 @@ use cdk_integration_tests::cli::CommonArgs;
 use cdk_integration_tests::shared;
 use clap::Parser;
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Parser)]
 #[command(name = "start-fake-mint")]
@@ -99,7 +100,8 @@ async fn start_fake_mint(
             println!("Fake mint shutdown signal received");
         };
 
-        match cdk_mintd::run_mintd_with_shutdown(&temp_dir, &settings, shutdown_future, None).await
+        match cdk_mintd::run_mintd_with_shutdown(&temp_dir, &settings, shutdown_future, None, None)
+            .await
         {
             Ok(_) => println!("Fake mint exited normally"),
             Err(e) => eprintln!("Fake mint exited with error: {e}"),
@@ -141,8 +143,10 @@ async fn main() -> Result<()> {
     )
     .await?;
 
+    let cancel_token = Arc::new(CancellationToken::new());
+
     // Wait for fake mint to be ready
-    if let Err(e) = shared::wait_for_mint_ready(args.port, 100).await {
+    if let Err(e) = shared::wait_for_mint_ready_with_shutdown(args.port, 100, cancel_token).await {
         eprintln!("Error waiting for fake mint: {e}");
         return Err(e);
     }

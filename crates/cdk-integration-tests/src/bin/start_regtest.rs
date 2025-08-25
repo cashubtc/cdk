@@ -6,9 +6,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use cashu::Amount;
 use cdk_integration_tests::cli::{init_logging, CommonArgs};
 use cdk_integration_tests::init_regtest::start_regtest_end;
+use cdk_ldk_node::CdkLdkNode;
 use clap::Parser;
+use ldk_node::lightning::ln::msgs::SocketAddress;
 use tokio::signal;
 use tokio::sync::{oneshot, Notify};
 use tokio::time::timeout;
@@ -42,15 +45,40 @@ async fn main() -> Result<()> {
     init_logging(args.common.enable_logging, args.common.log_level);
 
     let temp_dir = PathBuf::from_str(&args.work_dir)?;
-    let temp_dir_clone = temp_dir.clone();
 
     let shutdown_regtest = Arc::new(Notify::new());
     let shutdown_clone = Arc::clone(&shutdown_regtest);
     let shutdown_clone_two = Arc::clone(&shutdown_regtest);
 
+    let ldk_work_dir = temp_dir.join("ldk_mint");
+    let cdk_ldk = CdkLdkNode::new(
+        bitcoin::Network::Regtest,
+        cdk_ldk_node::ChainSource::BitcoinRpc(cdk_ldk_node::BitcoinRpcConfig {
+            host: "127.0.0.1".to_string(),
+            port: 18443,
+            user: "testuser".to_string(),
+            password: "testpass".to_string(),
+        }),
+        cdk_ldk_node::GossipSource::P2P,
+        ldk_work_dir.to_string_lossy().to_string(),
+        cdk_common::common::FeeReserve {
+            min_fee_reserve: Amount::ZERO,
+            percent_fee_reserve: 0.0,
+        },
+        vec![SocketAddress::TcpIpV4 {
+            addr: [127, 0, 0, 1],
+            port: 8092,
+        }],
+        None,
+    )?;
+
+    let inner_node = cdk_ldk.node();
+
+    let temp_dir_clone = temp_dir.clone();
+
     let (tx, rx) = oneshot::channel();
     tokio::spawn(async move {
-        start_regtest_end(&temp_dir_clone, tx, shutdown_clone)
+        start_regtest_end(&temp_dir_clone, tx, shutdown_clone, Some(inner_node))
             .await
             .expect("Error starting regtest");
     });

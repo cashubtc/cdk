@@ -123,9 +123,7 @@ async fn test_happy_mint_melt_round_trip() {
 
     assert!(mint_amount == 100.into());
 
-    let invoice = create_invoice_for_env(&get_test_temp_dir(), Some(50))
-        .await
-        .unwrap();
+    let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
     let melt = wallet.melt_quote(invoice, None).await.unwrap();
 
@@ -371,9 +369,7 @@ async fn test_fake_melt_change_in_quote() {
         .await
         .unwrap();
 
-    let invoice = create_invoice_for_env(&get_test_temp_dir(), Some(9))
-        .await
-        .unwrap();
+    let invoice = create_invoice_for_env(Some(9)).await.unwrap();
 
     let proofs = wallet.get_unspent_proofs().await.unwrap();
 
@@ -447,9 +443,7 @@ async fn test_pay_invoice_twice() {
 
     assert_eq!(mint_amount, 100.into());
 
-    let invoice = create_invoice_for_env(&get_test_temp_dir(), Some(25))
-        .await
-        .unwrap();
+    let invoice = create_invoice_for_env(Some(25)).await.unwrap();
 
     let melt_quote = wallet.melt_quote(invoice.clone(), None).await.unwrap();
 
