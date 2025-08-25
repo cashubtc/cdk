@@ -11,7 +11,6 @@ use cdk::wallet::{MultiMintWallet, SendMemo, SendOptions};
 use cdk::Amount;
 use clap::Args;
 use starknet_types_core::felt::Felt;
-use stwo_cairo_prover::witness::prelude::Felt252;
 
 use crate::sub_commands::balance::mint_balances;
 use crate::utils::{

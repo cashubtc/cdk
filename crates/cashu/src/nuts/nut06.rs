@@ -459,7 +459,7 @@ impl Nuts {
     }
 
     /// NutXX settings
-    pub fn nutxx(mut self, supported: bool) -> Self {
+    pub fn nutxx(self, supported: bool) -> Self {
         Self {
             nutxx: NutXXSettings {
                 supported: supported,
