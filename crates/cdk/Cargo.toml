@@ -103,6 +103,13 @@ required-features = ["wallet", "auth"]
 name = "bip353"
 required-features = ["wallet", "bip353"]
 
+[[example]]
+name = "mint-token-bolt12-with-stream"
+required-features = ["wallet"]
+[[example]]
+name = "mint-token-bolt12"
+required-features = ["wallet"]
+
 [dev-dependencies]
 rand.workspace = true
 cdk-sqlite.workspace = true
