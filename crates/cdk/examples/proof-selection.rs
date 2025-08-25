@@ -2,11 +2,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::Wallet;
-use cdk::{Amount, StreamExt};
+use cdk::Amount;
 use cdk_common::nut02::KeySetInfosMethods;
 use cdk_sqlite::wallet::memory;
 use rand::random;
@@ -31,14 +32,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let amount = Amount::from(amount);
 
         let quote = wallet.mint_quote(amount, None).await?;
+        let proofs = wallet
+            .wait_and_mint_quote(
+                quote,
+                Default::default(),
+                Default::default(),
+                Duration::from_secs(10),
+            )
+            .await?;
 
-        let mut proof_streams = wallet.proof_stream(quote, Default::default(), Default::default());
-
-        while let Some(proofs) = proof_streams.next().await {
-            // Mint the received amount
-            let receive_amount = proofs?.total_amount()?;
-            println!("Minted {}", receive_amount);
-        }
+        // Mint the received amount
+        let receive_amount = proofs.total_amount()?;
+        println!("Minted {}", receive_amount);
     }
 
     // Get unspent proofs

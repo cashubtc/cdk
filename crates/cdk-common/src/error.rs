@@ -114,6 +114,11 @@ pub enum Error {
     /// BIP353 address parsing error
     #[error("Failed to parse BIP353 address: {0}")]
     Bip353Parse(String),
+
+    /// Operation timeout
+    #[error("Operation timeout")]
+    Timeout,
+
     /// BIP353 address resolution error
     #[error("Failed to resolve BIP353 address: {0}")]
     Bip353Resolve(String),

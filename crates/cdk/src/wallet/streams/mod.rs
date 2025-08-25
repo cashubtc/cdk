@@ -12,6 +12,7 @@ use super::{Wallet, WalletSubscription};
 
 pub mod payment;
 pub mod proof;
+mod wait;
 
 /// Shared type
 #[cfg(not(target_arch = "wasm32"))]

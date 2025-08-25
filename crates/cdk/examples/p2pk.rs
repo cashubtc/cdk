@@ -1,9 +1,10 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use cdk::error::Error;
 use cdk::nuts::{CurrencyUnit, SecretKey, SpendingConditions};
 use cdk::wallet::{ReceiveOptions, SendOptions, Wallet};
-use cdk::{Amount, StreamExt};
+use cdk::Amount;
 use cdk_sqlite::wallet::memory;
 use rand::random;
 use tracing_subscriber::EnvFilter;
@@ -34,58 +35,60 @@ async fn main() -> Result<(), Error> {
     let wallet = Wallet::new(mint_url, unit, localstore, seed, None).unwrap();
 
     let quote = wallet.mint_quote(amount, None).await?;
+    let proofs = wallet
+        .wait_and_mint_quote(
+            quote,
+            Default::default(),
+            Default::default(),
+            Duration::from_secs(10),
+        )
+        .await?;
 
-    let mut proof_streams = wallet.proof_stream(quote, Default::default(), Default::default());
+    // Mint the received amount
+    println!(
+        "Minted nuts: {:?}",
+        proofs.into_iter().map(|p| p.amount).collect::<Vec<_>>()
+    );
 
-    while let Some(proofs) = proof_streams.next().await {
-        let proofs = proofs?;
+    // Generate a secret key for spending conditions
+    let secret = SecretKey::generate();
 
-        // Mint the received amount
-        println!(
-            "Minted nuts: {:?}",
-            proofs.into_iter().map(|p| p.amount).collect::<Vec<_>>()
-        );
+    // Create spending conditions using the generated public key
+    let spending_conditions = SpendingConditions::new_p2pk(secret.public_key(), None);
 
-        // Generate a secret key for spending conditions
-        let secret = SecretKey::generate();
+    // Get the total balance of the wallet
+    let bal = wallet.total_balance().await?;
+    println!("Total balance: {}", bal);
 
-        // Create spending conditions using the generated public key
-        let spending_conditions = SpendingConditions::new_p2pk(secret.public_key(), None);
+    // Send a token with the specified amount and spending conditions
+    let prepared_send = wallet
+        .prepare_send(
+            10.into(),
+            SendOptions {
+                conditions: Some(spending_conditions),
+                include_fee: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+    println!("Fee: {}", prepared_send.fee());
+    let token = prepared_send.confirm(None).await?;
 
-        // Get the total balance of the wallet
-        let bal = wallet.total_balance().await?;
-        println!("Total balance: {}", bal);
+    println!("Created token locked to pubkey: {}", secret.public_key());
+    println!("{}", token);
 
-        // Send a token with the specified amount and spending conditions
-        let prepared_send = wallet
-            .prepare_send(
-                10.into(),
-                SendOptions {
-                    conditions: Some(spending_conditions),
-                    include_fee: true,
-                    ..Default::default()
-                },
-            )
-            .await?;
-        println!("Fee: {}", prepared_send.fee());
-        let token = prepared_send.confirm(None).await?;
+    // Receive the token using the secret key
+    let amount = wallet
+        .receive(
+            &token.to_string(),
+            ReceiveOptions {
+                p2pk_signing_keys: vec![secret],
+                ..Default::default()
+            },
+        )
+        .await?;
 
-        println!("Created token locked to pubkey: {}", secret.public_key());
-        println!("{}", token);
-
-        // Receive the token using the secret key
-        let amount = wallet
-            .receive(
-                &token.to_string(),
-                ReceiveOptions {
-                    p2pk_signing_keys: vec![secret],
-                    ..Default::default()
-                },
-            )
-            .await?;
-
-        println!("Redeemed locked token worth: {}", u64::from(amount));
-    }
+    println!("Redeemed locked token worth: {}", u64::from(amount));
 
     Ok(())
 }
