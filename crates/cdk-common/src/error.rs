@@ -542,6 +542,11 @@ impl From<Error> for ErrorResponse {
                 error: Some(err.to_string()),
                 detail: None,
             },
+            Error::UnpaidQuote => ErrorResponse {
+                code: ErrorCode::QuoteNotPaid,
+                error: Some(err.to_string()),
+                detail: None
+            },
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(9999),
                 error: Some(err.to_string()),

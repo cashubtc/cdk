@@ -114,7 +114,7 @@ impl Wallet {
 
         if amount == Amount::ZERO {
             tracing::error!("Cannot mint zero amount.");
-            return Err(Error::InvoiceAmountUndefined);
+            return Err(Error::UnpaidQuote);
         }
 
         let premint_secrets = match &spending_conditions {
