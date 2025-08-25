@@ -337,7 +337,7 @@ pub struct Nuts {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg(feature = "auth")]
     pub nut22: Option<BlindAuthSettings>,
-    // NUTXX Settings
+    /// NUTXX Settings
     #[serde(default)]
     #[serde(rename = "xx")]
     pub nutxx: NutXXSettings,
@@ -462,7 +462,7 @@ impl Nuts {
     pub fn nutxx(self, supported: bool) -> Self {
         Self {
             nutxx: NutXXSettings {
-                supported: supported,
+                supported,
                 ..NutXXSettings::default()
             },
             ..self

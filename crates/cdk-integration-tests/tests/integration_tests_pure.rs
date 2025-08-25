@@ -14,8 +14,8 @@ use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
 use cashu::mint_url::MintUrl;
 use cashu::{
-    CurrencyUnit, Id, MeltRequest, NotificationPayload, NutXXConditions, PreMintSecrets,
-    ProofState, SecretKey, SpendingConditions, State, SwapRequest,
+    CairoWitness, CurrencyUnit, Id, MeltRequest, NotificationPayload, NutXXConditions,
+    PreMintSecrets, ProofState, SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
@@ -651,7 +651,12 @@ pub async fn test_cairo_swap() {
     let cairo_proof: String =
         include_str!("../../cashu/src/nuts/nutxx/test/is_prime_proof_7.json").to_string();
     for proof in &mut proofs {
-        proof.add_cairo_proof(cairo_proof.clone());
+        let witness = CairoWitness {
+            cairo_proof_json: cairo_proof.clone(),
+            with_pedersen: false,
+            with_bootloader: false,
+        };
+        proof.add_cairo_witness(witness);
     }
 
     let swap_request = SwapRequest::new(proofs.clone(), pre_swap.blinded_messages());

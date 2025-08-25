@@ -7,6 +7,7 @@ use anyhow::{anyhow, Result};
 use cairo_lang_runner::Arg;
 use cairo_prove::execute::execute;
 use cairo_prove::prove::{prove, prover_input_from_runner};
+use cashu::CairoWitness;
 use cdk::nuts::{SecretKey, Token};
 use cdk::util::unix_time;
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
@@ -48,7 +49,7 @@ pub struct ReceiveSubCommand {
     cairo: Vec<String>,
 }
 
-fn cairo_prove(executable_path: &Path, args: Vec<String>) -> String {
+fn cairo_prove(executable_path: &Path, args: Vec<String>, with_bootloader: bool) -> CairoWitness {
     let executable = serde_json::from_reader(
         std::fs::File::open(executable_path).expect("Failed to open Cairo executable file"),
     )
@@ -66,6 +67,8 @@ fn cairo_prove(executable_path: &Path, args: Vec<String>) -> String {
     let runner = execute(executable, args);
     let prover_input = prover_input_from_runner(&runner);
 
+    let with_pedersen = prover_input.public_segment_context[1]; // pedersen builtin
+
     let pcs_config = PcsConfig {
         pow_bits: 26,
         fri_config: FriConfig {
@@ -81,7 +84,13 @@ fn cairo_prove(executable_path: &Path, args: Vec<String>) -> String {
         "[cairo_prove fn] Cairo proof generated successfully in {} ms",
         start.elapsed().as_millis()
     );
-    serde_json::to_string(&cairo_proof).unwrap() // returns a json serialized CairoProof
+    let cairo_proof_json = serde_json::to_string(&cairo_proof).unwrap();
+
+    CairoWitness {
+        cairo_proof_json,
+        with_pedersen,
+        with_bootloader,
+    }
 }
 
 pub async fn receive(
@@ -108,7 +117,7 @@ pub async fn receive(
         signing_keys.append(&mut s_keys);
     }
 
-    let mut cairo_proofs_json: Vec<String> = Vec::new();
+    let mut cairo_witnesses: Vec<CairoWitness> = Vec::new();
     if !sub_command_args.cairo.is_empty() {
         let cairo_args = &sub_command_args.cairo;
         if cairo_args.len() < 2 {
@@ -139,7 +148,7 @@ pub async fn receive(
             input_args.push(arg.clone());
         }
 
-        cairo_proofs_json.push(cairo_prove(exec_path, input_args));
+        cairo_witnesses.push(cairo_prove(exec_path, input_args, false));
     }
 
     let amount = match &sub_command_args.token {
@@ -149,7 +158,7 @@ pub async fn receive(
                 token_str,
                 &signing_keys,
                 &sub_command_args.preimage,
-                &cairo_proofs_json,
+                &cairo_witnesses,
             )
             .await?
         }
@@ -190,7 +199,7 @@ pub async fn receive(
                     token_str,
                     &signing_keys,
                     &sub_command_args.preimage,
-                    &cairo_proofs_json,
+                    &cairo_witnesses,
                 )
                 .await
                 {
@@ -217,7 +226,7 @@ async fn receive_token(
     token_str: &str,
     signing_keys: &[SecretKey],
     preimage: &[String],
-    cairo_proofs_json: &[String],
+    cairo_witnesses: &[CairoWitness],
 ) -> Result<Amount> {
     let token: Token = Token::from_str(token_str)?;
 
@@ -238,7 +247,7 @@ async fn receive_token(
             ReceiveOptions {
                 p2pk_signing_keys: signing_keys.to_vec(),
                 preimages: preimage.to_vec(),
-                cairo_proofs: cairo_proofs_json.to_vec(),
+                cairo_witnesses: cairo_witnesses.to_vec(),
                 ..Default::default()
             },
         )

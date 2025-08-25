@@ -173,6 +173,10 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
 pub struct CairoWitness {
     /// The serialized .json Cairo proof
     pub cairo_proof_json: String,
+    /// The preprocessed trace variant to use (Canonical or CanonicalWithoutPedersen)
+    pub with_pedersen: bool,
+    /// Whether the proof uses a bootloader
+    pub with_bootloader: bool,
 }
 
 // TODO: won't be needed once we update to the latest version of stwo_cairo_prover
@@ -233,6 +237,15 @@ impl Proof {
             Err(e) => return Err(Error::Serde(e)),
         };
 
+        let preprocessed_trace = match cairo_witness.with_pedersen {
+            true => PreProcessedTraceVariant::Canonical,
+            false => PreProcessedTraceVariant::CanonicalWithoutPedersen,
+        };
+
+        if cairo_witness.with_bootloader {
+            return Err(Error::NotImplemented); // TODO: implement bootloader support (optional feature)
+        }
+
         let program_hash_condition: [u8; 32] = hex::decode(secret.secret_data().data())?
             .as_slice()
             .try_into()?;
@@ -263,7 +276,6 @@ impl Proof {
             }
         }
 
-        let preprocessed_trace = PreProcessedTraceVariant::CanonicalWithoutPedersen; // TODO: give option
         let result = verify_cairo::<Blake2sMerkleChannel>(
             cairo_proof,
             secure_pcs_config(),
@@ -275,10 +287,10 @@ impl Proof {
         }
     }
 
-    /// Add cairo proof
+    /// Add cairo witness
     #[inline]
-    pub fn add_cairo_proof(&mut self, cairo_proof_json: String) {
-        self.witness = Some(Witness::CairoWitness(CairoWitness { cairo_proof_json }))
+    pub fn add_cairo_witness(&mut self, cairo_witness: CairoWitness) {
+        self.witness = Some(Witness::CairoWitness(cairo_witness));
     }
 }
 
@@ -378,11 +390,15 @@ mod tests {
 
         let cairo_proof_is_prime_7 = include_str!("./test/is_prime_proof_7.json").to_string();
         let witness_is_prime_7 = CairoWitness {
-            cairo_proof_json: cairo_proof_is_prime_7,
+            cairo_proof_json: cairo_proof_is_prime_7.clone(),
+            with_pedersen: false,
+            with_bootloader: false,
         };
         let cairo_proof_is_prime_9 = include_str!("./test/is_prime_proof_9.json").to_string();
         let witness_is_prime_9 = CairoWitness {
-            cairo_proof_json: cairo_proof_is_prime_9,
+            cairo_proof_json: cairo_proof_is_prime_9.clone(),
+            with_pedersen: false,
+            with_bootloader: false,
         };
 
         // Proof that is_prime(7) == true
@@ -408,6 +424,16 @@ mod tests {
         // If we change the output condition to true, the verification should again fail
         proof.secret = secret_is_prime_true.clone();
         assert!(proof.verify_cairo().is_err());
+
+        // If we change the witness back to the computation of is_prime(7) and add the bootloader flag,
+        // it should fail with a NotImplemented error
+        let witness_is_prime_7_with_bootloader = CairoWitness {
+            cairo_proof_json: cairo_proof_is_prime_7.clone(),
+            with_pedersen: false,
+            with_bootloader: true,
+        };
+        proof.witness = Some(Witness::CairoWitness(witness_is_prime_7_with_bootloader));
+        assert!(matches!(proof.verify_cairo(), Err(Error::NotImplemented)));
     }
 
     #[test]
