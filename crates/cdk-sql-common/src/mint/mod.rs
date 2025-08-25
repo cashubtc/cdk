@@ -546,6 +546,11 @@ where
         amount_paid: Amount,
         payment_id: String,
     ) -> Result<Amount, Self::Err> {
+        if amount_paid == Amount::ZERO {
+            tracing::warn!("Amount payments of zero amount should not be recorded.");
+            return Err(Error::Duplicate);
+        }
+
         // Check if payment_id already exists in mint_quote_payments
         let exists = query(
             r#"
@@ -591,6 +596,13 @@ where
         let new_amount_paid = current_amount_paid
             .checked_add(amount_paid)
             .ok_or_else(|| database::Error::AmountOverflow)?;
+
+        tracing::debug!(
+            "Mint quote {} amount paid was {} is now {}.",
+            quote_id,
+            current_amount_paid,
+            new_amount_paid
+        );
 
         // Update the amount_paid
         query(

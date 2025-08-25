@@ -647,11 +647,7 @@ impl MintPayment for Cln {
                     .await
                     .map_err(Error::from)?
             }
-            PaymentIdentifier::CustomId(_) => {
-                tracing::error!("Unsupported payment id for CLN");
-                return Err(payment::Error::UnknownPaymentState);
-            }
-            PaymentIdentifier::Bolt12PaymentHash(_) => {
+            _ => {
                 tracing::error!("Unsupported payment id for CLN");
                 return Err(payment::Error::UnknownPaymentState);
             }
