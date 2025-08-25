@@ -146,6 +146,14 @@ impl Proof {
         let witness_signatures = witness_signatures.ok_or(Error::SignaturesNotProvided)?;
 
         let mut pubkeys = spending_conditions.pubkeys.clone().unwrap_or_default();
+        // NUT-11 enforcement per spec:
+        // - If locktime has passed and refund keys are present, spend must be authorized by
+        //   refund pubkeys (n_sigs_refund-of-refund). This supersedes normal pubkey enforcement
+        //   after expiry.
+        // - If locktime has passed and no refund keys are present, proof becomes spendable
+        //   without further key checks (anyone-can-spend behavior).
+        // - Otherwise (before locktime), enforce normal multisig on the set of authorized
+        //   pubkeys: Secret.data plus optional `pubkeys` tag, requiring n_sigs unique signers.
 
         let now = unix_time();
 
