@@ -81,7 +81,7 @@ fn cairo_prove(executable_path: &Path, args: Vec<String>) -> String {
         "[cairo_prove fn] Cairo proof generated successfully in {} ms",
         start.elapsed().as_millis()
     );
-    serde_json::to_string(&cairo_proof).unwrap(); // returns a json serialized CairoProof
+    serde_json::to_string(&cairo_proof).unwrap() // returns a json serialized CairoProof
 }
 
 pub async fn receive(
