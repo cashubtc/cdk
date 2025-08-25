@@ -293,12 +293,18 @@ fn default_webserver_port() -> Option<u16> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FakeWallet {
     pub supported_units: Vec<CurrencyUnit>,
+    #[serde(default = "default_fee_percent")]
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
     #[serde(default = "default_min_delay_time")]
     pub min_delay_time: u64,
     #[serde(default = "default_max_delay_time")]
     pub max_delay_time: u64,
+}
+
+#[cfg(feature = "fakewallet")]
+fn default_fee_percent() -> f32 {
+    0.02
 }
 
 #[cfg(feature = "fakewallet")]

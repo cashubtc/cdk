@@ -359,6 +359,7 @@ impl CdkLdkNode {
             payment_amount: amount_msat.into(),
             unit: CurrencyUnit::Msat,
             payment_id,
+            is_confirmed: true,
         };
 
         match sender.send(wait_payment_response) {
@@ -474,6 +475,7 @@ impl MintPayment for CdkLdkNode {
             invoice_description: true,
             amountless: true,
             bolt12: true,
+            onchain: false,
         };
         Ok(serde_json::to_value(settings)?)
     }
@@ -554,6 +556,7 @@ impl MintPayment for CdkLdkNode {
                     expiry: time.map(|a| a as u64),
                 })
             }
+            IncomingPaymentOptions::Onchain => Err(Error::UnsupportedOnchain.into()),
         }
     }
 
@@ -638,6 +641,7 @@ impl MintPayment for CdkLdkNode {
                     unit: unit.clone(),
                 })
             }
+            OutgoingPaymentOptions::Onchain(_) => Err(Error::UnsupportedOnchain.into()),
         }
     }
 
@@ -817,6 +821,7 @@ impl MintPayment for CdkLdkNode {
                     unit: unit.clone(),
                 })
             }
+            OutgoingPaymentOptions::Onchain(_) => Err(Error::UnsupportedOnchain.into()),
         }
     }
 
@@ -916,6 +921,7 @@ impl MintPayment for CdkLdkNode {
             payment_amount: amount.into(),
             unit: CurrencyUnit::Msat,
             payment_id: payment_id_str,
+            is_confirmed: true,
         };
 
         Ok(vec![response])

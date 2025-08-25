@@ -9,7 +9,10 @@ use cdk_common::pub_sub::OnNewSubscription;
 use cdk_common::quote_id::QuoteId;
 use cdk_common::{MintQuoteBolt12Response, NotificationPayload, PaymentMethod};
 
-use crate::nuts::{MeltQuoteBolt11Response, MintQuoteBolt11Response, ProofState, PublicKey};
+use crate::nuts::{
+    MeltQuoteBolt11Response, MeltQuoteOnchainResponse, MintQuoteBolt11Response,
+    MintQuoteOnchainResponse, ProofState, PublicKey,
+};
 
 #[derive(Default)]
 /// Subscription Init
@@ -54,6 +57,12 @@ impl OnNewSubscription for OnSubscription {
                 Notification::MeltQuoteBolt12(uuid) => {
                     melt_queries.push(datastore.get_melt_quote(uuid))
                 }
+                Notification::MintQuoteOnchain(uuid) => {
+                    mint_queries.push(datastore.get_mint_quote(uuid))
+                }
+                Notification::MeltQuoteOnchain(uuid) => {
+                    melt_queries.push(datastore.get_melt_quote(uuid))
+                }
             }
         }
 
@@ -64,8 +73,23 @@ impl OnNewSubscription for OnSubscription {
                     .map(|quotes| {
                         quotes
                             .into_iter()
-                            .filter_map(|quote| quote.map(|x| x.into()))
-                            .map(|x: MeltQuoteBolt11Response<QuoteId>| x.into())
+                            .filter_map(|quote| {
+                                quote.and_then(|x| match x.payment_method {
+                                    PaymentMethod::Bolt11 => {
+                                        let response: MeltQuoteBolt11Response<QuoteId> = x.into();
+                                        Some(response.into())
+                                    }
+                                    PaymentMethod::Bolt12 => {
+                                        let response: MeltQuoteBolt11Response<QuoteId> = x.into();
+                                        Some(response.into())
+                                    }
+                                    PaymentMethod::Onchain => {
+                                        let response: MeltQuoteOnchainResponse<QuoteId> = x.into();
+                                        Some(response.into())
+                                    }
+                                    PaymentMethod::Custom(_) => None,
+                                })
+                            })
                             .collect::<Vec<_>>()
                     })
                     .map_err(|e| e.to_string())?,
@@ -88,6 +112,14 @@ impl OnNewSubscription for OnSubscription {
                                     PaymentMethod::Bolt12 => match x.try_into() {
                                         Ok(response) => {
                                             let response: MintQuoteBolt12Response<QuoteId> =
+                                                response;
+                                            Some(response.into())
+                                        }
+                                        Err(_) => None,
+                                    },
+                                    PaymentMethod::Onchain => match x.try_into() {
+                                        Ok(response) => {
+                                            let response: MintQuoteOnchainResponse<QuoteId> =
                                                 response;
                                             Some(response.into())
                                         }

@@ -3,6 +3,7 @@
 pub static MIGRATIONS: &[(&str, &str, &str)] = &[
     ("postgres", "1_initial.sql", include_str!(r#"./migrations/postgres/1_initial.sql"#)),
     ("postgres", "2_remove_request_lookup_kind_constraints.sql", include_str!(r#"./migrations/postgres/2_remove_request_lookup_kind_constraints.sql"#)),
+    ("postgres", "3_add_amount_unconfirmed.sql", include_str!(r#"./migrations/postgres/3_add_amount_unconfirmed.sql"#)),
     ("sqlite", "1_fix_sqlx_migration.sql", include_str!(r#"./migrations/sqlite/1_fix_sqlx_migration.sql"#)),
     ("sqlite", "20240612124932_init.sql", include_str!(r#"./migrations/sqlite/20240612124932_init.sql"#)),
     ("sqlite", "20240618195700_quote_state.sql", include_str!(r#"./migrations/sqlite/20240618195700_quote_state.sql"#)),
@@ -27,4 +28,5 @@ pub static MIGRATIONS: &[(&str, &str, &str)] = &[
     ("sqlite", "20250706101057_bolt12.sql", include_str!(r#"./migrations/sqlite/20250706101057_bolt12.sql"#)),
     ("sqlite", "20250812132015_drop_melt_request.sql", include_str!(r#"./migrations/sqlite/20250812132015_drop_melt_request.sql"#)),
     ("sqlite", "20250819200000_remove_request_lookup_kind_constraints.sql", include_str!(r#"./migrations/sqlite/20250819200000_remove_request_lookup_kind_constraints.sql"#)),
+    ("sqlite", "20250825100423_add_amount_unconfirmed.sql", include_str!(r#"./migrations/sqlite/20250825100423_add_amount_unconfirmed.sql"#)),
 ];

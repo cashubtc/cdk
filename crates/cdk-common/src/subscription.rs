@@ -54,6 +54,12 @@ impl TryFrom<IndexableParams> for Vec<Index<Notification>> {
                     Kind::Bolt12MintQuote => {
                         Notification::MintQuoteBolt12(QuoteId::from_str(&filter)?)
                     }
+                    Kind::OnchainMeltQuote => {
+                        Notification::MeltQuoteOnchain(QuoteId::from_str(&filter)?)
+                    }
+                    Kind::OnchainMintQuote => {
+                        Notification::MintQuoteOnchain(QuoteId::from_str(&filter)?)
+                    }
                 };
 
                 Ok(Index::from((idx, params.id.clone(), sub_id)))
@@ -91,6 +97,16 @@ impl Indexable for NotificationPayload<QuoteId> {
             NotificationPayload::MintQuoteBolt12Response(mint_quote) => {
                 vec![Index::from(Notification::MintQuoteBolt12(
                     mint_quote.quote.clone(),
+                ))]
+            }
+            NotificationPayload::MintQuoteOnchainResponse(mint_quote) => {
+                vec![Index::from(Notification::MintQuoteOnchain(
+                    mint_quote.quote.clone(),
+                ))]
+            }
+            NotificationPayload::MeltQuoteOnchainResponse(melt_quote) => {
+                vec![Index::from(Notification::MeltQuoteOnchain(
+                    melt_quote.quote.clone(),
                 ))]
             }
         }

@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::anyhow;
 use async_trait::async_trait;
 use bitcoin::hashes::sha256::Hash;
 use cdk_common::amount::{to_unit, Amount};
@@ -75,6 +76,7 @@ impl MintPayment for Cln {
             invoice_description: true,
             amountless: true,
             bolt12: true,
+            onchain: false,
         })?)
     }
 
@@ -240,7 +242,8 @@ impl MintPayment for Cln {
                                 payment_identifier: request_lookup_id,
                                 payment_amount: amount_msats.msat().into(),
                                 unit: CurrencyUnit::Msat,
-                                payment_id: payment_hash.to_string()
+                                payment_id: payment_hash.to_string(),
+                                is_confirmed: true,
                             };
                             tracing::info!("CLN: Created WaitPaymentResponse with amount {} msats", amount_msats.msat());
                             let event = Event::PaymentReceived(response);
@@ -348,6 +351,9 @@ impl MintPayment for Cln {
                     unit: unit.clone(),
                 })
             }
+            OutgoingPaymentOptions::Onchain(_) => {
+                Err(Self::Err::Anyhow(anyhow!("Onchain not supported by Cln")))
+            }
         }
     }
 
@@ -438,6 +444,9 @@ impl MintPayment for Cln {
 
                 cln_response.invoice
             }
+            OutgoingPaymentOptions::Onchain(_) => {
+                return Err(Self::Err::Anyhow(anyhow!("Onchain not supported by Cln")));
+            }
         };
 
         let cln_response = cln_client
@@ -472,6 +481,9 @@ impl MintPayment for Cln {
                     }
                     OutgoingPaymentOptions::Bolt12(_) => {
                         PaymentIdentifier::Bolt12PaymentHash(*pay_response.payment_hash.as_ref())
+                    }
+                    OutgoingPaymentOptions::Onchain(_) => {
+                        return Err(Self::Err::Anyhow(anyhow!("Onchain not supported by Cln")));
                     }
                 };
 
@@ -592,6 +604,9 @@ impl MintPayment for Cln {
                     expiry: unix_expiry,
                 })
             }
+            IncomingPaymentOptions::Onchain => {
+                Err(Self::Err::Anyhow(anyhow!("Onchain not supported by Cln")))
+            }
         }
     }
 
@@ -669,6 +684,7 @@ impl MintPayment for Cln {
                     .into(),
                 unit: CurrencyUnit::Msat,
                 payment_id: p.payment_hash.to_string(),
+                is_confirmed: true,
             })
             .collect())
     }
@@ -683,6 +699,10 @@ impl MintPayment for Cln {
         let payment_hash = match payment_identifier {
             PaymentIdentifier::PaymentHash(hash) => hash,
             PaymentIdentifier::Bolt12PaymentHash(hash) => hash,
+            PaymentIdentifier::OnchainAddress(_) => {
+                tracing::error!("Onchain payments not supported by CLN.");
+                return Err(payment::Error::UnknownPaymentState);
+            }
             _ => {
                 tracing::error!("Unsupported identifier to check outgoing payment for cln.");
                 return Err(payment::Error::UnknownPaymentState);

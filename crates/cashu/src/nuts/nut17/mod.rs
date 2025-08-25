@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "mint")]
 use super::PublicKey;
 use crate::nuts::{
-    CurrencyUnit, MeltQuoteBolt11Response, MintQuoteBolt11Response, PaymentMethod, ProofState,
+    CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteOnchainResponse, MintQuoteBolt11Response,
+    MintQuoteOnchainResponse, PaymentMethod, ProofState,
 };
 #[cfg(feature = "mint")]
 use crate::quote_id::{QuoteId, QuoteIdError};
@@ -107,6 +108,12 @@ pub enum WsCommand {
     /// Command to check the state of a proof
     #[serde(rename = "proof_state")]
     ProofState,
+    /// Websocket support for Onchain Mint Quote
+    #[serde(rename = "onchain_mint_quote")]
+    OnchainMintQuote,
+    /// Websocket support for Onchain Melt Quote
+    #[serde(rename = "onchain_melt_quote")]
+    OnchainMeltQuote,
 }
 
 impl<T> From<MintQuoteBolt12Response<T>> for NotificationPayload<T> {
@@ -128,6 +135,10 @@ pub enum NotificationPayload<T> {
     MintQuoteBolt11Response(MintQuoteBolt11Response<T>),
     /// Mint Quote Bolt12 Response
     MintQuoteBolt12Response(MintQuoteBolt12Response<T>),
+    /// Mint Quote Onchain Response
+    MintQuoteOnchainResponse(MintQuoteOnchainResponse<T>),
+    /// Melt Quote Onchain Response
+    MeltQuoteOnchainResponse(MeltQuoteOnchainResponse<T>),
 }
 
 impl<T> From<ProofState> for NotificationPayload<T> {
@@ -148,20 +159,36 @@ impl<T> From<MintQuoteBolt11Response<T>> for NotificationPayload<T> {
     }
 }
 
+impl<T> From<MintQuoteOnchainResponse<T>> for NotificationPayload<T> {
+    fn from(mint_quote: MintQuoteOnchainResponse<T>) -> NotificationPayload<T> {
+        NotificationPayload::MintQuoteOnchainResponse(mint_quote)
+    }
+}
+
+impl<T> From<MeltQuoteOnchainResponse<T>> for NotificationPayload<T> {
+    fn from(melt_quote: MeltQuoteOnchainResponse<T>) -> NotificationPayload<T> {
+        NotificationPayload::MeltQuoteOnchainResponse(melt_quote)
+    }
+}
+
 #[cfg(feature = "mint")]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 /// A parsed notification
 pub enum Notification {
     /// ProofState id is a Pubkey
     ProofState(PublicKey),
-    /// MeltQuote id is an QuoteId
+    /// MeltQuote id is an Uuid
     MeltQuoteBolt11(QuoteId),
-    /// MintQuote id is an QuoteId
+    /// MintQuote id is an Uuid
     MintQuoteBolt11(QuoteId),
-    /// MintQuote id is an QuoteId
+    /// MintQuote id is an Uuid
     MintQuoteBolt12(QuoteId),
-    /// MintQuote id is an QuoteId
+    /// MintQuote id is an Uuid
     MeltQuoteBolt12(QuoteId),
+    /// MintQuote id is an Uuid
+    MintQuoteOnchain(QuoteId),
+    /// MeltQuote id is an Uuid
+    MeltQuoteOnchain(QuoteId),
 }
 
 /// Kind
@@ -176,6 +203,10 @@ pub enum Kind {
     ProofState,
     /// Bolt 12 Mint Quote
     Bolt12MintQuote,
+    /// Onchain Mint Quote
+    OnchainMintQuote,
+    /// Onchain Melt Quote
+    OnchainMeltQuote,
 }
 
 impl<I> AsRef<I> for Params<I> {

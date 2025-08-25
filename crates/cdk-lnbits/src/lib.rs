@@ -62,6 +62,7 @@ impl LNbits {
                 invoice_description: true,
                 amountless: false,
                 bolt12: false,
+                onchain: false,
             },
         })
     }
@@ -125,6 +126,7 @@ impl LNbits {
             payment_amount: Amount::from(amount.unsigned_abs()),
             unit: CurrencyUnit::Msat,
             payment_id: msg.to_string(),
+            is_confirmed: true,
         }))
     }
 
@@ -233,6 +235,9 @@ impl MintPayment for LNbits {
             OutgoingPaymentOptions::Bolt12(_bolt12_options) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
             }
+            OutgoingPaymentOptions::Onchain(_) => Err(Self::Err::Anyhow(anyhow!(
+                "Onchain not supported by LNbits"
+            ))),
         }
     }
 
@@ -294,6 +299,9 @@ impl MintPayment for LNbits {
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
             }
+            OutgoingPaymentOptions::Onchain(_) => Err(Self::Err::Anyhow(anyhow!(
+                "Onchain not supported by LNbits"
+            ))),
         }
     }
 
@@ -349,6 +357,9 @@ impl MintPayment for LNbits {
             IncomingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
             }
+            IncomingPaymentOptions::Onchain => Err(Self::Err::Anyhow(anyhow!(
+                "Onchain not supported by LNbits"
+            ))),
         }
     }
 
@@ -378,6 +389,7 @@ impl MintPayment for LNbits {
                 payment_amount: Amount::from(amount.unsigned_abs()),
                 unit: CurrencyUnit::Msat,
                 payment_id: payment.details.payment_hash,
+                is_confirmed: true,
             }]),
             false => Ok(vec![]),
         }

@@ -330,7 +330,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
 
         assert_eq!(settings.bat_max_mint, 5);
-        assert_eq!(settings.protected_endpoints.len(), 5); // 4 mint paths + 1 swap path
+        assert_eq!(settings.protected_endpoints.len(), 7); // 6 mint paths + 1 swap path
 
         let expected_protected: HashSet<ProtectedEndpoint> = HashSet::from_iter(vec![
             ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
@@ -338,6 +338,8 @@ mod tests {
             ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
             ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt12),
             ProtectedEndpoint::new(Method::Get, RoutePath::MintBolt12),
+            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteOnchain),
+            ProtectedEndpoint::new(Method::Get, RoutePath::MintOnchain),
         ]);
 
         let deserialized_protected = settings.protected_endpoints.into_iter().collect();

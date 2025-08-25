@@ -9,16 +9,20 @@ use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cashu::quote_id::QuoteId;
-use cashu::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
+use cashu::{
+    MeltQuoteBolt11Response, MeltQuoteBolt12Request, MeltQuoteOnchainRequest,
+    MeltQuoteOnchainResponse, MintQuoteBolt12Request, MintQuoteBolt12Response,
+    MintQuoteOnchainRequest, MintQuoteOnchainResponse,
+};
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, MintDatabase, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
-    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
-    RestoreResponse, SwapRequest, SwapResponse,
+    MeltQuoteBolt11Request, MeltRequest, MintInfo, MintQuoteBolt11Request, MintQuoteBolt11Response,
+    MintRequest, MintResponse, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest,
+    SwapResponse,
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
@@ -27,7 +31,6 @@ use cdk::{Amount, Error, Mint, StreamExt};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
-use uuid::Uuid;
 
 pub struct DirectMintConnection {
     pub mint: Mint,
@@ -99,7 +102,7 @@ impl MintConnector for DirectMintConnection {
         self.mint
             .get_melt_quote(request.into())
             .await
-            .map(Into::into)
+            .and_then(|response| response.try_into())
     }
 
     async fn get_melt_quote_status(
@@ -109,7 +112,7 @@ impl MintConnector for DirectMintConnection {
         self.mint
             .check_melt_quote(&QuoteId::from_str(quote_id)?)
             .await
-            .map(Into::into)
+            .and_then(|response| response.try_into())
     }
 
     async fn post_melt(
@@ -117,7 +120,10 @@ impl MintConnector for DirectMintConnection {
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let request_uuid = request.try_into().unwrap();
-        self.mint.melt(&request_uuid).await.map(Into::into)
+        self.mint
+            .melt(&request_uuid)
+            .await
+            .and_then(|response| response.try_into())
     }
 
     async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
@@ -181,7 +187,7 @@ impl MintConnector for DirectMintConnection {
         self.mint
             .get_melt_quote(request.into())
             .await
-            .map(Into::into)
+            .and_then(|response| response.try_into())
     }
     /// Melt Quote Status [NUT-23]
     async fn get_melt_bolt12_quote_status(
@@ -191,13 +197,72 @@ impl MintConnector for DirectMintConnection {
         self.mint
             .check_melt_quote(&QuoteId::from_str(quote_id)?)
             .await
-            .map(Into::into)
+            .and_then(|response| response.try_into())
     }
     /// Melt [NUT-23]
     async fn post_melt_bolt12(
         &self,
         _request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        // Implementation to be added later
+        Err(Error::UnsupportedPaymentMethod)
+    }
+
+    /// Mint Quote [NUT-26]
+    async fn post_mint_onchain_quote(
+        &self,
+        request: MintQuoteOnchainRequest,
+    ) -> Result<MintQuoteOnchainResponse<String>, Error> {
+        let res: MintQuoteOnchainResponse<QuoteId> =
+            self.mint.get_mint_quote(request.into()).await?.try_into()?;
+        Ok(res.into())
+    }
+
+    /// Mint Quote Status [NUT-26]
+    async fn get_mint_quote_onchain_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteOnchainResponse<String>, Error> {
+        let quote_id_uuid = QuoteId::from_str(quote_id).unwrap();
+        let quote: MintQuoteOnchainResponse<QuoteId> = self
+            .mint
+            .check_mint_quote(&quote_id_uuid)
+            .await?
+            .try_into()?;
+
+        Ok(quote.into())
+    }
+
+    /// Melt Quote [NUT-26]
+    async fn post_melt_onchain_quote(
+        &self,
+        request: MeltQuoteOnchainRequest,
+    ) -> Result<MeltQuoteOnchainResponse<String>, Error> {
+        let res: MeltQuoteOnchainResponse<QuoteId> =
+            self.mint.get_melt_quote(request.into()).await?.try_into()?;
+        Ok(res.into())
+    }
+
+    /// Melt Quote Status [NUT-26]
+    async fn get_melt_onchain_quote_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MeltQuoteOnchainResponse<String>, Error> {
+        let quote_id_uuid = QuoteId::from_str(quote_id).unwrap();
+        let quote: MeltQuoteOnchainResponse<QuoteId> = self
+            .mint
+            .check_melt_quote(&quote_id_uuid)
+            .await?
+            .try_into()?;
+
+        Ok(quote.into())
+    }
+
+    /// Melt [NUT-26]
+    async fn post_melt_onchain(
+        &self,
+        _request: MeltRequest<String>,
+    ) -> Result<MeltQuoteOnchainResponse<String>, Error> {
         // Implementation to be added later
         Err(Error::UnsupportedPaymentMethod)
     }
@@ -243,7 +308,9 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         percent_fee_reserve: 1.0,
     };
 
-    let ln_fake_backend = FakeWallet::new(
+    // Create separate FakeWallet instances for each payment processor
+    // to avoid the NoReceiver panic when multiple processors try to consume the same receiver
+    let bolt11_fake_backend = FakeWallet::new(
         fee_reserve.clone(),
         HashMap::default(),
         HashSet::default(),
@@ -251,12 +318,49 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         CurrencyUnit::Sat,
     );
 
+    let bolt12_fake_backend = FakeWallet::new(
+        fee_reserve.clone(),
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    );
+
+    let onchain_fake_backend = FakeWallet::new(
+        fee_reserve.clone(),
+        HashMap::default(),
+        HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    );
+
+    // Add BOLT11 payment processor
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
             PaymentMethod::Bolt11,
             MintMeltLimits::new(1, 10_000),
-            Arc::new(ln_fake_backend),
+            Arc::new(bolt11_fake_backend),
+        )
+        .await?;
+
+    // Add BOLT12 payment processor
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Bolt12,
+            MintMeltLimits::new(1, 10_000),
+            Arc::new(bolt12_fake_backend),
+        )
+        .await?;
+
+    // Add Onchain payment processor
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Onchain,
+            MintMeltLimits::new(1, 10_000),
+            Arc::new(onchain_fake_backend),
         )
         .await?;
 
@@ -344,7 +448,7 @@ pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
 /// Creates a temporary directory with a unique name based on the prefix
 fn create_temp_dir(prefix: &str) -> Result<PathBuf> {
     let temp_dir = env::temp_dir();
-    let unique_dir = temp_dir.join(format!("{}-{}", prefix, Uuid::new_v4()));
+    let unique_dir = temp_dir.join(format!("{}-{}", prefix, QuoteId::new_uuid()));
     fs::create_dir_all(&unique_dir)?;
     Ok(unique_dir)
 }

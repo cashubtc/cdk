@@ -80,6 +80,10 @@ pub enum Error {
     /// Invalid hex
     #[error("Invalid hex")]
     InvalidHex,
+
+    /// Unsupported onchain
+    #[error("Unsupported onchain")]
+    UnsupportedOnchain,
 }
 
 impl From<Error> for cdk_common::payment::Error {

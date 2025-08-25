@@ -66,7 +66,8 @@ impl WaitableEvent {
                         match payment_method {
                             PaymentMethod::Bolt11 => acc.0.push(quote_id),
                             PaymentMethod::Bolt12 => acc.1.push(quote_id),
-                            PaymentMethod::Custom(_) => acc.0.push(quote_id),
+                            // TODO: Handle other payment methods
+                            _ => acc.0.push(quote_id),
                         }
                         acc
                     },
