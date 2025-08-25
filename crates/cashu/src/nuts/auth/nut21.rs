@@ -161,6 +161,18 @@ pub enum RoutePath {
     /// Bolt12 Quote
     #[serde(rename = "/v1/melt/bolt12")]
     MeltBolt12,
+    /// Onchain Mint Quote
+    #[serde(rename = "/v1/mint/quote/onchain")]
+    MintQuoteOnchain,
+    /// Onchain Mint
+    #[serde(rename = "/v1/mint/onchain")]
+    MintOnchain,
+    /// Onchain Melt Quote
+    #[serde(rename = "/v1/melt/quote/onchain")]
+    MeltQuoteOnchain,
+    /// Onchain Melt
+    #[serde(rename = "/v1/melt/onchain")]
+    MeltOnchain,
 }
 
 /// Returns [`RoutePath`]s that match regex
@@ -209,6 +221,12 @@ mod tests {
         assert!(paths.contains(&RoutePath::MintBlindAuth));
         assert!(paths.contains(&RoutePath::MintQuoteBolt12));
         assert!(paths.contains(&RoutePath::MintBolt12));
+        assert!(paths.contains(&RoutePath::MeltQuoteBolt12));
+        assert!(paths.contains(&RoutePath::MeltBolt12));
+        assert!(paths.contains(&RoutePath::MintQuoteOnchain));
+        assert!(paths.contains(&RoutePath::MintOnchain));
+        assert!(paths.contains(&RoutePath::MeltQuoteOnchain));
+        assert!(paths.contains(&RoutePath::MeltOnchain));
     }
 
     #[test]
@@ -217,17 +235,21 @@ mod tests {
         let paths = matching_route_paths("^/v1/mint/.*").unwrap();
 
         // Should match only mint paths
-        assert_eq!(paths.len(), 4);
+        assert_eq!(paths.len(), 6);
         assert!(paths.contains(&RoutePath::MintQuoteBolt11));
         assert!(paths.contains(&RoutePath::MintBolt11));
         assert!(paths.contains(&RoutePath::MintQuoteBolt12));
         assert!(paths.contains(&RoutePath::MintBolt12));
+        assert!(paths.contains(&RoutePath::MintQuoteOnchain));
+        assert!(paths.contains(&RoutePath::MintOnchain));
 
         // Should not match other paths
         assert!(!paths.contains(&RoutePath::MeltQuoteBolt11));
         assert!(!paths.contains(&RoutePath::MeltBolt11));
         assert!(!paths.contains(&RoutePath::MeltQuoteBolt12));
         assert!(!paths.contains(&RoutePath::MeltBolt12));
+        assert!(!paths.contains(&RoutePath::MeltQuoteOnchain));
+        assert!(!paths.contains(&RoutePath::MeltOnchain));
         assert!(!paths.contains(&RoutePath::Swap));
     }
 
@@ -237,15 +259,21 @@ mod tests {
         let paths = matching_route_paths(".*/quote/.*").unwrap();
 
         // Should match only quote paths
-        assert_eq!(paths.len(), 4);
+        assert_eq!(paths.len(), 6);
         assert!(paths.contains(&RoutePath::MintQuoteBolt11));
         assert!(paths.contains(&RoutePath::MeltQuoteBolt11));
         assert!(paths.contains(&RoutePath::MintQuoteBolt12));
         assert!(paths.contains(&RoutePath::MeltQuoteBolt12));
+        assert!(paths.contains(&RoutePath::MintQuoteOnchain));
+        assert!(paths.contains(&RoutePath::MeltQuoteOnchain));
 
         // Should not match non-quote paths
         assert!(!paths.contains(&RoutePath::MintBolt11));
         assert!(!paths.contains(&RoutePath::MeltBolt11));
+        assert!(!paths.contains(&RoutePath::MintBolt12));
+        assert!(!paths.contains(&RoutePath::MeltBolt12));
+        assert!(!paths.contains(&RoutePath::MintOnchain));
+        assert!(!paths.contains(&RoutePath::MeltOnchain));
     }
 
     #[test]
@@ -294,6 +322,26 @@ mod tests {
         assert_eq!(RoutePath::Checkstate.to_string(), "/v1/checkstate");
         assert_eq!(RoutePath::Restore.to_string(), "/v1/restore");
         assert_eq!(RoutePath::MintBlindAuth.to_string(), "/v1/auth/blind/mint");
+        assert_eq!(
+            RoutePath::MintQuoteBolt12.to_string(),
+            "/v1/mint/quote/bolt12"
+        );
+        assert_eq!(RoutePath::MintBolt12.to_string(), "/v1/mint/bolt12");
+        assert_eq!(
+            RoutePath::MeltQuoteBolt12.to_string(),
+            "/v1/melt/quote/bolt12"
+        );
+        assert_eq!(RoutePath::MeltBolt12.to_string(), "/v1/melt/bolt12");
+        assert_eq!(
+            RoutePath::MintQuoteOnchain.to_string(),
+            "/v1/mint/quote/onchain"
+        );
+        assert_eq!(RoutePath::MintOnchain.to_string(), "/v1/mint/onchain");
+        assert_eq!(
+            RoutePath::MeltQuoteOnchain.to_string(),
+            "/v1/melt/quote/onchain"
+        );
+        assert_eq!(RoutePath::MeltOnchain.to_string(), "/v1/melt/onchain");
     }
 
     #[test]
@@ -356,7 +404,7 @@ mod tests {
             "https://example.com/.well-known/openid-configuration"
         );
         assert_eq!(settings.client_id, "client123");
-        assert_eq!(settings.protected_endpoints.len(), 5); // 3 mint paths + 1 swap path
+        assert_eq!(settings.protected_endpoints.len(), 7); // 6 mint paths + 1 swap path
 
         let expected_protected: HashSet<ProtectedEndpoint> = HashSet::from_iter(vec![
             ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
@@ -364,6 +412,8 @@ mod tests {
             ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
             ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt12),
             ProtectedEndpoint::new(Method::Get, RoutePath::MintBolt12),
+            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteOnchain),
+            ProtectedEndpoint::new(Method::Get, RoutePath::MintOnchain),
         ]);
 
         let deserlized_protected = settings.protected_endpoints.into_iter().collect();

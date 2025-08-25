@@ -21,6 +21,7 @@ use router_handlers::*;
 mod auth;
 mod bolt12_router;
 pub mod cache;
+mod onchain_router;
 mod router_handlers;
 mod ws;
 
@@ -47,6 +48,9 @@ mod swagger_imports {
         MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintQuoteBolt11Request,
         MintQuoteBolt11Response,
     };
+    pub use cdk::nuts::nut26::{
+        MeltQuoteOnchainRequest, MintQuoteOnchainRequest, MintQuoteOnchainResponse,
+    };
     #[cfg(feature = "auth")]
     pub use cdk::nuts::MintAuthRequest;
     pub use cdk::nuts::{nut04, nut05, nut15, MeltQuoteState, MintQuoteState};
@@ -58,6 +62,10 @@ use swagger_imports::*;
 use crate::bolt12_router::{
     cache_post_melt_bolt12, cache_post_mint_bolt12, get_check_mint_bolt12_quote,
     post_melt_bolt12_quote, post_mint_bolt12_quote,
+};
+use crate::onchain_router::{
+    cache_post_melt_onchain, cache_post_mint_onchain, get_check_melt_onchain_quote,
+    get_check_mint_onchain_quote, post_melt_onchain_quote, post_mint_onchain_quote,
 };
 
 /// CDK Mint State
@@ -128,6 +136,7 @@ define_api_doc! {
         MeltRequest<String>,
         MeltQuoteBolt11Request,
         MeltQuoteBolt11Response<String>,
+        MeltQuoteOnchainRequest,
         MeltQuoteState,
         MeltMethodSettings,
         MintRequest<String>,
@@ -135,6 +144,8 @@ define_api_doc! {
         MintInfo,
         MintQuoteBolt11Request,
         MintQuoteBolt11Response<String>,
+        MintQuoteOnchainRequest,
+        MintQuoteOnchainResponse<String>,
         MintQuoteState,
         MintMethodSettings,
         MintVersion,
@@ -184,6 +195,7 @@ define_api_doc! {
         MeltRequest<String>,
         MeltQuoteBolt11Request,
         MeltQuoteBolt11Response<String>,
+        MeltQuoteOnchainRequest,
         MeltQuoteState,
         MeltMethodSettings,
         MintRequest<String>,
@@ -191,6 +203,8 @@ define_api_doc! {
         MintInfo,
         MintQuoteBolt11Request,
         MintQuoteBolt11Response<String>,
+        MintQuoteOnchainRequest,
+        MintQuoteOnchainResponse<String>,
         MintQuoteState,
         MintMethodSettings,
         MintVersion,
@@ -224,8 +238,13 @@ define_api_doc! {
 }
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
-pub async fn create_mint_router(mint: Arc<Mint>, include_bolt12: bool) -> Result<Router> {
-    create_mint_router_with_custom_cache(mint, Default::default(), include_bolt12).await
+pub async fn create_mint_router(
+    mint: Arc<Mint>,
+    include_bolt12: bool,
+    include_onchain: bool,
+) -> Result<Router> {
+    create_mint_router_with_custom_cache(mint, Default::default(), include_bolt12, include_onchain)
+        .await
 }
 
 async fn cors_middleware(
@@ -278,6 +297,7 @@ pub async fn create_mint_router_with_custom_cache(
     mint: Arc<Mint>,
     cache: HttpCache,
     include_bolt12: bool,
+    include_onchain: bool,
 ) -> Result<Router> {
     let state = MintState {
         mint,
@@ -322,6 +342,14 @@ pub async fn create_mint_router_with_custom_cache(
         mint_router
     };
 
+    // Conditionally create and merge onchain_router
+    let mint_router = if include_onchain {
+        let onchain_router = create_onchain_router(state.clone());
+        mint_router.nest("/v1", onchain_router)
+    } else {
+        mint_router
+    };
+
     let mint_router = mint_router
         .layer(from_fn(cors_middleware))
         .with_state(state);
@@ -343,5 +371,22 @@ fn create_bolt12_router(state: MintState) -> Router<MintState> {
             get(get_check_mint_bolt12_quote),
         )
         .route("/mint/bolt12", post(cache_post_mint_bolt12))
+        .with_state(state)
+}
+
+fn create_onchain_router(state: MintState) -> Router<MintState> {
+    Router::new()
+        .route("/melt/quote/onchain", post(post_melt_onchain_quote))
+        .route(
+            "/melt/quote/onchain/{quote_id}",
+            get(get_check_melt_onchain_quote),
+        )
+        .route("/melt/onchain", post(cache_post_melt_onchain))
+        .route("/mint/quote/onchain", post(post_mint_onchain_quote))
+        .route(
+            "/mint/quote/onchain/{quote_id}",
+            get(get_check_mint_onchain_quote),
+        )
+        .route("/mint/onchain", post(cache_post_mint_onchain))
         .with_state(state)
 }

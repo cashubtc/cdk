@@ -4,6 +4,7 @@ use std::convert::Infallible;
 use std::pin::Pin;
 
 use async_trait::async_trait;
+use bitcoin::Address;
 use cashu::util::hex;
 use cashu::{Bolt11Invoice, MeltOptions};
 use futures::Stream;
@@ -91,6 +92,8 @@ pub enum PaymentIdentifier {
     PaymentHash([u8; 32]),
     /// Bolt12 payment hash
     Bolt12PaymentHash([u8; 32]),
+    /// Onchain address identifier
+    OnchainAddress(String),
     /// Custom Payment ID
     CustomId(String),
 }
@@ -111,6 +114,7 @@ impl PaymentIdentifier {
                     .try_into()
                     .map_err(|_| Error::InvalidHash)?,
             )),
+            "onchain_address" => Ok(Self::OnchainAddress(identifier.to_string())),
             "custom" => Ok(Self::CustomId(identifier.to_string())),
             _ => Err(Error::UnsupportedPaymentOption),
         }
@@ -123,6 +127,7 @@ impl PaymentIdentifier {
             Self::OfferId(_) => "offer_id".to_string(),
             Self::PaymentHash(_) => "payment_hash".to_string(),
             Self::Bolt12PaymentHash(_) => "bolt12_payment_hash".to_string(),
+            Self::OnchainAddress(_) => "onchain_address".to_string(),
             Self::CustomId(_) => "custom".to_string(),
         }
     }
@@ -135,6 +140,7 @@ impl std::fmt::Display for PaymentIdentifier {
             Self::OfferId(o) => write!(f, "{o}"),
             Self::PaymentHash(h) => write!(f, "{}", hex::encode(h)),
             Self::Bolt12PaymentHash(h) => write!(f, "{}", hex::encode(h)),
+            Self::OnchainAddress(a) => write!(f, "{a}"),
             Self::CustomId(c) => write!(f, "{c}"),
         }
     }
@@ -169,6 +175,8 @@ pub enum IncomingPaymentOptions {
     Bolt11(Bolt11IncomingPaymentOptions),
     /// BOLT12 payment request options
     Bolt12(Box<Bolt12IncomingPaymentOptions>),
+    /// Onchain payment request options
+    Onchain,
 }
 
 /// Options for BOLT11 outgoing payments
@@ -197,6 +205,17 @@ pub struct Bolt12OutgoingPaymentOptions {
     pub melt_options: Option<MeltOptions>,
 }
 
+/// Options for onchain outgoing payments
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OnchainOutgoingPaymentOptions {
+    /// Onchain address to send to
+    pub address: Address,
+    /// Amount to send
+    pub amount: Amount,
+    /// Maximum fee amount allowed for the payment
+    pub max_fee_amount: Option<Amount>,
+}
+
 /// Options for creating an outgoing payment
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum OutgoingPaymentOptions {
@@ -204,6 +223,8 @@ pub enum OutgoingPaymentOptions {
     Bolt11(Box<Bolt11OutgoingPaymentOptions>),
     /// BOLT12 payment options
     Bolt12(Box<Bolt12OutgoingPaymentOptions>),
+    /// Onchain payment options
+    Onchain(Box<OnchainOutgoingPaymentOptions>),
 }
 
 impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
@@ -235,6 +256,13 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
                     },
                 )))
             }
+            MeltPaymentRequest::Onchain { address } => Ok(OutgoingPaymentOptions::Onchain(
+                Box::new(OnchainOutgoingPaymentOptions {
+                    address,
+                    amount: melt_quote.amount,
+                    max_fee_amount: Some(melt_quote.fee_reserve),
+                }),
+            )),
         }
     }
 }
@@ -308,6 +336,9 @@ pub struct WaitPaymentResponse {
     /// Unique id of payment
     // Payment hash
     pub payment_id: String,
+    /// Whether the payment is confirmed (for onchain payments)
+    /// For Lightning payments, this should always be true
+    pub is_confirmed: bool,
 }
 
 /// Create incoming payment response
@@ -364,6 +395,8 @@ pub struct Bolt11Settings {
     pub amountless: bool,
     /// Bolt12 supported
     pub bolt12: bool,
+    /// Onchain supported
+    pub onchain: bool,
 }
 
 impl TryFrom<Bolt11Settings> for Value {

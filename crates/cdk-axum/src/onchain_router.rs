@@ -6,8 +6,8 @@ use cdk::error::ErrorResponse;
 #[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
-    MeltQuoteBolt11Response, MeltQuoteBolt12Request, MeltRequest, MintQuoteBolt12Request,
-    MintQuoteBolt12Response, MintRequest, MintResponse,
+    MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MeltRequest, MintQuoteOnchainRequest,
+    MintQuoteOnchainResponse, MintRequest, MintResponse,
 };
 use paste::paste;
 use tracing::instrument;
@@ -17,35 +17,36 @@ use uuid::Uuid;
 use crate::auth::AuthHeader;
 use crate::{into_response, post_cache_wrapper, MintState};
 
-post_cache_wrapper!(post_mint_bolt12, MintRequest<Uuid>, MintResponse);
+post_cache_wrapper!(post_mint_onchain, MintRequest<Uuid>, MintResponse);
 post_cache_wrapper!(
-    post_melt_bolt12,
+    post_melt_onchain,
     MeltRequest<Uuid>,
-    MeltQuoteBolt11Response<Uuid>
+    MeltQuoteOnchainResponse<Uuid>
 );
 
 #[cfg_attr(feature = "swagger", utoipa::path(
-    get,
+    post,
     context_path = "/v1",
-    path = "/mint/quote/bolt12",
+    path = "/mint/quote/onchain",
+    request_body(content = MintQuoteOnchainRequest, description = "Quote params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = MintQuoteBolt12Response<String>, content_type = "application/json")
+        (status = 200, description = "Successful response", body = MintQuoteOnchainResponse<String>, content_type = "application/json")
     )
 ))]
-/// Get mint bolt12 quote
-#[instrument(skip_all, fields(amount = ?payload.amount))]
-pub async fn post_mint_bolt12_quote(
+/// Create mint onchain quote
+#[instrument(skip_all)]
+pub async fn post_mint_onchain_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
-    Json(payload): Json<MintQuoteBolt12Request>,
-) -> Result<Json<MintQuoteBolt12Response<Uuid>>, Response> {
+    Json(payload): Json<MintQuoteOnchainRequest>,
+) -> Result<Json<MintQuoteOnchainResponse<Uuid>>, Response> {
     #[cfg(feature = "auth")]
     {
         state
             .mint
             .verify_auth(
                 auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt12),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteOnchain),
             )
             .await
             .map_err(into_response)?;
@@ -63,29 +64,29 @@ pub async fn post_mint_bolt12_quote(
 #[cfg_attr(feature = "swagger", utoipa::path(
     get,
     context_path = "/v1",
-    path = "/mint/quote/bolt12/{quote_id}",
+    path = "/mint/quote/onchain/{quote_id}",
     params(
         ("quote_id" = String, description = "The quote ID"),
     ),
     responses(
-        (status = 200, description = "Successful response", body = MintQuoteBolt12Response<String>, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MintQuoteOnchainResponse<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
-/// Get mint bolt12 quote
+/// Get mint onchain quote
 #[instrument(skip_all, fields(quote_id = ?quote_id))]
-pub async fn get_check_mint_bolt12_quote(
+pub async fn get_check_mint_onchain_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Path(quote_id): Path<Uuid>,
-) -> Result<Json<MintQuoteBolt12Response<Uuid>>, Response> {
+) -> Result<Json<MintQuoteOnchainResponse<Uuid>>, Response> {
     #[cfg(feature = "auth")]
     {
         state
             .mint
             .verify_auth(
                 auth.into(),
-                &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt12),
+                &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteOnchain),
             )
             .await
             .map_err(into_response)?;
@@ -103,7 +104,7 @@ pub async fn get_check_mint_bolt12_quote(
 #[cfg_attr(feature = "swagger", utoipa::path(
     post,
     context_path = "/v1",
-    path = "/mint/bolt12",
+    path = "/mint/onchain",
     request_body(content = MintRequest<String>, description = "Request params", content_type = "application/json"),
     responses(
         (status = 200, description = "Successful response", body = MintResponse, content_type = "application/json"),
@@ -112,7 +113,7 @@ pub async fn get_check_mint_bolt12_quote(
 ))]
 /// Request a quote for melting tokens
 #[instrument(skip_all, fields(quote_id = ?payload.quote))]
-pub async fn post_mint_bolt12(
+pub async fn post_mint_onchain(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MintRequest<Uuid>>,
@@ -123,7 +124,7 @@ pub async fn post_mint_bolt12(
             .mint
             .verify_auth(
                 auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt12),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MintOnchain),
             )
             .await
             .map_err(into_response)?;
@@ -144,25 +145,25 @@ pub async fn post_mint_bolt12(
 #[cfg_attr(feature = "swagger", utoipa::path(
     post,
     context_path = "/v1",
-    path = "/melt/quote/bolt12",
-    request_body(content = MeltQuoteBolt12Request, description = "Quote params", content_type = "application/json"),
+    path = "/melt/quote/onchain",
+    request_body(content = MeltQuoteOnchainRequest, description = "Quote params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response<String>, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MeltQuoteOnchainResponse<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
-pub async fn post_melt_bolt12_quote(
+pub async fn post_melt_onchain_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
-    Json(payload): Json<MeltQuoteBolt12Request>,
-) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+    Json(payload): Json<MeltQuoteOnchainRequest>,
+) -> Result<Json<MeltQuoteOnchainResponse<Uuid>>, Response> {
     #[cfg(feature = "auth")]
     {
         state
             .mint
             .verify_auth(
                 auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuoteBolt12),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuoteOnchain),
             )
             .await
             .map_err(into_response)?;
@@ -180,28 +181,28 @@ pub async fn post_melt_bolt12_quote(
 #[cfg_attr(feature = "swagger", utoipa::path(
     post,
     context_path = "/v1",
-    path = "/melt/bolt12",
+    path = "/melt/onchain",
     request_body(content = MeltRequest<String>, description = "Melt params", content_type = "application/json"),
     responses(
-        (status = 200, description = "Successful response", body = MeltQuoteBolt11Response<String>, content_type = "application/json"),
+        (status = 200, description = "Successful response", body = MeltQuoteOnchainResponse<String>, content_type = "application/json"),
         (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
     )
 ))]
 /// Melt tokens for a Bitcoin payment that the mint will make for the user in exchange
 ///
 /// Requests tokens to be destroyed and sent out via Lightning.
-pub async fn post_melt_bolt12(
+pub async fn post_melt_onchain(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MeltRequest<Uuid>>,
-) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+) -> Result<Json<MeltQuoteOnchainResponse<Uuid>>, Response> {
     #[cfg(feature = "auth")]
     {
         state
             .mint
             .verify_auth(
                 auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt12),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltOnchain),
             )
             .await
             .map_err(into_response)?;
@@ -210,4 +211,44 @@ pub async fn post_melt_bolt12(
     let res = state.mint.melt(&payload).await.map_err(into_response)?;
 
     Ok(Json(res.try_into().map_err(into_response)?))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    get,
+    context_path = "/v1",
+    path = "/melt/quote/onchain/{quote_id}",
+    params(
+        ("quote_id" = String, description = "The quote ID"),
+    ),
+    responses(
+        (status = 200, description = "Successful response", body = MeltQuoteOnchainResponse<String>, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+/// Get melt onchain quote
+#[instrument(skip_all, fields(quote_id = ?quote_id))]
+pub async fn get_check_melt_onchain_quote(
+    #[cfg(feature = "auth")] auth: AuthHeader,
+    State(state): State<MintState>,
+    Path(quote_id): Path<Uuid>,
+) -> Result<Json<MeltQuoteOnchainResponse<Uuid>>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuoteOnchain),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
+    let quote = state
+        .mint
+        .check_melt_quote(&quote_id)
+        .await
+        .map_err(into_response)?;
+
+    Ok(Json(quote.try_into().map_err(into_response)?))
 }

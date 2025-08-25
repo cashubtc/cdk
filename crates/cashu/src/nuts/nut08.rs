@@ -4,6 +4,7 @@
 
 use super::nut05::MeltRequest;
 use super::nut23::MeltQuoteBolt11Response;
+use super::nut26::MeltQuoteOnchainResponse;
 use crate::Amount;
 
 impl<Q> MeltRequest<Q> {
@@ -16,6 +17,15 @@ impl<Q> MeltRequest<Q> {
 }
 
 impl<Q> MeltQuoteBolt11Response<Q> {
+    /// Total change [`Amount`]
+    pub fn change_amount(&self) -> Option<Amount> {
+        self.change
+            .as_ref()
+            .and_then(|o| Amount::try_sum(o.iter().map(|proof| proof.amount)).ok())
+    }
+}
+
+impl<Q> MeltQuoteOnchainResponse<Q> {
     /// Total change [`Amount`]
     pub fn change_amount(&self) -> Option<Amount> {
         self.change

@@ -71,6 +71,16 @@ async fn convert_subscription(
                 subscribed_to.insert(id, (sub.0.clone(), sub.1.id.clone(), AnyState::Empty));
             }
         }
+        Kind::OnchainMintQuote => {
+            for id in sub.1.filters.iter().map(|id| UrlType::Mint(id.clone())) {
+                subscribed_to.insert(id, (sub.0.clone(), sub.1.id.clone(), AnyState::Empty));
+            }
+        }
+        Kind::OnchainMeltQuote => {
+            for id in sub.1.filters.iter().map(|id| UrlType::Melt(id.clone())) {
+                subscribed_to.insert(id, (sub.0.clone(), sub.1.id.clone(), AnyState::Empty));
+            }
+        }
     }
 
     Some(())

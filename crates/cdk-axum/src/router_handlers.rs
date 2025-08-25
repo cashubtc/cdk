@@ -305,7 +305,7 @@ pub(crate) async fn post_melt_bolt11_quote(
         .await
         .map_err(into_response)?;
 
-    Ok(Json(quote))
+    Ok(Json(quote.try_into().map_err(into_response)?))
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -350,7 +350,7 @@ pub(crate) async fn get_check_melt_bolt11_quote(
             into_response(err)
         })?;
 
-    Ok(Json(quote))
+    Ok(Json(quote.try_into().map_err(into_response)?))
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -386,7 +386,7 @@ pub(crate) async fn post_melt_bolt11(
 
     let res = state.mint.melt(&payload).await.map_err(into_response)?;
 
-    Ok(Json(res))
+    Ok(Json(res.try_into().map_err(into_response)?))
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(

@@ -3,7 +3,11 @@
 use std::fmt::Debug;
 
 use async_trait::async_trait;
-use cdk_common::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
+use cdk_common::{
+    MeltQuoteBolt12Request, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse,
+    MintQuoteBolt12Request, MintQuoteBolt12Response, MintQuoteOnchainRequest,
+    MintQuoteOnchainResponse,
+};
 
 use super::Error;
 use crate::nuts::{
@@ -103,4 +107,30 @@ pub trait MintConnector: Debug {
         &self,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+
+    /// Mint Quote [NUT-26]
+    async fn post_mint_onchain_quote(
+        &self,
+        request: MintQuoteOnchainRequest,
+    ) -> Result<MintQuoteOnchainResponse<String>, Error>;
+    /// Mint Quote status [NUT-26]
+    async fn get_mint_quote_onchain_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteOnchainResponse<String>, Error>;
+    /// Melt Quote [NUT-26]
+    async fn post_melt_onchain_quote(
+        &self,
+        request: MeltQuoteOnchainRequest,
+    ) -> Result<MeltQuoteOnchainResponse<String>, Error>;
+    /// Melt Quote Status [NUT-26]
+    async fn get_melt_onchain_quote_status(
+        &self,
+        quote_id: &str,
+    ) -> Result<MeltQuoteOnchainResponse<String>, Error>;
+    /// Melt [NUT-26]
+    async fn post_melt_onchain(
+        &self,
+        request: MeltRequest<String>,
+    ) -> Result<MeltQuoteOnchainResponse<String>, Error>;
 }

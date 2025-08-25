@@ -138,6 +138,7 @@ impl MintPayment for PaymentProcessorClient {
                     },
                 )),
             },
+            CdkIncomingPaymentOptions::Onchain => unimplemented!(),
         };
 
         let response = inner
@@ -172,16 +173,22 @@ impl MintPayment for PaymentProcessorClient {
             cdk_common::payment::OutgoingPaymentOptions::Bolt12(_) => {
                 OutgoingPaymentRequestType::Bolt12Offer
             }
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(_) => {
+                // TODO: Add Onchain support to protobuf
+                return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
+            }
         };
 
         let proto_request = match &options {
             cdk_common::payment::OutgoingPaymentOptions::Bolt11(opts) => opts.bolt11.to_string(),
             cdk_common::payment::OutgoingPaymentOptions::Bolt12(opts) => opts.offer.to_string(),
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(opts) => opts.address.to_string(),
         };
 
         let proto_options = match &options {
             cdk_common::payment::OutgoingPaymentOptions::Bolt11(opts) => opts.melt_options,
             cdk_common::payment::OutgoingPaymentOptions::Bolt12(opts) => opts.melt_options,
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(_opts) => None,
         };
 
         let response = inner
@@ -233,6 +240,9 @@ impl MintPayment for PaymentProcessorClient {
                         },
                     )),
                 }
+            }
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(_opts) => {
+                return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
             }
         };
 
