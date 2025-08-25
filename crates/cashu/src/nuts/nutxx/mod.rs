@@ -126,11 +126,25 @@ pub struct Conditions {
     /// Blake2s hash of the output of the program
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<[u8; 32]>,
+    /// The preprocessed trace variant to use
+    ///
+    /// Default is `false` (CanonicalWithoutPedersen)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub with_pedersen: Option<bool>,
+    /// Whether the proof requires a bootloader
+    ///
+    /// Default is `false`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub with_bootloader: Option<bool>,
 }
 
 impl From<Conditions> for Vec<Vec<String>> {
     fn from(conditions: Conditions) -> Vec<Vec<String>> {
-        let Conditions { output } = conditions;
+        let Conditions {
+            output,
+            with_pedersen,
+            with_bootloader,
+        } = conditions;
 
         let mut tags = Vec::new();
 
@@ -138,6 +152,18 @@ impl From<Conditions> for Vec<Vec<String>> {
             tags.push(vec![
                 TagKind::Custom("program_output".to_string()).to_string(),
                 hex::encode(output),
+            ]);
+        }
+        if let Some(with_pedersen) = with_pedersen {
+            tags.push(vec![
+                TagKind::Custom("with_pedersen".to_string()).to_string(),
+                with_pedersen.to_string(),
+            ]);
+        }
+        if let Some(with_bootloader) = with_bootloader {
+            tags.push(vec![
+                TagKind::Custom("with_bootloader".to_string()).to_string(),
+                with_bootloader.to_string(),
             ]);
         }
         tags
@@ -148,6 +174,8 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
     type Error = Error;
     fn try_from(tags: Vec<Vec<String>>) -> Result<Conditions, Self::Error> {
         let mut output = None;
+        let mut with_pedersen = None;
+        let mut with_bootloader = None;
 
         for tag in tags {
             if tag.len() < 2 {
@@ -159,11 +187,21 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
                 TagKind::Custom(ref kind) if kind == "program_output" => {
                     output = Some(hex::decode(&tag[1])?.as_slice().try_into()?);
                 }
+                TagKind::Custom(ref kind) if kind == "with_pedersen" => {
+                    with_pedersen = Some(&tag[1] == "true");
+                }
+                TagKind::Custom(ref kind) if kind == "with_bootloader" => {
+                    with_bootloader = Some(&tag[1] == "true");
+                }
                 _ => {}
             }
         }
 
-        Ok(Conditions { output })
+        Ok(Conditions {
+            output,
+            with_pedersen,
+            with_bootloader,
+        })
     }
 }
 
@@ -247,23 +285,39 @@ impl Proof {
             ));
         }
 
+        let mut preprocessed_trace = PreProcessedTraceVariant::CanonicalWithoutPedersen;
+
         let conditions: Option<Conditions> = secret
             .secret_data()
             .tags()
             .and_then(|c| c.clone().try_into().ok());
+        if let Some(conditions) = conditions {
+            if let Some(output_condition) = conditions.output {
+                // check if the output in the claim matches the output in the conditions
+                let output = hash_array_pmv(&cairo_proof.claim.public_data.public_memory.output);
+                if output != output_condition {
+                    return Err(Error::OutputHashVerification(
+                        hex::encode(output),
+                        hex::encode(output_condition),
+                    ));
+                }
+            }
 
-        if let Some(output_condition) = conditions.and_then(|c| c.output) {
-            // check if the output in the claim matches the output in the conditions
-            let output = hash_array_pmv(&cairo_proof.claim.public_data.public_memory.output);
-            if output != output_condition {
-                return Err(Error::OutputHashVerification(
-                    hex::encode(output),
-                    hex::encode(output_condition),
-                ));
+            if let Some(with_pedersen) = conditions.with_pedersen {
+                preprocessed_trace = match with_pedersen {
+                    true => PreProcessedTraceVariant::Canonical,
+                    false => PreProcessedTraceVariant::CanonicalWithoutPedersen,
+                };
+            }
+
+            if let Some(with_bootloader) = conditions.with_bootloader {
+                // TODO: Bootloader support not yet implemented.
+                if with_bootloader {
+                    return Err(Error::NotImplemented);
+                }
             }
         }
 
-        let preprocessed_trace = PreProcessedTraceVariant::CanonicalWithoutPedersen; // TODO: give option
         let result = verify_cairo::<Blake2sMerkleChannel>(
             cairo_proof,
             secure_pcs_config(),
@@ -362,9 +416,13 @@ mod tests {
 
         let cond_false = Conditions {
             output: Some(output_false),
+            with_pedersen: Some(false),
+            with_bootloader: Some(false),
         };
         let cond_true = Conditions {
             output: Some(output_true),
+            with_pedersen: Some(false),
+            with_bootloader: Some(false),
         };
 
         let secret_is_prime_true: Secret =
@@ -413,11 +471,60 @@ mod tests {
     #[test]
     fn test_secret_ser() {
         // Testing the serde serialization of the secret
-        let conditions = Conditions { output: None };
+        let conditions = Conditions {
+            output: None,
+            with_pedersen: Some(true),
+            with_bootloader: None,
+        };
         let data = Blake2sHasher::hash(b"1234567890abcdef").to_string();
         let secret = Nut10Secret::new(Kind::Cairo, data, Some(conditions));
         let secret_str = serde_json::to_string(&secret).unwrap();
         let secret_der: Nut10Secret = serde_json::from_str(&secret_str).unwrap();
         assert_eq!(secret, secret_der);
+    }
+
+    #[test]
+    fn test_verify_with_bootloader_not_implemented() {
+        use super::Error;
+        let secret_key =
+            SecretKey::from_str("99590802251e78ee1051648439eedb003dc539093a48a44e7b8f2642c909ea37")
+                .unwrap();
+        let v_key = secret_key.public_key();
+
+        let executable_json = include_str!("./test/is_prime_executable.json");
+        let executable: Executable = serde_json::from_str(executable_json).unwrap();
+        let program_hash = hash_array_felt(&executable.program.bytecode);
+        let output_true = hash_array_felt(&[Felt::from(1)]);
+
+        let cond_bootloader = Conditions {
+            output: Some(output_true),
+            with_pedersen: Some(true),
+            with_bootloader: Some(true),
+        };
+
+        let secret_is_prime_true: Secret = Nut10Secret::new(
+            Kind::Cairo,
+            hex::encode(program_hash),
+            Some(cond_bootloader),
+        )
+        .try_into()
+        .unwrap();
+
+        let cairo_proof_is_prime_7 = include_str!("./test/is_prime_proof_7.json").to_string();
+        let witness_is_prime_7 = CairoWitness {
+            cairo_proof_json: cairo_proof_is_prime_7,
+        };
+
+        let proof: Proof = Proof {
+            amount: Amount::ZERO,
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            secret: secret_is_prime_true,
+            c: v_key,
+            witness: Some(Witness::CairoWitness(witness_is_prime_7)),
+            dleq: None,
+        };
+
+        let result = proof.verify_cairo();
+        assert!(matches!(result, Err(Error::NotImplemented)));
     }
 }

@@ -225,6 +225,8 @@ pub async fn send(
 
             let output_condition = Some(NutXXConditions {
                 output: Some(hashed_output_conditions),
+                with_pedersen: None,   // TODO: add option as argument in CLI
+                with_bootloader: None, // Currently unsupported by the wallet
             });
 
             Some(SpendingConditions::CairoConditions {
@@ -302,6 +304,8 @@ pub async fn send(
                     // TODO: support multiple outputs
                     let output_condition = Some(NutXXConditions {
                         output: Some(hashed_output_conditions),
+                        with_pedersen: None, // TODO: add option as argument in CLI
+                        with_bootloader: None, // Currently unsupported by the wallet
                     });
 
                     Some(SpendingConditions::CairoConditions {

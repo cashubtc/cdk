@@ -586,6 +586,8 @@ pub async fn test_cairo_swap() {
     let output_condition = vec![Felt::from(1)]; // program output: true
     let desired_program_output_hash = Some(NutXXConditions {
         output: Some(hash_array_felt(&output_condition)),
+        with_pedersen: Some(false), // TODO: add option as argument in CLI
+        with_bootloader: Some(false), // Currently unsupported by the wallet
     });
 
     let spending_conditions =
