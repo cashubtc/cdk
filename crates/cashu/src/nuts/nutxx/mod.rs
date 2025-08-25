@@ -58,20 +58,27 @@ pub enum Error {
 /// Mint Info CairoProverConfig field
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CairoProverConfig {
+    /// Cairo Prover version
     pub version: String,
 }
+
 /// Mint Info optional features bootloader field
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BootloaderFeature {
+    /// Is bootloader supported
     pub supported: bool,
+    /// Bootloader version
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Boastloader hash
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hash: Option<String>,
 }
+
 /// Mint Info optional features
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct NutXXOptionalFeatures {
+    /// Bootloader feature
     pub bootloader: BootloaderFeature,
 }
 impl Default for BootloaderFeature {
@@ -88,9 +95,12 @@ impl Default for BootloaderFeature {
 /// Mint Info NUT-XX settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NutXXSettings {
+    /// Is NUT-XX supported
     pub supported: bool,
+    /// Optional features
     #[serde(skip_serializing_if = "Option::is_none")]
     pub optional_features: Option<NutXXOptionalFeatures>,
+    /// Cairo Prover configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cairo_prover_config: Option<CairoProverConfig>,
 }
@@ -286,17 +296,17 @@ mod tests {
 
     /// Cairo Executable
     #[derive(Deserialize)]
-    pub struct Executable {
+    struct Executable {
         /// Cairo program
-        pub program: Program,
+        program: Program,
     }
 
     /// Cairo Program
     #[derive(Deserialize)]
-    pub struct Program {
+    struct Program {
         #[serde(deserialize_with = "deserialize_felt_vec")]
         /// Cairo program bytecode
-        pub bytecode: Vec<Felt>,
+        bytecode: Vec<Felt>,
     }
 
     fn deserialize_felt_vec<'de, D>(deserializer: D) -> Result<Vec<Felt>, D::Error>
@@ -324,7 +334,7 @@ mod tests {
     }
 
     /// Hash an array of Felts in little endian format using Blake2s
-    pub fn hash_array_felt(bytecode: &[Felt]) -> [u8; 32] {
+    fn hash_array_felt(bytecode: &[Felt]) -> [u8; 32] {
         let mut hasher = Blake2sHasher::default();
         for felt in bytecode {
             for byte in felt.to_bytes_le().iter() {
