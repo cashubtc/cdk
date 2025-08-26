@@ -226,8 +226,8 @@ impl CurrencyUnit {
     ///   equivalent strings map to the same index.
     /// - reserve a low integer range for known variants
     pub fn derivation_index(&self) -> Option<u32> {
-        // reserved band for well-known units
-        const RESERVED: u32 = 10_000;
+        // reserved to ensure backward compatibility for hardcoded derivation paths
+        const RESERVED: u32 = 5;
 
         match self {
             Self::Sat => Some(0),
@@ -405,6 +405,6 @@ mod tests {
             .derivation_index()
             .expect("custom units should always produce an index");
 
-        assert_eq!(idx, 2425625035);
+        assert_eq!(idx, 2425615040);
     }
 }
