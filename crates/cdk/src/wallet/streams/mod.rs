@@ -15,11 +15,7 @@ pub mod proof;
 mod wait;
 
 /// Shared type
-#[cfg(not(target_arch = "wasm32"))]
 type RecvFuture<'a, Ret> = Pin<Box<dyn Future<Output = Ret> + Send + 'a>>;
-
-#[cfg(target_arch = "wasm32")]
-type RecvFuture<'a, Ret> = Pin<Box<dyn Future<Output = Ret> + 'a>>;
 
 #[allow(private_bounds)]
 #[allow(clippy::enum_variant_names)]

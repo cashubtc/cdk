@@ -42,6 +42,7 @@ pub mod multi_mint_wallet;
 mod proofs;
 mod receive;
 mod send;
+#[cfg(not(target_arch = "wasm32"))]
 mod streams;
 pub mod subscription;
 mod swap;
