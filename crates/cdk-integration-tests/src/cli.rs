@@ -24,7 +24,6 @@ pub fn init_logging(enable_logging: bool, log_level: tracing::Level) {
         let default_filter = log_level.to_string();
 
         // Common filters to reduce noise
-        let sqlx_filter = "sqlx=warn";
         let hyper_filter = "hyper=warn";
         let h2_filter = "h2=warn";
         let rustls_filter = "rustls=warn";
@@ -32,7 +31,7 @@ pub fn init_logging(enable_logging: bool, log_level: tracing::Level) {
         let tower_filter = "tower_http=warn";
 
         let env_filter = EnvFilter::new(format!(
-            "{default_filter},{sqlx_filter},{hyper_filter},{h2_filter},{rustls_filter},{reqwest_filter},{tower_filter}"
+            "{default_filter},{hyper_filter},{h2_filter},{rustls_filter},{reqwest_filter},{tower_filter}"
         ));
 
         // Ok if successful, Err if already initialized

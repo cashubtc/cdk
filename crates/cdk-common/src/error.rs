@@ -111,13 +111,14 @@ pub enum Error {
     #[error("Could not parse bolt12")]
     Bolt12parse,
 
+    /// BIP353 address parsing error
+    #[error("Failed to parse BIP353 address: {0}")]
+    Bip353Parse(String),
+
     /// Operation timeout
     #[error("Operation timeout")]
     Timeout,
 
-    /// BIP353 address parsing error
-    #[error("Failed to parse BIP353 address: {0}")]
-    Bip353Parse(String),
     /// BIP353 address resolution error
     #[error("Failed to resolve BIP353 address: {0}")]
     Bip353Resolve(String),
@@ -541,6 +542,11 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::UnitMismatch,
                 error: Some(err.to_string()),
                 detail: None,
+            },
+            Error::UnpaidQuote => ErrorResponse {
+                code: ErrorCode::QuoteNotPaid,
+                error: Some(err.to_string()),
+                detail: None
             },
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(9999),
