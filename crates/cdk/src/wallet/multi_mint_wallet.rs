@@ -4,6 +4,7 @@
 //! pairs
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -26,13 +27,23 @@ use crate::wallet::types::MintQuote;
 use crate::{ensure_cdk, Amount, Wallet};
 
 /// Multi Mint Wallet
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MultiMintWallet {
     /// Storage backend
     pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
     seed: [u8; 64],
     /// Wallets
     pub wallets: Arc<RwLock<BTreeMap<WalletKey, Wallet>>>,
+}
+
+impl fmt::Debug for MultiMintWallet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MultiMintWallet")
+            .field("localstore", &self.localstore)
+            .field("seed", &"[REDACTED]")
+            .field("wallets", &self.wallets)
+            .finish()
+    }
 }
 
 impl MultiMintWallet {

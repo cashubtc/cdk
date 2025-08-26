@@ -11,7 +11,7 @@ use zeroize::Zeroize;
 use crate::util::hex;
 
 /// The secret data that allows spending ecash
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Secret(String);
 
@@ -32,6 +32,18 @@ pub enum Error {
 impl Default for Secret {
     fn default() -> Self {
         Self::generate()
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Secret").field(&"[REDACTED]").finish()
+    }
+}
+
+impl fmt::Display for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[REDACTED]")
     }
 }
 

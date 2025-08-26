@@ -15,7 +15,7 @@ use super::{Error, PublicKey};
 use crate::SECP256K1;
 
 /// SecretKey
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct SecretKey {
     #[cfg_attr(feature = "swagger", schema(value_type = String))]
@@ -38,7 +38,15 @@ impl From<secp256k1::SecretKey> for SecretKey {
 
 impl fmt::Display for SecretKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_secret_hex())
+        write!(f, "[REDACTED]")
+    }
+}
+
+impl fmt::Debug for SecretKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecretKey")
+            .field("inner", &"[REDACTED]")
+            .finish()
     }
 }
 
