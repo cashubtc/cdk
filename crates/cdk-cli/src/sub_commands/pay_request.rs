@@ -67,10 +67,10 @@ pub async fn pay_request(
 
     let matching_wallet = matching_wallets.first().unwrap();
 
-    let transports = payment_request
-        .transports
-        .clone()
-        .ok_or(anyhow!("Cannot pay request without transport"))?;
+    if payment_request.transports.is_empty() {
+        return Err(anyhow!("Cannot pay request without transport"));
+    }
+    let transports = payment_request.transports.clone();
 
     // We prefer nostr transport if it is available to hide ip.
     let transport = transports
