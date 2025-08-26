@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
+use std::str::FromStr;
 
 use bitcoin::secp256k1;
 use serde::de::{self, MapAccess, Visitor};
@@ -192,6 +193,93 @@ impl MintKeyPair {
     }
 }
 
+/// Currency Unit
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub enum CurrencyUnit {
+    /// Sat
+    #[default]
+    Sat,
+    /// Msat
+    Msat,
+    /// Usd
+    Usd,
+    /// Euro
+    Eur,
+    /// Auth
+    Auth,
+    /// Custom currency unit
+    Custom(String),
+}
+
+#[cfg(feature = "mint")]
+impl CurrencyUnit {
+    /// Derivation index mint will use for unit
+    pub fn derivation_index(&self) -> Option<u32> {
+        match self {
+            Self::Sat => Some(0),
+            Self::Msat => Some(1),
+            Self::Usd => Some(2),
+            Self::Eur => Some(3),
+            Self::Auth => Some(4),
+            _ => None,
+        }
+    }
+}
+
+impl FromStr for CurrencyUnit {
+    type Err = Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let upper_value = value.to_uppercase();
+        match upper_value.as_str() {
+            "SAT" => Ok(Self::Sat),
+            "MSAT" => Ok(Self::Msat),
+            "USD" => Ok(Self::Usd),
+            "EUR" => Ok(Self::Eur),
+            "AUTH" => Ok(Self::Auth),
+            _ => Ok(Self::Custom(value.to_string())),
+        }
+    }
+}
+
+impl fmt::Display for CurrencyUnit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            CurrencyUnit::Sat => "SAT",
+            CurrencyUnit::Msat => "MSAT",
+            CurrencyUnit::Usd => "USD",
+            CurrencyUnit::Eur => "EUR",
+            CurrencyUnit::Auth => "AUTH",
+            CurrencyUnit::Custom(unit) => unit,
+        };
+        if let Some(width) = f.width() {
+            write!(f, "{:width$}", s.to_lowercase(), width = width)
+        } else {
+            write!(f, "{}", s.to_lowercase())
+        }
+    }
+}
+
+impl Serialize for CurrencyUnit {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for CurrencyUnit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let currency: String = String::deserialize(deserializer)?;
+        Self::from_str(&currency).map_err(|_| serde::de::Error::custom("Unsupported unit"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -246,5 +334,13 @@ mod tests {
 }"#;
         let response: Result<Keys, serde_json::Error> = serde_json::from_str(incorrect_1);
         assert!(response.is_ok());
+    }
+
+    #[test]
+    fn custom_unit_ser_der() {
+        let unit = CurrencyUnit::Custom(String::from("test"));
+        let serialized = serde_json::to_string(&unit).unwrap();
+        let deserialized: CurrencyUnit = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(unit, deserialized)
     }
 }

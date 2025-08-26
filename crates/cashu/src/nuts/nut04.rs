@@ -13,7 +13,8 @@ use thiserror::Error;
 #[cfg(feature = "mint")]
 use uuid::Uuid;
 
-use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
+use super::nut00::{BlindSignature, BlindedMessage, PaymentMethod};
+use super::nut01::CurrencyUnit;
 use crate::Amount;
 
 /// NUT04 Error
