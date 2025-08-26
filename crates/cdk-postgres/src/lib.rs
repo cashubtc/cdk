@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use cdk_common::database::Error;
 use cdk_sql_common::database::{DatabaseConnector, DatabaseExecutor, GenericTransactionHandler};
+use cdk_sql_common::mint::ldk::SQLLdkDatabase;
 use cdk_sql_common::mint::SQLMintAuthDatabase;
 use cdk_sql_common::pool::{DatabaseConfig, DatabasePool};
 use cdk_sql_common::stmt::{Column, Statement};
@@ -220,6 +221,7 @@ impl DatabaseExecutor for PostgresConnection {
         pg_batch(self.inner().await?, statement).await
     }
 }
+pub type LdkPgDatabase = SQLLdkDatabase<PgConnectionPool>;
 
 /// Mint DB implementation with PostgreSQL
 pub type MintPgDatabase = SQLMintDatabase<PgConnectionPool>;
