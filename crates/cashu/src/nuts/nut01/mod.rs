@@ -6,7 +6,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::str::FromStr;
+use unicode_normalization::UnicodeNormalization;
 
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -215,15 +218,49 @@ pub enum CurrencyUnit {
 
 #[cfg(feature = "mint")]
 impl CurrencyUnit {
-    /// Derivation index mint will use for unit
+    /// Deterministic derivation index for each currency unit
+    ///
+    /// - use SHA-256 so results are identical across platforms
+    ///   and rust versions
+    /// - NFC normalization, lowercasing, and trim to ensure logically
+    ///   equivalent strings map to the same index.
+    /// - reserve a low integer range for known variants
     pub fn derivation_index(&self) -> Option<u32> {
+        // reserved band for well-known units
+        const RESERVED: u32 = 10_000;
+
         match self {
             Self::Sat => Some(0),
             Self::Msat => Some(1),
             Self::Usd => Some(2),
             Self::Eur => Some(3),
             Self::Auth => Some(4),
-            _ => None,
+            Self::Custom(s) => {
+                // 1) NFC normalization: composes equivalent Unicode sequences (e.g., "e" + U+0301) into a single
+                //    canonical code point (e.g., "é") so visually/equivalently identical strings hash the same
+                // 2) lowercase: avoids case-induced divergence ("USD" vs "usd")
+                // 3) trim: removes accidental leading/trailing whitespace (" usd " vs "usd")
+                let norm = s.nfc().collect::<String>().to_lowercase();
+                let norm = norm.trim();
+
+                // use SHA-256 so that the same normalized string always yields the same digest
+                let digest = Sha256::hash(norm.as_bytes());
+
+                // take 4 bytes in a fixed endianness to get a u32
+                let x = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) as u64;
+
+                // map x into the inclusive interval [RESERVED, u32::MAX].
+                // compute the size of that interval:
+                //   size = (u32::MAX - RESERVED + 1)
+                // use u64 math to avoid overflow.
+                let interval_size = (u32::MAX as u64) - (RESERVED as u64) + 1;
+
+                // Fold x uniformly into [0, interval_size - 1].
+                let r = (x % interval_size) as u32;
+
+                // shift into [RESERVED, u32::MAX], guaranteeing no overlap with reserved band [0, RESERVED-1].
+                Some(RESERVED + r)
+            }
         }
     }
 }
@@ -342,5 +379,32 @@ mod tests {
         let serialized = serde_json::to_string(&unit).unwrap();
         let deserialized: CurrencyUnit = serde_json::from_str(&serialized).unwrap();
         assert_eq!(unit, deserialized)
+    }
+
+    #[test]
+    fn currency_unit_unicode_equivalents_match() {
+        // "é" as composed vs decomposed; both should normalize and hash to same index
+        let composed = CurrencyUnit::Custom("café".into());
+        let decomposed = CurrencyUnit::Custom("cafe\u{0301}".into());
+        assert_eq!(composed.derivation_index(), decomposed.derivation_index());
+    }
+
+    #[test]
+    fn currency_unit_case_and_whitespace_ignored() {
+        let a = CurrencyUnit::Custom("  UsD  ".into());
+        let b = CurrencyUnit::Custom("usd".into());
+        assert_eq!(a.derivation_index(), b.derivation_index());
+    }
+
+    #[cfg(all(test, feature = "mint"))]
+    #[test]
+    fn currency_unit_custom_unit_derivation_index() {
+        let unit = CurrencyUnit::Custom("nuts".into());
+
+        let idx = unit
+            .derivation_index()
+            .expect("custom units should always produce an index");
+
+        assert_eq!(idx, 2425625035);
     }
 }
