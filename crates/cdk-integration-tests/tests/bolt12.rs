@@ -337,8 +337,14 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         .pay_bolt12_offer(Some(pay_amount_msats), mint_quote.request.clone())
         .await?;
 
+    let payment = wallet
+        .wait_for_payment(&mint_quote, tokio::time::Duration::from_secs(15))
+        .await?
+        .unwrap();
+
     let state = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
 
+    assert_eq!(payment, state.amount_paid);
     assert_eq!(state.amount_paid, (pay_amount_msats / 1_000).into());
     assert_eq!(state.amount_issued, Amount::ZERO);
 

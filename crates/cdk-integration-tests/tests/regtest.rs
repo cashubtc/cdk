@@ -310,12 +310,7 @@ async fn test_cached_mint() {
         .expect("failed to pay invoice");
 
     let _proofs = wallet
-        .wait_and_mint_quote(
-            quote.clone(),
-            SplitTarget::default(),
-            None,
-            tokio::time::Duration::from_secs(15),
-        )
+        .wait_for_payment(&quote, tokio::time::Duration::from_secs(15))
         .await
         .expect("payment");
 
