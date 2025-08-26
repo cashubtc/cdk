@@ -42,11 +42,12 @@ pub mod multi_mint_wallet;
 mod proofs;
 mod receive;
 mod send;
+#[cfg(not(target_arch = "wasm32"))]
+mod streams;
 pub mod subscription;
 mod swap;
 mod transactions;
 pub mod util;
-mod wait;
 
 #[cfg(feature = "auth")]
 pub use auth::{AuthMintConnector, AuthWallet};

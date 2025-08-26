@@ -3,7 +3,6 @@ use std::fmt::{Debug, Formatter};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 use std::{env, fs};
 
 use anyhow::{anyhow, bail, Result};
@@ -23,7 +22,7 @@ use cdk::nuts::{
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
 use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
-use cdk::{Amount, Error, Mint};
+use cdk::{Amount, Error, Mint, StreamExt};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
@@ -361,12 +360,10 @@ pub async fn fund_wallet(
     let desired_amount = Amount::from(amount);
     let quote = wallet.mint_quote(desired_amount, None).await?;
 
-    wallet
-        .wait_for_payment(&quote, Duration::from_secs(60))
-        .await?;
-
     Ok(wallet
-        .mint(&quote.id, split_target.unwrap_or_default(), None)
-        .await?
+        .proof_stream(quote, split_target.unwrap_or_default(), None)
+        .next()
+        .await
+        .expect("proofs")?
         .total_amount()?)
 }
