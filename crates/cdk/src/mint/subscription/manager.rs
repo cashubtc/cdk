@@ -107,8 +107,8 @@ impl PubSubManager {
         amount_issued: Amount,
     ) {
         if let Ok(mut event) = quote.try_into() {
-            event.amount_paid += amount_paid;
-            event.amount_issued += amount_issued;
+            event.amount_paid = amount_paid;
+            event.amount_issued = amount_issued;
 
             self.broadcast(event.into());
         } else {

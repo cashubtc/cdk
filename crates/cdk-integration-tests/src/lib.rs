@@ -24,11 +24,10 @@ use anyhow::{anyhow, bail, Result};
 use cashu::Bolt11Invoice;
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::State;
-use cdk::Wallet;
+use cdk::{StreamExt, Wallet};
 use cdk_fake_wallet::create_fake_invoice;
 use init_regtest::{get_lnd_dir, LND_RPC_ADDR};
 use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
-use tokio::time::Duration;
 
 use crate::init_regtest::get_cln_dir;
 
@@ -44,15 +43,12 @@ pub async fn fund_wallet(wallet: Arc<Wallet>, amount: Amount) {
         .await
         .expect("Could not get mint quote");
 
-    wallet
-        .wait_for_payment(&quote, Duration::from_secs(60))
-        .await
-        .expect("wait for mint failed");
-
     let _proofs = wallet
-        .mint(&quote.id, SplitTarget::default(), None)
+        .proof_stream(quote, SplitTarget::default(), None)
+        .next()
         .await
-        .expect("Could not mint");
+        .expect("proofs")
+        .expect("proofs with no error");
 }
 
 pub fn get_mint_url_from_env() -> String {

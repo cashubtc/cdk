@@ -51,15 +51,15 @@ async fn test_internal_payment() {
         .await
         .expect("failed to pay invoice");
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
+    let _proofs = wallet
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(15),
+        )
         .await
-        .unwrap();
-
-    let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await
-        .unwrap();
+        .expect("payment");
 
     assert!(wallet.total_balance().await.unwrap() == 100.into());
 
@@ -83,15 +83,15 @@ async fn test_internal_payment() {
 
     let _melted = wallet.melt(&melt.id).await.unwrap();
 
-    wallet_2
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
+    let _proofs = wallet_2
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(15),
+        )
         .await
-        .unwrap();
-
-    let _wallet_2_mint = wallet_2
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await
-        .unwrap();
+        .expect("payment");
 
     // let check_paid = match get_mint_port("0") {
     //     8085 => {
@@ -230,28 +230,32 @@ async fn test_multimint_melt() {
         .pay_invoice(quote.request.clone())
         .await
         .expect("failed to pay invoice");
-    wallet1
-        .wait_for_payment(&quote, Duration::from_secs(60))
+
+    let _proofs = wallet1
+        .wait_and_mint_quote(
+            quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(15),
+        )
         .await
-        .unwrap();
-    wallet1
-        .mint(&quote.id, SplitTarget::default(), None)
-        .await
-        .unwrap();
+        .expect("payment");
 
     let quote = wallet2.mint_quote(mint_amount, None).await.unwrap();
     ln_client
         .pay_invoice(quote.request.clone())
         .await
         .expect("failed to pay invoice");
-    wallet2
-        .wait_for_payment(&quote, Duration::from_secs(60))
+
+    let _proofs = wallet2
+        .wait_and_mint_quote(
+            quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(15),
+        )
         .await
-        .unwrap();
-    wallet2
-        .mint(&quote.id, SplitTarget::default(), None)
-        .await
-        .unwrap();
+        .expect("payment");
 
     // Get an invoice
     let invoice = ln_client.create_invoice(Some(50)).await.unwrap();
@@ -305,10 +309,10 @@ async fn test_cached_mint() {
         .await
         .expect("failed to pay invoice");
 
-    wallet
-        .wait_for_payment(&quote, Duration::from_secs(60))
+    let _proofs = wallet
+        .wait_for_payment(&quote, tokio::time::Duration::from_secs(15))
         .await
-        .unwrap();
+        .expect("payment");
 
     let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
     let http_client = HttpClient::new(get_mint_url_from_env().parse().unwrap(), None);
