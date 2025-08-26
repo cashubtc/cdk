@@ -87,13 +87,15 @@ async fn test_internal_payment() {
         .await
         .expect("failed to pay invoice");
 
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let _proofs = proof_streams
-        .next()
+    let _proofs = wallet
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(15),
+        )
         .await
-        .expect("payment")
-        .expect("no error");
+        .expect("payment");
 
     assert!(wallet.total_balance().await.unwrap() == 100.into());
 
@@ -117,13 +119,15 @@ async fn test_internal_payment() {
 
     let _melted = wallet.melt(&melt.id).await.unwrap();
 
-    let mut proof_streams = wallet_2.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-
-    let _proofs = proof_streams
-        .next()
+    let _proofs = wallet_2
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(15),
+        )
         .await
-        .expect("payment")
-        .expect("no error");
+        .expect("payment");
 
     // let check_paid = match get_mint_port("0") {
     //     8085 => {
@@ -259,13 +263,15 @@ async fn test_multimint_melt() {
         .await
         .expect("failed to pay invoice");
 
-    let mut proof_streams = wallet1.proof_stream(quote.clone(), SplitTarget::default(), None);
-
-    let _proofs = proof_streams
-        .next()
+    let _proofs = wallet1
+        .wait_and_mint_quote(
+            quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(15),
+        )
         .await
-        .expect("payment")
-        .expect("no error");
+        .expect("payment");
 
     let quote = wallet2.mint_quote(mint_amount, None).await.unwrap();
     lnd_client
@@ -273,13 +279,15 @@ async fn test_multimint_melt() {
         .await
         .expect("failed to pay invoice");
 
-    let mut proof_streams = wallet2.proof_stream(quote.clone(), SplitTarget::default(), None);
-
-    let _proofs = proof_streams
-        .next()
+    let _proofs = wallet2
+        .wait_and_mint_quote(
+            quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(15),
+        )
         .await
-        .expect("payment")
-        .expect("no error");
+        .expect("payment");
 
     // Get an invoice
     let invoice = lnd_client.create_invoice(Some(50)).await.unwrap();
