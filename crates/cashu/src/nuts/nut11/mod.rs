@@ -146,6 +146,45 @@ impl Proof {
         let witness_signatures = witness_signatures.ok_or(Error::SignaturesNotProvided)?;
 
         let mut pubkeys = spending_conditions.pubkeys.clone().unwrap_or_default();
+        // NUT-11 enforcement per spec:
+        // - If locktime has passed and refund keys are present, spend must be authorized by
+        //   refund pubkeys (n_sigs_refund-of-refund). This supersedes normal pubkey enforcement
+        //   after expiry.
+        // - If locktime has passed and no refund keys are present, proof becomes spendable
+        //   without further key checks (anyone-can-spend behavior).
+        // - Otherwise (before locktime), enforce normal multisig on the set of authorized
+        //   pubkeys: Secret.data plus optional `pubkeys` tag, requiring n_sigs unique signers.
+
+        let now = unix_time();
+
+        if let Some(locktime) = spending_conditions.locktime {
+            if now >= locktime {
+                if let Some(refund_keys) = spending_conditions.refund_keys.clone() {
+                    let needed_refund_sigs =
+                        spending_conditions.num_sigs_refund.unwrap_or(1) as usize;
+                    let mut valid_pubkeys = HashSet::new();
+
+                    // After locktime, require signatures from refund keys
+                    for s in witness_signatures.iter() {
+                        let sig = Signature::from_str(s).map_err(|_| Error::InvalidSignature)?;
+                        for v in &refund_keys {
+                            if v.verify(msg, &sig).is_ok() {
+                                valid_pubkeys.insert(v);
+                                if valid_pubkeys.len() >= needed_refund_sigs {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+
+                    // If locktime and refund keys were specified they must sign after locktime
+                    return Err(Error::SpendConditionsNotMet);
+                } else {
+                    // If only locktime is specified, consider it spendable after locktime
+                    return Ok(());
+                }
+            }
+        }
 
         if secret.kind().eq(&Kind::P2PK) {
             pubkeys.push(PublicKey::from_str(secret.secret_data().data())?);
@@ -173,34 +212,6 @@ impl Proof {
 
         if valid_sigs >= spending_conditions.num_sigs.unwrap_or(1) {
             return Ok(());
-        }
-
-        if let (Some(locktime), Some(refund_keys)) = (
-            spending_conditions.locktime,
-            spending_conditions.refund_keys,
-        ) {
-            let needed_refund_sigs = spending_conditions.num_sigs_refund.unwrap_or(1) as usize;
-
-            let mut valid_pubkeys = HashSet::new();
-
-            // If lock time has passed check if refund witness signature is valid
-            if locktime.lt(&unix_time()) {
-                for s in witness_signatures.iter() {
-                    for v in &refund_keys {
-                        let sig = Signature::from_str(s).map_err(|_| Error::InvalidSignature)?;
-
-                        if v.verify(msg, &sig).is_ok() {
-                            if !valid_pubkeys.insert(v) {
-                                return Err(Error::DuplicateSignature);
-                            }
-
-                            if valid_pubkeys.len() >= needed_refund_sigs {
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         Err(Error::SpendConditionsNotMet)
@@ -502,7 +513,7 @@ impl From<Conditions> for Vec<Vec<String>> {
             refund_keys,
             num_sigs,
             sig_flag,
-            num_sigs_refund: _,
+            num_sigs_refund,
         } = conditions;
 
         let mut tags = Vec::new();
@@ -522,6 +533,11 @@ impl From<Conditions> for Vec<Vec<String>> {
         if let Some(refund_keys) = refund_keys {
             tags.push(Tag::Refund(refund_keys).as_vec())
         }
+
+        if let Some(num_sigs_refund) = num_sigs_refund {
+            tags.push(Tag::NSigsRefund(num_sigs_refund).as_vec())
+        }
+
         tags.push(Tag::SigFlag(sig_flag).as_vec());
         tags
     }
@@ -577,13 +593,22 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
             None
         };
 
+        let num_sigs_refund = if let Some(tag) = tags.get(&TagKind::NSigsRefund) {
+            match tag {
+                Tag::NSigsRefund(num_sigs) => Some(*num_sigs),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         Ok(Conditions {
             locktime,
             pubkeys,
             refund_keys,
             num_sigs,
             sig_flag,
-            num_sigs_refund: None,
+            num_sigs_refund,
         })
     }
 }
@@ -619,7 +644,7 @@ impl fmt::Display for TagKind {
             Self::Refund => write!(f, "refund"),
             Self::Pubkeys => write!(f, "pubkeys"),
             Self::NSigsRefund => write!(f, "n_sigs_refund"),
-            Self::Custom(kind) => write!(f, "{kind}"),
+            Self::Custom(c) => write!(f, "{c}"),
         }
     }
 }
@@ -635,6 +660,7 @@ where
             "locktime" => Self::Locktime,
             "refund" => Self::Refund,
             "pubkeys" => Self::Pubkeys,
+            "n_sigs_refund" => Self::NSigsRefund,
             t => Self::Custom(t.to_owned()),
         }
     }
@@ -741,6 +767,10 @@ pub enum Tag {
     Refund(Vec<PublicKey>),
     /// Pubkeys [`Tag`]
     PubKeys(Vec<PublicKey>),
+    /// Number of Sigs refund [`Tag`]
+    NSigsRefund(u64),
+    /// Custom tag
+    Custom(String, Vec<String>),
 }
 
 impl Tag {
@@ -752,6 +782,8 @@ impl Tag {
             Self::LockTime(_) => TagKind::Locktime,
             Self::Refund(_) => TagKind::Refund,
             Self::PubKeys(_) => TagKind::Pubkeys,
+            Self::NSigsRefund(_) => TagKind::NSigsRefund,
+            Self::Custom(tag, _) => TagKind::Custom(tag.to_string()),
         }
     }
 
@@ -792,7 +824,16 @@ where
 
                 Ok(Self::PubKeys(pubkeys))
             }
-            _ => Err(Error::UnknownTag),
+            TagKind::NSigsRefund => Ok(Tag::NSigsRefund(tag[1].as_ref().parse()?)),
+            TagKind::Custom(name) => {
+                let tags = tag
+                    .iter()
+                    .skip(1)
+                    .map(|p| p.as_ref().to_string())
+                    .collect::<Vec<String>>();
+
+                Ok(Self::Custom(name, tags))
+            }
         }
     }
 }
@@ -816,6 +857,18 @@ impl From<Tag> for Vec<String> {
                 for pubkey in pubkeys {
                     tag.push(pubkey.to_string())
                 }
+                tag
+            }
+            Tag::NSigsRefund(num_sigs) => {
+                vec![TagKind::NSigsRefund.to_string(), num_sigs.to_string()]
+            }
+            Tag::Custom(name, c) => {
+                let mut tag = vec![name];
+
+                for t in c {
+                    tag.push(t);
+                }
+
                 tag
             }
         }
@@ -1358,6 +1411,61 @@ mod tests {
         let invalid_proof: Proof = serde_json::from_str(invalid_proof).unwrap();
 
         assert!(invalid_proof.verify_p2pk().is_err());
+    }
+
+    #[test]
+    fn sig_with_non_refund_keys_after_locktime() {
+        let secret_key =
+            SecretKey::from_str("99590802251e78ee1051648439eedb003dc539093a48a44e7b8f2642c909ea37")
+                .unwrap();
+
+        let signing_key_two =
+            SecretKey::from_str("0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap();
+
+        let signing_key_three =
+            SecretKey::from_str("7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f")
+                .unwrap();
+        let v_key: PublicKey = secret_key.public_key();
+        let v_key_two: PublicKey = signing_key_two.public_key();
+        let v_key_three: PublicKey = signing_key_three.public_key();
+
+        let conditions = Conditions {
+            locktime: Some(21),
+            pubkeys: Some(vec![v_key_three]),
+            refund_keys: Some(vec![v_key, v_key_two]),
+            num_sigs: None,
+            sig_flag: SigFlag::SigInputs,
+            num_sigs_refund: Some(2),
+        };
+
+        let secret: Secret = Nut10Secret::new(Kind::P2PK, v_key.to_string(), Some(conditions))
+            .try_into()
+            .unwrap();
+
+        let mut proof = Proof {
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            amount: Amount::ZERO,
+            secret,
+            c: PublicKey::from_str(
+                "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+            )
+            .unwrap(),
+            witness: Some(Witness::P2PKWitness(P2PKWitness { signatures: vec![] })),
+            dleq: None,
+        };
+
+        proof.sign_p2pk(signing_key_three.clone()).unwrap();
+
+        assert!(proof.verify_p2pk().is_err());
+
+        proof.witness = None;
+
+        proof.sign_p2pk(secret_key).unwrap();
+        assert!(proof.verify_p2pk().is_err());
+        proof.sign_p2pk(signing_key_two).unwrap();
+
+        assert!(proof.verify_p2pk().is_ok());
     }
 
     // Helper functions for melt request tests
