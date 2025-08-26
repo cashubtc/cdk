@@ -5,13 +5,12 @@
 
 use std::sync::Arc;
 
+use super::Error;
 use crate::amount::Amount;
 use crate::mint_url::MintUrl;
 use crate::nuts::{MeltOptions, SpendingConditions, Token};
 use crate::types::Melted;
 use crate::wallet::{MultiMintWallet, SendOptions};
-
-use super::Error;
 
 /// Builder for complex send operations
 pub struct SendBuilder {
@@ -76,7 +75,11 @@ impl SendBuilder {
     pub async fn send(self) -> Result<Token, Error> {
         // Try preferred mint first if specified
         if let Some(mint_url) = self.preferred_mint {
-            match self.wallet.send_from_wallet(&mint_url, self.amount, self.options.clone()).await {
+            match self
+                .wallet
+                .send_from_wallet(&mint_url, self.amount, self.options.clone())
+                .await
+            {
                 Ok(token) => return Ok(token),
                 Err(e) if !self.fallback_to_any => return Err(e),
                 Err(_) => {
@@ -150,12 +153,11 @@ impl MeltBuilder {
     pub async fn pay(self) -> Result<Melted, Error> {
         // Try preferred mint first if specified
         if let Some(mint_url) = self.preferred_mint {
-            match self.wallet.melt_from_wallet(
-                &mint_url, 
-                &self.bolt11, 
-                self.options.clone(), 
-                self.max_fee
-            ).await {
+            match self
+                .wallet
+                .melt_from_wallet(&mint_url, &self.bolt11, self.options.clone(), self.max_fee)
+                .await
+            {
                 Ok(melted) => return Ok(melted),
                 Err(e) if !self.enable_mpp => return Err(e),
                 Err(_) => {
@@ -166,7 +168,9 @@ impl MeltBuilder {
         }
 
         // Use automatic wallet selection (with MPP if enabled)
-        self.wallet.melt(&self.bolt11, self.options, self.max_fee).await
+        self.wallet
+            .melt(&self.bolt11, self.options, self.max_fee)
+            .await
     }
 }
 
@@ -232,10 +236,10 @@ impl SwapBuilder {
 pub trait MultiMintWalletBuilderExt {
     /// Create a send builder
     fn send_builder(&self, amount: Amount) -> SendBuilder;
-    
+
     /// Create a melt builder
     fn melt_builder(&self, bolt11: String) -> MeltBuilder;
-    
+
     /// Create a swap builder
     fn swap_builder(&self) -> SwapBuilder;
 }

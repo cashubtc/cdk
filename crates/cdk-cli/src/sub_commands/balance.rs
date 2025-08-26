@@ -9,14 +9,14 @@ use cdk::Amount;
 pub async fn balance(multi_mint_wallet: &MultiMintWallet) -> Result<()> {
     // Show individual mint balances
     let mint_balances = mint_balances(multi_mint_wallet, &CurrencyUnit::Sat).await?;
-    
+
     // Show total balance using the new unified interface
     let total = multi_mint_wallet.total_balance(&CurrencyUnit::Sat).await?;
     if !mint_balances.is_empty() {
         println!();
         println!("Total balance across all wallets: {} SAT", total);
     }
-    
+
     Ok(())
 }
 

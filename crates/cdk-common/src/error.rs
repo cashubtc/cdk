@@ -250,12 +250,17 @@ pub enum Error {
     // MultiMint Wallet Errors
     /// Currency unit mismatch in MultiMintWallet
     #[error("Currency unit mismatch: wallet uses {expected}, but {found} provided")]
-    MultiMintCurrencyUnitMismatch { expected: CurrencyUnit, found: CurrencyUnit },
+    MultiMintCurrencyUnitMismatch {
+        expected: CurrencyUnit,
+        found: CurrencyUnit,
+    },
     /// No prepared sends provided to MultiMintPreparedSend
     #[error("No prepared sends provided")]
     NoPreparedSends,
     /// Cross-mint sends not enabled
-    #[error("Cross-mint sends are disabled. Enable with allow_cross_mint(true) or use single mint")]
+    #[error(
+        "Cross-mint sends are disabled. Enable with allow_cross_mint(true) or use single mint"
+    )]
     CrossMintSendsDisabled,
     /// Conflicting mint preferences
     #[error("Mint {mint_url} cannot be both preferred and excluded")]
@@ -264,8 +269,14 @@ pub enum Error {
     #[error("Cannot enable cross-mint sends with max_mints set to 1")]
     InvalidMintSelectionOptions,
     /// No mint available with sufficient funds
-    #[error("No mint has sufficient balance of {amount} {unit}. Total available: {total_available}")]
-    InsufficientFundsPerMint { amount: Amount, unit: CurrencyUnit, total_available: Amount },
+    #[error(
+        "No mint has sufficient balance of {amount} {unit}. Total available: {total_available}"
+    )]
+    InsufficientFundsPerMint {
+        amount: Amount,
+        unit: CurrencyUnit,
+        total_available: Amount,
+    },
     /// Unknown mint in MultiMintWallet
     #[error("Unknown mint: {mint_url}")]
     UnknownMint { mint_url: String },

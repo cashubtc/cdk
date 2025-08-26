@@ -4,9 +4,8 @@ use anyhow::{bail, Result};
 use cdk::amount::{amount_for_offer, Amount, MSAT_IN_SAT};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MeltOptions};
-use cdk::wallet::{MultiMintWallet, MultiMintWalletBuilderExt};
 use cdk::wallet::types::WalletKey;
-use cdk::wallet::{MeltQuote, Wallet};
+use cdk::wallet::{MeltQuote, MultiMintWallet, MultiMintWalletBuilderExt, Wallet};
 use cdk::Bolt11Invoice;
 use clap::{Args, ValueEnum};
 use lightning::offers::offer::Offer;
@@ -96,7 +95,7 @@ pub async fn pay(
     sub_command_args: &MeltSubCommand,
 ) -> Result<()> {
     let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
-    
+
     // Check total balance across all wallets
     let total_balance = multi_mint_wallet.total_balance(&unit).await?;
     if total_balance == Amount::ZERO {
@@ -110,7 +109,7 @@ pub async fn pay(
         }
 
         let bolt11 = get_user_input("Enter bolt11 invoice request")?;
-        
+
         // Use the new unified melt function with MPP support
         match multi_mint_wallet.melt(&bolt11, &unit, None, None).await {
             Ok(melted) => {
@@ -142,14 +141,15 @@ pub async fn pay(
                 // Use the new unified interface
                 let melted = if let Some(mint_url) = &sub_command_args.mint_url {
                     // User specified a mint
-                    let wallet_key = WalletKey::new(
-                        MintUrl::from_str(mint_url)?,
-                        unit.clone(),
-                    );
-                    multi_mint_wallet.melt_from_wallet(&wallet_key, &bolt11_str, options, None).await?
+                    let wallet_key = WalletKey::new(MintUrl::from_str(mint_url)?, unit.clone());
+                    multi_mint_wallet
+                        .melt_from_wallet(&wallet_key, &bolt11_str, options, None)
+                        .await?
                 } else {
                     // Let the wallet automatically select the best mint
-                    multi_mint_wallet.melt(&bolt11_str, &unit, options, None).await?
+                    multi_mint_wallet
+                        .melt(&bolt11_str, &unit, options, None)
+                        .await?
                 };
 
                 println!("Payment successful: {:?}", melted);

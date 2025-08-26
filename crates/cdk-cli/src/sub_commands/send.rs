@@ -62,7 +62,11 @@ pub async fn send(
     // Check total balance across all wallets for this unit
     let total_balance = multi_mint_wallet.total_balance(&unit).await?;
     if total_balance < token_amount {
-        return Err(anyhow!("Insufficient funds. Total balance: {}, Required: {}", total_balance, token_amount));
+        return Err(anyhow!(
+            "Insufficient funds. Total balance: {}, Required: {}",
+            total_balance,
+            token_amount
+        ));
     }
 
     let conditions = match (&sub_command_args.preimage, &sub_command_args.hash) {
@@ -205,10 +209,14 @@ pub async fn send(
             cdk::mint_url::MintUrl::from_str(mint_url)?,
             unit.clone(),
         );
-        multi_mint_wallet.send_from_wallet(&wallet_key, token_amount, send_options).await?
+        multi_mint_wallet
+            .send_from_wallet(&wallet_key, token_amount, send_options)
+            .await?
     } else {
         // Let the wallet automatically select the best mint
-        multi_mint_wallet.send(token_amount, &unit, send_options).await?
+        multi_mint_wallet
+            .send(token_amount, &unit, send_options)
+            .await?
     };
 
     match sub_command_args.v3 {
