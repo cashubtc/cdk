@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use axum::Router;
 #[cfg(feature = "fakewallet")]
 use bip39::rand::{thread_rng, Rng};
+use bip39::Mnemonic;
 use cdk::cdk_payment::MintPayment;
 use cdk::nuts::CurrencyUnit;
 #[cfg(any(
@@ -192,7 +193,7 @@ impl LnBackendSetup for config::LdkNode {
     async fn setup(
         &self,
         _routers: &mut Vec<Router>,
-        _settings: &Settings,
+        settings: &Settings,
         _unit: CurrencyUnit,
         runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
@@ -287,6 +288,7 @@ impl LnBackendSetup for config::LdkNode {
         // We need to get the actual socket address struct from ldk_node
         // For now, let's construct it manually based on the cdk-ldk-node implementation
         let listen_address = vec![socket_addr.into()];
+        let mem: Mnemonic = settings.clone().info.mnemonic.unwrap().parse().unwrap();
 
         let mut ldk_node = cdk_ldk_node::CdkLdkNode::new(
             network,
@@ -296,6 +298,7 @@ impl LnBackendSetup for config::LdkNode {
             fee_reserve,
             listen_address,
             runtime,
+            Some(mem),
         )?;
 
         // Configure webserver address if specified
