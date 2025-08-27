@@ -55,6 +55,71 @@ pub enum Error {
     NotImplemented,
 }
 
+/// Mint Info CairoProverConfig field
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CairoProverConfig {
+    /// Cairo Prover version
+    pub version: String,
+}
+
+/// Mint Info optional features bootloader field
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BootloaderFeature {
+    /// Is bootloader supported
+    pub supported: bool,
+    /// Bootloader version
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Boastloader hash
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+}
+
+/// Mint Info optional features
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct NutXXOptionalFeatures {
+    /// Bootloader feature
+    pub bootloader: BootloaderFeature,
+}
+impl Default for BootloaderFeature {
+    /// Default bootloader feature is unsupported with no version or hash
+    fn default() -> Self {
+        Self {
+            supported: false,
+            version: None,
+            hash: None,
+        }
+    }
+}
+
+/// Mint Info NUT-XX settings
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NutXXSettings {
+    /// Is NUT-XX supported
+    pub supported: bool,
+    /// Optional features
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optional_features: Option<NutXXOptionalFeatures>,
+    /// Cairo Prover configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cairo_prover_config: Option<CairoProverConfig>,
+}
+
+impl Default for NutXXSettings {
+    /// Default NUT-XX settings
+    fn default() -> Self {
+        Self {
+            // NUT-XX advertised by default unless explicitly disabled in config
+            supported: true,
+            // Show bootloader as present but disabled by default
+            optional_features: Some(NutXXOptionalFeatures {
+                bootloader: BootloaderFeature::default(),
+            }),
+            cairo_prover_config: None,
+        }
+    }
+}
+
 /// Cairo spending conditions
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Conditions {
@@ -108,6 +173,10 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
 pub struct CairoWitness {
     /// The serialized .json Cairo proof
     pub cairo_proof_json: String,
+    /// The preprocessed trace variant to use (Canonical or CanonicalWithoutPedersen)
+    pub with_pedersen: bool,
+    /// Whether the proof uses a bootloader
+    pub with_bootloader: bool,
 }
 
 // TODO: won't be needed once we update to the latest version of stwo_cairo_prover
@@ -123,7 +192,7 @@ fn secure_pcs_config() -> PcsConfig {
 }
 
 /// Hash an array of Felts in little endian format using Blake2s
-fn hash_array_bytes(bytecode: &[[u8; 32]]) -> [u8; 32] {
+pub fn hash_array_bytes(bytecode: &[[u8; 32]]) -> [u8; 32] {
     let mut hasher = Blake2sHasher::default();
     for felt in bytecode {
         for byte in felt.iter() {
@@ -168,6 +237,15 @@ impl Proof {
             Err(e) => return Err(Error::Serde(e)),
         };
 
+        let preprocessed_trace = match cairo_witness.with_pedersen {
+            true => PreProcessedTraceVariant::Canonical,
+            false => PreProcessedTraceVariant::CanonicalWithoutPedersen,
+        };
+
+        if cairo_witness.with_bootloader {
+            return Err(Error::NotImplemented); // TODO: implement bootloader support (optional feature)
+        }
+
         let program_hash_condition: [u8; 32] = hex::decode(secret.secret_data().data())?
             .as_slice()
             .try_into()?;
@@ -198,7 +276,6 @@ impl Proof {
             }
         }
 
-        let preprocessed_trace = PreProcessedTraceVariant::CanonicalWithoutPedersen; // TODO: give option
         let result = verify_cairo::<Blake2sMerkleChannel>(
             cairo_proof,
             secure_pcs_config(),
@@ -210,10 +287,10 @@ impl Proof {
         }
     }
 
-    /// Add cairo proof
+    /// Add cairo witness
     #[inline]
-    pub fn add_cairo_proof(&mut self, cairo_proof_json: String) {
-        self.witness = Some(Witness::CairoWitness(CairoWitness { cairo_proof_json }))
+    pub fn add_cairo_witness(&mut self, cairo_witness: CairoWitness) {
+        self.witness = Some(Witness::CairoWitness(cairo_witness));
     }
 }
 
@@ -229,14 +306,18 @@ mod tests {
     use crate::secret::Secret;
     use crate::{Amount, Id, Kind, Nut10Secret, SecretKey};
 
+    /// Cairo Executable
     #[derive(Deserialize)]
     struct Executable {
+        /// Cairo program
         program: Program,
     }
 
+    /// Cairo Program
     #[derive(Deserialize)]
     struct Program {
         #[serde(deserialize_with = "deserialize_felt_vec")]
+        /// Cairo program bytecode
         bytecode: Vec<Felt>,
     }
 
@@ -264,6 +345,7 @@ mod tests {
             .collect()
     }
 
+    /// Hash an array of Felts in little endian format using Blake2s
     fn hash_array_felt(bytecode: &[Felt]) -> [u8; 32] {
         let mut hasher = Blake2sHasher::default();
         for felt in bytecode {
@@ -308,11 +390,15 @@ mod tests {
 
         let cairo_proof_is_prime_7 = include_str!("./test/is_prime_proof_7.json").to_string();
         let witness_is_prime_7 = CairoWitness {
-            cairo_proof_json: cairo_proof_is_prime_7,
+            cairo_proof_json: cairo_proof_is_prime_7.clone(),
+            with_pedersen: false,
+            with_bootloader: false,
         };
         let cairo_proof_is_prime_9 = include_str!("./test/is_prime_proof_9.json").to_string();
         let witness_is_prime_9 = CairoWitness {
-            cairo_proof_json: cairo_proof_is_prime_9,
+            cairo_proof_json: cairo_proof_is_prime_9.clone(),
+            with_pedersen: false,
+            with_bootloader: false,
         };
 
         // Proof that is_prime(7) == true
@@ -338,6 +424,16 @@ mod tests {
         // If we change the output condition to true, the verification should again fail
         proof.secret = secret_is_prime_true.clone();
         assert!(proof.verify_cairo().is_err());
+
+        // If we change the witness back to the computation of is_prime(7) and add the bootloader flag,
+        // it should fail with a NotImplemented error
+        let witness_is_prime_7_with_bootloader = CairoWitness {
+            cairo_proof_json: cairo_proof_is_prime_7.clone(),
+            with_pedersen: false,
+            with_bootloader: true,
+        };
+        proof.witness = Some(Witness::CairoWitness(witness_is_prime_7_with_bootloader));
+        assert!(matches!(proof.verify_cairo(), Err(Error::NotImplemented)));
     }
 
     #[test]

@@ -93,3 +93,18 @@ reserve_fee_min = 4
 # enabled_check_melt_quote=true
 # enabled_restore=true
 # enabled_check_proof_state=true
+
+
+[nutxx]
+# If omitted or true, NUT-XX is advertised. Set to false to disable.
+# enabled = true
+
+[nutxx.cairo_prover_config]
+# Version of the `stwo_cairo_prover` dependency used
+version = "0.1.1"
+
+[nutxx.optional_features.bootloader]
+# Advertise bootloader feature (defaults to false if omitted)
+# supported = false
+# version = "0.14.0"
+# hash = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"

@@ -255,9 +255,9 @@ pub enum Error {
     /// Transaction not found
     #[error("Transaction not found")]
     TransactionNotFound,
-    /// Cairo proof not provided
-    #[error("Cairo proof not provided")]
-    CairoProofNotProvided,
+    /// Cairo witness not provided
+    #[error("Cairo witness not provided")]
+    CairoWitnessNotProvided,
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),
