@@ -235,33 +235,36 @@ impl CurrencyUnit {
             Self::Usd => Some(2),
             Self::Eur => Some(3),
             Self::Auth => Some(4),
-            Self::Custom(s) => {
-                // 1) NFC normalization: composes equivalent Unicode sequences (e.g., "e" + U+0301) into a single
-                //    canonical code point (e.g., "é") so visually/equivalently identical strings hash the same
-                // 2) lowercase: avoids case-induced divergence ("USD" vs "usd")
-                // 3) trim: removes accidental leading/trailing whitespace (" usd " vs "usd")
-                let norm = s.nfc().collect::<String>().to_lowercase();
-                let norm = norm.trim();
-
-                // use SHA-256 so that the same normalized string always yields the same digest
-                let digest = Sha256::hash(norm.as_bytes());
-
-                // take 4 bytes in a fixed endianness to get a u32
-                let x = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) as u64;
-
-                // map x into the inclusive interval [RESERVED, u32::MAX].
-                // compute the size of that interval:
-                //   size = (u32::MAX - RESERVED + 1)
-                // use u64 math to avoid overflow.
-                let interval_size = (u32::MAX as u64) - (RESERVED as u64) + 1;
-
-                // Fold x uniformly into [0, interval_size - 1].
-                let r = (x % interval_size) as u32;
-
-                // shift into [RESERVED, u32::MAX], guaranteeing no overlap with reserved band [0, RESERVED-1].
-                Some(RESERVED + r)
-            }
+            Self::Custom(s) => Self::custom_derivation_index(s, RESERVED),
         }
+    }
+
+    /// Generate deterministic derivation index for custom currency units
+    fn custom_derivation_index(s: &str, reserved: u32) -> Option<u32> {
+        // 1) NFC normalization: composes equivalent Unicode sequences (e.g., "e" + U+0301) into a single
+        //    canonical code point (e.g., "é") so visually/equivalently identical strings hash the same
+        // 2) lowercase: avoids case-induced divergence ("USD" vs "usd")
+        // 3) trim: removes accidental leading/trailing whitespace (" usd " vs "usd")
+        let norm = s.nfc().collect::<String>().to_lowercase();
+        let norm = norm.trim();
+
+        // use SHA-256 so that the same normalized string always yields the same digest
+        let digest = Sha256::hash(norm.as_bytes());
+
+        // take 4 bytes in a fixed endianness to get a u32
+        let x = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) as u64;
+
+        // map x into the inclusive interval [RESERVED, u32::MAX].
+        // compute the size of that interval:
+        //   size = (u32::MAX - RESERVED + 1)
+        // use u64 math to avoid overflow.
+        let interval_size = (u32::MAX as u64) - (reserved as u64) + 1;
+
+        // Fold x uniformly into [0, interval_size - 1].
+        let r = (x % interval_size) as u32;
+
+        // shift into [RESERVED, u32::MAX], guaranteeing no overlap with reserved band [0, RESERVED-1].
+        Some(reserved + r)
     }
 }
 
