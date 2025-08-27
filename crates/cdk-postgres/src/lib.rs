@@ -10,7 +10,6 @@ use cdk_sql_common::pool::{DatabaseConfig, DatabasePool};
 use cdk_sql_common::stmt::{Column, Statement};
 use cdk_sql_common::{SQLMintDatabase, SQLWalletDatabase};
 use db::{pg_batch, pg_execute, pg_fetch_all, pg_fetch_one, pg_pluck};
-use native_tls;
 use native_tls::TlsConnector;
 use postgres_native_tls::MakeTlsConnector;
 use tokio::sync::{Mutex, Notify};
