@@ -15,6 +15,7 @@ default = ["mint", "wallet", "auth"]
 wallet = ["dep:futures", "dep:reqwest", "cdk-common/wallet", "dep:rustls"]
 mint = ["dep:futures", "dep:reqwest", "cdk-common/mint", "cdk-signatory"]
 auth = ["dep:jsonwebtoken", "cdk-common/auth", "cdk-common/auth"]
+bip353 = ["dep:trust-dns-resolver"]
 # We do not commit to a MSRV with swagger enabled
 swagger = ["mint", "dep:utoipa", "cdk-common/swagger"]
 bench = []
@@ -42,11 +43,14 @@ url.workspace = true
 utoipa = { workspace = true, optional = true }
 uuid.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
+trust-dns-resolver = { version = "0.23.2", optional = true }
 cdk-prometheus = {workspace = true, optional = true}
 # -Z minimal-versions
 sync_wrapper = "0.1.2"
 bech32 = "0.9.1"
 arc-swap = "1.7.1"
+zeroize = "1"
+tokio-util.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = [
@@ -95,6 +99,17 @@ required-features = ["wallet"]
 name = "auth_wallet"
 required-features = ["wallet", "auth"]
 
+[[example]]
+name = "bip353"
+required-features = ["wallet", "bip353"]
+
+[[example]]
+name = "mint-token-bolt12-with-stream"
+required-features = ["wallet"]
+[[example]]
+name = "mint-token-bolt12"
+required-features = ["wallet"]
+
 [dev-dependencies]
 rand.workspace = true
 cdk-sqlite.workspace = true
@@ -102,6 +117,7 @@ bip39.workspace = true
 tracing-subscriber.workspace = true
 criterion = "0.6.0"
 reqwest = { workspace = true }
+anyhow.workspace = true
 
 
 [[bench]]

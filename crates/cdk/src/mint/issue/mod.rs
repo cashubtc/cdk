@@ -256,14 +256,10 @@ impl Mint {
 
                     let description = bolt12_request.description;
 
-                    let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
-
-                    let expiry = unix_time() + mint_ttl;
-
                     let bolt12_options = Bolt12IncomingPaymentOptions {
                         description,
                         amount,
-                        unix_expiry: Some(expiry),
+                        unix_expiry: None,
                     };
 
                     let incoming_options = IncomingPaymentOptions::Bolt12(Box::new(bolt12_options));
@@ -480,53 +476,13 @@ impl Mint {
         METRICS.inc_in_flight_requests("pay_mint_quote");
 
         let result = async {
-            tracing::debug!(
-                "Received payment notification of {} for mint quote {} with payment id {}",
-                wait_payment_response.payment_amount,
-                mint_quote.id,
-                wait_payment_response.payment_id.to_string()
-            );
-
-            let quote_state = mint_quote.state();
-            if !mint_quote
-                .payment_ids()
-                .contains(&&wait_payment_response.payment_id)
-            {
-                if mint_quote.payment_method == PaymentMethod::Bolt11
-                    && (quote_state == MintQuoteState::Issued
-                        || quote_state == MintQuoteState::Paid)
-                {
-                    tracing::info!("Received payment notification for already seen payment.");
-                } else {
-                    tx.increment_mint_quote_amount_paid(
-                        &mint_quote.id,
-                        wait_payment_response.payment_amount,
-                        wait_payment_response.payment_id,
-                    )
-                    .await?;
-
-                    match mint_quote.payment_method {
-                        PaymentMethod::Bolt11 => {
-                            self.pubsub_manager
-                                .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Paid);
-                        }
-                        PaymentMethod::Bolt12 => {
-                            self.pubsub_manager.mint_quote_bolt12_status(
-                                mint_quote.clone(),
-                                wait_payment_response.payment_amount,
-                                Amount::ZERO,
-                            );
-                        }
-                        _ => {
-                            // We don't send ws updates for unknown methods
-                        }
-                    }
-                }
-            } else {
-                tracing::info!("Received payment notification for already seen payment.");
-            }
-
-            Ok(())
+            Self::handle_mint_quote_payment(
+                tx,
+                mint_quote,
+                wait_payment_response,
+                &self.pubsub_manager,
+            )
+            .await
         }
         .await;
 
@@ -564,7 +520,9 @@ impl Mint {
                 .await?
                 .ok_or(Error::UnknownQuote)?;
 
-            self.check_mint_quote_paid(&mut quote).await?;
+            if quote.payment_method == PaymentMethod::Bolt11 {
+                self.check_mint_quote_paid(&mut quote).await?;
+            }
 
             quote.try_into()
         }
@@ -612,8 +570,9 @@ impl Mint {
                 .await?
                 .ok_or(Error::UnknownQuote)?;
 
-            self.check_mint_quote_paid(&mut mint_quote).await?;
-
+            if mint_quote.payment_method == PaymentMethod::Bolt11 {
+                self.check_mint_quote_paid(&mut mint_quote).await?;
+            }
         // get the blind signatures before having starting the db transaction, if there are any
         // rollbacks this blind_signatures will be lost, and the signature is stateless. It is not a
         // good idea to call an external service (which is really a trait, it could be anything
@@ -622,53 +581,53 @@ impl Mint {
 
         let mut tx = self.localstore.begin_transaction().await?;
 
-            let mint_quote = tx
-                .get_mint_quote(&mint_request.quote)
-                .await?
-                .ok_or(Error::UnknownQuote)?;
+        let mint_quote = tx
+            .get_mint_quote(&mint_request.quote)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
 
-            match mint_quote.state() {
-                MintQuoteState::Unpaid => {
-                    return Err(Error::UnpaidQuote);
-                }
-                MintQuoteState::Issued => {
-                    if mint_quote.payment_method == PaymentMethod::Bolt12
-                        && mint_quote.amount_paid() > mint_quote.amount_issued()
-                    {
-                        tracing::warn!("Mint quote should state should have been set to issued upon new payment. Something isn't right. Stopping mint");
-                    }
-
-                    return Err(Error::IssuedQuote);
-                }
-                MintQuoteState::Paid => (),
+        match mint_quote.state() {
+            MintQuoteState::Unpaid => {
+                return Err(Error::UnpaidQuote);
             }
+            MintQuoteState::Issued => {
+                if mint_quote.payment_method == PaymentMethod::Bolt12
+                    && mint_quote.amount_paid() > mint_quote.amount_issued()
+                {
+                    tracing::warn!("Mint quote should state should have been set to issued upon new payment. Something isn't right. Stopping mint");
+                }
 
-            if mint_quote.payment_method == PaymentMethod::Bolt12 && mint_quote.pubkey.is_none() {
-                tracing::warn!("Bolt12 mint quote created without pubkey");
-                return Err(Error::SignatureMissingOrInvalid);
+                return Err(Error::IssuedQuote);
             }
+            MintQuoteState::Paid => (),
+        }
 
-            let mint_amount = match mint_quote.payment_method {
-                PaymentMethod::Bolt11 => mint_quote.amount.ok_or(Error::AmountUndefined)?,
-                PaymentMethod::Bolt12 => {
-                    if mint_quote.amount_issued() > mint_quote.amount_paid() {
-                        tracing::error!(
+        if mint_quote.payment_method == PaymentMethod::Bolt12 && mint_quote.pubkey.is_none() {
+            tracing::warn!("Bolt12 mint quote created without pubkey");
+            return Err(Error::SignatureMissingOrInvalid);
+        }
+
+        let mint_amount = match mint_quote.payment_method {
+            PaymentMethod::Bolt11 => mint_quote.amount.ok_or(Error::AmountUndefined)?,
+            PaymentMethod::Bolt12 => {
+                if mint_quote.amount_issued() > mint_quote.amount_paid() {
+                    tracing::error!(
                             "Quote state should not be issued if issued {} is > paid {}.",
                             mint_quote.amount_issued(),
                             mint_quote.amount_paid()
                         );
-                        return Err(Error::UnpaidQuote);
-                    }
-                    mint_quote.amount_paid() - mint_quote.amount_issued()
+                    return Err(Error::UnpaidQuote);
                 }
-                _ => return Err(Error::UnsupportedPaymentMethod),
-            };
-
-            // If the there is a public key provoided in mint quote request
-            // verify the signature is provided for the mint request
-            if let Some(pubkey) = mint_quote.pubkey {
-                mint_request.verify_signature(pubkey)?;
+                mint_quote.amount_paid() - mint_quote.amount_issued()
             }
+            _ => return Err(Error::UnsupportedPaymentMethod),
+        };
+
+        // If the there is a public key provoided in mint quote request
+        // verify the signature is provided for the mint request
+        if let Some(pubkey) = mint_quote.pubkey {
+            mint_request.verify_signature(pubkey)?;
+        }
 
         let Verification {
             amount: outputs_amount,
@@ -702,8 +661,8 @@ impl Mint {
             }
         }
 
-            let unit = unit.ok_or(Error::UnsupportedUnit).unwrap();
-            ensure_cdk!(unit == mint_quote.unit, Error::UnsupportedUnit);
+        let unit = unit.ok_or(Error::UnsupportedUnit).unwrap();
+        ensure_cdk!(unit == mint_quote.unit, Error::UnsupportedUnit);
 
         tx.add_blind_signatures(
             &mint_request
@@ -714,35 +673,24 @@ impl Mint {
             &blind_signatures,
             Some(mint_request.quote),
         )
-        .await?;
+            .await?;
 
-            tx.increment_mint_quote_amount_issued(&mint_request.quote, mint_request.total_amount()?)
-                .await?;
+        let amount_issued = mint_request.total_amount()?;
 
-            tx.commit().await?;
+        let total_issued = tx
+            .increment_mint_quote_amount_issued(&mint_request.quote, amount_issued)
+            .await?;
 
-        match mint_quote.payment_method {
-            PaymentMethod::Bolt11 => {
-                self.pubsub_manager
-                    .mint_quote_bolt11_status(mint_quote.clone(), MintQuoteState::Issued);
-            }
-            PaymentMethod::Bolt12 => {
-                self.pubsub_manager.mint_quote_bolt12_status(
-                    mint_quote.clone(),
-                    Amount::ZERO,
-                    mint_request.total_amount()?,
-                );
-            }
-            PaymentMethod::Custom(_) => {
-                // We don't send ws updates for unknown methods
-            }
-        }
+        tx.commit().await?;
 
-            Ok(MintResponse {
-                signatures: blind_signatures,
-            })
-        }
-            .await;
+        self.pubsub_manager
+            .mint_quote_issue(&mint_quote, total_issued);
+
+        Ok(MintResponse {
+            signatures: blind_signatures,
+        })
+    }
+    .await;
 
         #[cfg(feature = "prometheus")]
         {

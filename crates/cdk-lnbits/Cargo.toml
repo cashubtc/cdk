@@ -13,7 +13,6 @@ readme = "README.md"
 [dependencies]
 async-trait.workspace = true
 anyhow.workspace = true
-axum.workspace = true
 bitcoin.workspace = true
 cdk-common = { workspace = true, features = ["mint"] }
 futures.workspace = true
@@ -21,5 +20,6 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
-lnbits-rs = "0.6.0"
+lnbits-rs = "0.8.0"
 serde_json.workspace = true
+rustls.workspace = true

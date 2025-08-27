@@ -24,6 +24,7 @@ use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
+    feature = "ldk-node",
     feature = "fakewallet",
     feature = "grpc-processor"
 ))]
@@ -33,6 +34,7 @@ use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path}
     feature = "cln",
     feature = "lnbits",
     feature = "lnd",
+    feature = "ldk-node",
     feature = "fakewallet"
 ))]
 use cdk::nuts::CurrencyUnit;
@@ -41,6 +43,7 @@ use cdk::nuts::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
+#[cfg(feature = "postgres")]
 use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus;
@@ -50,8 +53,9 @@ use cdk_prometheus::metrics;
 use cdk_prometheus::prometheus::proto::Metric;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
-#[cfg(feature = "auth")]
+#[cfg(all(feature = "auth", feature = "sqlite"))]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
+#[cfg(feature = "sqlite")]
 use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
 use config::{AuthType, DatabaseEngine, LnBackend};
@@ -113,12 +117,13 @@ pub fn setup_tracing(
     logging_config: &config::LoggingConfig,
 ) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
     let default_filter = "debug";
-    let hyper_filter = "hyper=warn";
+    let hyper_filter = "hyper=warn,rustls=warn,reqwest=warn";
     let h2_filter = "h2=warn";
     let tower_http = "tower_http=warn";
+    let rustls = "rustls=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{default_filter},{hyper_filter},{h2_filter},{tower_http}"
+        "{default_filter},{hyper_filter},{h2_filter},{tower_http},{rustls}"
     ));
 
     use config::LoggingOutput;
@@ -253,19 +258,21 @@ pub fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<co
 
 async fn setup_database(
     settings: &config::Settings,
-    work_dir: &Path,
-    db_password: Option<String>,
+    _work_dir: &Path,
+    _db_password: Option<String>,
 ) -> Result<(
     Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
 )> {
     match settings.database.engine {
+        #[cfg(feature = "sqlite")]
         DatabaseEngine::Sqlite => {
-            let db = setup_sqlite_database(work_dir, db_password).await?;
+            let db = setup_sqlite_database(_work_dir, _db_password).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
             Ok((localstore, keystore))
         }
+        #[cfg(feature = "postgres")]
         DatabaseEngine::Postgres => {
             // Get the PostgreSQL configuration, ensuring it exists
             let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
@@ -276,16 +283,33 @@ async fn setup_database(
                 bail!("PostgreSQL URL is required. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
             }
 
+            #[cfg(feature = "postgres")]
             let pg_db = Arc::new(MintPgDatabase::new(pg_config.url.as_str()).await?);
+            #[cfg(feature = "postgres")]
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
                 pg_db.clone();
-            let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> =
-                pg_db;
-            Ok((localstore, keystore))
+            #[cfg(feature = "postgres")]
+            let keystore: Arc<
+                dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync,
+            > = pg_db;
+            #[cfg(feature = "postgres")]
+            return Ok((localstore, keystore));
+
+            #[cfg(not(feature = "postgres"))]
+            bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
+        }
+        #[cfg(not(feature = "sqlite"))]
+        DatabaseEngine::Sqlite => {
+            bail!("SQLite support not compiled in. Enable the 'sqlite' feature to use SQLite database.")
+        }
+        #[cfg(not(feature = "postgres"))]
+        DatabaseEngine::Postgres => {
+            bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
         }
     }
 }
 
+#[cfg(feature = "sqlite")]
 async fn setup_sqlite_database(
     work_dir: &Path,
     _password: Option<String>,
@@ -310,6 +334,8 @@ async fn setup_sqlite_database(
 async fn configure_mint_builder(
     settings: &config::Settings,
     mint_builder: MintBuilder,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    work_dir: &Path,
 ) -> Result<(MintBuilder, Vec<Router>)> {
     let mut ln_routers = vec![];
 
@@ -317,7 +343,10 @@ async fn configure_mint_builder(
     let mint_builder = configure_basic_info(settings, mint_builder);
 
     // Configure lightning backend
-    let mint_builder = configure_lightning_backend(settings, mint_builder, &mut ln_routers).await?;
+    let mint_builder =
+        configure_lightning_backend(settings, mint_builder, &mut ln_routers, runtime, work_dir)
+            .await?;
+
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
 
@@ -379,6 +408,8 @@ async fn configure_lightning_backend(
     settings: &config::Settings,
     mut mint_builder: MintBuilder,
     ln_routers: &mut Vec<Router>,
+    _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    work_dir: &Path,
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
         mint_min: settings.ln.min_mint,
@@ -397,7 +428,7 @@ async fn configure_lightning_backend(
                 .clone()
                 .expect("Config checked at load that cln is some");
             let cln = cln_settings
-                .setup(ln_routers, settings, CurrencyUnit::Msat)
+                .setup(ln_routers, settings, CurrencyUnit::Msat, None, work_dir)
                 .await?;
             #[cfg(feature = "prometheus")]
             let cln = MetricsMintPayment::new(cln);
@@ -415,7 +446,7 @@ async fn configure_lightning_backend(
         LnBackend::LNbits => {
             let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
             let lnbits = lnbits_settings
-                .setup(ln_routers, settings, CurrencyUnit::Sat)
+                .setup(ln_routers, settings, CurrencyUnit::Sat, None, work_dir)
                 .await?;
             #[cfg(feature = "prometheus")]
             let lnbits = MetricsMintPayment::new(lnbits);
@@ -433,7 +464,7 @@ async fn configure_lightning_backend(
         LnBackend::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
             let lnd = lnd_settings
-                .setup(ln_routers, settings, CurrencyUnit::Msat)
+                .setup(ln_routers, settings, CurrencyUnit::Msat, None, work_dir)
                 .await?;
             #[cfg(feature = "prometheus")]
             let lnd = MetricsMintPayment::new(lnd);
@@ -454,7 +485,7 @@ async fn configure_lightning_backend(
 
             for unit in fake_wallet.clone().supported_units {
                 let fake = fake_wallet
-                    .setup(ln_routers, settings, unit.clone())
+                    .setup(ln_routers, settings, unit.clone(), None, work_dir)
                     .await?;
                 #[cfg(feature = "prometheus")]
                 let fake = MetricsMintPayment::new(fake);
@@ -485,7 +516,7 @@ async fn configure_lightning_backend(
             for unit in grpc_processor.clone().supported_units {
                 tracing::debug!("Adding unit: {:?}", unit);
                 let processor = grpc_processor
-                    .setup(ln_routers, settings, unit.clone())
+                    .setup(ln_routers, settings, unit.clone(), None, work_dir)
                     .await?;
                 #[cfg(feature = "prometheus")]
                 let processor = MetricsMintPayment::new(processor);
@@ -499,6 +530,24 @@ async fn configure_lightning_backend(
                 )
                 .await?;
             }
+        }
+        #[cfg(feature = "ldk-node")]
+        LnBackend::LdkNode => {
+            let ldk_node_settings = settings.clone().ldk_node.expect("Checked at config load");
+            tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
+
+            let ldk_node = ldk_node_settings
+                .setup(ln_routers, settings, CurrencyUnit::Sat, _runtime, work_dir)
+                .await?;
+
+            mint_builder = configure_backend_for_unit(
+                settings,
+                mint_builder,
+                CurrencyUnit::Sat,
+                mint_melt_limits,
+                Arc::new(ldk_node),
+            )
+            .await?;
         }
         LnBackend::None => {
             tracing::error!(
@@ -548,8 +597,17 @@ async fn configure_backend_for_unit(
         mint_builder.set_unit_fee(&unit, input_fee)?;
     }
 
-    let nut17_supported = SupportedMethods::default_bolt11(unit);
-    mint_builder = mint_builder.with_supported_websockets(nut17_supported);
+    #[cfg(any(
+        feature = "cln",
+        feature = "lnbits",
+        feature = "lnd",
+        feature = "fakewallet",
+        feature = "grpc-processor"
+    ))]
+    {
+        let nut17_supported = SupportedMethods::default_bolt11(unit);
+        mint_builder = mint_builder.with_supported_websockets(nut17_supported);
+    }
 
     Ok(mint_builder)
 }
@@ -569,7 +627,7 @@ fn configure_cache(settings: &config::Settings, mint_builder: MintBuilder) -> Mi
 #[cfg(feature = "auth")]
 async fn setup_authentication(
     settings: &config::Settings,
-    work_dir: &Path,
+    _work_dir: &Path,
     mut mint_builder: MintBuilder,
     _password: Option<String>,
 ) -> Result<MintBuilder> {
@@ -578,29 +636,53 @@ async fn setup_authentication(
         let auth_localstore: Arc<
             dyn cdk_database::MintAuthDatabase<Err = cdk_database::Error> + Send + Sync,
         > = match settings.database.engine {
+            #[cfg(feature = "sqlite")]
             DatabaseEngine::Sqlite => {
-                let sql_db_path = work_dir.join("cdk-mintd-auth.sqlite");
-                #[cfg(not(feature = "sqlcipher"))]
-                let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
-                #[cfg(feature = "sqlcipher")]
-                let sqlite_db = {
-                    // Get password from command line arguments for sqlcipher
-                    MintSqliteAuthDatabase::new((sql_db_path, _password.unwrap())).await?
-                };
+                #[cfg(feature = "sqlite")]
+                {
+                    let sql_db_path = _work_dir.join("cdk-mintd-auth.sqlite");
+                    #[cfg(not(feature = "sqlcipher"))]
+                    let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
+                    #[cfg(feature = "sqlcipher")]
+                    let sqlite_db = {
+                        // Get password from command line arguments for sqlcipher
+                        MintSqliteAuthDatabase::new((sql_db_path, _password.unwrap())).await?
+                    };
 
-                Arc::new(sqlite_db)
-            }
-            DatabaseEngine::Postgres => {
-                // Get the PostgreSQL configuration, ensuring it exists
-                let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
-                    anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
-                })?;
-
-                if pg_config.url.is_empty() {
-                    bail!("PostgreSQL URL is required for auth database. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
+                    Arc::new(sqlite_db)
                 }
+                #[cfg(not(feature = "sqlite"))]
+                {
+                    bail!("SQLite support not compiled in. Enable the 'sqlite' feature to use SQLite database.")
+                }
+            }
+            #[cfg(feature = "postgres")]
+            DatabaseEngine::Postgres => {
+                #[cfg(feature = "postgres")]
+                {
+                    // Get the PostgreSQL configuration, ensuring it exists
+                    let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
+                        anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
+                    })?;
 
-                Arc::new(MintPgAuthDatabase::new(pg_config.url.as_str()).await?)
+                    if pg_config.url.is_empty() {
+                        bail!("PostgreSQL URL is required for auth database. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
+                    }
+
+                    Arc::new(MintPgAuthDatabase::new(pg_config.url.as_str()).await?)
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
+                }
+            }
+            #[cfg(not(feature = "sqlite"))]
+            DatabaseEngine::Sqlite => {
+                bail!("SQLite support not compiled in. Enable the 'sqlite' feature to use SQLite database.")
+            }
+            #[cfg(not(feature = "postgres"))]
+            DatabaseEngine::Postgres => {
+                bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
             }
         };
 
@@ -941,6 +1023,7 @@ pub async fn run_mintd(
     settings: &config::Settings,
     db_password: Option<String>,
     enable_logging: bool,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 ) -> Result<()> {
     let _guard = if enable_logging {
         setup_tracing(work_dir, &settings.info.logging)?
@@ -948,7 +1031,8 @@ pub async fn run_mintd(
         None
     };
 
-    let result = run_mintd_with_shutdown(work_dir, settings, shutdown_signal(), db_password).await;
+    let result =
+        run_mintd_with_shutdown(work_dir, settings, shutdown_signal(), db_password, runtime).await;
 
     // Explicitly drop the guard to ensure proper cleanup
     if let Some(guard) = _guard {
@@ -969,12 +1053,14 @@ pub async fn run_mintd_with_shutdown(
     settings: &config::Settings,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     db_password: Option<String>,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 ) -> Result<()> {
     let (localstore, keystore) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
     let mint_builder = MintBuilder::new(localstore);
 
-    let (mint_builder, ln_routers) = configure_mint_builder(settings, mint_builder).await?;
+    let (mint_builder, ln_routers) =
+        configure_mint_builder(settings, mint_builder, runtime, work_dir).await?;
     #[cfg(feature = "auth")]
     let mint_builder = setup_authentication(settings, work_dir, mint_builder, db_password).await?;
 

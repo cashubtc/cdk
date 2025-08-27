@@ -11,19 +11,23 @@ rust-version.workspace = true
 readme = "README.md"
 
 [features]
-default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet", "grpc-processor", "auth"]
+default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet", "grpc-processor", "sqlite"]
+# Database features - at least one must be enabled
+sqlite = ["dep:cdk-sqlite"]
+postgres = ["dep:cdk-postgres"]
 # Ensure at least one lightning backend is enabled
 management-rpc = ["cdk-mint-rpc"]
 cln = ["dep:cdk-cln"]
 lnd = ["dep:cdk-lnd"]
 lnbits = ["dep:cdk-lnbits"]
 fakewallet = ["dep:cdk-fake-wallet"]
+ldk-node = ["dep:cdk-ldk-node"]
 grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
-sqlcipher = ["cdk-sqlite/sqlcipher"]
+sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 # MSRV is not committed to with swagger enabled
 swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
 redis = ["cdk-axum/redis"]
-auth = ["cdk/auth", "cdk-sqlite/auth"]
+auth = ["cdk/auth", "cdk-axum/auth", "cdk-sqlite?/auth", "cdk-postgres?/auth"]
 prometheus = ["cdk/prometheus", "dep:cdk-prometheus"]
 
 [dependencies]
@@ -35,19 +39,19 @@ cdk = { workspace = true, features = [
 ] }
 cdk-sqlite = { workspace = true, features = [
     "mint", "prometheus"
-] }
-cdk-postgres = { workspace = true, features = ["mint"]}
+], optional = true  }
+cdk-postgres = { workspace = true, features = ["mint"], optional = true}
 cdk-cln = { workspace = true, optional = true }
 cdk-lnbits = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }
+cdk-ldk-node = { workspace = true, optional = true }
 cdk-fake-wallet = { workspace = true, optional = true }
 cdk-axum = {workspace = true, features = ["prometheus"]}
 cdk-signatory.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
 cdk-payment-processor = { workspace = true, optional = true }
+config.workspace = true
 cdk-prometheus = { workspace = true, optional = true ,features = ["system-metrics"]}
-
-config = { version = "0.15.11", features = ["toml"] }
 clap.workspace = true
 bitcoin.workspace = true
 tokio = { workspace = true, default-features = false, features = ["signal"] }
@@ -58,7 +62,8 @@ futures.workspace = true
 serde.workspace = true
 bip39.workspace = true
 tower-http = { workspace = true, features = ["compression-full", "decompression-full"] }
-tower = "0.5.2"
+tower.workspace = true
+lightning-invoice.workspace = true
 home.workspace = true
 utoipa = { workspace = true, optional = true }
 utoipa-swagger-ui = { version = "9.0.0", features = ["axum"], optional = true }

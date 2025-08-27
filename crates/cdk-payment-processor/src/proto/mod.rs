@@ -37,6 +37,10 @@ impl From<CdkPaymentIdentifier> for PaymentIdentifier {
                 r#type: PaymentIdentifierType::CustomId.into(),
                 value: Some(payment_identifier::Value::Id(id)),
             },
+            CdkPaymentIdentifier::PaymentId(hash) => Self {
+                r#type: PaymentIdentifierType::PaymentId.into(),
+                value: Some(payment_identifier::Value::Hash(hex::encode(hash))),
+            },
         }
     }
 }
@@ -137,22 +141,11 @@ impl TryFrom<CreatePaymentResponse> for CreateIncomingPaymentResponse {
 impl From<cdk_common::payment::PaymentQuoteResponse> for PaymentQuoteResponse {
     fn from(value: cdk_common::payment::PaymentQuoteResponse) -> Self {
         Self {
-            request_identifier: Some(value.request_lookup_id.into()),
+            request_identifier: value.request_lookup_id.map(|i| i.into()),
             amount: value.amount.into(),
             fee: value.fee.into(),
             unit: value.unit.to_string(),
             state: QuoteState::from(value.state).into(),
-            melt_options: value.options.map(|opt| match opt {
-                cdk_common::payment::PaymentQuoteOptions::Bolt12 { invoice } => {
-                    PaymentQuoteOptions {
-                        melt_options: Some(payment_quote_options::MeltOptions::Bolt12(
-                            Bolt12Options {
-                                invoice: invoice.map(String::from_utf8).and_then(|r| r.ok()),
-                            },
-                        )),
-                    }
-                }
-            }),
         }
     }
 }
@@ -160,26 +153,15 @@ impl From<cdk_common::payment::PaymentQuoteResponse> for PaymentQuoteResponse {
 impl From<PaymentQuoteResponse> for cdk_common::payment::PaymentQuoteResponse {
     fn from(value: PaymentQuoteResponse) -> Self {
         let state_val = value.state();
-        let request_identifier = value
-            .request_identifier
-            .expect("request identifier required");
+        let request_identifier = value.request_identifier;
 
         Self {
             request_lookup_id: request_identifier
-                .try_into()
-                .expect("valid request identifier"),
+                .map(|i| i.try_into().expect("valid request identifier")),
             amount: value.amount.into(),
             fee: value.fee.into(),
             unit: CurrencyUnit::from_str(&value.unit).unwrap_or_default(),
             state: state_val.into(),
-            options: value.melt_options.map(|opt| match opt.melt_options {
-                Some(payment_quote_options::MeltOptions::Bolt12(bolt12)) => {
-                    cdk_common::payment::PaymentQuoteOptions::Bolt12 {
-                        invoice: bolt12.invoice.as_deref().map(str::as_bytes).map(Vec::from),
-                    }
-                }
-                None => unreachable!(),
-            }),
         }
     }
 }
