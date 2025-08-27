@@ -8,10 +8,10 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use thiserror::Error;
-#[cfg(feature = "mint")]
-use uuid::Uuid;
 
 use super::{BlindSignature, CurrencyUnit, MeltQuoteState, Mpp, PublicKey};
+#[cfg(feature = "mint")]
+use crate::quote_id::QuoteId;
 use crate::Amount;
 
 /// NUT023 Error
@@ -120,8 +120,8 @@ impl<Q: ToString> MintQuoteBolt11Response<Q> {
 }
 
 #[cfg(feature = "mint")]
-impl From<MintQuoteBolt11Response<Uuid>> for MintQuoteBolt11Response<String> {
-    fn from(value: MintQuoteBolt11Response<Uuid>) -> Self {
+impl From<MintQuoteBolt11Response<QuoteId>> for MintQuoteBolt11Response<String> {
+    fn from(value: MintQuoteBolt11Response<QuoteId>) -> Self {
         Self {
             quote: value.quote.to_string(),
             request: value.request,
@@ -293,8 +293,8 @@ impl<Q: ToString> MeltQuoteBolt11Response<Q> {
 }
 
 #[cfg(feature = "mint")]
-impl From<MeltQuoteBolt11Response<Uuid>> for MeltQuoteBolt11Response<String> {
-    fn from(value: MeltQuoteBolt11Response<Uuid>) -> Self {
+impl From<MeltQuoteBolt11Response<QuoteId>> for MeltQuoteBolt11Response<String> {
+    fn from(value: MeltQuoteBolt11Response<QuoteId>) -> Self {
         Self {
             quote: value.quote.to_string(),
             amount: value.amount,

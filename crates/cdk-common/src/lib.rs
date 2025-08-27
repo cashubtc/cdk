@@ -29,5 +29,7 @@ pub use bitcoin;
 pub use cashu::amount::{self, Amount};
 pub use cashu::lightning_invoice::{self, Bolt11Invoice};
 pub use cashu::nuts::{self, *};
+#[cfg(feature = "mint")]
+pub use cashu::quote_id::{self, *};
 pub use cashu::{dhke, ensure_cdk, mint_url, secret, util, SECP256K1};
 pub use error::Error;

@@ -4,6 +4,7 @@ use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::{ErrorCode, ErrorResponse};
+use cdk::mint::QuoteId;
 #[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
@@ -15,7 +16,6 @@ use cdk::nuts::{
 use cdk::util::unix_time;
 use paste::paste;
 use tracing::instrument;
-use uuid::Uuid;
 
 #[cfg(feature = "auth")]
 use crate::auth::AuthHeader;
@@ -62,11 +62,11 @@ macro_rules! post_cache_wrapper {
 }
 
 post_cache_wrapper!(post_swap, SwapRequest, SwapResponse);
-post_cache_wrapper!(post_mint_bolt11, MintRequest<Uuid>, MintResponse);
+post_cache_wrapper!(post_mint_bolt11, MintRequest<QuoteId>, MintResponse);
 post_cache_wrapper!(
     post_melt_bolt11,
-    MeltRequest<Uuid>,
-    MeltQuoteBolt11Response<Uuid>
+    MeltRequest<QuoteId>,
+    MeltQuoteBolt11Response<QuoteId>
 );
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -152,7 +152,7 @@ pub(crate) async fn post_mint_bolt11_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt11Request>,
-) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
+) -> Result<Json<MintQuoteBolt11Response<QuoteId>>, Response> {
     #[cfg(feature = "auth")]
     state
         .mint
@@ -191,8 +191,8 @@ pub(crate) async fn post_mint_bolt11_quote(
 pub(crate) async fn get_check_mint_bolt11_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
-    Path(quote_id): Path<Uuid>,
-) -> Result<Json<MintQuoteBolt11Response<Uuid>>, Response> {
+    Path(quote_id): Path<QuoteId>,
+) -> Result<Json<MintQuoteBolt11Response<QuoteId>>, Response> {
     #[cfg(feature = "auth")]
     {
         state
@@ -244,7 +244,7 @@ pub(crate) async fn ws_handler(
 pub(crate) async fn post_mint_bolt11(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
-    Json(payload): Json<MintRequest<Uuid>>,
+    Json(payload): Json<MintRequest<QuoteId>>,
 ) -> Result<Json<MintResponse>, Response> {
     #[cfg(feature = "auth")]
     {
@@ -286,7 +286,7 @@ pub(crate) async fn post_melt_bolt11_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt11Request>,
-) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
     #[cfg(feature = "auth")]
     {
         state
@@ -327,8 +327,8 @@ pub(crate) async fn post_melt_bolt11_quote(
 pub(crate) async fn get_check_melt_bolt11_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
-    Path(quote_id): Path<Uuid>,
-) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+    Path(quote_id): Path<QuoteId>,
+) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
     #[cfg(feature = "auth")]
     {
         state
@@ -370,8 +370,8 @@ pub(crate) async fn get_check_melt_bolt11_quote(
 pub(crate) async fn post_melt_bolt11(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
-    Json(payload): Json<MeltRequest<Uuid>>,
-) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+    Json(payload): Json<MeltRequest<QuoteId>>,
+) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
     #[cfg(feature = "auth")]
     {
         state

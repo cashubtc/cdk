@@ -183,6 +183,7 @@ pub fn create_fake_wallet_settings(
             url: format!("http://127.0.0.1:{port}"),
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
+            seed: None,
             mnemonic,
             signatory_url: signatory_config.as_ref().map(|(url, _)| url.clone()),
             signatory_certs: signatory_config
@@ -233,6 +234,7 @@ pub fn create_cln_settings(
             url: format!("http://127.0.0.1:{port}"),
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
+            seed: None,
             mnemonic: Some(mnemonic),
             signatory_url: None,
             signatory_certs: None,
@@ -277,6 +279,7 @@ pub fn create_lnd_settings(
             url: format!("http://127.0.0.1:{port}"),
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
+            seed: None,
             mnemonic: Some(mnemonic),
             signatory_url: None,
             signatory_certs: None,

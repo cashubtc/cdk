@@ -677,7 +677,7 @@ impl CdkMint for MintRPCServer {
             _ => {
                 // Create a new quote with the same values
                 let quote = MintQuote::new(
-                    Some(mint_quote.id),                  // id
+                    Some(mint_quote.id.clone()),          // id
                     mint_quote.request.clone(),           // request
                     mint_quote.unit.clone(),              // unit
                     mint_quote.amount,                    // amount

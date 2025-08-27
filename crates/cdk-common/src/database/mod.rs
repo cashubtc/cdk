@@ -126,6 +126,13 @@ pub enum Error {
     #[error(transparent)]
     #[cfg(feature = "auth")]
     NUT22(#[from] crate::nuts::nut22::Error),
+    /// NUT04 Error
+    #[error(transparent)]
+    NUT04(#[from] crate::nuts::nut04::Error),
+    /// Quote ID Error
+    #[error(transparent)]
+    #[cfg(feature = "mint")]
+    QuoteId(#[from] crate::quote_id::QuoteIdError),
     /// Serde Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),

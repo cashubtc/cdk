@@ -3,6 +3,7 @@ use axum::extract::{Json, Path, State};
 use axum::response::Response;
 #[cfg(feature = "swagger")]
 use cdk::error::ErrorResponse;
+use cdk::mint::QuoteId;
 #[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
@@ -11,17 +12,16 @@ use cdk::nuts::{
 };
 use paste::paste;
 use tracing::instrument;
-use uuid::Uuid;
 
 #[cfg(feature = "auth")]
 use crate::auth::AuthHeader;
 use crate::{into_response, post_cache_wrapper, MintState};
 
-post_cache_wrapper!(post_mint_bolt12, MintRequest<Uuid>, MintResponse);
+post_cache_wrapper!(post_mint_bolt12, MintRequest<QuoteId>, MintResponse);
 post_cache_wrapper!(
     post_melt_bolt12,
-    MeltRequest<Uuid>,
-    MeltQuoteBolt11Response<Uuid>
+    MeltRequest<QuoteId>,
+    MeltQuoteBolt11Response<QuoteId>
 );
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -38,7 +38,7 @@ pub async fn post_mint_bolt12_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MintQuoteBolt12Request>,
-) -> Result<Json<MintQuoteBolt12Response<Uuid>>, Response> {
+) -> Result<Json<MintQuoteBolt12Response<QuoteId>>, Response> {
     #[cfg(feature = "auth")]
     {
         state
@@ -77,8 +77,8 @@ pub async fn post_mint_bolt12_quote(
 pub async fn get_check_mint_bolt12_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
-    Path(quote_id): Path<Uuid>,
-) -> Result<Json<MintQuoteBolt12Response<Uuid>>, Response> {
+    Path(quote_id): Path<QuoteId>,
+) -> Result<Json<MintQuoteBolt12Response<QuoteId>>, Response> {
     #[cfg(feature = "auth")]
     {
         state
@@ -115,7 +115,7 @@ pub async fn get_check_mint_bolt12_quote(
 pub async fn post_mint_bolt12(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
-    Json(payload): Json<MintRequest<Uuid>>,
+    Json(payload): Json<MintRequest<QuoteId>>,
 ) -> Result<Json<MintResponse>, Response> {
     #[cfg(feature = "auth")]
     {
@@ -155,7 +155,7 @@ pub async fn post_melt_bolt12_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt12Request>,
-) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
     #[cfg(feature = "auth")]
     {
         state
@@ -193,8 +193,8 @@ pub async fn post_melt_bolt12_quote(
 pub async fn post_melt_bolt12(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
-    Json(payload): Json<MeltRequest<Uuid>>,
-) -> Result<Json<MeltQuoteBolt11Response<Uuid>>, Response> {
+    Json(payload): Json<MeltRequest<QuoteId>>,
+) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
     #[cfg(feature = "auth")]
     {
         state
