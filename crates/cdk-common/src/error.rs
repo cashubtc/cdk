@@ -363,6 +363,10 @@ pub enum Error {
     /// NUT23 Error
     #[error(transparent)]
     NUT23(#[from] crate::nuts::nut23::Error),
+    /// Quote ID Error
+    #[error(transparent)]
+    #[cfg(feature = "mint")]
+    QuoteId(#[from] crate::quote_id::QuoteIdError),
     /// From slice error
     #[error(transparent)]
     TryFromSliceError(#[from] TryFromSliceError),

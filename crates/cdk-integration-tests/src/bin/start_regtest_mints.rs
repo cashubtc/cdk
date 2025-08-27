@@ -260,6 +260,7 @@ fn create_ldk_settings(
             url: format!("http://127.0.0.1:{port}"),
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
+            seed: None,
             mnemonic: Some(mnemonic),
             signatory_url: None,
             signatory_certs: None,
