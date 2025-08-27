@@ -1337,7 +1337,10 @@ where
         Ok(mint_quotes)
     }
 
-    async fn get_melt_quote(&self, quote_id: &QuoteId) -> Result<Option<mint::MeltQuote>, Self::Err> {
+    async fn get_melt_quote(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<mint::MeltQuote>, Self::Err> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("get_melt_quote");
 
