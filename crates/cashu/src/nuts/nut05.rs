@@ -12,7 +12,8 @@ use thiserror::Error;
 #[cfg(feature = "mint")]
 use uuid::Uuid;
 
-use super::nut00::{BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
+use super::nut00::{BlindedMessage, PaymentMethod, Proofs};
+use super::nut01::CurrencyUnit;
 use super::ProofsMethods;
 use crate::Amount;
 
