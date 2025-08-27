@@ -36,7 +36,7 @@ jobs:
           '
       - name: typos
         run: nix develop -i -L .#nightly --command typos
-  
+
   examples:
     name: "Run examples"
     runs-on: ubuntu-latest
@@ -44,14 +44,7 @@ jobs:
     needs: pre-commit-checks
     strategy:
       matrix:
-        build-args:
-          [
-            mint-token,
-            melt-token,
-            p2pk,
-            proof-selection,
-            wallet
-          ]
+        build-args: [mint-token, melt-token, p2pk, proof-selection, wallet]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -73,8 +66,7 @@ jobs:
     needs: pre-commit-checks
     strategy:
       matrix:
-        build-args:
-          [
+        build-args: [
             # Core crate testing
             -p cashu,
             -p cashu --no-default-features,
@@ -94,18 +86,18 @@ jobs:
             -p cdk-sql-common,
             -p cdk-sql-common --no-default-features --features wallet,
             -p cdk-sql-common --no-default-features --features mint,
-            
+
             # Database and infrastructure crates
             -p cdk-redb,
             -p cdk-sqlite,
             -p cdk-sqlite --features sqlcipher,
-            
+
             # HTTP/API layer - consolidated
             -p cdk-axum,
             -p cdk-axum --no-default-features,
             -p cdk-axum --no-default-features --features redis,
             -p cdk-axum --no-default-features --features "redis swagger",
-            
+
             # Lightning backends
             -p cdk-cln,
             -p cdk-lnd,
@@ -113,10 +105,10 @@ jobs:
             -p cdk-fake-wallet,
             -p cdk-payment-processor,
             -p cdk-ldk-node,
-            
+
             -p cdk-signatory,
             -p cdk-mint-rpc,
-            
+
             # Binaries
             --bin cdk-cli,
             --bin cdk-cli --features sqlcipher,
@@ -163,15 +155,8 @@ jobs:
     needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
     strategy:
       matrix:
-        build-args:
-          [
-            -p cdk-integration-tests,
-          ]
-        database: 
-          [
-            SQLITE,
-            POSTGRES
-          ]
+        build-args: [-p cdk-integration-tests]
+        database: [SQLITE, POSTGRES]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -195,7 +180,7 @@ jobs:
           shared-key: "stable"
       - name: Test
         run: nix develop -i -L .#stable --command just itest ${{ matrix.database }}
-          
+
   fake-mint-itest:
     name: "Integration fake mint tests"
     runs-on: ubuntu-latest
@@ -203,14 +188,8 @@ jobs:
     needs: [pre-commit-checks, clippy]
     strategy:
       matrix:
-        build-args:
-          [
-            -p cdk-integration-tests,
-          ]
-        database: 
-          [
-          SQLITE,
-          ]
+        build-args: [-p cdk-integration-tests]
+        database: [SQLITE]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -236,7 +215,7 @@ jobs:
         run: nix develop -i -L .#stable --command cargo clippy -- -D warnings
       - name: Test fake auth mint
         run: nix develop -i -L .#stable --command just fake-mint-itest ${{ matrix.database }}
-                
+
   pure-itest:
     name: "Integration fake wallet tests"
     runs-on: ubuntu-latest
@@ -244,19 +223,14 @@ jobs:
     needs: [pre-commit-checks, clippy]
     strategy:
       matrix:
-        database: 
-          [
-          memory,
-          sqlite,
-          redb
-          ]
+        database: [memory, sqlite, redb]
     steps:
       - name: checkout
         uses: actions/checkout@v4
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
-          tool-cache: true          
+          tool-cache: true
           android: true
           dotnet: true
           haskell: true
@@ -274,31 +248,26 @@ jobs:
       - name: Test fake mint
         run: nix develop -i -L .#stable --command just test-pure ${{ matrix.database }}
       - name: Install Postgres
-        run: bash -x crates/cdk-postgres/start_db_for_test.sh
+        run: bash -x crates/storage/cdk-postgres/start_db_for_test.sh
       - name: Test mint
         run: nix develop -i -L .#stable --command just test
-
 
   payment-processor-itests:
     name: "Payment processor tests"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest, regtest-itest]
+    needs:
+      [pre-commit-checks, clippy, pure-itest, fake-mint-itest, regtest-itest]
     strategy:
       matrix:
-        ln: 
-          [
-          FAKEWALLET,
-          CLN,
-          LND
-          ]
+        ln: [FAKEWALLET, CLN, LND]
     steps:
       - name: checkout
         uses: actions/checkout@v4
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
-          tool-cache: true          
+          tool-cache: true
           android: true
           dotnet: true
           haskell: true
@@ -357,7 +326,6 @@ jobs:
       - name: Build
         run: nix develop -i -L .#msrv --command cargo build ${{ matrix.build-args }}
 
-  
   check-wasm:
     name: Check WASM
     runs-on: ubuntu-latest
@@ -389,7 +357,6 @@ jobs:
       - name: Build cdk and binding
         run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
 
-        
   check-wasm-msrv:
     name: Check WASM
     runs-on: ubuntu-latest
@@ -428,10 +395,7 @@ jobs:
     needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
     strategy:
       matrix:
-        database: 
-          [
-          SQLITE,
-          ]
+        database: [SQLITE]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -456,7 +420,7 @@ jobs:
       - name: Stop and clean up Docker Compose
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml down
-          
+
   doc-tests:
     name: "Documentation Tests"
     runs-on: ubuntu-latest
@@ -475,7 +439,7 @@ jobs:
           shared-key: "stable"
       - name: Run doc tests
         run: nix develop -i -L .#stable --command cargo test --doc
-        
+
   strict-docs:
     name: "Strict Documentation Check"
     runs-on: ubuntu-latest
