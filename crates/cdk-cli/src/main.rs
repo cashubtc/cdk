@@ -9,7 +9,7 @@ use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{HttpClient, MultiMintWallet, Wallet, WalletBuilder};
+use cdk::wallet::MultiMintWallet;
 #[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
@@ -168,62 +168,15 @@ async fn main() -> Result<()> {
     };
     let seed = mnemonic.to_seed_normalized("");
 
-    let mut wallets: Vec<Wallet> = Vec::new();
+    // Create MultiMintWallet with SAT unit (default)
+    let multi_mint_wallet = MultiMintWallet::new(localstore.clone(), seed, CurrencyUnit::Sat)?;
 
     let mints = localstore.get_mints().await?;
 
-    for (mint_url, mint_info) in mints {
-        let units = if let Some(mint_info) = mint_info {
-            mint_info.supported_units().into_iter().cloned().collect()
-        } else {
-            vec![CurrencyUnit::Sat]
-        };
-
-        let proxy_client = if let Some(proxy_url) = args.proxy.as_ref() {
-            Some(HttpClient::with_proxy(
-                mint_url.clone(),
-                proxy_url.clone(),
-                None,
-                true,
-            )?)
-        } else {
-            None
-        };
-
-        let seed = mnemonic.to_seed_normalized("");
-
-        for unit in units {
-            let mint_url_clone = mint_url.clone();
-            let mut builder = WalletBuilder::new()
-                .mint_url(mint_url_clone.clone())
-                .unit(unit)
-                .localstore(localstore.clone())
-                .seed(seed);
-
-            if let Some(http_client) = &proxy_client {
-                builder = builder.client(http_client.clone());
-            }
-
-            let wallet = builder.build()?;
-
-            let wallet_clone = wallet.clone();
-
-            tokio::spawn(async move {
-                // We refresh keysets, this internally gets mint info
-                if let Err(err) = wallet_clone.refresh_keysets().await {
-                    tracing::error!(
-                        "Could not get mint quote for {}, {}",
-                        wallet_clone.mint_url,
-                        err
-                    );
-                }
-            });
-
-            wallets.push(wallet);
-        }
+    for (mint_url, _mint_info) in mints {
+        // Add each mint to the MultiMintWallet
+        multi_mint_wallet.add_mint(mint_url, None).await?;
     }
-
-    let multi_mint_wallet = MultiMintWallet::new(localstore, seed, wallets);
 
     match &args.command {
         Commands::DecodeToken(sub_command_args) => {

@@ -57,7 +57,7 @@ pub async fn create_request(
 ) -> Result<()> {
     // Get available mints from the wallet
     let mints: Vec<cdk::mint_url::MintUrl> = multi_mint_wallet
-        .get_balances(&CurrencyUnit::Sat)
+        .get_balances()
         .await?
         .keys()
         .cloned()

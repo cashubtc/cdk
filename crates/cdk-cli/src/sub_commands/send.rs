@@ -3,7 +3,7 @@ use std::str::FromStr;
 use anyhow::{anyhow, Result};
 use cdk::nuts::{Conditions, CurrencyUnit, PublicKey, SpendingConditions};
 use cdk::wallet::types::SendKind;
-use cdk::wallet::{MultiMintWallet, MultiMintWalletBuilderExt, SendMemo, SendOptions};
+use cdk::wallet::{MultiMintWallet, SendMemo, SendOptions};
 use cdk::Amount;
 use clap::Args;
 
@@ -56,11 +56,11 @@ pub async fn send(
     multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &SendSubCommand,
 ) -> Result<()> {
-    let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
+    let _unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
     let token_amount = Amount::from(get_number_input::<u64>("Enter value of token in sats")?);
 
     // Check total balance across all wallets for this unit
-    let total_balance = multi_mint_wallet.total_balance(&unit).await?;
+    let total_balance = multi_mint_wallet.total_balance().await?;
     if total_balance < token_amount {
         return Err(anyhow!(
             "Insufficient funds. Total balance: {}, Required: {}",
@@ -205,18 +205,23 @@ pub async fn send(
     // Use the new unified interface
     let token = if let Some(mint_url) = &sub_command_args.mint_url {
         // User specified a mint, use that specific wallet
-        let wallet_key = cdk::wallet::types::WalletKey::new(
-            cdk::mint_url::MintUrl::from_str(mint_url)?,
-            unit.clone(),
-        );
-        multi_mint_wallet
-            .send_from_wallet(&wallet_key, token_amount, send_options)
-            .await?
+        let mint_url = cdk::mint_url::MintUrl::from_str(mint_url)?;
+        let prepared = multi_mint_wallet
+            .prepare_send_for_mint(&mint_url, token_amount, send_options.clone())
+            .await?;
+
+        // Confirm the prepared send (single mint)
+        let memo = send_options.memo.clone();
+        prepared.confirm(memo).await?
     } else {
         // Let the wallet automatically select the best mint
-        multi_mint_wallet
-            .send(token_amount, &unit, send_options)
-            .await?
+        let prepared = multi_mint_wallet
+            .prepare_send(token_amount, send_options.clone())
+            .await?;
+
+        // Confirm the prepared send (multi mint)
+        let memo = send_options.memo.clone();
+        prepared.confirm(memo).await?
     };
 
     match sub_command_args.v3 {

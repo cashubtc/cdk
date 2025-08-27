@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use super::multi_mint_wallet::MultiMintSendOptions;
 use super::Error;
 use crate::amount::Amount;
 use crate::mint_url::MintUrl;
@@ -12,11 +13,33 @@ use crate::nuts::{MeltOptions, SpendingConditions, Token};
 use crate::types::Melted;
 use crate::wallet::{MultiMintWallet, SendOptions};
 
-/// Builder for complex send operations
+/// Builder for complex send operations with advanced features
+///
+/// # Examples
+///
+/// ```no_run
+/// # use cdk::wallet::{MultiMintWallet, SendBuilder};
+/// # use cdk::Amount;
+/// # use std::sync::Arc;
+/// # async fn example(wallet: Arc<MultiMintWallet>) -> Result<(), Box<dyn std::error::Error>> {
+/// // Simple send with automatic mint selection
+/// let token = SendBuilder::new(wallet.clone(), Amount::from(100))
+///     .send()
+///     .await?;
+///
+/// // Send with preferred mint and fallback
+/// let token = SendBuilder::new(wallet.clone(), Amount::from(100))
+///     .prefer_mint("https://mint.example.com".parse()?)
+///     .fallback_to_any(true)
+///     .send()
+///     .await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct SendBuilder {
     wallet: Arc<MultiMintWallet>,
     amount: Amount,
-    options: SendOptions,
+    options: MultiMintSendOptions,
     preferred_mint: Option<MintUrl>,
     fallback_to_any: bool,
     max_fee: Option<Amount>,
@@ -28,7 +51,7 @@ impl SendBuilder {
         Self {
             wallet,
             amount,
-            options: SendOptions::default(),
+            options: MultiMintSendOptions::new(),
             preferred_mint: None,
             fallback_to_any: true,
             max_fee: None,
@@ -36,20 +59,35 @@ impl SendBuilder {
     }
 
     /// Set send options
-    pub fn with_options(mut self, options: SendOptions) -> Self {
+    ///
+    /// This configures advanced sending behavior like proof selection strategy,
+    /// spending conditions, and more.
+    pub fn with_send_options(mut self, options: SendOptions) -> Self {
+        self.options = self.options.send_options(options);
+        self
+    }
+
+    /// Set multi-mint send options
+    ///
+    /// This allows fine-grained control over mint selection and cross-mint behavior.
+    pub fn with_multi_mint_options(mut self, options: MultiMintSendOptions) -> Self {
         self.options = options;
         self
     }
 
     /// Set spending conditions (P2PK, HTLC, etc.)
     pub fn with_conditions(mut self, conditions: SpendingConditions) -> Self {
-        self.options.conditions = Some(conditions);
+        let mut send_opts = self.options.send_options.clone();
+        send_opts.conditions = Some(conditions);
+        self.options = self.options.send_options(send_opts);
         self
     }
 
     /// Include fee in the token
     pub fn include_fee(mut self, include: bool) -> Self {
-        self.options.include_fee = include;
+        let mut send_opts = self.options.send_options.clone();
+        send_opts.include_fee = include;
+        self.options = self.options.send_options(send_opts);
         self
     }
 
@@ -72,29 +110,82 @@ impl SendBuilder {
     }
 
     /// Execute the send operation
+    ///
+    /// This will prepare and execute the send in one step.
+    /// If a preferred mint is specified, it will try that first.
+    /// If fallback is enabled and the preferred mint fails, it will try other mints.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use cdk::wallet::{MultiMintWallet, SendBuilder};
+    /// # use cdk::Amount;
+    /// # use std::sync::Arc;
+    /// # async fn example(wallet: Arc<MultiMintWallet>) -> Result<(), Box<dyn std::error::Error>> {
+    /// let token = SendBuilder::new(wallet.clone(), Amount::from(100))
+    ///     .prefer_mint("https://preferred.mint".parse()?)
+    ///     .fallback_to_any(true)  // Will try other mints if preferred fails
+    ///     .send()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn send(self) -> Result<Token, Error> {
+        // Configure options based on preferred mint
+        let mut options = self.options;
+
         // Try preferred mint first if specified
         if let Some(mint_url) = self.preferred_mint {
-            match self
-                .wallet
-                .send_from_wallet(&mint_url, self.amount, self.options.clone())
-                .await
-            {
-                Ok(token) => return Ok(token),
-                Err(e) if !self.fallback_to_any => return Err(e),
-                Err(_) => {
-                    // Continue to automatic selection
-                    tracing::debug!("Preferred mint failed, falling back to automatic selection");
-                }
+            if !self.fallback_to_any {
+                // Only use the preferred mint
+                let prepared = self
+                    .wallet
+                    .prepare_send_for_mint(&mint_url, self.amount, options.send_options.clone())
+                    .await?;
+                let token = prepared.confirm(None).await?;
+                return Ok(token);
+            } else {
+                // Try preferred mint first, but allow fallback
+                options = options.preferred_mints_list(vec![mint_url]);
             }
         }
 
-        // Use automatic wallet selection
-        self.wallet.send(self.amount, self.options).await
+        // Use automatic wallet selection with configured options
+        let prepared = self
+            .wallet
+            .prepare_send_with_options(self.amount, options)
+            .await?;
+        let token = prepared.confirm(None).await?;
+        Ok(token)
     }
 }
 
 /// Builder for complex melt (payment) operations
+///
+/// Provides a fluent interface for configuring lightning payments with
+/// advanced features like multi-path payments, fee limits, and mint preferences.
+///
+/// # Examples
+/// ```no_run
+/// # use cdk::wallet::MeltBuilder;
+/// # use cdk::Amount;
+/// # use cdk::wallet::MultiMintWallet;
+/// # use std::sync::Arc;
+/// # async fn example(wallet: Arc<MultiMintWallet>) -> Result<(), Box<dyn std::error::Error>> {
+/// // Simple payment
+/// let result = MeltBuilder::new(wallet.clone(), "lnbc100n1p...".to_string())
+///     .pay()
+///     .await?;
+///
+/// // Payment with fee limit and preferred mint
+/// let result = MeltBuilder::new(wallet.clone(), "lnbc100n1p...".to_string())
+///     .max_fee(Amount::from(10))
+///     .prefer_mint("https://preferred.mint".parse()?)
+///     .enable_mpp(true)  // Enable multi-path payments
+///     .pay()
+///     .await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct MeltBuilder {
     wallet: Arc<MultiMintWallet>,
     bolt11: String,
@@ -132,6 +223,10 @@ impl MeltBuilder {
     }
 
     /// Enable or disable Multi-Path Payment
+    ///
+    /// When enabled, the payment can be split across multiple mints if a single
+    /// mint doesn't have sufficient balance. This increases payment success rate
+    /// but may result in higher total fees.
     pub fn enable_mpp(mut self, enable: bool) -> Self {
         self.enable_mpp = enable;
         self
@@ -150,6 +245,28 @@ impl MeltBuilder {
     }
 
     /// Execute the melt operation
+    ///
+    /// Attempts to pay the lightning invoice using the configured options.
+    /// Will automatically select the best mint(s) based on balance, fees,
+    /// and route availability.
+    ///
+    /// # Returns
+    /// - `Ok(Melted)` with payment details on success
+    /// - `Err(Error)` if payment fails
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use cdk::wallet::{MeltBuilder, MultiMintWallet};
+    /// # use std::sync::Arc;
+    /// # async fn example(wallet: Arc<MultiMintWallet>) -> Result<(), Box<dyn std::error::Error>> {
+    /// let result = MeltBuilder::new(wallet, "lnbc...".to_string())
+    ///     .pay()
+    ///     .await?;
+    /// println!("Payment successful! Paid {} sats with {} sats fee",
+    ///          result.amount, result.fee_paid);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn pay(self) -> Result<Melted, Error> {
         // Try preferred mint first if specified
         if let Some(mint_url) = self.preferred_mint {

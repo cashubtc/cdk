@@ -3,7 +3,6 @@ use std::str::FromStr;
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::types::WalletKey;
 use cdk::wallet::MultiMintWallet;
 use clap::Args;
 
@@ -20,18 +19,18 @@ pub async fn restore(
     multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &RestoreSubCommand,
 ) -> Result<()> {
-    let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
+    let _unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
     let mint_url = sub_command_args.mint_url.clone();
 
-    let wallet = match multi_mint_wallet
-        .get_wallet(&WalletKey::new(mint_url.clone(), unit.clone()))
-        .await
-    {
+    let wallet = match multi_mint_wallet.get_wallet(&mint_url).await {
         Some(wallet) => wallet.clone(),
         None => {
+            multi_mint_wallet.add_mint(mint_url.clone(), None).await?;
             multi_mint_wallet
-                .create_and_add_wallet(&mint_url.to_string(), unit, None)
-                .await?
+                .get_wallet(&mint_url)
+                .await
+                .expect("Wallet should exist after adding mint")
+                .clone()
         }
     };
 
