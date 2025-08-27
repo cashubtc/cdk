@@ -91,6 +91,8 @@ pub enum PaymentIdentifier {
     PaymentHash([u8; 32]),
     /// Bolt12 payment hash
     Bolt12PaymentHash([u8; 32]),
+    /// Payment id
+    PaymentId([u8; 32]),
     /// Custom Payment ID
     CustomId(String),
 }
@@ -112,6 +114,11 @@ impl PaymentIdentifier {
                     .map_err(|_| Error::InvalidHash)?,
             )),
             "custom" => Ok(Self::CustomId(identifier.to_string())),
+            "payment_id" => Ok(Self::PaymentId(
+                hex::decode(identifier)?
+                    .try_into()
+                    .map_err(|_| Error::InvalidHash)?,
+            )),
             _ => Err(Error::UnsupportedPaymentOption),
         }
     }
@@ -123,6 +130,7 @@ impl PaymentIdentifier {
             Self::OfferId(_) => "offer_id".to_string(),
             Self::PaymentHash(_) => "payment_hash".to_string(),
             Self::Bolt12PaymentHash(_) => "bolt12_payment_hash".to_string(),
+            Self::PaymentId(_) => "payment_id".to_string(),
             Self::CustomId(_) => "custom".to_string(),
         }
     }
@@ -135,6 +143,7 @@ impl std::fmt::Display for PaymentIdentifier {
             Self::OfferId(o) => write!(f, "{o}"),
             Self::PaymentHash(h) => write!(f, "{}", hex::encode(h)),
             Self::Bolt12PaymentHash(h) => write!(f, "{}", hex::encode(h)),
+            Self::PaymentId(h) => write!(f, "{}", hex::encode(h)),
             Self::CustomId(c) => write!(f, "{c}"),
         }
     }
@@ -193,8 +202,6 @@ pub struct Bolt12OutgoingPaymentOptions {
     pub max_fee_amount: Option<Amount>,
     /// Optional timeout in seconds
     pub timeout_secs: Option<u64>,
-    /// Bolt12 Invoice
-    pub invoice: Option<Vec<u8>>,
     /// Melt options
     pub melt_options: Option<MeltOptions>,
 }
@@ -221,7 +228,7 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
                     melt_options: melt_quote.options,
                 },
             ))),
-            MeltPaymentRequest::Bolt12 { offer, invoice } => {
+            MeltPaymentRequest::Bolt12 { offer } => {
                 let melt_options = match melt_quote.options {
                     None => None,
                     Some(MeltOptions::Mpp { mpp: _ }) => return Err(Error::UnsupportedUnit),
@@ -233,7 +240,6 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
                         max_fee_amount: Some(melt_quote.fee_reserve),
                         timeout_secs: None,
                         offer: *offer,
-                        invoice,
                         melt_options,
                     },
                 )))
@@ -247,6 +253,20 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
 pub trait MintPayment {
     /// Mint Lightning Error
     type Err: Into<Error> + From<Error>;
+
+    /// Start the payment processor
+    /// Called when the mint starts up to initialize the payment processor
+    async fn start(&self) -> Result<(), Self::Err> {
+        // Default implementation - do nothing
+        Ok(())
+    }
+
+    /// Stop the payment processor
+    /// Called when the mint shuts down to gracefully stop the payment processor
+    async fn stop(&self) -> Result<(), Self::Err> {
+        // Default implementation - do nothing
+        Ok(())
+    }
 
     /// Base Settings
     async fn get_settings(&self) -> Result<serde_json::Value, Self::Err>;
@@ -343,7 +363,7 @@ pub struct MakePaymentResponse {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentQuoteResponse {
     /// Request look up id
-    pub request_lookup_id: PaymentIdentifier,
+    pub request_lookup_id: Option<PaymentIdentifier>,
     /// Amount
     pub amount: Amount,
     /// Fee required for melt
@@ -352,18 +372,6 @@ pub struct PaymentQuoteResponse {
     pub unit: CurrencyUnit,
     /// Status
     pub state: MeltQuoteState,
-    /// Payment Quote Options
-    pub options: Option<PaymentQuoteOptions>,
-}
-
-/// Payment quote options
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PaymentQuoteOptions {
-    /// Bolt12 payment options
-    Bolt12 {
-        /// Bolt12 invoice
-        invoice: Option<Vec<u8>>,
-    },
 }
 
 /// Ln backend settings

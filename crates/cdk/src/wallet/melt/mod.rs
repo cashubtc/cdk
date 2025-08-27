@@ -7,6 +7,8 @@ use tracing::instrument;
 
 use crate::Wallet;
 
+#[cfg(feature = "bip353")]
+mod melt_bip353;
 mod melt_bolt11;
 mod melt_bolt12;
 

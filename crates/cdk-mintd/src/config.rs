@@ -7,7 +7,45 @@ use cdk_axum::cache;
 use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LoggingOutput {
+    /// Log to stderr only
+    Stderr,
+    /// Log to file only
+    File,
+    /// Log to both stderr and file (default)
+    #[default]
+    Both,
+}
+
+impl std::str::FromStr for LoggingOutput {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "stderr" => Ok(LoggingOutput::Stderr),
+            "file" => Ok(LoggingOutput::File),
+            "both" => Ok(LoggingOutput::Both),
+            _ => Err(format!(
+                "Unknown logging output: {s}. Valid options: stdout, file, both"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LoggingConfig {
+    /// Where to output logs: stdout, file, or both
+    #[serde(default)]
+    pub output: LoggingOutput,
+    /// Log level for console output (when stdout or both)
+    pub console_level: Option<String>,
+    /// Log level for file output (when file or both)
+    pub file_level: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Info {
     pub url: String,
     pub listen_host: String,
@@ -19,11 +57,32 @@ pub struct Info {
 
     pub http_cache: cache::Config,
 
+    /// Logging configuration
+    #[serde(default)]
+    pub logging: LoggingConfig,
+
     /// When this is set to true, the mint exposes a Swagger UI for it's API at
     /// `[listen_host]:[listen_port]/swagger-ui`
     ///
     /// This requires `mintd` was built with the `swagger` feature flag.
     pub enable_swagger_ui: Option<bool>,
+}
+
+impl Default for Info {
+    fn default() -> Self {
+        Info {
+            url: String::new(),
+            listen_host: "127.0.0.1".to_string(),
+            listen_port: 8091, // Default to port 8091 instead of 0
+            mnemonic: None,
+            signatory_url: None,
+            signatory_certs: None,
+            input_fee_ppk: None,
+            http_cache: cache::Config::default(),
+            enable_swagger_ui: None,
+            logging: LoggingConfig::default(),
+        }
+    }
 }
 
 impl std::fmt::Debug for Info {
@@ -45,6 +104,7 @@ impl std::fmt::Debug for Info {
             .field("mnemonic", &mnemonic_display)
             .field("input_fee_ppk", &self.input_fee_ppk)
             .field("http_cache", &self.http_cache)
+            .field("logging", &self.logging)
             .field("enable_swagger_ui", &self.enable_swagger_ui)
             .finish()
     }
@@ -63,6 +123,8 @@ pub enum LnBackend {
     FakeWallet,
     #[cfg(feature = "lnd")]
     Lnd,
+    #[cfg(feature = "ldk-node")]
+    LdkNode,
     #[cfg(feature = "grpc-processor")]
     GrpcProcessor,
 }
@@ -80,6 +142,8 @@ impl std::str::FromStr for LnBackend {
             "fakewallet" => Ok(LnBackend::FakeWallet),
             #[cfg(feature = "lnd")]
             "lnd" => Ok(LnBackend::Lnd),
+            #[cfg(feature = "ldk-node")]
+            "ldk-node" | "ldknode" => Ok(LnBackend::LdkNode),
             #[cfg(feature = "grpc-processor")]
             "grpcprocessor" => Ok(LnBackend::GrpcProcessor),
             _ => Err(format!("Unknown Lightning backend: {s}")),
@@ -118,7 +182,6 @@ pub struct LNbits {
     pub lnbits_api: String,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
-    pub retro_api: bool,
 }
 
 #[cfg(feature = "cln")]
@@ -139,6 +202,88 @@ pub struct Lnd {
     pub macaroon_file: PathBuf,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
+}
+
+#[cfg(feature = "ldk-node")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LdkNode {
+    /// Fee percentage (e.g., 0.02 for 2%)
+    #[serde(default = "default_ldk_fee_percent")]
+    pub fee_percent: f32,
+    /// Minimum reserve fee
+    #[serde(default = "default_ldk_reserve_fee_min")]
+    pub reserve_fee_min: Amount,
+    /// Bitcoin network (mainnet, testnet, signet, regtest)
+    pub bitcoin_network: Option<String>,
+    /// Chain source type (esplora or bitcoinrpc)
+    pub chain_source_type: Option<String>,
+    /// Esplora URL (when chain_source_type = "esplora")
+    pub esplora_url: Option<String>,
+    /// Bitcoin RPC configuration (when chain_source_type = "bitcoinrpc")
+    pub bitcoind_rpc_host: Option<String>,
+    pub bitcoind_rpc_port: Option<u16>,
+    pub bitcoind_rpc_user: Option<String>,
+    pub bitcoind_rpc_password: Option<String>,
+    /// Storage directory path
+    pub storage_dir_path: Option<String>,
+    /// LDK node listening host
+    pub ldk_node_host: Option<String>,
+    /// LDK node listening port
+    pub ldk_node_port: Option<u16>,
+    /// Gossip source type (p2p or rgs)
+    pub gossip_source_type: Option<String>,
+    /// Rapid Gossip Sync URL (when gossip_source_type = "rgs")
+    pub rgs_url: Option<String>,
+    /// Webserver host (defaults to 127.0.0.1)
+    #[serde(default = "default_webserver_host")]
+    pub webserver_host: Option<String>,
+    /// Webserver port
+    #[serde(default = "default_webserver_port")]
+    pub webserver_port: Option<u16>,
+}
+
+#[cfg(feature = "ldk-node")]
+impl Default for LdkNode {
+    fn default() -> Self {
+        Self {
+            fee_percent: default_ldk_fee_percent(),
+            reserve_fee_min: default_ldk_reserve_fee_min(),
+            bitcoin_network: None,
+            chain_source_type: None,
+            esplora_url: None,
+            bitcoind_rpc_host: None,
+            bitcoind_rpc_port: None,
+            bitcoind_rpc_user: None,
+            bitcoind_rpc_password: None,
+            storage_dir_path: None,
+            ldk_node_host: None,
+            ldk_node_port: None,
+            gossip_source_type: None,
+            rgs_url: None,
+            webserver_host: default_webserver_host(),
+            webserver_port: default_webserver_port(),
+        }
+    }
+}
+
+#[cfg(feature = "ldk-node")]
+fn default_ldk_fee_percent() -> f32 {
+    0.04
+}
+
+#[cfg(feature = "ldk-node")]
+fn default_ldk_reserve_fee_min() -> Amount {
+    4.into()
+}
+
+#[cfg(feature = "ldk-node")]
+fn default_webserver_host() -> Option<String> {
+    Some("127.0.0.1".to_string())
+}
+
+#[cfg(feature = "ldk-node")]
+fn default_webserver_port() -> Option<u16> {
+    Some(8091)
 }
 
 #[cfg(feature = "fakewallet")]
@@ -295,6 +440,8 @@ pub struct Settings {
     pub lnbits: Option<LNbits>,
     #[cfg(feature = "lnd")]
     pub lnd: Option<Lnd>,
+    #[cfg(feature = "ldk-node")]
+    pub ldk_node: Option<LdkNode>,
     #[cfg(feature = "fakewallet")]
     pub fake_wallet: Option<FakeWallet>,
     pub grpc_processor: Option<GrpcProcessor>,
@@ -399,6 +546,13 @@ impl Settings {
                 assert!(
                     settings.lnd.is_some(),
                     "LND backend requires a valid config."
+                )
+            }
+            #[cfg(feature = "ldk-node")]
+            LnBackend::LdkNode => {
+                assert!(
+                    settings.ldk_node.is_some(),
+                    "LDK Node backend requires a valid config."
                 )
             }
             #[cfg(feature = "fakewallet")]

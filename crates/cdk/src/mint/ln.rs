@@ -46,32 +46,26 @@ impl Mint {
         let mut tx = self.localstore.begin_transaction().await?;
 
         for payment in ln_status {
-            if !quote.payment_ids().contains(&&payment.payment_id) {
-                tracing::debug!("Found payment for quote {} when checking.", quote.id);
+            if !quote.payment_ids().contains(&&payment.payment_id)
+                && payment.payment_amount > Amount::ZERO
+            {
+                tracing::debug!(
+                    "Found payment of {} {} for quote {} when checking.",
+                    payment.payment_amount,
+                    payment.unit,
+                    quote.id
+                );
+
                 let amount_paid = to_unit(payment.payment_amount, &payment.unit, &quote.unit)?;
 
                 quote.increment_amount_paid(amount_paid)?;
                 quote.add_payment(amount_paid, payment.payment_id.clone(), unix_time())?;
 
-                tx.increment_mint_quote_amount_paid(&quote.id, amount_paid, payment.payment_id)
+                let total_paid = tx
+                    .increment_mint_quote_amount_paid(&quote.id, amount_paid, payment.payment_id)
                     .await?;
 
-                match quote.payment_method {
-                    PaymentMethod::Bolt11 => {
-                        self.pubsub_manager
-                            .mint_quote_bolt11_status(quote.clone(), MintQuoteState::Paid);
-                    }
-                    PaymentMethod::Bolt12 => {
-                        self.pubsub_manager.mint_quote_bolt12_status(
-                            quote.clone(),
-                            amount_paid,
-                            Amount::ZERO,
-                        );
-                    }
-                    PaymentMethod::Custom(_) => {
-                        // We don't send ws updates for unknown methods
-                    }
-                }
+                self.pubsub_manager.mint_quote_payment(quote, total_paid);
             }
         }
 

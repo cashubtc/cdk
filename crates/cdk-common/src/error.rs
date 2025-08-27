@@ -111,9 +111,20 @@ pub enum Error {
     #[error("Could not parse bolt12")]
     Bolt12parse,
 
+    /// BIP353 address parsing error
+    #[error("Failed to parse BIP353 address: {0}")]
+    Bip353Parse(String),
+
     /// Operation timeout
     #[error("Operation timeout")]
     Timeout,
+
+    /// BIP353 address resolution error
+    #[error("Failed to resolve BIP353 address: {0}")]
+    Bip353Resolve(String),
+    /// BIP353 no Lightning offer found
+    #[error("No Lightning offer found in BIP353 payment instructions")]
+    Bip353NoLightningOffer,
 
     /// Internal Error - Send error
     #[error("Internal send error: {0}")]
@@ -290,8 +301,8 @@ pub enum Error {
     #[error(transparent)]
     HexError(#[from] hex::Error),
     /// Http transport error
-    #[error("Http transport error: {0}")]
-    HttpError(String),
+    #[error("Http transport error {0:?}: {1}")]
+    HttpError(Option<u16>, String),
     #[cfg(feature = "wallet")]
     // Crate error conversions
     /// Cashu Url Error
@@ -531,6 +542,11 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::UnitMismatch,
                 error: Some(err.to_string()),
                 detail: None,
+            },
+            Error::UnpaidQuote => ErrorResponse {
+                code: ErrorCode::QuoteNotPaid,
+                error: Some(err.to_string()),
+                detail: None
             },
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(9999),

@@ -49,14 +49,14 @@ impl Mint {
         endpoint: &ProtectedEndpoint,
     ) -> Result<(), Error> {
         let auth_required = if let Some(auth_required) = self.is_protected(endpoint).await? {
-            tracing::info!(
+            tracing::trace!(
                 "Auth required for endpoint: {:?}, type: {:?}",
                 endpoint,
                 auth_required
             );
             auth_required
         } else {
-            tracing::debug!("No auth required for endpoint: {:?}", endpoint);
+            tracing::trace!("No auth required for endpoint: {:?}", endpoint);
             return Ok(());
         };
 

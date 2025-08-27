@@ -18,8 +18,6 @@ use tracing::Level;
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
-#[cfg(feature = "bip353")]
-mod bip353;
 mod nostr_storage;
 mod sub_commands;
 mod token_storage;

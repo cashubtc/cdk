@@ -22,6 +22,9 @@ pub mod mint;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
+#[cfg(feature = "bip353")]
+mod bip353;
+
 #[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
 mod oidc_client;
 
@@ -61,3 +64,7 @@ pub use self::wallet::HttpClient;
 /// Result
 #[doc(hidden)]
 pub type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
+
+/// Re-export futures::Stream
+#[cfg(any(feature = "wallet", feature = "mint"))]
+pub use futures::{Stream, StreamExt};

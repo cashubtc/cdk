@@ -546,6 +546,11 @@ where
         amount_paid: Amount,
         payment_id: String,
     ) -> Result<Amount, Self::Err> {
+        if amount_paid == Amount::ZERO {
+            tracing::warn!("Amount payments of zero amount should not be recorded.");
+            return Err(Error::Duplicate);
+        }
+
         // Check if payment_id already exists in mint_quote_payments
         let exists = query(
             r#"
@@ -591,6 +596,13 @@ where
         let new_amount_paid = current_amount_paid
             .checked_add(amount_paid)
             .ok_or_else(|| database::Error::AmountOverflow)?;
+
+        tracing::debug!(
+            "Mint quote {} amount paid was {} is now {}.",
+            quote_id,
+            current_amount_paid,
+            new_amount_paid
+        );
 
         // Update the amount_paid
         query(
@@ -700,7 +712,6 @@ VALUES (:quote_id, :amount, :timestamp);
 
     #[instrument(skip_all)]
     async fn add_mint_quote(&mut self, quote: MintQuote) -> Result<(), Self::Err> {
-        tracing::debug!("Adding quote with: {}", quote.payment_method);
         query(
             r#"
                 INSERT INTO mint_quote (
@@ -740,24 +751,6 @@ VALUES (:quote_id, :amount, :timestamp);
 
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
         // First try to find and replace any expired UNPAID quotes with the same request_lookup_id
-        let current_time = unix_time();
-        let row_affected = query(
-            r#"
-            DELETE FROM melt_quote
-            WHERE request_lookup_id = :request_lookup_id
-            AND state = :state
-            AND expiry < :current_time
-            "#,
-        )?
-        .bind("request_lookup_id", quote.request_lookup_id.to_string())
-        .bind("state", MeltQuoteState::Unpaid.to_string())
-        .bind("current_time", current_time as i64)
-        .execute(&self.inner)
-        .await?;
-
-        if row_affected > 0 {
-            tracing::info!("Received new melt quote for existing invoice with expired quote.");
-        }
 
         // Now insert the new quote
         query(
@@ -784,14 +777,20 @@ VALUES (:quote_id, :amount, :timestamp);
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry as i64)
         .bind("payment_preimage", quote.payment_preimage)
-        .bind("request_lookup_id", quote.request_lookup_id.to_string())
+        .bind(
+            "request_lookup_id",
+            quote.request_lookup_id.as_ref().map(|id| id.to_string()),
+        )
         .bind("created_time", quote.created_time as i64)
         .bind("paid_time", quote.paid_time.map(|t| t as i64))
         .bind(
             "options",
             quote.options.map(|o| serde_json::to_string(&o).ok()),
         )
-        .bind("request_lookup_id_kind", quote.request_lookup_id.kind())
+        .bind(
+            "request_lookup_id_kind",
+            quote.request_lookup_id.map(|id| id.kind()),
+        )
         .bind("payment_method", quote.payment_method.to_string())
         .execute(&self.inner)
         .await?;
@@ -1714,19 +1713,24 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
     let unit = column_as_string!(unit);
     let request = column_as_string!(request);
 
-    let mut request_lookup_id_kind = column_as_string!(request_lookup_id_kind);
+    let request_lookup_id_kind = column_as_nullable_string!(request_lookup_id_kind);
 
-    let request_lookup_id = column_as_nullable_string!(&request_lookup_id).unwrap_or_else(|| {
+    let request_lookup_id = column_as_nullable_string!(&request_lookup_id).or_else(|| {
         Bolt11Invoice::from_str(&request)
+            .ok()
             .map(|invoice| invoice.payment_hash().to_string())
-            .unwrap_or_else(|_| {
-                request_lookup_id_kind = "custom".to_string();
-                request.clone()
-            })
     });
 
-    let request_lookup_id = PaymentIdentifier::new(&request_lookup_id_kind, &request_lookup_id)
-        .map_err(|_| ConversionError::MissingParameter("Payment id".to_string()))?;
+    let request_lookup_id = if let (Some(id_kind), Some(request_lookup_id)) =
+        (request_lookup_id_kind, request_lookup_id)
+    {
+        Some(
+            PaymentIdentifier::new(&id_kind, &request_lookup_id)
+                .map_err(|_| ConversionError::MissingParameter("Payment id".to_string()))?,
+        )
+    } else {
+        None
+    };
 
     let request = match serde_json::from_str(&request) {
         Ok(req) => req,

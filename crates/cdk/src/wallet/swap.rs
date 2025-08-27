@@ -21,6 +21,8 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<Option<Proofs>, Error> {
+        self.refresh_keysets().await?;
+
         tracing::info!("Swapping");
         let mint_url = &self.mint_url;
         let unit = &self.unit;

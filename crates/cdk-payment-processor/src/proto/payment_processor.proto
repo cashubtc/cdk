@@ -46,6 +46,7 @@ enum PaymentIdentifierType {
   LABEL = 2;
   BOLT12_PAYMENT_HASH = 3;
   CUSTOM_ID = 4;
+  PAYMENT_ID = 5;
 }
 
 message PaymentIdentifier {
@@ -105,23 +106,13 @@ enum QuoteState {
     ISSUED = 5;
 }
 
-message Bolt12Options {
-  optional string invoice = 1;
-}
-
-message PaymentQuoteOptions {
-  oneof melt_options {
-    Bolt12Options bolt12 = 1;
-  }
-}
 
 message PaymentQuoteResponse {
   PaymentIdentifier request_identifier = 1;
   uint64 amount = 2;
   uint64 fee = 3;
   QuoteState state = 4;
-  optional PaymentQuoteOptions melt_options = 5;
-  string unit = 6;
+  string unit = 5;
 }
 
 message Bolt11OutgoingPaymentOptions {
@@ -135,7 +126,6 @@ message Bolt12OutgoingPaymentOptions {
   string offer = 1;
   optional uint64 max_fee_amount = 2;
   optional uint64 timeout_secs = 3;
-  optional bytes invoice = 4;
   optional MeltOptions melt_options = 5;
 }
 

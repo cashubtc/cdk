@@ -13,6 +13,7 @@ use cdk_common::database::WalletDatabase;
 use cdk_common::wallet::{Transaction, TransactionDirection, WalletKey};
 use tokio::sync::RwLock;
 use tracing::instrument;
+use zeroize::Zeroize;
 
 use super::receive::ReceiveOptions;
 use super::send::{PreparedSend, SendOptions};
@@ -78,7 +79,7 @@ impl MultiMintWallet {
             target_proof_count,
         )?;
 
-        wallet.get_mint_info().await?;
+        wallet.fetch_mint_info().await?;
 
         self.add_wallet(wallet.clone()).await;
 
@@ -366,5 +367,11 @@ impl MultiMintWallet {
             .ok_or(Error::UnknownWallet(wallet_key.clone()))?;
 
         wallet.verify_token_dleq(token).await
+    }
+}
+
+impl Drop for MultiMintWallet {
+    fn drop(&mut self) {
+        self.seed.zeroize();
     }
 }

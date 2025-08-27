@@ -51,7 +51,7 @@ pub async fn cat_login(
     };
 
     let mint_info = wallet
-        .get_mint_info()
+        .fetch_mint_info()
         .await?
         .ok_or(anyhow!("Mint info not found"))?;
 

@@ -1,7 +1,6 @@
 use std::env;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bip39::Mnemonic;
 use cashu::{MintAuthRequest, MintInfo};
@@ -42,7 +41,7 @@ async fn test_invalid_credentials() {
         .expect("Wallet");
 
     let mint_info = wallet
-        .get_mint_info()
+        .fetch_mint_info()
         .await
         .expect("mint info")
         .expect("could not get mint info");
@@ -278,7 +277,7 @@ async fn test_mint_blind_auth() {
         .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
-    let mint_info = wallet.get_mint_info().await.unwrap().unwrap();
+    let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
 
     let (access_token, _) = get_access_token(&mint_info).await;
 
@@ -310,7 +309,7 @@ async fn test_mint_with_auth() {
         .expect("Wallet");
 
     let mint_info = wallet
-        .get_mint_info()
+        .fetch_mint_info()
         .await
         .expect("mint info")
         .expect("could not get mint info");
@@ -331,15 +330,16 @@ async fn test_mint_with_auth() {
     let mint_amount: Amount = 100.into();
 
     let quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+
     let proofs = wallet
         .wait_and_mint_quote(
-            quote,
-            Default::default(),
-            Default::default(),
-            Duration::from_secs(10),
+            quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(15),
         )
         .await
-        .unwrap();
+        .expect("payment");
 
     assert!(proofs.total_amount().expect("Could not get proofs amount") == mint_amount);
 }
@@ -355,7 +355,7 @@ async fn test_swap_with_auth() {
         .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
-    let mint_info = wallet.get_mint_info().await.unwrap().unwrap();
+    let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
     let (access_token, _) = get_access_token(&mint_info).await;
 
     wallet.set_cat(access_token).await.unwrap();
@@ -410,7 +410,7 @@ async fn test_melt_with_auth() {
         .expect("Wallet");
 
     let mint_info = wallet
-        .get_mint_info()
+        .fetch_mint_info()
         .await
         .expect("Mint info not found")
         .expect("Mint info not found");
@@ -452,7 +452,7 @@ async fn test_mint_auth_over_max() {
     let wallet = Arc::new(wallet);
 
     let mint_info = wallet
-        .get_mint_info()
+        .fetch_mint_info()
         .await
         .expect("Mint info not found")
         .expect("Mint info not found");
@@ -490,7 +490,7 @@ async fn test_reuse_auth_proof() {
         .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
-    let mint_info = wallet.get_mint_info().await.unwrap().unwrap();
+    let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
 
     let (access_token, _) = get_access_token(&mint_info).await;
 
@@ -542,7 +542,7 @@ async fn test_melt_with_invalid_auth() {
         .seed(Mnemonic::generate(12).unwrap().to_seed_normalized(""))
         .build()
         .expect("Wallet");
-    let mint_info = wallet.get_mint_info().await.unwrap().unwrap();
+    let mint_info = wallet.fetch_mint_info().await.unwrap().unwrap();
 
     let (access_token, _) = get_access_token(&mint_info).await;
 
@@ -607,7 +607,7 @@ async fn test_refresh_access_token() {
         .expect("Wallet");
 
     let mint_info = wallet
-        .get_mint_info()
+        .fetch_mint_info()
         .await
         .expect("mint info")
         .expect("could not get mint info");
@@ -663,7 +663,7 @@ async fn test_invalid_refresh_token() {
         .expect("Wallet");
 
     let mint_info = wallet
-        .get_mint_info()
+        .fetch_mint_info()
         .await
         .expect("mint info")
         .expect("could not get mint info");
@@ -699,7 +699,7 @@ async fn test_auth_token_spending_order() {
         .expect("Wallet");
 
     let mint_info = wallet
-        .get_mint_info()
+        .fetch_mint_info()
         .await
         .expect("mint info")
         .expect("could not get mint info");
