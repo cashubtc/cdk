@@ -13,7 +13,7 @@ docker run -d --rm \
   -e POSTGRES_USER="${DB_USER}" \
   -e POSTGRES_PASSWORD="${DB_PASS}" \
   -e POSTGRES_DB="${DB_NAME}" \
-  -p ${DB_PORT}:5432 \
+  -p 127.0.0.1:${DB_PORT}:5432 \
   postgres:16
 
 echo "Waiting for PostgreSQL to be ready and database '${DB_NAME}' to exist..."
