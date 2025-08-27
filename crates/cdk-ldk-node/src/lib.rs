@@ -125,6 +125,7 @@ impl CdkLdkNode {
         listening_address: Vec<SocketAddress>,
         runtime: Option<Arc<Runtime>>,
         seed: Option<Mnemonic>,
+        announcement_address: Option<Vec<SocketAddress>>,
     ) -> Result<Self, Error> {
         let mut builder = Builder::new();
         builder.set_network(network);
@@ -159,6 +160,9 @@ impl CdkLdkNode {
         builder.set_node_alias("cdk-ldk-node".to_string())?;
         if seed.is_some() {
             builder.set_entropy_bip39_mnemonic(seed.unwrap(), None);
+        }
+        if announcement_address.is_some() {
+            builder.set_announcement_addresses(announcement_address.unwrap())?;
         }
         let node = builder.build()?;
 

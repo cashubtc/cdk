@@ -70,6 +70,8 @@ async fn main() -> Result<()> {
             port: 8092,
         }],
         None,
+        None,
+        None,
     )?;
 
     let inner_node = cdk_ldk.node();

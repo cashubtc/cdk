@@ -344,6 +344,8 @@ fn main() -> Result<()> {
                 port: 8092,
             }],
             Some(Arc::clone(&rt_clone)),
+            None,
+            None,
         )?;
 
         let inner_node = cdk_ldk.node();

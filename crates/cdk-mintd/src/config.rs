@@ -233,6 +233,8 @@ pub struct LdkNode {
     pub ldk_node_host: Option<String>,
     /// LDK node listening port
     pub ldk_node_port: Option<u16>,
+    /// LDK node announcement addresses
+    pub ldk_node_announce_addresses: Option<Vec<String>>,
     /// Gossip source type (p2p or rgs)
     pub gossip_source_type: Option<String>,
     /// Rapid Gossip Sync URL (when gossip_source_type = "rgs")
@@ -257,6 +259,7 @@ impl Default for LdkNode {
             bitcoind_rpc_host: None,
             bitcoind_rpc_port: None,
             bitcoind_rpc_user: None,
+            ldk_node_announce_addresses: None,
             bitcoind_rpc_password: None,
             storage_dir_path: None,
             ldk_node_host: None,
