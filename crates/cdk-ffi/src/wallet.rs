@@ -63,7 +63,7 @@ impl Wallet {
     }
 
     /// Get total balance
-    pub async fn total_balance(&self) -> Result<Amount, FfiError> {
+    pub fn total_balance(&self) -> Result<Amount, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let balance = inner.total_balance().await?;
@@ -72,7 +72,7 @@ impl Wallet {
     }
 
     /// Get total pending balance
-    pub async fn total_pending_balance(&self) -> Result<Amount, FfiError> {
+    pub fn total_pending_balance(&self) -> Result<Amount, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let balance = inner.total_pending_balance().await?;
@@ -81,7 +81,7 @@ impl Wallet {
     }
 
     /// Get total reserved balance
-    pub async fn total_reserved_balance(&self) -> Result<Amount, FfiError> {
+    pub fn total_reserved_balance(&self) -> Result<Amount, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let balance = inner.total_reserved_balance().await?;
@@ -90,7 +90,7 @@ impl Wallet {
     }
 
     /// Get mint info
-    pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
+    pub fn get_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let info = inner.fetch_mint_info().await?;
@@ -99,7 +99,7 @@ impl Wallet {
     }
 
     /// Receive tokens
-    pub async fn receive(
+    pub fn receive(
         &self,
         token: std::sync::Arc<Token>,
         options: ReceiveOptions,
@@ -112,7 +112,7 @@ impl Wallet {
     }
 
     /// Restore wallet from seed
-    pub async fn restore(&self) -> Result<Amount, FfiError> {
+    pub fn restore(&self) -> Result<Amount, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let amount = inner.restore().await?;
@@ -121,7 +121,7 @@ impl Wallet {
     }
 
     /// Verify token DLEQ proofs
-    pub async fn verify_token_dleq(&self, token: std::sync::Arc<Token>) -> Result<(), FfiError> {
+    pub fn verify_token_dleq(&self, token: std::sync::Arc<Token>) -> Result<(), FfiError> {
         let inner = self.inner.clone();
         let cdk_token = token.inner.clone();
         runtime::block_on(async move {
@@ -131,7 +131,7 @@ impl Wallet {
     }
 
     /// Receive proofs directly
-    pub async fn receive_proofs(
+    pub fn receive_proofs(
         &self,
         proofs: Proofs,
         options: ReceiveOptions,
@@ -150,7 +150,7 @@ impl Wallet {
     }
 
     /// Prepare a send operation
-    pub async fn prepare_send(
+    pub fn prepare_send(
         &self,
         amount: Amount,
         options: SendOptions,
@@ -163,7 +163,7 @@ impl Wallet {
     }
 
     /// Get a mint quote
-    pub async fn mint_quote(
+    pub fn mint_quote(
         &self,
         amount: Amount,
         description: Option<String>,
@@ -176,7 +176,7 @@ impl Wallet {
     }
 
     /// Mint tokens
-    pub async fn mint(
+    pub fn mint(
         &self,
         quote_id: String,
         amount_split_target: SplitTarget,
@@ -200,7 +200,7 @@ impl Wallet {
     }
 
     /// Get a melt quote
-    pub async fn melt_quote(
+    pub fn melt_quote(
         &self,
         request: String,
         options: Option<MeltOptions>,
@@ -214,7 +214,7 @@ impl Wallet {
     }
 
     /// Melt tokens
-    pub async fn melt(&self, quote_id: String) -> Result<Melted, FfiError> {
+    pub fn melt(&self, quote_id: String) -> Result<Melted, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let melted = inner.melt(&quote_id).await?;
@@ -223,7 +223,7 @@ impl Wallet {
     }
 
     /// Get a quote for a bolt12 mint
-    pub async fn mint_bolt12_quote(
+    pub fn mint_bolt12_quote(
         &self,
         amount: Option<Amount>,
         description: Option<String>,
@@ -238,7 +238,7 @@ impl Wallet {
     }
 
     /// Mint tokens using bolt12
-    pub async fn mint_bolt12(
+    pub fn mint_bolt12(
         &self,
         quote_id: String,
         amount: Option<Amount>,
@@ -268,7 +268,7 @@ impl Wallet {
     }
 
     /// Get a quote for a bolt12 melt
-    pub async fn melt_bolt12_quote(
+    pub fn melt_bolt12_quote(
         &self,
         request: String,
         options: Option<MeltOptions>,
@@ -282,7 +282,7 @@ impl Wallet {
     }
 
     /// Swap proofs
-    pub async fn swap(
+    pub fn swap(
         &self,
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
@@ -318,7 +318,7 @@ impl Wallet {
     }
 
     /// Get proofs by states
-    pub async fn get_proofs_by_states(&self, states: Vec<ProofState>) -> Result<Proofs, FfiError> {
+    pub fn get_proofs_by_states(&self, states: Vec<ProofState>) -> Result<Proofs, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let mut all_proofs = Vec::new();
@@ -346,7 +346,7 @@ impl Wallet {
     }
 
     /// Check if proofs are spent
-    pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<bool>, FfiError> {
+    pub fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<bool>, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let cdk_proofs: Vec<cdk::nuts::Proof> =
@@ -368,7 +368,7 @@ impl Wallet {
     }
 
     /// List transactions
-    pub async fn list_transactions(
+    pub fn list_transactions(
         &self,
         direction: Option<TransactionDirection>,
     ) -> Result<Vec<Transaction>, FfiError> {
@@ -381,7 +381,7 @@ impl Wallet {
     }
 
     /// Get transaction by ID
-    pub async fn get_transaction(
+    pub fn get_transaction(
         &self,
         id: TransactionId,
     ) -> Result<Option<Transaction>, FfiError> {
@@ -394,7 +394,7 @@ impl Wallet {
     }
 
     /// Revert a transaction
-    pub async fn revert_transaction(&self, id: TransactionId) -> Result<(), FfiError> {
+    pub fn revert_transaction(&self, id: TransactionId) -> Result<(), FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let cdk_id = id.try_into()?;
@@ -405,7 +405,7 @@ impl Wallet {
 
     /// Set Clear Auth Token (CAT) for authentication
     #[cfg(feature = "auth")]
-    pub async fn set_cat(&self, cat: String) -> Result<(), FfiError> {
+    pub fn set_cat(&self, cat: String) -> Result<(), FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             inner.set_cat(cat).await?;
@@ -415,7 +415,7 @@ impl Wallet {
 
     /// Set refresh token for authentication
     #[cfg(feature = "auth")]
-    pub async fn set_refresh_token(&self, refresh_token: String) -> Result<(), FfiError> {
+    pub fn set_refresh_token(&self, refresh_token: String) -> Result<(), FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             inner.set_refresh_token(refresh_token).await?;
@@ -425,7 +425,7 @@ impl Wallet {
 
     /// Refresh access token using the stored refresh token
     #[cfg(feature = "auth")]
-    pub async fn refresh_access_token(&self) -> Result<(), FfiError> {
+    pub fn refresh_access_token(&self) -> Result<(), FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             inner.refresh_access_token().await?;
@@ -435,7 +435,7 @@ impl Wallet {
 
     /// Mint blind auth tokens
     #[cfg(feature = "auth")]
-    pub async fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, FfiError> {
+    pub fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let proofs = inner.mint_blind_auth(amount.into()).await?;
@@ -450,7 +450,7 @@ impl Wallet {
 
     /// Get unspent auth proofs
     #[cfg(feature = "auth")]
-    pub async fn get_unspent_auth_proofs(&self) -> Result<Vec<AuthProof>, FfiError> {
+    pub fn get_unspent_auth_proofs(&self) -> Result<Vec<AuthProof>, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let auth_proofs = inner.get_unspent_auth_proofs().await?;
@@ -459,7 +459,7 @@ impl Wallet {
     }
 
     /// Subscribe to wallet events
-    pub async fn subscribe(
+    pub fn subscribe(
         &self,
         params: SubscribeParams,
     ) -> Result<std::sync::Arc<ActiveSubscription>, FfiError> {
@@ -475,7 +475,7 @@ impl Wallet {
     }
 
     /// Refresh keysets from the mint
-    pub async fn refresh_keysets(&self) -> Result<Vec<KeySetInfo>, FfiError> {
+    pub fn refresh_keysets(&self) -> Result<Vec<KeySetInfo>, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let keysets = inner.refresh_keysets().await?;
@@ -484,7 +484,7 @@ impl Wallet {
     }
 
     /// Get the active keyset for the wallet's unit
-    pub async fn get_active_keyset(&self) -> Result<KeySetInfo, FfiError> {
+    pub fn get_active_keyset(&self) -> Result<KeySetInfo, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let keyset = inner.get_active_keyset().await?;
@@ -493,7 +493,7 @@ impl Wallet {
     }
 
     /// Get fees for a specific keyset ID
-    pub async fn get_keyset_fees_by_id(&self, keyset_id: String) -> Result<u64, FfiError> {
+    pub fn get_keyset_fees_by_id(&self, keyset_id: String) -> Result<u64, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let id = cdk::nuts::Id::from_str(&keyset_id)
@@ -504,7 +504,7 @@ impl Wallet {
     }
 
     /// Reclaim unspent proofs (mark them as unspent in the database)
-    pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), FfiError> {
+    pub fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let cdk_proofs: Vec<cdk::nuts::Proof> =
@@ -515,7 +515,7 @@ impl Wallet {
     }
 
     /// Check all pending proofs and return the total amount reclaimed
-    pub async fn check_all_pending_proofs(&self) -> Result<Amount, FfiError> {
+    pub fn check_all_pending_proofs(&self) -> Result<Amount, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let amount = inner.check_all_pending_proofs().await?;
@@ -524,7 +524,7 @@ impl Wallet {
     }
 
     /// Calculate fee for a given number of proofs with the specified keyset
-    pub async fn calculate_fee(
+    pub fn calculate_fee(
         &self,
         proof_count: u32,
         keyset_id: String,

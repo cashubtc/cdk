@@ -12,27 +12,26 @@ use crate::types::*;
 /// FFI-compatible trait for wallet database operations
 /// This trait mirrors the CDK WalletDatabase trait but uses FFI-compatible types
 #[uniffi::export(with_foreign)]
-#[async_trait::async_trait]
 pub trait WalletDatabase: Send + Sync {
     // Mint Management
     /// Add Mint to storage
-    async fn add_mint(
+    fn add_mint(
         &self,
         mint_url: MintUrl,
         mint_info: Option<MintInfo>,
     ) -> Result<(), FfiError>;
 
     /// Remove Mint from storage
-    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), FfiError>;
+    fn remove_mint(&self, mint_url: MintUrl) -> Result<(), FfiError>;
 
     /// Get mint from storage
-    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, FfiError>;
+    fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, FfiError>;
 
     /// Get all mints from storage
-    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, FfiError>;
+    fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, FfiError>;
 
     /// Update mint url
-    async fn update_mint_url(
+    fn update_mint_url(
         &self,
         old_mint_url: MintUrl,
         new_mint_url: MintUrl,
@@ -40,67 +39,67 @@ pub trait WalletDatabase: Send + Sync {
 
     // Keyset Management
     /// Add mint keyset to storage
-    async fn add_mint_keysets(
+    fn add_mint_keysets(
         &self,
         mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
     ) -> Result<(), FfiError>;
 
     /// Get mint keysets for mint url
-    async fn get_mint_keysets(
+    fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, FfiError>;
 
     /// Get mint keyset by id
-    async fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<KeySetInfo>, FfiError>;
+    fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<KeySetInfo>, FfiError>;
 
     // Mint Quote Management
     /// Add mint quote to storage
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError>;
+    fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError>;
 
     /// Get mint quote from storage
-    async fn get_mint_quote(&self, quote_id: String) -> Result<Option<MintQuote>, FfiError>;
+    fn get_mint_quote(&self, quote_id: String) -> Result<Option<MintQuote>, FfiError>;
 
     /// Get mint quotes from storage
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError>;
+    fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError>;
 
     /// Remove mint quote from storage
-    async fn remove_mint_quote(&self, quote_id: String) -> Result<(), FfiError>;
+    fn remove_mint_quote(&self, quote_id: String) -> Result<(), FfiError>;
 
     // Melt Quote Management
     /// Add melt quote to storage
-    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), FfiError>;
+    fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), FfiError>;
 
     /// Get melt quote from storage
-    async fn get_melt_quote(&self, quote_id: String) -> Result<Option<MeltQuote>, FfiError>;
+    fn get_melt_quote(&self, quote_id: String) -> Result<Option<MeltQuote>, FfiError>;
 
     /// Get melt quotes from storage
-    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, FfiError>;
+    fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, FfiError>;
 
     /// Remove melt quote from storage
-    async fn remove_melt_quote(&self, quote_id: String) -> Result<(), FfiError>;
+    fn remove_melt_quote(&self, quote_id: String) -> Result<(), FfiError>;
 
     // Keys Management
     /// Add Keys to storage
-    async fn add_keys(&self, keyset: KeySet) -> Result<(), FfiError>;
+    fn add_keys(&self, keyset: KeySet) -> Result<(), FfiError>;
 
     /// Get Keys from storage
-    async fn get_keys(&self, id: Id) -> Result<Option<Keys>, FfiError>;
+    fn get_keys(&self, id: Id) -> Result<Option<Keys>, FfiError>;
 
     /// Remove Keys from storage
-    async fn remove_keys(&self, id: Id) -> Result<(), FfiError>;
+    fn remove_keys(&self, id: Id) -> Result<(), FfiError>;
 
     // Proof Management
     /// Update the proofs in storage by adding new proofs or removing proofs by their Y value
-    async fn update_proofs(
+    fn update_proofs(
         &self,
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), FfiError>;
 
     /// Get proofs from storage
-    async fn get_proofs(
+    fn get_proofs(
         &self,
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
@@ -109,7 +108,7 @@ pub trait WalletDatabase: Send + Sync {
     ) -> Result<Vec<ProofInfo>, FfiError>;
 
     /// Update proofs state in storage
-    async fn update_proofs_state(
+    fn update_proofs_state(
         &self,
         ys: Vec<PublicKey>,
         state: ProofState,
@@ -117,20 +116,20 @@ pub trait WalletDatabase: Send + Sync {
 
     // Keyset Counter Management
     /// Increment Keyset counter
-    async fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<u32, FfiError>;
+    fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<u32, FfiError>;
 
     // Transaction Management
     /// Add transaction to storage
-    async fn add_transaction(&self, transaction: Transaction) -> Result<(), FfiError>;
+    fn add_transaction(&self, transaction: Transaction) -> Result<(), FfiError>;
 
     /// Get transaction from storage
-    async fn get_transaction(
+    fn get_transaction(
         &self,
         transaction_id: TransactionId,
     ) -> Result<Option<Transaction>, FfiError>;
 
     /// List transactions from storage
-    async fn list_transactions(
+    fn list_transactions(
         &self,
         mint_url: Option<MintUrl>,
         direction: Option<TransactionDirection>,
@@ -138,7 +137,7 @@ pub trait WalletDatabase: Send + Sync {
     ) -> Result<Vec<Transaction>, FfiError>;
 
     /// Remove transaction from storage
-    async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), FfiError>;
+    fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), FfiError>;
 }
 
 /// Internal bridge trait to convert from the FFI trait to the CDK database trait
@@ -174,7 +173,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
 
         self.ffi_db
             .add_mint(ffi_mint_url, ffi_mint_info)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
@@ -182,7 +180,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let ffi_mint_url = mint_url.into();
         self.ffi_db
             .remove_mint(ffi_mint_url)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
@@ -194,7 +191,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let result = self
             .ffi_db
             .get_mint(ffi_mint_url)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
         Ok(result.map(Into::into))
     }
@@ -206,7 +202,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let result = self
             .ffi_db
             .get_mints()
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
 
         let mut cdk_result = HashMap::new();
@@ -228,7 +223,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let ffi_new_mint_url = new_mint_url.into();
         self.ffi_db
             .update_mint_url(ffi_old_mint_url, ffi_new_mint_url)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
@@ -243,7 +237,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
 
         self.ffi_db
             .add_mint_keysets(ffi_mint_url, ffi_keysets)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
@@ -255,7 +248,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let result = self
             .ffi_db
             .get_mint_keysets(ffi_mint_url)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
         Ok(result.map(|keysets| keysets.into_iter().map(Into::into).collect()))
     }
@@ -268,7 +260,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let result = self
             .ffi_db
             .get_keyset_by_id(ffi_id)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
         Ok(result.map(Into::into))
     }
@@ -278,7 +269,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let ffi_quote = quote.into();
         self.ffi_db
             .add_mint_quote(ffi_quote)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
@@ -289,7 +279,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let result = self
             .ffi_db
             .get_mint_quote(quote_id.to_string())
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
         Ok(result
             .map(|q| {
@@ -304,7 +293,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let result = self
             .ffi_db
             .get_mint_quotes()
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
         Ok(result
             .into_iter()
@@ -319,7 +307,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         self.ffi_db
             .remove_mint_quote(quote_id.to_string())
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
@@ -328,7 +315,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let ffi_quote = quote.into();
         self.ffi_db
             .add_melt_quote(ffi_quote)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
@@ -339,7 +325,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let result = self
             .ffi_db
             .get_melt_quote(quote_id.to_string())
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
         Ok(result
             .map(|q| {
@@ -354,7 +339,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let result = self
             .ffi_db
             .get_melt_quotes()
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
         Ok(result
             .into_iter()
@@ -369,7 +353,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         self.ffi_db
             .remove_melt_quote(quote_id.to_string())
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
@@ -378,7 +361,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let ffi_keyset: KeySet = keyset.into();
         self.ffi_db
             .add_keys(ffi_keyset)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
@@ -390,7 +372,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let result = self
             .ffi_db
             .get_keys(ffi_id)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
 
         // Convert FFI Keys back to CDK Keys using TryFrom
@@ -407,7 +388,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let ffi_id = (*id).into();
         self.ffi_db
             .remove_keys(ffi_id)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
@@ -422,7 +402,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
 
         self.ffi_db
             .update_proofs(ffi_added, ffi_removed_ys)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
@@ -442,7 +421,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let result = self
             .ffi_db
             .get_proofs(ffi_mint_url, ffi_unit, ffi_state, ffi_spending_conditions)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
 
         // Convert back to CDK ProofInfo
@@ -484,7 +462,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
 
         self.ffi_db
             .update_proofs_state(ffi_ys, ffi_state)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
@@ -497,7 +474,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let ffi_id = (*keyset_id).into();
         self.ffi_db
             .increment_keyset_counter(ffi_id, count)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
@@ -509,7 +485,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let ffi_transaction = transaction.into();
         self.ffi_db
             .add_transaction(ffi_transaction)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
@@ -521,7 +496,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let result = self
             .ffi_db
             .get_transaction(ffi_id)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
 
         result
@@ -543,7 +517,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let result = self
             .ffi_db
             .list_transactions(ffi_mint_url, ffi_direction, ffi_unit)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
 
         result
@@ -560,7 +533,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let ffi_id = transaction_id.into();
         self.ffi_db
             .remove_transaction(ffi_id)
-            .await
             .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 }
@@ -579,7 +551,7 @@ impl WalletSqliteDatabase {
 impl WalletSqliteDatabase {
     /// Create a new WalletSqliteDatabase with the given work directory
     #[uniffi::constructor]
-    pub async fn new(work_dir: String) -> Result<Arc<Self>, FfiError> {
+    pub fn new(work_dir: String) -> Result<Arc<Self>, FfiError> {
         crate::runtime::block_on(async move {
             let db = CdkWalletSqliteDatabase::new(work_dir.as_str())
                 .await
@@ -592,7 +564,7 @@ impl WalletSqliteDatabase {
 
     /// Create an in-memory database
     #[uniffi::constructor]
-    pub async fn new_in_memory() -> Result<Arc<Self>, FfiError> {
+    pub fn new_in_memory() -> Result<Arc<Self>, FfiError> {
         crate::runtime::block_on(async move {
             let db = cdk_sqlite::wallet::memory::empty()
                 .await
@@ -605,10 +577,9 @@ impl WalletSqliteDatabase {
 }
 
 #[uniffi::export]
-#[async_trait::async_trait]
 impl WalletDatabase for WalletSqliteDatabase {
     // Mint Management
-    async fn add_mint(
+    fn add_mint(
         &self,
         mint_url: MintUrl,
         mint_info: Option<MintInfo>,
@@ -623,7 +594,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), FfiError> {
+    fn remove_mint(&self, mint_url: MintUrl) -> Result<(), FfiError> {
         crate::runtime::block_on(async move {
             let cdk_mint_url = mint_url.try_into()?;
             self.inner
@@ -633,7 +604,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, FfiError> {
+    fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, FfiError> {
         crate::runtime::block_on(async move {
             let cdk_mint_url = mint_url.try_into()?;
             let result = self
@@ -645,7 +616,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, FfiError> {
+    fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, FfiError> {
         crate::runtime::block_on(async move {
             let result = self
                 .inner
@@ -659,7 +630,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn update_mint_url(
+    fn update_mint_url(
         &self,
         old_mint_url: MintUrl,
         new_mint_url: MintUrl,
@@ -675,7 +646,7 @@ impl WalletDatabase for WalletSqliteDatabase {
     }
 
     // Keyset Management
-    async fn add_mint_keysets(
+    fn add_mint_keysets(
         &self,
         mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
@@ -691,7 +662,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn get_mint_keysets(
+    fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, FfiError> {
@@ -706,7 +677,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<KeySetInfo>, FfiError> {
+    fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<KeySetInfo>, FfiError> {
         crate::runtime::block_on(async move {
             let cdk_id = keyset_id.into();
             let result = self
@@ -719,7 +690,7 @@ impl WalletDatabase for WalletSqliteDatabase {
     }
 
     // Mint Quote Management
-    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError> {
+    fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError> {
         crate::runtime::block_on(async move {
             let cdk_quote = quote.try_into()?;
             self.inner
@@ -729,7 +700,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn get_mint_quote(&self, quote_id: String) -> Result<Option<MintQuote>, FfiError> {
+    fn get_mint_quote(&self, quote_id: String) -> Result<Option<MintQuote>, FfiError> {
         crate::runtime::block_on(async move {
             let result = self
                 .inner
@@ -740,7 +711,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
+    fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
         crate::runtime::block_on(async move {
             let result = self
                 .inner
@@ -751,7 +722,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn remove_mint_quote(&self, quote_id: String) -> Result<(), FfiError> {
+    fn remove_mint_quote(&self, quote_id: String) -> Result<(), FfiError> {
         crate::runtime::block_on(async move {
             self.inner
                 .remove_mint_quote(&quote_id)
@@ -761,7 +732,7 @@ impl WalletDatabase for WalletSqliteDatabase {
     }
 
     // Melt Quote Management
-    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), FfiError> {
+    fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), FfiError> {
         crate::runtime::block_on(async move {
             let cdk_quote = quote.try_into()?;
             self.inner
@@ -771,7 +742,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn get_melt_quote(&self, quote_id: String) -> Result<Option<MeltQuote>, FfiError> {
+    fn get_melt_quote(&self, quote_id: String) -> Result<Option<MeltQuote>, FfiError> {
         crate::runtime::block_on(async move {
             let result = self
                 .inner
@@ -782,7 +753,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, FfiError> {
+    fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, FfiError> {
         crate::runtime::block_on(async move {
             let result = self
                 .inner
@@ -793,7 +764,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn remove_melt_quote(&self, quote_id: String) -> Result<(), FfiError> {
+    fn remove_melt_quote(&self, quote_id: String) -> Result<(), FfiError> {
         crate::runtime::block_on(async move {
             self.inner
                 .remove_melt_quote(&quote_id)
@@ -803,7 +774,7 @@ impl WalletDatabase for WalletSqliteDatabase {
     }
 
     // Keys Management
-    async fn add_keys(&self, keyset: KeySet) -> Result<(), FfiError> {
+    fn add_keys(&self, keyset: KeySet) -> Result<(), FfiError> {
         crate::runtime::block_on(async move {
             // Convert FFI KeySet to cashu::KeySet
             let cashu_keyset: cashu::KeySet = keyset.try_into()?;
@@ -814,7 +785,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn get_keys(&self, id: Id) -> Result<Option<Keys>, FfiError> {
+    fn get_keys(&self, id: Id) -> Result<Option<Keys>, FfiError> {
         crate::runtime::block_on(async move {
             let cdk_id = id.into();
             let result = self
@@ -826,7 +797,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn remove_keys(&self, id: Id) -> Result<(), FfiError> {
+    fn remove_keys(&self, id: Id) -> Result<(), FfiError> {
         crate::runtime::block_on(async move {
             let cdk_id = id.into();
             self.inner
@@ -837,7 +808,7 @@ impl WalletDatabase for WalletSqliteDatabase {
     }
 
     // Proof Management
-    async fn update_proofs(
+    fn update_proofs(
         &self,
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
@@ -873,7 +844,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn get_proofs(
+    fn get_proofs(
         &self,
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
@@ -903,7 +874,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn update_proofs_state(
+    fn update_proofs_state(
         &self,
         ys: Vec<PublicKey>,
         state: ProofState,
@@ -922,7 +893,7 @@ impl WalletDatabase for WalletSqliteDatabase {
     }
 
     // Keyset Counter Management
-    async fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<u32, FfiError> {
+    fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<u32, FfiError> {
         crate::runtime::block_on(async move {
             let cdk_id = keyset_id.into();
             self.inner
@@ -933,7 +904,7 @@ impl WalletDatabase for WalletSqliteDatabase {
     }
 
     // Transaction Management
-    async fn add_transaction(&self, transaction: Transaction) -> Result<(), FfiError> {
+    fn add_transaction(&self, transaction: Transaction) -> Result<(), FfiError> {
         crate::runtime::block_on(async move {
             // Convert FFI Transaction to CDK Transaction using TryFrom
             let cdk_transaction: cdk_common::wallet::Transaction = transaction.try_into()?;
@@ -945,7 +916,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn get_transaction(
+    fn get_transaction(
         &self,
         transaction_id: TransactionId,
     ) -> Result<Option<Transaction>, FfiError> {
@@ -960,7 +931,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn list_transactions(
+    fn list_transactions(
         &self,
         mint_url: Option<MintUrl>,
         direction: Option<TransactionDirection>,
@@ -981,7 +952,7 @@ impl WalletDatabase for WalletSqliteDatabase {
         })
     }
 
-    async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), FfiError> {
+    fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), FfiError> {
         crate::runtime::block_on(async move {
             let cdk_id = transaction_id.try_into()?;
             self.inner
