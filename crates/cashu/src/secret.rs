@@ -41,12 +41,6 @@ impl fmt::Debug for Secret {
     }
 }
 
-impl fmt::Display for Secret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[REDACTED]")
-    }
-}
-
 impl Secret {
     /// Create new [`Secret`]
     #[inline]
