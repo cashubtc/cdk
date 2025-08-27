@@ -381,10 +381,7 @@ impl Wallet {
     }
 
     /// Get transaction by ID
-    pub fn get_transaction(
-        &self,
-        id: TransactionId,
-    ) -> Result<Option<Transaction>, FfiError> {
+    pub fn get_transaction(&self, id: TransactionId) -> Result<Option<Transaction>, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let cdk_id = id.try_into()?;
@@ -524,11 +521,7 @@ impl Wallet {
     }
 
     /// Calculate fee for a given number of proofs with the specified keyset
-    pub fn calculate_fee(
-        &self,
-        proof_count: u32,
-        keyset_id: String,
-    ) -> Result<Amount, FfiError> {
+    pub fn calculate_fee(&self, proof_count: u32, keyset_id: String) -> Result<Amount, FfiError> {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let id = cdk::nuts::Id::from_str(&keyset_id)
