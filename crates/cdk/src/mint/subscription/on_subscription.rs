@@ -6,8 +6,8 @@ use std::sync::Arc;
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::nut17::Notification;
 use cdk_common::pub_sub::OnNewSubscription;
+use cdk_common::quote_id::QuoteId;
 use cdk_common::{MintQuoteBolt12Response, NotificationPayload, PaymentMethod};
-use uuid::Uuid;
 
 use crate::nuts::{MeltQuoteBolt11Response, MintQuoteBolt11Response, ProofState, PublicKey};
 
@@ -21,7 +21,7 @@ pub struct OnSubscription(pub(crate) Option<Arc<dyn MintDatabase<database::Error
 
 #[async_trait::async_trait]
 impl OnNewSubscription for OnSubscription {
-    type Event = NotificationPayload<Uuid>;
+    type Event = NotificationPayload<QuoteId>;
     type Index = Notification;
 
     async fn on_new_subscription(
@@ -65,7 +65,7 @@ impl OnNewSubscription for OnSubscription {
                         quotes
                             .into_iter()
                             .filter_map(|quote| quote.map(|x| x.into()))
-                            .map(|x: MeltQuoteBolt11Response<Uuid>| x.into())
+                            .map(|x: MeltQuoteBolt11Response<QuoteId>| x.into())
                             .collect::<Vec<_>>()
                     })
                     .map_err(|e| e.to_string())?,
@@ -82,12 +82,13 @@ impl OnNewSubscription for OnSubscription {
                             .filter_map(|quote| {
                                 quote.and_then(|x| match x.payment_method {
                                     PaymentMethod::Bolt11 => {
-                                        let response: MintQuoteBolt11Response<Uuid> = x.into();
+                                        let response: MintQuoteBolt11Response<QuoteId> = x.into();
                                         Some(response.into())
                                     }
                                     PaymentMethod::Bolt12 => match x.try_into() {
                                         Ok(response) => {
-                                            let response: MintQuoteBolt12Response<Uuid> = response;
+                                            let response: MintQuoteBolt12Response<QuoteId> =
+                                                response;
                                             Some(response.into())
                                         }
                                         Err(_) => None,

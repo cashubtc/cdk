@@ -10,10 +10,12 @@ use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, Visitor};
 use serde::ser::{SerializeStruct, Serializer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-#[cfg(feature = "mint")]
-use uuid::Uuid;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
+#[cfg(feature = "mint")]
+use crate::quote_id::QuoteId;
+#[cfg(feature = "mint")]
+use crate::quote_id::QuoteIdError;
 use crate::Amount;
 
 /// NUT04 Error
@@ -44,12 +46,12 @@ pub struct MintRequest<Q> {
 }
 
 #[cfg(feature = "mint")]
-impl TryFrom<MintRequest<String>> for MintRequest<Uuid> {
-    type Error = uuid::Error;
+impl TryFrom<MintRequest<String>> for MintRequest<QuoteId> {
+    type Error = QuoteIdError;
 
     fn try_from(value: MintRequest<String>) -> Result<Self, Self::Error> {
         Ok(Self {
-            quote: Uuid::from_str(&value.quote)?,
+            quote: QuoteId::from_str(&value.quote)?,
             outputs: value.outputs,
             signature: value.signature,
         })
