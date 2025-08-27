@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use cdk_common::MintQuoteBolt12Response;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time;
 
@@ -15,6 +16,7 @@ use crate::Wallet;
 #[derive(Debug, Hash, PartialEq, Eq)]
 enum UrlType {
     Mint(String),
+    MintBolt12(String),
     Melt(String),
     PublicKey(nut01::PublicKey),
 }
@@ -22,6 +24,7 @@ enum UrlType {
 #[derive(Debug, Eq, PartialEq)]
 enum AnyState {
     MintQuoteState(nut23::QuoteState),
+    MintBolt12QuoteState(MintQuoteBolt12Response<String>),
     MeltQuoteState(nut05::QuoteState),
     PublicKey(nut07::State),
     Empty,
@@ -67,7 +70,12 @@ async fn convert_subscription(
             }
         }
         Kind::Bolt12MintQuote => {
-            for id in sub.1.filters.iter().map(|id| UrlType::Mint(id.clone())) {
+            for id in sub
+                .1
+                .filters
+                .iter()
+                .map(|id| UrlType::MintBolt12(id.clone()))
+            {
                 subscribed_to.insert(id, (sub.0.clone(), sub.1.id.clone(), AnyState::Empty));
             }
         }
@@ -98,6 +106,18 @@ pub async fn http_main<S: IntoIterator<Item = SubId>>(
                 for (url, (sender, _, last_state)) in subscribed_to.iter_mut() {
                     tracing::debug!("Polling: {:?}", url);
                     match url {
+                        UrlType::MintBolt12(id) => {
+                            let response = http_client.get_mint_quote_bolt12_status(id).await;
+                            if let Ok(response) = response {
+                                if *last_state == AnyState::MintBolt12QuoteState(response.clone()) {
+                                    continue;
+                                }
+                                *last_state = AnyState::MintBolt12QuoteState(response.clone());
+                                if let Err(err) = sender.try_send(NotificationPayload::MintQuoteBolt12Response(response)) {
+                                    tracing::error!("Error sending mint quote response: {:?}", err);
+                                }
+                            }
+                        },
                         UrlType::Mint(id) => {
 
                             let response = http_client.get_mint_quote_status(id).await;
