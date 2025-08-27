@@ -76,6 +76,7 @@ impl Default for Info {
             url: String::new(),
             listen_host: "127.0.0.1".to_string(),
             listen_port: 8091, // Default to port 8091 instead of 0
+            seed: None,
             mnemonic: None,
             signatory_url: None,
             signatory_certs: None,
