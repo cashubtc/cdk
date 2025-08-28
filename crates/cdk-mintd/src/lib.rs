@@ -14,11 +14,10 @@ use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase, MintKeysDatabase};
-use cdk::cdk_payment;
 // internal crate modules
 #[cfg(feature = "prometheus")]
-use cdk::cdk_payment::MetricsMintPayment;
-use cdk::cdk_payment::MintPayment;
+use cdk_common::payment::MetricsMintPayment;
+use cdk_common::payment::MintPayment;
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 #[cfg(any(
     feature = "cln",
@@ -567,7 +566,7 @@ async fn configure_backend_for_unit(
     mut mint_builder: MintBuilder,
     unit: cdk::nuts::CurrencyUnit,
     mint_melt_limits: MintMeltLimits,
-    backend: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+    backend: Arc<dyn MintPayment<Err = cdk_common::payment::Error> + Send + Sync>,
 ) -> Result<MintBuilder> {
     let payment_settings = backend.get_settings().await?;
 

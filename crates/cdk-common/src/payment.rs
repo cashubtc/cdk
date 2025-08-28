@@ -6,6 +6,7 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use cashu::util::hex;
 use cashu::{Bolt11Invoice, MeltOptions};
+#[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use futures::Stream;
 use lightning::offers::offer::Offer;
@@ -412,10 +413,11 @@ impl TryFrom<Value> for Bolt11Settings {
 /// MintPayment trait methods. It wraps any existing MintPayment implementation
 /// and automatically records timing and operation metrics.
 #[derive(Clone)]
+#[cfg(feature = "prometheus")]
 pub struct MetricsMintPayment<T> {
     inner: T,
 }
-
+#[cfg(feature = "prometheus")]
 impl<T> MetricsMintPayment<T>
 where
     T: MintPayment,
@@ -437,6 +439,7 @@ where
 }
 
 #[async_trait]
+#[cfg(feature = "prometheus")]
 impl<T> MintPayment for MetricsMintPayment<T>
 where
     T: MintPayment + Send + Sync,
