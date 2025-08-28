@@ -282,7 +282,7 @@ impl Wallet {
     }
 
     /// Get a quote for a BIP353 melt
-    /// 
+    ///
     /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Lightning offer
     /// and then creates a melt quote for that offer.
     #[cfg(feature = "bip353")]
@@ -294,9 +294,7 @@ impl Wallet {
         let inner = self.inner.clone();
         runtime::block_on(async move {
             let cdk_amount: cdk::Amount = amount_msat.into();
-            let quote = inner
-                .melt_bip353_quote(&bip353_address, cdk_amount)
-                .await?;
+            let quote = inner.melt_bip353_quote(&bip353_address, cdk_amount).await?;
             Ok::<MeltQuote, FfiError>(quote.into())
         })
     }
