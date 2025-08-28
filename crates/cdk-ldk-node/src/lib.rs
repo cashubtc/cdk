@@ -19,6 +19,7 @@ use cdk_common::{Amount, CurrencyUnit, MeltOptions, MeltQuoteState};
 use futures::{Stream, StreamExt};
 use ldk_node::bitcoin::hashes::Hash;
 use ldk_node::bitcoin::Network;
+use ldk_node::config::{Config, WALLET_KEYS_SEED_LEN};
 use ldk_node::lightning::ln::channelmanager::PaymentId;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use ldk_node::lightning_invoice::{Bolt11InvoiceDescription, Description};
@@ -98,6 +99,64 @@ pub enum GossipSource {
     /// Contains the URL of the RGS server for compressed gossip data
     RapidGossipSync(String),
 }
+/// A builder for an [`CdkLdkNode`] instance.
+///
+pub struct CdkLdkNodeBuilder {
+    network: Network,
+    chain_source: ChainSource,
+    gossip_source: GossipSource,
+    storage_dir_path: String,
+    fee_reserve: FeeReserve,
+    listening_addresses: Vec<SocketAddress>,
+    runtime: Option<Arc<Runtime>>,
+    seed: Option<Mnemonic>,
+    announcement_addresses: Option<Vec<SocketAddress>>,
+}
+
+impl CdkLdkNodeBuilder {
+    /// Creates a new builder instance.
+    pub fn new(
+        network: Network,
+        chain_source: ChainSource,
+        gossip_source: GossipSource,
+        storage_dir_path: String,
+        fee_reserve: FeeReserve,
+        listening_addresses: Vec<SocketAddress>,
+    ) -> Self {
+        Self {
+            network,
+            chain_source,
+            gossip_source,
+            storage_dir_path,
+            fee_reserve,
+            listening_addresses,
+            runtime: None,
+            seed: None,
+            announcement_addresses: None,
+        }
+    }
+    /// Configures the [`CdkLdkNode`] to use the provided runtime
+    /// deprecated
+    pub fn with_runtime(mut self, runtime: Arc<Runtime>) -> Self {
+        self.runtime = Some(runtime);
+        self
+    }
+
+    /// Configures the [`CdkLdkNode`] to use the Mnemonic for entropy source configuration
+    pub fn with_seed(mut self, seed: Mnemonic) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+    /// Configures the [`CdkLdkNode`] to use announce this address to the lightning network
+    pub fn with_announcement_address(mut self, announcement_addresses: Vec<SocketAddress>) -> Self {
+        self.announcement_addresses = Some(announcement_addresses);
+        self
+    }
+    /// Builds the [`CdkLdkNode`] instance
+    pub fn build(self) -> Result<CdkLdkNode, Error> {
+        CdkLdkNode::new(self)
+    }
+}
 
 impl CdkLdkNode {
     /// Create a new CDK LDK Node instance
@@ -116,25 +175,15 @@ impl CdkLdkNode {
     ///
     /// # Errors
     /// Returns an error if the LDK node builder fails to create the node
-    pub fn new(
-        network: Network,
-        chain_source: ChainSource,
-        gossip_source: GossipSource,
-        storage_dir_path: String,
-        fee_reserve: FeeReserve,
-        listening_address: Vec<SocketAddress>,
-        runtime: Option<Arc<Runtime>>,
-        seed: Option<Mnemonic>,
-        announcement_address: Option<Vec<SocketAddress>>,
-    ) -> Result<Self, Error> {
-        let mut builder = Builder::new();
-        builder.set_network(network);
-        tracing::info!("Storage dir of node is {}", storage_dir_path);
-        builder.set_storage_dir_path(storage_dir_path);
+    pub fn new(builder: CdkLdkNodeBuilder) -> Result<Self, Error> {
+        let mut ldk = Builder::new();
+        ldk.set_network(builder.network);
+        tracing::info!("Storage dir of node is {}", builder.storage_dir_path);
+        ldk.set_storage_dir_path(builder.storage_dir_path);
 
-        match chain_source {
+        match builder.chain_source {
             ChainSource::Esplora(esplora_url) => {
-                builder.set_chain_source_esplora(esplora_url, None);
+                ldk.set_chain_source_esplora(esplora_url, None);
             }
             ChainSource::BitcoinRpc(BitcoinRpcConfig {
                 host,
@@ -142,29 +191,30 @@ impl CdkLdkNode {
                 user,
                 password,
             }) => {
-                builder.set_chain_source_bitcoind_rpc(host, port, user, password);
+                ldk.set_chain_source_bitcoind_rpc(host, port, user, password);
             }
         }
 
-        match gossip_source {
+        match builder.gossip_source {
             GossipSource::P2P => {
-                builder.set_gossip_source_p2p();
+                ldk.set_gossip_source_p2p();
             }
             GossipSource::RapidGossipSync(rgs_url) => {
-                builder.set_gossip_source_rgs(rgs_url);
+                ldk.set_gossip_source_rgs(rgs_url);
             }
         }
 
-        builder.set_listening_addresses(listening_address)?;
+        ldk.set_listening_addresses(builder.listening_addresses)?;
 
-        builder.set_node_alias("cdk-ldk-node".to_string())?;
-        if seed.is_some() {
-            builder.set_entropy_bip39_mnemonic(seed.unwrap(), None);
+        ldk.set_node_alias("cdk-ldk-node".to_string())?;
+        if builder.seed.is_some() {
+            ldk.set_entropy_bip39_mnemonic(builder.seed.unwrap(), None);
         }
-        if announcement_address.is_some() {
-            builder.set_announcement_addresses(announcement_address.unwrap())?;
+        if builder.announcement_addresses.is_some() {
+            ldk.set_announcement_addresses(builder.announcement_addresses.unwrap())?;
         }
-        let node = builder.build()?;
+
+        let node = ldk.build()?;
 
         tracing::info!("Creating tokio channel for payment notifications");
         let (sender, receiver) = tokio::sync::broadcast::channel(8);
@@ -177,18 +227,18 @@ impl CdkLdkNode {
             "Created node {} with address {:?} on network {}",
             id,
             adr,
-            network
+            builder.network
         );
 
         Ok(Self {
             inner: node.into(),
-            fee_reserve,
+            fee_reserve: builder.fee_reserve,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             sender,
             receiver: Arc::new(receiver),
             events_cancel_token: CancellationToken::new(),
-            runtime,
+            runtime: builder.runtime,
             web_addr: None,
         })
     }

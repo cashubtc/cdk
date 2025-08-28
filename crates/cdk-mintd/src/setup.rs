@@ -300,22 +300,19 @@ impl LnBackendSetup for config::LdkNode {
             .filter_map(|addr| addr.parse().ok())
             .collect();
 
-        let mut ldk_node = cdk_ldk_node::CdkLdkNode::new(
+        let mut ldk_node_builder = cdk_ldk_node::CdkLdkNodeBuilder::new(
             network,
             chain_source,
             gossip_source,
             storage_dir_path,
             fee_reserve,
             listen_address,
-            runtime,
-            Some(mem),
-            if announce_addrs.is_empty() {
-                None
-            } else {
-                Some(announce_addrs)
-            },
-        )?;
-
+        );
+        ldk_node_builder = ldk_node_builder.with_seed(mem);
+        ldk_node_builder = ldk_node_builder.with_runtime(runtime.unwrap());
+        if !announce_addrs.is_empty() {
+            ldk_node_builder = ldk_node_builder.with_announcement_address(announce_addrs)
+        }
         // Configure webserver address if specified
         let webserver_addr = if let Some(host) = &self.webserver_host {
             let port = self.webserver_port.unwrap_or(8091);
@@ -333,6 +330,7 @@ impl LnBackendSetup for config::LdkNode {
 
         println!("webserver: {:?}", webserver_addr);
 
+        let mut ldk_node = ldk_node_builder.build()?;
         ldk_node.set_web_addr(webserver_addr);
 
         Ok(ldk_node)
