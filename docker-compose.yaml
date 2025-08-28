@@ -8,7 +8,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./misc/provisioning/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -25,8 +25,11 @@ services:
     image: grafana/grafana:latest
     ports:
       - "3011:3000"
+    volumes:
+      - ./misc/provisioning/datasources:/etc/grafana/provisioning/datasources
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_PROVISIONING_PATHS=/etc/grafana/provisioning
     networks:
       - cdk
   mintd:
