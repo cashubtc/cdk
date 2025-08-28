@@ -11,10 +11,10 @@ use cdk_common::payment::{
     Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, OutgoingPaymentOptions,
     PaymentIdentifier,
 };
+use cdk_common::quote_id::QuoteId;
 use cdk_common::{MeltOptions, MeltQuoteBolt12Request};
 use lightning::offers::offer::Offer;
 use tracing::instrument;
-use uuid::Uuid;
 
 use super::{
     CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, Mint,
@@ -114,7 +114,7 @@ impl Mint {
     pub async fn get_melt_quote(
         &self,
         melt_quote_request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         match melt_quote_request {
             MeltQuoteRequest::Bolt11(bolt11_request) => {
                 self.get_melt_bolt11_quote_impl(&bolt11_request).await
@@ -130,7 +130,7 @@ impl Mint {
     async fn get_melt_bolt11_quote_impl(
         &self,
         melt_request: &MeltQuoteBolt11Request,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         let MeltQuoteBolt11Request {
             request,
             unit,
@@ -222,7 +222,7 @@ impl Mint {
     async fn get_melt_bolt12_quote_impl(
         &self,
         melt_request: &MeltQuoteBolt12Request,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         let MeltQuoteBolt12Request {
             request,
             unit,
@@ -322,8 +322,8 @@ impl Mint {
     #[instrument(skip(self))]
     pub async fn check_melt_quote(
         &self,
-        quote_id: &Uuid,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+        quote_id: &QuoteId,
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         let quote = self
             .localstore
             .get_melt_quote(quote_id)
@@ -363,7 +363,7 @@ impl Mint {
     pub async fn check_melt_expected_ln_fees(
         &self,
         melt_quote: &MeltQuote,
-        melt_request: &MeltRequest<Uuid>,
+        melt_request: &MeltRequest<QuoteId>,
     ) -> Result<Option<Amount>, Error> {
         let quote_msats = to_unit(melt_quote.amount, &melt_quote.unit, &CurrencyUnit::Msat)
             .expect("Quote unit is checked above that it can convert to msat");
@@ -445,7 +445,7 @@ impl Mint {
         &self,
         tx: &mut Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
         input_verification: Verification,
-        melt_request: &MeltRequest<Uuid>,
+        melt_request: &MeltRequest<QuoteId>,
     ) -> Result<(ProofWriter, MeltQuote), Error> {
         let (state, quote) = tx
             .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending, None)
@@ -518,8 +518,8 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn melt(
         &self,
-        melt_request: &MeltRequest<Uuid>,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+        melt_request: &MeltRequest<QuoteId>,
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         use std::sync::Arc;
         async fn check_payment_state(
             ln: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
@@ -743,10 +743,10 @@ impl Mint {
         mut tx: Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
         mut proof_writer: ProofWriter,
         quote: MeltQuote,
-        melt_request: &MeltRequest<Uuid>,
+        melt_request: &MeltRequest<QuoteId>,
         payment_preimage: Option<String>,
         total_spent: Amount,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         let input_ys = melt_request.inputs().ys()?;
 
         proof_writer
@@ -823,7 +823,7 @@ impl Mint {
                         .map(|o| o.blinded_secret)
                         .collect::<Vec<PublicKey>>(),
                     &change_sigs,
-                    Some(quote.id),
+                    Some(quote.id.clone()),
                 )
                 .await?;
 

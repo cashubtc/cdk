@@ -6,11 +6,11 @@ use cashu::nut17::{self};
 #[cfg(feature = "mint")]
 use cashu::nut17::{Error, Kind, Notification};
 #[cfg(feature = "mint")]
+use cashu::quote_id::QuoteId;
+#[cfg(feature = "mint")]
 use cashu::{NotificationPayload, PublicKey};
 #[cfg(feature = "mint")]
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "mint")]
-use uuid::Uuid;
 
 #[cfg(feature = "mint")]
 use crate::pub_sub::index::{Index, Indexable, SubscriptionGlobalId};
@@ -45,14 +45,14 @@ impl TryFrom<IndexableParams> for Vec<Index<Notification>> {
             .map(|filter| {
                 let idx = match params.kind {
                     Kind::Bolt11MeltQuote => {
-                        Notification::MeltQuoteBolt11(Uuid::from_str(&filter)?)
+                        Notification::MeltQuoteBolt11(QuoteId::from_str(&filter)?)
                     }
                     Kind::Bolt11MintQuote => {
-                        Notification::MintQuoteBolt11(Uuid::from_str(&filter)?)
+                        Notification::MintQuoteBolt11(QuoteId::from_str(&filter)?)
                     }
                     Kind::ProofState => Notification::ProofState(PublicKey::from_str(&filter)?),
                     Kind::Bolt12MintQuote => {
-                        Notification::MintQuoteBolt12(Uuid::from_str(&filter)?)
+                        Notification::MintQuoteBolt12(QuoteId::from_str(&filter)?)
                     }
                 };
 
@@ -70,7 +70,7 @@ impl AsRef<SubId> for IndexableParams {
 }
 
 #[cfg(feature = "mint")]
-impl Indexable for NotificationPayload<Uuid> {
+impl Indexable for NotificationPayload<QuoteId> {
     type Type = Notification;
 
     fn to_indexes(&self) -> Vec<Index<Self::Type>> {
@@ -79,13 +79,19 @@ impl Indexable for NotificationPayload<Uuid> {
                 vec![Index::from(Notification::ProofState(proof_state.y))]
             }
             NotificationPayload::MeltQuoteBolt11Response(melt_quote) => {
-                vec![Index::from(Notification::MeltQuoteBolt11(melt_quote.quote))]
+                vec![Index::from(Notification::MeltQuoteBolt11(
+                    melt_quote.quote.clone(),
+                ))]
             }
             NotificationPayload::MintQuoteBolt11Response(mint_quote) => {
-                vec![Index::from(Notification::MintQuoteBolt11(mint_quote.quote))]
+                vec![Index::from(Notification::MintQuoteBolt11(
+                    mint_quote.quote.clone(),
+                ))]
             }
             NotificationPayload::MintQuoteBolt12Response(mint_quote) => {
-                vec![Index::from(Notification::MintQuoteBolt12(mint_quote.quote))]
+                vec![Index::from(Notification::MintQuoteBolt12(
+                    mint_quote.quote.clone(),
+                ))]
             }
         }
     }

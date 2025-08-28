@@ -6,6 +6,7 @@ pub const DATABASE_URL_ENV_VAR: &str = "CDK_MINTD_DATABASE_URL"; // Legacy, main
 pub const ENV_URL: &str = "CDK_MINTD_URL";
 pub const ENV_LISTEN_HOST: &str = "CDK_MINTD_LISTEN_HOST";
 pub const ENV_LISTEN_PORT: &str = "CDK_MINTD_LISTEN_PORT";
+pub const ENV_SEED: &str = "CDK_MINTD_SEED";
 pub const ENV_MNEMONIC: &str = "CDK_MINTD_MNEMONIC";
 pub const ENV_SIGNATORY_URL: &str = "CDK_MINTD_SIGNATORY_URL";
 pub const ENV_SIGNATORY_CERTS: &str = "CDK_MINTD_SIGNATORY_CERTS";
