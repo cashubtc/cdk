@@ -85,7 +85,8 @@ jobs:
           shared-key: "stable"
       - name: Run example
         run: nix develop -i -L .#stable --command cargo r --example ${{ matrix.build-args }}
-
+      - name: Cleanup
+        run: rm -rf ~/runner/_work/cdk/cdk/target/debug
   clippy:
     name: "Stable build, clippy and test"
     runs-on: self-hosted
@@ -116,7 +117,8 @@ jobs:
           github.event_name == 'workflow_dispatch' ||
           (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
         run: nix develop -i -L .#stable --command bash -c 'PARALLEL=true MAX_PARALLEL_JOBS=8 TEST_SUBSET=full ./misc/test_matrix.sh'
-
+      - name: Cleanup
+        run: rm -rf ~/runner/_work/cdk/cdk/target/debug
   wasm-tests:
     name: "WASM tests"
     runs-on: self-hosted
@@ -149,7 +151,8 @@ jobs:
           shared-key: "stable"
       - name: Run WASM tests
         run: nix develop -i -L .#stable --command bash -c 'PARALLEL=true MAX_PARALLEL_JOBS=8 RUN_WASM_TESTS=true ./misc/test_matrix.sh'
-
+      - name: Cleanup
+        run: rm -rf ~/runner/_work/cdk/cdk/target/debug
   msrv-tests:
     name: "MSRV tests"
     runs-on: self-hosted
@@ -182,7 +185,8 @@ jobs:
           shared-key: "stable"
       - name: Run MSRV tests
         run: nix develop -i -L .#msrv --command bash -c 'PARALLEL=true MAX_PARALLEL_JOBS=8 RUN_MSRV_TESTS=true ./misc/test_matrix.sh'
-
+      - name: Cleanup
+        run: rm -rf ~/runner/_work/cdk/cdk/target/debug
   integration-tests:
     name: "Integration tests"
     runs-on: self-hosted
@@ -220,7 +224,8 @@ jobs:
         run: nix develop -i -L .#stable --command bash -c 'RUN_INTEGRATION_TESTS=true ./misc/test_matrix.sh'
       - name: Stop Postgres
         run: docker stop rust-test-pg
-
+      - name: Cleanup
+        run: rm -rf ~/runner/_work/cdk/cdk/target/debug
   fake-mint-auth-itest:
     name: "Integration fake mint auth tests"
     runs-on: self-hosted
@@ -261,3 +266,5 @@ jobs:
         run: |
           sudo rm -rf misc/keycloak/postgres_data
           docker compose -f misc/keycloak/docker-compose-recover.yml down
+      - name: Cleanup
+        run: rm -rf ~/runner/_work/cdk/cdk/target/debug
