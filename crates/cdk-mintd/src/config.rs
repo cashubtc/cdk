@@ -229,6 +229,8 @@ pub struct LdkNode {
     pub bitcoind_rpc_password: Option<String>,
     /// Storage directory path
     pub storage_dir_path: Option<String>,
+    /// Log directory path (logging stdout if omitted)
+    pub log_dir_path: Option<String>,
     /// LDK node listening host
     pub ldk_node_host: Option<String>,
     /// LDK node listening port
@@ -263,6 +265,7 @@ impl Default for LdkNode {
             bitcoind_rpc_password: None,
             storage_dir_path: None,
             ldk_node_host: None,
+            log_dir_path: None,
             ldk_node_port: None,
             gossip_source_type: None,
             rgs_url: None,

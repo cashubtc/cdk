@@ -329,7 +329,17 @@ impl LnBackendSetup for config::LdkNode {
         };
 
         println!("webserver: {:?}", webserver_addr);
-
+        if settings.clone().ldk_node.unwrap().log_dir_path.is_some() {
+            ldk_node_builder = ldk_node_builder.with_log_dir_path(
+                settings
+                    .clone()
+                    .ldk_node
+                    .unwrap()
+                    .log_dir_path
+                    .clone()
+                    .unwrap(),
+            );
+        }
         let mut ldk_node = ldk_node_builder.build()?;
         ldk_node.set_web_addr(webserver_addr);
 
