@@ -471,9 +471,6 @@ where
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn MintKeyDatabaseTransaction<'a, Error> + Send + Sync + 'a>, Error> {
-        #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("mint_key_transaction");
-
         let tx = SQLTransaction {
             inner: ConnectionWithTransaction::new(
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
