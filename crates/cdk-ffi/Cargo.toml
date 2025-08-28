@@ -13,6 +13,7 @@ name = "cdk_ffi"
 [features]
 default = ["auth"]
 auth = ["cdk/auth"]
+bip353 = ["cdk/bip353"]
 
 [dependencies]
 async-trait = { workspace = true }
