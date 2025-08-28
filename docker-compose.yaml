@@ -27,7 +27,9 @@ services:
       - "3011:3000"
     volumes:
       - ./misc/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./misc/provisioning/dashboards:/etc/grafana/provisioning/dashboards
     environment:
+      - GF_DASHBOARDS_JSON_ENABLED=true
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_PROVISIONING_PATHS=/etc/grafana/provisioning
     networks:
