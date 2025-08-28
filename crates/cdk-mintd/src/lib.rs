@@ -14,10 +14,6 @@ use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase, MintKeysDatabase};
-// internal crate modules
-#[cfg(feature = "prometheus")]
-use cdk_common::payment::MetricsMintPayment;
-use cdk_common::payment::MintPayment;
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 #[cfg(any(
     feature = "cln",
@@ -42,6 +38,10 @@ use cdk::nuts::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
+// internal crate modules
+#[cfg(feature = "prometheus")]
+use cdk_common::payment::MetricsMintPayment;
+use cdk_common::payment::MintPayment;
 #[cfg(feature = "postgres")]
 use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase};
 #[cfg(feature = "prometheus")]
