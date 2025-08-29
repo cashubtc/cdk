@@ -28,7 +28,7 @@ rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync", "rt"] }
+tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
 uniffi = { version = "0.29", features = ["cli"] }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
