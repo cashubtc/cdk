@@ -1187,51 +1187,47 @@ impl PreparedSend {
         self: std::sync::Arc<Self>,
         memo: Option<String>,
     ) -> Result<Token, FfiError> {
-        crate::runtime::block_on(async move {
-            let inner = {
-                if let Ok(mut guard) = self.inner.lock() {
-                    guard.take()
-                } else {
-                    return Err(FfiError::Generic {
-                        msg: "Failed to acquire lock on PreparedSend".to_string(),
-                    });
-                }
-            };
-
-            if let Some(inner) = inner {
-                let send_memo = memo.map(|m| cdk::wallet::SendMemo::for_token(&m));
-                let token = inner.confirm(send_memo).await?;
-                Ok(token.into())
+        let inner = {
+            if let Ok(mut guard) = self.inner.lock() {
+                guard.take()
             } else {
-                Err(FfiError::Generic {
-                    msg: "PreparedSend has already been consumed or cancelled".to_string(),
-                })
+                return Err(FfiError::Generic {
+                    msg: "Failed to acquire lock on PreparedSend".to_string(),
+                });
             }
-        })
+        };
+
+        if let Some(inner) = inner {
+            let send_memo = memo.map(|m| cdk::wallet::SendMemo::for_token(&m));
+            let token = inner.confirm(send_memo).await?;
+            Ok(token.into())
+        } else {
+            Err(FfiError::Generic {
+                msg: "PreparedSend has already been consumed or cancelled".to_string(),
+            })
+        }
     }
 
     /// Cancel the prepared send operation
     pub async fn cancel(self: std::sync::Arc<Self>) -> Result<(), FfiError> {
-        crate::runtime::block_on(async move {
-            let inner = {
-                if let Ok(mut guard) = self.inner.lock() {
-                    guard.take()
-                } else {
-                    return Err(FfiError::Generic {
-                        msg: "Failed to acquire lock on PreparedSend".to_string(),
-                    });
-                }
-            };
-
-            if let Some(inner) = inner {
-                inner.cancel().await?;
-                Ok(())
+        let inner = {
+            if let Ok(mut guard) = self.inner.lock() {
+                guard.take()
             } else {
-                Err(FfiError::Generic {
-                    msg: "PreparedSend has already been consumed or cancelled".to_string(),
-                })
+                return Err(FfiError::Generic {
+                    msg: "Failed to acquire lock on PreparedSend".to_string(),
+                });
             }
-        })
+        };
+
+        if let Some(inner) = inner {
+            inner.cancel().await?;
+            Ok(())
+        } else {
+            Err(FfiError::Generic {
+                msg: "PreparedSend has already been consumed or cancelled".to_string(),
+            })
+        }
     }
 }
 
@@ -2160,31 +2156,25 @@ impl ActiveSubscription {
 
     /// Receive the next notification
     pub async fn recv(&self) -> Result<NotificationPayload, FfiError> {
-        let inner = self.inner.clone();
-        crate::runtime::block_on(async move {
-            let mut guard = inner.lock().await;
-            guard
-                .recv()
-                .await
-                .ok_or(FfiError::Generic {
-                    msg: "Subscription closed".to_string(),
-                })
-                .map(Into::into)
-        })
+        let mut guard = self.inner.lock().await;
+        guard
+            .recv()
+            .await
+            .ok_or(FfiError::Generic {
+                msg: "Subscription closed".to_string(),
+            })
+            .map(Into::into)
     }
 
     /// Try to receive a notification without blocking
     pub async fn try_recv(&self) -> Result<Option<NotificationPayload>, FfiError> {
-        let inner = self.inner.clone();
-        crate::runtime::block_on(async move {
-            let mut guard = inner.lock().await;
-            guard
-                .try_recv()
-                .map(|opt| opt.map(Into::into))
-                .map_err(|e| FfiError::Generic {
-                    msg: format!("Failed to receive notification: {}", e),
-                })
-        })
+        let mut guard = self.inner.lock().await;
+        guard
+            .try_recv()
+            .map(|opt| opt.map(Into::into))
+            .map_err(|e| FfiError::Generic {
+                msg: format!("Failed to receive notification: {}", e),
+            })
     }
 }
 

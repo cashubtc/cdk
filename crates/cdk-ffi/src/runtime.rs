@@ -1,12 +1,10 @@
 //! Runtime management for FFI bindings
 //!
-//! This module provides a global multi-threaded Tokio runtime for handling
-//! async operations in the FFI bindings. The runtime is lazily initialized
-//! and shared across all FFI function calls.
+//! This module provides runtime configuration for async FFI operations.
+//! UniFFI handles the async runtime automatically when methods are marked as async.
 //!
-//! The multi-threaded runtime is configured to be compatible with mobile
-//! devices (iOS and Android) with optimized thread pool sizing and resource
-//! management while maintaining sync FFI interfaces through block_on calls.
+//! The runtime is optimized for mobile devices (iOS and Android) with
+//! appropriate thread pool sizing and resource management.
 
 use std::sync::Arc;
 
@@ -26,6 +24,7 @@ fn get_mobile_worker_threads() -> usize {
 }
 
 /// Global multi-threaded Tokio runtime instance optimized for mobile devices
+/// This is used by UniFFI for async operations
 static RUNTIME: Lazy<Arc<Runtime>> = Lazy::new(|| {
     let worker_threads = get_mobile_worker_threads();
     
@@ -40,12 +39,8 @@ static RUNTIME: Lazy<Arc<Runtime>> = Lazy::new(|| {
     )
 });
 
-/// Execute a future within the global multi-threaded runtime context
-///
-/// This function blocks the current thread until the future completes,
-/// utilizing a mobile-optimized thread pool for async operations. The runtime
-/// dynamically adjusts to device capabilities while being compatible with
-/// both iOS and Android platforms and maintaining synchronous FFI interfaces.
-pub(crate) fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    RUNTIME.block_on(future)
+/// Initialize the runtime (called by UniFFI when needed)
+pub fn init_runtime() {
+    // Force runtime initialization
+    let _ = &*RUNTIME;
 }
