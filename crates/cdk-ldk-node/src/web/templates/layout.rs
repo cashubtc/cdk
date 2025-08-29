@@ -1311,7 +1311,6 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                             li { a href="/" { "Dashboard" } }
                             li { a href="/balance" { "Lightning" } }
                             li { a href="/onchain" { "On-chain" } }
-                            li { a href="/invoices" { "Invoices" } }
                             li { a href="/payments" { "All Payments" } }
                         }
                     }
