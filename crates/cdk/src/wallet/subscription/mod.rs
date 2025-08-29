@@ -48,14 +48,16 @@ type WsSubscriptionBody = (mpsc::Sender<NotificationPayload>, Params);
 pub struct SubscriptionManager {
     all_connections: Arc<RwLock<HashMap<MintUrl, SubscriptionClient>>>,
     http_client: Arc<dyn MintConnector + Send + Sync>,
+    prefer_http: bool,
 }
 
 impl SubscriptionManager {
     /// Create a new subscription manager
-    pub fn new(http_client: Arc<dyn MintConnector + Send + Sync>) -> Self {
+    pub fn new(http_client: Arc<dyn MintConnector + Send + Sync>, prefer_http: bool) -> Self {
         Self {
             all_connections: Arc::new(RwLock::new(HashMap::new())),
             http_client,
+            prefer_http,
         }
     }
 
@@ -92,6 +94,12 @@ impl SubscriptionManager {
                 target_arch = "wasm32"
             ))]
             let is_ws_support = false;
+
+            let is_ws_support = if self.prefer_http {
+                false
+            } else {
+                is_ws_support
+            };
 
             tracing::debug!(
                 "Connect to {:?} to subscribe. WebSocket is supported ({})",
