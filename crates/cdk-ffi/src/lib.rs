@@ -12,7 +12,6 @@ pub use error::*;
 pub use types::*;
 pub use wallet::*;
 
-
 uniffi::setup_scaffolding!();
 
 #[cfg(test)]
@@ -288,10 +287,10 @@ mod tests {
     fn test_runtime_initialization() {
         // Test that the runtime initializes without panic
         runtime::init_runtime();
-        
+
         // Test that we can get a runtime handle
         let _handle = runtime::runtime_handle();
-        
+
         // Test that we can execute a simple async operation
         let result = runtime::block_on(async {
             tokio::task::yield_now().await;
