@@ -1,65 +1,63 @@
 # CDK FFI Bindings
 
-UniFFI bindings for the CDK (Cashu Development Kit) wallet functionality, providing async wallet operations for mobile and desktop applications.
+UniFFI bindings for the CDK (Cashu Development Kit), providing foreign function interface access to wallet functionality for multiple programming languages.
 
-## Usage
+## Supported Languages
 
-The CDK FFI provides async bindings for wallet operations. All wallet methods are async and use UniFFI's automatic runtime management.
+- **🐍 Python** - With REPL integration for development
+- **🍎 Swift** - iOS and macOS development
+- **🎯 Kotlin** - Android and JVM development  
+- **💎 Ruby** - Ruby applications
 
-```rust
-use cdk_ffi::*;
-use std::sync::Arc;
+## Development Tasks
 
-// Generate a new mnemonic or use an existing one
-let mnemonic = generate_mnemonic()?;
-
-// Create a database instance
-let database = WalletSqliteDatabase::new("/path/to/wallet/data".to_string()).await?;
-
-// Create wallet configuration
-let config = WalletConfig {
-    target_proof_count: Some(3), // or None for default
-};
-
-// Create wallet with mnemonic (no passphrase used)
-let wallet = Wallet::new(
-    "https://mint.example.com".to_string(),
-    CurrencyUnit::Sat,
-    mnemonic,
-    database,
-    config
-).await?;
-
-// Get wallet balance
-let balance = wallet.total_balance().await?;
-
-// Receive tokens
-let received = wallet.receive(token, ReceiveOptions::default()).await?;
+### Build & Check
+```bash
+just ffi-build        # Build FFI library (release)
+just ffi-build --debug # Build debug version
+just ffi-check         # Check compilation
+just ffi-clean         # Clean build artifacts
 ```
 
-## Building
+### Generate Bindings
+```bash
+# Generate for specific languages
+just ffi-generate python
+just ffi-generate swift
+just ffi-generate kotlin
+just ffi-generate ruby
 
-This crate uses UniFFI proc macros (not UDL files) for generating bindings.
+# Generate all languages
+just ffi-generate-all
+
+# Use --debug for faster development builds
+just ffi-generate python --debug
+```
+
+### Development & Testing
+```bash
+# Python development with REPL
+just ffi-dev-python    # Generates bindings and opens Python REPL with cdk_ffi loaded
+
+# Test bindings
+just ffi-test-python   # Test Python bindings import
+```
+
+## Quick Start
 
 ```bash
-# Build the library
-cargo build --release --package cdk-ffi
+# Start development
+just ffi-dev-python
+
+# In the Python REPL:
+>>> dir(cdk_ffi)  # Explore available functions
+>>> help(cdk_ffi.generate_mnemonic)  # Get help
 ```
 
-## Supported Language Bindings
+## Language Packages
 
-Pre-built language bindings are available in separate repositories:
+For production use, see language-specific repositories:
 
-- **Swift**: [cdk-swift](https://github.com/cashubtc/cdk-swift) - iOS and macOS bindings
-- **Kotlin**: [cdk-kotlin](https://github.com/cashubtc/cdk-kotlin) - Android and JVM bindings  
-- **Python**: [cdk-python](https://github.com/cashubtc/cdk-python) - Python bindings
-
-These repositories contain the generated bindings and provide language-specific packaging and distribution.
-
-## Features
-
-- **Async/Await Support**: All wallet operations are async and integrate with native async runtimes
-- **Mobile Optimized**: Runtime configured for mobile battery efficiency and performance
-- **Cross-Platform**: Works on iOS, Android, and desktop platforms
-- **Type Safety**: Full type safety with automatic conversion between Rust and foreign types
-
+- [cdk-swift](https://github.com/cashubtc/cdk-swift) - iOS/macOS packages
+- [cdk-kotlin](https://github.com/cashubtc/cdk-kotlin) - Android/JVM packages  
+- [cdk-python](https://github.com/cashubtc/cdk-python) - PyPI packages
