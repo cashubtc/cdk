@@ -22,7 +22,7 @@ use cashu::Amount;
 use cdk_integration_tests::cli::CommonArgs;
 use cdk_integration_tests::init_regtest::start_regtest_end;
 use cdk_integration_tests::shared;
-use cdk_ldk_node::CdkLdkNode;
+use cdk_ldk_node::{CdkLdkNode, CdkLdkNodeBuilder};
 use cdk_mintd::config::LoggingConfig;
 use clap::Parser;
 use ldk_node::lightning::ln::msgs::SocketAddress;
@@ -207,6 +207,8 @@ async fn start_ldk_mint(
         bitcoind_rpc_user: Some("testuser".to_string()),
         bitcoind_rpc_password: Some("testpass".to_string()),
         esplora_url: None,
+        log_dir_path: None,
+        ldk_node_announce_addresses: None,
         storage_dir_path: Some(ldk_work_dir.to_string_lossy().to_string()),
         ldk_node_host: Some("127.0.0.1".to_string()),
         ldk_node_port: Some(port + 10), // Use a different port for the LDK node P2P connections
@@ -325,7 +327,7 @@ fn main() -> Result<()> {
         let shutdown_clone_one = Arc::clone(&shutdown_clone);
 
         let ldk_work_dir = temp_dir.join("ldk_mint");
-        let cdk_ldk = CdkLdkNode::new(
+        let node_builder = CdkLdkNodeBuilder::new(
             bitcoin::Network::Regtest,
             cdk_ldk_node::ChainSource::BitcoinRpc(cdk_ldk_node::BitcoinRpcConfig {
                 host: "127.0.0.1".to_string(),
@@ -343,10 +345,8 @@ fn main() -> Result<()> {
                 addr: [127, 0, 0, 1],
                 port: 8092,
             }],
-            Some(Arc::clone(&rt_clone)),
-            None,
-            None,
-        )?;
+        );
+        let cdk_ldk = node_builder.build()?;
 
         let inner_node = cdk_ldk.node();
 
