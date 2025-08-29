@@ -3,7 +3,7 @@
 //! <https://github.com/cashubtc/nuts/blob/main/13.md>
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
-use bitcoin::secp256k1::hashes::{hmac, sha512, Hash, HashEngine, HmacEngine};
+use bitcoin::secp256k1::hashes::{hmac, sha256, Hash, HashEngine, HmacEngine};
 use bitcoin::{secp256k1, Network};
 use thiserror::Error;
 use tracing::instrument;
@@ -66,14 +66,14 @@ impl Secret {
 
     fn derive(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         let mut message = Vec::new();
-        message.extend_from_slice(b"Cashu_KDF_HMAC_SHA512");
+        message.extend_from_slice(b"Cashu_KDF_HMAC_SHA256");
         message.extend_from_slice(&keyset_id.to_bytes());
         message.extend_from_slice(&(counter as u64).to_be_bytes());
         message.extend_from_slice(b"\x00");
 
-        let mut engine = HmacEngine::<sha512::Hash>::new(seed);
+        let mut engine = HmacEngine::<sha256::Hash>::new(seed);
         engine.input(&message);
-        let hmac_result = hmac::Hmac::<sha512::Hash>::from_engine(engine);
+        let hmac_result = hmac::Hmac::<sha256::Hash>::from_engine(engine);
         let result_bytes = hmac_result.to_byte_array();
 
         Ok(Self::new(hex::encode(&result_bytes[..32])))
@@ -101,14 +101,14 @@ impl SecretKey {
 
     fn derive(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         let mut message = Vec::new();
-        message.extend_from_slice(b"Cashu_KDF_HMAC_SHA512");
+        message.extend_from_slice(b"Cashu_KDF_HMAC_SHA256");
         message.extend_from_slice(&keyset_id.to_bytes());
         message.extend_from_slice(&(counter as u64).to_be_bytes());
         message.extend_from_slice(b"\x01");
 
-        let mut engine = HmacEngine::<sha512::Hash>::new(seed);
+        let mut engine = HmacEngine::<sha256::Hash>::new(seed);
         engine.input(&message);
-        let hmac_result = hmac::Hmac::<sha512::Hash>::from_engine(engine);
+        let hmac_result = hmac::Hmac::<sha256::Hash>::from_engine(engine);
         let result_bytes = hmac_result.to_byte_array();
 
         Ok(Self::from(secp256k1::SecretKey::from_slice(
@@ -316,26 +316,26 @@ mod tests {
 
         // Test with a v2 keyset ID (33 bytes, starting with "01")
         let keyset_id =
-            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+            Id::from_str("012e23479a0029432eaad0d2040c09be53bab592d5cbf1d55e0dd26c9495951b30")
                 .unwrap();
 
         // Expected secrets derived using the new derivation
         let test_secrets = [
-            "f24ca2e4e5c8e1e8b43e3d0d9e9d4c2a1b6a5e9f8c7b3d2e1f0a9b8c7d6e5f4a",
-            "8b7e5f9a4d3c2b1e7f6a5d9c8b4e3f2a6b5c9d8e7f4a3b2e1f5a9c8d7b6e4f3",
-            "e9f8c7b6a5d4c3b2a1f9e8d7c6b5a4d3c2b1f0e9d8c7b6a5f4e3d2c1b0a9f8e7",
-            "a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2",
-            "d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a0f9e8d7c6",
+            "ba250bf927b1df5dd0a07c543be783a4349a7f99904acd3406548402d3484118",
+            "3a6423fe56abd5e74ec9d22a91ee110cd2ce45a7039901439d62e5534d3438c1",
+            "843484a75b78850096fac5b513e62854f11d57491cf775a6fd2edf4e583ae8c0",
+            "3600608d5cf8197374f060cfbcff134d2cd1fb57eea68cbcf2fa6917c58911b6",
+            "717fce9cc6f9ea060d20dd4e0230af4d63f3894cc49dd062fd99d033ea1ac1dd",
         ];
 
-        for (i, _test_secret) in test_secrets.iter().enumerate() {
+        for (i, test_secret) in test_secrets.iter().enumerate() {
             let secret = Secret::from_seed(&seed, keyset_id, i.try_into().unwrap()).unwrap();
             // Note: The actual expected values would need to be computed from a reference implementation
             // For now, we just verify the derivation works and produces consistent results
             assert_eq!(secret.to_string().len(), 64); // Should be 32 bytes = 64 hex chars
 
             // Test deterministic derivation: same inputs should produce same outputs
-            let secret2 = Secret::from_seed(&seed, keyset_id, i.try_into().unwrap()).unwrap();
+            let secret2 = Secret::from_str(test_secret).unwrap();
             assert_eq!(secret, secret2);
         }
     }
@@ -349,18 +349,26 @@ mod tests {
 
         // Test with a v2 keyset ID (33 bytes, starting with "01")
         let keyset_id =
-            Id::from_str("01adc013fa9d85171586660abab27579888611659d357bc86bc09cb26eee8bc035")
+            Id::from_str("012e23479a0029432eaad0d2040c09be53bab592d5cbf1d55e0dd26c9495951b30")
                 .unwrap();
 
-        for i in 0..5 {
-            let secret_key = SecretKey::from_seed(&seed, keyset_id, i).unwrap();
+        let test_secret_keys = [
+            "4f8b32a54aed811b692a665ed296b4c1fc2f37a8be4006379e95063a76693745",
+            "c4b8412ee644067007423480c9e556385b71ffdff0f340bc16a95c0534fe0e01",
+            "ceff40983441c40acaf77d2a8ddffd5c1c84391fb9fd0dc4607c186daab1c829",
+            "41ad26b840fb62d29b2318a82f1d9cd40dc0f1e58183cc57562f360a32fdfad6",
+            "fb986a9c76758593b0e2d1a5172ade977c858d87111a220e16c292a9347abf81",
+        ];
+
+        for (i, test_secret) in test_secret_keys.iter().enumerate() {
+            let secret_key = SecretKey::from_seed(&seed, keyset_id, i as u32).unwrap();
 
             // Verify the secret key is valid (32 bytes)
             let secret_bytes = secret_key.secret_bytes();
             assert_eq!(secret_bytes.len(), 32);
 
             // Test deterministic derivation
-            let secret_key2 = SecretKey::from_seed(&seed, keyset_id, i).unwrap();
+            let secret_key2 = SecretKey::from_str(test_secret).unwrap();
             assert_eq!(secret_key, secret_key2);
         }
     }
