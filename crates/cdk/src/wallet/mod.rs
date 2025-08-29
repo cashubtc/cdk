@@ -68,7 +68,7 @@ use crate::nuts::nut00::ProofsMethods;
 /// The CDK [`Wallet`] is a high level cashu wallet.
 ///
 /// A [`Wallet`] is for a single mint and single unit.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Wallet {
     /// Mint Url
     pub mint_url: MintUrl,
@@ -136,6 +136,26 @@ impl From<WalletSubscription> for Params {
                 id: id.into(),
             },
         }
+    }
+}
+
+impl fmt::Debug for Wallet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug_struct = f.debug_struct("Wallet");
+        debug_struct
+            .field("mint_url", &self.mint_url)
+            .field("unit", &self.unit)
+            .field("localstore", &self.localstore)
+            .field("target_proof_count", &self.target_proof_count);
+
+        #[cfg(feature = "auth")]
+        debug_struct.field("auth_wallet", &self.auth_wallet);
+
+        debug_struct
+            .field("seed", &"[REDACTED]")
+            .field("client", &self.client)
+            .field("subscription", &self.subscription)
+            .finish()
     }
 }
 
