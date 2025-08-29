@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use axum::Router;
 #[cfg(feature = "fakewallet")]
 use bip39::rand::{thread_rng, Rng};
+use bip39::Mnemonic;
 use cdk::cdk_payment::MintPayment;
 use cdk::nuts::CurrencyUnit;
 #[cfg(any(
@@ -192,7 +193,7 @@ impl LnBackendSetup for config::LdkNode {
     async fn setup(
         &self,
         _routers: &mut Vec<Router>,
-        _settings: &Settings,
+        settings: &Settings,
         _unit: CurrencyUnit,
         runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
@@ -287,17 +288,31 @@ impl LnBackendSetup for config::LdkNode {
         // We need to get the actual socket address struct from ldk_node
         // For now, let's construct it manually based on the cdk-ldk-node implementation
         let listen_address = vec![socket_addr.into()];
+        let mem: Mnemonic = settings.clone().info.mnemonic.unwrap().parse().unwrap();
+        let announce = settings
+            .clone()
+            .ldk_node
+            .unwrap()
+            .ldk_node_announce_addresses;
+        let announce_addrs: Vec<_> = announce
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|addr| addr.parse().ok())
+            .collect();
 
-        let mut ldk_node = cdk_ldk_node::CdkLdkNode::new(
+        let mut ldk_node_builder = cdk_ldk_node::CdkLdkNodeBuilder::new(
             network,
             chain_source,
             gossip_source,
             storage_dir_path,
             fee_reserve,
             listen_address,
-            runtime,
-        )?;
-
+        );
+        ldk_node_builder = ldk_node_builder.with_seed(mem);
+        ldk_node_builder = ldk_node_builder.with_runtime(runtime.unwrap());
+        if !announce_addrs.is_empty() {
+            ldk_node_builder = ldk_node_builder.with_announcement_address(announce_addrs)
+        }
         // Configure webserver address if specified
         let webserver_addr = if let Some(host) = &self.webserver_host {
             let port = self.webserver_port.unwrap_or(8091);
@@ -314,7 +329,18 @@ impl LnBackendSetup for config::LdkNode {
         };
 
         println!("webserver: {:?}", webserver_addr);
-
+        if settings.clone().ldk_node.unwrap().log_dir_path.is_some() {
+            ldk_node_builder = ldk_node_builder.with_log_dir_path(
+                settings
+                    .clone()
+                    .ldk_node
+                    .unwrap()
+                    .log_dir_path
+                    .clone()
+                    .unwrap(),
+            );
+        }
+        let mut ldk_node = ldk_node_builder.build()?;
         ldk_node.set_web_addr(webserver_addr);
 
         Ok(ldk_node)
