@@ -452,6 +452,16 @@ pub struct Settings {
     #[cfg(feature = "management-rpc")]
     pub mint_management_rpc: Option<MintManagementRpc>,
     pub auth: Option<Auth>,
+    #[cfg(feature = "prometheus")]
+    pub prometheus: Option<Prometheus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg(feature = "prometheus")]
+pub struct Prometheus {
+    pub enabled: bool,
+    pub address: Option<String>,
+    pub port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

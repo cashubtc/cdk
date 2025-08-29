@@ -13,10 +13,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
-// internal crate modules
 use cdk::cdk_database::{self, MintDatabase, MintKeysDatabase};
-use cdk::cdk_payment;
-use cdk::cdk_payment::MintPayment;
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 #[cfg(any(
     feature = "cln",
@@ -41,8 +38,20 @@ use cdk::nuts::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
+// internal crate modules
+#[cfg(feature = "prometheus")]
+use cdk_common::payment::MetricsMintPayment;
+use cdk_common::payment::MintPayment;
 #[cfg(feature = "postgres")]
 use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase};
+#[cfg(feature = "prometheus")]
+use cdk_prometheus;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::metrics;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::prometheus::proto::Metric;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::METRICS;
 #[cfg(all(feature = "auth", feature = "sqlite"))]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 #[cfg(feature = "sqlite")]
@@ -420,6 +429,8 @@ async fn configure_lightning_backend(
             let cln = cln_settings
                 .setup(ln_routers, settings, CurrencyUnit::Msat, None, work_dir)
                 .await?;
+            #[cfg(feature = "prometheus")]
+            let cln = MetricsMintPayment::new(cln);
 
             mint_builder = configure_backend_for_unit(
                 settings,
@@ -436,6 +447,8 @@ async fn configure_lightning_backend(
             let lnbits = lnbits_settings
                 .setup(ln_routers, settings, CurrencyUnit::Sat, None, work_dir)
                 .await?;
+            #[cfg(feature = "prometheus")]
+            let lnbits = MetricsMintPayment::new(lnbits);
 
             mint_builder = configure_backend_for_unit(
                 settings,
@@ -452,6 +465,8 @@ async fn configure_lightning_backend(
             let lnd = lnd_settings
                 .setup(ln_routers, settings, CurrencyUnit::Msat, None, work_dir)
                 .await?;
+            #[cfg(feature = "prometheus")]
+            let lnd = MetricsMintPayment::new(lnd);
 
             mint_builder = configure_backend_for_unit(
                 settings,
@@ -471,6 +486,8 @@ async fn configure_lightning_backend(
                 let fake = fake_wallet
                     .setup(ln_routers, settings, unit.clone(), None, work_dir)
                     .await?;
+                #[cfg(feature = "prometheus")]
+                let fake = MetricsMintPayment::new(fake);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -500,6 +517,8 @@ async fn configure_lightning_backend(
                 let processor = grpc_processor
                     .setup(ln_routers, settings, unit.clone(), None, work_dir)
                     .await?;
+                #[cfg(feature = "prometheus")]
+                let processor = MetricsMintPayment::new(processor);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -547,7 +566,7 @@ async fn configure_backend_for_unit(
     mut mint_builder: MintBuilder,
     unit: cdk::nuts::CurrencyUnit,
     mint_melt_limits: MintMeltLimits,
-    backend: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+    backend: Arc<dyn MintPayment<Err = cdk_common::payment::Error> + Send + Sync>,
 ) -> Result<MintBuilder> {
     let payment_settings = backend.get_settings().await?;
 
@@ -922,7 +941,30 @@ async fn start_services_with_shutdown(
             );
         }
     }
+    #[cfg(feature = "prometheus")]
+    {
+        if let Some(prometheus_settings) = &settings.prometheus {
+            if prometheus_settings.enabled {
+                let addr = prometheus_settings
+                    .address
+                    .clone()
+                    .unwrap_or("127.0.0.1".to_string());
+                let port = prometheus_settings.port.unwrap_or(9000);
 
+                let address = format!("{}:{}", addr, port)
+                    .parse()
+                    .expect("Invalid prometheus address");
+
+                let server = cdk_prometheus::PrometheusBuilder::new()
+                    .bind_address(address)
+                    .build_with_cdk_metrics()?;
+
+                if let Err(e) = server.start().await {
+                    tracing::error!("Failed to start prometheus server: {}", e);
+                }
+            }
+        }
+    }
     for router in ln_routers {
         mint_service = mint_service.merge(router);
     }
