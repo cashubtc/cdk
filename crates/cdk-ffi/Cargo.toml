@@ -22,6 +22,7 @@ cashu = { workspace = true }
 cdk = { workspace = true, default-features = false, features = ["wallet"] }
 cdk-common = { workspace = true }
 cdk-sqlite = { workspace = true }
+ctor = "0.2"
 futures = { workspace = true }
 once_cell = { workspace = true }
 rand = { workspace = true }
