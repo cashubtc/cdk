@@ -15,7 +15,7 @@ pub struct Wallet {
     inner: Arc<CdkWallet>,
 }
 
-#[uniffi::export]
+#[uniffi::export(async_runtime = "tokio")]
 impl Wallet {
     /// Create a new Wallet from mnemonic using WalletDatabase trait
     #[uniffi::constructor]

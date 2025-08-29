@@ -600,7 +600,7 @@ impl WalletSqliteDatabase {
     }
 }
 
-#[uniffi::export]
+#[uniffi::export(async_runtime = "tokio")]
 #[async_trait::async_trait]
 impl WalletDatabase for WalletSqliteDatabase {
     // Mint Management

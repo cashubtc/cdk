@@ -1152,7 +1152,7 @@ impl From<cdk::wallet::PreparedSend> for PreparedSend {
     }
 }
 
-#[uniffi::export]
+#[uniffi::export(async_runtime = "tokio")]
 impl PreparedSend {
     /// Get the prepared send ID
     pub fn id(&self) -> String {
@@ -2147,7 +2147,7 @@ impl ActiveSubscription {
     }
 }
 
-#[uniffi::export]
+#[uniffi::export(async_runtime = "tokio")]
 impl ActiveSubscription {
     /// Get the subscription ID
     pub fn id(&self) -> String {

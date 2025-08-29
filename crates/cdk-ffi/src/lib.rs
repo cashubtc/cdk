@@ -4,7 +4,6 @@
 
 pub mod database;
 pub mod error;
-pub mod runtime;
 pub mod types;
 pub mod wallet;
 
@@ -13,11 +12,6 @@ pub use error::*;
 pub use types::*;
 pub use wallet::*;
 
-// Initialize the runtime when the library is loaded
-#[ctor::ctor]
-fn init() {
-    runtime::init_runtime();
-}
 
 uniffi::setup_scaffolding!();
 
