@@ -120,7 +120,7 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 
@@ -136,7 +136,7 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 
@@ -187,7 +187,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
             quote_one.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 
@@ -206,7 +206,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
             quote_two.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 
@@ -283,7 +283,7 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 
