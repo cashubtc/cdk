@@ -26,6 +26,7 @@ pub struct WalletBuilder {
     #[cfg(feature = "auth")]
     auth_wallet: Option<AuthWallet>,
     seed: Option<[u8; 64]>,
+    prefer_http_subscription: bool,
     client: Option<Arc<dyn MintConnector + Send + Sync>>,
 }
 
@@ -40,6 +41,7 @@ impl Default for WalletBuilder {
             auth_wallet: None,
             seed: None,
             client: None,
+            prefer_http_subscription: false,
         }
     }
 }
@@ -48,6 +50,19 @@ impl WalletBuilder {
     /// Create a new WalletBuilder
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Use HTTP for wallet subscriptions to mint events
+    pub fn prefer_http_subscription(mut self) -> Self {
+        self.prefer_http_subscription = true;
+        self
+    }
+
+    /// If WS is preferred (with fallback to HTTP is it is not supported by the mint) for the wallet
+    /// subscriptions to mint events
+    pub fn prefer_ws_subscription(mut self) -> Self {
+        self.prefer_http_subscription = false;
+        self
     }
 
     /// Set the mint URL
@@ -150,7 +165,7 @@ impl WalletBuilder {
             auth_wallet: Arc::new(RwLock::new(self.auth_wallet)),
             seed,
             client: client.clone(),
-            subscription: SubscriptionManager::new(client),
+            subscription: SubscriptionManager::new(client, self.prefer_http_subscription),
         })
     }
 }
