@@ -17,7 +17,7 @@ fn get_mobile_worker_threads() -> usize {
     let cpu_count = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(2);
-    
+
     // Limit to 4 threads max for mobile devices to balance performance and battery life
     // Minimum of 2 threads to ensure responsiveness
     std::cmp::max(2, std::cmp::min(cpu_count, 4))
@@ -27,7 +27,7 @@ fn get_mobile_worker_threads() -> usize {
 /// This is used by UniFFI for async operations
 static RUNTIME: Lazy<Arc<Runtime>> = Lazy::new(|| {
     let worker_threads = get_mobile_worker_threads();
-    
+
     Arc::new(
         Builder::new_multi_thread()
             .worker_threads(worker_threads)

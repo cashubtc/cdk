@@ -16,7 +16,11 @@ use crate::types::*;
 pub trait WalletDatabase: Send + Sync {
     // Mint Management
     /// Add Mint to storage
-    async fn add_mint(&self, mint_url: MintUrl, mint_info: Option<MintInfo>) -> Result<(), FfiError>;
+    async fn add_mint(
+        &self,
+        mint_url: MintUrl,
+        mint_info: Option<MintInfo>,
+    ) -> Result<(), FfiError>;
 
     /// Remove Mint from storage
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), FfiError>;
@@ -28,16 +32,25 @@ pub trait WalletDatabase: Send + Sync {
     async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, FfiError>;
 
     /// Update mint url
-    async fn update_mint_url(&self, old_mint_url: MintUrl, new_mint_url: MintUrl)
-        -> Result<(), FfiError>;
+    async fn update_mint_url(
+        &self,
+        old_mint_url: MintUrl,
+        new_mint_url: MintUrl,
+    ) -> Result<(), FfiError>;
 
     // Keyset Management
     /// Add mint keyset to storage
-    async fn add_mint_keysets(&self, mint_url: MintUrl, keysets: Vec<KeySetInfo>)
-        -> Result<(), FfiError>;
+    async fn add_mint_keysets(
+        &self,
+        mint_url: MintUrl,
+        keysets: Vec<KeySetInfo>,
+    ) -> Result<(), FfiError>;
 
     /// Get mint keysets for mint url
-    async fn get_mint_keysets(&self, mint_url: MintUrl) -> Result<Option<Vec<KeySetInfo>>, FfiError>;
+    async fn get_mint_keysets(
+        &self,
+        mint_url: MintUrl,
+    ) -> Result<Option<Vec<KeySetInfo>>, FfiError>;
 
     /// Get mint keyset by id
     async fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<KeySetInfo>, FfiError>;
@@ -96,7 +109,11 @@ pub trait WalletDatabase: Send + Sync {
     ) -> Result<Vec<ProofInfo>, FfiError>;
 
     /// Update proofs state in storage
-    async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: ProofState) -> Result<(), FfiError>;
+    async fn update_proofs_state(
+        &self,
+        ys: Vec<PublicKey>,
+        state: ProofState,
+    ) -> Result<(), FfiError>;
 
     // Keyset Counter Management
     /// Increment Keyset counter
@@ -587,7 +604,11 @@ impl WalletSqliteDatabase {
 #[async_trait::async_trait]
 impl WalletDatabase for WalletSqliteDatabase {
     // Mint Management
-    async fn add_mint(&self, mint_url: MintUrl, mint_info: Option<MintInfo>) -> Result<(), FfiError> {
+    async fn add_mint(
+        &self,
+        mint_url: MintUrl,
+        mint_info: Option<MintInfo>,
+    ) -> Result<(), FfiError> {
         let cdk_mint_url = mint_url.try_into()?;
         let cdk_mint_info = mint_info.map(Into::into);
         self.inner
@@ -654,7 +675,10 @@ impl WalletDatabase for WalletSqliteDatabase {
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
 
-    async fn get_mint_keysets(&self, mint_url: MintUrl) -> Result<Option<Vec<KeySetInfo>>, FfiError> {
+    async fn get_mint_keysets(
+        &self,
+        mint_url: MintUrl,
+    ) -> Result<Option<Vec<KeySetInfo>>, FfiError> {
         let cdk_mint_url = mint_url.try_into()?;
         let result = self
             .inner
@@ -833,7 +857,11 @@ impl WalletDatabase for WalletSqliteDatabase {
         Ok(result.into_iter().map(Into::into).collect())
     }
 
-    async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: ProofState) -> Result<(), FfiError> {
+    async fn update_proofs_state(
+        &self,
+        ys: Vec<PublicKey>,
+        state: ProofState,
+    ) -> Result<(), FfiError> {
         let cdk_ys: Result<Vec<cdk_common::nuts::PublicKey>, FfiError> =
             ys.into_iter().map(|pk| pk.try_into()).collect();
         let cdk_ys = cdk_ys?;

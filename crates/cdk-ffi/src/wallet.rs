@@ -91,7 +91,10 @@ impl Wallet {
         token: std::sync::Arc<Token>,
         options: ReceiveOptions,
     ) -> Result<Amount, FfiError> {
-        let amount = self.inner.receive(&token.to_string(), options.into()).await?;
+        let amount = self
+            .inner
+            .receive(&token.to_string(), options.into())
+            .await?;
         Ok(amount.into())
     }
 
@@ -118,7 +121,8 @@ impl Wallet {
         let cdk_proofs: Vec<cdk::nuts::Proof> =
             proofs.into_iter().map(|p| p.inner.clone()).collect();
 
-        let amount = self.inner
+        let amount = self
+            .inner
             .receive_proofs(cdk_proofs, options.into(), memo)
             .await?;
         Ok(amount.into())
@@ -130,7 +134,10 @@ impl Wallet {
         amount: Amount,
         options: SendOptions,
     ) -> Result<std::sync::Arc<PreparedSend>, FfiError> {
-        let prepared = self.inner.prepare_send(amount.into(), options.into()).await?;
+        let prepared = self
+            .inner
+            .prepare_send(amount.into(), options.into())
+            .await?;
         Ok(std::sync::Arc::new(prepared.into()))
     }
 
@@ -154,7 +161,8 @@ impl Wallet {
         // Convert spending conditions if provided
         let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
 
-        let proofs = self.inner
+        let proofs = self
+            .inner
             .mint(&quote_id, amount_split_target.into(), conditions)
             .await?;
         Ok(proofs
@@ -186,7 +194,8 @@ impl Wallet {
         amount: Option<Amount>,
         description: Option<String>,
     ) -> Result<MintQuote, FfiError> {
-        let quote = self.inner
+        let quote = self
+            .inner
             .mint_bolt12_quote(amount.map(Into::into), description)
             .await?;
         Ok(quote.into())
@@ -202,7 +211,8 @@ impl Wallet {
     ) -> Result<Proofs, FfiError> {
         let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
 
-        let proofs = self.inner
+        let proofs = self
+            .inner
             .mint_bolt12(
                 &quote_id,
                 amount.map(Into::into),
@@ -239,7 +249,10 @@ impl Wallet {
         amount_msat: Amount,
     ) -> Result<MeltQuote, FfiError> {
         let cdk_amount: cdk::Amount = amount_msat.into();
-        let quote = self.inner.melt_bip353_quote(&bip353_address, cdk_amount).await?;
+        let quote = self
+            .inner
+            .melt_bip353_quote(&bip353_address, cdk_amount)
+            .await?;
         Ok(quote.into())
     }
 
@@ -258,7 +271,8 @@ impl Wallet {
         // Convert spending conditions if provided
         let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
 
-        let result = self.inner
+        let result = self
+            .inner
             .swap(
                 amount.map(Into::into),
                 amount_split_target.into(),
@@ -331,7 +345,10 @@ impl Wallet {
     }
 
     /// Get transaction by ID
-    pub async fn get_transaction(&self, id: TransactionId) -> Result<Option<Transaction>, FfiError> {
+    pub async fn get_transaction(
+        &self,
+        id: TransactionId,
+    ) -> Result<Option<Transaction>, FfiError> {
         let cdk_id = id.try_into()?;
         let transaction = self.inner.get_transaction(cdk_id).await?;
         Ok(transaction.map(Into::into))
@@ -390,9 +407,9 @@ impl Wallet {
         let cdk_params: cdk_common::subscription::Params = params.clone().into();
         let sub_id = cdk_params.id.to_string();
         let active_sub = self.inner.subscribe(cdk_params).await;
-        Ok(std::sync::Arc::new(
-            ActiveSubscription::new(active_sub, sub_id),
-        ))
+        Ok(std::sync::Arc::new(ActiveSubscription::new(
+            active_sub, sub_id,
+        )))
     }
 
     /// Refresh keysets from the mint
@@ -417,8 +434,7 @@ impl Wallet {
 
     /// Reclaim unspent proofs (mark them as unspent in the database)
     pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), FfiError> {
-        let cdk_proofs: Vec<cdk::nuts::Proof> =
-            proofs.iter().map(|p| p.inner.clone()).collect();
+        let cdk_proofs: Vec<cdk::nuts::Proof> = proofs.iter().map(|p| p.inner.clone()).collect();
         self.inner.reclaim_unspent(cdk_proofs).await?;
         Ok(())
     }
@@ -430,7 +446,11 @@ impl Wallet {
     }
 
     /// Calculate fee for a given number of proofs with the specified keyset
-    pub async fn calculate_fee(&self, proof_count: u32, keyset_id: String) -> Result<Amount, FfiError> {
+    pub async fn calculate_fee(
+        &self,
+        proof_count: u32,
+        keyset_id: String,
+    ) -> Result<Amount, FfiError> {
         let id = cdk::nuts::Id::from_str(&keyset_id)
             .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
         let fee_ppk = self.inner.get_keyset_fees_by_id(id).await?;
