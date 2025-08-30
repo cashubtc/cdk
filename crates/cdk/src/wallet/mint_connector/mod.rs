@@ -15,7 +15,7 @@ use crate::nuts::{
 #[cfg(feature = "auth")]
 use crate::wallet::AuthWallet;
 
-mod http_client;
+pub mod http_client;
 pub mod transport;
 
 /// Auth HTTP Client with async transport

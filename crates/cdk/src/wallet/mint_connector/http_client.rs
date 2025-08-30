@@ -1,3 +1,4 @@
+//! HTTP Mint client with pluggable transport
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
@@ -193,7 +194,7 @@ where
 
         Ok(self
             .transport
-            .http_get::<_, KeysResponse>(url, None)
+            .http_get::<KeysResponse>(url, None)
             .await?
             .keysets)
     }
@@ -205,10 +206,7 @@ where
             .mint_url
             .join_paths(&["v1", "keys", &keyset_id.to_string()])?;
 
-        let keys_response = self
-            .transport
-            .http_get::<_, KeysResponse>(url, None)
-            .await?;
+        let keys_response = self.transport.http_get::<KeysResponse>(url, None).await?;
 
         Ok(keys_response.keysets.first().unwrap().clone())
     }
@@ -574,7 +572,7 @@ where
     /// Get Mint Info [NUT-06]
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
         let url = self.mint_url.join_paths(&["v1", "info"])?;
-        let mint_info: MintInfo = self.transport.http_get::<_, MintInfo>(url, None).await?;
+        let mint_info: MintInfo = self.transport.http_get::<MintInfo>(url, None).await?;
 
         Ok(mint_info)
     }
@@ -586,10 +584,7 @@ where
             self.mint_url
                 .join_paths(&["v1", "auth", "blind", "keys", &keyset_id.to_string()])?;
 
-        let mut keys_response = self
-            .transport
-            .http_get::<_, KeysResponse>(url, None)
-            .await?;
+        let mut keys_response = self.transport.http_get::<KeysResponse>(url, None).await?;
 
         let keyset = keys_response
             .keysets

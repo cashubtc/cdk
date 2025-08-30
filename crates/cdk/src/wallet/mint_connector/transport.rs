@@ -2,7 +2,7 @@
 use std::fmt::Debug;
 
 use cdk_common::AuthToken;
-use reqwest::{Client, IntoUrl};
+use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
@@ -14,6 +14,7 @@ use crate::error::ErrorResponse;
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait Transport: Default + Send + Sync + Debug + Clone {
+    /// Make the transport to use a given proxy
     fn with_proxy(
         &mut self,
         proxy: Url,
@@ -21,19 +22,19 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
         accept_invalid_certs: bool,
     ) -> Result<(), Error>;
 
-    async fn http_get<U, R>(&self, url: U, auth: Option<AuthToken>) -> Result<R, Error>
+    /// HTTP Get request
+    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>
     where
-        U: IntoUrl + Send,
         R: DeserializeOwned;
 
-    async fn http_post<U, P, R>(
+    /// HTTP Post request
+    async fn http_post<P, R>(
         &self,
-        url: U,
+        url: Url,
         auth_token: Option<AuthToken>,
         payload: &P,
     ) -> Result<R, Error>
     where
-        U: IntoUrl + Send + Sync,
         P: Serialize + ?Sized + Send + Sync,
         R: DeserializeOwned;
 }
@@ -103,9 +104,8 @@ impl Transport for Async {
         Ok(())
     }
 
-    async fn http_get<U, R>(&self, url: U, auth: Option<AuthToken>) -> Result<R, Error>
+    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>
     where
-        U: IntoUrl + Send,
         R: DeserializeOwned,
     {
         let mut request = self.inner.get(url);
@@ -141,14 +141,13 @@ impl Transport for Async {
         })
     }
 
-    async fn http_post<U, P, R>(
+    async fn http_post<P, R>(
         &self,
-        url: U,
+        url: Url,
         auth_token: Option<AuthToken>,
         payload: &P,
     ) -> Result<R, Error>
     where
-        U: IntoUrl + Send + Sync,
         P: Serialize + ?Sized + Send + Sync,
         R: DeserializeOwned,
     {
