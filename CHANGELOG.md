@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+
+## [0.12.1](https://github.com/cashubtc/cdk/releases/tag/v0.12.1)
+
+### Fixed
+- cdk-postgres: TLS support for PostgreSQL connections ([asmogo]).
+- cdk: patch sha-512 derivation -> sha-256 derivation ([lollerfirst]).
+
 ## [0.12.0](https://github.com/cashubtc/cdk/releases/tag/v0.12.0)
 
 ### Summary
