@@ -241,12 +241,11 @@ pub async fn close_channel_page(
                 span class="info-label" { "Node ID:" }
                 span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (node_id) }
             }
-            form method="post" action="/channels/close" style="margin-top: 1rem;" {
+            form method="post" action="/channels/close" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;" {
                 input type="hidden" name="channel_id" value=(channel_id) {}
                 input type="hidden" name="node_id" value=(node_id) {}
-                button type="submit" style="background: #dc3545;" { "Close Channel" }
-                " "
-                a href="/balance" { button type="button" { "Cancel" } }
+                button type="submit" class="button-secondary" { "Close Channel" }
+                a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
             }
         },
     );
@@ -293,12 +292,11 @@ pub async fn force_close_channel_page(
                 span class="info-label" { "Node ID:" }
                 span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (node_id) }
             }
-            form method="post" action="/channels/force-close" style="margin-top: 1rem;" {
+            form method="post" action="/channels/force-close" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;" {
                 input type="hidden" name="channel_id" value=(channel_id) {}
                 input type="hidden" name="node_id" value=(node_id) {}
-                button type="submit" style="background: #d63384;" { "Force Close Channel" }
-                " "
-                a href="/balance" { button type="button" { "Cancel" } }
+                button type="submit" class="button-destructive" { "Force Close Channel" }
+                a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
             }
         },
     );

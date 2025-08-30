@@ -151,12 +151,12 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                             }
                         }
                         @if channel.is_usable {
-                            div style="margin-top: 1rem; display: flex; gap: 0.5rem;" {
+                            div style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;" {
                                 a href=(format!("/channels/close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
-                                    button style="background: #dc3545;" { "Close Channel" }
+                                    button class="button-secondary" { "Close Channel" }
                                 }
                                 a href=(format!("/channels/force-close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
-                                    button style="background: #d63384;" title="Force close should not be used if normal close is preferred. Force close will broadcast the latest commitment transaction immediately." { "Force Close" }
+                                    button class="button-destructive" title="Force close should not be used if normal close is preferred. Force close will broadcast the latest commitment transaction immediately." { "Force Close" }
                                 }
                             }
                         }

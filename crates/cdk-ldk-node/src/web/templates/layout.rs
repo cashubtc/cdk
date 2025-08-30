@@ -424,13 +424,15 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                     }
                     
                     .button-destructive {
-                        background-color: hsl(var(--destructive));
-                        color: hsl(var(--destructive-foreground));
+                        background-color: #B91C1C !important;
+                        color: white !important;
                     }
                     
                     .button-destructive:hover {
-                        background-color: hsl(var(--destructive) / 0.9);
+                        background-color: #DC2626 !important;
                     }
+                    
+
                     
                     .button-sm {
                         height: 2rem;
