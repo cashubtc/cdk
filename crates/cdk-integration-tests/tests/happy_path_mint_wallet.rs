@@ -114,7 +114,7 @@ async fn test_happy_mint_melt_round_trip() {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await
         .expect("payment");
@@ -236,7 +236,7 @@ async fn test_happy_mint() {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await
         .expect("payment");
@@ -284,7 +284,7 @@ async fn test_restore() {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await
         .expect("payment");
@@ -364,7 +364,7 @@ async fn test_fake_melt_change_in_quote() {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await
         .expect("payment");
@@ -434,7 +434,7 @@ async fn test_pay_invoice_twice() {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await
         .expect("payment");

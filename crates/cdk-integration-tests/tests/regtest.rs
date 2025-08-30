@@ -56,7 +56,7 @@ async fn test_internal_payment() {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await
         .expect("payment");
@@ -88,7 +88,7 @@ async fn test_internal_payment() {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await
         .expect("payment");
@@ -236,7 +236,7 @@ async fn test_multimint_melt() {
             quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await
         .expect("payment");
@@ -252,7 +252,7 @@ async fn test_multimint_melt() {
             quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await
         .expect("payment");

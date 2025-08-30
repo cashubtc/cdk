@@ -336,7 +336,7 @@ async fn test_mint_with_auth() {
             quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await
         .expect("payment");

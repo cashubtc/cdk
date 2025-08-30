@@ -106,6 +106,11 @@ required-features = ["wallet", "bip353"]
 [[example]]
 name = "mint-token-bolt12-with-stream"
 required-features = ["wallet"]
+
+[[example]]
+name = "mint-token-bolt12-with-custom-http"
+required-features = ["wallet"]
+
 [[example]]
 name = "mint-token-bolt12"
 required-features = ["wallet"]
@@ -118,6 +123,7 @@ tracing-subscriber.workspace = true
 criterion = "0.6.0"
 reqwest = { workspace = true }
 anyhow.workspace = true
+ureq = { version = "3.1.0", features = ["json"] }
 
 
 [[bench]]
