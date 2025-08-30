@@ -53,7 +53,8 @@ mod auth;
 
 #[rustfmt::skip]
 mod migrations;
-
+#[cfg(feature = "ldk")]
+pub mod ldk;
 
 #[cfg(feature = "auth")]
 pub use auth::SQLMintAuthDatabase;

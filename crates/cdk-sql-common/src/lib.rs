@@ -1,4 +1,4 @@
-//! SQLite storage backend for cdk
+//! SQL storage backend for cdk
 
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
