@@ -141,7 +141,7 @@ pub async fn onchain_page(
                             }
                             input type="hidden" id="send_action" name="send_action" value="send" {}
                             div style="display: flex; justify-content: space-between; gap: 1rem; margin-top: 2rem;" {
-                                a href="/onchain" { button type="button" { "Cancel" } }
+                                a href="/onchain" { button type="button" class="button-secondary" { "Cancel" } }
                                 div style="display: flex; gap: 0.5rem;" {
                                     button type="submit" onclick="document.getElementById('send_action').value='send'" { "Send Payment" }
                                     button type="submit" onclick="document.getElementById('send_action').value='send_all'; document.getElementById('amount_sat').value=''" { "Send All" }
@@ -191,7 +191,7 @@ pub async fn onchain_page(
                         form method="post" action="/onchain/new-address" {
                             p style="margin-bottom: 2rem;" { "Click the button below to generate a new Bitcoin address for receiving on-chain payments." }
                             div style="display: flex; justify-content: space-between; gap: 1rem;" {
-                                a href="/onchain" { button type="button" { "Cancel" } }
+                                a href="/onchain" { button type="button" class="button-secondary" { "Cancel" } }
                                 button class="button-primary" type="submit" { "Generate New Address" }
                             }
                         }
@@ -345,7 +345,7 @@ pub async fn onchain_confirm_page(
         div class="card" {
             div style="display: flex; justify-content: space-between; gap: 1rem; margin-top: 2rem;" {
                 a href="/onchain?action=send" {
-                    button type="button" class="button-secondary" { "← Cancel" }
+                    button type="button" class="button-secondary" { "Cancel" }
                 }
                 div style="display: flex; gap: 0.5rem;" {
                     a href=(confirmation_url) {
