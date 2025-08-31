@@ -244,8 +244,8 @@ pub async fn close_channel_page(
             form method="post" action="/channels/close" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;" {
                 input type="hidden" name="channel_id" value=(channel_id) {}
                 input type="hidden" name="node_id" value=(node_id) {}
-                button type="submit" class="button-secondary" { "Close Channel" }
-                a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
+                a href="/balance" { button type="button" class="button-primary" { "Cancel" } }
+                button type="submit" class="button-destructive" { "Close Channel" }
             }
         },
     );
@@ -275,9 +275,9 @@ pub async fn force_close_channel_page(
     let content = form_card(
         "Force Close Channel",
         html! {
-            div style="border: 2px solid #d63384; background-color: rgba(214, 51, 132, 0.1); padding: 1rem; margin-bottom: 1rem; border-radius: 0.5rem;" {
-                h4 style="color: #d63384; margin: 0 0 0.5rem 0;" { "⚠️ Warning: Force Close" }
-                p style="color: #d63384; margin: 0; font-size: 0.9rem;" {
+            div style="border: 2px solid #f97316; background-color: rgba(249, 115, 22, 0.1); padding: 1rem; margin-bottom: 1rem; border-radius: 0.5rem;" {
+                h4 style="color: #f97316; margin: 0 0 0.5rem 0;" { "⚠️ Warning: Force Close" }
+                p style="color: #f97316; margin: 0; font-size: 0.9rem;" {
                     "Force close should NOT be used if normal close is preferred. "
                     "Force close will immediately broadcast the latest commitment transaction and may result in delayed fund recovery. "
                     "Only use this if the channel counterparty is unresponsive or there are other issues preventing normal closure."
@@ -295,8 +295,8 @@ pub async fn force_close_channel_page(
             form method="post" action="/channels/force-close" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;" {
                 input type="hidden" name="channel_id" value=(channel_id) {}
                 input type="hidden" name="node_id" value=(node_id) {}
-                button type="submit" class="button-destructive" { "Force Close Channel" }
                 a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
+                button type="submit" class="button-destructive" { "Force Close Channel" }
             }
         },
     );
