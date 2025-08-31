@@ -30,9 +30,14 @@ async fn get_node_alias(node_id: &str) -> Option<String> {
         // Cache the result
         let mut cache = NODE_ALIAS_CACHE.write().await;
         cache.insert(node_id.to_string(), alias.clone());
+        return Some(alias.clone());
     }
     
-    alias
+    // Fallback: Generate a test alias for unknown nodes (useful for testnet/regtest)
+    let test_alias = generate_test_alias(node_id);
+    let mut cache = NODE_ALIAS_CACHE.write().await;
+    cache.insert(node_id.to_string(), test_alias.clone());
+    Some(test_alias)
 }
 
 /// Fetch node alias from 1ml.com API
@@ -57,6 +62,13 @@ async fn fetch_node_alias_from_1ml(node_id: &str) -> Option<String> {
     }
     
     None
+}
+
+/// Generate a test alias for nodes that don't have aliases in the database
+fn generate_test_alias(node_id: &str) -> String {
+    // Use the first 8 characters of the node ID to create a readable alias
+    let short_id = &node_id[..8.min(node_id.len())];
+    format!("TestNode_{}", short_id)
 }
 
 pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
