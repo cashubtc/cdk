@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use cdk_common::nut04::MintMethodOptions;
-use cdk_common::nut24::MintQuoteBolt12Request;
+use cdk_common::nut25::MintQuoteBolt12Request;
 use cdk_common::wallet::{Transaction, TransactionDirection};
 use cdk_common::{Proofs, SecretKey};
 use tracing::instrument;
