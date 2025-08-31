@@ -2,9 +2,62 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Html;
 use maud::html;
+use std::collections::HashMap;
+use tokio::sync::RwLock;
 
 use crate::web::handlers::AppState;
 use crate::web::templates::{format_sats_as_btc, layout};
+
+// Cache for node aliases to avoid repeated lookups
+lazy_static::lazy_static! {
+    static ref NODE_ALIAS_CACHE: RwLock<HashMap<String, String>> = RwLock::new(HashMap::new());
+}
+
+/// Fetch node alias from external sources
+async fn get_node_alias(node_id: &str) -> Option<String> {
+    // Check cache first
+    {
+        let cache = NODE_ALIAS_CACHE.read().await;
+        if let Some(alias) = cache.get(node_id) {
+            return Some(alias.clone());
+        }
+    }
+
+    // Try to fetch from 1ml.com API (for mainnet/testnet)
+    let alias = fetch_node_alias_from_1ml(node_id).await;
+    
+    if let Some(alias) = &alias {
+        // Cache the result
+        let mut cache = NODE_ALIAS_CACHE.write().await;
+        cache.insert(node_id.to_string(), alias.clone());
+    }
+    
+    alias
+}
+
+/// Fetch node alias from 1ml.com API
+async fn fetch_node_alias_from_1ml(node_id: &str) -> Option<String> {
+    let client = reqwest::Client::new();
+    let url = format!("https://1ml.com/node/{}/json", node_id);
+    
+    match client.get(&url).send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                match response.json::<serde_json::Value>().await {
+                    Ok(json) => {
+                        if let Some(alias) = json.get("alias").and_then(|v| v.as_str()) {
+                            return Some(alias.to_string());
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+        Err(_) => {}
+    }
+    
+    None
+}
 
 pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let balances = state.node.inner.list_balances();
@@ -117,6 +170,9 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
 
                 // Channels list
                 @for channel in &channels {
+                    @let node_id = channel.counterparty_node_id.to_string();
+                    @let node_alias = get_node_alias(&node_id).await;
+                    
                     div class="channel-item" {
                         div class="channel-header" {
                             span class="channel-id" { "Channel ID: " (channel.channel_id.to_string()) }
@@ -128,7 +184,12 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                         }
                         div class="info-item" {
                             span class="info-label" { "Counterparty" }
-                            span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (channel.counterparty_node_id.to_string()) }
+                            div class="info-value" {
+                                @if let Some(alias) = node_alias {
+                                    div style="font-weight: bold; margin-bottom: 0.25rem;" { (alias) }
+                                }
+                                span style="font-family: monospace; font-size: 0.85rem;" { (node_id) }
+                            }
                         }
                         @if let Some(short_channel_id) = channel.short_channel_id {
                             div class="info-item" {
