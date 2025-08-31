@@ -295,9 +295,9 @@ pub trait MintPayment {
 
     /// Listen for invoices to be paid to the mint
     /// Returns a stream of request_lookup_id once invoices are paid
-    async fn wait_any_incoming_payment(
+    async fn wait_payment_event(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err>;
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err>;
 
     /// Is wait invoice active
     fn is_wait_invoice_active(&self) -> bool;
@@ -316,6 +316,13 @@ pub trait MintPayment {
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err>;
+}
+
+/// An event emitted which should be handled by the mint
+#[derive(Debug, Clone, Hash)]
+pub enum Event {
+    /// A payment has been received.
+    PaymentReceived(WaitPaymentResponse),
 }
 
 /// Wait any invoice response
