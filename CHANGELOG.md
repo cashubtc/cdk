@@ -15,11 +15,15 @@
 - cdk-common: Refactored `MintPayment` trait method `wait_any_incoming_payment` to `wait_payment_event` with event-driven architecture ([thesimplekid]).
 - cdk-common: Updated `wait_payment_event` return type to stream `Event` enum instead of `WaitPaymentResponse` directly ([thesimplekid]).
 - cdk: Updated mint payment handling to process payment events through new `Event` enum pattern ([thesimplekid]).
+<<<<<<< HEAD
 - cashu: Updated BOLT12 payment method specification from NUT-24 to NUT-25 ([thesimplekid]).
 - cdk: Updated BOLT12 import references from nut24 to nut25 module ([thesimplekid]).
 
 ### Fixied
 - cdk: Wallet melt track and use payment method from quote for BOLT11/BOLT12 routing ([thesimplekid]).
+=======
+- cdk: Enhanced melt operations to track and use payment method from quote for BOLT11/BOLT12 routing ([thesimplekid]).
+>>>>>>> 5afcc11b (fix: cdk melt quote track payment method)
 
 ## [0.12.0](https://github.com/cashubtc/cdk/releases/tag/v0.12.0)
 

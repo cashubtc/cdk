@@ -188,7 +188,17 @@ impl Wallet {
         let melt_response = match quote_info.payment_method {
             cdk_common::PaymentMethod::Bolt11 => self.client.post_melt(request).await,
             cdk_common::PaymentMethod::Bolt12 => self.client.post_melt_bolt12(request).await,
-            cdk_common::PaymentMethod::Onchain => self.client.post_melt_onchain(request).await,
+            cdk_common::PaymentMethod::Onchain => {
+                let response = self.client.post_melt_onchain(request).await?;
+
+                return Ok(Melted {
+                    state: response.state,
+                    preimage: None,
+                    change: None,
+                    amount: response.amount,
+                    fee_paid: response.fee_reserve,
+                });
+            }
             cdk_common::PaymentMethod::Custom(_) => {
                 return Err(Error::UnsupportedPaymentMethod);
             }
@@ -212,7 +222,7 @@ impl Wallet {
             .await?
             .ok_or(Error::NoActiveKeyset)?;
 
-        let change_proofs = match melt_change {
+        let change_proofs = match melt_response.change {
             Some(change) => {
                 let num_change_proof = change.len();
 
@@ -238,8 +248,8 @@ impl Wallet {
         };
 
         let melted = Melted::from_proofs(
-            melt_state,
-            melt_payment_preimage,
+            melt_response.state,
+            melt_response.payment_preimage,
             quote_info.amount,
             proofs.clone(),
             change_proofs.clone(),
