@@ -528,16 +528,20 @@ impl Mint {
                     processor.cancel_wait_invoice();
                     break;
                 }
-                result = processor.wait_any_incoming_payment() => {
+                result = processor.wait_payment_event() => {
                     match result {
                         Ok(mut stream) => {
-                            while let Some(request_lookup_id) = stream.next().await {
-                                if let Err(e) = Self::handle_payment_notification(
-                                    &localstore,
-                                    &pubsub_manager,
-                                    request_lookup_id,
-                                ).await {
-                                    tracing::warn!("Payment notification error: {:?}", e);
+                            while let Some(event) = stream.next().await {
+                                match event {
+                                    cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
+                                        if let Err(e) = Self::handle_payment_notification(
+                                            &localstore,
+                                            &pubsub_manager,
+                                            wait_payment_response,
+                                        ).await {
+                                            tracing::warn!("Payment notification error: {:?}", e);
+                                        }
+                                    }
                                 }
                             }
                         }
