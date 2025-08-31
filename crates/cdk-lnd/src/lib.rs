@@ -193,7 +193,6 @@ impl MintPayment for Lnd {
                                                 payment_identifier: PaymentIdentifier::PaymentHash(hash_slice), payment_amount: Amount::from(msg.amt_paid_msat as u64),
                                                 unit: CurrencyUnit::Msat,
                                                 payment_id: hash,
-                                                is_confirmed: true,
                                             };
                                             tracing::info!("LND: Created WaitPaymentResponse with amount {} msat", 
                                                          msg.amt_paid_msat);
@@ -544,7 +543,6 @@ impl MintPayment for Lnd {
                 payment_amount: Amount::from(invoice.amt_paid_msat as u64),
                 unit: CurrencyUnit::Msat,
                 payment_id: hex::encode(invoice.r_hash),
-                is_confirmed: true,
             }])
         } else {
             Ok(vec![])

@@ -359,7 +359,6 @@ impl CdkLdkNode {
             payment_amount: amount_msat.into(),
             unit: CurrencyUnit::Msat,
             payment_id,
-            is_confirmed: true,
         };
 
         match sender.send(wait_payment_response) {
@@ -921,7 +920,6 @@ impl MintPayment for CdkLdkNode {
             payment_amount: amount.into(),
             unit: CurrencyUnit::Msat,
             payment_id: payment_id_str,
-            is_confirmed: true,
         };
 
         Ok(vec![response])

@@ -243,7 +243,6 @@ impl MintPayment for Cln {
                                 payment_amount: amount_msats.msat().into(),
                                 unit: CurrencyUnit::Msat,
                                 payment_id: payment_hash.to_string(),
-                                is_confirmed: true,
                             };
                             tracing::info!("CLN: Created WaitPaymentResponse with amount {} msats", amount_msats.msat());
                             let event = Event::PaymentReceived(response);
@@ -684,7 +683,6 @@ impl MintPayment for Cln {
                     .into(),
                 unit: CurrencyUnit::Msat,
                 payment_id: p.payment_hash.to_string(),
-                is_confirmed: true,
             })
             .collect())
     }

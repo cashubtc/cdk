@@ -5,6 +5,7 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use bitcoin::Address;
+use cashu::quote_id::QuoteId;
 use cashu::util::hex;
 use cashu::{Bolt11Invoice, MeltOptions};
 use futures::Stream;
@@ -96,6 +97,8 @@ pub enum PaymentIdentifier {
     PaymentId([u8; 32]),
     /// Onchain address identifier
     OnchainAddress(String),
+    /// Quote Id
+    QuoteId(QuoteId),
     /// Custom Payment ID
     CustomId(String),
 }
@@ -136,6 +139,7 @@ impl PaymentIdentifier {
             Self::Bolt12PaymentHash(_) => "bolt12_payment_hash".to_string(),
             Self::PaymentId(_) => "payment_id".to_string(),
             Self::OnchainAddress(_) => "onchain_address".to_string(),
+            Self::QuoteId(_) => "quote_id".to_string(),
             Self::CustomId(_) => "custom".to_string(),
         }
     }
@@ -150,6 +154,7 @@ impl std::fmt::Display for PaymentIdentifier {
             Self::Bolt12PaymentHash(h) => write!(f, "{}", hex::encode(h)),
             Self::PaymentId(h) => write!(f, "{}", hex::encode(h)),
             Self::OnchainAddress(a) => write!(f, "{a}"),
+            Self::QuoteId(a) => write!(f, "{}", a.to_string()),
             Self::CustomId(c) => write!(f, "{c}"),
         }
     }
@@ -366,9 +371,6 @@ pub struct WaitPaymentResponse {
     /// Unique id of payment
     // Payment hash
     pub payment_id: String,
-    /// Whether the payment is confirmed (for onchain payments)
-    /// For Lightning payments, this should always be true
-    pub is_confirmed: bool,
 }
 
 /// Create incoming payment response

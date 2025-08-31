@@ -48,6 +48,7 @@ enum PaymentIdentifierType {
   CUSTOM_ID = 4;
   PAYMENT_ID = 5;
   ONCHAIN_ADDRESS = 6;
+  QuoteId = 7;
 }
 
 message PaymentIdentifier {
@@ -173,5 +174,4 @@ message WaitIncomingPaymentResponse {
   uint64 payment_amount = 2;
   string unit = 3;
   string payment_id = 4;
-  bool is_confirmed = 5;
 }

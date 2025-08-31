@@ -412,7 +412,6 @@ impl TryFrom<crate::mint::MintQuote> for MintQuoteOnchainResponse<QuoteId> {
             pubkey: mint_quote.pubkey.ok_or(crate::Error::PubkeyRequired)?,
             amount_paid: mint_quote.amount_paid,
             amount_issued: mint_quote.amount_issued,
-            amount_unconfirmed: mint_quote.amount_unconfirmed,
         })
     }
 }

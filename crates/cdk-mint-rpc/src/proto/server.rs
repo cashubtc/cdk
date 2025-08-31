@@ -657,7 +657,6 @@ impl CdkMint for MintRPCServer {
                     payment_amount: mint_quote.amount_paid(),
                     unit: mint_quote.unit.clone(),
                     payment_identifier: mint_quote.request_lookup_id.clone(),
-                    is_confirmed: true,
                 };
 
                 let localstore = self.mint.localstore();

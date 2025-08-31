@@ -122,8 +122,8 @@ async fn test_regtest_onchain_quote_status() -> Result<()> {
     // The quote should still show zero amounts until blockchain confirmation
     // In real implementation, amount_unconfirmed might show the pending amount
     println!(
-        "Updated quote status - Paid: {}, Unconfirmed: {}",
-        updated_status.amount_paid, updated_status.amount_unconfirmed
+        "Updated quote status - Paid: {}",
+        updated_status.amount_paid,
     );
 
     Ok(())
@@ -167,10 +167,7 @@ async fn test_regtest_onchain_multiple_payments() -> Result<()> {
     // Check final status
     let final_status = wallet.mint_onchain_quote_state(&mint_quote.id).await?;
 
-    println!(
-        "Final status - Paid: {}, Unconfirmed: {}",
-        final_status.amount_paid, final_status.amount_unconfirmed
-    );
+    println!("Final status - Paid: {}", final_status.amount_paid);
 
     // Verify quote properties remain consistent
     assert_eq!(final_status.pubkey, pubkey);
@@ -333,8 +330,8 @@ async fn test_regtest_onchain_mint_security() -> Result<()> {
     // Check state after fake wallet automatic payment
     let initial_state = wallet.mint_onchain_quote_state(&mint_quote.id).await?;
     println!(
-        "Initial state after fake wallet payment - Paid: {}, Unconfirmed: {}",
-        initial_state.amount_paid, initial_state.amount_unconfirmed
+        "Initial state after fake wallet payment - Paid: {}",
+        initial_state.amount_paid
     );
 
     // Fake wallet automatically pays a random amount (1-1000 sats), so amount_paid > 0
@@ -345,8 +342,8 @@ async fn test_regtest_onchain_mint_security() -> Result<()> {
 
     let paid_state = initial_state;
     println!(
-        "Using fake wallet payment - Paid: {}, Unconfirmed: {}",
-        paid_state.amount_paid, paid_state.amount_unconfirmed
+        "Using fake wallet payment - Paid: {}",
+        paid_state.amount_paid
     );
 
     // Attempt to mint much more than was paid (fake wallet pays 1-1000 sats, we try to mint 2000)

@@ -51,8 +51,6 @@ pub struct MintQuoteOnchainResponse<Q> {
     pub amount_paid: Amount,
     /// Amount that has been issued
     pub amount_issued: Amount,
-    /// Amount that is waiting to be deep enough in the chain to be confirmed
-    pub amount_unconfirmed: Amount,
 }
 
 #[cfg(feature = "mint")]
@@ -67,7 +65,6 @@ impl<Q: ToString> MintQuoteOnchainResponse<Q> {
             pubkey: self.pubkey,
             amount_paid: self.amount_paid,
             amount_issued: self.amount_issued,
-            amount_unconfirmed: self.amount_unconfirmed,
         }
     }
 }
@@ -83,7 +80,6 @@ impl From<MintQuoteOnchainResponse<QuoteId>> for MintQuoteOnchainResponse<String
             pubkey: value.pubkey,
             amount_paid: value.amount_paid,
             amount_issued: value.amount_issued,
-            amount_unconfirmed: value.amount_unconfirmed,
         }
     }
 }

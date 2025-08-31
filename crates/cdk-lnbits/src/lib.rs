@@ -126,7 +126,6 @@ impl LNbits {
             payment_amount: Amount::from(amount.unsigned_abs()),
             unit: CurrencyUnit::Msat,
             payment_id: msg.to_string(),
-            is_confirmed: true,
         }))
     }
 
@@ -389,7 +388,6 @@ impl MintPayment for LNbits {
                 payment_amount: Amount::from(amount.unsigned_abs()),
                 unit: CurrencyUnit::Msat,
                 payment_id: payment.details.payment_hash,
-                is_confirmed: true,
             }]),
             false => Ok(vec![]),
         }

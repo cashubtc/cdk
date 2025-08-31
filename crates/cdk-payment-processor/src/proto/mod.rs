@@ -45,6 +45,10 @@ impl From<CdkPaymentIdentifier> for PaymentIdentifier {
                 r#type: PaymentIdentifierType::PaymentId.into(),
                 value: Some(payment_identifier::Value::Hash(hex::encode(hash))),
             },
+            CdkPaymentIdentifier::QuoteId(id) => Self {
+                r#type: PaymentIdentifierType::QuoteId.into(),
+                value: Some(payment_identifier::Value::Id(id.to_string())),
+            },
         }
     }
 }
@@ -250,7 +254,6 @@ impl From<WaitPaymentResponse> for WaitIncomingPaymentResponse {
             payment_amount: value.payment_amount.into(),
             unit: value.unit.to_string(),
             payment_id: value.payment_id,
-            is_confirmed: value.is_confirmed,
         }
     }
 }
@@ -269,7 +272,6 @@ impl TryFrom<WaitIncomingPaymentResponse> for WaitPaymentResponse {
             payment_amount: value.payment_amount.into(),
             unit: CurrencyUnit::from_str(&value.unit)?,
             payment_id: value.payment_id,
-            is_confirmed: value.is_confirmed,
         })
     }
 }

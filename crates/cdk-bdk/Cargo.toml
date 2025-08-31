@@ -1,0 +1,29 @@
+[package]
+name = "cdk-bdk"
+version.workspace = true
+edition.workspace = true
+authors = ["CDK Developers"]
+license.workspace = true
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+rust-version.workspace = true # MSRV
+description = "CDK onchain backend witn bdk"
+readme = "README.md"
+
+[dependencies]
+async-trait.workspace = true
+bdk_wallet = { version = "2.1.0", features = ["rusqlite", "keys-bip39"] }
+bdk_esplora = "0.22.1"
+bdk_bitcoind_rpc = "0.21.0"
+cdk-common = { workspace = true, features = ["mint"] }
+futures.workspace = true
+tokio.workspace = true 
+tokio-util.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+tokio-stream = { workspace = true, features = ["sync"] }
+serde.workspace = true
+serde_json.workspace = true
+
+
+

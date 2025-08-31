@@ -317,7 +317,6 @@ impl MintPayment for FakeWallet {
                     payment_amount,
                     unit: unit.clone(),
                     payment_id,
-                    is_confirmed: false,
                 };
                 Event::PaymentReceived(wait_response)
             },
@@ -602,7 +601,6 @@ impl MintPayment for FakeWallet {
                 payment_amount: final_amount,
                 unit: unit_clone,
                 payment_id: payment_identifier_clone.to_string(),
-                is_confirmed: true,
             };
             let mut incoming = incoming_payment.write().await;
             incoming
