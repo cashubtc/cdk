@@ -82,8 +82,8 @@ pub struct CdkBdk {
     _fee_reserve: FeeReserve,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
-    payment_sender: tokio::sync::broadcast::Sender<WaitPaymentResponse>,
-    payment_receiver: Arc<tokio::sync::broadcast::Receiver<WaitPaymentResponse>>,
+    payment_sender: tokio::sync::broadcast::Sender<Event>,
+    payment_receiver: Arc<tokio::sync::broadcast::Receiver<Event>>,
     events_cancel_token: CancellationToken,
     wallet_with_db: Arc<Mutex<WalletWithDb>>,
     chain_source: ChainSource,
@@ -236,7 +236,10 @@ impl CdkBdk {
                         payment_response.payment_identifier
                     );
 
-                    if let Err(err) = self.payment_sender.send(payment_response) {
+                    if let Err(err) = self
+                        .payment_sender
+                        .send(Event::PaymentReceived(payment_response))
+                    {
                         tracing::error!("Failed to send payment notification: {}", err);
                     }
                 }
@@ -503,8 +506,9 @@ impl CdkBdk {
                     ChainPosition::Confirmed { anchor, .. } => {
                         if anchor.block_id.height < older_then {
                             to_remove.push(*outpoint);
-                            if let Err(err) =
-                                self.payment_sender.send(make_payment_response.clone())
+                            if let Err(err) = self
+                                .payment_sender
+                                .send(Event::PaymentReceived(make_payment_response.clone()))
                             {
                                 tracing::error!("Could not send wait payment response: {}", err);
                             }
@@ -702,9 +706,9 @@ impl MintPayment for CdkBdk {
     /// Listen for invoices to be paid to the mint
     /// Returns a stream of request_lookup_id once invoices are paid
     #[instrument(skip(self))]
-    async fn wait_any_incoming_payment(
+    async fn wait_payment_event(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
         tracing::info!("Starting stream for invoices - wait_any_incoming_payment called");
 
         // Set active flag to indicate stream is active
