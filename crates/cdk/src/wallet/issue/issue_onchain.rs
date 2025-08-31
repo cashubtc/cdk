@@ -9,7 +9,7 @@ use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
-    nut12, MintQuoteOnchainResponse, MintRequest, PaymentMethod, PreMintSecrets, PublicKey,
+    nut12, MintQuoteOnchainResponse, MintRequest, PaymentMethod, PreMintSecrets,
     SpendingConditions, State,
 };
 use crate::types::ProofInfo;
@@ -20,7 +20,7 @@ use crate::{Amount, Error, Wallet};
 impl Wallet {
     /// Mint Onchain Quote
     #[instrument(skip(self))]
-    pub async fn mint_onchain_quote(&self, pubkey: PublicKey) -> Result<MintQuote, Error> {
+    pub async fn mint_onchain_quote(&self) -> Result<MintQuote, Error> {
         let mint_url = self.mint_url.clone();
         let unit = &self.unit;
 
@@ -30,7 +30,7 @@ impl Wallet {
 
         let mint_request = MintQuoteOnchainRequest {
             unit: self.unit.clone(),
-            pubkey,
+            pubkey: secret_key.public_key(),
         };
 
         let quote_res = self.client.post_mint_onchain_quote(mint_request).await?;

@@ -8,14 +8,6 @@ use cdk_integration_tests::init_pure_tests::*;
 
 // Note: Temp directory functions available from init_regtest module
 
-// Helper function to create a dummy public key for testing
-fn create_dummy_pubkey() -> PublicKey {
-    // Create a valid dummy public key for testing purposes
-    // This is a real secp256k1 public key (compressed format)
-    PublicKey::from_hex("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
-        .expect("Valid dummy pubkey")
-}
-
 // Helper function to simulate onchain payment confirmation
 // In real implementation, this would monitor Bitcoin blockchain
 async fn simulate_onchain_payment_confirmation(
@@ -45,9 +37,8 @@ async fn test_regtest_onchain_mint() -> Result<()> {
         .expect("Failed to create test wallet");
 
     let mint_amount = Amount::from(100);
-    let pubkey = create_dummy_pubkey();
 
-    let mint_quote = wallet.mint_onchain_quote(pubkey).await?;
+    let mint_quote = wallet.mint_onchain_quote().await?;
 
     // In a real scenario, the quote would contain a Bitcoin address
     // and the user would send Bitcoin to that address
@@ -94,9 +85,7 @@ async fn test_regtest_onchain_quote_status() -> Result<()> {
         .await
         .expect("Failed to create test wallet");
 
-    let pubkey = create_dummy_pubkey();
-
-    let mint_quote = wallet.mint_onchain_quote(pubkey).await?;
+    let mint_quote = wallet.mint_onchain_quote().await?;
 
     // Check initial status - FakeWallet automatically pays quotes
     let initial_status = wallet.mint_onchain_quote_state(&mint_quote.id).await?;
@@ -104,7 +93,6 @@ async fn test_regtest_onchain_quote_status() -> Result<()> {
     // FakeWallet automatically simulates payment, so amount_paid will be 1000
     assert_eq!(initial_status.amount_paid, Amount::from(1000));
     assert_eq!(initial_status.amount_issued, Amount::ZERO);
-    assert_eq!(initial_status.pubkey, pubkey);
 
     // Simulate payment
     let tx_id =
@@ -144,9 +132,7 @@ async fn test_regtest_onchain_multiple_payments() -> Result<()> {
         .await
         .expect("Failed to create test wallet");
 
-    let pubkey = create_dummy_pubkey();
-
-    let mint_quote = wallet.mint_onchain_quote(pubkey).await?;
+    let mint_quote = wallet.mint_onchain_quote().await?;
 
     // Simulate first payment
     let tx_id_1 =
@@ -170,7 +156,6 @@ async fn test_regtest_onchain_multiple_payments() -> Result<()> {
     println!("Final status - Paid: {}", final_status.amount_paid);
 
     // Verify quote properties remain consistent
-    assert_eq!(final_status.pubkey, pubkey);
     assert!(!final_status.request.is_empty());
 
     Ok(())
@@ -199,14 +184,11 @@ async fn test_regtest_onchain_multiple_wallets() -> Result<()> {
         .await
         .expect("Failed to create test wallet");
 
-    let pubkey_one = create_dummy_pubkey();
-    let pubkey_two = create_dummy_pubkey();
-
     // First wallet gets a quote
-    let quote_one = wallet_one.mint_onchain_quote(pubkey_one).await?;
+    let quote_one = wallet_one.mint_onchain_quote().await?;
 
     // Second wallet gets a separate quote
-    let quote_two = wallet_two.mint_onchain_quote(pubkey_two).await?;
+    let quote_two = wallet_two.mint_onchain_quote().await?;
 
     // Verify quotes are different
     assert_ne!(quote_one.id, quote_two.id);
@@ -234,10 +216,6 @@ async fn test_regtest_onchain_multiple_wallets() -> Result<()> {
 
     let status_two = wallet_two.mint_onchain_quote_state(&quote_two.id).await?;
 
-    // Verify wallets are independent
-    assert_eq!(status_one.pubkey, pubkey_one);
-    assert_eq!(status_two.pubkey, pubkey_two);
-
     println!("Wallet one status - Paid: {}", status_one.amount_paid);
     println!("Wallet two status - Paid: {}", status_two.amount_paid);
 
@@ -263,8 +241,7 @@ async fn test_regtest_onchain_melt() -> Result<()> {
     // In a real scenario, the wallet would have tokens from previous minting
 
     // Simulate having tokens by creating a mint quote first
-    let pubkey = create_dummy_pubkey();
-    let mint_quote = wallet.mint_onchain_quote(pubkey).await?;
+    let mint_quote = wallet.mint_onchain_quote().await?;
 
     // Simulate payment to get tokens (simplified for testing)
     let _tx_id =
@@ -321,8 +298,7 @@ async fn test_regtest_onchain_mint_security() -> Result<()> {
         .await
         .expect("Failed to create test wallet");
 
-    let pubkey = create_dummy_pubkey();
-    let mint_quote = wallet.mint_onchain_quote(pubkey).await?;
+    let mint_quote = wallet.mint_onchain_quote().await?;
 
     // Wait a bit for the fake wallet to process automatic payment
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -415,8 +391,7 @@ async fn test_regtest_onchain_address_handling() -> Result<()> {
         .await
         .expect("Failed to create test wallet");
 
-    let pubkey = create_dummy_pubkey();
-    let mint_quote = wallet.mint_onchain_quote(pubkey).await?;
+    let mint_quote = wallet.mint_onchain_quote().await?;
 
     // Verify address is not empty and has reasonable format
     assert!(!mint_quote.request.is_empty());
@@ -425,7 +400,7 @@ async fn test_regtest_onchain_address_handling() -> Result<()> {
     println!("Generated onchain address: {}", mint_quote.request);
 
     // Test multiple quotes with same pubkey
-    let mint_quote_2 = wallet.mint_onchain_quote(pubkey).await?;
+    let mint_quote_2 = wallet.mint_onchain_quote().await?;
 
     // Each quote should be unique even with same pubkey
     assert_ne!(mint_quote.id, mint_quote_2.id);

@@ -123,6 +123,15 @@ impl Stream for MultipleMintQuoteProofStream<'_> {
                                 )
                                 .await
                                 .map(|proofs| (mint_quote, proofs)),
+                            PaymentMethod::Onchain => wallet
+                                .mint_onchain(
+                                    &mint_quote.id,
+                                    amount,
+                                    amount_split_target,
+                                    spending_conditions,
+                                )
+                                .await
+                                .map(|proofs| (mint_quote, proofs)),
                             _ => Err(Error::UnsupportedPaymentMethod),
                         }
                     });

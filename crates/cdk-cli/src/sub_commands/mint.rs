@@ -80,8 +80,17 @@ pub async fn mint(
 
                 quote
             }
+            PaymentMethod::Onchain => {
+                let quote = wallet.mint_onchain_quote().await?;
+
+                println!("Quote: {quote:#?}");
+
+                println!("Please send funds to: {}", quote.request);
+
+                quote
+            }
             _ => {
-                todo!()
+                return Err(anyhow!("Unsupported payment method: {}", payment_method));
             }
         },
         Some(quote_id) => wallet
@@ -106,6 +115,7 @@ pub async fn mint(
             }
         };
         amount_minted += proofs.total_amount()?;
+        println!("Received {} from mint {mint_url}", proofs.total_amount()?);
     }
 
     println!("Received {amount_minted} from mint {mint_url}");

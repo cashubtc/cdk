@@ -26,6 +26,8 @@ pub enum PaymentType {
     Bolt12,
     /// Bip353
     Bip353,
+    /// Onchain Bitcoin address
+    Onchain,
 }
 
 #[derive(Args)]
@@ -195,6 +197,25 @@ pub async fn pay(
                         &bip353_addr,
                         options.expect("Amount is required").amount_msat(),
                     )
+                    .await?;
+                process_payment(&wallet, quote).await?;
+            }
+            PaymentType::Onchain => {
+                // Process onchain payment (Bitcoin address)
+                let bitcoin_address = get_user_input("Enter Bitcoin address")?;
+
+                let prompt = "Enter the amount you would like to pay in sats:";
+                // Onchain payments always require amount specification
+                let user_amount = get_number_input::<u64>(prompt)?;
+                let amount_msat = user_amount * MSAT_IN_SAT;
+
+                if amount_msat > available_funds {
+                    bail!("Not enough funds");
+                }
+
+                // Get melt quote for onchain payment
+                let quote = wallet
+                    .melt_onchain_quote(bitcoin_address, Amount::from(user_amount))
                     .await?;
                 process_payment(&wallet, quote).await?;
             }
