@@ -15,7 +15,7 @@ use cdk_common::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk_common::common::FeeReserve;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, IncomingPaymentOptions,
+    self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
     MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
     PaymentQuoteResponse, WaitPaymentResponse,
 };
@@ -155,9 +155,9 @@ impl MintPayment for LNbits {
         self.wait_invoice_cancel_token.cancel()
     }
 
-    async fn wait_any_incoming_payment(
+    async fn wait_payment_event(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
         let api = self.lnbits_api.clone();
         let cancel_token = self.wait_invoice_cancel_token.clone();
         let is_active = Arc::clone(&self.wait_invoice_is_active);
@@ -179,7 +179,7 @@ impl MintPayment for LNbits {
                     msg_option = receiver.recv() => {
                         Self::process_message(msg_option, &api, &is_active)
                             .await
-                            .map(|response| (response, (api, cancel_token, is_active)))
+                            .map(|response| (Event::PaymentReceived(response), (api, cancel_token, is_active)))
                     }
                 }
             },

@@ -20,7 +20,7 @@ use cdk_common::bitcoin::hashes::Hash;
 use cdk_common::common::FeeReserve;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, IncomingPaymentOptions,
+    self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
     MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
     PaymentQuoteResponse, WaitPaymentResponse,
 };
@@ -137,9 +137,9 @@ impl MintPayment for Lnd {
     }
 
     #[instrument(skip_all)]
-    async fn wait_any_incoming_payment(
+    async fn wait_payment_event(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
         let mut lnd_client = self.lnd_client.clone();
 
         let stream_req = lnrpc::InvoiceSubscription {
@@ -195,7 +195,8 @@ impl MintPayment for Lnd {
                                             };
                                             tracing::info!("LND: Created WaitPaymentResponse with amount {} msat", 
                                                          msg.amt_paid_msat);
-                                            Some((wait_response, (stream, cancel_token, is_active)))
+                                            let event = Event::PaymentReceived(wait_response);
+                                            Some((event, (stream, cancel_token, is_active)))
                             }  else { None }
                         } else {
                             None
