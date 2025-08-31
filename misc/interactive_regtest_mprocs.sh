@@ -102,6 +102,7 @@ export CDK_ITESTS_MINT_ADDR="127.0.0.1"
 export CDK_ITESTS_MINT_PORT_0=8085
 export CDK_ITESTS_MINT_PORT_1=8087
 export CDK_ITESTS_MINT_PORT_2=8089
+export CDK_ITESTS_MINT_PORT_3=8092
 
 # Check if the temporary directory was created successfully
 if [[ ! -d "$CDK_ITESTS_DIR" ]]; then
@@ -160,11 +161,13 @@ fi
 mkdir -p "$CDK_ITESTS_DIR/cln_mint"
 mkdir -p "$CDK_ITESTS_DIR/lnd_mint"
 mkdir -p "$CDK_ITESTS_DIR/ldk_node_mint"
+mkdir -p "$CDK_ITESTS_DIR/bdk_mint"
 
 # Set environment variables for easy access
 export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
 export CDK_TEST_MINT_URL_2="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1"
 export CDK_TEST_MINT_URL_3="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_2"
+export CDK_TEST_MINT_URL_4="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_3"
 
 # Create state file for other terminal sessions
 ENV_FILE="/tmp/cdk_regtest_env"
@@ -172,6 +175,7 @@ echo "export CDK_ITESTS_DIR=\"$CDK_ITESTS_DIR\"" > "$ENV_FILE"
 echo "export CDK_TEST_MINT_URL=\"$CDK_TEST_MINT_URL\"" >> "$ENV_FILE"
 echo "export CDK_TEST_MINT_URL_2=\"$CDK_TEST_MINT_URL_2\"" >> "$ENV_FILE"
 echo "export CDK_TEST_MINT_URL_3=\"$CDK_TEST_MINT_URL_3\"" >> "$ENV_FILE"
+echo "export CDK_TEST_MINT_URL_4=\"$CDK_TEST_MINT_URL_4\"" >> "$ENV_FILE"
 echo "export CDK_REGTEST_PID=\"$CDK_REGTEST_PID\"" >> "$ENV_FILE"
 
 # Get the project root directory (where justfile is located)
@@ -274,10 +278,47 @@ echo "---"
 exec cargo run --bin cdk-mintd --features ldk-node
 EOF
 
+cat > "$CDK_ITESTS_DIR/start_bdk_mint.sh" << EOF
+#!/usr/bin/env bash
+cd "$PROJECT_ROOT"
+export CDK_MINTD_URL="http://127.0.0.1:8092"
+export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR/bdk_mint"
+export CDK_MINTD_LISTEN_HOST="127.0.0.1"
+export CDK_MINTD_LISTEN_PORT=8092
+export CDK_MINTD_LN_BACKEND="bdk"
+export CDK_MINTD_LOGGING_CONSOLE_LEVEL="debug"
+export CDK_MINTD_LOGGING_FILE_LEVEL="debug"
+export CDK_MINTD_MNEMONIC="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+export RUST_BACKTRACE=1
+export CDK_MINTD_DATABASE="$CDK_MINTD_DATABASE"
+
+# BDK specific environment variables
+export CDK_MINTD_BDK_BITCOIN_NETWORK="regtest"
+export CDK_MINTD_BDK_CHAIN_SOURCE_TYPE="bitcoinrpc"
+export CDK_MINTD_BDK_BITCOIND_RPC_HOST="127.0.0.1"
+export CDK_MINTD_BDK_BITCOIND_RPC_PORT=18443
+export CDK_MINTD_BDK_BITCOIND_RPC_USER="testuser"
+export CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD="testpass"
+export CDK_MINTD_BDK_STORAGE_DIR_PATH="$CDK_ITESTS_DIR/bdk_mint"
+export CDK_MINTD_BDK_FEE_PERCENT=0.0
+export CDK_MINTD_BDK_RESERVE_FEE_MIN=0
+
+echo "Starting BDK Mint on port 8092..."
+echo "Project root: $PROJECT_ROOT"
+echo "Working directory: \$CDK_MINTD_WORK_DIR"
+echo "Bitcoin RPC: 127.0.0.1:18443 (testuser/testpass)"
+echo "Storage directory: \$CDK_MINTD_BDK_STORAGE_DIR_PATH"
+echo "Database type: \$CDK_MINTD_DATABASE"
+echo "---"
+
+exec cargo run --bin cdk-mintd --features bdk
+EOF
+
 # Make scripts executable
 chmod +x "$CDK_ITESTS_DIR/start_cln_mint.sh"
 chmod +x "$CDK_ITESTS_DIR/start_lnd_mint.sh"
 chmod +x "$CDK_ITESTS_DIR/start_ldk_node_mint.sh"
+chmod +x "$CDK_ITESTS_DIR/start_bdk_mint.sh"
 
 echo
 echo "=============================================="
@@ -295,15 +336,17 @@ echo "CDK Mints (will be managed by mprocs):"
 echo "  • CLN Mint:       $CDK_TEST_MINT_URL"
 echo "  • LND Mint:       $CDK_TEST_MINT_URL_2"
 echo "  • LDK Node Mint:  $CDK_TEST_MINT_URL_3"
+echo "  • BDK Mint:       $CDK_TEST_MINT_URL_4 (available but disabled by default)"
 echo
 echo "Files and Directories:"
 echo "  • Working Directory:  $CDK_ITESTS_DIR"
-echo "  • Start Scripts:      $CDK_ITESTS_DIR/start_{cln,lnd,ldk_node}_mint.sh"
+echo "  • Start Scripts:      $CDK_ITESTS_DIR/start_{cln,lnd,ldk_node,bdk}_mint.sh"
 echo
 echo "Environment Variables (available in other terminals):"
 echo "  • CDK_TEST_MINT_URL=\"$CDK_TEST_MINT_URL\""
 echo "  • CDK_TEST_MINT_URL_2=\"$CDK_TEST_MINT_URL_2\""
 echo "  • CDK_TEST_MINT_URL_3=\"$CDK_TEST_MINT_URL_3\""
+echo "  • CDK_TEST_MINT_URL_4=\"$CDK_TEST_MINT_URL_4\""
 echo "  • CDK_ITESTS_DIR=\"$CDK_ITESTS_DIR\""
 echo
 echo "Starting mprocs with direct process management..."
@@ -314,6 +357,9 @@ echo "  • 'k' to kill a process"
 echo "  • 'r' to restart a process"
 echo "  • 'Enter' to focus on a process"
 echo "  • 'q' to quit and stop the environment"
+echo ""
+echo "Note: BDK mint is available but disabled by default."
+echo "      To enable it, press 's' on the 'bdk-mint' process in mprocs."
 echo "=============================================="
 
 # Wait a moment for everything to settle
@@ -339,6 +385,13 @@ procs:
   
   ldk-node-mint:
     shell: "$CDK_ITESTS_DIR/start_ldk_node_mint.sh"
+    autostart: true
+    env:
+      CDK_ITESTS_DIR: "$CDK_ITESTS_DIR"
+      CDK_MINTD_DATABASE: "$CDK_MINTD_DATABASE"
+  
+  bdk-mint:
+    shell: "$CDK_ITESTS_DIR/start_bdk_mint.sh"
     autostart: true
     env:
       CDK_ITESTS_DIR: "$CDK_ITESTS_DIR"

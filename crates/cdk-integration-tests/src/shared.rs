@@ -211,6 +211,7 @@ pub fn create_fake_wallet_settings(
         lnbits: None,
         lnd: None,
         ldk_node: None,
+        bdk: None,
         fake_wallet: fake_wallet_config,
         grpc_processor: None,
         database: Database {
@@ -260,6 +261,7 @@ pub fn create_cln_settings(
         lnbits: None,
         lnd: None,
         ldk_node: None,
+        bdk: None,
         fake_wallet: None,
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
@@ -304,7 +306,54 @@ pub fn create_lnd_settings(
         cln: None,
         lnbits: None,
         ldk_node: None,
+        bdk: None,
         lnd: Some(lnd_config),
+        fake_wallet: None,
+        grpc_processor: None,
+        database: cdk_mintd::config::Database::default(),
+        mint_management_rpc: None,
+        auth: None,
+    }
+}
+
+/// Create settings for a BDK mint (onchain-only)
+pub fn create_bdk_settings(
+    port: u16,
+    bdk_config: cdk_mintd::config::Bdk,
+    mnemonic: String,
+) -> cdk_mintd::config::Settings {
+    cdk_mintd::config::Settings {
+        info: cdk_mintd::config::Info {
+            url: format!("http://127.0.0.1:{port}"),
+            listen_host: "127.0.0.1".to_string(),
+            listen_port: port,
+            seed: None,
+            mnemonic: Some(mnemonic),
+            signatory_url: None,
+            signatory_certs: None,
+            input_fee_ppk: None,
+            http_cache: cache::Config::default(),
+            logging: cdk_mintd::config::LoggingConfig {
+                output: cdk_mintd::config::LoggingOutput::Both,
+                console_level: Some("debug".to_string()),
+                file_level: Some("debug".to_string()),
+            },
+            enable_swagger_ui: None,
+        },
+        mint_info: cdk_mintd::config::MintInfo::default(),
+        ln: cdk_mintd::config::Ln {
+            ln_backend: cdk_mintd::config::LnBackend::Bdk,
+            invoice_description: None,
+            min_mint: DEFAULT_MIN_MINT.into(),
+            max_mint: DEFAULT_MAX_MINT.into(),
+            min_melt: DEFAULT_MIN_MELT.into(),
+            max_melt: DEFAULT_MAX_MELT.into(),
+        },
+        cln: None,
+        lnbits: None,
+        lnd: None,
+        ldk_node: None,
+        bdk: Some(bdk_config),
         fake_wallet: None,
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),

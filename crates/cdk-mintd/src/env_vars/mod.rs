@@ -124,6 +124,10 @@ impl Settings {
                 self.grpc_processor =
                     Some(self.grpc_processor.clone().unwrap_or_default().from_env());
             }
+            #[cfg(feature = "bdk")]
+            LnBackend::Bdk => {
+                self.bdk = Some(self.bdk.clone().unwrap_or_default());
+            }
             LnBackend::None => bail!("Ln backend must be set"),
             #[allow(unreachable_patterns)]
             _ => bail!("Selected Ln backend is not enabled in this build"),

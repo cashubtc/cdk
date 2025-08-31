@@ -130,6 +130,8 @@ pub enum LnBackend {
     LdkNode,
     #[cfg(feature = "grpc-processor")]
     GrpcProcessor,
+    #[cfg(feature = "bdk")]
+    Bdk,
 }
 
 impl std::str::FromStr for LnBackend {
@@ -149,6 +151,8 @@ impl std::str::FromStr for LnBackend {
             "ldk-node" | "ldknode" => Ok(LnBackend::LdkNode),
             #[cfg(feature = "grpc-processor")]
             "grpcprocessor" => Ok(LnBackend::GrpcProcessor),
+            #[cfg(feature = "bdk")]
+            "bdk" => Ok(LnBackend::Bdk),
             _ => Err(format!("Unknown Lightning backend: {s}")),
         }
     }
@@ -287,6 +291,58 @@ fn default_webserver_host() -> Option<String> {
 #[cfg(feature = "ldk-node")]
 fn default_webserver_port() -> Option<u16> {
     Some(8091)
+}
+
+#[cfg(feature = "bdk")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bdk {
+    /// Fee percentage (e.g., 0.02 for 2%)
+    #[serde(default = "default_bdk_fee_percent")]
+    pub fee_percent: f32,
+    /// Minimum reserve fee
+    #[serde(default = "default_bdk_reserve_fee_min")]
+    pub reserve_fee_min: Amount,
+    /// Bitcoin network (mainnet, testnet, signet, regtest)
+    pub bitcoin_network: Option<String>,
+    /// Chain source type (esplora or bitcoinrpc)
+    pub chain_source_type: Option<String>,
+    /// Esplora URL (when chain_source_type = "esplora")
+    pub esplora_url: Option<String>,
+    /// Bitcoin RPC configuration (when chain_source_type = "bitcoinrpc")
+    pub bitcoind_rpc_host: Option<String>,
+    pub bitcoind_rpc_port: Option<u16>,
+    pub bitcoind_rpc_user: Option<String>,
+    pub bitcoind_rpc_password: Option<String>,
+    /// Storage directory path
+    pub storage_dir_path: Option<String>,
+}
+
+#[cfg(feature = "bdk")]
+impl Default for Bdk {
+    fn default() -> Self {
+        Self {
+            fee_percent: default_bdk_fee_percent(),
+            reserve_fee_min: default_bdk_reserve_fee_min(),
+            bitcoin_network: None,
+            chain_source_type: None,
+            esplora_url: None,
+            bitcoind_rpc_host: None,
+            bitcoind_rpc_port: None,
+            bitcoind_rpc_user: None,
+            bitcoind_rpc_password: None,
+            storage_dir_path: None,
+        }
+    }
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_fee_percent() -> f32 {
+    0.02
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_reserve_fee_min() -> Amount {
+    2.into()
 }
 
 #[cfg(feature = "fakewallet")]
@@ -451,6 +507,8 @@ pub struct Settings {
     pub lnd: Option<Lnd>,
     #[cfg(feature = "ldk-node")]
     pub ldk_node: Option<LdkNode>,
+    #[cfg(feature = "bdk")]
+    pub bdk: Option<Bdk>,
     #[cfg(feature = "fakewallet")]
     pub fake_wallet: Option<FakeWallet>,
     pub grpc_processor: Option<GrpcProcessor>,
@@ -574,6 +632,13 @@ impl Settings {
                 assert!(
                     settings.grpc_processor.is_some(),
                     "GRPC backend requires a valid config."
+                )
+            }
+            #[cfg(feature = "bdk")]
+            LnBackend::Bdk => {
+                assert!(
+                    settings.bdk.is_some(),
+                    "BDK backend requires a valid config."
                 )
             }
         }

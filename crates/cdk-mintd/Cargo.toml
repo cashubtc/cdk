@@ -12,6 +12,7 @@ readme = "README.md"
 
 [features]
 default = ["management-rpc", "cln", "lnd", "lnbits", "fakewallet", "grpc-processor", "sqlite"]
+bdk = ["dep:cdk-bdk"]
 # Database features - at least one must be enabled
 sqlite = ["dep:cdk-sqlite"]
 postgres = ["dep:cdk-postgres"]
@@ -49,6 +50,8 @@ cdk-axum.workspace = true
 cdk-signatory.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
 cdk-payment-processor = { workspace = true, optional = true }
+cdk-bdk = { workspace = true, optional = true }
+bdk_wallet = { version = "2.1.0", default-features = false, features = ["rusqlite", "keys-bip39"] }
 config.workspace = true
 clap.workspace = true
 bitcoin.workspace = true

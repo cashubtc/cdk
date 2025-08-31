@@ -29,7 +29,8 @@ cdk-sqlite = { workspace = true }
 cdk-redb = { workspace = true }
 cdk-fake-wallet = { workspace = true }
 cdk-common = { workspace = true, features = ["mint", "wallet", "auth"] }
-cdk-mintd = { workspace = true, features = ["cln", "lnd", "fakewallet", "grpc-processor", "auth", "lnbits", "management-rpc", "sqlite", "postgres", "ldk-node"] }
+cdk-mintd = { workspace = true, features = ["cln", "lnd", "fakewallet", "grpc-processor", "auth", "lnbits", "management-rpc", "sqlite", "postgres", "ldk-node", "bdk"] }
+cdk-payment-processor = { workspace = true }
 futures = { workspace = true, default-features = false, features = [
     "executor",
 ] }
@@ -50,6 +51,7 @@ tokio-util.workspace = true
 reqwest.workspace = true
 bitcoin = "0.32.0"
 clap = { workspace = true, features = ["derive"] }
+bdk_wallet = { version = "2.1.0", default-features = false, features = ["rusqlite", "keys-bip39"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio.workspace = true

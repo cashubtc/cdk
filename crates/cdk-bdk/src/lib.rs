@@ -5,6 +5,7 @@
 #![warn(rustdoc::bare_urls)]
 
 use std::collections::HashMap;
+use std::fs;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -146,6 +147,7 @@ impl CdkBdk {
     ) -> Result<Self, Error> {
         let storage_dir_path = PathBuf::from_str(&storage_dir_path).map_err(|_| Error::Path)?;
         let storage_dir_path = storage_dir_path.join("bdk_wallet");
+        fs::create_dir_all(&storage_dir_path).unwrap();
 
         let mut db = Connection::open(storage_dir_path.join("bdk_wallet.sqlite"))?;
 
@@ -462,7 +464,7 @@ impl CdkBdk {
                     ChainPosition::Confirmed { anchor, .. } => {
                         if anchor.block_id.height < older_then {
                             to_remove.push(*outpoint);
-                            // TODO we need another channel to notifer of update
+                            // TODO we need another channel to notifier of update
                         }
                     }
                     ChainPosition::Unconfirmed { .. } => (),
@@ -603,14 +605,14 @@ impl MintPayment for CdkBdk {
 
         match options {
             OutgoingPaymentOptions::Onchain(onchain_options) => {
-                let addrress = onchain_options.address;
+                let address = onchain_options.address;
 
                 let mut wallet_with_db = self.wallet_with_db.lock().await;
 
                 let mut tx = wallet_with_db.wallet.build_tx();
 
                 tx.add_recipient(
-                    addrress.script_pubkey(),
+                    address.script_pubkey(),
                     bdk_wallet::bitcoin::Amount::from_sat(onchain_options.amount.into()),
                 );
 

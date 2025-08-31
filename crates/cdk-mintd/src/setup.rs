@@ -320,3 +320,104 @@ impl LnBackendSetup for config::LdkNode {
         Ok(ldk_node)
     }
 }
+
+#[cfg(feature = "bdk")]
+#[async_trait]
+impl LnBackendSetup for config::Bdk {
+    async fn setup(
+        &self,
+        _routers: &mut Vec<Router>,
+        settings: &Settings,
+        _unit: CurrencyUnit,
+        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+        work_dir: &Path,
+    ) -> anyhow::Result<cdk_bdk::CdkBdk> {
+        use bdk_wallet::bitcoin::Network;
+
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: self.reserve_fee_min,
+            percent_fee_reserve: self.fee_percent,
+        };
+
+        // Parse network from config
+        let network = match self
+            .bitcoin_network
+            .as_ref()
+            .map(|n| n.to_lowercase())
+            .as_deref()
+            .unwrap_or("regtest")
+        {
+            "mainnet" | "bitcoin" => Network::Bitcoin,
+            "testnet" => Network::Testnet,
+            "signet" => Network::Signet,
+            _ => Network::Regtest,
+        };
+
+        // Parse chain source from config
+        let chain_source = match self
+            .chain_source_type
+            .as_ref()
+            .map(|s| s.to_lowercase())
+            .as_deref()
+            .unwrap_or("bitcoinrpc")
+        {
+            "bitcoinrpc" => {
+                let host = self
+                    .bitcoind_rpc_host
+                    .clone()
+                    .unwrap_or_else(|| "127.0.0.1".to_string());
+                let port = self.bitcoind_rpc_port.unwrap_or(18443);
+                let user = self
+                    .bitcoind_rpc_user
+                    .clone()
+                    .unwrap_or_else(|| "testuser".to_string());
+                let password = self
+                    .bitcoind_rpc_password
+                    .clone()
+                    .unwrap_or_else(|| "testpass".to_string());
+
+                cdk_bdk::ChainSource::BitcoinRpc(cdk_bdk::BitcoinRpcConfig {
+                    host,
+                    port,
+                    user,
+                    password,
+                })
+            }
+            _ => {
+                let esplora_url = self
+                    .esplora_url
+                    .clone()
+                    .unwrap_or_else(|| "https://mutinynet.com/api".to_string());
+                cdk_bdk::ChainSource::Esplora(esplora_url)
+            }
+        };
+
+        // Get storage directory path
+        let storage_dir_path = if let Some(dir_path) = &self.storage_dir_path {
+            dir_path.clone()
+        } else {
+            let mut work_dir = work_dir.to_path_buf();
+            work_dir.push("bdk");
+            work_dir.to_string_lossy().to_string()
+        };
+
+        // Generate mnemonic from settings or create a new one
+        let mnemonic = if let Some(mnemonic_str) = &settings.info.mnemonic {
+            use std::str::FromStr;
+
+            bip39::Mnemonic::from_str(mnemonic_str)?
+        } else {
+            bip39::Mnemonic::generate(12)?
+        };
+
+        let bdk = cdk_bdk::CdkBdk::new(
+            mnemonic,
+            network,
+            chain_source,
+            storage_dir_path,
+            fee_reserve,
+        )?;
+
+        Ok(bdk)
+    }
+}

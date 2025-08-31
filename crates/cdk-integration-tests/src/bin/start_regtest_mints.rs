@@ -61,6 +61,10 @@ struct Args {
     /// LDK port (default: 8089)
     #[arg(default_value_t = 8089)]
     ldk_port: u16,
+
+    /// BDK port (default: 8091)
+    #[arg(default_value_t = 8092)]
+    bdk_port: u16,
 }
 
 /// Start regtest CLN mint using the library
@@ -249,6 +253,69 @@ async fn start_ldk_mint(
     Ok(handle)
 }
 
+/// Start regtest BDK mint using the library
+async fn start_bdk_mint(
+    temp_dir: &Path,
+    port: u16,
+    shutdown: Arc<Notify>,
+) -> Result<tokio::task::JoinHandle<()>> {
+    let bdk_work_dir = temp_dir.join("bdk_mint");
+
+    // Create work directory for BDK mint
+    fs::create_dir_all(&bdk_work_dir)?;
+
+    // Configure BDK for regtest
+    let bdk_config = cdk_mintd::config::Bdk {
+        fee_percent: 0.0,
+        reserve_fee_min: 0.into(),
+        bitcoin_network: Some("regtest".to_string()),
+        // Use bitcoind RPC for regtest
+        chain_source_type: Some("bitcoinrpc".to_string()),
+        bitcoind_rpc_host: Some("127.0.0.1".to_string()),
+        bitcoind_rpc_port: Some(18443),
+        bitcoind_rpc_user: Some("testuser".to_string()),
+        bitcoind_rpc_password: Some("testpass".to_string()),
+        esplora_url: None,
+        storage_dir_path: Some(bdk_work_dir.to_string_lossy().to_string()),
+    };
+
+    // Create settings struct for BDK mint using shared function
+    let settings = shared::create_bdk_settings(
+        port,
+        bdk_config,
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string(),
+    );
+
+    println!("Starting BDK mintd on port {port}");
+
+    let bdk_work_dir = bdk_work_dir.clone();
+    let shutdown_clone = shutdown.clone();
+
+    // Run the mint in a separate task
+    let handle = tokio::spawn(async move {
+        // Create a future that resolves when the shutdown signal is received
+        let shutdown_future = async move {
+            shutdown_clone.notified().await;
+            println!("BDK mint shutdown signal received");
+        };
+
+        match cdk_mintd::run_mintd_with_shutdown(
+            &bdk_work_dir,
+            &settings,
+            shutdown_future,
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(_) => println!("BDK mint exited normally"),
+            Err(e) => eprintln!("BDK mint exited with error: {e}"),
+        }
+    });
+
+    Ok(handle)
+}
+
 /// Create settings for an LDK mint
 fn create_ldk_settings(
     port: u16,
@@ -282,6 +349,7 @@ fn create_ldk_settings(
         lnbits: None,
         lnd: None,
         ldk_node: Some(ldk_config),
+        bdk: None,
         fake_wallet: None,
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
@@ -307,10 +375,12 @@ fn main() -> Result<()> {
         let mint_url_1 = format!("http://{}:{}", args.mint_addr, args.cln_port);
         let mint_url_2 = format!("http://{}:{}", args.mint_addr, args.lnd_port);
         let mint_url_3 = format!("http://{}:{}", args.mint_addr, args.ldk_port);
+        let mint_url_4 = format!("http://{}:{}", args.mint_addr, args.bdk_port);
         let env_vars: Vec<(&str, &str)> = vec![
             ("CDK_TEST_MINT_URL", &mint_url_1),
             ("CDK_TEST_MINT_URL_2", &mint_url_2),
             ("CDK_TEST_MINT_URL_3", &mint_url_3),
+            ("CDK_TEST_MINT_URL_4", &mint_url_4),
         ];
 
         shared::write_env_file(&temp_dir, &env_vars)?;
@@ -384,6 +454,9 @@ fn main() -> Result<()> {
         // Start CLN mint
         let cln_handle = start_cln_mint(&temp_dir, args.cln_port, shutdown_clone.clone()).await?;
 
+        // Start BDK mint
+        let bdk_handle = start_bdk_mint(&temp_dir, args.bdk_port, shutdown_clone.clone()).await?;
+
         let cancel_token = Arc::new(CancellationToken::new());
 
         // Set up Ctrl+C handler before waiting for mints to be ready
@@ -416,6 +489,11 @@ fn main() -> Result<()> {
                 100,
                 Arc::clone(&cancel_token)
             ),
+            shared::wait_for_mint_ready_with_shutdown(
+                args.bdk_port,
+                100,
+                Arc::clone(&cancel_token)
+            ),
         ) {
             Ok(_) => println!("All mints are ready!"),
             Err(e) => {
@@ -435,6 +513,7 @@ fn main() -> Result<()> {
         println!("CLN mint: http://{}:{}", args.mint_addr, args.cln_port);
         println!("LND mint: http://{}:{}", args.mint_addr, args.lnd_port);
         println!("LDK mint: http://{}:{}", args.mint_addr, args.ldk_port);
+        println!("BDK mint: http://{}:{}", args.mint_addr, args.bdk_port);
         shared::display_mint_info(args.cln_port, &temp_dir, &args.database_type); // Using CLN port for display
         println!();
         println!("Environment variables set:");
@@ -449,6 +528,10 @@ fn main() -> Result<()> {
         println!(
             "  CDK_TEST_MINT_URL_3=http://{}:{}",
             args.mint_addr, args.ldk_port
+        );
+        println!(
+            "  CDK_TEST_MINT_URL_4=http://{}:{}",
+            args.mint_addr, args.bdk_port
         );
         println!("  CDK_ITESTS_DIR={}", temp_dir.display());
         println!();
@@ -492,6 +575,10 @@ fn main() -> Result<()> {
                     println!("LDK mint finished unexpectedly");
                     return;
                 }
+                if bdk_handle.is_finished() {
+                    println!("BDK mint finished unexpectedly");
+                    return;
+                }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         };
@@ -508,7 +595,7 @@ fn main() -> Result<()> {
         }
 
         // Wait for mints to finish gracefully
-        if let Err(e) = tokio::try_join!(ldk_handle, cln_handle, lnd_handle) {
+        if let Err(e) = tokio::try_join!(ldk_handle, cln_handle, lnd_handle, bdk_handle) {
             eprintln!("Error waiting for mints to shut down: {e}");
         }
 

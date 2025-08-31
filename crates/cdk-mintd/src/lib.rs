@@ -529,6 +529,24 @@ async fn configure_lightning_backend(
             )
             .await?;
         }
+        #[cfg(feature = "bdk")]
+        LnBackend::Bdk => {
+            let bdk_settings = settings.clone().bdk.expect("Checked at config load");
+            tracing::info!("Using BDK backend: {:?}", bdk_settings);
+
+            let bdk = bdk_settings
+                .setup(ln_routers, settings, CurrencyUnit::Sat, None, work_dir)
+                .await?;
+
+            mint_builder = configure_backend_for_unit(
+                settings,
+                mint_builder,
+                CurrencyUnit::Sat,
+                mint_melt_limits,
+                Arc::new(bdk),
+            )
+            .await?;
+        }
         LnBackend::None => {
             tracing::error!(
                 "Payment backend was not set or feature disabled. {:?}",
