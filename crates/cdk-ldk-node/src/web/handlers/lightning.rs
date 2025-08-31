@@ -75,6 +75,17 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                 (active, inactive)
             });
 
+    // Pre-fetch all node aliases before building the template
+    let mut node_aliases = HashMap::new();
+    for channel in &channels {
+        let node_id = channel.counterparty_node_id.to_string();
+        if !node_aliases.contains_key(&node_id) {
+            if let Some(alias) = get_node_alias(&node_id).await {
+                node_aliases.insert(node_id, alias);
+            }
+        }
+    }
+
     let content = if channels.is_empty() {
         html! {
             h2 style="text-align: center; margin-bottom: 3rem;" { "Lightning" }
@@ -171,7 +182,7 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                 // Channels list
                 @for channel in &channels {
                     @let node_id = channel.counterparty_node_id.to_string();
-                    @let node_alias = get_node_alias(&node_id).await;
+                    @let node_alias = node_aliases.get(&node_id).cloned();
                     
                     div class="channel-item" {
                         div class="channel-header" {
