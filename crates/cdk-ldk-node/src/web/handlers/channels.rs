@@ -302,7 +302,7 @@ pub async fn close_channel_page(
     let content = form_card(
         "Close Channel",
         html! {
-            p { "Are you sure you want to close this channel?" }
+            p style="margin-bottom: 1.5rem;" { "Are you sure you want to close this channel?" }
 
             // Channel details in consistent format
             div class="channel-details" {
@@ -367,7 +367,7 @@ pub async fn force_close_channel_page(
                     "Only use this if the channel counterparty is unresponsive or there are other issues preventing normal closure."
                 }
             }
-            p { "Are you sure you want to force close this channel?" }
+            p style="margin-bottom: 1.5rem;" { "Are you sure you want to force close this channel?" }
 
             // Channel details in consistent format
             div class="channel-details" {
