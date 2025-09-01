@@ -313,16 +313,16 @@ pub async fn close_channel_page(
                 @if let Some(alias) = node_alias {
                     div class="detail-row" {
                         span class="detail-label" { "Node Alias" }
-                        span class="detail-value" { (alias) }
+                        span class="detail-value-amount" { (alias) }
                     }
                 }
                 div class="detail-row" {
                     span class="detail-label" { "User Channel ID" }
-                    span class="detail-value" { (channel_id) }
+                    span class="detail-value-amount" { (channel_id) }
                 }
                 div class="detail-row" {
                     span class="detail-label" { "Node ID" }
-                    span class="detail-value" { (node_id) }
+                    span class="detail-value-amount" { (node_id) }
                 }
                 @if let Some(ch) = channel {
                     div class="detail-row" {
@@ -388,16 +388,16 @@ pub async fn force_close_channel_page(
                 @if let Some(alias) = node_alias {
                     div class="detail-row" {
                         span class="detail-label" { "Node Alias" }
-                        span class="detail-value" { (alias) }
+                        span class="detail-value-amount" { (alias) }
                     }
                 }
                 div class="detail-row" {
                     span class="detail-label" { "User Channel ID" }
-                    span class="detail-value" { (channel_id) }
+                    span class="detail-value-amount" { (channel_id) }
                 }
                 div class="detail-row" {
                     span class="detail-label" { "Node ID" }
-                    span class="detail-value" { (node_id) }
+                    span class="detail-value-amount" { (node_id) }
                 }
                 @if let Some(ch) = channel {
                     div class="detail-row" {
