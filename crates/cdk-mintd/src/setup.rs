@@ -340,9 +340,11 @@ impl LnBackendSetup for config::Bdk {
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
-        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_bdk::CdkBdk> {
         use bdk_wallet::bitcoin::Network;
+
+        let kv_store = kv_store.ok_or(anyhow!("Kv store is required for bdk"))?;
 
         let fee_reserve = FeeReserve {
             min_fee_reserve: self.reserve_fee_min,
@@ -426,6 +428,7 @@ impl LnBackendSetup for config::Bdk {
             chain_source,
             storage_dir_path,
             fee_reserve,
+            kv_store,
         )?;
 
         Ok(bdk)

@@ -324,7 +324,6 @@ impl Mint {
             pubkey,
             Amount::ZERO,
             Amount::ZERO,
-            Amount::ZERO,
             payment_method.clone(),
             unix_time(),
             vec![],

@@ -3,7 +3,6 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use cashu::amount::SplitTarget;
 use cashu::{Amount, MintRequest, PreMintSecrets};
-use cdk::nuts::PublicKey;
 use cdk_integration_tests::init_pure_tests::*;
 
 // Note: Temp directory functions available from init_regtest module

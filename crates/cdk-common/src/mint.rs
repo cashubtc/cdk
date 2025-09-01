@@ -52,9 +52,6 @@ pub struct MintQuote {
     /// Payment of payment(s) that filled quote
     #[serde(default)]
     pub issuance: Vec<Issuance>,
-    /// Amount unconfirmed on the block chain for onchain payments
-    #[serde(default)]
-    pub amount_unconfirmed: Amount,
 }
 
 impl MintQuote {
@@ -70,7 +67,6 @@ impl MintQuote {
         pubkey: Option<PublicKey>,
         amount_paid: Amount,
         amount_issued: Amount,
-        amount_unconfirmed: Amount,
         payment_method: PaymentMethod,
         created_time: u64,
         payments: Vec<IncomingPayment>,
@@ -89,7 +85,6 @@ impl MintQuote {
             created_time,
             amount_paid,
             amount_issued,
-            amount_unconfirmed,
             payment_method,
             payments,
             issuance,
@@ -113,12 +108,6 @@ impl MintQuote {
     #[instrument(skip(self))]
     pub fn amount_paid(&self) -> Amount {
         self.amount_paid
-    }
-
-    /// Amount unconfirmed
-    #[instrument(skip(self))]
-    pub fn amount_unconfirmed(&self) -> Amount {
-        self.amount_unconfirmed
     }
 
     /// Increment the amount issued on the mint quote by a given amount

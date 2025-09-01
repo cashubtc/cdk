@@ -4,7 +4,7 @@ use std::convert::Infallible;
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use bitcoin::Address;
+use bitcoin::{Address, OutPoint};
 use cashu::quote_id::QuoteId;
 use cashu::util::hex;
 use cashu::{Bolt11Invoice, MeltOptions};
@@ -99,6 +99,8 @@ pub enum PaymentIdentifier {
     OnchainAddress(String),
     /// Quote Id
     QuoteId(QuoteId),
+    /// Outpoint
+    Outpoint(OutPoint),
     /// Custom Payment ID
     CustomId(String),
 }
@@ -140,6 +142,7 @@ impl PaymentIdentifier {
             Self::PaymentId(_) => "payment_id".to_string(),
             Self::OnchainAddress(_) => "onchain_address".to_string(),
             Self::QuoteId(_) => "quote_id".to_string(),
+            Self::Outpoint(_) => "outpoint".to_string(),
             Self::CustomId(_) => "custom".to_string(),
         }
     }
@@ -155,6 +158,7 @@ impl std::fmt::Display for PaymentIdentifier {
             Self::PaymentId(h) => write!(f, "{}", hex::encode(h)),
             Self::OnchainAddress(a) => write!(f, "{a}"),
             Self::QuoteId(a) => write!(f, "{}", a.to_string()),
+            Self::Outpoint(a) => write!(f, "{}", a.to_string()),
             Self::CustomId(c) => write!(f, "{c}"),
         }
     }

@@ -108,6 +108,10 @@ pub enum Error {
     /// Path error
     #[error("Path error")]
     Path,
+
+    /// KV Store error
+    #[error("KV Store error: {0}")]
+    KvStore(#[from] cdk_common::database::Error),
 }
 
 impl<T> From<tokio::sync::mpsc::error::SendError<T>> for Error {

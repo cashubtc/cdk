@@ -589,7 +589,7 @@ async fn configure_lightning_backend(
                     CurrencyUnit::Sat,
                     None,
                     work_dir,
-                    None,
+                    _kv_store,
                 )
                 .await?;
 

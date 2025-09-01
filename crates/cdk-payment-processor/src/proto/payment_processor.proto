@@ -49,6 +49,7 @@ enum PaymentIdentifierType {
   PAYMENT_ID = 5;
   ONCHAIN_ADDRESS = 6;
   QuoteId = 7;
+  Outpoint = 8;
 }
 
 message PaymentIdentifier {

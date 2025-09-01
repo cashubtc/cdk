@@ -49,6 +49,10 @@ impl From<CdkPaymentIdentifier> for PaymentIdentifier {
                 r#type: PaymentIdentifierType::QuoteId.into(),
                 value: Some(payment_identifier::Value::Id(id.to_string())),
             },
+            CdkPaymentIdentifier::Outpoint(id) => Self {
+                r#type: PaymentIdentifierType::Outpoint.into(),
+                value: Some(payment_identifier::Value::Id(id.to_string())),
+            },
         }
     }
 }

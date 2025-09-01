@@ -4,7 +4,6 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -23,6 +22,7 @@ use bdk_wallet::rusqlite::Connection;
 use bdk_wallet::template::Bip84;
 use bdk_wallet::{KeychainKind, PersistedWallet, Wallet};
 use cdk_common::common::FeeReserve;
+use cdk_common::database::MintKVStore;
 use cdk_common::payment::{self, *};
 use cdk_common::{Amount, CurrencyUnit, MeltQuoteState};
 use futures::{Stream, StreamExt};
@@ -33,8 +33,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
 use crate::error::Error;
+use crate::storage::BdkStorage;
 
 mod error;
+mod storage;
 
 const NUM_CONFS: u32 = 3;
 
@@ -88,8 +90,7 @@ pub struct CdkBdk {
     chain_source: ChainSource,
     command_sender: tokio::sync::mpsc::Sender<CdkCommand>,
     command_receiver: Arc<Mutex<tokio::sync::mpsc::Receiver<CdkCommand>>>,
-    pending_incoming_tx: Arc<Mutex<HashMap<OutPoint, WaitPaymentResponse>>>,
-    pending_outgoing_tx: Arc<Mutex<HashMap<OutPoint, MakePaymentResponse>>>,
+    storage: BdkStorage,
     network: Network,
 }
 
@@ -144,6 +145,7 @@ impl CdkBdk {
         chain_source: ChainSource,
         storage_dir_path: String,
         fee_reserve: FeeReserve,
+        kv_store: Arc<dyn MintKVStore<Err = cdk_common::database::Error> + Send + Sync>,
     ) -> Result<Self, Error> {
         let storage_dir_path = PathBuf::from_str(&storage_dir_path).map_err(|_| Error::Path)?;
         let storage_dir_path = storage_dir_path.join("bdk_wallet");
@@ -193,8 +195,7 @@ impl CdkBdk {
             chain_source,
             command_sender,
             command_receiver: Arc::new(Mutex::new(command_receiver)),
-            pending_incoming_tx: Arc::new(Mutex::new(HashMap::new())),
-            pending_outgoing_tx: Arc::new(Mutex::new(HashMap::new())),
+            storage: BdkStorage::new(kv_store),
             network,
         })
     }
@@ -264,7 +265,7 @@ impl CdkBdk {
         let mut tx = wallet_with_db.wallet.build_tx();
 
         tx.add_recipient(
-            address,
+            address.clone(),
             bdk_wallet::bitcoin::Amount::from_sat(amount.into()),
         );
 
@@ -299,7 +300,42 @@ impl CdkBdk {
 
         tracing::info!("New transaction {} signed and ready for broadcast.", txid);
 
-        self.broadcast_transaction_internal(tx).await?;
+        let t: Vec<_> = tx
+            .output
+            .iter()
+            .enumerate()
+            .filter_map(|(vout, o)| {
+                if let Ok(out_address) =
+                    Address::from_script(&o.script_pubkey.as_script(), self.network)
+                {
+                    if out_address == address {
+                        return Some(vout);
+                    }
+                }
+
+                None
+            })
+            .collect();
+
+        assert!(t.len() == 1);
+
+        let vout = t.first().expect("We've added the address to the tx");
+
+        self.broadcast_transaction_internal(tx.clone()).await?;
+
+        // Store the pending outgoing transaction after broadcasting
+        let outpoint = OutPoint::new(txid, *vout as u32);
+        let make_payment_response = MakePaymentResponse {
+            payment_lookup_id: PaymentIdentifier::Outpoint(outpoint),
+            unit: CurrencyUnit::Sat,
+            payment_proof: Some(outpoint.to_string()),
+            status: MeltQuoteState::Pending,
+            total_spent: amount + fee.to_sat().into(),
+        };
+
+        self.storage
+            .store_pending_outgoing_tx(outpoint, make_payment_response)
+            .await?;
 
         Ok((
             PaymentIdentifier::CustomId(txid.to_string()),
@@ -414,63 +450,71 @@ impl CdkBdk {
     async fn process_block(&self, block_height: u32) -> Result<(), Error> {
         let wallet_with_db = self.wallet_with_db.lock().await;
 
-        let txs = wallet_with_db.wallet.list_output().filter_map(|o| {
-            if o.keychain != KeychainKind::External {
-                return None;
-            }
+        let txs: Vec<_> = wallet_with_db
+            .wallet
+            .list_output()
+            .filter_map(|o| {
+                if o.keychain != KeychainKind::External {
+                    return None;
+                }
 
-            let ChainPosition::Confirmed { anchor, .. } = &o.chain_position else {
-                return None;
-            };
+                let ChainPosition::Confirmed { anchor, .. } = &o.chain_position else {
+                    return None;
+                };
 
-            if anchor.block_id.height != block_height {
-                return None;
-            }
+                if anchor.block_id.height != block_height {
+                    return None;
+                }
 
-            Address::from_script(&o.txout.script_pubkey.as_script(), self.network)
-                .map(|address| {
-                    let payment_amount = o.txout.value.to_sat();
+                Address::from_script(&o.txout.script_pubkey.as_script(), self.network)
+                    .map(|address| {
+                        let payment_amount = o.txout.value.to_sat();
 
-                    tracing::info!(
-                        "New payment to {} found in block {} for {} sat",
-                        address,
-                        block_height,
-                        payment_amount
-                    );
+                        tracing::info!(
+                            "New payment to {} found in block {} for {} sat",
+                            address,
+                            block_height,
+                            payment_amount
+                        );
 
-                    (
-                        o.outpoint,
-                        WaitPaymentResponse {
-                            payment_identifier: PaymentIdentifier::OnchainAddress(
-                                address.to_string(),
-                            ),
-                            payment_amount: payment_amount.into(),
-                            unit: CurrencyUnit::Sat,
-                            payment_id: o.outpoint.to_string(),
-                        },
-                    )
-                })
-                .ok()
-        });
+                        (
+                            o.outpoint,
+                            WaitPaymentResponse {
+                                payment_identifier: PaymentIdentifier::OnchainAddress(
+                                    address.to_string(),
+                                ),
+                                payment_amount: payment_amount.into(),
+                                unit: CurrencyUnit::Sat,
+                                payment_id: o.outpoint.to_string(),
+                            },
+                        )
+                    })
+                    .ok()
+            })
+            .collect();
 
-        let mut pending_incoming = self.pending_incoming_tx.lock().await;
+        drop(wallet_with_db);
 
-        pending_incoming.extend(txs);
+        // Store each new transaction in the KvStore
+        for (outpoint, response) in txs {
+            self.storage
+                .store_pending_incoming_tx(outpoint, response)
+                .await?;
+        }
 
         Ok(())
     }
 
     async fn check_pending_outgoing(&self) -> Result<(), Error> {
-        let mut pending_tx = self.pending_outgoing_tx.lock().await;
+        let pending_txs = self.storage.get_pending_outgoing_txs().await?;
         let wallet_with_db = self.wallet_with_db.lock().await;
 
         let check_point = wallet_with_db.wallet.latest_checkpoint().height();
-
         let older_then = check_point - NUM_CONFS;
 
         let mut to_remove = vec![];
 
-        for (outpoint, _make_payment_response) in pending_tx.iter() {
+        for (outpoint, _make_payment_response) in pending_txs.iter() {
             if let Some(tx) = wallet_with_db.wallet.get_tx(outpoint.txid) {
                 match &tx.chain_position {
                     ChainPosition::Confirmed { anchor, .. } => {
@@ -484,22 +528,26 @@ impl CdkBdk {
             };
         }
 
-        pending_tx.retain(|t, _| !to_remove.contains(t));
+        drop(wallet_with_db);
+
+        // Remove confirmed transactions from KvStore
+        for outpoint in to_remove {
+            self.storage.remove_pending_outgoing_tx(&outpoint).await?;
+        }
 
         Ok(())
     }
 
     async fn check_pending_incoming(&self) -> Result<(), Error> {
-        let mut pending_tx = self.pending_incoming_tx.lock().await;
+        let pending_txs = self.storage.get_pending_incoming_txs().await?;
         let wallet_with_db = self.wallet_with_db.lock().await;
 
         let check_point = wallet_with_db.wallet.latest_checkpoint().height();
-
         let older_then = check_point - NUM_CONFS;
 
         let mut to_remove = vec![];
 
-        for (outpoint, make_payment_response) in pending_tx.iter() {
+        for (outpoint, wait_payment_response) in pending_txs.iter() {
             if let Some(tx) = wallet_with_db.wallet.get_tx(outpoint.txid) {
                 match &tx.chain_position {
                     ChainPosition::Confirmed { anchor, .. } => {
@@ -507,7 +555,7 @@ impl CdkBdk {
                             to_remove.push(*outpoint);
                             if let Err(err) = self
                                 .payment_sender
-                                .send(Event::PaymentReceived(make_payment_response.clone()))
+                                .send(Event::PaymentReceived(wait_payment_response.clone()))
                             {
                                 tracing::error!("Could not send wait payment response: {}", err);
                             }
@@ -518,7 +566,12 @@ impl CdkBdk {
             };
         }
 
-        pending_tx.retain(|t, _| !to_remove.contains(t));
+        drop(wallet_with_db);
+
+        // Remove confirmed transactions from KvStore
+        for outpoint in to_remove {
+            self.storage.remove_pending_incoming_tx(&outpoint).await?;
+        }
 
         Ok(())
     }
