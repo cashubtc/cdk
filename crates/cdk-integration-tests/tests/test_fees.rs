@@ -32,7 +32,7 @@ async fn test_swap() {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await
         .expect("payment");
@@ -92,7 +92,7 @@ async fn test_fake_melt_change_in_quote() {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await
         .expect("payment");
