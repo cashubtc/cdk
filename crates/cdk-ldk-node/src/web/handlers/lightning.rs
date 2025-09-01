@@ -206,17 +206,17 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                     div class="channel-details" {
                         div class="detail-row" {
                             span class="detail-label" { "Channel ID" }
-                            span class="detail-value" { (channel.channel_id.to_string()) }
+                            span class="detail-value-amount" { (channel.channel_id.to_string()) }
                         }
                         @if let Some(short_channel_id) = channel.short_channel_id {
                             div class="detail-row" {
                                 span class="detail-label" { "Short Channel ID" }
-                                span class="detail-value" { (short_channel_id.to_string()) }
+                                span class="detail-value-amount" { (short_channel_id.to_string()) }
                             }
                         }
                         div class="detail-row" {
                             span class="detail-label" { "Node ID" }
-                            span class="detail-value" { (node_id) }
+                            span class="detail-value-amount" { (node_id) }
                         }
                         div class="detail-row" {
                             span class="detail-label" { "Status" }
