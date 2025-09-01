@@ -280,7 +280,7 @@ pub async fn post_open_channel(
 }
 
 pub async fn close_channel_page(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     query: Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
     let channel_id = query.get("channel_id").unwrap_or(&"".to_string()).clone();
@@ -295,6 +295,10 @@ pub async fn close_channel_page(
         };
         return Ok(Html(layout("Close Channel Error", content).into_string()));
     }
+
+    // Get channel information for amount display
+    let channels = state.node.inner.list_channels();
+    let channel = channels.iter().find(|c| c.user_channel_id.0.to_string() == channel_id);
 
     // Get node alias for consistent display
     let node_alias = get_node_alias(&node_id).await;
@@ -320,6 +324,12 @@ pub async fn close_channel_page(
                     span class="detail-label" { "Node ID" }
                     span class="detail-value" { (node_id) }
                 }
+                @if let Some(ch) = channel {
+                    div class="detail-row" {
+                        span class="detail-label" { "Channel Amount" }
+                        span class="detail-value" { (format_sats_as_btc(ch.channel_value_sats)) }
+                    }
+                }
             }
 
             form method="post" action="/channels/close" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;" {
@@ -335,7 +345,7 @@ pub async fn close_channel_page(
 }
 
 pub async fn force_close_channel_page(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     query: Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
     let channel_id = query.get("channel_id").unwrap_or(&"".to_string()).clone();
@@ -352,6 +362,10 @@ pub async fn force_close_channel_page(
             layout("Force Close Channel Error", content).into_string(),
         ));
     }
+
+    // Get channel information for amount display
+    let channels = state.node.inner.list_channels();
+    let channel = channels.iter().find(|c| c.user_channel_id.0.to_string() == channel_id);
 
     // Get node alias for consistent display
     let node_alias = get_node_alias(&node_id).await;
@@ -384,6 +398,12 @@ pub async fn force_close_channel_page(
                 div class="detail-row" {
                     span class="detail-label" { "Node ID" }
                     span class="detail-value" { (node_id) }
+                }
+                @if let Some(ch) = channel {
+                    div class="detail-row" {
+                        span class="detail-label" { "Channel Amount" }
+                        span class="detail-value" { (format_sats_as_btc(ch.channel_value_sats)) }
+                    }
                 }
             }
 
