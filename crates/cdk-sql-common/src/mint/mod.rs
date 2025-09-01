@@ -1059,7 +1059,7 @@ VALUES (:quote_id, :amount, :timestamp);
                 amount_paid,
                 amount_issued,
                 payment_method,
-                request_lookup_id_kind,
+                request_lookup_id_kind
             FROM
                 mint_quote
             WHERE request = :request
@@ -1190,7 +1190,7 @@ where
                 amount_paid,
                 amount_issued,
                 payment_method,
-                request_lookup_id_kind,
+                request_lookup_id_kind
             FROM
                 mint_quote
             WHERE request = :request"#,
