@@ -25,14 +25,14 @@ async fn get_node_alias(node_id: &str) -> Option<String> {
 
     // Try to fetch from 1ml.com API (for mainnet/testnet)
     let alias = fetch_node_alias_from_1ml(node_id).await;
-    
+
     if let Some(alias) = &alias {
         // Cache the result
         let mut cache = NODE_ALIAS_CACHE.write().await;
         cache.insert(node_id.to_string(), alias.clone());
         return Some(alias.clone());
     }
-    
+
     // Fallback: Generate a test alias for unknown nodes (useful for testnet/regtest)
     let test_alias = generate_test_alias(node_id);
     let mut cache = NODE_ALIAS_CACHE.write().await;
@@ -44,7 +44,7 @@ async fn get_node_alias(node_id: &str) -> Option<String> {
 async fn fetch_node_alias_from_1ml(node_id: &str) -> Option<String> {
     let client = reqwest::Client::new();
     let url = format!("https://1ml.com/node/{}/json", node_id);
-    
+
     match client.get(&url).send().await {
         Ok(response) => {
             if response.status().is_success() {
@@ -60,7 +60,7 @@ async fn fetch_node_alias_from_1ml(node_id: &str) -> Option<String> {
         }
         Err(_) => {}
     }
-    
+
     None
 }
 
@@ -188,65 +188,74 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                 }
             }
 
-            div class="card" {
-                h2 { "Channel Details" }
+            // Channel Details header (outside card)
+            h2 class="section-header" { "Channel Details" }
 
-                // Channels list
-                @for channel in &channels {
-                    @let node_id = channel.counterparty_node_id.to_string();
-                    @let node_alias = node_aliases.get(&node_id).cloned();
-                    
-                    div class="channel-item" {
-                        div class="channel-header" {
-                            span class="channel-id" { "Channel ID: " (channel.channel_id.to_string()) }
+            // Channels list
+            @for channel in &channels {
+                @let node_id = channel.counterparty_node_id.to_string();
+                @let node_alias = node_aliases.get(&node_id).cloned();
+
+                div class="channel-box" {
+                    // Node alias as prominent header
+                    @if let Some(alias) = node_alias {
+                        div class="channel-alias" { (alias) }
+                    }
+
+                    // Channel details in left-aligned format
+                    div class="channel-details" {
+                        div class="detail-row" {
+                            span class="detail-label" { "Channel ID" }
+                            span class="detail-value" { (channel.channel_id.to_string()) }
+                        }
+                        @if let Some(short_channel_id) = channel.short_channel_id {
+                            div class="detail-row" {
+                                span class="detail-label" { "Short Channel ID" }
+                                span class="detail-value" { (short_channel_id.to_string()) }
+                            }
+                        }
+                        div class="detail-row" {
+                            span class="detail-label" { "Node ID" }
+                            span class="detail-value" { (node_id) }
+                        }
+                        div class="detail-row" {
+                            span class="detail-label" { "Status" }
                             @if channel.is_usable {
                                 span class="status-badge status-active" { "Active" }
                             } @else {
                                 span class="status-badge status-inactive" { "Inactive" }
                             }
                         }
-                        div class="info-item" {
-                            span class="info-label" { "Counterparty" }
-                            div class="info-value" {
-                                @if let Some(alias) = node_alias {
-                                    div style="font-weight: bold; margin-bottom: 0.25rem;" { (alias) }
-                                }
-                                span style="font-family: monospace; font-size: 0.85rem;" { (node_id) }
-                            }
+                    }
+
+                    // Balance information cards (keeping existing style)
+                    div class="balance-info" {
+                        div class="balance-item" {
+                            div class="balance-amount" { (format_sats_as_btc(channel.outbound_capacity_msat / 1000)) }
+                            div class="balance-label" { "Outbound" }
                         }
-                        @if let Some(short_channel_id) = channel.short_channel_id {
-                            div class="info-item" {
-                                span class="info-label" { "Short Channel ID" }
-                                span class="info-value" { (short_channel_id.to_string()) }
-                            }
+                        div class="balance-item" {
+                            div class="balance-amount" { (format_sats_as_btc(channel.inbound_capacity_msat / 1000)) }
+                            div class="balance-label" { "Inbound" }
                         }
-                        div class="balance-info" {
-                            div class="balance-item" {
-                                div class="balance-amount" { (format_sats_as_btc(channel.outbound_capacity_msat / 1000)) }
-                                div class="balance-label" { "Outbound" }
-                            }
-                            div class="balance-item" {
-                                div class="balance-amount" { (format_sats_as_btc(channel.inbound_capacity_msat / 1000)) }
-                                div class="balance-label" { "Inbound" }
-                            }
-                            div class="balance-item" {
-                                div class="balance-amount" { (format_sats_as_btc(channel.channel_value_sats)) }
-                                div class="balance-label" { "Total" }
-                            }
+                        div class="balance-item" {
+                            div class="balance-amount" { (format_sats_as_btc(channel.channel_value_sats)) }
+                            div class="balance-label" { "Total" }
                         }
-                        @if channel.is_usable {
-                            div style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;" {
-                                a href=(format!("/channels/close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
-                                    button class="button-secondary" { "Close Channel" }
-                                }
-                                a href=(format!("/channels/force-close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
-                                    button class="button-destructive" title="Force close should not be used if normal close is preferred. Force close will broadcast the latest commitment transaction immediately." { "Force Close" }
-                                }
+                    }
+
+                    // Action buttons
+                    @if channel.is_usable {
+                        div class="channel-actions" {
+                            a href=(format!("/channels/close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
+                                button class="button-secondary" { "Close Channel" }
+                            }
+                            a href=(format!("/channels/force-close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
+                                button class="button-destructive" title="Force close should not be used if normal close is preferred. Force close will broadcast the latest commitment transaction immediately." { "Force Close" }
                             }
                         }
                     }
                 }
-
             }
         }
     };

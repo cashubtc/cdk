@@ -34,25 +34,25 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         --input: 214.3 31.8% 91.4%;
                         --ring: 222.2 84% 4.9%;
                         --radius: 0.5rem;
-                        
+
                         /* Typography scale */
                         --fs-title: 1.25rem;
                         --fs-label: 0.8125rem;
                         --fs-value: 1.625rem;
-                        
+
                         /* Line heights */
                         --lh-tight: 1.15;
                         --lh-normal: 1.4;
-                        
+
                         /* Font weights */
                         --fw-medium: 500;
                         --fw-semibold: 600;
                         --fw-bold: 700;
-                        
+
                         /* Colors */
                         --fg-primary: #0f172a;
                         --fg-muted: #6b7280;
-                        
+
                         /* Header text colors for light mode */
                         --header-title: #000000;
                         --header-subtitle: #333333;
@@ -80,28 +80,28 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                             --border: 217.2 32.6% 17.5%;
                             --input: 217.2 32.6% 17.5%;
                             --ring: 212.7 26.8% 83.9%;
-                            
+
                             /* Dark mode colors */
                             --fg-primary: #f8fafc;
                             --fg-muted: #94a3b8;
-                            
+
                             /* Header text colors for dark mode */
                             --header-title: #ffffff;
                             --header-subtitle: #e2e8f0;
                         }
                     }
-                    
+
                     * {
                         box-sizing: border-box;
                         margin: 0;
                         padding: 0;
                     }
-                    
+
                     html {
                         font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
                         font-variation-settings: normal;
                     }
-                    
+
                     body {
                         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
                         font-size: 14px;
@@ -114,19 +114,19 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         text-rendering: geometricPrecision;
                         min-height: 100vh;
                     }
-                    
+
                     .container {
                         max-width: 1200px;
                         margin: 0 auto;
                         padding: 0 1rem;
                     }
-                    
+
                     @media (min-width: 640px) {
                         .container {
                             padding: 0 2rem;
                         }
                     }
-                    
+
                     /* Hero section styling */
                     header {
                         position: relative;
@@ -143,14 +143,14 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         align-items: center;
                         justify-content: center;
                     }
-                    
+
                     /* Dark mode header background - using different image */
                     @media (prefers-color-scheme: dark) {
                         header {
                             background-image: url('/static/images/bg-dark.jpg?v=3');
                         }
                     }
-                    
+
                     /* Ensure text is positioned properly */
                     header .container {
                         position: absolute;
@@ -162,7 +162,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         max-width: 1200px;
                         padding: 0 2rem;
                     }
-                    
+
                     h1 {
                         font-size: 3rem;
                         font-weight: 700;
@@ -171,7 +171,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         color: var(--header-title);
                         margin-bottom: 1rem;
                     }
-                    
+
                     .subtitle {
                         font-size: 1.25rem;
                         color: var(--header-subtitle);
@@ -180,35 +180,35 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         margin: 0 auto;
                         line-height: 1.6;
                     }
-                    
+
                     @media (max-width: 768px) {
                         header {
                             height: 300px; /* Smaller height on mobile */
                         }
-                        
+
                         header .container {
                             padding: 0 1rem;
                         }
-                        
+
                         h1 {
                             font-size: 2.25rem;
                         }
-                        
+
                         .subtitle {
                             font-size: 1.1rem;
                         }
                     }
-                    
+
                     /* Card fade-in animation */
                     @keyframes fade-in {
                         from { opacity: 0; transform: translateY(10px); }
                         to { opacity: 1; transform: translateY(0); }
                     }
-                    
+
                     .card {
                         animation: fade-in 0.3s ease-out;
                     }
-                    
+
                     /* Modern Navigation Bar Styling */
                     nav {
                         background-color: hsl(var(--card));
@@ -220,13 +220,13 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         padding: 0.75rem;
                         margin-bottom: 2rem;
                     }
-                    
+
                     nav .container {
                         padding: 0;
                         display: flex;
                         justify-content: center;
                     }
-                    
+
                     nav ul {
                         list-style: none;
                         display: flex;
@@ -237,11 +237,11 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         padding: 0;
                         justify-content: center;
                     }
-                    
+
                     nav li {
                         flex-shrink: 0;
                     }
-                    
+
                     nav a {
                         display: inline-flex;
                         align-items: center;
@@ -257,22 +257,22 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         position: relative;
                         min-height: 3rem;
                     }
-                    
+
                     nav a:hover {
                         color: hsl(var(--foreground));
                         background-color: hsl(var(--muted));
                     }
-                    
+
                     nav a.active {
                         color: hsl(var(--primary-foreground));
                         background-color: hsl(var(--primary));
                         font-weight: 700;
                     }
-                    
+
                     nav a.active:hover {
                         background-color: hsl(var(--primary) / 0.9);
                     }
-                    
+
                     .card {
                         background-color: hsl(var(--card));
                         border: 1px solid hsl(var(--border));
@@ -281,7 +281,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         margin-bottom: 1.5rem;
                         box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
                     }
-                    
+
                     /* Metric cards styling - matching balance-item style */
                     .metrics-container {
                         display: flex;
@@ -289,7 +289,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         margin: 1rem 0;
                         flex-wrap: wrap;
                     }
-                    
+
                     .metric-card {
                         flex: 1;
                         min-width: 200px;
@@ -299,7 +299,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         border-radius: calc(var(--radius) - 2px);
                         border: 1px solid hsl(var(--border));
                     }
-                    
+
                     .metric-value {
                         font-size: 1.5rem;
                         font-weight: 600;
@@ -307,13 +307,13 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         margin-bottom: 0.5rem;
                         line-height: 1.2;
                     }
-                    
+
                     .metric-label {
                         font-size: 0.875rem;
                         color: hsl(var(--muted-foreground));
                         font-weight: 400;
                     }
-                    
+
                     .card h2,
                     .section-title,
                     h2 {
@@ -324,7 +324,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         text-transform: none;
                         margin: 0 0 12px;
                     }
-                    
+
                     h3 {
                         font-size: var(--fs-title);
                         line-height: var(--lh-tight);
@@ -333,11 +333,11 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         text-transform: none;
                         margin: 0 0 12px;
                     }
-                    
+
                     .form-group {
                         margin-bottom: 1.5rem;
                     }
-                    
+
                     label {
                         display: block;
                         font-size: 0.875rem;
@@ -345,7 +345,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         color: hsl(var(--foreground));
                         margin-bottom: 0.5rem;
                     }
-                    
+
                     input, textarea, select {
                         flex: 1;
                         background-color: hsl(var(--background));
@@ -358,19 +358,19 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         transition: border-color 150ms ease-in-out, box-shadow 150ms ease-in-out;
                         width: 100%;
                     }
-                    
+
                     input:focus, textarea:focus, select:focus {
                         outline: 2px solid transparent;
                         outline-offset: 2px;
                         border-color: hsl(var(--ring));
                         box-shadow: 0 0 0 2px hsl(var(--ring));
                     }
-                    
+
                     input:disabled, textarea:disabled, select:disabled {
                         cursor: not-allowed;
                         opacity: 0.5;
                     }
-                    
+
                     button {
                         display: inline-flex;
                         align-items: center;
@@ -387,81 +387,81 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         background-color: hsl(var(--primary));
                         color: hsl(var(--primary-foreground));
                     }
-                    
+
                     button:hover {
                         background-color: hsl(var(--primary) / 0.9);
                     }
-                    
+
                     button:focus-visible {
                         outline: 2px solid hsl(var(--ring));
                         outline-offset: 2px;
                     }
-                    
+
                     button:disabled {
                         pointer-events: none;
                         opacity: 0.5;
                     }
-                    
+
                     .button-secondary {
                         background-color: hsl(var(--secondary));
                         color: hsl(var(--secondary-foreground));
                         border: 1px solid hsl(var(--input));
                     }
-                    
+
                     .button-secondary:hover {
                         background-color: hsl(var(--secondary) / 0.8);
                     }
-                    
+
                     .button-outline {
                         border: 1px solid hsl(var(--input));
                         background-color: hsl(var(--background));
                         color: hsl(var(--foreground));
                     }
-                    
+
                     .button-outline:hover {
                         background-color: hsl(var(--accent));
                         color: hsl(var(--accent-foreground));
                     }
-                    
+
                     .button-destructive {
                         background-color: #B91C1C !important;
                         color: white !important;
                     }
-                    
+
                     .button-destructive:hover {
                         background-color: #DC2626 !important;
                     }
-                    
 
-                    
+
+
                     .button-sm {
                         height: 2rem;
                         border-radius: calc(var(--radius) - 4px);
                         padding: 0 0.75rem;
                         font-size: 0.75rem;
                     }
-                    
+
                     .button-lg {
                         height: 2.75rem;
                         border-radius: var(--radius);
                         padding: 0 2rem;
                         font-size: 1rem;
                     }
-                    
+
                     .grid {
                         display: grid;
                         grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
                         gap: 1.5rem;
                     }
-                    
+
                     @media (max-width: 640px) {
                         .grid {
                             grid-template-columns: 1fr;
                         }
                     }
-                    
 
-                    
+
+
                     .info-label,
                     .sub-label,
                     label {
@@ -473,7 +473,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         letter-spacing: 0.02em;
                         flex-shrink: 0;
                     }
-                    
+
                     .info-value {
                         font-size: 0.875rem;
                         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
@@ -484,7 +484,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         hyphens: auto;
                         min-width: 0;
                     }
-                    
+
                     .info-item {
                         display: flex;
                         gap: 0.5rem;
@@ -495,43 +495,43 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         min-height: 3rem;
                         justify-content: space-between;
                     }
-                    
+
                     .info-item:last-child {
                         border-bottom: none;
                     }
-                    
+
                     /* Card flex spacing improvements */
                     .card-flex {
                         display: flex;
                         gap: 1rem;
                         align-items: center;
                     }
-                    
+
                     .card-flex-content {
                         flex: 1 1 auto;
                     }
-                    
+
                     .card-flex-button {
                         flex: 0 0 auto;
                     }
-                    
+
                     .card-flex-content p {
                         margin: 0 0 12px;
                         line-height: var(--lh-normal);
                     }
-                    
+
                     .card-flex-content p + .card-flex-button,
                     .card-flex-content p + a,
                     .card-flex-content p + button {
                         margin-top: 12px;
                     }
-                    
+
                     .card-flex-content .body + .card-flex-button,
                     .card-flex-content .body + a,
                     .card-flex-content .body + button {
                         margin-top: 12px;
                     }
-                    
+
                     .truncate-value {
                         font-size: 0.875rem;
                         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
@@ -543,7 +543,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         display: inline-block;
                         max-width: 200px;
                     }
-                    
+
                     .copy-button {
                         background-color: hsl(var(--secondary));
                         color: hsl(var(--secondary-foreground));
@@ -559,24 +559,24 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         min-height: auto;
                         flex-shrink: 0;
                     }
-                    
+
                     .copy-button:hover {
                         background-color: hsl(var(--secondary) / 0.8);
                         border-color: hsl(var(--border));
                     }
-                    
+
                     .balance-item,
                     .balance-item-container {
                         padding: 1.25rem 0;
                         border-bottom: 1px solid hsl(var(--border));
                         margin-bottom: 10px;
                     }
-                    
+
                     .balance-item:last-child,
                     .balance-item-container:last-child {
                         border-bottom: none;
                     }
-                    
+
                     .balance-item .balance-label,
                     .balance-item-container .balance-label,
                     .balance-title,
@@ -590,7 +590,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         letter-spacing: 0.02em;
                         text-transform: none;
                     }
-                    
+
                     .balance-item .balance-amount,
                     .balance-item-container .balance-value,
                     .balance-amount,
@@ -604,39 +604,39 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         white-space: nowrap;
                         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
                     }
-                    
+
                     .balance-item .info-label + .info-value,
                     .balance-item .label + .amount,
                     .balance-item-container .info-label + .info-value,
                     .balance-item-container .label + .amount {
                         margin-top: 6px;
                     }
-                    
+
                     .alert {
                         border: 1px solid hsl(var(--border));
                         border-radius: var(--radius);
                         padding: 1rem;
                         margin-bottom: 1rem;
                     }
-                    
+
                     .alert-success {
                         border-color: hsl(142.1 76.2% 36.3%);
                         background-color: hsl(142.1 70.6% 45.3% / 0.1);
                         color: hsl(142.1 76.2% 36.3%);
                     }
-                    
+
                     .alert-destructive {
                         border-color: hsl(var(--destructive));
                         background-color: hsl(var(--destructive) / 0.1);
                         color: hsl(var(--destructive));
                     }
-                    
+
                     .alert-warning {
                         border-color: hsl(32.6 75.4% 55.1%);
                         background-color: hsl(32.6 75.4% 55.1% / 0.1);
                         color: hsl(32.6 75.4% 55.1%);
                     }
-                    
+
                     /* Legacy classes for backward compatibility */
                     .success {
                         border-color: hsl(142.1 76.2% 36.3%);
@@ -647,7 +647,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         padding: 1rem;
                         margin-bottom: 1rem;
                     }
-                    
+
                     .error {
                         border-color: hsl(var(--destructive));
                         background-color: hsl(var(--destructive) / 0.1);
@@ -657,7 +657,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         padding: 1rem;
                         margin-bottom: 1rem;
                     }
-                    
+
                     .badge {
                         display: inline-flex;
                         align-items: center;
@@ -669,33 +669,33 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         transition: all 150ms ease-in-out;
                         border: 1px solid transparent;
                     }
-                    
+
                     .badge-default {
                         background-color: hsl(var(--primary));
                         color: hsl(var(--primary-foreground));
                     }
-                    
+
                     .badge-secondary {
                         background-color: hsl(var(--secondary));
                         color: hsl(var(--secondary-foreground));
                     }
-                    
+
                     .badge-success {
                         background-color: hsl(142.1 70.6% 45.3%);
                         color: hsl(355.7 78% 98.4%);
                     }
-                    
+
                     .badge-destructive {
                         background-color: hsl(var(--destructive));
                         color: hsl(var(--destructive-foreground));
                     }
-                    
+
                     .badge-outline {
                         background-color: transparent;
                         color: hsl(var(--foreground));
                         border: 1px solid hsl(var(--border));
                     }
-                    
+
                     /* Legacy status classes */
                     .status-badge {
                         display: inline-flex;
@@ -706,55 +706,111 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         font-weight: 500;
                         line-height: 1;
                     }
-                    
+
                     .status-active {
                         background-color: hsl(142.1 70.6% 45.3%);
                         color: hsl(355.7 78% 98.4%);
                     }
-                    
+
                     .status-inactive {
                         background-color: hsl(var(--destructive));
                         color: hsl(var(--destructive-foreground));
                     }
-                    
-                    .channel-item {
+
+                    .channel-box {
                         background-color: hsl(var(--card));
                         border: 1px solid hsl(var(--border));
                         border-radius: var(--radius);
                         padding: 1.5rem;
                         margin-bottom: 1.5rem;
                     }
-                    
-                    .channel-header {
-                        display: flex;
-                        justify-content: space-between;
-                        align-items: center;
+
+                    .section-header {
+                        font-size: 1.25rem;
+                        font-weight: 700;
+                        color: hsl(var(--foreground));
+                        margin-bottom: 1.5rem;
+                        line-height: 1.2;
+                    }
+
+                    .channel-alias {
+                        font-size: 1.25rem;
+                        font-weight: 600;
+                        color: hsl(var(--foreground));
                         margin-bottom: 1rem;
+                        line-height: 1.2;
+                    }
+
+                    .channel-details {
+                        margin-bottom: 1.5rem;
+                    }
+
+                    .detail-row {
+                        display: flex;
+                        align-items: baseline;
+                        margin-bottom: 0.75rem;
                         gap: 1rem;
                     }
-                    
-                    .channel-id {
+
+                    .detail-row:last-child {
+                        margin-bottom: 0;
+                    }
+
+                    .detail-label {
+                        font-weight: 500;
+                        color: hsl(var(--muted-foreground));
+                        font-size: 0.875rem;
+                        min-width: 120px;
+                        flex-shrink: 0;
+                    }
+
+                    .detail-value {
+                        color: hsl(var(--foreground));
                         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
                         font-size: 0.875rem;
-                        color: hsl(var(--muted-foreground));
                         word-break: break-all;
                         flex: 1;
                         min-width: 0;
                     }
-                    
+
+                    .channel-actions {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        margin-top: 1rem;
+                        gap: 1rem;
+                    }
+
+                    @media (max-width: 640px) {
+                        .channel-actions {
+                            flex-direction: column;
+                            align-items: stretch;
+                        }
+
+                        .detail-row {
+                            flex-direction: column;
+                            align-items: flex-start;
+                            gap: 0.25rem;
+                        }
+
+                        .detail-label {
+                            min-width: auto;
+                        }
+                    }
+
                     .balance-info {
                         display: grid;
                         grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
                         gap: 1rem;
                         margin-top: 1rem;
                     }
-                    
+
                     @media (max-width: 640px) {
                         .balance-info {
                             grid-template-columns: 1fr;
                         }
                     }
-                    
+
                     .balance-item {
                         text-align: center;
                         padding: 1rem;
@@ -762,7 +818,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         border-radius: calc(var(--radius) - 2px);
                         border: 1px solid hsl(var(--border));
                     }
-                    
+
                     .balance-amount {
                         font-weight: 600;
                         font-size: 1.125rem;
@@ -770,9 +826,9 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         color: hsl(var(--foreground));
                         line-height: 1.2;
                     }
-                    
 
-                    
+
+
                     .payment-item {
                         background-color: hsl(var(--card));
                         border: 1px solid hsl(var(--border));
@@ -780,7 +836,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         padding: 1.5rem;
                         margin-bottom: 1.5rem;
                     }
-                    
+
                     .payment-header {
                         display: flex;
                         justify-content: space-between;
@@ -788,7 +844,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         margin-bottom: 1rem;
                         gap: 1rem;
                     }
-                    
+
                     @media (max-width: 640px) {
                         .payment-header {
                             flex-direction: column;
@@ -796,7 +852,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                             gap: 0.75rem;
                         }
                     }
-                    
+
                     .payment-direction {
                         display: flex;
                         align-items: center;
@@ -806,19 +862,19 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         flex: 1;
                         min-width: 0;
                     }
-                    
+
                     .direction-icon {
                         font-size: 1.125rem;
                         font-weight: bold;
                         color: hsl(var(--muted-foreground));
                     }
-                    
+
                     .payment-details {
                         display: flex;
                         flex-direction: column;
                         gap: 0.75rem;
                     }
-                    
+
                     .payment-amount {
                         font-size: 1.25rem;
                         font-weight: 600;
@@ -826,14 +882,14 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         color: hsl(var(--foreground));
                         line-height: 1.2;
                     }
-                    
+
                     .payment-info {
                         display: flex;
                         align-items: center;
                         gap: 0.75rem;
                         flex-wrap: wrap;
                     }
-                    
+
                     @media (max-width: 640px) {
                         .payment-info {
                             flex-direction: column;
@@ -841,14 +897,14 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                             gap: 0.25rem;
                         }
                     }
-                    
+
                     .payment-label {
                         font-weight: 500;
                         color: hsl(var(--muted-foreground));
                         font-size: 0.875rem;
                         flex-shrink: 0;
                     }
-                    
+
                     .payment-value {
                         color: hsl(var(--foreground));
                         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
@@ -856,7 +912,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         word-break: break-all;
                         min-width: 0;
                     }
-                    
+
                     .payment-list-header {
                         display: flex;
                         justify-content: space-between;
@@ -865,7 +921,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         padding-bottom: 1rem;
                         border-bottom: 1px solid hsl(var(--border));
                     }
-                    
+
                     @media (max-width: 640px) {
                         .payment-list-header {
                             flex-direction: column;
@@ -873,14 +929,14 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                             gap: 1rem;
                         }
                     }
-                    
+
                     .payment-filter-tabs {
                         display: flex;
                         gap: 0.25rem;
                         overflow-x: auto;
                         -webkit-overflow-scrolling: touch;
                     }
-                    
+
                     .payment-filter-tab {
                         display: inline-flex;
                         align-items: center;
@@ -897,19 +953,19 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         transition: all 150ms ease-in-out;
                         height: 2.25rem;
                     }
-                    
+
                     .payment-filter-tab:hover {
                         background-color: hsl(var(--accent));
                         color: hsl(var(--accent-foreground));
                         text-decoration: none;
                     }
-                    
+
                     .payment-filter-tab.active {
                         background-color: hsl(var(--primary));
                         color: hsl(var(--primary-foreground));
                         border-color: hsl(var(--primary));
                     }
-                    
+
                     .payment-type-badge {
                         display: inline-flex;
                         align-items: center;
@@ -922,43 +978,43 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         text-transform: uppercase;
                         letter-spacing: 0.05em;
                     }
-                    
+
                     .payment-type-bolt11 {
                         background-color: hsl(217 91% 60% / 0.1);
                         color: hsl(217 91% 60%);
                         border: 1px solid hsl(217 91% 60% / 0.2);
                     }
-                    
+
                     .payment-type-bolt12 {
                         background-color: hsl(262 83% 58% / 0.1);
                         color: hsl(262 83% 58%);
                         border: 1px solid hsl(262 83% 58% / 0.2);
                     }
-                    
+
                     .payment-type-onchain {
                         background-color: hsl(32 95% 44% / 0.1);
                         color: hsl(32 95% 44%);
                         border: 1px solid hsl(32 95% 44% / 0.2);
                     }
-                    
+
                     .payment-type-spontaneous {
                         background-color: hsl(142.1 70.6% 45.3% / 0.1);
                         color: hsl(142.1 70.6% 45.3%);
                         border: 1px solid hsl(142.1 70.6% 45.3% / 0.2);
                     }
-                    
+
                     .payment-type-bolt11-jit {
                         background-color: hsl(199 89% 48% / 0.1);
                         color: hsl(199 89% 48%);
                         border: 1px solid hsl(199 89% 48% / 0.2);
                     }
-                    
+
                     .payment-type-unknown {
                         background-color: hsl(var(--muted));
                         color: hsl(var(--muted-foreground));
                         border: 1px solid hsl(var(--border));
                     }
-                    
+
                     /* Pagination */
                     .pagination-controls {
                         display: flex;
@@ -966,14 +1022,14 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         align-items: center;
                         margin: 2rem 0;
                     }
-                    
+
                     .pagination {
                         display: flex;
                         align-items: center;
                         gap: 0.25rem;
                         list-style: none;
                     }
-                    
+
                     .pagination-btn, .pagination-number {
                         display: inline-flex;
                         align-items: center;
@@ -992,19 +1048,19 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         min-width: 2.25rem;
                         padding: 0 0.5rem;
                     }
-                    
+
                     .pagination-btn:hover, .pagination-number:hover {
                         background-color: hsl(var(--accent));
                         color: hsl(var(--accent-foreground));
                         text-decoration: none;
                     }
-                    
+
                     .pagination-number.active {
                         background-color: hsl(var(--primary));
                         color: hsl(var(--primary-foreground));
                         border-color: hsl(var(--primary));
                     }
-                    
+
                     .pagination-btn.disabled {
                         background-color: hsl(var(--muted));
                         color: hsl(var(--muted-foreground));
@@ -1012,7 +1068,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         opacity: 0.5;
                         pointer-events: none;
                     }
-                    
+
                     .pagination-ellipsis {
                         display: flex;
                         align-items: center;
@@ -1022,31 +1078,31 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         color: hsl(var(--muted-foreground));
                         font-size: 0.875rem;
                     }
-                    
+
                     /* Responsive adjustments */
                     @media (max-width: 640px) {
                         .container {
                             padding: 0 1rem;
                         }
-                        
+
                         header {
                             padding: 1rem 0;
                             margin-bottom: 1rem;
                         }
-                        
+
                         h1 {
                             font-size: 1.5rem;
                         }
-                        
+
                         nav ul {
                             flex-wrap: wrap;
                         }
-                        
+
                         .card {
                             padding: 1rem;
                             margin-bottom: 1rem;
                         }
-                        
+
                         .info-item {
                             flex-direction: column;
                             align-items: flex-start;
@@ -1054,35 +1110,35 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                             padding: 1rem 0;
                             min-height: auto;
                         }
-                        
+
                         .info-value, .truncate-value {
                             text-align: left;
                             max-width: 100%;
                         }
-                        
+
                         .copy-button {
                             margin-left: 0;
                             margin-top: 0.25rem;
                             align-self: flex-start;
                         }
-                        
+
                         .balance-amount-value {
                             font-size: 1.25rem;
                         }
-                        
+
                         .pagination {
                             flex-wrap: wrap;
                             justify-content: center;
                             gap: 0.125rem;
                         }
-                        
+
                         .pagination-btn, .pagination-number {
                             height: 2rem;
                             min-width: 2rem;
                             font-size: 0.75rem;
                         }
                     }
-                    
+
                     /* Node Information Section Styling */
                     .node-info-section {
                         display: flex;
@@ -1090,7 +1146,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         margin-bottom: 1.5rem;
                         align-items: flex-start;
                     }
-                    
+
                     .node-info-main-container {
                         flex: 1;
                         display: flex;
@@ -1102,14 +1158,14 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         padding: 1.5rem;
                         box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
                     }
-                    
+
                     .node-info-left {
                         display: flex;
                         align-items: center;
                         gap: 1rem;
                         margin-bottom: 1rem;
                     }
-                    
+
                     .node-avatar {
                         flex-shrink: 0;
                         background-color: hsl(var(--muted) / 0.3);
@@ -1122,7 +1178,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         width: 80px;
                         height: 80px;
                     }
-                    
+
                     .avatar-image {
                         width: 48px;
                         height: 48px;
@@ -1130,12 +1186,12 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         object-fit: cover;
                         display: block;
                     }
-                    
+
                     .node-details {
                         flex: 1;
                         min-width: 0;
                     }
-                    
+
                     .node-name {
                         font-size: var(--fs-title);
                         font-weight: var(--fw-semibold);
@@ -1146,14 +1202,14 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         overflow-wrap: break-word;
                         hyphens: auto;
                     }
-                    
+
                     .node-address {
                         font-size: 0.875rem;
                         color: var(--fg-muted);
                         margin: 0;
                         line-height: var(--lh-normal);
                     }
-                    
+
                     .node-content-box {
                         background-color: hsl(var(--muted) / 0.3);
                         border: 1px solid hsl(var(--border));
@@ -1166,106 +1222,106 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         color: hsl(var(--muted-foreground));
                         overflow: hidden;
                     }
-                    
+
                     .node-metrics {
                         flex-shrink: 0;
                         width: 280px;
                         display: flex;
                         flex-direction: column;
                     }
-                    
+
                     .node-metrics .card {
                         margin-bottom: 0;
                         flex: 1;
                         display: flex;
                         flex-direction: column;
                     }
-                    
+
                     .node-metrics .metrics-container {
                         flex-direction: column;
                         margin: 1rem 0 0 0;
                         flex: 1;
                     }
-                    
+
                     .node-metrics .metric-card {
                         min-width: auto;
                     }
-                    
+
                     /* Mobile responsive design for node info */
                     @media (max-width: 768px) {
                         .node-info-section {
                             flex-direction: column;
                             gap: 1rem;
                         }
-                        
+
                         .node-info-left {
                             flex-direction: column;
                             align-items: flex-start;
                             text-align: center;
                             gap: 0.75rem;
                         }
-                        
+
                         .node-avatar {
                             align-self: center;
                         }
-                        
+
                         .node-details {
                             text-align: center;
                             width: 100%;
                         }
-                        
+
                         .node-content-box {
                             min-height: 150px;
                             padding: 1rem;
                         }
-                        
+
                         .node-metrics {
                             width: 100%;
                         }
-                        
+
                         .node-metrics .metrics-container {
                             flex-direction: row;
                             flex-wrap: wrap;
                         }
-                        
+
                         .node-metrics .metric-card {
                             flex: 1;
                             min-width: 120px;
                         }
                     }
-                    
+
                     @media (max-width: 480px) {
                         .node-info-left {
                             gap: 0.5rem;
                         }
-                        
+
                         .node-avatar {
                             width: 64px;
                             height: 64px;
                             padding: 0.5rem;
                         }
-                        
+
                         .avatar-image {
                             width: 40px;
                             height: 40px;
                         }
-                        
+
                         .node-name {
                             font-size: 1rem;
                             word-wrap: break-word;
                             overflow-wrap: break-word;
                             hyphens: auto;
                         }
-                        
+
                         .node-address {
                             font-size: 0.8125rem;
                         }
-                        
+
                         .node-content-box {
                             min-height: 120px;
                             padding: 0.75rem;
                         }
-                        
+
                         .node-metrics .metrics-container {
                             flex-direction: column;
                             gap: 0.75rem;
@@ -1277,12 +1333,12 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         :root {
                             --fs-value: 1.45rem;
                         }
-                        
+
                         .node-name {
                             font-size: 0.875rem;
                         }
                     }
-                    
+
                     @media (max-width: 480px) {
                         .node-name {
                             font-size: 0.8125rem;
