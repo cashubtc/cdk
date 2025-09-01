@@ -18,6 +18,73 @@ use crate::web::templates::{
     error_message, form_card, format_sats_as_btc, info_card, layout, success_message,
 };
 
+// Node alias cache for consistent display
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use std::collections::HashMap as StdHashMap;
+
+lazy_static::lazy_static! {
+    static ref NODE_ALIAS_CACHE: Arc<RwLock<StdHashMap<String, String>>> = Arc::new(RwLock::new(StdHashMap::new()));
+}
+
+/// Fetch node alias from external sources
+async fn get_node_alias(node_id: &str) -> Option<String> {
+    // Check cache first
+    {
+        let cache = NODE_ALIAS_CACHE.read().await;
+        if let Some(alias) = cache.get(node_id) {
+            return Some(alias.clone());
+        }
+    }
+
+    // Try to fetch from 1ml.com API (for mainnet/testnet)
+    let alias = fetch_node_alias_from_1ml(node_id).await;
+
+    if let Some(alias) = &alias {
+        // Cache the result
+        let mut cache = NODE_ALIAS_CACHE.write().await;
+        cache.insert(node_id.to_string(), alias.clone());
+        return Some(alias.clone());
+    }
+
+    // Fallback: Generate a test alias for unknown nodes (useful for testnet/regtest)
+    let test_alias = generate_test_alias(node_id);
+    let mut cache = NODE_ALIAS_CACHE.write().await;
+    cache.insert(node_id.to_string(), test_alias.clone());
+    Some(test_alias)
+}
+
+/// Fetch node alias from 1ml.com API
+async fn fetch_node_alias_from_1ml(node_id: &str) -> Option<String> {
+    let client = reqwest::Client::new();
+    let url = format!("https://1ml.com/node/{}/json", node_id);
+
+    match client.get(&url).send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                match response.json::<serde_json::Value>().await {
+                    Ok(json) => {
+                        if let Some(alias) = json.get("alias").and_then(|v| v.as_str()) {
+                            return Some(alias.to_string());
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+        Err(_) => {}
+    }
+
+    None
+}
+
+/// Generate a test alias for nodes that don't have aliases in the database
+fn generate_test_alias(node_id: &str) -> String {
+    // Use the first 8 characters of the node ID to create a readable alias
+    let short_id = &node_id[..8.min(node_id.len())];
+    format!("TestNode_{}", short_id)
+}
+
 #[derive(Deserialize)]
 pub struct OpenChannelForm {
     node_id: String,
@@ -229,22 +296,36 @@ pub async fn close_channel_page(
         return Ok(Html(layout("Close Channel Error", content).into_string()));
     }
 
+    // Get node alias for consistent display
+    let node_alias = get_node_alias(&node_id).await;
+
     let content = form_card(
         "Close Channel",
         html! {
             p { "Are you sure you want to close this channel?" }
-            div class="info-item" {
-                span class="info-label" { "User Channel ID:" }
-                span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (channel_id) }
+
+            // Channel details in consistent format
+            div class="channel-details" {
+                @if let Some(alias) = node_alias {
+                    div class="detail-row" {
+                        span class="detail-label" { "Node Alias" }
+                        span class="detail-value" { (alias) }
+                    }
+                }
+                div class="detail-row" {
+                    span class="detail-label" { "User Channel ID" }
+                    span class="detail-value" { (channel_id) }
+                }
+                div class="detail-row" {
+                    span class="detail-label" { "Node ID" }
+                    span class="detail-value" { (node_id) }
+                }
             }
-            div class="info-item" {
-                span class="info-label" { "Node ID:" }
-                span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (node_id) }
-            }
+
             form method="post" action="/channels/close" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;" {
                 input type="hidden" name="channel_id" value=(channel_id) {}
                 input type="hidden" name="node_id" value=(node_id) {}
-                a href="/balance" { button type="button" class="button-primary" { "Cancel" } }
+                a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
                 button type="submit" class="button-destructive" { "Close Channel" }
             }
         },
@@ -272,6 +353,9 @@ pub async fn force_close_channel_page(
         ));
     }
 
+    // Get node alias for consistent display
+    let node_alias = get_node_alias(&node_id).await;
+
     let content = form_card(
         "Force Close Channel",
         html! {
@@ -284,14 +368,25 @@ pub async fn force_close_channel_page(
                 }
             }
             p { "Are you sure you want to force close this channel?" }
-            div class="info-item" {
-                span class="info-label" { "User Channel ID:" }
-                span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (channel_id) }
+
+            // Channel details in consistent format
+            div class="channel-details" {
+                @if let Some(alias) = node_alias {
+                    div class="detail-row" {
+                        span class="detail-label" { "Node Alias" }
+                        span class="detail-value" { (alias) }
+                    }
+                }
+                div class="detail-row" {
+                    span class="detail-label" { "User Channel ID" }
+                    span class="detail-value" { (channel_id) }
+                }
+                div class="detail-row" {
+                    span class="detail-label" { "Node ID" }
+                    span class="detail-value" { (node_id) }
+                }
             }
-            div class="info-item" {
-                span class="info-label" { "Node ID:" }
-                span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (node_id) }
-            }
+
             form method="post" action="/channels/force-close" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;" {
                 input type="hidden" name="channel_id" value=(channel_id) {}
                 input type="hidden" name="node_id" value=(node_id) {}
