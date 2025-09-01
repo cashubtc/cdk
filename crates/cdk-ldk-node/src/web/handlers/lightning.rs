@@ -102,18 +102,35 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
         html! {
             h2 style="text-align: center; margin-bottom: 3rem;" { "Lightning" }
 
-            // Quick Actions section - matching dashboard style
+            // Quick Actions section - individual cards
             div class="card" style="margin-bottom: 2rem;" {
                 h2 { "Quick Actions" }
-                div style="display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap;" {
-                    a href="/channels/open" style="text-decoration: none; flex: 1; min-width: 200px;" {
-                        button class="button-primary" style="width: 100%;" { "Open Channel" }
+                div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;" {
+                    // Open Channel Card
+                    div class="quick-action-card" {
+                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Open Channel" }
+                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Create a new Lightning Network channel to connect with another node." }
+                        a href="/channels/open" style="text-decoration: none;" {
+                            button class="button-outline" { "Open Channel" }
+                        }
                     }
-                    a href="/invoices" style="text-decoration: none; flex: 1; min-width: 200px;" {
-                        button class="button-primary" style="width: 100%;" { "Create Invoice" }
+
+                    // Create Invoice Card
+                    div class="quick-action-card" {
+                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Create Invoice" }
+                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Generate a Lightning invoice to receive payments from other users or services." }
+                        a href="/invoices" style="text-decoration: none;" {
+                            button class="button-outline" { "Create Invoice" }
+                        }
                     }
-                    a href="/payments/send" style="text-decoration: none; flex: 1; min-width: 200px;" {
-                        button class="button-primary" style="width: 100%;" { "Make Lightning Payment" }
+
+                    // Make Payment Card
+                    div class="quick-action-card" {
+                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Make Lightning Payment" }
+                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send Lightning payments to other users using invoices. BOLT 11 & 12 supported." }
+                        a href="/payments/send" style="text-decoration: none;" {
+                            button class="button-outline" { "Make Payment" }
+                        }
                     }
                 }
             }
@@ -149,18 +166,35 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
         html! {
             h2 style="text-align: center; margin-bottom: 3rem;" { "Lightning" }
 
-            // Quick Actions section - matching dashboard style
+            // Quick Actions section - individual cards
             div class="card" style="margin-bottom: 2rem;" {
                 h2 { "Quick Actions" }
-                div style="display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap;" {
-                    a href="/channels/open" style="text-decoration: none; flex: 1; min-width: 200px;" {
-                        button class="button-primary" style="width: 100%;" { "Open Channel" }
+                div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;" {
+                    // Open Channel Card
+                    div class="quick-action-card" {
+                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Open Channel" }
+                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Create a new Lightning channel by connecting with another node." }
+                        a href="/channels/open" style="text-decoration: none;" {
+                            button class="button-outline" { "Open Channel" }
+                        }
                     }
-                    a href="/invoices" style="text-decoration: none; flex: 1; min-width: 200px;" {
-                        button class="button-primary" style="width: 100%;" { "Create Invoice" }
+
+                    // Create Invoice Card
+                    div class="quick-action-card" {
+                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Create Invoice" }
+                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Generate a Lightning invoice to receive payments." }
+                        a href="/invoices" style="text-decoration: none;" {
+                            button class="button-outline" { "Create Invoice" }
+                        }
                     }
-                    a href="/payments/send" style="text-decoration: none; flex: 1; min-width: 200px;" {
-                        button class="button-primary" style="width: 100%;" { "Make Lightning Payment" }
+
+                    // Make Payment Card
+                    div class="quick-action-card" {
+                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Make Lightning Payment" }
+                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send Lightning payments to other users using invoices." }
+                        a href="/payments/send" style="text-decoration: none;" {
+                            button class="button-outline" { "Make Payment" }
+                        }
                     }
                 }
             }

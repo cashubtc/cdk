@@ -60,6 +60,10 @@ pub fn layout(title: &str, content: Markup) -> Markup {
 
                                         /* Dark mode using system preference */
                     @media (prefers-color-scheme: dark) {
+                        body {
+                            background: linear-gradient(rgb(23, 25, 29), rgb(18, 19, 21));
+                        }
+
                         :root {
                             --background: 0 0% 0%;
                             --foreground: 0 0% 100%;
@@ -113,7 +117,17 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                             border: none !important;
                         }
 
-                        .balance-item {
+                                                .balance-item {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+
+                        .node-info-main-container {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+
+                        .node-avatar {
                             background-color: rgba(255, 255, 255, 0.03) !important;
                             border: none !important;
                         }
@@ -141,6 +155,60 @@ pub fn layout(title: &str, content: Markup) -> Markup {
 
                         .metric-value, .balance-amount {
                             color: var(--text-primary) !important;
+                        }
+
+                        /* Page headers and section titles */
+                        h1, h2, h3, h4, h5, h6 {
+                            color: var(--text-primary) !important;
+                        }
+
+                        /* Form card titles */
+                        .form-card h2, .form-card h3 {
+                            color: var(--text-primary) !important;
+                        }
+
+                        /* Quick action cards styling */
+                        .quick-action-card {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                            border-radius: 0.75rem !important;
+                            padding: 1.5rem !important;
+                        }
+
+                        /* Dark mode outline button styling */
+                        .button-outline {
+                            background-color: transparent !important;
+                            color: var(--text-primary) !important;
+                            border: 1px solid var(--text-muted) !important;
+                        }
+
+                        .button-outline:hover {
+                            background-color: rgba(255, 255, 255, 0.2) !important;
+                        }
+
+                        /* Navigation dark mode styling */
+                        nav {
+                            background-color: transparent !important;
+                            border-top: none !important;
+                            border-bottom: none !important;
+                        }
+
+                        nav a {
+                            color: var(--text-muted) !important;
+                        }
+
+                        nav a:hover {
+                            color: var(--text-secondary) !important;
+                            background-color: rgba(255, 255, 255, 0.05) !important;
+                        }
+
+                        nav a.active {
+                            color: var(--text-primary) !important;
+                            background-color: rgba(255, 255, 255, 0.08) !important;
+                        }
+
+                        nav a.active:hover {
+                            background-color: rgba(255, 255, 255, 0.1) !important;
                         }
                     }
 
@@ -477,12 +545,13 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                     }
 
                     .button-destructive {
-                        background-color: #B91C1C !important;
-                        color: white !important;
+                        background-color: transparent !important;
+                        color: #DC2626 !important;
+                        border: 1px solid #DC2626 !important;
                     }
 
                     .button-destructive:hover {
-                        background-color: #DC2626 !important;
+                        background-color: rgba(220, 38, 38, 0.2) !important;
                     }
 
 
@@ -749,7 +818,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         border: 1px solid hsl(var(--border));
                     }
 
-                    /* Legacy status classes */
+                    /* Status badge classes - consistent with payment type badges */
                     .status-badge {
                         display: inline-flex;
                         align-items: center;
@@ -761,13 +830,21 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                     }
 
                     .status-active {
-                        background-color: hsl(142.1 70.6% 45.3%);
-                        color: hsl(355.7 78% 98.4%);
+                        background-color: hsl(142.1 70.6% 45.3% / 0.1);
+                        color: hsl(142.1 70.6% 45.3%);
+                        border: 1px solid hsl(142.1 70.6% 45.3% / 0.2);
                     }
 
                     .status-inactive {
-                        background-color: hsl(var(--destructive));
-                        color: hsl(var(--destructive-foreground));
+                        background-color: hsl(0 84.2% 60.2% / 0.1);
+                        color: hsl(0 84.2% 60.2%);
+                        border: 1px solid hsl(0 84.2% 60.2% / 0.2);
+                    }
+
+                    .status-pending {
+                        background-color: hsl(215.4 16.3% 46.9% / 0.1);
+                        color: hsl(215.4 16.3% 46.9%);
+                        border: 1px solid hsl(215.4 16.3% 46.9% / 0.2);
                     }
 
                     .channel-box {
@@ -1025,6 +1102,30 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         background-color: hsl(var(--primary));
                         color: hsl(var(--primary-foreground));
                         border-color: hsl(var(--primary));
+                    }
+
+                    /* Dark mode specific styling for payment filter tabs */
+                    @media (prefers-color-scheme: dark) {
+                        .payment-filter-tab {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border-color: var(--text-muted) !important;
+                            color: var(--text-muted) !important;
+                        }
+
+                        .payment-filter-tab:hover {
+                            background-color: rgba(255, 255, 255, 0.08) !important;
+                            color: var(--text-secondary) !important;
+                        }
+
+                        .payment-filter-tab.active {
+                            background-color: rgba(255, 255, 255, 0.12) !important;
+                            color: var(--text-primary) !important;
+                            border-color: var(--text-secondary) !important;
+                        }
+
+                        .payment-filter-tab.active:hover {
+                            background-color: rgba(255, 255, 255, 0.15) !important;
+                        }
                     }
 
                     .payment-type-badge {
@@ -1427,10 +1528,46 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                 nav {
                     div class="container" {
                         ul {
-                            li { a href="/" { "Dashboard" } }
-                            li { a href="/balance" { "Lightning" } }
-                            li { a href="/onchain" { "On-chain" } }
-                            li { a href="/payments" { "All Payments" } }
+                            li {
+                                a href="/" {
+                                    svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 0.5rem;" {
+                                        path d="M15.6 2.7a10 10 0 1 0 5.7 5.7" {}
+                                        circle cx="12" cy="12" r="2" {}
+                                        path d="M13.4 10.6 19 5" {}
+                                    }
+                                    "Dashboard"
+                                }
+                            }
+                            li {
+                                a href="/balance" {
+                                    svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 0.5rem;" {
+                                        path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z" {}
+                                    }
+                                    "Lightning"
+                                }
+                            }
+                            li {
+                                a href="/onchain" {
+                                    svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 0.5rem;" {
+                                        path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" {}
+                                        path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" {}
+                                    }
+                                    "On-chain"
+                                }
+                            }
+                            li {
+                                a href="/payments" {
+                                    svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 0.5rem;" {
+                                        path d="M12 18H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5" {}
+                                        path d="m16 19 3 3 3-3" {}
+                                        path d="M18 12h.01" {}
+                                        path d="M19 16v6" {}
+                                        path d="M6 12h.01" {}
+                                        circle cx="12" cy="12" r="2" {}
+                                    }
+                                    "All Payments"
+                                }
+                            }
                         }
                     }
                 }
