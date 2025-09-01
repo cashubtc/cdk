@@ -327,7 +327,7 @@ pub async fn close_channel_page(
                 @if let Some(ch) = channel {
                     div class="detail-row" {
                         span class="detail-label" { "Channel Amount" }
-                        span class="detail-value" { (format_sats_as_btc(ch.channel_value_sats)) }
+                        span class="detail-value-amount" { (format_sats_as_btc(ch.channel_value_sats)) }
                     }
                 }
             }
@@ -402,7 +402,7 @@ pub async fn force_close_channel_page(
                 @if let Some(ch) = channel {
                     div class="detail-row" {
                         span class="detail-label" { "Channel Amount" }
-                        span class="detail-value" { (format_sats_as_btc(ch.channel_value_sats)) }
+                        span class="detail-value-amount" { (format_sats_as_btc(ch.channel_value_sats)) }
                     }
                 }
             }

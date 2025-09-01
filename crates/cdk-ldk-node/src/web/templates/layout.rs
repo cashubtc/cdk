@@ -773,6 +773,14 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         min-width: 0;
                     }
 
+                    .detail-value-amount {
+                        color: hsl(var(--foreground));
+                        font-size: 0.875rem;
+                        word-break: break-all;
+                        flex: 1;
+                        min-width: 0;
+                    }
+
                     .channel-actions {
                         display: flex;
                         justify-content: space-between;
