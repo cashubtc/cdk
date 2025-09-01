@@ -27,7 +27,7 @@ use cdk_common::common::FeeReserve;
 use cdk_common::ensure_cdk;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, IncomingPaymentOptions,
+    self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
     MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
     PaymentQuoteResponse, WaitPaymentResponse,
 };
@@ -295,9 +295,9 @@ impl MintPayment for FakeWallet {
     }
 
     #[instrument(skip_all)]
-    async fn wait_any_incoming_payment(
+    async fn wait_payment_event(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
         tracing::info!("Starting stream for fake invoices");
         let receiver = self
             .receiver
@@ -309,11 +309,14 @@ impl MintPayment for FakeWallet {
         let unit = self.unit.clone();
         let receiver_stream = ReceiverStream::new(receiver);
         Ok(Box::pin(receiver_stream.map(
-            move |(request_lookup_id, payment_amount, payment_id)| WaitPaymentResponse {
-                payment_identifier: request_lookup_id.clone(),
-                payment_amount,
-                unit: unit.clone(),
-                payment_id,
+            move |(request_lookup_id, payment_amount, payment_id)| {
+                let wait_response = WaitPaymentResponse {
+                    payment_identifier: request_lookup_id.clone(),
+                    payment_amount,
+                    unit: unit.clone(),
+                    payment_id,
+                };
+                Event::PaymentReceived(wait_response)
             },
         )))
     }
