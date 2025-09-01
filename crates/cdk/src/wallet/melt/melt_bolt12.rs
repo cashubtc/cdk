@@ -6,6 +6,7 @@ use std::str::FromStr;
 
 use cdk_common::amount::amount_for_offer;
 use cdk_common::wallet::MeltQuote;
+use cdk_common::PaymentMethod;
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 
@@ -57,6 +58,7 @@ impl Wallet {
             state: quote_res.state,
             expiry: quote_res.expiry,
             payment_preimage: quote_res.payment_preimage,
+            payment_method: PaymentMethod::Bolt12,
         };
 
         self.localstore.add_melt_quote(quote.clone()).await?;

@@ -156,7 +156,8 @@ where
                   fee_reserve,
                   state,
                   expiry,
-                  payment_preimage
+                  payment_preimage,
+                  payment_method
               FROM
                   melt_quote
               "#,
@@ -579,16 +580,17 @@ ON CONFLICT(id) DO UPDATE SET
         query(
             r#"
 INSERT INTO melt_quote
-(id, unit, amount, request, fee_reserve, state, expiry)
+(id, unit, amount, request, fee_reserve, state, expiry, payment_method)
 VALUES
-(:id, :unit, :amount, :request, :fee_reserve, :state, :expiry)
+(:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_method)
 ON CONFLICT(id) DO UPDATE SET
     unit = excluded.unit,
     amount = excluded.amount,
     request = excluded.request,
     fee_reserve = excluded.fee_reserve,
     state = excluded.state,
-    expiry = excluded.expiry
+    expiry = excluded.expiry,
+    payment_method = excluded.payment_method
 ;
         "#,
         )?
@@ -599,6 +601,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind("fee_reserve", u64::from(quote.fee_reserve) as i64)
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry as i64)
+        .bind("payment_method", quote.payment_method.to_string())
         .execute(&*conn)
         .await?;
 
@@ -618,7 +621,8 @@ ON CONFLICT(id) DO UPDATE SET
                 fee_reserve,
                 state,
                 expiry,
-                payment_preimage
+                payment_preimage,
+                payment_method
             FROM
                 melt_quote
             WHERE
@@ -1124,12 +1128,16 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<wallet::MeltQuote, Error> {
             fee_reserve,
             state,
             expiry,
-            payment_preimage
+            payment_preimage,
+            row_method
         ) = row
     );
 
     let amount: u64 = column_as_number!(amount);
     let fee_reserve: u64 = column_as_number!(fee_reserve);
+
+    let payment_method =
+        PaymentMethod::from_str(&column_as_string!(row_method)).map_err(Error::from)?;
 
     Ok(wallet::MeltQuote {
         id: column_as_string!(id),
@@ -1140,6 +1148,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<wallet::MeltQuote, Error> {
         state: column_as_string!(state, MeltQuoteState::from_str),
         expiry: column_as_number!(expiry),
         payment_preimage: column_as_nullable_string!(payment_preimage),
+        payment_method,
     })
 }
 
