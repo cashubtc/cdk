@@ -58,36 +58,89 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         --header-subtitle: #333333;
                     }
 
-                    /* Dark mode using system preference */
+                                        /* Dark mode using system preference */
                     @media (prefers-color-scheme: dark) {
                         :root {
-                            --background: 222.2 84% 4.9%;
-                            --foreground: 210 40% 98%;
-                            --card: 222.2 84% 4.9%;
-                            --card-foreground: 210 40% 98%;
-                            --popover: 222.2 84% 4.9%;
-                            --popover-foreground: 210 40% 98%;
-                            --primary: 210 40% 98%;
-                            --primary-foreground: 222.2 84% 4.9%;
-                            --secondary: 217.2 32.6% 17.5%;
-                            --secondary-foreground: 210 40% 98%;
-                            --muted: 217.2 32.6% 17.5%;
-                            --muted-foreground: 215 20.2% 65.1%;
-                            --accent: 217.2 32.6% 17.5%;
-                            --accent-foreground: 210 40% 98%;
+                            --background: 0 0% 0%;
+                            --foreground: 0 0% 100%;
+                            --card: 0 0% 0%;
+                            --card-foreground: 0 0% 100%;
+                            --popover: 0 0% 0%;
+                            --popover-foreground: 0 0% 100%;
+                            --primary: 0 0% 100%;
+                            --primary-foreground: 0 0% 0%;
+                            --secondary: 0 0% 20%;
+                            --secondary-foreground: 0 0% 100%;
+                            --muted: 0 0% 20%;
+                            --muted-foreground: 0 0% 70%;
+                            --accent: 0 0% 20%;
+                            --accent-foreground: 0 0% 100%;
                             --destructive: 0 62.8% 30.6%;
-                            --destructive-foreground: 210 40% 98%;
-                            --border: 217.2 32.6% 17.5%;
-                            --input: 217.2 32.6% 17.5%;
-                            --ring: 212.7 26.8% 83.9%;
+                            --destructive-foreground: 0 0% 100%;
+                            --border: 0 0% 20%;
+                            --input: 0 0% 20%;
+                            --ring: 0 0% 83.9%;
 
-                            /* Dark mode colors */
-                            --fg-primary: #f8fafc;
-                            --fg-muted: #94a3b8;
+                            /* Dark mode text hierarchy colors */
+                            --text-primary: #ffffff;
+                            --text-secondary: #e6e6e6;
+                            --text-tertiary: #cccccc;
+                            --text-quaternary: #b3b3b3;
+                            --text-muted: #999999;
+                            --text-muted-2: #888888;
+                            --text-muted-3: #666666;
+                            --text-muted-4: #333333;
+                            --text-subtle: #1a1a1a;
 
                             /* Header text colors for dark mode */
                             --header-title: #ffffff;
-                            --header-subtitle: #e2e8f0;
+                            --header-subtitle: #e6e6e6;
+                        }
+
+                        /* Dark mode box styling - no borders, subtle background */
+                        .card {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+
+                        .channel-box {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+
+                        .metric-card {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+
+                        .balance-item {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+
+                        /* Text hierarchy colors */
+                        .section-header {
+                            color: var(--text-primary) !important;
+                        }
+
+                        .channel-alias {
+                            color: var(--text-primary) !important;
+                        }
+
+                        .detail-label {
+                            color: var(--text-muted) !important;
+                        }
+
+                        .detail-value, .detail-value-amount {
+                            color: var(--text-secondary) !important;
+                        }
+
+                        .metric-label, .balance-label {
+                            color: var(--text-muted) !important;
+                        }
+
+                        .metric-value, .balance-amount {
+                            color: var(--text-primary) !important;
                         }
                     }
 
