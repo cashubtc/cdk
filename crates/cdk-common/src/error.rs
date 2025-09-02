@@ -257,18 +257,6 @@ pub enum Error {
         /// Found currency unit
         found: CurrencyUnit,
     },
-    /// No mint available with sufficient funds
-    #[error(
-        "No mint has sufficient balance of {amount} {unit}. Total available: {total_available}"
-    )]
-    InsufficientFundsPerMint {
-        /// Requested amount
-        amount: Amount,
-        /// Currency unit
-        unit: CurrencyUnit,
-        /// Total available amount across all mints
-        total_available: Amount,
-    },
     /// Unknown mint in MultiMintWallet
     #[error("Unknown mint: {mint_url}")]
     UnknownMint {
@@ -284,21 +272,6 @@ pub enum Error {
         target_mint: String,
         /// Amount that failed to transfer
         amount: Amount,
-    },
-    /// Multi-Path Payment not implemented
-    #[error("Multi-Path Payment across wallets not fully implemented")]
-    MppNotImplemented,
-    /// Mint selection failed
-    #[error("Could not select suitable mints for operation: {reason}")]
-    MintSelectionFailed {
-        /// Reason for failure
-        reason: String,
-    },
-    /// Token combination failed
-    #[error("Failed to combine tokens from multiple prepared sends: {reason}")]
-    TokenCombinationFailed {
-        /// Reason for failure
-        reason: String,
     },
     /// Insufficient Funds
     #[error("Insufficient funds")]
