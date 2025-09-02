@@ -67,9 +67,8 @@ pub async fn pay_request(
         .first()
         .ok_or_else(|| anyhow!("No wallet found that can pay this request"))?;
 
-    cdk::wallet::payment_request::pay_request(
+    matching_wallet.pay_request(
         payment_request.clone(),
-        matching_wallet,
         Some(amount),
     )
     .await
