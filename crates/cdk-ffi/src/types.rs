@@ -996,6 +996,37 @@ impl MeltQuoteBolt11Response {
     }
 }
 
+/// FFI-compatible PaymentMethod
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
+pub enum PaymentMethod {
+    /// Bolt11 payment type
+    Bolt11,
+    /// Bolt12 payment type
+    Bolt12,
+    /// Custom payment type
+    Custom { method: String },
+}
+
+impl From<cdk::nuts::PaymentMethod> for PaymentMethod {
+    fn from(method: cdk::nuts::PaymentMethod) -> Self {
+        match method {
+            cdk::nuts::PaymentMethod::Bolt11 => Self::Bolt11,
+            cdk::nuts::PaymentMethod::Bolt12 => Self::Bolt12,
+            cdk::nuts::PaymentMethod::Custom(s) => Self::Custom { method: s },
+        }
+    }
+}
+
+impl From<PaymentMethod> for cdk::nuts::PaymentMethod {
+    fn from(method: PaymentMethod) -> Self {
+        match method {
+            PaymentMethod::Bolt11 => Self::Bolt11,
+            PaymentMethod::Bolt12 => Self::Bolt12,
+            PaymentMethod::Custom { method } => Self::Custom(method),
+        }
+    }
+}
+
 /// FFI-compatible MeltQuote
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MeltQuote {
@@ -1015,6 +1046,8 @@ pub struct MeltQuote {
     pub expiry: u64,
     /// Payment preimage
     pub payment_preimage: Option<String>,
+    /// Payment method
+    pub payment_method: PaymentMethod,
 }
 
 impl From<cdk::wallet::MeltQuote> for MeltQuote {
@@ -1028,6 +1061,7 @@ impl From<cdk::wallet::MeltQuote> for MeltQuote {
             state: quote.state.into(),
             expiry: quote.expiry,
             payment_preimage: quote.payment_preimage.clone(),
+            payment_method: quote.payment_method.into(),
         }
     }
 }
@@ -1045,6 +1079,7 @@ impl TryFrom<MeltQuote> for cdk::wallet::MeltQuote {
             state: quote.state.into(),
             expiry: quote.expiry,
             payment_preimage: quote.payment_preimage,
+            payment_method: quote.payment_method.into(),
         })
     }
 }
