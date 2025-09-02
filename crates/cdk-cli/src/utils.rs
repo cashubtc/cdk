@@ -30,13 +30,13 @@ pub async fn get_or_create_wallet(
     multi_mint_wallet: &MultiMintWallet,
     mint_url: &MintUrl,
 ) -> Result<cdk::wallet::Wallet> {
-    match multi_mint_wallet.get_wallet(&mint_url).await {
+    match multi_mint_wallet.get_wallet(mint_url).await {
         Some(wallet) => Ok(wallet.clone()),
         None => {
             tracing::debug!("Wallet does not exist creating..");
             multi_mint_wallet.add_mint(mint_url.clone(), None).await?;
             Ok(multi_mint_wallet
-                .get_wallet(&mint_url)
+                .get_wallet(mint_url)
                 .await
                 .expect("Wallet should exist after adding mint")
                 .clone())

@@ -252,7 +252,7 @@ impl MeltBuilder {
         if let Some(mint_url) = self.preferred_mint {
             match self
                 .wallet
-                .pay_invoice_for_wallet(&mint_url, &self.bolt11, self.options.clone(), self.max_fee)
+                .pay_invoice_for_wallet(&mint_url, &self.bolt11, self.options, self.max_fee)
                 .await
             {
                 Ok(melted) => return Ok(melted),

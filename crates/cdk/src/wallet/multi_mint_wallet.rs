@@ -767,7 +767,7 @@ impl MultiMintWallet {
         // Parse the invoice to get the amount
         let invoice = bolt11
             .parse::<crate::Bolt11Invoice>()
-            .map_err(|e| Error::Invoice(e))?;
+            .map_err(Error::Invoice)?;
 
         let amount = invoice
             .amount_milli_satoshis()
@@ -793,7 +793,7 @@ impl MultiMintWallet {
         let mut best_wallet = None;
 
         for (_, wallet) in eligible_wallets.iter() {
-            match wallet.melt_quote(bolt11.to_string(), options.clone()).await {
+            match wallet.melt_quote(bolt11.to_string(), options).await {
                 Ok(quote) => {
                     if let Some(max_fee) = max_fee {
                         if quote.fee_reserve > max_fee {
