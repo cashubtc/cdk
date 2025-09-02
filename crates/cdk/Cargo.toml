@@ -44,7 +44,7 @@ utoipa = { workspace = true, optional = true }
 uuid.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
 trust-dns-resolver = { version = "0.23.2", optional = true }
-nostr-sdk = { optional = true, version = "0.41.0", default-features = false, features = [
+nostr-sdk = { optional = true, version = "0.43.0", default-features = false, features = [
     "nip04",
     "nip44",
     "nip59"
