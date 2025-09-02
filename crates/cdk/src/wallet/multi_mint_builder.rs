@@ -23,7 +23,7 @@ use crate::wallet::{MultiMintWallet, SendOptions};
 /// # use std::sync::Arc;
 /// # async fn example(wallet: Arc<MultiMintWallet>) -> Result<(), Box<dyn std::error::Error>> {
 /// let mint_url: MintUrl = "https://mint.example.com".parse()?;
-/// 
+///
 /// // Simple send from a specific mint
 /// let token = SendBuilder::new(wallet.clone(), Amount::from(100), mint_url.clone())
 ///     .send()
