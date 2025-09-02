@@ -15,6 +15,7 @@ use tokio::sync::RwLock;
 use tracing::instrument;
 use zeroize::Zeroize;
 
+use super::builder::WalletBuilder;
 use super::receive::ReceiveOptions;
 use super::send::{PreparedSend, SendOptions};
 use super::Error;
@@ -70,7 +71,7 @@ use crate::{ensure_cdk, Amount, Wallet};
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MultiMintWallet {
     /// Storage backend
     localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
@@ -79,6 +80,8 @@ pub struct MultiMintWallet {
     unit: CurrencyUnit,
     /// Wallets indexed by mint URL
     wallets: Arc<RwLock<BTreeMap<MintUrl, Wallet>>>,
+    /// Proxy configuration for HTTP clients (optional)
+    proxy_config: Option<url::Url>,
 }
 
 /// Multi-Mint Send Options
@@ -166,6 +169,26 @@ impl MultiMintWallet {
             seed,
             unit,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
+            proxy_config: None,
+        })
+    }
+
+    /// Create a new [MultiMintWallet] with proxy configuration
+    ///
+    /// All wallets in this MultiMintWallet will use the specified proxy.
+    /// This allows you to route all mint connections through a proxy server.
+    pub fn with_proxy(
+        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        seed: [u8; 64],
+        unit: CurrencyUnit,
+        proxy_url: url::Url,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            localstore,
+            seed,
+            unit,
+            wallets: Arc::new(RwLock::new(BTreeMap::new())),
+            proxy_config: Some(proxy_url),
         })
     }
 
@@ -176,13 +199,42 @@ impl MultiMintWallet {
         mint_url: MintUrl,
         target_proof_count: Option<usize>,
     ) -> Result<(), Error> {
-        let wallet = Wallet::new(
-            &mint_url.to_string(),
-            self.unit.clone(),
-            self.localstore.clone(),
-            self.seed,
-            target_proof_count,
-        )?;
+        let wallet = if let Some(proxy_url) = &self.proxy_config {
+            // Create wallet with proxy-configured client
+            let client = crate::wallet::HttpClient::with_proxy(
+                mint_url.clone(),
+                proxy_url.clone(),
+                None,
+                true,
+            )
+            .unwrap_or_else(|_| {
+                #[cfg(feature = "auth")]
+                {
+                    crate::wallet::HttpClient::new(mint_url.clone(), None)
+                }
+                #[cfg(not(feature = "auth"))]
+                {
+                    crate::wallet::HttpClient::new(mint_url.clone())
+                }
+            });
+            WalletBuilder::new()
+                .mint_url(mint_url.clone())
+                .unit(self.unit.clone())
+                .localstore(self.localstore.clone())
+                .seed(self.seed)
+                .target_proof_count(target_proof_count.unwrap_or(3))
+                .client(client)
+                .build()?
+        } else {
+            // Create wallet with default client
+            Wallet::new(
+                &mint_url.to_string(),
+                self.unit.clone(),
+                self.localstore.clone(),
+                self.seed,
+                target_proof_count,
+            )?
+        };
 
         wallet.fetch_mint_info().await?;
 

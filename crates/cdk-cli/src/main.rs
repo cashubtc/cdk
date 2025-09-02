@@ -169,7 +169,18 @@ async fn main() -> Result<()> {
     let seed = mnemonic.to_seed_normalized("");
 
     // Create MultiMintWallet with SAT unit (default)
-    let multi_mint_wallet = MultiMintWallet::new(localstore.clone(), seed, CurrencyUnit::Sat)?;
+    let multi_mint_wallet = match &args.proxy {
+        Some(proxy_url) => {
+            // Create MultiMintWallet with proxy configuration
+            MultiMintWallet::with_proxy(
+                localstore.clone(),
+                seed,
+                CurrencyUnit::Sat,
+                proxy_url.clone(),
+            )?
+        }
+        None => MultiMintWallet::new(localstore.clone(), seed, CurrencyUnit::Sat)?,
+    };
 
     let mints = localstore.get_mints().await?;
 
