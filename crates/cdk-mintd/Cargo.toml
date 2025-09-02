@@ -21,7 +21,7 @@ cln = ["dep:cdk-cln"]
 lnd = ["dep:cdk-lnd"]
 lnbits = ["dep:cdk-lnbits"]
 fakewallet = ["dep:cdk-fake-wallet"]
-ldk-node = ["dep:cdk-ldk-node"]
+ldk-node = ["dep:cdk-ldk-node", "dep:ldk-node"]
 grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
 sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 # MSRV is not committed to with swagger enabled
@@ -66,6 +66,7 @@ home.workspace = true
 url.workspace = true
 utoipa = { workspace = true, optional = true }
 utoipa-swagger-ui = { version = "9.0.0", features = ["axum"], optional = true }
+ldk-node = { workspace = true, optional = true }
 
 [build-dependencies]
 # Dep of utopia 2.5.0 breaks so keeping here for now

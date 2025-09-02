@@ -12,10 +12,11 @@ readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
-default = ["mint", "wallet", "auth"]
+default = ["mint", "wallet", "auth", "ldk"]
 mint = ["cdk-common/mint"]
 wallet = ["cdk-common/wallet"]
 auth = ["cdk-common/auth"]
+ldk = ["lightning"]
 
 [dependencies]
 async-trait.workspace = true
@@ -27,5 +28,6 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 lightning-invoice.workspace = true
+lightning = {workspace = true, optional = true}
 uuid.workspace = true
 once_cell.workspace = true
