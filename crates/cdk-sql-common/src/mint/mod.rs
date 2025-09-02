@@ -26,6 +26,7 @@ use cdk_common::mint::{
 };
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::payment::PaymentIdentifier;
+use cdk_common::quote_id::QuoteId;
 use cdk_common::secret::Secret;
 use cdk_common::state::check_state_transition;
 use cdk_common::util::unix_time;
@@ -36,7 +37,6 @@ use cdk_common::{
 use lightning_invoice::Bolt11Invoice;
 use migrations::MIGRATIONS;
 use tracing::instrument;
-use uuid::Uuid;
 
 use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
@@ -169,7 +169,7 @@ where
     async fn add_proofs(
         &mut self,
         proofs: Proofs,
-        quote_id: Option<Uuid>,
+        quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
@@ -212,7 +212,7 @@ where
                 proof.witness.map(|w| serde_json::to_string(&w).unwrap()),
             )
             .bind("state", "UNSPENT".to_string())
-            .bind("quote_id", quote_id.map(|q| q.hyphenated().to_string()))
+            .bind("quote_id", quote_id.clone().map(|q| q.to_string()))
             .bind("created_time", current_time as i64)
             .execute(&self.inner)
             .await?;
@@ -253,7 +253,7 @@ where
     async fn remove_proofs(
         &mut self,
         ys: &[PublicKey],
-        _quote_id: Option<Uuid>,
+        _quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err> {
         if ys.is_empty() {
             return Ok(());
@@ -309,7 +309,7 @@ where
 #[inline(always)]
 async fn get_mint_quote_payments<C>(
     conn: &C,
-    quote_id: &Uuid,
+    quote_id: &QuoteId,
 ) -> Result<Vec<IncomingPayment>, Error>
 where
     C: DatabaseExecutor + Send + Sync,
@@ -327,7 +327,7 @@ where
             quote_id=:quote_id
         "#,
     )?
-    .bind("quote_id", quote_id.as_hyphenated().to_string())
+    .bind("quote_id", quote_id.to_string())
     .fetch_all(conn)
     .await?
     .into_iter()
@@ -344,7 +344,7 @@ where
 }
 
 #[inline(always)]
-async fn get_mint_quote_issuance<C>(conn: &C, quote_id: &Uuid) -> Result<Vec<Issuance>, Error>
+async fn get_mint_quote_issuance<C>(conn: &C, quote_id: &QuoteId) -> Result<Vec<Issuance>, Error>
 where
     C: DatabaseExecutor + Send + Sync,
 {
@@ -356,7 +356,7 @@ FROM mint_quote_issued
 WHERE quote_id=:quote_id
             "#,
     )?
-    .bind("quote_id", quote_id.as_hyphenated().to_string())
+    .bind("quote_id", quote_id.to_string())
     .fetch_all(conn)
     .await?
     .into_iter()
@@ -542,10 +542,15 @@ where
     #[instrument(skip(self))]
     async fn increment_mint_quote_amount_paid(
         &mut self,
-        quote_id: &Uuid,
+        quote_id: &QuoteId,
         amount_paid: Amount,
         payment_id: String,
     ) -> Result<Amount, Self::Err> {
+        if amount_paid == Amount::ZERO {
+            tracing::warn!("Amount payments of zero amount should not be recorded.");
+            return Err(Error::Duplicate);
+        }
+
         // Check if payment_id already exists in mint_quote_payments
         let exists = query(
             r#"
@@ -573,7 +578,7 @@ where
             FOR UPDATE
             "#,
         )?
-        .bind("quote_id", quote_id.as_hyphenated().to_string())
+        .bind("quote_id", quote_id.to_string())
         .fetch_one(&self.inner)
         .await
         .inspect_err(|err| {
@@ -592,6 +597,13 @@ where
             .checked_add(amount_paid)
             .ok_or_else(|| database::Error::AmountOverflow)?;
 
+        tracing::debug!(
+            "Mint quote {} amount paid was {} is now {}.",
+            quote_id,
+            current_amount_paid,
+            new_amount_paid
+        );
+
         // Update the amount_paid
         query(
             r#"
@@ -601,7 +613,7 @@ where
             "#,
         )?
         .bind("amount_paid", new_amount_paid.to_i64())
-        .bind("quote_id", quote_id.as_hyphenated().to_string())
+        .bind("quote_id", quote_id.to_string())
         .execute(&self.inner)
         .await
         .inspect_err(|err| {
@@ -616,7 +628,7 @@ where
             VALUES (:quote_id, :payment_id, :amount, :timestamp)
             "#,
         )?
-        .bind("quote_id", quote_id.as_hyphenated().to_string())
+        .bind("quote_id", quote_id.to_string())
         .bind("payment_id", payment_id)
         .bind("amount", amount_paid.to_i64())
         .bind("timestamp", unix_time() as i64)
@@ -633,7 +645,7 @@ where
     #[instrument(skip_all)]
     async fn increment_mint_quote_amount_issued(
         &mut self,
-        quote_id: &Uuid,
+        quote_id: &QuoteId,
         amount_issued: Amount,
     ) -> Result<Amount, Self::Err> {
         // Get current amount_issued from quote
@@ -645,7 +657,7 @@ where
             FOR UPDATE
             "#,
         )?
-        .bind("quote_id", quote_id.as_hyphenated().to_string())
+        .bind("quote_id", quote_id.to_string())
         .fetch_one(&self.inner)
         .await
         .inspect_err(|err| {
@@ -673,7 +685,7 @@ where
             "#,
         )?
         .bind("amount_issued", new_amount_issued.to_i64())
-        .bind("quote_id", quote_id.as_hyphenated().to_string())
+        .bind("quote_id", quote_id.to_string())
         .execute(&self.inner)
         .await
         .inspect_err(|err| {
@@ -689,7 +701,7 @@ INSERT INTO mint_quote_issued
 VALUES (:quote_id, :amount, :timestamp);
             "#,
         )?
-        .bind("quote_id", quote_id.as_hyphenated().to_string())
+        .bind("quote_id", quote_id.to_string())
         .bind("amount", amount_issued.to_i64())
         .bind("timestamp", current_time as i64)
         .execute(&self.inner)
@@ -729,9 +741,9 @@ VALUES (:quote_id, :amount, :timestamp);
         Ok(())
     }
 
-    async fn remove_mint_quote(&mut self, quote_id: &Uuid) -> Result<(), Self::Err> {
+    async fn remove_mint_quote(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err> {
         query(r#"DELETE FROM mint_quote WHERE id=:id"#)?
-            .bind("id", quote_id.as_hyphenated().to_string())
+            .bind("id", quote_id.to_string())
             .execute(&self.inner)
             .await?;
         Ok(())
@@ -788,13 +800,13 @@ VALUES (:quote_id, :amount, :timestamp);
 
     async fn update_melt_quote_request_lookup_id(
         &mut self,
-        quote_id: &Uuid,
+        quote_id: &QuoteId,
         new_request_lookup_id: &PaymentIdentifier,
     ) -> Result<(), Self::Err> {
         query(r#"UPDATE melt_quote SET request_lookup_id = :new_req_id, request_lookup_id_kind = :new_kind WHERE id = :id"#)?
             .bind("new_req_id", new_request_lookup_id.to_string())
             .bind("new_kind",new_request_lookup_id.kind() )
-            .bind("id", quote_id.as_hyphenated().to_string())
+            .bind("id", quote_id.to_string())
             .execute(&self.inner)
             .await?;
         Ok(())
@@ -802,7 +814,7 @@ VALUES (:quote_id, :amount, :timestamp);
 
     async fn update_melt_quote_state(
         &mut self,
-        quote_id: &Uuid,
+        quote_id: &QuoteId,
         state: MeltQuoteState,
         payment_proof: Option<String>,
     ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err> {
@@ -830,7 +842,7 @@ VALUES (:quote_id, :amount, :timestamp);
                 AND state != :state
             "#,
         )?
-        .bind("id", quote_id.as_hyphenated().to_string())
+        .bind("id", quote_id.to_string())
         .bind("state", state.to_string())
         .fetch_one(&self.inner)
         .await?
@@ -844,13 +856,13 @@ VALUES (:quote_id, :amount, :timestamp);
                 .bind("state", state.to_string())
                 .bind("paid_time", current_time as i64)
                 .bind("payment_preimage", payment_proof)
-                .bind("id", quote_id.as_hyphenated().to_string())
+                .bind("id", quote_id.to_string())
                 .execute(&self.inner)
                 .await
         } else {
             query(r#"UPDATE melt_quote SET state = :state WHERE id = :id"#)?
                 .bind("state", state.to_string())
-                .bind("id", quote_id.as_hyphenated().to_string())
+                .bind("id", quote_id.to_string())
                 .execute(&self.inner)
                 .await
         };
@@ -869,21 +881,21 @@ VALUES (:quote_id, :amount, :timestamp);
         Ok((old_state, quote))
     }
 
-    async fn remove_melt_quote(&mut self, quote_id: &Uuid) -> Result<(), Self::Err> {
+    async fn remove_melt_quote(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err> {
         query(
             r#"
             DELETE FROM melt_quote
             WHERE id=?
             "#,
         )?
-        .bind("id", quote_id.as_hyphenated().to_string())
+        .bind("id", quote_id.to_string())
         .execute(&self.inner)
         .await?;
 
         Ok(())
     }
 
-    async fn get_mint_quote(&mut self, quote_id: &Uuid) -> Result<Option<MintQuote>, Self::Err> {
+    async fn get_mint_quote(&mut self, quote_id: &QuoteId) -> Result<Option<MintQuote>, Self::Err> {
         let payments = get_mint_quote_payments(&self.inner, quote_id).await?;
         let issuance = get_mint_quote_issuance(&self.inner, quote_id).await?;
 
@@ -908,7 +920,7 @@ VALUES (:quote_id, :amount, :timestamp);
             FOR UPDATE
             "#,
         )?
-        .bind("id", quote_id.as_hyphenated().to_string())
+        .bind("id", quote_id.to_string())
         .fetch_one(&self.inner)
         .await?
         .map(|row| sql_row_to_mint_quote(row, payments, issuance))
@@ -917,7 +929,7 @@ VALUES (:quote_id, :amount, :timestamp);
 
     async fn get_melt_quote(
         &mut self,
-        quote_id: &Uuid,
+        quote_id: &QuoteId,
     ) -> Result<Option<mint::MeltQuote>, Self::Err> {
         Ok(query(
             r#"
@@ -942,7 +954,7 @@ VALUES (:quote_id, :amount, :timestamp);
                 id=:id
             "#,
         )?
-        .bind("id", quote_id.as_hyphenated().to_string())
+        .bind("id", quote_id.to_string())
         .fetch_one(&self.inner)
         .await?
         .map(sql_row_to_melt_quote)
@@ -1041,7 +1053,7 @@ where
 {
     type Err = Error;
 
-    async fn get_mint_quote(&self, quote_id: &Uuid) -> Result<Option<MintQuote>, Self::Err> {
+    async fn get_mint_quote(&self, quote_id: &QuoteId) -> Result<Option<MintQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         let payments = get_mint_quote_payments(&*conn, quote_id).await?;
@@ -1066,7 +1078,7 @@ where
                 mint_quote
             WHERE id = :id"#,
         )?
-        .bind("id", quote_id.as_hyphenated().to_string())
+        .bind("id", quote_id.to_string())
         .fetch_one(&*conn)
         .await?
         .map(|row| sql_row_to_mint_quote(row, payments, issuance))
@@ -1194,7 +1206,10 @@ where
         Ok(mint_quotes)
     }
 
-    async fn get_melt_quote(&self, quote_id: &Uuid) -> Result<Option<mint::MeltQuote>, Self::Err> {
+    async fn get_melt_quote(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<mint::MeltQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -1219,7 +1234,7 @@ where
                 id=:id
             "#,
         )?
-        .bind("id", quote_id.as_hyphenated().to_string())
+        .bind("id", quote_id.to_string())
         .fetch_one(&*conn)
         .await?
         .map(sql_row_to_melt_quote)
@@ -1300,7 +1315,10 @@ where
         Ok(ys.iter().map(|y| proofs.remove(y)).collect())
     }
 
-    async fn get_proof_ys_by_quote_id(&self, quote_id: &Uuid) -> Result<Vec<PublicKey>, Self::Err> {
+    async fn get_proof_ys_by_quote_id(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Vec<PublicKey>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -1316,7 +1334,7 @@ where
                 quote_id = :quote_id
             "#,
         )?
-        .bind("quote_id", quote_id.as_hyphenated().to_string())
+        .bind("quote_id", quote_id.to_string())
         .fetch_all(&*conn)
         .await?
         .into_iter()
@@ -1374,7 +1392,7 @@ where
         &mut self,
         blinded_messages: &[PublicKey],
         blind_signatures: &[BlindSignature],
-        quote_id: Option<Uuid>,
+        quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
@@ -1391,7 +1409,10 @@ where
             .bind("amount", u64::from(signature.amount) as i64)
             .bind("keyset_id", signature.keyset_id.to_string())
             .bind("c", signature.c.to_bytes().to_vec())
-            .bind("quote_id", quote_id.map(|q| q.hyphenated().to_string()))
+            .bind("quote_id", quote_id.as_ref().map(|q| match q {
+                QuoteId::BASE64(s) => s.to_string(),
+                QuoteId::UUID(u) => u.hyphenated().to_string(),
+            }))
             .bind(
                 "dleq_e",
                 signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()),
@@ -1535,7 +1556,7 @@ where
     /// Get [`BlindSignature`]s for quote
     async fn get_blind_signatures_for_quote(
         &self,
-        quote_id: &Uuid,
+        quote_id: &QuoteId,
     ) -> Result<Vec<BlindSignature>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
@@ -1646,7 +1667,7 @@ fn sql_row_to_mint_quote(
     let payment_method = column_as_string!(payment_method, PaymentMethod::from_str);
 
     Ok(MintQuote::new(
-        Some(Uuid::parse_str(&id).map_err(|_| Error::InvalidUuid(id))?),
+        Some(QuoteId::from_str(&id)?),
         request_str,
         column_as_string!(unit, CurrencyUnit::from_str),
         amount.map(Amount::from),
@@ -1733,7 +1754,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
     };
 
     Ok(MeltQuote {
-        id: Uuid::parse_str(&id).map_err(|_| Error::InvalidUuid(id))?,
+        id: QuoteId::from_str(&id)?,
         unit: CurrencyUnit::from_str(&unit)?,
         amount: Amount::from(amount),
         request,

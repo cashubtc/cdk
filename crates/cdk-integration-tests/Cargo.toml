@@ -23,12 +23,13 @@ cashu = { workspace = true, features = ["mint", "wallet"] }
 cdk = { workspace = true, features = ["mint", "wallet", "auth"] }
 cdk-cln = { workspace = true }
 cdk-lnd = { workspace = true }
+cdk-ldk-node = { workspace = true }
 cdk-axum = { workspace = true, features = ["auth"] }
 cdk-sqlite = { workspace = true }
 cdk-redb = { workspace = true }
 cdk-fake-wallet = { workspace = true }
 cdk-common = { workspace = true, features = ["mint", "wallet", "auth"] }
-cdk-mintd = { workspace = true, features = ["cln", "lnd", "fakewallet", "grpc-processor", "auth", "lnbits", "management-rpc", "sqlite", "postgres"] }
+cdk-mintd = { workspace = true, features = ["cln", "lnd", "fakewallet", "grpc-processor", "auth", "lnbits", "management-rpc", "sqlite", "postgres", "ldk-node"] }
 futures = { workspace = true, default-features = false, features = [
     "executor",
 ] }
@@ -39,11 +40,13 @@ serde_json.workspace = true
 # ln-regtest-rs = { path = "../../../../ln-regtest-rs" }
 ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "df81424" }
 lightning-invoice.workspace = true
+ldk-node.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio-tungstenite.workspace = true
 tower-http = { workspace = true, features = ["cors"] }
 tower-service = "0.3.3"
+tokio-util.workspace = true
 reqwest.workspace = true
 bitcoin = "0.32.0"
 clap = { workspace = true, features = ["derive"] }

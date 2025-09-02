@@ -1,9 +1,9 @@
-use cdk_common::amount::to_unit;
 use cdk_common::mint::MintQuote;
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
     IncomingPaymentOptions, WaitPaymentResponse,
 };
+use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{
     database, ensure_cdk, Amount, CurrencyUnit, Error, MintQuoteBolt11Request,
@@ -11,7 +11,6 @@ use cdk_common::{
     MintRequest, MintResponse, NotificationPayload, PaymentMethod, PublicKey,
 };
 use tracing::instrument;
-use uuid::Uuid;
 
 use crate::mint::Verification;
 use crate::Mint;
@@ -50,12 +49,12 @@ impl From<MintQuoteBolt12Request> for MintQuoteRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MintQuoteResponse {
     /// Lightning Network BOLT11 invoice response
-    Bolt11(MintQuoteBolt11Response<Uuid>),
+    Bolt11(MintQuoteBolt11Response<QuoteId>),
     /// Lightning Network BOLT12 offer response
-    Bolt12(MintQuoteBolt12Response<Uuid>),
+    Bolt12(MintQuoteBolt12Response<QuoteId>),
 }
 
-impl TryFrom<MintQuoteResponse> for MintQuoteBolt11Response<Uuid> {
+impl TryFrom<MintQuoteResponse> for MintQuoteBolt11Response<QuoteId> {
     type Error = Error;
 
     fn try_from(response: MintQuoteResponse) -> Result<Self, Self::Error> {
@@ -66,7 +65,7 @@ impl TryFrom<MintQuoteResponse> for MintQuoteBolt11Response<Uuid> {
     }
 }
 
-impl TryFrom<MintQuoteResponse> for MintQuoteBolt12Response<Uuid> {
+impl TryFrom<MintQuoteResponse> for MintQuoteBolt12Response<QuoteId> {
     type Error = Error;
 
     fn try_from(response: MintQuoteResponse) -> Result<Self, Self::Error> {
@@ -83,7 +82,7 @@ impl TryFrom<MintQuote> for MintQuoteResponse {
     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
         match quote.payment_method {
             PaymentMethod::Bolt11 => {
-                let bolt11_response: MintQuoteBolt11Response<Uuid> = quote.into();
+                let bolt11_response: MintQuoteBolt11Response<QuoteId> = quote.into();
                 Ok(MintQuoteResponse::Bolt11(bolt11_response))
             }
             PaymentMethod::Bolt12 => {
@@ -251,14 +250,10 @@ impl Mint {
 
                 let description = bolt12_request.description;
 
-                let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
-
-                let expiry = unix_time() + mint_ttl;
-
                 let bolt12_options = Bolt12IncomingPaymentOptions {
                     description,
                     amount,
-                    unix_expiry: Some(expiry),
+                    unix_expiry: None,
                 };
 
                 let incoming_options = IncomingPaymentOptions::Bolt12(Box::new(bolt12_options));
@@ -303,12 +298,12 @@ impl Mint {
 
         match payment_method {
             PaymentMethod::Bolt11 => {
-                let res: MintQuoteBolt11Response<Uuid> = quote.clone().into();
+                let res: MintQuoteBolt11Response<QuoteId> = quote.clone().into();
                 self.pubsub_manager
                     .broadcast(NotificationPayload::MintQuoteBolt11Response(res));
             }
             PaymentMethod::Bolt12 => {
-                let res: MintQuoteBolt12Response<Uuid> = quote.clone().try_into()?;
+                let res: MintQuoteBolt12Response<QuoteId> = quote.clone().try_into()?;
                 self.pubsub_manager
                     .broadcast(NotificationPayload::MintQuoteBolt12Response(res));
             }
@@ -338,7 +333,7 @@ impl Mint {
     /// * `Ok(())` if removal was successful
     /// * `Error` if the quote doesn't exist or removal fails
     #[instrument(skip_all)]
-    pub async fn remove_mint_quote(&self, quote_id: &Uuid) -> Result<(), Error> {
+    pub async fn remove_mint_quote(&self, quote_id: &QuoteId) -> Result<(), Error> {
         let mut tx = self.localstore.begin_transaction().await?;
         tx.remove_mint_quote(quote_id).await?;
         tx.commit().await?;
@@ -410,52 +405,8 @@ impl Mint {
         mint_quote: &MintQuote,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
-        tracing::debug!(
-            "Received payment notification of {} {} for mint quote {} with payment id {}",
-            wait_payment_response.payment_amount,
-            wait_payment_response.unit,
-            mint_quote.id,
-            wait_payment_response.payment_id.to_string()
-        );
-
-        let quote_state = mint_quote.state();
-        if !mint_quote
-            .payment_ids()
-            .contains(&&wait_payment_response.payment_id)
-        {
-            if mint_quote.payment_method == PaymentMethod::Bolt11
-                && (quote_state == MintQuoteState::Issued || quote_state == MintQuoteState::Paid)
-            {
-                tracing::info!("Received payment notification for already seen payment.");
-            } else {
-                let payment_amount_quote_unit = to_unit(
-                    wait_payment_response.payment_amount,
-                    &wait_payment_response.unit,
-                    &mint_quote.unit,
-                )?;
-
-                tracing::debug!(
-                    "Payment received amount in quote unit {} {}",
-                    mint_quote.unit,
-                    payment_amount_quote_unit
-                );
-
-                let total_paid = tx
-                    .increment_mint_quote_amount_paid(
-                        &mint_quote.id,
-                        payment_amount_quote_unit,
-                        wait_payment_response.payment_id,
-                    )
-                    .await?;
-
-                self.pubsub_manager
-                    .mint_quote_payment(mint_quote, total_paid);
-            }
-        } else {
-            tracing::info!("Received payment notification for already seen payment.");
-        }
-
-        Ok(())
+        Self::handle_mint_quote_payment(tx, mint_quote, wait_payment_response, &self.pubsub_manager)
+            .await
     }
 
     /// Checks the status of a mint quote and updates it if necessary
@@ -470,14 +421,16 @@ impl Mint {
     /// * `MintQuoteResponse` - The current state of the quote
     /// * `Error` if the quote doesn't exist or checking fails
     #[instrument(skip(self))]
-    pub async fn check_mint_quote(&self, quote_id: &Uuid) -> Result<MintQuoteResponse, Error> {
+    pub async fn check_mint_quote(&self, quote_id: &QuoteId) -> Result<MintQuoteResponse, Error> {
         let mut quote = self
             .localstore
             .get_mint_quote(quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        self.check_mint_quote_paid(&mut quote).await?;
+        if quote.payment_method == PaymentMethod::Bolt11 {
+            self.check_mint_quote_paid(&mut quote).await?;
+        }
 
         quote.try_into()
     }
@@ -501,15 +454,16 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn process_mint_request(
         &self,
-        mint_request: MintRequest<Uuid>,
+        mint_request: MintRequest<QuoteId>,
     ) -> Result<MintResponse, Error> {
         let mut mint_quote = self
             .localstore
             .get_mint_quote(&mint_request.quote)
             .await?
             .ok_or(Error::UnknownQuote)?;
-
-        self.check_mint_quote_paid(&mut mint_quote).await?;
+        if mint_quote.payment_method == PaymentMethod::Bolt11 {
+            self.check_mint_quote_paid(&mut mint_quote).await?;
+        }
 
         // get the blind signatures before having starting the db transaction, if there are any
         // rollbacks this blind_signatures will be lost, and the signature is stateless. It is not a
@@ -609,7 +563,7 @@ impl Mint {
                 .map(|p| p.blinded_secret)
                 .collect::<Vec<PublicKey>>(),
             &blind_signatures,
-            Some(mint_request.quote),
+            Some(mint_request.quote.clone()),
         )
         .await?;
 

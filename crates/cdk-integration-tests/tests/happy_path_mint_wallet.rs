@@ -109,23 +109,21 @@ async fn test_happy_mint_melt_round_trip() {
         .await
         .unwrap();
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await
-        .unwrap();
-
     let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(60),
+        )
         .await
-        .unwrap();
+        .expect("payment");
 
     let mint_amount = proofs.total_amount().unwrap();
 
     assert!(mint_amount == 100.into());
 
-    let invoice = create_invoice_for_env(&get_test_temp_dir(), Some(50))
-        .await
-        .unwrap();
+    let invoice = create_invoice_for_env(Some(50)).await.unwrap();
 
     let melt = wallet.melt_quote(invoice, None).await.unwrap();
 
@@ -233,15 +231,15 @@ async fn test_happy_mint() {
         .await
         .unwrap();
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await
-        .unwrap();
-
     let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(60),
+        )
         .await
-        .unwrap();
+        .expect("payment");
 
     let mint_amount = proofs.total_amount().unwrap();
 
@@ -281,15 +279,15 @@ async fn test_restore() {
         .await
         .unwrap();
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
+    let _proofs = wallet
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(60),
+        )
         .await
-        .unwrap();
-
-    let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await
-        .unwrap();
+        .expect("payment");
 
     assert_eq!(wallet.total_balance().await.unwrap(), 100.into());
 
@@ -361,19 +359,17 @@ async fn test_fake_melt_change_in_quote() {
 
     pay_if_regtest(&get_test_temp_dir(), &bolt11).await.unwrap();
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
+    let _proofs = wallet
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(60),
+        )
         .await
-        .unwrap();
+        .expect("payment");
 
-    let _mint_amount = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
-        .await
-        .unwrap();
-
-    let invoice = create_invoice_for_env(&get_test_temp_dir(), Some(9))
-        .await
-        .unwrap();
+    let invoice = create_invoice_for_env(Some(9)).await.unwrap();
 
     let proofs = wallet.get_unspent_proofs().await.unwrap();
 
@@ -433,23 +429,21 @@ async fn test_pay_invoice_twice() {
         .await
         .unwrap();
 
-    wallet
-        .wait_for_payment(&mint_quote, Duration::from_secs(60))
-        .await
-        .unwrap();
-
     let proofs = wallet
-        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(60),
+        )
         .await
-        .unwrap();
+        .expect("payment");
 
     let mint_amount = proofs.total_amount().unwrap();
 
     assert_eq!(mint_amount, 100.into());
 
-    let invoice = create_invoice_for_env(&get_test_temp_dir(), Some(25))
-        .await
-        .unwrap();
+    let invoice = create_invoice_for_env(Some(25)).await.unwrap();
 
     let melt_quote = wallet.melt_quote(invoice.clone(), None).await.unwrap();
 

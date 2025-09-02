@@ -74,8 +74,6 @@ where
 #[cfg(test)]
 mod tests {
 
-    use uuid::Uuid;
-
     use super::*;
 
     #[test]
@@ -111,8 +109,11 @@ mod tests {
         assert_eq!(expected_msg_to_sign, request_msg_to_sign);
     }
 
+    #[cfg(feature = "mint")]
     #[test]
     fn test_valid_signature() {
+        use uuid::Uuid;
+
         let pubkey = PublicKey::from_hex(
             "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
         )

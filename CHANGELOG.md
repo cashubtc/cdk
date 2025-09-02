@@ -7,6 +7,27 @@
 ## [Unreleased]
 
 ### Added
+- cdk-common: New `Event` enum for payment event handling with `PaymentReceived` variant ([thesimplekid]).
+- cdk-common: Added `payment_method` field to `MeltQuote` struct for tracking payment method type ([thesimplekid]).
+- cdk-sql-common: Database migration to add `payment_method` column to melt_quote table for SQLite and PostgreSQL ([thesimplekid]).
+
+### Changed
+- cdk-common: Refactored `MintPayment` trait method `wait_any_incoming_payment` to `wait_payment_event` with event-driven architecture ([thesimplekid]).
+- cdk-common: Updated `wait_payment_event` return type to stream `Event` enum instead of `WaitPaymentResponse` directly ([thesimplekid]).
+- cdk: Updated mint payment handling to process payment events through new `Event` enum pattern ([thesimplekid]).
+- cashu: Updated BOLT12 payment method specification from NUT-24 to NUT-25 ([thesimplekid]).
+- cdk: Updated BOLT12 import references from nut24 to nut25 module ([thesimplekid]).
+
+### Fixied
+- cdk: Wallet melt track and use payment method from quote for BOLT11/BOLT12 routing ([thesimplekid]).
+
+## [0.12.0](https://github.com/cashubtc/cdk/releases/tag/v0.12.0)
+
+### Summary
+
+Version 0.12.0 delivers end-to-end BOLT12 offers and payments, adds BIP‑353 address resolution for BOLT12 payments, and introduces cdk-ldk-node, an integrated Lightning backend that lets a single binary run both a Cashu mint and a Lightning node with full BOLT11 and BOLT12 support. It also adds a local, admin-focused web UI for cdk-ldk-node with dashboards for channels, invoices and offers, payments, and on-chain activity. On the data layer, the release expands storage with PostgreSQL via the new cdk-postgres crate and accelerates the shared SQL stack (cdk-sql-common) with statement caching and structured, namespaced/global migrations. Operationally, the mint now exposes explicit start and stop lifecycle methods, enabling graceful startup and shutdown of background services. Wallet keyset management has been clarified with renamed APIs that separate local storage from network fetches—making load_mint_keysets the primary entry point for token operations—and the MSRV is updated to 1.85.0.
+
+### Added
 - dev: Goose recipes for changelog and commit message generation with Just commands ([thesimplekid]).
 - cashu: `KeySetInfos` type alias and `KeySetInfosMethods` trait for filtering keysets ([thesimplekid]).
 - cdk: Mint lifecycle management with `start()` and `stop()` methods for graceful background service control ([thesimplekid]).
@@ -20,6 +41,16 @@
 - cdk-integration-tests: Shared utilities module for common integration test functionality ([thesimplekid]).
 - cdk-redb: Database migration to increment keyset counters by 1 for existing keysets with counter > 0 ([thesimplekid]).
 - cdk-sql-common: Database migration to increment keyset counters by 1 for existing keysets with counter > 0 ([thesimplekid]).
+- cdk-ldk-node: New Lightning backend implementation using LDK Node for improved Lightning Network functionality ([thesimplekid]).
+- cdk-ldk-node: Local web management UI (dashboard, channels, invoices/offers, payments, on‑chain). Intended for localhost/admin use only; do not expose publicly ([thesimplekid]/[erik]).
+- cdk-common: Added `start()` and `stop()` methods to `MintPayment` trait for payment processor lifecycle management ([thesimplekid]).
+- cdk-mintd: Added LDK Node backend support with comprehensive configuration options ([thesimplekid]).
+- cdk-postgres: Postgres Database for mint and wallet ([crodas]).
+- cdk: BOLT12 mint quote WebSocket subscriptions (NUT-17) ([crodas]).
+- cdk: Future streams for payments and minting proofs ([crodas]).
+- cdk: Log-to-file support ([thesimplekid]).
+- cdk(wallet): BIP-353 support ([thesimplekid]).
+- security: Zeroize secrets on drop ([vnprc]).
 
 ### Changed
 - cdk-common: Modified `Database::get_keyset_counter` trait method to return `u32` instead of `Option<u32>` for simpler keyset counter handling ([thesimplekid]).
@@ -31,8 +62,15 @@
 - cdk: Enhanced keyset management with better offline/online operation separation ([thesimplekid]).
 - cdk: Updated method documentation to clarify storage vs network operations ([thesimplekid]).
 - cdk: Refactored invoice payment monitoring to use centralized lifecycle management instead of manual task spawning ([thesimplekid]).
+- cdk: Enhanced mint startup to initialize payment processors before starting background services ([thesimplekid]).
+- cdk: Improved mint shutdown to gracefully stop payment processors alongside background services ([thesimplekid]).
 - cdk-mintd: Updated to use new mint lifecycle methods for improved service management ([thesimplekid]).
 - cdk-integration-tests: Updated test utilities to use new mint lifecycle management ([thesimplekid]).
+- cdk: HTTP retry only on transport errors ([crodas]).
+- cdk-lnbits: Migrate to LNBits v1 websocket API and remove pre-v1 code paths ([thesimplekid]).
+- cdk-cln: Use millisatoshis (msats) for amounts ([thesimplekid]).
+- cdk: NUT-20 support toggle in mint builder configuration ([thesimplekid]).
+- cashu/cdk: New secret derivation per updated spec ([lollerfirst]).
 - cdk-sqlite: Introduce `cdk-sql-common` crate for shared SQL storage codebase ([crodas]).
 - cdk-sqlite: Rename `still_active` to `stale` for better clarity ([crodas]).
 - cdk-integration-tests: Refactored regtest setup to use Rust binaries instead of shell scripts ([thesimplekid]).
@@ -41,14 +79,22 @@
 - cdk-integration-tests: Updated integration tests to use proper temp directory management ([thesimplekid]).
 - cdk-integration-tests: Simplified regtest shell scripts to use new binaries ([thesimplekid]).
 - crates/cdk-mintd: Moved mintd library functions to separate module for better organization and testability ([thesimplekid]).
+- dev/docker: Switch base image to Debian Trixie ([thesimplekid]).
 - Updated MSRV to 1.85.0 ([thesimplekid]).
 - dev: Simplified Nix flake configuration by removing specific dependency version constraints from MSRV shell hook ([thesimplekid]).
 
 ### Fixed
 - cashu: Fixed CurrencyUnit custom units preserving original case instead of being converted to uppercase ([thesimplekid]).
+- cdk: Fix P2PK spending-condition validation and requirements ([thesimplekid]).
+- cdk: Fixed BOLT12 missing payments notifications ([crodas]).
+- cdk-axum/mint: Fix BOLT12 WebSocket behavior on mint ([thesimplekid]).
+- cdk-lnbits: Fix payment check and unit handling ([thesimplekid]).
 - cdk-sqlite: Fix `get_mint_quote_by_request_lookup_id` function synchronization ([crodas]).
-- cdk-common: Fix TransactionId::from_hex to check bytes length before copy to avoid panic ([codingpeanut157]).
+- cdk-sqlite: Reduce mmap_size to 5 MiB to avoid resource issues ([thesimplekid]).
+- cdk: Remove unwrap in startup checks ([thesimplekid]).
+- cdk: Allow paid and issued BOLT12 quotes to settle internally ([gudnuf]).
 - cdk: Include change in melt quote state updates ([thesimplekid]).
+- cdk-mintd/axum: Pass auth config from mintd through to axum correctly ([thesimplekid]).
 
 ### Migration
 - cdk-sql-common: Improve migrations with namespaced and global migrations support ([crodas]).
@@ -477,3 +523,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [asmo]: https://github.com/asmogo
 [gudnuf]: https://github.com/gudnuf
 [codingpeanut157]: https://github.com/codingpeanut157
+[erik]: https://github.com/swedishfrenchpress

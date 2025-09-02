@@ -50,6 +50,7 @@ sync_wrapper = "0.1.2"
 bech32 = "0.9.1"
 arc-swap = "1.7.1"
 zeroize = "1"
+tokio-util.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true, features = [
@@ -102,6 +103,18 @@ required-features = ["wallet", "auth"]
 name = "bip353"
 required-features = ["wallet", "bip353"]
 
+[[example]]
+name = "mint-token-bolt12-with-stream"
+required-features = ["wallet"]
+
+[[example]]
+name = "mint-token-bolt12-with-custom-http"
+required-features = ["wallet"]
+
+[[example]]
+name = "mint-token-bolt12"
+required-features = ["wallet"]
+
 [dev-dependencies]
 rand.workspace = true
 cdk-sqlite.workspace = true
@@ -110,6 +123,7 @@ tracing-subscriber.workspace = true
 criterion = "0.6.0"
 reqwest = { workspace = true }
 anyhow.workspace = true
+ureq = { version = "3.1.0", features = ["json"] }
 
 
 [[bench]]

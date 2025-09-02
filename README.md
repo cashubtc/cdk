@@ -23,6 +23,7 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-cln**](./crates/cdk-cln/): CLN Lightning backend for mint.
     * [**cdk-lnd**](./crates/cdk-lnd/): Lnd Lightning backend for mint.
     * [**cdk-lnbits**](./crates/cdk-lnbits/): [LNbits](https://lnbits.com/) Lightning backend for mint. **Note: Only LNBits v1 API is supported.**
+    * [**cdk-ldk-node**](./crates/cdk-ldk-node/): LDK Node Lightning backend for mint.
     * [**cdk-fake-wallet**](./crates/cdk-fake-wallet/): Fake Lightning backend for mint. To be used only for testing, quotes are automatically filled.
     * [**cdk-mint-rpc**](./crates/cdk-mint-rpc/): Mint management gRPC server and cli.
 * Binaries:
@@ -34,6 +35,22 @@ The project is split up into several crates in the `crates/` directory:
 ## Development 
 
 For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVELOPMENT.md)
+
+## LDK Node Network Configuration
+
+For detailed configuration examples for running CDK with LDK Node on different Bitcoin networks (Mutinynet, Testnet, Mainnet), see [LDK Node Network Guide](./crates/cdk-ldk-node/NETWORK_GUIDE.md).
+
+**Quick Start with Mutinynet (Recommended for Testing):**
+```toml
+[ln]
+ln_backend = "ldk-node"
+
+[ldk_node]
+bitcoin_network = "signet"
+esplora_url = "https://mutinynet.com/api"
+rgs_url = "https://rgs.mutinynet.com/snapshot/0"
+gossip_source_type = "rgs"
+```
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
@@ -70,6 +87,7 @@ For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVE
 | [21][21] | Clear Authentication | :heavy_check_mark: |
 | [22][22] | Blind Authentication  | :heavy_check_mark: |
 | [23][23] | Payment Method: BOLT11 | :heavy_check_mark: |
+| [25][25] | Payment Method: BOLT12 | :heavy_check_mark: |
 
 
 ## License
@@ -109,3 +127,4 @@ Please see the [development guide](DEVELOPMENT.md).
 [21]: https://github.com/cashubtc/nuts/blob/main/21.md
 [22]: https://github.com/cashubtc/nuts/blob/main/22.md
 [23]: https://github.com/cashubtc/nuts/blob/main/23.md
+[25]: https://github.com/cashubtc/nuts/blob/main/25.md

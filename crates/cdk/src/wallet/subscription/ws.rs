@@ -18,25 +18,6 @@ use crate::Wallet;
 
 const MAX_ATTEMPT_FALLBACK_HTTP: usize = 10;
 
-async fn fallback_to_http<S: IntoIterator<Item = SubId>>(
-    initial_state: S,
-    http_client: Arc<dyn MintConnector + Send + Sync>,
-    subscriptions: Arc<RwLock<HashMap<SubId, WsSubscriptionBody>>>,
-    new_subscription_recv: mpsc::Receiver<SubId>,
-    on_drop: mpsc::Receiver<SubId>,
-    wallet: Arc<Wallet>,
-) {
-    http_main(
-        initial_state,
-        http_client,
-        subscriptions,
-        new_subscription_recv,
-        on_drop,
-        wallet,
-    )
-    .await
-}
-
 #[inline]
 pub async fn ws_main(
     http_client: Arc<dyn MintConnector + Send + Sync>,
@@ -72,7 +53,8 @@ pub async fn ws_main(
                     tracing::error!(
                         "Could not connect to server after {MAX_ATTEMPT_FALLBACK_HTTP} attempts, falling back to HTTP-subscription client"
                     );
-                    return fallback_to_http(
+
+                    return http_main(
                         active_subscriptions.into_keys(),
                         http_client,
                         subscriptions,
@@ -169,17 +151,19 @@ pub async fn ws_main(
                         WsMessageOrResponse::ErrorResponse(error) => {
                             tracing::error!("Received error from server: {:?}", error);
                             if subscription_requests.contains(&error.id) {
-                                // If the server sends an error response to a subscription request, we should
-                                // fallback to HTTP.
-                                // TODO: Add some retry before giving up to HTTP.
-                                return fallback_to_http(
+                                tracing::error!(
+                                    "Falling back to HTTP client"
+                                );
+
+                                return http_main(
                                     active_subscriptions.into_keys(),
                                     http_client,
                                     subscriptions,
                                     new_subscription_recv,
                                     on_drop,
-                                    wallet
-                                ).await;
+                                    wallet,
+                                )
+                                .await;
                             }
                         }
                     }

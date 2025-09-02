@@ -31,6 +31,10 @@ impl Info {
             self.signatory_certs = Some(signatory_certs);
         }
 
+        if let Ok(seed) = env::var(ENV_SEED) {
+            self.seed = Some(seed);
+        }
+
         if let Ok(mnemonic) = env::var(ENV_MNEMONIC) {
             self.mnemonic = Some(mnemonic);
         }

@@ -84,6 +84,9 @@ pub struct MeltQuote {
     pub expiry: u64,
     /// Payment preimage
     pub payment_preimage: Option<String>,
+    /// Payment method
+    #[serde(default)]
+    pub payment_method: PaymentMethod,
 }
 
 impl MintQuote {

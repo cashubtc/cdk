@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use cdk_common::nut04::MintMethodOptions;
-use cdk_common::nut24::MintQuoteBolt12Request;
+use cdk_common::nut25::MintQuoteBolt12Request;
 use cdk_common::wallet::{Transaction, TransactionDirection};
 use cdk_common::{Proofs, SecretKey};
 use tracing::instrument;
@@ -91,7 +91,7 @@ impl Wallet {
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) && quote.expiry.ne(&0) {
-                tracing::info!("Minting after expiry");
+                tracing::info!("Attempting to mint expired quote.");
             }
 
             quote.clone()
@@ -114,7 +114,7 @@ impl Wallet {
 
         if amount == Amount::ZERO {
             tracing::error!("Cannot mint zero amount.");
-            return Err(Error::InvoiceAmountUndefined);
+            return Err(Error::UnpaidQuote);
         }
 
         let premint_secrets = match &spending_conditions {

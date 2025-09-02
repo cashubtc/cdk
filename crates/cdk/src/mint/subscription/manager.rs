@@ -5,8 +5,8 @@ use std::sync::Arc;
 use cdk_common::database::{self, MintDatabase};
 use cdk_common::mint::MintQuote;
 use cdk_common::nut17::Notification;
+use cdk_common::quote_id::QuoteId;
 use cdk_common::{Amount, MintQuoteBolt12Response, NotificationPayload, PaymentMethod};
-use uuid::Uuid;
 
 use super::OnSubscription;
 use crate::nuts::{
@@ -20,7 +20,9 @@ use crate::pub_sub;
 ///
 /// Nut-17 implementation is system-wide and not only through the WebSocket, so
 /// it is possible for another part of the system to subscribe to events.
-pub struct PubSubManager(pub_sub::Manager<NotificationPayload<Uuid>, Notification, OnSubscription>);
+pub struct PubSubManager(
+    pub_sub::Manager<NotificationPayload<QuoteId>, Notification, OnSubscription>,
+);
 
 #[allow(clippy::default_constructed_unit_structs)]
 impl Default for PubSubManager {
@@ -36,7 +38,7 @@ impl From<Arc<dyn MintDatabase<database::Error> + Send + Sync>> for PubSubManage
 }
 
 impl Deref for PubSubManager {
-    type Target = pub_sub::Manager<NotificationPayload<Uuid>, Notification, OnSubscription>;
+    type Target = pub_sub::Manager<NotificationPayload<QuoteId>, Notification, OnSubscription>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -88,7 +90,7 @@ impl PubSubManager {
     }
 
     /// Helper function to emit a MintQuoteBolt11Response status
-    pub fn mint_quote_bolt11_status<E: Into<MintQuoteBolt11Response<Uuid>>>(
+    pub fn mint_quote_bolt11_status<E: Into<MintQuoteBolt11Response<QuoteId>>>(
         &self,
         quote: E,
         new_state: MintQuoteState,
@@ -100,15 +102,15 @@ impl PubSubManager {
     }
 
     /// Helper function to emit a MintQuoteBolt11Response status
-    pub fn mint_quote_bolt12_status<E: TryInto<MintQuoteBolt12Response<Uuid>>>(
+    pub fn mint_quote_bolt12_status<E: TryInto<MintQuoteBolt12Response<QuoteId>>>(
         &self,
         quote: E,
         amount_paid: Amount,
         amount_issued: Amount,
     ) {
         if let Ok(mut event) = quote.try_into() {
-            event.amount_paid += amount_paid;
-            event.amount_issued += amount_issued;
+            event.amount_paid = amount_paid;
+            event.amount_issued = amount_issued;
 
             self.broadcast(event.into());
         } else {
@@ -117,7 +119,7 @@ impl PubSubManager {
     }
 
     /// Helper function to emit a MeltQuoteBolt11Response status
-    pub fn melt_quote_status<E: Into<MeltQuoteBolt11Response<Uuid>>>(
+    pub fn melt_quote_status<E: Into<MeltQuoteBolt11Response<QuoteId>>>(
         &self,
         quote: E,
         payment_preimage: Option<String>,

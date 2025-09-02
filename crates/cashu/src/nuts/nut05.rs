@@ -9,11 +9,11 @@ use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, Visitor};
 use serde::ser::{SerializeStruct, Serializer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-#[cfg(feature = "mint")]
-use uuid::Uuid;
 
 use super::nut00::{BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::ProofsMethods;
+#[cfg(feature = "mint")]
+use crate::quote_id::QuoteId;
 use crate::Amount;
 
 /// NUT05 Error
@@ -28,6 +28,9 @@ pub enum Error {
     /// Unsupported unit
     #[error("Unsupported unit")]
     UnsupportedUnit,
+    /// Invalid quote id
+    #[error("Invalid quote id")]
+    InvalidQuote,
 }
 
 /// Possible states of a quote
@@ -91,12 +94,12 @@ pub struct MeltRequest<Q> {
 }
 
 #[cfg(feature = "mint")]
-impl TryFrom<MeltRequest<String>> for MeltRequest<Uuid> {
-    type Error = uuid::Error;
+impl TryFrom<MeltRequest<String>> for MeltRequest<QuoteId> {
+    type Error = Error;
 
     fn try_from(value: MeltRequest<String>) -> Result<Self, Self::Error> {
         Ok(Self {
-            quote: Uuid::from_str(&value.quote)?,
+            quote: QuoteId::from_str(&value.quote).map_err(|_e| Error::InvalidQuote)?,
             inputs: value.inputs,
             outputs: value.outputs,
         })

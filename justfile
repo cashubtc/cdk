@@ -53,7 +53,7 @@ format:
   nixpkgs-fmt $(echo **.nix)
 
 # run doc tests
-test: build
+test:
   #!/usr/bin/env bash
   set -euo pipefail
   if [ ! -f Cargo.toml ]; then
@@ -325,6 +325,7 @@ release m="":
     "-p cdk-common"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
+    "-p cdk-postgres"
     "-p cdk-redb"
     "-p cdk-signatory"
     "-p cdk"
@@ -333,6 +334,7 @@ release m="":
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
+    "-p cdk-ldk-node"
     "-p cdk-fake-wallet"
     "-p cdk-payment-processor"
     "-p cdk-cli"

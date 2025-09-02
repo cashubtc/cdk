@@ -68,6 +68,11 @@
         # MSRV stable
         msrv_toolchain = pkgs.rust-bin.stable."1.85.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
+          extensions = [
+            "rustfmt"
+            "clippy"
+            "rust-analyzer"
+          ];
         };
 
         # Nightly used for formatting
@@ -114,7 +119,6 @@
 
         # Common arguments can be set here to avoid repeating them later
         nativeBuildInputs = [
-          pkgs.rust-analyzer
           #Add additional build inputs here
         ]
         ++ lib.optionals isDarwin [

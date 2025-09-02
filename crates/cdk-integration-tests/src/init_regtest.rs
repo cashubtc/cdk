@@ -1,4 +1,5 @@
 use std::env;
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -6,6 +7,8 @@ use anyhow::Result;
 use cdk::types::FeeReserve;
 use cdk_cln::Cln as CdkCln;
 use cdk_lnd::Lnd as CdkLnd;
+use ldk_node::lightning::ln::msgs::SocketAddress;
+use ldk_node::Node;
 use ln_regtest_rs::bitcoin_client::BitcoinClient;
 use ln_regtest_rs::bitcoind::Bitcoind;
 use ln_regtest_rs::cln::Clnd;
@@ -145,6 +148,9 @@ pub async fn init_lnd(
 
 pub fn generate_block(bitcoin_client: &BitcoinClient) -> Result<()> {
     let mine_to_address = bitcoin_client.get_new_address()?;
+    let blocks = 10;
+    tracing::info!("Mining {blocks} blocks to {mine_to_address}");
+
     bitcoin_client.generate_blocks(&mine_to_address, 10)?;
 
     Ok(())
@@ -225,6 +231,7 @@ pub async fn start_regtest_end(
     work_dir: &Path,
     sender: Sender<()>,
     notify: Arc<Notify>,
+    ldk_node: Option<Arc<Node>>,
 ) -> anyhow::Result<()> {
     let mut bitcoind = init_bitcoind(work_dir);
     bitcoind.start_bitcoind()?;
@@ -285,6 +292,13 @@ pub async fn start_regtest_end(
 
     lnd_client.wait_chain_sync().await.unwrap();
 
+    if let Some(node) = ldk_node.as_ref() {
+        tracing::info!("Starting ldk node");
+        node.start()?;
+        let addr = node.onchain_payment().new_address().unwrap();
+        bitcoin_client.send_to_address(&addr.to_string(), 5_000_000)?;
+    }
+
     fund_ln(&bitcoin_client, &lnd_client).await.unwrap();
 
     // create second lnd node
@@ -336,11 +350,107 @@ pub async fn start_regtest_end(
         tracing::info!("Opened channel between cln and lnd two");
         generate_block(&bitcoin_client)?;
 
-        cln_client.wait_channels_active().await?;
-        cln_two_client.wait_channels_active().await?;
-        lnd_client.wait_channels_active().await?;
-        lnd_two_client.wait_channels_active().await?;
+        if let Some(node) = ldk_node {
+            let pubkey = node.node_id();
+            let listen_addr = node.listening_addresses();
+            let listen_addr = listen_addr.as_ref().unwrap().first().unwrap();
+
+            let (listen_addr, port) = match listen_addr {
+                SocketAddress::TcpIpV4 { addr, port } => (Ipv4Addr::from(*addr).to_string(), port),
+                _ => panic!(),
+            };
+
+            tracing::info!("Opening channel from cln to ldk");
+
+            cln_client
+                .connect_peer(pubkey.to_string(), listen_addr.clone(), *port)
+                .await?;
+
+            cln_client
+                .open_channel(1_500_000, &pubkey.to_string(), Some(750_000))
+                .await
+                .unwrap();
+
+            generate_block(&bitcoin_client)?;
+
+            let cln_two_info = cln_two_client.get_connect_info().await?;
+
+            cln_client
+                .connect_peer(cln_two_info.pubkey, listen_addr.clone(), cln_two_info.port)
+                .await?;
+
+            tracing::info!("Opening channel from lnd to ldk");
+
+            let cln_info = cln_client.get_connect_info().await?;
+
+            node.connect(
+                cln_info.pubkey.parse()?,
+                SocketAddress::TcpIpV4 {
+                    addr: cln_info
+                        .address
+                        .split('.')
+                        .map(|part| part.parse())
+                        .collect::<Result<Vec<u8>, _>>()?
+                        .try_into()
+                        .unwrap(),
+                    port: cln_info.port,
+                },
+                true,
+            )?;
+
+            let lnd_info = lnd_client.get_connect_info().await?;
+
+            node.connect(
+                lnd_info.pubkey.parse()?,
+                SocketAddress::TcpIpV4 {
+                    addr: [127, 0, 0, 1],
+                    port: lnd_info.port,
+                },
+                true,
+            )?;
+
+            // lnd_client
+            //     .open_channel(1_500_000, &pubkey.to_string(), Some(750_000))
+            //     .await
+            //     .unwrap();
+
+            generate_block(&bitcoin_client)?;
+            lnd_client.wait_chain_sync().await?;
+
+            node.open_announced_channel(
+                lnd_info.pubkey.parse()?,
+                SocketAddress::TcpIpV4 {
+                    addr: [127, 0, 0, 1],
+                    port: lnd_info.port,
+                },
+                1_000_000,
+                Some(500_000_000),
+                None,
+            )?;
+
+            generate_block(&bitcoin_client)?;
+
+            tracing::info!("Ldk channels opened");
+
+            node.sync_wallets()?;
+
+            tracing::info!("Ldk wallet synced");
+
+            cln_client.wait_channels_active().await?;
+
+            lnd_client.wait_channels_active().await?;
+
+            node.stop()?;
+        } else {
+            cln_client.wait_channels_active().await?;
+
+            lnd_client.wait_channels_active().await?;
+
+            generate_block(&bitcoin_client)?;
+        }
     }
+
+    tracing::info!("Regtest channels active");
 
     // Send notification that regtest set up is complete
     sender.send(()).expect("Could not send oneshot");

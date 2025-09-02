@@ -100,7 +100,7 @@ pub async fn create_request(
             // We'll need the Nostr keys and relays later for listening
             let transport_info = Some((keys, relays, nprofile.public_key));
 
-            (Some(vec![nostr_transport]), transport_info)
+            (vec![nostr_transport], transport_info)
         }
         "http" => {
             if let Some(url) = &sub_command_args.http_url {
@@ -110,18 +110,18 @@ pub async fn create_request(
                     tags: None,
                 };
 
-                (Some(vec![http_transport]), None)
+                (vec![http_transport], None)
             } else {
                 println!(
                     "Warning: HTTP transport selected but no URL provided, skipping transport"
                 );
-                (None, None)
+                (vec![], None)
             }
         }
-        "none" => (None, None),
+        "none" => (vec![], None),
         _ => {
             println!("Warning: Unknown transport type '{transport_type}', defaulting to none");
-            (None, None)
+            (vec![], None)
         }
     };
 
@@ -234,7 +234,7 @@ pub async fn create_request(
     let nut10 = spending_conditions.map(Nut10SecretRequest::from);
 
     // Extract the transports option from our match result
-    let (transports_option, nostr_info) = transports;
+    let (transports, nostr_info) = transports;
 
     let req = PaymentRequest {
         payment_id: None,
@@ -243,7 +243,7 @@ pub async fn create_request(
         single_use: Some(true),
         mints: Some(mints),
         description: sub_command_args.description.clone(),
-        transports: transports_option,
+        transports,
         nut10,
     };
 
