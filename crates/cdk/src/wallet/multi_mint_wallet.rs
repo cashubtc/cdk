@@ -16,11 +16,12 @@ use tracing::instrument;
 use zeroize::Zeroize;
 
 use super::receive::ReceiveOptions;
-use super::send::{PreparedSend, SendMemo, SendOptions};
+use super::send::{PreparedSend, SendOptions};
 use super::Error;
 use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::ProofsMethods;
+use crate::nuts::nut23::QuoteState;
 use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SpendingConditions, Token};
 use crate::types::Melted;
 use crate::wallet::types::MintQuote;
@@ -58,38 +59,14 @@ use crate::{ensure_cdk, Amount, Wallet};
 /// let balance = wallet.total_balance().await?;
 /// println!("Total balance: {} sats", balance);
 ///
-/// // Send tokens (automatically selects best mint)
+/// // Send tokens from a specific mint
+/// let mint_url = "https://mint1.example.com".parse()?;
 /// let prepared = wallet.prepare_send(
+///     mint_url,
 ///     Amount::from(100),
 ///     Default::default()
 /// ).await?;
-/// let proofs = prepared.send().await?;
-/// # Ok(())
-/// # }
-/// ```
-///
-/// ## Advanced multi-mint operations
-/// ```no_run
-/// # use cdk::wallet::{MultiMintWallet, MultiMintSendOptions, MintSelectionStrategy};
-/// # use cdk::Amount;
-/// # use std::sync::Arc;
-/// # async fn example(wallet: Arc<MultiMintWallet>) -> Result<(), Box<dyn std::error::Error>> {
-/// // Pay invoice with automatic mint selection and fallback
-/// let invoice = "lnbc100n1p...";
-/// let melted = wallet.melt(
-///     invoice,
-///     None,  // Use default melt options
-///     Some(Amount::from(10))  // Max acceptable fee
-/// ).await?;
-///
-/// // Send across multiple mints if needed
-/// let prepared = wallet.prepare_send_with_options(
-///     Amount::from(1000),
-///     MultiMintSendOptions::new()
-///         .max_mints(2)  // Use at most 2 mints
-///         .selection_strategy(MintSelectionStrategy::LowestFeesFirst)
-///         .allow_cross_mint(true)  // Allow splitting across mints
-/// ).await?;
+/// let token = prepared.confirm(None).await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -104,241 +81,76 @@ pub struct MultiMintWallet {
     wallets: Arc<RwLock<BTreeMap<MintUrl, Wallet>>>,
 }
 
-/// Multi-Mint Prepared Send
-///
-/// Holds multiple PreparedSend structs from different wallets for cross-wallet sends
-#[derive(Debug)]
-pub struct MultiMintPreparedSend {
-    /// The prepared sends from different wallets
-    pub prepared_sends: Vec<PreparedSend>,
-    /// Total amount being sent
-    pub total_amount: Amount,
-    /// Total fees across all wallets
-    pub total_fee: Amount,
-    /// Currency unit
-    pub unit: CurrencyUnit,
-    /// Reference to the wallet to access mint information
-    pub wallet: Arc<MultiMintWallet>,
-}
-
-impl MultiMintPreparedSend {
-    /// Create a new MultiMintPreparedSend
-    pub fn new(
-        prepared_sends: Vec<PreparedSend>,
-        unit: CurrencyUnit,
-        wallet: Arc<MultiMintWallet>,
-    ) -> Result<Self, Error> {
-        if prepared_sends.is_empty() {
-            return Err(Error::NoPreparedSends);
-        }
-
-        let total_amount = prepared_sends
-            .iter()
-            .map(|p| p.amount())
-            .fold(Amount::ZERO, |acc, amount| acc + amount);
-        let total_fee = prepared_sends
-            .iter()
-            .map(|p| p.fee())
-            .fold(Amount::ZERO, |acc, fee| acc + fee);
-
-        Ok(Self {
-            prepared_sends,
-            total_amount,
-            total_fee,
-            unit,
-            wallet,
-        })
-    }
-
-    /// Get the total amount being sent
-    pub fn amount(&self) -> Amount {
-        self.total_amount
-    }
-
-    /// Get the total fees across all wallets
-    pub fn fee(&self) -> Amount {
-        self.total_fee
-    }
-
-    /// Get the currency unit
-    pub fn unit(&self) -> &CurrencyUnit {
-        &self.unit
-    }
-
-    /// Get the number of wallets involved in this send
-    pub fn wallet_count(&self) -> usize {
-        self.prepared_sends.len()
-    }
-
-    /// Confirm all prepared sends and return a consolidated token
-    ///
-    /// If there's only one prepared send, returns its token directly.
-    /// For multiple prepared sends, returns the first token and logs the others.
-    ///
-    /// Note: Proper token consolidation requires mint keyset information
-    /// which is not available in this context.
-    pub async fn confirm(self, memo: Option<SendMemo>) -> Result<Token, Error> {
-        if self.prepared_sends.is_empty() {
-            return Err(Error::NoPreparedSends);
-        }
-
-        // If there's only one prepared send, return its token directly
-        if self.prepared_sends.len() == 1 {
-            let prepared_send = self.prepared_sends.into_iter().next().unwrap();
-            return prepared_send.confirm(memo).await;
-        }
-
-        // For multiple sends, confirm all but return the first token
-        // This is a simplified implementation - proper consolidation would require
-        // mint keyset information to properly merge tokens
-        let mut tokens = Vec::new();
-        for prepared_send in self.prepared_sends {
-            let token = prepared_send.confirm(memo.clone()).await?;
-            tokens.push(token);
-        }
-
-        tracing::info!(
-            "Confirmed {} prepared sends, returning first token",
-            tokens.len()
-        );
-        tracing::warn!(
-            "Multi-mint token consolidation not fully implemented - only returning first token"
-        );
-
-        // Return the first token for now
-        // In a full implementation, you would want to consolidate all tokens
-        Ok(tokens.into_iter().next().unwrap())
-    }
-}
-
 /// Multi-Mint Send Options
 ///
-/// Controls which mints to use for sending and in what priority order
-#[derive(Debug, Clone)]
+/// Controls transfer behavior when the target mint doesn't have sufficient balance
+#[derive(Debug, Clone, Default)]
 pub struct MultiMintSendOptions {
-    /// Maximum number of mints to use for a single send operation
-    pub max_mints: Option<usize>,
-    /// Specific mints to use (allowed mints)
+    /// Whether to allow transferring funds from other mints to the sending mint
+    /// if the sending mint doesn't have sufficient balance
+    pub allow_transfer: bool,
+    /// Maximum amount to transfer from other mints (optional limit)
+    pub max_transfer_amount: Option<Amount>,
+    /// Specific mints allowed for transfers (empty means all mints allowed)
     pub allowed_mints: Vec<MintUrl>,
-    /// Specific mints to avoid using
+    /// Specific mints to exclude from transfers
     pub excluded_mints: Vec<MintUrl>,
-    /// Strategy for selecting mints when not specified
-    pub selection_strategy: MintSelectionStrategy,
-    /// Whether to allow cross-mint sends (using multiple mints for one transaction)
-    pub allow_cross_mint: bool,
-    /// Base send options to apply to each individual wallet send
+    /// Base send options to apply to the wallet send
     pub send_options: SendOptions,
 }
 
-/// Strategy for selecting which mints to use for sending
-#[derive(Debug, Clone)]
-pub enum MintSelectionStrategy {
-    /// Use the mint with the highest balance first
-    HighestBalanceFirst,
-    /// Use the mint with the lowest balance first (to consolidate small amounts)
-    LowestBalanceFirst,
-    /// Use mints in random order
-    Random,
-    /// Use mints based on lowest fees first
-    LowestFeesFirst,
-}
-
-impl Default for MultiMintSendOptions {
-    fn default() -> Self {
+impl MultiMintSendOptions {
+    /// Create new default options
+    pub fn new() -> Self {
         Self {
-            max_mints: Some(1), // By default, prefer single mint sends
+            allow_transfer: false,
+            max_transfer_amount: None,
             allowed_mints: Vec::new(),
             excluded_mints: Vec::new(),
-            selection_strategy: MintSelectionStrategy::HighestBalanceFirst,
-            allow_cross_mint: false, // Conservative default
             send_options: SendOptions::default(),
         }
     }
-}
 
-impl MultiMintSendOptions {
-    /// Create new options with default values
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set maximum number of mints to use
-    pub fn max_mints(mut self, max: usize) -> Self {
-        self.max_mints = Some(max);
+    /// Enable transferring funds from other mints if needed
+    pub fn allow_transfer(mut self, allow: bool) -> Self {
+        self.allow_transfer = allow;
         self
     }
 
-    /// Allow unlimited mints to be used
-    pub fn unlimited_mints(mut self) -> Self {
-        self.max_mints = None;
+    /// Set maximum amount to transfer from other mints
+    pub fn max_transfer_amount(mut self, amount: Amount) -> Self {
+        self.max_transfer_amount = Some(amount);
         self
     }
 
-    /// Add an allowed mint
+    /// Add a mint to the allowed list for transfers
     pub fn allow_mint(mut self, mint_url: MintUrl) -> Self {
         self.allowed_mints.push(mint_url);
         self
     }
 
-    /// Set all allowed mints
+    /// Set all allowed mints for transfers
     pub fn allowed_mints(mut self, mints: Vec<MintUrl>) -> Self {
         self.allowed_mints = mints;
         self
     }
 
-    /// Set preferred mints (alias for allowed_mints for compatibility)
-    pub fn preferred_mints_list(mut self, mints: Vec<MintUrl>) -> Self {
-        self.allowed_mints = mints;
-        self
-    }
-
-    /// Add a mint to exclude from selection
+    /// Add a mint to exclude from transfers
     pub fn exclude_mint(mut self, mint_url: MintUrl) -> Self {
         self.excluded_mints.push(mint_url);
         self
     }
 
-    /// Set all excluded mints
+    /// Set all excluded mints for transfers
     pub fn excluded_mints(mut self, mints: Vec<MintUrl>) -> Self {
         self.excluded_mints = mints;
         self
     }
 
-    /// Set the mint selection strategy
-    pub fn selection_strategy(mut self, strategy: MintSelectionStrategy) -> Self {
-        self.selection_strategy = strategy;
-        self
-    }
-
-    /// Enable cross-mint sends (allows using multiple mints for one transaction)
-    pub fn allow_cross_mint(mut self, allow: bool) -> Self {
-        self.allow_cross_mint = allow;
-        self
-    }
-
-    /// Set the base send options for individual wallet operations
+    /// Set the base send options for the wallet operation
     pub fn send_options(mut self, options: SendOptions) -> Self {
         self.send_options = options;
         self
-    }
-
-    /// Validate that the options are consistent
-    pub fn validate(&self) -> Result<(), Error> {
-        // Check that allowed mints don't conflict with excluded mints
-        for allowed in &self.allowed_mints {
-            if self.excluded_mints.contains(allowed) {
-                return Err(Error::ConflictingMintPreferences {
-                    mint_url: allowed.to_string(),
-                });
-            }
-        }
-
-        // If max_mints is 1, cross_mint should be false
-        if self.max_mints == Some(1) && self.allow_cross_mint {
-            return Err(Error::InvalidMintSelectionOptions);
-        }
-
-        Ok(())
     }
 }
 
@@ -384,7 +196,6 @@ impl MultiMintWallet {
     #[instrument(skip(self))]
     pub async fn remove_mint(&self, mint_url: &MintUrl) {
         let mut wallets = self.wallets.write().await;
-
         wallets.remove(mint_url);
     }
 
@@ -449,20 +260,194 @@ impl MultiMintWallet {
         Ok(transactions)
     }
 
-    /// Prepare to send from a specific mint
+    /// Get total balance across all wallets (since all wallets use the same currency unit)
     #[instrument(skip(self))]
-    pub async fn prepare_send_for_mint(
+    pub async fn total_balance(&self) -> Result<Amount, Error> {
+        let mut total = Amount::ZERO;
+        for (_, wallet) in self.wallets.read().await.iter() {
+            total += wallet.total_balance().await?;
+        }
+        Ok(total)
+    }
+
+    /// Prepare to send tokens from a specific mint with optional transfer from other mints
+    ///
+    /// This method ensures that sends always happen from only one mint. If the specified
+    /// mint doesn't have sufficient balance and `allow_transfer` is enabled in options,
+    /// it will first transfer funds from other mints to the target mint.
+    #[instrument(skip(self))]
+    pub async fn prepare_send(
         &self,
-        mint_url: &MintUrl,
+        mint_url: MintUrl,
         amount: Amount,
-        opts: SendOptions,
+        opts: MultiMintSendOptions,
     ) -> Result<PreparedSend, Error> {
+        // Ensure the mint exists
         let wallets = self.wallets.read().await;
-        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+        let target_wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
             mint_url: mint_url.to_string(),
         })?;
 
-        wallet.prepare_send(amount, opts).await
+        // Check current balance of target mint
+        let target_balance = target_wallet.total_balance().await?;
+
+        // If target mint has sufficient balance, prepare send directly
+        if target_balance >= amount {
+            return target_wallet.prepare_send(amount, opts.send_options).await;
+        }
+
+        // If transfer is not allowed, return insufficient funds error
+        if !opts.allow_transfer {
+            return Err(Error::InsufficientFunds);
+        }
+
+        // Calculate how much we need to transfer
+        let transfer_needed = amount - target_balance;
+
+        // Check if transfer amount exceeds max_transfer_amount
+        if let Some(max_transfer) = opts.max_transfer_amount {
+            if transfer_needed > max_transfer {
+                return Err(Error::InsufficientFunds);
+            }
+        }
+
+        // Find source wallets with available funds for transfer
+        let mut available_for_transfer = Amount::ZERO;
+        let mut source_wallets = Vec::new();
+
+        for (source_mint_url, wallet) in wallets.iter() {
+            if source_mint_url == &mint_url {
+                continue; // Skip the target mint
+            }
+
+            // Check if this mint is excluded from transfers
+            if opts.excluded_mints.contains(source_mint_url) {
+                continue;
+            }
+
+            // Check if we have a restricted allowed list and this mint isn't in it
+            if !opts.allowed_mints.is_empty() && !opts.allowed_mints.contains(source_mint_url) {
+                continue;
+            }
+
+            let balance = wallet.total_balance().await?;
+            if balance > Amount::ZERO {
+                source_wallets.push((source_mint_url.clone(), wallet.clone(), balance));
+                available_for_transfer += balance;
+            }
+        }
+
+        // Check if we have enough funds across all mints
+        if available_for_transfer < transfer_needed {
+            return Err(Error::InsufficientFunds);
+        }
+
+        // Drop the read lock before performing transfers
+        drop(wallets);
+
+        // Perform transfers from source wallets to target wallet
+        self.transfer_to_mint(&mint_url, transfer_needed, source_wallets)
+            .await?;
+
+        // Now prepare the send from the target mint
+        let wallets = self.wallets.read().await;
+        let target_wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        target_wallet.prepare_send(amount, opts.send_options).await
+    }
+
+    /// Transfer funds from source wallets to target mint using Lightning Network (melt/mint)
+    async fn transfer_to_mint(
+        &self,
+        target_mint_url: &MintUrl,
+        total_amount: Amount,
+        source_wallets: Vec<(MintUrl, Wallet, Amount)>,
+    ) -> Result<(), Error> {
+        let mut remaining_amount = total_amount;
+
+        // Get target wallet for minting
+        let wallets = self.wallets.read().await;
+        let target_wallet = wallets
+            .get(target_mint_url)
+            .ok_or(Error::UnknownMint {
+                mint_url: target_mint_url.to_string(),
+            })?
+            .clone();
+        drop(wallets);
+
+        for (source_mint_url, source_wallet, available_balance) in source_wallets {
+            if remaining_amount == Amount::ZERO {
+                break;
+            }
+
+            let transfer_amount = std::cmp::min(remaining_amount, available_balance);
+
+            // Step 1: Create a mint quote in the target mint
+            let mint_quote = target_wallet.mint_quote(transfer_amount, None).await?;
+
+            // Step 2: Create melt quote in source wallet for the target mint's invoice
+            let melt_quote = source_wallet
+                .melt_quote(mint_quote.request.clone(), None)
+                .await?;
+
+            // Step 3: Melt from source wallet using the melt quote
+            let melted = source_wallet.melt(&melt_quote.id).await?;
+
+            // Step 4: Check if the mint quote is paid and mint in target wallet
+            // We need to poll for payment confirmation
+            let mut attempts = 0;
+            const MAX_ATTEMPTS: u32 = 30; // 30 seconds max wait
+            const POLL_INTERVAL_MS: u64 = 1000; // 1 second
+
+            loop {
+                attempts += 1;
+
+                // Check if the quote is paid
+                match target_wallet.mint_quote_state(&mint_quote.id).await {
+                    Ok(quote_state) => {
+                        if quote_state.state == QuoteState::Paid {
+                            // Quote is paid, now mint the tokens
+                            target_wallet
+                                .mint(&mint_quote.id, crate::amount::SplitTarget::default(), None)
+                                .await?;
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Error checking mint quote status: {}", e);
+                    }
+                }
+
+                if attempts >= MAX_ATTEMPTS {
+                    return Err(Error::TransferTimeout {
+                        source_mint: source_mint_url.to_string(),
+                        target_mint: target_mint_url.to_string(),
+                        amount: transfer_amount,
+                    });
+                }
+
+                tokio::time::sleep(tokio::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+            }
+
+            remaining_amount -= transfer_amount;
+
+            tracing::info!(
+                "Transferred {} from {} to {} via Lightning (melted: {} sats, fee: {} sats)",
+                transfer_amount,
+                source_mint_url,
+                target_mint_url,
+                melted.amount,
+                melted.fee_paid
+            );
+        }
+
+        if remaining_amount > Amount::ZERO {
+            return Err(Error::InsufficientFunds);
+        }
+
+        Ok(())
     }
 
     /// Mint quote for wallet
@@ -652,143 +637,11 @@ impl MultiMintWallet {
         wallet.verify_token_dleq(token).await
     }
 
-    // ============================================================================
-    // NEW UNIFIED INTERFACE METHODS - Making MultiMintWallet more like Wallet
-    // ============================================================================
-
-    /// Get total balance across all wallets (since all wallets use the same currency unit)
-    #[instrument(skip(self))]
-    pub async fn total_balance(&self) -> Result<Amount, Error> {
-        let mut total = Amount::ZERO;
-        for (_, wallet) in self.wallets.read().await.iter() {
-            total += wallet.total_balance().await?;
-        }
-        Ok(total)
-    }
-
-    /// Prepare to send tokens with automatic wallet selection based on available balance
-    ///
-    /// Uses default MultiMintSendOptions (single mint, highest balance first)
-    #[instrument(skip(self))]
-    pub async fn prepare_send(
-        &self,
-        amount: Amount,
-        opts: SendOptions,
-    ) -> Result<MultiMintPreparedSend, Error> {
-        let multi_opts = MultiMintSendOptions::new().send_options(opts);
-        self.prepare_send_with_options(amount, multi_opts).await
-    }
-
-    /// Prepare to send tokens with advanced mint selection options
-    ///
-    /// This method allows fine-grained control over which mints to use and in what order:
-    /// - Control maximum number of mints to use
-    /// - Specify preferred mints (in priority order)
-    /// - Exclude specific mints
-    /// - Choose selection strategy (highest balance, lowest fees, etc.)
-    /// - Enable cross-mint sends (split across multiple mints)
-    #[instrument(skip(self))]
-    pub async fn prepare_send_with_options(
-        &self,
-        amount: Amount,
-        options: MultiMintSendOptions,
-    ) -> Result<MultiMintPreparedSend, Error> {
-        // Select mints based on the provided options
-        let selected_wallets = self.select_mints_for_send(amount, &options).await?;
-
-        if selected_wallets.is_empty() {
-            return Err(Error::InsufficientFunds);
-        }
-
-        // For single mint sends (most common case)
-        if !options.allow_cross_mint {
-            let (_, wallet, _) = selected_wallets
-                .into_iter()
-                .next()
-                .ok_or(Error::InsufficientFunds)?;
-
-            // Prepare the send from the selected wallet
-            let prepared = wallet.prepare_send(amount, options.send_options).await?;
-            return MultiMintPreparedSend::new(
-                vec![prepared],
-                self.unit.clone(),
-                Arc::new(self.clone()),
-            );
-        }
-
-        // For cross-mint sends, we need to split the amount across multiple wallets
-        self.prepare_cross_mint_send(amount, selected_wallets, &options)
-            .await
-    }
-
-    /// Internal method for cross-mint sends (splitting amount across multiple wallets)
-    async fn prepare_cross_mint_send(
-        &self,
-        total_amount: Amount,
-        wallets: Vec<(MintUrl, Wallet, Amount)>,
-        options: &MultiMintSendOptions,
-    ) -> Result<MultiMintPreparedSend, Error> {
-        if wallets.is_empty() {
-            return Err(Error::InsufficientFunds);
-        }
-
-        // For single wallet, just send normally
-        if wallets.len() == 1 {
-            let (_, wallet, _) = wallets.into_iter().next().unwrap();
-            let prepared = wallet
-                .prepare_send(total_amount, options.send_options.clone())
-                .await?;
-            return MultiMintPreparedSend::new(
-                vec![prepared],
-                self.unit.clone(),
-                Arc::new(self.clone()),
-            );
-        }
-
-        // For multiple wallets, prepare sends from each wallet
-        let mut prepared_sends = Vec::new();
-        let mut remaining_amount = total_amount;
-
-        for (i, (_, wallet, wallet_balance)) in wallets.iter().enumerate() {
-            if remaining_amount == Amount::ZERO {
-                break;
-            }
-
-            // Determine how much to send from this wallet
-            let send_amount = if i == wallets.len() - 1 {
-                // Last wallet gets the remaining amount
-                remaining_amount
-            } else {
-                // For other wallets, use their full balance or remaining amount, whichever is smaller
-                std::cmp::min(remaining_amount, *wallet_balance)
-            };
-
-            if send_amount > Amount::ZERO {
-                let prepared = wallet
-                    .prepare_send(send_amount, options.send_options.clone())
-                    .await?;
-                prepared_sends.push(prepared);
-                remaining_amount -= send_amount;
-            }
-        }
-
-        if remaining_amount > Amount::ZERO {
-            return Err(Error::InsufficientFunds);
-        }
-
-        // Create a MultiMintPreparedSend
-        MultiMintPreparedSend::new(prepared_sends, self.unit.clone(), Arc::new(self.clone()))
-    }
-
     /// Melt (pay invoice) with automatic wallet selection
     ///
     /// Automatically selects the best wallet to pay from based on:
     /// - Available balance  
     /// - Fees
-    /// - Lightning route availability
-    ///
-    /// If a single wallet doesn't have enough balance, this will attempt
-    /// Multi-Path Payment (MPP) across multiple wallets.
     ///
     /// # Examples
     /// ```no_run
@@ -796,19 +649,11 @@ impl MultiMintWallet {
     /// # use cdk::Amount;
     /// # use std::sync::Arc;
     /// # async fn example(wallet: Arc<MultiMintWallet>) -> Result<(), Box<dyn std::error::Error>> {
-    /// // Pay a lightning invoice
+    /// // Pay a lightning invoice from any mint with sufficient balance
     /// let invoice = "lnbc100n1p...";
     ///
-    /// // Simple payment with automatic mint selection
     /// let result = wallet.melt(invoice, None, None).await?;
     /// println!("Paid {} sats, fee was {} sats", result.amount, result.fee_paid);
-    ///
-    /// // Payment with max fee limit
-    /// let result = wallet.melt(
-    ///     invoice,
-    ///     None,  // Default melt options
-    ///     Some(Amount::from(5))  // Max 5 sats fee
-    /// ).await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -829,180 +674,52 @@ impl MultiMintWallet {
             .map(|msats| Amount::from(msats / 1000))
             .ok_or(Error::InvoiceAmountUndefined)?;
 
-        // First try single wallet payment
         let wallets = self.wallets.read().await;
         let mut eligible_wallets = Vec::new();
-        let mut all_wallets_for_melt = Vec::new();
 
         for (mint_url, wallet) in wallets.iter() {
             let balance = wallet.total_balance().await?;
-            all_wallets_for_melt.push((mint_url.clone(), wallet.clone(), balance));
-
-            // Add some buffer for fees (5% of amount)
-            let fee_buffer = Amount::from(u64::from(amount) / 20);
-            if balance >= amount + fee_buffer {
+            if balance >= amount {
                 eligible_wallets.push((mint_url.clone(), wallet.clone()));
             }
         }
 
-        // Try single wallet payment first
-        if !eligible_wallets.is_empty() {
-            // Try to get quotes from eligible wallets and select the best one
-            let mut best_quote = None;
-            let mut best_wallet = None;
+        if eligible_wallets.is_empty() {
+            return Err(Error::InsufficientFunds);
+        }
 
-            for (_, wallet) in eligible_wallets.iter() {
-                match wallet.melt_quote(bolt11.to_string(), options.clone()).await {
-                    Ok(quote) => {
-                        if let Some(max_fee) = max_fee {
-                            if quote.fee_reserve > max_fee {
-                                continue;
-                            }
+        // Try to get quotes from eligible wallets and select the best one
+        let mut best_quote = None;
+        let mut best_wallet = None;
+
+        for (_, wallet) in eligible_wallets.iter() {
+            match wallet.melt_quote(bolt11.to_string(), options.clone()).await {
+                Ok(quote) => {
+                    if let Some(max_fee) = max_fee {
+                        if quote.fee_reserve > max_fee {
+                            continue;
                         }
+                    }
 
-                        if best_quote.is_none() {
+                    if best_quote.is_none() {
+                        best_quote = Some(quote);
+                        best_wallet = Some(wallet.clone());
+                    } else if let Some(ref existing_quote) = best_quote {
+                        if quote.fee_reserve < existing_quote.fee_reserve {
                             best_quote = Some(quote);
                             best_wallet = Some(wallet.clone());
-                        } else if let Some(ref existing_quote) = best_quote {
-                            if quote.fee_reserve < existing_quote.fee_reserve {
-                                best_quote = Some(quote);
-                                best_wallet = Some(wallet.clone());
-                            }
                         }
                     }
-                    Err(_) => continue,
                 }
-            }
-
-            if let (Some(quote), Some(wallet)) = (best_quote, best_wallet) {
-                return wallet.melt(&quote.id).await;
+                Err(_) => continue,
             }
         }
 
-        // If single wallet payment isn't possible, try MPP
-        let total_balance = self.total_balance().await?;
-        if total_balance < amount {
-            return Err(Error::InsufficientFunds);
+        if let (Some(quote), Some(wallet)) = (best_quote, best_wallet) {
+            return wallet.melt(&quote.id).await;
         }
 
-        // Attempt Multi-Path Payment
-        self.melt_mpp_internal(bolt11, &all_wallets_for_melt, amount, options, max_fee)
-            .await
-    }
-
-    /// Internal method for Multi-Path Payment across multiple wallets
-    async fn melt_mpp_internal(
-        &self,
-        bolt11: &str,
-        wallets: &[(MintUrl, Wallet, Amount)],
-        total_amount: Amount,
-        options: Option<MeltOptions>,
-        max_fee: Option<Amount>,
-    ) -> Result<Melted, Error> {
-        tracing::info!("Starting MPP payment for amount: {}", total_amount);
-        tracing::debug!("Available wallets for MPP: {}", wallets.len());
-
-        if wallets.is_empty() {
-            return Err(Error::InsufficientFunds);
-        }
-
-        // For now, implement a basic MPP strategy:
-        // 1. Use the first wallet with sufficient balance
-        // 2. If no single wallet has enough, try combining wallets
-        // 3. For simplicity, fail if we need more than 2 wallets (can be extended later)
-
-        // Try single wallet first
-        for (_, wallet, balance) in wallets.iter() {
-            if *balance >= total_amount {
-                let quote = wallet
-                    .melt_quote(bolt11.to_string(), options.clone())
-                    .await?;
-                if let Some(max_fee) = max_fee {
-                    if quote.fee_reserve > max_fee {
-                        continue;
-                    }
-                }
-                tracing::info!("Using single wallet for MPP payment");
-                return wallet.melt(&quote.id).await;
-            }
-        }
-
-        // If no single wallet can handle it, try combining the two largest wallets
-        if wallets.len() >= 2 {
-            let mut sorted_wallets = wallets.to_vec();
-            sorted_wallets.sort_by(|a, b| b.2.cmp(&a.2)); // Sort by balance descending
-
-            let wallet1 = &sorted_wallets[0].1;
-            let wallet2 = &sorted_wallets[1].1;
-            let combined_balance = sorted_wallets[0].2 + sorted_wallets[1].2;
-
-            if combined_balance >= total_amount {
-                // For true MPP, we would need to:
-                // 1. Split the invoice into multiple parts
-                // 2. Pay each part from different wallets
-                // 3. Coordinate success/failure atomically
-                //
-                // Lightning Network MPP requires specific protocol support
-                // For now, we'll try to pay from the wallet with higher balance
-
-                tracing::warn!(
-                    "MPP across multiple wallets requires Lightning Network MPP protocol support"
-                );
-                tracing::info!("Attempting payment from largest available wallet");
-
-                let quote = wallet1
-                    .melt_quote(bolt11.to_string(), options.clone())
-                    .await?;
-                if let Some(max_fee) = max_fee {
-                    if quote.fee_reserve > max_fee {
-                        return Err(Error::MaxFeeExceeded);
-                    }
-                }
-
-                // Try first wallet
-                match wallet1.melt(&quote.id).await {
-                    Ok(melted) => return Ok(melted),
-                    Err(e1) => {
-                        // If first wallet fails, try second wallet
-                        tracing::info!(
-                            "First wallet failed with error: {:?}, trying second wallet",
-                            e1
-                        );
-                        let quote2 = wallet2.melt_quote(bolt11.to_string(), options).await?;
-                        if let Some(max_fee) = max_fee {
-                            if quote2.fee_reserve > max_fee {
-                                return Err(Error::MaxFeeExceeded);
-                            }
-                        }
-                        return wallet2.melt(&quote2.id).await;
-                    }
-                }
-            }
-        }
-
-        // If we reach here, we don't have enough combined balance
-        let total_available: Amount = wallets
-            .iter()
-            .map(|(_, _, balance)| *balance)
-            .fold(Amount::ZERO, |acc, amount| acc + amount);
-        Err(Error::InsufficientFundsPerMint {
-            amount: total_amount,
-            unit: self.unit.clone(),
-            total_available,
-        })
-    }
-
-    /// Melt (pay invoice) from a specific wallet
-    #[instrument(skip(self, bolt11))]
-    pub async fn melt_from_wallet(
-        &self,
-        mint_url: &MintUrl,
-        bolt11: &str,
-        options: Option<MeltOptions>,
-        max_fee: Option<Amount>,
-    ) -> Result<Melted, Error> {
-        self.pay_invoice_for_wallet(mint_url, bolt11, options, max_fee)
-            .await
+        Err(Error::InsufficientFunds)
     }
 
     /// Swap proofs with automatic wallet selection
@@ -1072,180 +789,6 @@ impl MultiMintWallet {
 
         Ok(total_consolidated)
     }
-
-    /// Get the best wallet for a specific operation based on criteria
-    /// This is a helper method for smart wallet selection
-    async fn select_best_wallet(&self, min_amount: Amount) -> Result<Wallet, Error> {
-        let wallets = self.wallets.read().await;
-        let mut best_wallet = None;
-        let mut best_balance = Amount::ZERO;
-
-        for (_, wallet) in wallets.iter() {
-            let balance = wallet.total_balance().await?;
-            if balance >= min_amount && balance > best_balance {
-                best_balance = balance;
-                best_wallet = Some(wallet.clone());
-            }
-        }
-
-        best_wallet.ok_or(Error::InsufficientFunds)
-    }
-
-    /// Get estimated fee information for a wallet
-    /// This fetches current keyset information to estimate fees
-    async fn get_wallet_fee_estimate(
-        &self,
-        wallet: &Wallet,
-        amount: Amount,
-    ) -> Result<Amount, Error> {
-        // Get the current keysets to determine fee structure
-        let keysets_info = wallet.get_keyset_fees().await.unwrap_or_default();
-
-        // Calculate estimated fee based on the amount and keyset fees
-        // This is a simplified fee calculation - in practice you might want more sophisticated logic
-        let mut total_fee = Amount::ZERO;
-
-        for (_, fee_info) in keysets_info.iter() {
-            // Use the fee information from keysets
-            // For now, we'll use a simple calculation based on the fee structure
-            let fee_rate = *fee_info;
-            let estimated_fee = Amount::from(u64::from(amount) * fee_rate as u64 / 1_000_000);
-            total_fee += estimated_fee;
-        }
-
-        // If no fee info available, return a small default fee
-        if total_fee == Amount::ZERO {
-            total_fee = Amount::from(1); // 1 sat default
-        }
-
-        Ok(total_fee)
-    }
-
-    /// Select and prioritize mints based on MultiMintSendOptions
-    /// Returns a Vec of (MintUrl, Wallet, Balance) tuples in priority order
-    async fn select_mints_for_send(
-        &self,
-        amount: Amount,
-        options: &MultiMintSendOptions,
-    ) -> Result<Vec<(MintUrl, Wallet, Amount)>, Error> {
-        // Validate options first
-        options.validate()?;
-
-        let wallets = self.wallets.read().await;
-        let mut available_wallets = Vec::new();
-
-        // First, collect all available wallets with their balances
-        for (mint_url, wallet) in wallets.iter() {
-            // Skip excluded mints
-            if options.excluded_mints.contains(mint_url) {
-                continue;
-            }
-
-            let balance = wallet.total_balance().await?;
-            if balance > Amount::ZERO {
-                available_wallets.push((mint_url.clone(), wallet.clone(), balance));
-            }
-        }
-
-        if available_wallets.is_empty() {
-            return Err(Error::InsufficientFunds);
-        }
-
-        // Sort wallets by preference and strategy
-        available_wallets = self
-            .sort_wallets_by_priority(available_wallets, options)
-            .await?;
-
-        // If we only need wallets that can handle the full amount for single-mint sends
-        if !options.allow_cross_mint {
-            available_wallets.retain(|(_, _, balance)| *balance >= amount);
-
-            if available_wallets.is_empty() {
-                return Err(Error::InsufficientFunds);
-            }
-        }
-
-        // Apply max_mints limit
-        if let Some(max_mints) = options.max_mints {
-            available_wallets.truncate(max_mints);
-        }
-
-        // Check if we have enough balance across selected wallets
-        let total_available: Amount = available_wallets
-            .iter()
-            .map(|(_, _, balance)| *balance)
-            .fold(Amount::ZERO, |acc, amount| acc + amount);
-        if total_available < amount {
-            return Err(Error::InsufficientFunds);
-        }
-
-        Ok(available_wallets)
-    }
-
-    /// Sort wallets according to the specified strategy and preferences
-    async fn sort_wallets_by_priority(
-        &self,
-        wallets: Vec<(MintUrl, Wallet, Amount)>,
-        options: &MultiMintSendOptions,
-    ) -> Result<Vec<(MintUrl, Wallet, Amount)>, Error> {
-        // First, separate allowed mints and filter if specified
-        // If allowed_mints is specified, filter to only those mints
-        let filtered_wallets = if !options.allowed_mints.is_empty() {
-            wallets
-                .into_iter()
-                .filter(|(mint_url, _, _)| options.allowed_mints.contains(mint_url))
-                .collect()
-        } else {
-            wallets
-        };
-
-        let mut other_wallets = filtered_wallets;
-
-        // Sort wallets by strategy
-        match options.selection_strategy {
-            MintSelectionStrategy::HighestBalanceFirst => {
-                other_wallets.sort_by(|a, b| b.2.cmp(&a.2));
-            }
-            MintSelectionStrategy::LowestBalanceFirst => {
-                other_wallets.sort_by(|a, b| a.2.cmp(&b.2));
-            }
-            MintSelectionStrategy::Random => {
-                // For now, we'll use a simple pseudo-random sort based on mint URL hash
-                // In a real implementation, you might want to use a proper RNG
-                other_wallets.sort_by(|a, b| {
-                    let hash_a = a.0.to_string().len() % 1000;
-                    let hash_b = b.0.to_string().len() % 1000;
-                    hash_a.cmp(&hash_b)
-                });
-            }
-            MintSelectionStrategy::LowestFeesFirst => {
-                // Sort by estimated fees (lowest first)
-                let mut wallet_fees = Vec::new();
-
-                // Estimate fees for each wallet (use a reasonable test amount)
-                let test_amount = Amount::from(1000); // Use 1000 sats as test amount
-
-                for (mint_url, wallet, balance) in &other_wallets {
-                    let estimated_fee = self
-                        .get_wallet_fee_estimate(wallet, test_amount)
-                        .await
-                        .unwrap_or(Amount::from(u32::MAX as u64)); // Use high fee if estimation fails
-                    wallet_fees.push((mint_url.clone(), wallet.clone(), *balance, estimated_fee));
-                }
-
-                // Sort by fee (lowest first), then by balance (highest first) as tiebreaker
-                wallet_fees.sort_by(|a, b| a.3.cmp(&b.3).then_with(|| b.2.cmp(&a.2)));
-
-                // Convert back to original format
-                other_wallets = wallet_fees
-                    .into_iter()
-                    .map(|(mint_url, wallet, balance, _fee)| (mint_url, wallet, balance))
-                    .collect();
-            }
-        }
-
-        Ok(other_wallets)
-    }
 }
 
 impl Drop for MultiMintWallet {
@@ -1282,9 +825,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_prepare_send_insufficient_funds() {
+        use std::str::FromStr;
+
         let multi_wallet = create_test_multi_wallet().await;
+        let mint_url = MintUrl::from_str("https://mint1.example.com").unwrap();
+        let options = MultiMintSendOptions::new();
+
         let result = multi_wallet
-            .prepare_send(Amount::from(1000), SendOptions::default())
+            .prepare_send(mint_url, Amount::from(1000), options)
             .await;
 
         assert!(result.is_err());
@@ -1304,98 +852,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_multi_mint_send_options_default() {
-        let options = MultiMintSendOptions::default();
-        assert_eq!(options.max_mints, Some(1));
-        assert_eq!(options.allowed_mints.len(), 0);
-        assert_eq!(options.excluded_mints.len(), 0);
-        assert!(!options.allow_cross_mint);
-        assert!(matches!(
-            options.selection_strategy,
-            MintSelectionStrategy::HighestBalanceFirst
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_multi_mint_send_options_builder() {
+    async fn test_multi_mint_send_options() {
         use std::str::FromStr;
 
         let mint1 = MintUrl::from_str("https://mint1.example.com").unwrap();
         let mint2 = MintUrl::from_str("https://mint2.example.com").unwrap();
         let mint3 = MintUrl::from_str("https://mint3.example.com").unwrap();
-
+        
         let options = MultiMintSendOptions::new()
-            .max_mints(3)
+            .allow_transfer(true)
+            .max_transfer_amount(Amount::from(500))
             .allow_mint(mint1.clone())
             .allow_mint(mint2.clone())
             .exclude_mint(mint3.clone())
-            .selection_strategy(MintSelectionStrategy::LowestBalanceFirst)
-            .allow_cross_mint(true);
+            .send_options(SendOptions::default());
 
-        assert_eq!(options.max_mints, Some(3));
+        assert!(options.allow_transfer);
+        assert_eq!(options.max_transfer_amount, Some(Amount::from(500)));
         assert_eq!(options.allowed_mints, vec![mint1, mint2]);
         assert_eq!(options.excluded_mints, vec![mint3]);
-        assert!(options.allow_cross_mint);
-        assert!(matches!(
-            options.selection_strategy,
-            MintSelectionStrategy::LowestBalanceFirst
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_multi_mint_send_options_validation() {
-        use std::str::FromStr;
-
-        let mint1 = MintUrl::from_str("https://mint1.example.com").unwrap();
-
-        // Test conflicting allowed and excluded mints
-        let options = MultiMintSendOptions::new()
-            .allow_mint(mint1.clone())
-            .exclude_mint(mint1.clone());
-
-        assert!(options.validate().is_err());
-
-        // Test conflicting max_mints and cross_mint
-        let options = MultiMintSendOptions::new()
-            .max_mints(1)
-            .allow_cross_mint(true);
-
-        assert!(options.validate().is_err());
-
-        // Test valid configuration
-        let options = MultiMintSendOptions::new()
-            .max_mints(3)
-            .allow_cross_mint(true);
-
-        assert!(options.validate().is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_prepare_send_with_options_insufficient_funds() {
-        let multi_wallet = create_test_multi_wallet().await;
-
-        let options = MultiMintSendOptions::new();
-        let result = multi_wallet
-            .prepare_send_with_options(Amount::from(1000), options)
-            .await;
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_mint_selection_strategy_enum() {
-        // Test that all enum variants exist and can be created
-        let strategies = vec![
-            MintSelectionStrategy::HighestBalanceFirst,
-            MintSelectionStrategy::LowestBalanceFirst,
-            MintSelectionStrategy::Random,
-            MintSelectionStrategy::LowestFeesFirst,
-        ];
-
-        for strategy in strategies {
-            let options = MultiMintSendOptions::new().selection_strategy(strategy);
-            // Just ensure the builder pattern works
-            assert!(options.validate().is_ok());
-        }
     }
 }

@@ -39,21 +39,20 @@ use crate::wallet::{MultiMintWallet, SendOptions};
 pub struct SendBuilder {
     wallet: Arc<MultiMintWallet>,
     amount: Amount,
+    mint_url: MintUrl,
     options: MultiMintSendOptions,
-    preferred_mint: Option<MintUrl>,
-    fallback_to_any: bool,
     max_fee: Option<Amount>,
 }
 
 impl SendBuilder {
-    /// Create a new SendBuilder
-    pub fn new(wallet: Arc<MultiMintWallet>, amount: Amount) -> Self {
+    /// Create a new SendBuilder with a required mint URL
+    /// Since the new interface requires specifying a mint, you must choose which mint to send from
+    pub fn new(wallet: Arc<MultiMintWallet>, amount: Amount, mint_url: MintUrl) -> Self {
         Self {
             wallet,
             amount,
+            mint_url,
             options: MultiMintSendOptions::new(),
-            preferred_mint: None,
-            fallback_to_any: true,
             max_fee: None,
         }
     }
@@ -91,15 +90,15 @@ impl SendBuilder {
         self
     }
 
-    /// Prefer a specific mint
-    pub fn prefer_mint(mut self, mint_url: MintUrl) -> Self {
-        self.preferred_mint = Some(mint_url);
+    /// Enable transferring funds from other mints if the sending mint doesn't have sufficient balance
+    pub fn allow_transfer(mut self, allow: bool) -> Self {
+        self.options = self.options.allow_transfer(allow);
         self
     }
 
-    /// Whether to fallback to any available wallet if preferred mint fails
-    pub fn fallback_to_any(mut self, fallback: bool) -> Self {
-        self.fallback_to_any = fallback;
+    /// Set maximum amount to transfer from other mints
+    pub fn max_transfer_amount(mut self, amount: Amount) -> Self {
+        self.options = self.options.max_transfer_amount(amount);
         self
     }
 
@@ -130,29 +129,10 @@ impl SendBuilder {
     /// # }
     /// ```
     pub async fn send(self) -> Result<Token, Error> {
-        // Configure options based on preferred mint
-        let mut options = self.options;
-
-        // Try preferred mint first if specified
-        if let Some(mint_url) = self.preferred_mint {
-            if !self.fallback_to_any {
-                // Only use the preferred mint
-                let prepared = self
-                    .wallet
-                    .prepare_send_for_mint(&mint_url, self.amount, options.send_options.clone())
-                    .await?;
-                let token = prepared.confirm(None).await?;
-                return Ok(token);
-            } else {
-                // Try preferred mint first, but allow fallback
-                options = options.preferred_mints_list(vec![mint_url]);
-            }
-        }
-
-        // Use automatic wallet selection with configured options
+        // Prepare and confirm the send from the specified mint
         let prepared = self
             .wallet
-            .prepare_send_with_options(self.amount, options)
+            .prepare_send(self.mint_url, self.amount, self.options)
             .await?;
         let token = prepared.confirm(None).await?;
         Ok(token)
@@ -272,7 +252,7 @@ impl MeltBuilder {
         if let Some(mint_url) = self.preferred_mint {
             match self
                 .wallet
-                .melt_from_wallet(&mint_url, &self.bolt11, self.options.clone(), self.max_fee)
+                .pay_invoice_for_wallet(&mint_url, &self.bolt11, self.options.clone(), self.max_fee)
                 .await
             {
                 Ok(melted) => return Ok(melted),
@@ -351,8 +331,8 @@ impl SwapBuilder {
 
 /// Extension trait to add builder methods to MultiMintWallet
 pub trait MultiMintWalletBuilderExt {
-    /// Create a send builder
-    fn send_builder(&self, amount: Amount) -> SendBuilder;
+    /// Create a send builder for a specific mint
+    fn send_builder(&self, amount: Amount, mint_url: MintUrl) -> SendBuilder;
 
     /// Create a melt builder
     fn melt_builder(&self, bolt11: String) -> MeltBuilder;
@@ -362,8 +342,8 @@ pub trait MultiMintWalletBuilderExt {
 }
 
 impl MultiMintWalletBuilderExt for Arc<MultiMintWallet> {
-    fn send_builder(&self, amount: Amount) -> SendBuilder {
-        SendBuilder::new(self.clone(), amount)
+    fn send_builder(&self, amount: Amount, mint_url: MintUrl) -> SendBuilder {
+        SendBuilder::new(self.clone(), amount, mint_url)
     }
 
     fn melt_builder(&self, bolt11: String) -> MeltBuilder {

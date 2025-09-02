@@ -62,7 +62,7 @@ pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::AuthHttpClient;
 pub use mint_connector::{HttpClient, MintConnector};
 pub use multi_mint_builder::{MeltBuilder, MultiMintWalletBuilderExt, SendBuilder, SwapBuilder};
-pub use multi_mint_wallet::{MintSelectionStrategy, MultiMintSendOptions, MultiMintWallet};
+pub use multi_mint_wallet::{MultiMintSendOptions, MultiMintWallet};
 pub use receive::ReceiveOptions;
 pub use send::{PreparedSend, SendMemo, SendOptions};
 pub use types::{MeltQuote, MintQuote, SendKind};

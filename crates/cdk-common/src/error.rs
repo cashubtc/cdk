@@ -255,20 +255,6 @@ pub enum Error {
         expected: CurrencyUnit,
         found: CurrencyUnit,
     },
-    /// No prepared sends provided to MultiMintPreparedSend
-    #[error("No prepared sends provided")]
-    NoPreparedSends,
-    /// Cross-mint sends not enabled
-    #[error(
-        "Cross-mint sends are disabled. Enable with allow_cross_mint(true) or use single mint"
-    )]
-    CrossMintSendsDisabled,
-    /// Conflicting mint preferences
-    #[error("Mint {mint_url} cannot be both preferred and excluded")]
-    ConflictingMintPreferences { mint_url: String },
-    /// Invalid mint selection options
-    #[error("Cannot enable cross-mint sends with max_mints set to 1")]
-    InvalidMintSelectionOptions,
     /// No mint available with sufficient funds
     #[error(
         "No mint has sufficient balance of {amount} {unit}. Total available: {total_available}"
@@ -281,6 +267,16 @@ pub enum Error {
     /// Unknown mint in MultiMintWallet
     #[error("Unknown mint: {mint_url}")]
     UnknownMint { mint_url: String },
+    /// Transfer between mints timed out
+    #[error("Transfer timeout: failed to transfer {amount} from {source_mint} to {target_mint}")]
+    TransferTimeout {
+        /// Source mint URL
+        source_mint: String,
+        /// Target mint URL  
+        target_mint: String,
+        /// Amount that failed to transfer
+        amount: Amount,
+    },
     /// Multi-Path Payment not implemented
     #[error("Multi-Path Payment across wallets not fully implemented")]
     MppNotImplemented,
