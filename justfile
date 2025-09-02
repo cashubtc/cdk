@@ -348,6 +348,13 @@ release m="":
     echo
   done
 
+  # Extract version from the cdk-ffi crate
+  VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "cdk-ffi") | .version')
+  
+  # Trigger Swift package release after Rust crates are published
+  echo "📦 Triggering Swift package release for version $VERSION..."
+  just ffi-release-swift $VERSION
+
 check-docs:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -536,3 +543,21 @@ ffi-test-bindings LANGUAGE: (ffi-generate LANGUAGE "--debug")
 # Test Python bindings (shorthand)
 ffi-test-python:
   just ffi-test-bindings python
+
+# Trigger Swift Package release workflow
+ffi-release-swift VERSION:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  
+  echo "🚀 Triggering Publish Swift Package workflow..."
+  echo "   Version: {{VERSION}}"
+  echo "   CDK Ref: v{{VERSION}}"
+  
+  # Trigger the workflow using GitHub CLI
+  gh workflow run "Publish Swift Package" \
+    --repo cashubtc/cdk-swift \
+    --field version="{{VERSION}}" \
+    --field cdk_repo="cashubtc/cdk" \
+    --field cdk_ref="v{{VERSION}}"
+  
+  echo "✅ Workflow triggered successfully!"
