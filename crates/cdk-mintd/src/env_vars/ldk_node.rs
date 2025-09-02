@@ -15,6 +15,7 @@ pub const LDK_NODE_BITCOIND_RPC_PORT_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_BITCOIN
 pub const LDK_NODE_BITCOIND_RPC_USER_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_BITCOIND_RPC_USER";
 pub const LDK_NODE_BITCOIND_RPC_PASSWORD_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_BITCOIND_RPC_PASSWORD";
 pub const LDK_NODE_STORAGE_DIR_PATH_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_STORAGE_DIR_PATH";
+pub const LDK_NODE_LOG_DIR_PATH_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_LOG_DIR_PATH";
 pub const LDK_NODE_LDK_NODE_HOST_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_LDK_NODE_HOST";
 pub const LDK_NODE_LDK_NODE_PORT_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_LDK_NODE_PORT";
 pub const LDK_NODE_GOSSIP_SOURCE_TYPE_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE";
@@ -68,6 +69,10 @@ impl LdkNode {
 
         if let Ok(storage_dir_path) = env::var(LDK_NODE_STORAGE_DIR_PATH_ENV_VAR) {
             self.storage_dir_path = Some(storage_dir_path);
+        }
+
+        if let Ok(log_dir_path) = env::var(LDK_NODE_LOG_DIR_PATH_ENV_VAR) {
+            self.log_dir_path = Some(log_dir_path);
         }
 
         if let Ok(ldk_node_host) = env::var(LDK_NODE_LDK_NODE_HOST_ENV_VAR) {

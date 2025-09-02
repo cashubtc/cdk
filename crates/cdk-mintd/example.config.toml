@@ -100,6 +100,8 @@ reserve_fee_min = 4
 # gossip_source_type = "rgs"  # Use RGS for better performance
 # rgs_url = "https://rgs.mutinynet.com/snapshot/0"
 # storage_dir_path = "~/.cdk-ldk-node/mutinynet"
+# log_dir_path = ".cdk-ldk-node/ldk-node/ldk_node.log"
+
 # 
 # # Testnet configuration
 # # bitcoin_network = "testnet"
