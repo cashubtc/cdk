@@ -12,7 +12,7 @@ license.workspace = true
 
 [features]
 default = ["mint", "wallet", "auth"]
-wallet = ["dep:futures", "dep:reqwest", "cdk-common/wallet", "dep:rustls"]
+wallet = ["dep:futures", "dep:reqwest", "cdk-common/wallet", "dep:rustls", "dep:nostr-sdk"]
 mint = ["dep:futures", "dep:reqwest", "cdk-common/mint", "cdk-signatory"]
 auth = ["dep:jsonwebtoken", "cdk-common/auth", "cdk-common/auth"]
 bip353 = ["dep:trust-dns-resolver"]
@@ -44,6 +44,11 @@ utoipa = { workspace = true, optional = true }
 uuid.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
 trust-dns-resolver = { version = "0.23.2", optional = true }
+nostr-sdk = { optional = true, version = "0.41.0", default-features = false, features = [
+    "nip04",
+    "nip44",
+    "nip59"
+]}
 
 # -Z minimal-versions
 sync_wrapper = "0.1.2"
