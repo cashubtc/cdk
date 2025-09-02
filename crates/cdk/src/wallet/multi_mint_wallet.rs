@@ -41,6 +41,7 @@ use crate::{ensure_cdk, Amount, Wallet};
 /// # use cdk::mint_url::MintUrl;
 /// # use cdk::Amount;
 /// # use cdk::cdk_database::WalletMemoryDatabase;
+/// # use cdk::nuts::CurrencyUnit;
 /// # use std::sync::Arc;
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// // Create a multi-mint wallet with a memory database
@@ -49,21 +50,23 @@ use crate::{ensure_cdk, Amount, Wallet};
 ///
 /// let wallet = MultiMintWallet::new(
 ///     Arc::new(database),
-///     &seed,
-///     vec![
-///         "https://mint1.example.com".parse()?,
-///         "https://mint2.example.com".parse()?,
-///     ],
+///     seed,
+///     CurrencyUnit::Sat,
 /// ).await?;
+///
+/// // Add mints to the wallet
+/// let mint_url1: MintUrl = "https://mint1.example.com".parse()?;
+/// let mint_url2: MintUrl = "https://mint2.example.com".parse()?;
+/// wallet.add_mint(mint_url1.clone(), None).await?;
+/// wallet.add_mint(mint_url2, None).await?;
 ///
 /// // Check total balance across all mints
 /// let balance = wallet.total_balance().await?;
 /// println!("Total balance: {} sats", balance);
 ///
 /// // Send tokens from a specific mint
-/// let mint_url = "https://mint1.example.com".parse()?;
 /// let prepared = wallet.prepare_send(
-///     mint_url,
+///     mint_url1,
 ///     Amount::from(100),
 ///     Default::default()
 /// ).await?;
@@ -159,37 +162,47 @@ impl MultiMintSendOptions {
 
 impl MultiMintWallet {
     /// Create a new [MultiMintWallet] for a specific currency unit
-    pub fn new(
+    pub async fn new(
         localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
         seed: [u8; 64],
         unit: CurrencyUnit,
     ) -> Result<Self, Error> {
-        Ok(Self {
+        let wallet = Self {
             localstore,
             seed,
             unit,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
             proxy_config: None,
-        })
+        };
+
+        // Automatically load wallets from database for this currency unit
+        wallet.load_wallets().await?;
+
+        Ok(wallet)
     }
 
     /// Create a new [MultiMintWallet] with proxy configuration
     ///
     /// All wallets in this MultiMintWallet will use the specified proxy.
     /// This allows you to route all mint connections through a proxy server.
-    pub fn with_proxy(
+    pub async fn with_proxy(
         localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
         seed: [u8; 64],
         unit: CurrencyUnit,
         proxy_url: url::Url,
     ) -> Result<Self, Error> {
-        Ok(Self {
+        let wallet = Self {
             localstore,
             seed,
             unit,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
             proxy_config: Some(proxy_url),
-        })
+        };
+
+        // Automatically load wallets from database for this currency unit
+        wallet.load_wallets().await?;
+
+        Ok(wallet)
     }
 
     /// Adds a mint to this [MultiMintWallet]
@@ -249,6 +262,35 @@ impl MultiMintWallet {
     pub async fn remove_mint(&self, mint_url: &MintUrl) {
         let mut wallets = self.wallets.write().await;
         wallets.remove(mint_url);
+    }
+
+    /// Load all wallets from database that have proofs for this currency unit
+    #[instrument(skip(self))]
+    pub async fn load_wallets(&self) -> Result<(), Error> {
+        let mints = self.localstore.get_mints().await.map_err(Error::Database)?;
+
+        // Get all proofs for this currency unit to determine which mints are relevant
+        let all_proofs = self
+            .localstore
+            .get_proofs(None, Some(self.unit.clone()), None, None)
+            .await
+            .map_err(Error::Database)?;
+
+        for (mint_url, _mint_info) in mints {
+            // Check if this mint has any proofs for the specified currency unit
+            // or if we have no proofs at all (initial setup)
+            let mint_has_proofs_for_unit =
+                all_proofs.is_empty() || all_proofs.iter().any(|proof| proof.mint_url == mint_url);
+
+            if mint_has_proofs_for_unit {
+                // Add mint to the MultiMintWallet if not already present
+                if !self.has_mint(&mint_url).await {
+                    self.add_mint(mint_url, None).await?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Get Wallets from MultiMintWallet
@@ -865,6 +907,7 @@ mod tests {
         );
         let seed = [0u8; 64];
         MultiMintWallet::new(localstore, seed, CurrencyUnit::Sat)
+            .await
             .expect("Failed to create MultiMintWallet")
     }
 

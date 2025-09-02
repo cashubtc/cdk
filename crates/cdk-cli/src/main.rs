@@ -49,6 +49,9 @@ struct Cli {
     /// NWS Proxy
     #[arg(short, long)]
     proxy: Option<Url>,
+    /// Currency unit to use for the wallet
+    #[arg(short, long, default_value = "sat")]
+    unit: String,
     #[command(subcommand)]
     command: Commands,
 }
@@ -168,26 +171,31 @@ async fn main() -> Result<()> {
     };
     let seed = mnemonic.to_seed_normalized("");
 
-    // Create MultiMintWallet with SAT unit (default)
+    // Parse currency unit from args, default to SAT if parsing fails
+    let currency_unit = match args.unit.to_lowercase().as_str() {
+        "sat" => CurrencyUnit::Sat,
+        "msat" => CurrencyUnit::Msat,
+        "usd" => CurrencyUnit::Usd,
+        "eur" => CurrencyUnit::Eur,
+        "auth" => CurrencyUnit::Auth,
+        custom => CurrencyUnit::Custom(custom.to_string()),
+    };
+
+    // Create MultiMintWallet with specified currency unit
+    // The constructor will automatically load wallets for this currency unit
     let multi_mint_wallet = match &args.proxy {
         Some(proxy_url) => {
             // Create MultiMintWallet with proxy configuration
             MultiMintWallet::with_proxy(
                 localstore.clone(),
                 seed,
-                CurrencyUnit::Sat,
+                currency_unit.clone(),
                 proxy_url.clone(),
-            )?
+            )
+            .await?
         }
-        None => MultiMintWallet::new(localstore.clone(), seed, CurrencyUnit::Sat)?,
+        None => MultiMintWallet::new(localstore.clone(), seed, currency_unit.clone()).await?,
     };
-
-    let mints = localstore.get_mints().await?;
-
-    for (mint_url, _mint_info) in mints {
-        // Add each mint to the MultiMintWallet
-        multi_mint_wallet.add_mint(mint_url, None).await?;
-    }
 
     match &args.command {
         Commands::DecodeToken(sub_command_args) => {
