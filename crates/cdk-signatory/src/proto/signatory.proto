@@ -32,7 +32,7 @@ message BlindedMessages {
 // Represents a blinded message
 message BlindedMessage {
   uint64 amount = 1;
-  string keyset_id = 2;
+  bytes keyset_id = 2;
   bytes blinded_secret = 3;
 }
 
@@ -57,12 +57,13 @@ message SignatoryKeysets {
 }
 
 message KeySet {
-  string id = 1;
+  bytes id = 1;
   CurrencyUnit unit = 2;
   bool active = 3;
   uint64 input_fee_ppk = 4;
   Keys keys = 5;
   optional uint64 final_expiry = 6;
+  uint64 version = 7;
 }
 
 message Keys {
@@ -72,7 +73,7 @@ message Keys {
 message RotationRequest {
   CurrencyUnit unit = 1;
   uint64 input_fee_ppk = 2;
-  uint32 max_order = 3;
+  repeated uint64 amounts = 3;
 }
 
 enum CurrencyUnitType {
@@ -99,18 +100,28 @@ message Proofs {
 
 message Proof {
   uint64 amount = 1;
-  string keyset_id = 2;
+  bytes keyset_id = 2;
   bytes secret = 3;
   bytes c = 4;
 }
 
+message ProofDLEQ {
+  bytes e = 1;
+  bytes s = 2;
+  bytes r = 3;
+}
+
+message SigningResponse {
+  Error error = 1;
+  BlindSignatures blind_signatures = 2;
+}
 message BlindSignatures {
   repeated BlindSignature blind_signatures = 1;
 }
 
 message BlindSignature {
   uint64 amount = 1;
-  string keyset_id = 2;
+  bytes keyset_id = 2;
   bytes blinded_secret = 3;
   optional BlindSignatureDLEQ dleq = 4;
 }
@@ -118,6 +129,28 @@ message BlindSignature {
 message BlindSignatureDLEQ {
   bytes e = 1;
   bytes s = 2;
+}
+
+// Witness type
+message Witness {
+  oneof witness_type {
+    P2PKWitness p2pk_witness = 1;
+    HTLCWitness htlc_witness = 2;
+  }
+}
+
+// P2PKWitness type
+message P2PKWitness {
+  // List of signatures
+  repeated string signatures = 1;
+}
+
+// HTLCWitness type
+message HTLCWitness {
+  // Preimage
+  string preimage = 1;
+  // List of signatures
+  repeated string signatures = 2;
 }
 
 enum ErrorCode {
