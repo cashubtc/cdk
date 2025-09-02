@@ -106,7 +106,7 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
         .localstore(Arc::new(memory::empty().await?))
         .seed(Mnemonic::generate(12)?.to_seed_normalized(""))
         .target_proof_count(3)
-        .prefer_http_subscription()
+        .use_http_subscription()
         .build()?;
 
     let mint_quote = wallet.mint_bolt12_quote(None, None).await?;
