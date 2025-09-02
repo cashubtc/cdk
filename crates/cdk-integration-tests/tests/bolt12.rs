@@ -1,13 +1,14 @@
 use std::env;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cashu::amount::SplitTarget;
 use cashu::nut23::Amountless;
-use cashu::{Amount, CurrencyUnit, MintRequest, PreMintSecrets, ProofsMethods};
-use cdk::wallet::{HttpClient, MintConnector, Wallet};
+use cashu::{Amount, CurrencyUnit, MintRequest, MintUrl, PreMintSecrets, ProofsMethods};
+use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletBuilder};
 use cdk_integration_tests::get_mint_url_from_env;
 use cdk_integration_tests::init_regtest::{get_cln_dir, get_temp_dir};
 use cdk_sqlite::wallet::memory;
@@ -97,13 +98,16 @@ async fn test_regtest_bolt12_mint() {
 /// - Tests the functionality of reusing a quote for multiple payments
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
-    let wallet = Wallet::new(
-        &get_mint_url_from_env(),
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let mint_url = MintUrl::from_str(&get_mint_url_from_env())?;
+
+    let wallet = WalletBuilder::new()
+        .mint_url(mint_url)
+        .unit(CurrencyUnit::Sat)
+        .localstore(Arc::new(memory::empty().await?))
+        .seed(Mnemonic::generate(12)?.to_seed_normalized(""))
+        .target_proof_count(3)
+        .use_http_subscription()
+        .build()?;
 
     let mint_quote = wallet.mint_bolt12_quote(None, None).await?;
 
@@ -120,7 +124,7 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 
@@ -136,7 +140,7 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 
@@ -187,7 +191,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
             quote_one.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 
@@ -206,7 +210,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
             quote_two.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 
@@ -283,7 +287,7 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 

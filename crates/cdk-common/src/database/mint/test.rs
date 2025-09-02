@@ -87,7 +87,7 @@ where
 {
     let keyset_id = setup_keyset(&db).await;
 
-    let quote_id = Uuid::max();
+    let quote_id = QuoteId::new_uuid();
 
     let proofs = vec![
         Proof {
@@ -110,7 +110,9 @@ where
 
     // Add proofs to database
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs.clone(), Some(quote_id)).await.unwrap();
+    tx.add_proofs(proofs.clone(), Some(quote_id.clone()))
+        .await
+        .unwrap();
     assert!(tx.commit().await.is_ok());
 
     let proofs_from_db = db.get_proofs_by_ys(&[proofs[0].c, proofs[1].c]).await;
