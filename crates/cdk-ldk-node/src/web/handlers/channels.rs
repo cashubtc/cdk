@@ -18,73 +18,6 @@ use crate::web::templates::{
     error_message, form_card, format_sats_as_btc, info_card, layout, success_message,
 };
 
-// Node alias cache for consistent display
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use std::collections::HashMap as StdHashMap;
-
-lazy_static::lazy_static! {
-    static ref NODE_ALIAS_CACHE: Arc<RwLock<StdHashMap<String, String>>> = Arc::new(RwLock::new(StdHashMap::new()));
-}
-
-/// Fetch node alias from external sources
-async fn get_node_alias(node_id: &str) -> Option<String> {
-    // Check cache first
-    {
-        let cache = NODE_ALIAS_CACHE.read().await;
-        if let Some(alias) = cache.get(node_id) {
-            return Some(alias.clone());
-        }
-    }
-
-    // Try to fetch from 1ml.com API (for mainnet/testnet)
-    let alias = fetch_node_alias_from_1ml(node_id).await;
-
-    if let Some(alias) = &alias {
-        // Cache the result
-        let mut cache = NODE_ALIAS_CACHE.write().await;
-        cache.insert(node_id.to_string(), alias.clone());
-        return Some(alias.clone());
-    }
-
-    // Fallback: Generate a test alias for unknown nodes (useful for testnet/regtest)
-    let test_alias = generate_test_alias(node_id);
-    let mut cache = NODE_ALIAS_CACHE.write().await;
-    cache.insert(node_id.to_string(), test_alias.clone());
-    Some(test_alias)
-}
-
-/// Fetch node alias from 1ml.com API
-async fn fetch_node_alias_from_1ml(node_id: &str) -> Option<String> {
-    let client = reqwest::Client::new();
-    let url = format!("https://1ml.com/node/{}/json", node_id);
-
-    match client.get(&url).send().await {
-        Ok(response) => {
-            if response.status().is_success() {
-                match response.json::<serde_json::Value>().await {
-                    Ok(json) => {
-                        if let Some(alias) = json.get("alias").and_then(|v| v.as_str()) {
-                            return Some(alias.to_string());
-                        }
-                    }
-                    Err(_) => {}
-                }
-            }
-        }
-        Err(_) => {}
-    }
-
-    None
-}
-
-/// Generate a test alias for nodes that don't have aliases in the database
-fn generate_test_alias(node_id: &str) -> String {
-    // Use the first 8 characters of the node ID to create a readable alias
-    let short_id = &node_id[..8.min(node_id.len())];
-    format!("TestNode_{}", short_id)
-}
-
 #[derive(Deserialize)]
 pub struct OpenChannelForm {
     node_id: String,
@@ -293,15 +226,14 @@ pub async fn close_channel_page(
                 a href="/balance" { button { "← Back to Lightning" } }
             }
         };
-        return Ok(Html(layout("Close Channel Error", content).into_string()));
+        return Ok(Html(
+            layout("Close Channel Error", content).into_string(),
+        ));
     }
 
     // Get channel information for amount display
     let channels = state.node.inner.list_channels();
     let channel = channels.iter().find(|c| c.user_channel_id.0.to_string() == channel_id);
-
-    // Get node alias for consistent display
-    let node_alias = get_node_alias(&node_id).await;
 
     let content = form_card(
         "Close Channel",
@@ -310,12 +242,6 @@ pub async fn close_channel_page(
 
             // Channel details in consistent format
             div class="channel-details" {
-                @if let Some(alias) = node_alias {
-                    div class="detail-row" {
-                        span class="detail-label" { "Node Alias" }
-                        span class="detail-value-amount" { (alias) }
-                    }
-                }
                 div class="detail-row" {
                     span class="detail-label" { "User Channel ID" }
                     span class="detail-value-amount" { (channel_id) }
@@ -367,9 +293,6 @@ pub async fn force_close_channel_page(
     let channels = state.node.inner.list_channels();
     let channel = channels.iter().find(|c| c.user_channel_id.0.to_string() == channel_id);
 
-    // Get node alias for consistent display
-    let node_alias = get_node_alias(&node_id).await;
-
     let content = form_card(
         "Force Close Channel",
         html! {
@@ -385,12 +308,6 @@ pub async fn force_close_channel_page(
 
             // Channel details in consistent format
             div class="channel-details" {
-                @if let Some(alias) = node_alias {
-                    div class="detail-row" {
-                        span class="detail-label" { "Node Alias" }
-                        span class="detail-value-amount" { (alias) }
-                    }
-                }
                 div class="detail-row" {
                     span class="detail-label" { "User Channel ID" }
                     span class="detail-value-amount" { (channel_id) }
