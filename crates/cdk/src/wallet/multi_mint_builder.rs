@@ -19,18 +19,13 @@ use crate::wallet::{MultiMintWallet, SendOptions};
 ///
 /// ```no_run
 /// # use cdk::wallet::{MultiMintWallet, SendBuilder};
-/// # use cdk::Amount;
+/// # use cdk::{Amount, mint_url::MintUrl};
 /// # use std::sync::Arc;
 /// # async fn example(wallet: Arc<MultiMintWallet>) -> Result<(), Box<dyn std::error::Error>> {
-/// // Simple send with automatic mint selection
-/// let token = SendBuilder::new(wallet.clone(), Amount::from(100))
-///     .send()
-///     .await?;
-///
-/// // Send with preferred mint and fallback
-/// let token = SendBuilder::new(wallet.clone(), Amount::from(100))
-///     .prefer_mint("https://mint.example.com".parse()?)
-///     .fallback_to_any(true)
+/// let mint_url: MintUrl = "https://mint.example.com".parse()?;
+/// 
+/// // Simple send from a specific mint
+/// let token = SendBuilder::new(wallet.clone(), Amount::from(100), mint_url.clone())
 ///     .send()
 ///     .await?;
 /// # Ok(())
@@ -110,19 +105,16 @@ impl SendBuilder {
 
     /// Execute the send operation
     ///
-    /// This will prepare and execute the send in one step.
-    /// If a preferred mint is specified, it will try that first.
-    /// If fallback is enabled and the preferred mint fails, it will try other mints.
+    /// This will prepare and execute the send from the specified mint.
     ///
     /// # Examples
     /// ```no_run
     /// # use cdk::wallet::{MultiMintWallet, SendBuilder};
-    /// # use cdk::Amount;
+    /// # use cdk::{Amount, mint_url::MintUrl};
     /// # use std::sync::Arc;
     /// # async fn example(wallet: Arc<MultiMintWallet>) -> Result<(), Box<dyn std::error::Error>> {
-    /// let token = SendBuilder::new(wallet.clone(), Amount::from(100))
-    ///     .prefer_mint("https://preferred.mint".parse()?)
-    ///     .fallback_to_any(true)  // Will try other mints if preferred fails
+    /// let mint_url: MintUrl = "https://mint.example.com".parse()?;
+    /// let token = SendBuilder::new(wallet.clone(), Amount::from(100), mint_url)
     ///     .send()
     ///     .await?;
     /// # Ok(())

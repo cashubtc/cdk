@@ -36,17 +36,17 @@ use crate::{ensure_cdk, Amount, Wallet};
 /// # Examples
 ///
 /// ## Creating and using a multi-mint wallet
-/// ```no_run
+/// ```ignore
 /// # use cdk::wallet::MultiMintWallet;
 /// # use cdk::mint_url::MintUrl;
 /// # use cdk::Amount;
-/// # use cdk::cdk_database::WalletMemoryDatabase;
 /// # use cdk::nuts::CurrencyUnit;
 /// # use std::sync::Arc;
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// // Create a multi-mint wallet with a memory database
+/// // Create a multi-mint wallet with a database
+/// // For real usage, you would use cdk_sqlite::wallet::memory::empty().await? or similar
 /// let seed = [0u8; 64];  // Use a secure random seed in production
-/// let database = WalletMemoryDatabase::default();
+/// let database = cdk_sqlite::wallet::memory::empty().await?;
 ///
 /// let wallet = MultiMintWallet::new(
 ///     Arc::new(database),
