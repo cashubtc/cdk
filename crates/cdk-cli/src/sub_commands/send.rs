@@ -1,7 +1,8 @@
 use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
-use cdk::nuts::{Conditions, CurrencyUnit, PublicKey, SpendingConditions};
+use cdk::mint_url::MintUrl;
+use cdk::nuts::{Conditions, PublicKey, SpendingConditions};
 use cdk::wallet::types::SendKind;
 use cdk::wallet::{MultiMintWallet, SendMemo, SendOptions};
 use cdk::Amount;
@@ -47,19 +48,27 @@ pub struct SendSubCommand {
     /// Mint URL to use for sending
     #[arg(long)]
     mint_url: Option<String>,
-    /// Currency unit e.g. sat
-    #[arg(default_value = "sat")]
-    unit: String,
+    /// Allow transferring funds from other mints if the target mint has insufficient balance
+    #[arg(long)]
+    allow_transfer: bool,
+    /// Maximum amount to transfer from other mints (in sats)
+    #[arg(long)]
+    max_transfer_amount: Option<u64>,
+    /// Specific mints allowed for transfers (can be specified multiple times)
+    #[arg(long, action = clap::ArgAction::Append)]
+    allowed_mints: Vec<String>,
+    /// Specific mints to exclude from transfers (can be specified multiple times)
+    #[arg(long, action = clap::ArgAction::Append)]
+    excluded_mints: Vec<String>,
 }
 
 pub async fn send(
     multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &SendSubCommand,
 ) -> Result<()> {
-    let _unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
     let token_amount = Amount::from(get_number_input::<u64>("Enter value of token in sats")?);
 
-    // Check total balance across all wallets for this unit
+    // Check total balance across all wallets
     let total_balance = multi_mint_wallet.total_balance().await?;
     if total_balance < token_amount {
         return Err(anyhow!(
@@ -202,12 +211,27 @@ pub async fn send(
         ..Default::default()
     };
 
-    // Create MultiMintSendOptions
+    // Parse allowed and excluded mints from CLI arguments
+    let allowed_mints: Result<Vec<MintUrl>, _> = sub_command_args
+        .allowed_mints
+        .iter()
+        .map(|url| MintUrl::from_str(url))
+        .collect();
+    let allowed_mints = allowed_mints?;
+
+    let excluded_mints: Result<Vec<MintUrl>, _> = sub_command_args
+        .excluded_mints
+        .iter()
+        .map(|url| MintUrl::from_str(url))
+        .collect();
+    let excluded_mints = excluded_mints?;
+
+    // Create MultiMintSendOptions from CLI arguments
     let multi_mint_options = cdk::wallet::multi_mint_wallet::MultiMintSendOptions {
-        allow_transfer: false, // Don't automatically transfer between mints
-        max_transfer_amount: None,
-        allowed_mints: Vec::new(),
-        excluded_mints: Vec::new(),
+        allow_transfer: sub_command_args.allow_transfer,
+        max_transfer_amount: sub_command_args.max_transfer_amount.map(Amount::from),
+        allowed_mints,
+        excluded_mints,
         send_options: send_options.clone(),
     };
 

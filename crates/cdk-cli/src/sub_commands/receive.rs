@@ -138,10 +138,9 @@ async fn receive_token(
     let token: Token = Token::from_str(token_str)?;
 
     let mint_url = token.mint_url()?;
-    let unit = token.unit().unwrap_or_default();
 
     if multi_mint_wallet.get_wallet(&mint_url).await.is_none() {
-        get_or_create_wallet(multi_mint_wallet, &mint_url, unit).await?;
+        get_or_create_wallet(multi_mint_wallet, &mint_url).await?;
     }
 
     let amount = multi_mint_wallet

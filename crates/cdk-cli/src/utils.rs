@@ -3,7 +3,6 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
-use cdk::nuts::CurrencyUnit;
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 
 /// Helper function to get user input with a prompt
@@ -30,7 +29,6 @@ where
 pub async fn get_or_create_wallet(
     multi_mint_wallet: &MultiMintWallet,
     mint_url: &MintUrl,
-    _unit: CurrencyUnit,
 ) -> Result<cdk::wallet::Wallet> {
     match multi_mint_wallet.get_wallet(&mint_url).await {
         Some(wallet) => Ok(wallet.clone()),

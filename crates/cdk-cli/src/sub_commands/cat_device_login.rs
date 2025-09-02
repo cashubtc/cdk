@@ -1,10 +1,9 @@
 use std::path::Path;
-use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, MintInfo};
+use cdk::nuts::MintInfo;
 use cdk::wallet::MultiMintWallet;
 use cdk::OidcClient;
 use clap::Args;
@@ -17,10 +16,6 @@ use crate::token_storage;
 pub struct CatDeviceLoginSubCommand {
     /// Mint url
     mint_url: MintUrl,
-    /// Currency unit e.g. sat
-    #[arg(default_value = "sat")]
-    #[arg(short, long)]
-    unit: String,
     /// Client ID for OIDC authentication
     #[arg(default_value = "cashu-client")]
     #[arg(long)]
@@ -33,7 +28,6 @@ pub async fn cat_device_login(
     work_dir: &Path,
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
-    let _unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
 
     let wallet = match multi_mint_wallet.get_wallet(&mint_url).await {
         Some(wallet) => wallet.clone(),

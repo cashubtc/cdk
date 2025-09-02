@@ -3,7 +3,7 @@ use std::str::FromStr;
 use anyhow::{bail, Result};
 use cdk::amount::{Amount, MSAT_IN_SAT};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::{CurrencyUnit, MeltOptions};
+use cdk::nuts::MeltOptions;
 use cdk::wallet::MultiMintWallet;
 use cdk::Bolt11Invoice;
 use clap::{Args, ValueEnum};
@@ -22,9 +22,6 @@ pub enum PaymentType {
 
 #[derive(Args)]
 pub struct MeltSubCommand {
-    /// Currency unit e.g. sat
-    #[arg(default_value = "sat")]
-    unit: String,
     /// Mpp
     #[arg(short, long, conflicts_with = "mint_url")]
     mpp: bool,
@@ -67,12 +64,10 @@ pub async fn pay(
     multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &MeltSubCommand,
 ) -> Result<()> {
-    let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
-
     // Check total balance across all wallets
     let total_balance = multi_mint_wallet.total_balance().await?;
     if total_balance == Amount::ZERO {
-        bail!("No funds available for unit: {}", unit);
+        bail!("No funds available");
     }
 
     if sub_command_args.mpp {

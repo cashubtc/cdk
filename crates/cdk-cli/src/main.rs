@@ -171,22 +171,16 @@ async fn main() -> Result<()> {
     };
     let seed = mnemonic.to_seed_normalized("");
 
-    // Parse currency unit from args, default to SAT if parsing fails
-    let currency_unit = match args.unit.to_lowercase().as_str() {
-        "sat" => CurrencyUnit::Sat,
-        "msat" => CurrencyUnit::Msat,
-        "usd" => CurrencyUnit::Usd,
-        "eur" => CurrencyUnit::Eur,
-        "auth" => CurrencyUnit::Auth,
-        custom => CurrencyUnit::Custom(custom.to_string()),
-    };
+    // Parse currency unit from args
+    let currency_unit = CurrencyUnit::from_str(&args.unit)
+        .unwrap_or_else(|_| CurrencyUnit::Custom(args.unit.clone()));
 
     // Create MultiMintWallet with specified currency unit
     // The constructor will automatically load wallets for this currency unit
     let multi_mint_wallet = match &args.proxy {
         Some(proxy_url) => {
             // Create MultiMintWallet with proxy configuration
-            MultiMintWallet::with_proxy(
+            MultiMintWallet::new_with_proxy(
                 localstore.clone(),
                 seed,
                 currency_unit.clone(),

@@ -185,7 +185,7 @@ impl MultiMintWallet {
     ///
     /// All wallets in this MultiMintWallet will use the specified proxy.
     /// This allows you to route all mint connections through a proxy server.
-    pub async fn with_proxy(
+    pub async fn new_with_proxy(
         localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
         seed: [u8; 64],
         unit: CurrencyUnit,
@@ -250,6 +250,7 @@ impl MultiMintWallet {
         };
 
         wallet.fetch_mint_info().await?;
+        wallet.refresh_keysets().await?;
 
         let mut wallets = self.wallets.write().await;
         wallets.insert(mint_url, wallet);
@@ -309,6 +310,11 @@ impl MultiMintWallet {
     #[instrument(skip(self))]
     pub async fn has_mint(&self, mint_url: &MintUrl) -> bool {
         self.wallets.read().await.contains_key(mint_url)
+    }
+
+    /// Get the currency unit for this wallet
+    pub fn unit(&self) -> &CurrencyUnit {
+        &self.unit
     }
 
     /// Get wallet balances for all mints
