@@ -269,6 +269,11 @@ impl Token {
     pub fn to_raw_bytes(&self) -> Result<Vec<u8>, FfiError> {
         Ok(self.inner.to_raw_bytes()?)
     }
+
+    /// Convert token to string representation
+    pub fn to_string(&self) -> String {
+        self.inner.to_string()
+    }
 }
 
 /// FFI-compatible SendMemo
@@ -758,7 +763,7 @@ pub struct MintQuote {
     /// Amount paid
     pub amount_paid: Amount,
     /// Payment method
-    pub payment_method: String,
+    pub payment_method: PaymentMethod,
     /// Secret key (optional, hex-encoded)
     pub secret_key: Option<String>,
 }
@@ -775,7 +780,7 @@ impl From<cdk::wallet::MintQuote> for MintQuote {
             mint_url: quote.mint_url.clone().into(),
             amount_issued: quote.amount_issued.into(),
             amount_paid: quote.amount_paid.into(),
-            payment_method: quote.payment_method.to_string(),
+            payment_method: quote.payment_method.into(),
             secret_key: quote.secret_key.map(|sk| sk.to_secret_hex()),
         }
     }
@@ -801,7 +806,7 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
             mint_url: quote.mint_url.try_into()?,
             amount_issued: quote.amount_issued.into(),
             amount_paid: quote.amount_paid.into(),
-            payment_method: cdk_common::PaymentMethod::Custom(quote.payment_method),
+            payment_method: quote.payment_method.into(),
             secret_key,
         })
     }
