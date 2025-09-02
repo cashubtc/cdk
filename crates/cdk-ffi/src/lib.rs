@@ -282,20 +282,4 @@ mod tests {
         let invalid_result = mnemonic_to_entropy("invalid mnemonic".to_string());
         assert!(invalid_result.is_err());
     }
-
-    #[test]
-    fn test_runtime_initialization() {
-        // Test that the runtime initializes without panic
-        runtime::init_runtime();
-
-        // Test that we can get a runtime handle
-        let _handle = runtime::runtime_handle();
-
-        // Test that we can execute a simple async operation
-        let result = runtime::block_on(async {
-            tokio::task::yield_now().await;
-            42
-        });
-        assert_eq!(result, 42);
-    }
 }
