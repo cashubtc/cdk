@@ -252,7 +252,9 @@ pub enum Error {
     /// Currency unit mismatch in MultiMintWallet
     #[error("Currency unit mismatch: wallet uses {expected}, but {found} provided")]
     MultiMintCurrencyUnitMismatch {
+        /// Expected currency unit
         expected: CurrencyUnit,
+        /// Found currency unit
         found: CurrencyUnit,
     },
     /// No mint available with sufficient funds
@@ -260,13 +262,19 @@ pub enum Error {
         "No mint has sufficient balance of {amount} {unit}. Total available: {total_available}"
     )]
     InsufficientFundsPerMint {
+        /// Requested amount
         amount: Amount,
+        /// Currency unit
         unit: CurrencyUnit,
+        /// Total available amount across all mints
         total_available: Amount,
     },
     /// Unknown mint in MultiMintWallet
     #[error("Unknown mint: {mint_url}")]
-    UnknownMint { mint_url: String },
+    UnknownMint {
+        /// URL of the unknown mint
+        mint_url: String,
+    },
     /// Transfer between mints timed out
     #[error("Transfer timeout: failed to transfer {amount} from {source_mint} to {target_mint}")]
     TransferTimeout {
@@ -282,10 +290,16 @@ pub enum Error {
     MppNotImplemented,
     /// Mint selection failed
     #[error("Could not select suitable mints for operation: {reason}")]
-    MintSelectionFailed { reason: String },
+    MintSelectionFailed {
+        /// Reason for failure
+        reason: String,
+    },
     /// Token combination failed
     #[error("Failed to combine tokens from multiple prepared sends: {reason}")]
-    TokenCombinationFailed { reason: String },
+    TokenCombinationFailed {
+        /// Reason for failure
+        reason: String,
+    },
     /// Insufficient Funds
     #[error("Insufficient funds")]
     InsufficientFunds,

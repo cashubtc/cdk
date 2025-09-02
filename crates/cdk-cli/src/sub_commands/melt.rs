@@ -115,9 +115,14 @@ pub async fn pay(
                 let melted = if let Some(mint_url) = &sub_command_args.mint_url {
                     // User specified a mint
                     let mint_url = MintUrl::from_str(mint_url)?;
-                    multi_mint_wallet
-                        .melt_from_wallet(&mint_url, &bolt11_str, options, None)
-                        .await?
+                    if let Some(wallet) = multi_mint_wallet.get_wallet(&mint_url).await {
+                        // First create a melt quote
+                        let quote = wallet.melt_quote(bolt11_str.clone(), options).await?;
+                        // Then melt using the quote id
+                        wallet.melt(&quote.id).await?
+                    } else {
+                        bail!("Mint {} not found in wallet", mint_url);
+                    }
                 } else {
                     // Let the wallet automatically select the best mint
                     multi_mint_wallet.melt(&bolt11_str, options, None).await?

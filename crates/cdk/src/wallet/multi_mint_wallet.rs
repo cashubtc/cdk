@@ -858,7 +858,7 @@ mod tests {
         let mint1 = MintUrl::from_str("https://mint1.example.com").unwrap();
         let mint2 = MintUrl::from_str("https://mint2.example.com").unwrap();
         let mint3 = MintUrl::from_str("https://mint3.example.com").unwrap();
-        
+
         let options = MultiMintSendOptions::new()
             .allow_transfer(true)
             .max_transfer_amount(Amount::from(500))

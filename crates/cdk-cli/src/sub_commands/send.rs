@@ -202,12 +202,21 @@ pub async fn send(
         ..Default::default()
     };
 
+    // Create MultiMintSendOptions
+    let multi_mint_options = cdk::wallet::multi_mint_wallet::MultiMintSendOptions {
+        allow_transfer: false, // Don't automatically transfer between mints
+        max_transfer_amount: None,
+        allowed_mints: Vec::new(),
+        excluded_mints: Vec::new(),
+        send_options: send_options.clone(),
+    };
+
     // Use the new unified interface
     let token = if let Some(mint_url) = &sub_command_args.mint_url {
         // User specified a mint, use that specific wallet
         let mint_url = cdk::mint_url::MintUrl::from_str(mint_url)?;
         let prepared = multi_mint_wallet
-            .prepare_send_for_mint(&mint_url, token_amount, send_options.clone())
+            .prepare_send(mint_url, token_amount, multi_mint_options)
             .await?;
 
         // Confirm the prepared send (single mint)
@@ -215,8 +224,20 @@ pub async fn send(
         prepared.confirm(memo).await?
     } else {
         // Let the wallet automatically select the best mint
+        // First, get balances to find a mint with sufficient funds
+        let balances = multi_mint_wallet.get_balances().await?;
+
+        // Find a mint with sufficient balance
+        let mint_url = balances
+            .into_iter()
+            .find(|(_, balance)| *balance >= token_amount)
+            .map(|(mint_url, _)| mint_url)
+            .ok_or_else(|| {
+                anyhow::anyhow!("No mint has sufficient balance for the requested amount")
+            })?;
+
         let prepared = multi_mint_wallet
-            .prepare_send(token_amount, send_options.clone())
+            .prepare_send(mint_url, token_amount, multi_mint_options)
             .await?;
 
         // Confirm the prepared send (multi mint)
