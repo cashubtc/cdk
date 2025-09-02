@@ -193,6 +193,110 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                             border-bottom: none !important;
                         }
 
+                                                                    }
+
+                    /* New Header Layout Styles */
+                    .header-content {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        padding: 0.5rem 0;
+                    }
+
+                    .header-left {
+                        display: flex;
+                        align-items: center;
+                        gap: 1rem;
+                    }
+
+                    .header-avatar {
+                        flex-shrink: 0;
+                        background-color: hsl(var(--muted) / 0.3);
+                        border: 1px solid hsl(var(--border));
+                        border-radius: var(--radius);
+                        padding: 0.75rem;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        width: 80px;
+                        height: 80px;
+                    }
+
+                    .header-avatar-image {
+                        width: 48px;
+                        height: 48px;
+                        border-radius: calc(var(--radius) - 2px);
+                        object-fit: cover;
+                        display: block;
+                    }
+
+                    .node-info {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 0.25rem;
+                        padding-top: 0;
+                        margin-top: 0;
+                    }
+
+                    .node-status {
+                        display: flex;
+                        align-items: center;
+                        gap: 0.5rem;
+                    }
+
+                    .status-indicator {
+                        width: 0.75rem;
+                        height: 0.75rem;
+                        border-radius: 50%;
+                        background-color: #10b981;
+                        box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+                    }
+
+                    .status-text {
+                        font-size: 0.875rem;
+                        font-weight: 500;
+                        color: #10b981;
+                    }
+
+                    .node-title {
+                        font-size: 1.875rem;
+                        font-weight: 600;
+                        color: var(--header-title);
+                        margin: 0;
+                        line-height: 1.1;
+                    }
+
+                    .node-subtitle {
+                        font-size: 0.875rem;
+                        color: var(--header-subtitle);
+                        font-weight: 500;
+                    }
+
+                    .header-right {
+                        display: flex;
+                        align-items: center;
+                    }
+
+
+
+                    /* Responsive header */
+                    @media (max-width: 768px) {
+                        .header-content {
+                            flex-direction: column;
+                            gap: 1rem;
+                            text-align: center;
+                        }
+
+                        .header-left {
+                            flex-direction: column;
+                            text-align: center;
+                        }
+
+                        .node-title {
+                            font-size: 1.5rem;
+                        }
+                    }
+
                         nav a {
                             color: var(--text-muted) !important;
                         }
@@ -256,13 +360,13 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         background-position: center;
                         background-repeat: no-repeat;
                         border-bottom: 1px solid hsl(var(--border));
-                        margin-bottom: 3rem;
-                        text-align: center;
+                        margin-bottom: 2rem;
+                        text-align: left;
                         width: 100%;
-                        height: 400px; /* Fixed height for better proportion */
+                        height: 200px; /* Reduced height for more compact header */
                         display: flex;
                         align-items: center;
-                        justify-content: center;
+                        justify-content: flex-start;
                     }
 
                     /* Dark mode header background - using different image */
@@ -274,14 +378,17 @@ pub fn layout(title: &str, content: Markup) -> Markup {
 
                     /* Ensure text is positioned properly */
                     header .container {
-                        position: absolute;
-                        top: 50%;
-                        left: 50%;
-                        transform: translate(-50%, -50%);
+                        position: relative;
+                        top: auto;
+                        left: auto;
+                        transform: none;
                         z-index: 2;
                         width: 100%;
                         max-width: 1200px;
                         padding: 0 2rem;
+                        display: flex;
+                        align-items: center;
+                        justify-content: flex-start;
                     }
 
                     h1 {
@@ -304,7 +411,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
 
                     @media (max-width: 768px) {
                         header {
-                            height: 300px; /* Smaller height on mobile */
+                            height: 150px; /* Smaller height on mobile */
                         }
 
                         header .container {
@@ -1306,7 +1413,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         display: flex;
                         gap: 1.5rem;
                         margin-bottom: 1.5rem;
-                        align-items: flex-start;
+                        align-items: stretch;
                     }
 
                     .node-info-main-container {
@@ -1319,6 +1426,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         border-radius: var(--radius);
                         padding: 1.5rem;
                         box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+                        height: 100%;
                     }
 
                     .node-info-left {
@@ -1390,6 +1498,7 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         width: 280px;
                         display: flex;
                         flex-direction: column;
+                        align-self: stretch;
                     }
 
                     .node-metrics .card {
@@ -1397,16 +1506,28 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         flex: 1;
                         display: flex;
                         flex-direction: column;
+                        align-self: stretch;
                     }
 
                     .node-metrics .metrics-container {
                         flex-direction: column;
                         margin: 1rem 0 0 0;
                         flex: 1;
+                        display: flex;
+                        justify-content: flex-start;
+                        gap: 1rem;
+                        align-items: stretch;
                     }
 
                     .node-metrics .metric-card {
                         min-width: auto;
+                        padding: 1rem;
+                        height: fit-content;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        justify-content: center;
+                        text-align: center;
                     }
 
                     /* Mobile responsive design for node info */
@@ -1520,8 +1641,24 @@ pub fn layout(title: &str, content: Markup) -> Markup {
             body {
                 header {
                     div class="container" {
-                        h1 { "CDK LDK Node" }
-                        p class="subtitle" { "Lightning Network Node Management" }
+                        div class="header-content" {
+                            div class="header-left" {
+                                div class="header-avatar" {
+                                    img src="/static/images/nut.png" alt="CDK LDK Node Icon" class="header-avatar-image";
+                                }
+                                div class="node-info" {
+                                    div class="node-status" {
+                                        span class="status-indicator status-running" {}
+                                        span class="status-text" { "Running" }
+                                    }
+                                    h1 class="node-title" { "CDK LDK Node" }
+                                    span class="node-subtitle" { "Cashu Mint & Lightning Network Node Management" }
+                                }
+                            }
+                            div class="header-right" {
+                                // Right side content can be added here later if needed
+                            }
+                        }
                     }
                 }
 
@@ -1575,6 +1712,8 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                 main class="container" {
                     (content)
                 }
+
+
             }
         }
     }
