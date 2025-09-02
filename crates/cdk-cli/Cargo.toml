@@ -30,7 +30,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 home.workspace = true
-nostr-sdk = { version = "0.43.0", default-features = false, features = [
+nostr-sdk = { version = "0.41.0", default-features = false, features = [
     "nip04",
     "nip44",
     "nip59"

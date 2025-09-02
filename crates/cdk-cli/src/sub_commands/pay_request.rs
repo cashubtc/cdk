@@ -67,10 +67,8 @@ pub async fn pay_request(
         .first()
         .ok_or_else(|| anyhow!("No wallet found that can pay this request"))?;
 
-    matching_wallet.pay_request(
-        payment_request.clone(),
-        Some(amount),
-    )
-    .await
-    .map_err(|e| anyhow!(e.to_string()))
+    matching_wallet
+        .pay_request(payment_request.clone(), Some(amount))
+        .await
+        .map_err(|e| anyhow!(e.to_string()))
 }

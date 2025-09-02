@@ -4,12 +4,21 @@
 //! Nostr or HTTP transports when available. If no transport is present in the request, an error
 //! is returned so callers can handle alternative delivery mechanisms explicitly.
 
+use std::str::FromStr;
+
+use anyhow::Result;
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use cdk_common::{Amount, PaymentRequest, PaymentRequestPayload, TransportType};
 use nostr_sdk::nips::nip19::Nip19Profile;
-use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys};
+use nostr_sdk::prelude::*;
+use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32};
 use reqwest::Client;
+use tokio::sync::Mutex;
 
-use crate::wallet::SendOptions;
+use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+use crate::nuts::nut18::Nut10SecretRequest;
+use crate::nuts::{CurrencyUnit, Transport};
+use crate::wallet::{MultiMintWallet, ReceiveOptions, SendOptions};
 use crate::Wallet;
 
 impl Wallet {
@@ -58,11 +67,7 @@ impl Wallet {
         let token = prepared_send.confirm(None).await?;
 
         // We need the keysets information to properly convert from token proof to proof
-        let keysets_info = match self
-            .localstore
-            .get_mint_keysets(token.mint_url()?)
-            .await?
-        {
+        let keysets_info = match self.localstore.get_mint_keysets(token.mint_url()?).await? {
             Some(keysets_info) => keysets_info,
             None => self.load_mint_keysets().await?, // Hit the keysets endpoint if we don't have the keysets for this Mint
         };
@@ -154,10 +159,280 @@ impl Wallet {
             }
         } else {
             // If no transport is available, return an error instead of printing the token
-            return Err(Error::Custom(
+            Err(Error::Custom(
                 "No transport available in payment request".to_string(),
-            ));
+            ))
         }
     }
+}
 
+/// Parameters for creating a PaymentRequest
+///
+/// This mirrors the CLI inputs and is used by `create_request` to build a
+/// NUT-18 PaymentRequest. When `transport` is set to `nostr`, the function
+/// also returns a `NostrWaitInfo` that can be passed to `wait_for_nostr_payment`.
+#[derive(Debug, Clone)]
+pub struct CreateRequestParams {
+    /// Optional amount to request (in the smallest unit for the chosen currency unit)
+    pub amount: Option<u64>,
+    /// Currency unit string (e.g., "sat")
+    pub unit: String,
+    /// Optional human-readable description for the request
+    pub description: Option<String>,
+    /// Optional set of public keys for P2PK spending conditions (multisig supported)
+    pub pubkeys: Option<Vec<String>>, // multiple P2PK pubkeys
+    /// Required number of signatures if `pubkeys` is provided (defaults typically to 1)
+    pub num_sigs: u64, // required signatures for P2PK
+    /// Optional HTLC hash condition (mutually exclusive with `preimage`)
+    pub hash: Option<String>, // HTLC hash
+    /// Optional HTLC preimage (mutually exclusive with `hash`)
+    pub preimage: Option<String>, // HTLC preimage
+    /// Transport type for the request: "nostr", "http", or "none"
+    pub transport: String, // "nostr", "http", or "none"
+    /// Target URL for HTTP transport (required if `transport == http`)
+    pub http_url: Option<String>, // when transport == http
+    /// List of Nostr relay URLs to include in the nprofile (used if `transport == nostr`)
+    pub nostr_relays: Option<Vec<String>>, // when transport == nostr
+}
+
+/// Extra information needed to wait for an incoming Nostr payment
+///
+/// Returned by `create_request` when the transport is `nostr`. Pass this to
+/// `wait_for_nostr_payment` to connect, subscribe, and receive the incoming
+/// payment on the specified relays.
+#[derive(Debug, Clone)]
+pub struct NostrWaitInfo {
+    /// Ephemeral keys used to connect to relays and unwrap the gift-wrapped event
+    pub keys: Keys,
+    /// Nostr relays to read from while waiting for the payment
+    pub relays: Vec<String>,
+    /// The recipient public key to subscribe to for incoming events
+    pub pubkey: nostr_sdk::PublicKey,
+}
+
+impl MultiMintWallet {
+    /// Construct a PaymentRequest and, if transport is Nostr, return the params needed to wait for payment.
+    pub async fn create_request(
+        &self,
+        params: CreateRequestParams,
+    ) -> Result<(PaymentRequest, Option<NostrWaitInfo>)> {
+        // Collect available mints for the selected unit
+        let mints = self
+            .get_balances(&CurrencyUnit::from_str(&params.unit)?)
+            .await?
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        // Transports
+        let transport_type = params.transport.to_lowercase();
+        let (transports, nostr_info): (Vec<Transport>, Option<NostrWaitInfo>) =
+            match transport_type.as_str() {
+                "nostr" => {
+                    let keys = Keys::generate();
+                    let relays = if let Some(custom_relays) = &params.nostr_relays {
+                        if !custom_relays.is_empty() {
+                            custom_relays.clone()
+                        } else {
+                            vec![
+                                "wss://relay.nos.social".to_string(),
+                                "wss://relay.damus.io".to_string(),
+                            ]
+                        }
+                    } else {
+                        vec![
+                            "wss://relay.nos.social".to_string(),
+                            "wss://relay.damus.io".to_string(),
+                        ]
+                    };
+
+                    // Parse relay URLs for nprofile
+                    let relay_urls = relays
+                        .iter()
+                        .map(|r| RelayUrl::parse(r))
+                        .collect::<Result<Vec<_>, _>>()?;
+
+                    let nprofile =
+                        nostr_sdk::nips::nip19::Nip19Profile::new(keys.public_key, relay_urls);
+                    let nostr_transport = Transport {
+                        _type: TransportType::Nostr,
+                        target: nprofile.to_bech32()?,
+                        tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
+                    };
+
+                    (
+                        vec![nostr_transport],
+                        Some(NostrWaitInfo {
+                            keys,
+                            relays,
+                            pubkey: nprofile.public_key,
+                        }),
+                    )
+                }
+                "http" => {
+                    if let Some(url) = &params.http_url {
+                        let http_transport = Transport {
+                            _type: TransportType::HttpPost,
+                            target: url.clone(),
+                            tags: None,
+                        };
+                        (vec![http_transport], None)
+                    } else {
+                        // No URL provided, skip transport
+                        (vec![], None)
+                    }
+                }
+                "none" => (vec![], None),
+                _ => (vec![], None),
+            };
+
+        // Spending conditions
+        let spending_conditions: Option<SpendingConditions> =
+            if let Some(pubkey_strings) = &params.pubkeys {
+                // parse pubkeys
+                let mut parsed_pubkeys = Vec::new();
+                for p in pubkey_strings {
+                    if let Ok(pk) = crate::nuts::nut01::PublicKey::from_str(p) {
+                        parsed_pubkeys.push(pk);
+                    }
+                }
+
+                if parsed_pubkeys.is_empty() {
+                    None
+                } else {
+                    let num_sigs = params.num_sigs.min(parsed_pubkeys.len() as u64);
+
+                    if let Some(hash_str) = &params.hash {
+                        let conditions = Conditions {
+                            locktime: None,
+                            pubkeys: Some(parsed_pubkeys),
+                            refund_keys: None,
+                            num_sigs: Some(num_sigs),
+                            sig_flag: SigFlag::SigInputs,
+                            num_sigs_refund: None,
+                        };
+
+                        match Sha256Hash::from_str(hash_str) {
+                            Ok(hash) => Some(SpendingConditions::HTLCConditions {
+                                data: hash,
+                                conditions: Some(conditions),
+                            }),
+                            Err(err) => anyhow::bail!("Error parsing hash: {err}"),
+                        }
+                    } else if let Some(preimage) = &params.preimage {
+                        let conditions = Conditions {
+                            locktime: None,
+                            pubkeys: Some(parsed_pubkeys),
+                            refund_keys: None,
+                            num_sigs: Some(num_sigs),
+                            sig_flag: SigFlag::SigInputs,
+                            num_sigs_refund: None,
+                        };
+
+                        Some(SpendingConditions::new_htlc(
+                            preimage.to_string(),
+                            Some(conditions),
+                        )?)
+                    } else {
+                        Some(SpendingConditions::new_p2pk(
+                            *parsed_pubkeys.first().expect("not empty"),
+                            Some(Conditions {
+                                locktime: None,
+                                pubkeys: Some(parsed_pubkeys[1..].to_vec()),
+                                refund_keys: None,
+                                num_sigs: Some(num_sigs),
+                                sig_flag: SigFlag::SigInputs,
+                                num_sigs_refund: None,
+                            }),
+                        ))
+                    }
+                }
+            } else if let Some(hash_str) = &params.hash {
+                match Sha256Hash::from_str(hash_str) {
+                    Ok(hash) => Some(SpendingConditions::HTLCConditions {
+                        data: hash,
+                        conditions: None,
+                    }),
+                    Err(err) => anyhow::bail!("Error parsing hash: {err}"),
+                }
+            } else if let Some(preimage) = &params.preimage {
+                Some(SpendingConditions::new_htlc(preimage.to_string(), None)?)
+            } else {
+                None
+            };
+
+        let nut10 = spending_conditions.map(Nut10SecretRequest::from);
+
+        let req = PaymentRequest {
+            payment_id: None,
+            amount: params.amount.map(Amount::from),
+            unit: Some(CurrencyUnit::from_str(&params.unit)?),
+            single_use: Some(true),
+            mints: Some(mints),
+            description: params.description,
+            transports,
+            nut10,
+        };
+
+        Ok((req, nostr_info))
+    }
+
+    /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
+    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
+        let NostrWaitInfo {
+            keys,
+            relays,
+            pubkey,
+        } = info;
+        let client = nostr_sdk::Client::new(keys);
+
+        let filter = nostr_sdk::Filter::new().pubkey(pubkey);
+
+        for relay in &relays {
+            client.add_read_relay(relay.clone()).await?;
+        }
+        client.connect().await;
+        client.subscribe(filter, None).await?;
+
+        let amount_received: std::sync::Arc<Mutex<Option<Amount>>> =
+            std::sync::Arc::new(Mutex::new(None));
+        let amount_cell = amount_received.clone();
+        let client_for_handler = client.clone();
+        let mmw = self.clone();
+
+        // Handle subscription notifications with `handle_notifications` method
+        client
+            .handle_notifications(move |notification| {
+                let amount_cell = amount_cell.clone();
+                let client = client_for_handler.clone();
+                let mmw = mmw.clone();
+                async move {
+                    let mut exit = false;
+                    if let nostr_sdk::RelayPoolNotification::Event { event, .. } = notification {
+                        let unwrapped = client.unwrap_gift_wrap(&event).await?;
+                        let rumor = unwrapped.rumor;
+                        let payload: PaymentRequestPayload = serde_json::from_str(&rumor.content)?;
+                        let token = crate::nuts::Token::new(
+                            payload.mint,
+                            payload.proofs,
+                            payload.memo,
+                            payload.unit,
+                        );
+
+                        let amount = mmw
+                            .receive(&token.to_string(), ReceiveOptions::default())
+                            .await?;
+
+                        let mut guard = amount_cell.lock().await;
+                        *guard = Some(amount);
+                        exit = true;
+                    }
+                    Ok(exit)
+                }
+            })
+            .await?;
+
+        let result = amount_received.lock().await.unwrap_or_default();
+        Ok(result)
+    }
 }
