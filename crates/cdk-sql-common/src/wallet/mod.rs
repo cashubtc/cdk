@@ -552,6 +552,9 @@ ON CONFLICT(id) DO UPDATE SET
                 state,
                 expiry,
                 secret_key
+                payment_method,
+                amount_issued,
+                amount_paid
             FROM
                 mint_quote
             "#,
