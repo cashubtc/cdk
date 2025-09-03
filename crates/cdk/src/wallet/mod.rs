@@ -38,7 +38,6 @@ mod issue;
 mod keysets;
 mod melt;
 mod mint_connector;
-// pub mod multi_mint_builder;
 pub mod multi_mint_wallet;
 mod proofs;
 mod receive;
@@ -61,7 +60,6 @@ pub use mint_connector::transport::Transport as HttpTransport;
 #[cfg(feature = "auth")]
 pub use mint_connector::AuthHttpClient;
 pub use mint_connector::{HttpClient, MintConnector};
-// pub use multi_mint_builder::{MeltBuilder, MultiMintWalletBuilderExt, SendBuilder, SwapBuilder};
 pub use multi_mint_wallet::{MultiMintReceiveOptions, MultiMintSendOptions, MultiMintWallet};
 pub use receive::ReceiveOptions;
 pub use send::{PreparedSend, SendMemo, SendOptions};

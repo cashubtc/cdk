@@ -112,7 +112,7 @@ impl WalletBuilder {
     }
 
     /// Set a custom client connector from Arc
-    pub fn arc_client(mut self, client: Arc<dyn MintConnector + Send + Sync>) -> Self {
+    pub fn shared_client(mut self, client: Arc<dyn MintConnector + Send + Sync>) -> Self {
         self.client = Some(client);
         self
     }
