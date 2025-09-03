@@ -372,7 +372,7 @@ impl Wallet {
     pub async fn get_keyset_fees_by_id(&self, keyset_id: String) -> Result<u64, FfiError> {
         let id = cdk::nuts::Id::from_str(&keyset_id)
             .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
-        let fees = self.inner.get_keyset_fees_by_id(id).await?;
+        let (fees, _) = self.inner.get_keyset_fees_and_amounts_by_id(id).await?;
         Ok(fees)
     }
 
@@ -397,7 +397,7 @@ impl Wallet {
     ) -> Result<Amount, FfiError> {
         let id = cdk::nuts::Id::from_str(&keyset_id)
             .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
-        let fee_ppk = self.inner.get_keyset_fees_by_id(id).await?;
+        let (fee_ppk, _) = self.inner.get_keyset_fees_and_amounts_by_id(id).await?;
         let total_fee = (proof_count as u64 * fee_ppk) / 1000; // fee is per thousand
         Ok(Amount::new(total_fee))
     }

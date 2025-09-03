@@ -746,8 +746,9 @@ impl PreMintSecrets {
         keyset_id: Id,
         amount: Amount,
         amount_split_target: &SplitTarget,
+        amounts_ppk: &[u64],
     ) -> Result<Self, Error> {
-        let amount_split = amount.split_targeted(amount_split_target)?;
+        let amount_split = amount.split_targeted(amount_split_target, amounts_ppk)?;
 
         let mut output = Vec::with_capacity(amount_split.len());
 
@@ -830,8 +831,9 @@ impl PreMintSecrets {
         amount: Amount,
         amount_split_target: &SplitTarget,
         conditions: &SpendingConditions,
+        amounts_ppk: &[u64],
     ) -> Result<Self, Error> {
-        let amount_split = amount.split_targeted(amount_split_target)?;
+        let amount_split = amount.split_targeted(amount_split_target, amounts_ppk)?;
 
         let mut output = Vec::with_capacity(amount_split.len());
 

@@ -127,12 +127,13 @@ impl PreMintSecrets {
         seed: &[u8; 64],
         amount: Amount,
         amount_split_target: &SplitTarget,
+        amounts_ppk: &[u64],
     ) -> Result<Self, Error> {
         let mut pre_mint_secrets = PreMintSecrets::new(keyset_id);
 
         let mut counter = counter;
 
-        for amount in amount.split_targeted(amount_split_target)? {
+        for amount in amount.split_targeted(amount_split_target, amounts_ppk)? {
             let secret = Secret::from_seed(seed, keyset_id, counter)?;
             let blinding_factor = SecretKey::from_seed(seed, keyset_id, counter)?;
 
@@ -486,10 +487,12 @@ mod tests {
                 .unwrap();
         let amount = Amount::from(1000u64);
         let split_target = SplitTarget::default();
+        let amounts_ppk = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
 
         // Test PreMintSecrets generation with v2 keyset
         let pre_mint_secrets =
-            PreMintSecrets::from_seed(keyset_id, 0, &seed, amount, &split_target).unwrap();
+            PreMintSecrets::from_seed(keyset_id, 0, &seed, amount, &split_target, &amounts_ppk)
+                .unwrap();
 
         // Verify all secrets in the pre_mint use the new v2 derivation
         for (i, pre_mint) in pre_mint_secrets.secrets.iter().enumerate() {
