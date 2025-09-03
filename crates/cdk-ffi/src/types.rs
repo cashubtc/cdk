@@ -212,6 +212,16 @@ impl std::fmt::Display for Token {
     }
 }
 
+impl FromStr for Token {
+    type Err = FfiError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let token = cdk::nuts::Token::from_str(s)
+            .map_err(|e| FfiError::InvalidToken { msg: e.to_string() })?;
+        Ok(Token { inner: token })
+    }
+}
+
 impl From<cdk::nuts::Token> for Token {
     fn from(token: cdk::nuts::Token) -> Self {
         Self { inner: token }
@@ -228,8 +238,8 @@ impl From<Token> for cdk::nuts::Token {
 impl Token {
     /// Create a new Token from string
     #[uniffi::constructor]
-    pub fn from_string(token_str: String) -> Result<Token, FfiError> {
-        let token = cdk::nuts::Token::from_str(&token_str)
+    pub fn from_string(encoded_token: String) -> Result<Token, FfiError> {
+        let token = cdk::nuts::Token::from_str(&encoded_token)
             .map_err(|e| FfiError::InvalidToken { msg: e.to_string() })?;
         Ok(Token { inner: token })
     }
@@ -270,9 +280,15 @@ impl Token {
         Ok(self.inner.to_raw_bytes()?)
     }
 
-    /// Convert token to string representation
-    pub fn to_string(&self) -> String {
-        self.inner.to_string()
+    /// Encode token to string representation
+    pub fn encode(&self) -> String {
+        self.to_string()
+    }
+
+    /// Decode token from string representation
+    #[uniffi::constructor]
+    pub fn decode(encoded_token: String) -> Result<Token, FfiError> {
+        encoded_token.parse()
     }
 }
 

@@ -6,8 +6,7 @@ UniFFI bindings for the CDK (Cashu Development Kit), providing foreign function 
 
 - **🐍 Python** - With REPL integration for development
 - **🍎 Swift** - iOS and macOS development
-- **🎯 Kotlin** - Android and JVM development  
-- **💎 Ruby** - Ruby applications
+- **🎯 Kotlin** - Android and JVM development
 
 ## Development Tasks
 
@@ -25,7 +24,6 @@ just ffi-clean         # Clean build artifacts
 just ffi-generate python
 just ffi-generate swift
 just ffi-generate kotlin
-just ffi-generate ruby
 
 # Generate all languages
 just ffi-generate-all
