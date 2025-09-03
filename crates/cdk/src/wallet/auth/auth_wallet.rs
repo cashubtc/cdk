@@ -394,9 +394,19 @@ impl AuthWallet {
         }
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
+        let amounts_ppk = self
+            .load_keyset_keys(active_keyset_id)
+            .await?
+            .iter()
+            .map(|(amount, _)| amount.to_u64())
+            .collect::<Vec<_>>();
 
-        let premint_secrets =
-            PreMintSecrets::random(active_keyset_id, amount, &SplitTarget::Value(1.into()))?;
+        let premint_secrets = PreMintSecrets::random(
+            active_keyset_id,
+            amount,
+            &SplitTarget::Value(1.into()),
+            &amounts_ppk,
+        )?;
 
         let request = MintAuthRequest {
             outputs: premint_secrets.blinded_messages(),

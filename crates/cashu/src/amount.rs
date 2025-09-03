@@ -60,31 +60,37 @@ impl Amount {
     pub const ONE: Amount = Amount(1);
 
     /// Split into parts that are powers of two
-    pub fn split(&self) -> Vec<Self> {
-        let sats = self.0;
-        (0_u64..64)
+    pub fn split(&self, amounts_ppk: &[u64]) -> Vec<Self> {
+        amounts_ppk
+            .iter()
             .rev()
-            .filter_map(|bit| {
-                let part = 1 << bit;
-                ((sats & part) == part).then_some(Self::from(part))
+            .fold((Vec::new(), self.0), |(mut acc, total), &amount| {
+                if total >= amount {
+                    acc.push(Self::from(amount));
+                }
+                (acc, total % amount)
             })
-            .collect()
+            .0
     }
 
     /// Split into parts that are powers of two by target
-    pub fn split_targeted(&self, target: &SplitTarget) -> Result<Vec<Self>, Error> {
+    pub fn split_targeted(
+        &self,
+        target: &SplitTarget,
+        amounts_ppk: &[u64],
+    ) -> Result<Vec<Self>, Error> {
         let mut parts = match target {
-            SplitTarget::None => self.split(),
+            SplitTarget::None => self.split(amounts_ppk),
             SplitTarget::Value(amount) => {
                 if self.le(amount) {
-                    return Ok(self.split());
+                    return Ok(self.split(amounts_ppk));
                 }
 
                 let mut parts_total = Amount::ZERO;
                 let mut parts = Vec::new();
 
                 // The powers of two that are need to create target value
-                let parts_of_value = amount.split();
+                let parts_of_value = amount.split(amounts_ppk);
 
                 while parts_total.lt(self) {
                     for part in parts_of_value.iter().copied() {
@@ -92,7 +98,7 @@ impl Amount {
                             parts.push(part);
                         } else {
                             let amount_left = *self - parts_total;
-                            parts.extend(amount_left.split());
+                            parts.extend(amount_left.split(amounts_ppk));
                         }
 
                         parts_total = Amount::try_sum(parts.clone().iter().copied())?;
@@ -115,7 +121,7 @@ impl Amount {
                     }
                     Ordering::Greater => {
                         let extra = *self - values_total;
-                        let mut extra_amount = extra.split();
+                        let mut extra_amount = extra.split(amounts_ppk);
                         let mut values = values.clone();
 
                         values.append(&mut extra_amount);
@@ -130,15 +136,15 @@ impl Amount {
     }
 
     /// Splits amount into powers of two while accounting for the swap fee
-    pub fn split_with_fee(&self, fee_ppk: u64) -> Result<Vec<Self>, Error> {
-        let without_fee_amounts = self.split();
+    pub fn split_with_fee(&self, fee_ppk: u64, amounts_ppk: &[u64]) -> Result<Vec<Self>, Error> {
+        let without_fee_amounts = self.split(amounts_ppk);
         let total_fee_ppk = fee_ppk
             .checked_mul(without_fee_amounts.len() as u64)
             .ok_or(Error::AmountOverflow)?;
         let fee = Amount::from(total_fee_ppk.div_ceil(1000));
         let new_amount = self.checked_add(fee).ok_or(Error::AmountOverflow)?;
 
-        let split = new_amount.split();
+        let split = new_amount.split(amounts_ppk);
         let split_fee_ppk = (split.len() as u64)
             .checked_mul(fee_ppk)
             .ok_or(Error::AmountOverflow)?;
@@ -151,7 +157,7 @@ impl Amount {
         }
         self.checked_add(Amount::ONE)
             .ok_or(Error::AmountOverflow)?
-            .split_with_fee(fee_ppk)
+            .split_with_fee(fee_ppk, amounts_ppk)
     }
 
     /// Checked addition for Amount. Returns None if overflow occurs.
@@ -191,6 +197,11 @@ impl Amount {
         target_unit: &CurrencyUnit,
     ) -> Result<Amount, Error> {
         to_unit(self.0, current_unit, target_unit)
+    }
+    ///
+    /// Convert to u64
+    pub fn to_u64(self) -> u64 {
+        self.0
     }
 
     /// Convert to i64
@@ -376,34 +387,37 @@ mod tests {
 
     #[test]
     fn test_split_amount() {
-        assert_eq!(Amount::from(1).split(), vec![Amount::from(1)]);
-        assert_eq!(Amount::from(2).split(), vec![Amount::from(2)]);
+        let amounts_ppk = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
+
+        assert_eq!(Amount::from(1).split(&amounts_ppk), vec![Amount::from(1)]);
+        assert_eq!(Amount::from(2).split(&amounts_ppk), vec![Amount::from(2)]);
         assert_eq!(
-            Amount::from(3).split(),
+            Amount::from(3).split(&amounts_ppk),
             vec![Amount::from(2), Amount::from(1)]
         );
         let amounts: Vec<Amount> = [8, 2, 1].iter().map(|a| Amount::from(*a)).collect();
-        assert_eq!(Amount::from(11).split(), amounts);
+        assert_eq!(Amount::from(11).split(&amounts_ppk), amounts);
         let amounts: Vec<Amount> = [128, 64, 32, 16, 8, 4, 2, 1]
             .iter()
             .map(|a| Amount::from(*a))
             .collect();
-        assert_eq!(Amount::from(255).split(), amounts);
+        assert_eq!(Amount::from(255).split(&amounts_ppk), amounts);
     }
 
     #[test]
     fn test_split_target_amount() {
+        let amounts_ppk = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
         let amount = Amount(65);
 
         let split = amount
-            .split_targeted(&SplitTarget::Value(Amount(32)))
+            .split_targeted(&SplitTarget::Value(Amount(32)), &amounts_ppk)
             .unwrap();
         assert_eq!(vec![Amount(1), Amount(32), Amount(32)], split);
 
         let amount = Amount(150);
 
         let split = amount
-            .split_targeted(&SplitTarget::Value(Amount::from(50)))
+            .split_targeted(&SplitTarget::Value(Amount::from(50)), &amounts_ppk)
             .unwrap();
         assert_eq!(
             vec![
@@ -423,7 +437,7 @@ mod tests {
         let amount = Amount::from(63);
 
         let split = amount
-            .split_targeted(&SplitTarget::Value(Amount::from(32)))
+            .split_targeted(&SplitTarget::Value(Amount::from(32)), &amounts_ppk)
             .unwrap();
         assert_eq!(
             vec![
@@ -440,22 +454,23 @@ mod tests {
 
     #[test]
     fn test_split_with_fee() {
+        let amounts_ppk = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
         let amount = Amount(2);
         let fee_ppk = 1;
 
-        let split = amount.split_with_fee(fee_ppk).unwrap();
+        let split = amount.split_with_fee(fee_ppk, &amounts_ppk).unwrap();
         assert_eq!(split, vec![Amount(2), Amount(1)]);
 
         let amount = Amount(3);
         let fee_ppk = 1;
 
-        let split = amount.split_with_fee(fee_ppk).unwrap();
+        let split = amount.split_with_fee(fee_ppk, &amounts_ppk).unwrap();
         assert_eq!(split, vec![Amount(4)]);
 
         let amount = Amount(3);
         let fee_ppk = 1000;
 
-        let split = amount.split_with_fee(fee_ppk).unwrap();
+        let split = amount.split_with_fee(fee_ppk, &amounts_ppk).unwrap();
         // With fee_ppk=1000 (100%), amount 3 requires proofs totaling at least 5
         // to cover both the amount (3) and fees (~2 for 2 proofs)
         assert_eq!(split, vec![Amount(4), Amount(1)]);
@@ -463,11 +478,12 @@ mod tests {
 
     #[test]
     fn test_split_with_fee_reported_issue() {
+        let amounts_ppk = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
         // Test the reported issue: mint 600, send 300 with fee_ppk=100
         let amount = Amount(300);
         let fee_ppk = 100;
 
-        let split = amount.split_with_fee(fee_ppk).unwrap();
+        let split = amount.split_with_fee(fee_ppk, &amounts_ppk).unwrap();
 
         // Calculate the total fee for the split
         let total_fee_ppk = (split.len() as u64) * fee_ppk;
@@ -486,6 +502,7 @@ mod tests {
 
     #[test]
     fn test_split_with_fee_edge_cases() {
+        let amounts_ppk = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
         // Test various amounts with fee_ppk=100
         let test_cases = vec![
             (Amount(1), 100),
@@ -502,7 +519,7 @@ mod tests {
         ];
 
         for (amount, fee_ppk) in test_cases {
-            let result = amount.split_with_fee(fee_ppk);
+            let result = amount.split_with_fee(fee_ppk, &amounts_ppk);
             assert!(
                 result.is_ok(),
                 "split_with_fee failed for amount {} with fee_ppk {}: {:?}",
@@ -539,6 +556,7 @@ mod tests {
 
     #[test]
     fn test_split_with_fee_high_fees() {
+        let amounts_ppk = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
         // Test with very high fees
         let test_cases = vec![
             (Amount(10), 500),  // 50% fee
@@ -550,7 +568,7 @@ mod tests {
         ];
 
         for (amount, fee_ppk) in test_cases {
-            let result = amount.split_with_fee(fee_ppk);
+            let result = amount.split_with_fee(fee_ppk, &amounts_ppk);
             assert!(
                 result.is_ok(),
                 "split_with_fee failed for amount {} with fee_ppk {}: {:?}",
@@ -575,12 +593,13 @@ mod tests {
 
     #[test]
     fn test_split_with_fee_recursion_limit() {
+        let amounts_ppk = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
         // Test that the recursion doesn't go infinite
         // This tests the edge case where the method keeps adding Amount::ONE
         let amount = Amount(1);
         let fee_ppk = 10000; // Very high fee that might cause recursion
 
-        let result = amount.split_with_fee(fee_ppk);
+        let result = amount.split_with_fee(fee_ppk, &amounts_ppk);
         assert!(
             result.is_ok(),
             "split_with_fee should handle extreme fees without infinite recursion"
@@ -589,13 +608,14 @@ mod tests {
 
     #[test]
     fn test_split_values() {
+        let amounts_ppk = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
         let amount = Amount(10);
 
         let target = vec![Amount(2), Amount(4), Amount(4)];
 
         let split_target = SplitTarget::Values(target.clone());
 
-        let values = amount.split_targeted(&split_target).unwrap();
+        let values = amount.split_targeted(&split_target, &amounts_ppk).unwrap();
 
         assert_eq!(target, values);
 
@@ -603,13 +623,13 @@ mod tests {
 
         let split_target = SplitTarget::Values(vec![Amount(2), Amount(4)]);
 
-        let values = amount.split_targeted(&split_target).unwrap();
+        let values = amount.split_targeted(&split_target, &amounts_ppk).unwrap();
 
         assert_eq!(target, values);
 
         let split_target = SplitTarget::Values(vec![Amount(2), Amount(10)]);
 
-        let values = amount.split_targeted(&split_target);
+        let values = amount.split_targeted(&split_target, &amounts_ppk);
 
         assert!(values.is_err())
     }
