@@ -514,6 +514,22 @@ where
 
         result
     }
+    async fn wait_payment_event(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+        let start = std::time::Instant::now();
+        METRICS.inc_in_flight_requests("wait_payment_event");
+
+        let result = self.inner.wait_payment_event().await;
+
+        let duration = start.elapsed().as_secs_f64();
+        let success = result.is_ok();
+
+        METRICS.record_mint_operation_histogram("wait_payment_event", success, duration);
+        METRICS.dec_in_flight_requests("wait_payment_event");
+
+        result
+    }
 
     async fn make_payment(
         &self,
@@ -530,25 +546,6 @@ where
 
         METRICS.record_mint_operation_histogram("make_payment", success, duration);
         METRICS.dec_in_flight_requests("make_payment");
-
-        result
-    }
-
-    async fn wait_any_incoming_payment(
-        &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
-        let start = std::time::Instant::now();
-        METRICS.inc_in_flight_requests("wait_any_incoming_payment");
-
-        let result = self.inner.wait_any_incoming_payment().await;
-
-        let duration = start.elapsed().as_secs_f64();
-        METRICS.record_mint_operation_histogram(
-            "wait_any_incoming_payment",
-            result.is_ok(),
-            duration,
-        );
-        METRICS.dec_in_flight_requests("wait_any_incoming_payment");
 
         result
     }
