@@ -26,7 +26,7 @@ use crate::nuts::nut23::QuoteState;
 use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SpendingConditions, Token};
 use crate::types::Melted;
 use crate::wallet::types::MintQuote;
-use crate::{ensure_cdk, Amount, Wallet};
+use crate::{Amount, Wallet};
 
 /// Multi Mint Wallet
 ///
@@ -85,79 +85,6 @@ pub struct MultiMintWallet {
     wallets: Arc<RwLock<BTreeMap<MintUrl, Wallet>>>,
     /// Proxy configuration for HTTP clients (optional)
     proxy_config: Option<url::Url>,
-}
-
-/// Multi-Mint Send Options
-///
-/// Controls transfer behavior when the target mint doesn't have sufficient balance
-#[derive(Debug, Clone, Default)]
-pub struct MultiMintSendOptions {
-    /// Whether to allow transferring funds from other mints to the sending mint
-    /// if the sending mint doesn't have sufficient balance
-    pub allow_transfer: bool,
-    /// Maximum amount to transfer from other mints (optional limit)
-    pub max_transfer_amount: Option<Amount>,
-    /// Specific mints allowed for transfers (empty means all mints allowed)
-    pub allowed_mints: Vec<MintUrl>,
-    /// Specific mints to exclude from transfers
-    pub excluded_mints: Vec<MintUrl>,
-    /// Base send options to apply to the wallet send
-    pub send_options: SendOptions,
-}
-
-impl MultiMintSendOptions {
-    /// Create new default options
-    pub fn new() -> Self {
-        Self {
-            allow_transfer: false,
-            max_transfer_amount: None,
-            allowed_mints: Vec::new(),
-            excluded_mints: Vec::new(),
-            send_options: SendOptions::default(),
-        }
-    }
-
-    /// Enable transferring funds from other mints if needed
-    pub fn allow_transfer(mut self, allow: bool) -> Self {
-        self.allow_transfer = allow;
-        self
-    }
-
-    /// Set maximum amount to transfer from other mints
-    pub fn max_transfer_amount(mut self, amount: Amount) -> Self {
-        self.max_transfer_amount = Some(amount);
-        self
-    }
-
-    /// Add a mint to the allowed list for transfers
-    pub fn allow_mint(mut self, mint_url: MintUrl) -> Self {
-        self.allowed_mints.push(mint_url);
-        self
-    }
-
-    /// Set all allowed mints for transfers
-    pub fn allowed_mints(mut self, mints: Vec<MintUrl>) -> Self {
-        self.allowed_mints = mints;
-        self
-    }
-
-    /// Add a mint to exclude from transfers
-    pub fn exclude_mint(mut self, mint_url: MintUrl) -> Self {
-        self.excluded_mints.push(mint_url);
-        self
-    }
-
-    /// Set all excluded mints for transfers
-    pub fn excluded_mints(mut self, mints: Vec<MintUrl>) -> Self {
-        self.excluded_mints = mints;
-        self
-    }
-
-    /// Set the base send options for the wallet operation
-    pub fn send_options(mut self, options: SendOptions) -> Self {
-        self.send_options = options;
-        self
-    }
 }
 
 impl MultiMintWallet {
@@ -267,7 +194,7 @@ impl MultiMintWallet {
 
     /// Load all wallets from database that have proofs for this currency unit
     #[instrument(skip(self))]
-    pub async fn load_wallets(&self) -> Result<(), Error> {
+    async fn load_wallets(&self) -> Result<(), Error> {
         let mints = self.localstore.get_mints().await.map_err(Error::Database)?;
 
         // Get all proofs for this currency unit to determine which mints are relevant
@@ -458,16 +385,113 @@ impl MultiMintWallet {
         target_wallet.prepare_send(amount, opts.send_options).await
     }
 
-    /// Transfer funds from source wallets to target mint using Lightning Network (melt/mint)
+    /// Transfer funds from a single source wallet to target mint using Lightning Network (melt/mint)
+    ///
+    /// This function properly accounts for fees by:
+    /// 1. Creating a mint quote at the target mint for the desired amount
+    /// 2. Creating a melt quote at the source mint using the invoice from step 1 to discover fees
+    /// 3. If fees are required, creating a new mint quote for the net amount (desired - fees)
+    /// 4. Creating a new melt quote with the adjusted invoice
+    /// 5. Melting from source and minting at target
+    pub(crate) async fn transfer_single(
+        &self,
+        source_mint_url: &MintUrl,
+        source_wallet: &Wallet,
+        target_mint_url: &MintUrl,
+        target_wallet: &Wallet,
+        amount: Amount,
+    ) -> Result<Amount, Error> {
+        // Step 1: Create initial mint quote at target mint for desired amount
+        let initial_mint_quote = target_wallet.mint_quote(amount, None).await?;
+
+        // Step 2: Create melt quote at source mint to check fees
+        let initial_melt_quote = source_wallet
+            .melt_quote(initial_mint_quote.request.clone(), None)
+            .await?;
+
+        // Step 3: Determine final quotes based on fees
+        let (final_mint_quote, final_melt_quote, actual_receive_amount) =
+            if initial_melt_quote.fee_reserve > Amount::ZERO {
+                // Calculate the actual amount the target will receive after fees
+                let net_amount = amount
+                    .checked_sub(initial_melt_quote.fee_reserve)
+                    .ok_or(Error::InsufficientFunds)?;
+
+                // Create new mint quote for the net amount
+                let adjusted_mint_quote = target_wallet.mint_quote(net_amount, None).await?;
+
+                // Create new melt quote with the adjusted invoice
+                let adjusted_melt_quote = source_wallet
+                    .melt_quote(adjusted_mint_quote.request.clone(), None)
+                    .await?;
+
+                (adjusted_mint_quote, adjusted_melt_quote, net_amount)
+            } else {
+                (initial_mint_quote, initial_melt_quote, amount)
+            };
+
+        // Step 4: Melt from source wallet using the final melt quote
+        let melted = source_wallet.melt(&final_melt_quote.id).await?;
+
+        // Step 5: Wait for payment confirmation and mint at target
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: u32 = 30; // 30 seconds max wait
+        const POLL_INTERVAL_MS: u64 = 1000; // 1 second
+
+        loop {
+            attempts += 1;
+
+            // Check if the quote is paid
+            match target_wallet.mint_quote_state(&final_mint_quote.id).await {
+                Ok(quote_state) => {
+                    if quote_state.state == QuoteState::Paid {
+                        // Quote is paid, now mint the tokens
+                        target_wallet
+                            .mint(
+                                &final_mint_quote.id,
+                                crate::amount::SplitTarget::default(),
+                                None,
+                            )
+                            .await?;
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Error checking mint quote status: {}", e);
+                }
+            }
+
+            if attempts >= MAX_ATTEMPTS {
+                return Err(Error::TransferTimeout {
+                    source_mint: source_mint_url.to_string(),
+                    target_mint: target_mint_url.to_string(),
+                    amount,
+                });
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+        }
+
+        tracing::info!(
+            "Transferred {} from {} to {} via Lightning (received: {} sats, fee: {} sats)",
+            amount,
+            source_mint_url,
+            target_mint_url,
+            actual_receive_amount,
+            melted.fee_paid
+        );
+
+        Ok(actual_receive_amount)
+    }
+
+    /// Transfer funds from multiple source wallets to target mint in parallel
     async fn transfer_to_mint(
         &self,
         target_mint_url: &MintUrl,
         total_amount: Amount,
         source_wallets: Vec<(MintUrl, Wallet, Amount)>,
     ) -> Result<(), Error> {
-        let mut remaining_amount = total_amount;
-
-        // Get target wallet for minting
+        // Get target wallet
         let wallets = self.wallets.read().await;
         let target_wallet = wallets
             .get(target_mint_url)
@@ -477,74 +501,68 @@ impl MultiMintWallet {
             .clone();
         drop(wallets);
 
+        let mut remaining_amount = total_amount;
+        let mut transfer_tasks = Vec::new();
+
+        // Create transfer tasks for each source wallet
         for (source_mint_url, source_wallet, available_balance) in source_wallets {
             if remaining_amount == Amount::ZERO {
                 break;
             }
 
             let transfer_amount = std::cmp::min(remaining_amount, available_balance);
-
-            // Step 1: Create a mint quote in the target mint
-            let mint_quote = target_wallet.mint_quote(transfer_amount, None).await?;
-
-            // Step 2: Create melt quote in source wallet for the target mint's invoice
-            let melt_quote = source_wallet
-                .melt_quote(mint_quote.request.clone(), None)
-                .await?;
-
-            // Step 3: Melt from source wallet using the melt quote
-            let melted = source_wallet.melt(&melt_quote.id).await?;
-
-            // Step 4: Check if the mint quote is paid and mint in target wallet
-            // We need to poll for payment confirmation
-            let mut attempts = 0;
-            const MAX_ATTEMPTS: u32 = 30; // 30 seconds max wait
-            const POLL_INTERVAL_MS: u64 = 1000; // 1 second
-
-            loop {
-                attempts += 1;
-
-                // Check if the quote is paid
-                match target_wallet.mint_quote_state(&mint_quote.id).await {
-                    Ok(quote_state) => {
-                        if quote_state.state == QuoteState::Paid {
-                            // Quote is paid, now mint the tokens
-                            target_wallet
-                                .mint(&mint_quote.id, crate::amount::SplitTarget::default(), None)
-                                .await?;
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Error checking mint quote status: {}", e);
-                    }
-                }
-
-                if attempts >= MAX_ATTEMPTS {
-                    return Err(Error::TransferTimeout {
-                        source_mint: source_mint_url.to_string(),
-                        target_mint: target_mint_url.to_string(),
-                        amount: transfer_amount,
-                    });
-                }
-
-                tokio::time::sleep(tokio::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
-            }
-
             remaining_amount -= transfer_amount;
 
-            tracing::info!(
-                "Transferred {} from {} to {} via Lightning (melted: {} sats, fee: {} sats)",
-                transfer_amount,
-                source_mint_url,
-                target_mint_url,
-                melted.amount,
-                melted.fee_paid
-            );
+            let self_clone = self.clone();
+            let source_mint_url_clone = source_mint_url.clone();
+            let source_wallet_clone = source_wallet.clone();
+            let target_mint_url_clone = target_mint_url.clone();
+            let target_wallet_clone = target_wallet.clone();
+
+            // Spawn parallel transfer task
+            let task = tokio::spawn(async move {
+                self_clone
+                    .transfer_single(
+                        &source_mint_url_clone,
+                        &source_wallet_clone,
+                        &target_mint_url_clone,
+                        &target_wallet_clone,
+                        transfer_amount,
+                    )
+                    .await
+            });
+
+            transfer_tasks.push(task);
         }
 
-        if remaining_amount > Amount::ZERO {
-            return Err(Error::InsufficientFunds);
+        // Wait for all transfers to complete
+        let mut total_transferred = Amount::ZERO;
+        for task in transfer_tasks {
+            match task.await {
+                Ok(Ok(amount)) => {
+                    total_transferred += amount;
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("Transfer failed: {}", e);
+                    return Err(e);
+                }
+                Err(e) => {
+                    tracing::error!("Transfer task panicked: {}", e);
+                    return Err(Error::Internal);
+                }
+            }
+        }
+
+        // Check if we transferred less than expected (accounting for fees)
+        // We don't return an error here as fees are expected
+        if total_transferred < total_amount {
+            let fee_paid = total_amount - total_transferred;
+            tracing::info!(
+                "Transfer completed with fees: requested {}, received {}, total fees {}",
+                total_amount,
+                total_transferred,
+                fee_paid
+            );
         }
 
         Ok(())
@@ -609,13 +627,40 @@ impl MultiMintWallet {
             .await
     }
 
-    /// Receive token
-    /// Wallet must be already added to multimintwallet
+    /// Receive token with multi-mint options
+    ///
+    /// This method can:
+    /// - Receive tokens from trusted mints (already added to the wallet)
+    /// - Optionally receive from untrusted mints by adding them to the wallet
+    /// - Optionally transfer tokens from untrusted mints to a trusted mint (and remove the untrusted mint)
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use cdk::wallet::{MultiMintWallet, MultiMintReceiveOptions};
+    /// # use cdk::mint_url::MintUrl;
+    /// # async fn example(wallet: MultiMintWallet) -> Result<(), Box<dyn std::error::Error>> {
+    /// // Receive from a trusted mint
+    /// let token = "cashuAey...";
+    /// let amount = wallet.receive(token, MultiMintReceiveOptions::default()).await?;
+    ///
+    /// // Receive from untrusted mint and add it to the wallet
+    /// let options = MultiMintReceiveOptions::default()
+    ///     .allow_untrusted(true);
+    /// let amount = wallet.receive(token, options).await?;
+    ///
+    /// // Receive from untrusted mint, transfer to trusted mint, then remove untrusted mint
+    /// let trusted_mint: MintUrl = "https://trusted.mint".parse()?;
+    /// let options = MultiMintReceiveOptions::default()
+    ///     .transfer_to_mint(Some(trusted_mint));
+    /// let amount = wallet.receive(token, options).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     #[instrument(skip_all)]
     pub async fn receive(
         &self,
         encoded_token: &str,
-        opts: ReceiveOptions,
+        opts: MultiMintReceiveOptions,
     ) -> Result<Amount, Error> {
         let token_data = Token::from_str(encoded_token)?;
         let unit = token_data.unit().unwrap_or_default();
@@ -629,12 +674,21 @@ impl MultiMintWallet {
         }
 
         let mint_url = token_data.mint_url()?;
+        let is_trusted = self.has_mint(&mint_url).await;
 
-        // Check that the mint is in this wallet
-        if !self.has_mint(&mint_url).await {
+        // If mint is not trusted and we don't allow untrusted mints, error
+        if !is_trusted && !opts.allow_untrusted {
             return Err(Error::UnknownMint {
                 mint_url: mint_url.to_string(),
             });
+        }
+
+        // If mint is untrusted and we need to transfer, ensure we have a target mint
+        let should_transfer = !is_trusted && opts.transfer_to_mint.is_some();
+
+        // Add the untrusted mint temporarily if needed
+        if !is_trusted {
+            self.add_mint(mint_url.clone(), None).await?;
         }
 
         let wallets = self.wallets.read().await;
@@ -656,47 +710,64 @@ impl MultiMintWallet {
 
         let mut amount_received = Amount::ZERO;
 
-        let mut mint_errors = None;
-
         match wallet
-            .receive_proofs(proofs, opts, token_data.memo().clone())
+            .receive_proofs(proofs, opts.receive_options, token_data.memo().clone())
             .await
         {
             Ok(amount) => {
                 amount_received += amount;
             }
             Err(err) => {
-                tracing::error!("Could no receive proofs for mint: {}", err);
-                mint_errors = Some(err);
+                // If we added the mint temporarily for transfer only, remove it before returning error
+                if !is_trusted && opts.transfer_to_mint.is_some() {
+                    drop(wallets);
+                    self.remove_mint(&mint_url).await;
+                }
+                return Err(err);
             }
         }
 
-        match mint_errors {
-            None => Ok(amount_received),
-            Some(err) => Err(err),
+        drop(wallets);
+
+        // If we should transfer to a trusted mint, do so now
+        if should_transfer {
+            if let Some(target_mint) = opts.transfer_to_mint {
+                // Ensure target mint exists and is trusted
+                if !self.has_mint(&target_mint).await {
+                    // Clean up untrusted mint if we're only using it for transfer
+                    self.remove_mint(&mint_url).await;
+                    return Err(Error::UnknownMint {
+                        mint_url: target_mint.to_string(),
+                    });
+                }
+
+                // Get the balance from the untrusted mint
+                let wallets = self.wallets.read().await;
+                let untrusted_wallet = wallets
+                    .get(&mint_url)
+                    .ok_or(Error::UnknownMint {
+                        mint_url: mint_url.to_string(),
+                    })?
+                    .clone();
+                let balance = untrusted_wallet.total_balance().await?;
+                drop(wallets);
+
+                // Transfer the entire balance to the target mint
+                if balance > Amount::ZERO {
+                    let source_wallets = vec![(mint_url.clone(), untrusted_wallet, balance)];
+
+                    self.transfer_to_mint(&target_mint, balance, source_wallets)
+                        .await?;
+                }
+
+                // Remove the untrusted mint after transfer
+                self.remove_mint(&mint_url).await;
+            }
         }
-    }
+        // Note: If allow_untrusted is true but no transfer is requested,
+        // the untrusted mint is kept in the wallet (as intended)
 
-    /// Pay an bolt11 invoice from specific wallet
-    #[instrument(skip(self, bolt11))]
-    pub async fn pay_invoice_for_wallet(
-        &self,
-        mint_url: &MintUrl,
-        bolt11: &str,
-        options: Option<MeltOptions>,
-        max_fee: Option<Amount>,
-    ) -> Result<Melted, Error> {
-        let wallets = self.wallets.read().await;
-        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
-            mint_url: mint_url.to_string(),
-        })?;
-
-        let quote = wallet.melt_quote(bolt11.to_string(), options).await?;
-        if let Some(max_fee) = max_fee {
-            ensure_cdk!(quote.fee_reserve <= max_fee, Error::MaxFeeExceeded);
-        }
-
-        wallet.melt(&quote.id).await
+        Ok(amount_received)
     }
 
     /// Restore
@@ -714,12 +785,12 @@ impl MultiMintWallet {
     #[instrument(skip(self, token))]
     pub async fn verify_token_p2pk(
         &self,
-        mint_url: &MintUrl,
         token: &Token,
         conditions: SpendingConditions,
     ) -> Result<(), Error> {
+        let mint_url = token.mint_url()?;
         let wallets = self.wallets.read().await;
-        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+        let wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
             mint_url: mint_url.to_string(),
         })?;
 
@@ -728,9 +799,10 @@ impl MultiMintWallet {
 
     /// Verifys all proofs in token have valid dleq proof
     #[instrument(skip(self, token))]
-    pub async fn verify_token_dleq(&self, mint_url: &MintUrl, token: &Token) -> Result<(), Error> {
+    pub async fn verify_token_dleq(&self, token: &Token) -> Result<(), Error> {
+        let mint_url = token.mint_url()?;
         let wallets = self.wallets.read().await;
-        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+        let wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
             mint_url: mint_url.to_string(),
         })?;
 
@@ -894,6 +966,111 @@ impl MultiMintWallet {
 impl Drop for MultiMintWallet {
     fn drop(&mut self) {
         self.seed.zeroize();
+    }
+}
+
+/// Multi-Mint Receive Options
+///
+/// Controls how tokens are received, especially from untrusted mints
+#[derive(Debug, Clone, Default)]
+pub struct MultiMintReceiveOptions {
+    /// Whether to allow receiving from untrusted (not yet added) mints
+    pub allow_untrusted: bool,
+    /// Mint to transfer tokens to from untrusted mints (None means keep in original mint)
+    pub transfer_to_mint: Option<MintUrl>,
+    /// Base receive options to apply to the wallet receive
+    pub receive_options: ReceiveOptions,
+}
+
+impl MultiMintReceiveOptions {
+    /// Create new default options
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    /// Allow receiving from untrusted mints
+    pub fn allow_untrusted(mut self, allow: bool) -> Self {
+        self.allow_untrusted = allow;
+        self
+    }
+
+    /// Set mint to transfer tokens to from untrusted mints
+    pub fn transfer_to_mint(mut self, mint_url: Option<MintUrl>) -> Self {
+        self.transfer_to_mint = mint_url;
+        self
+    }
+
+    /// Set the base receive options for the wallet operation
+    pub fn receive_options(mut self, options: ReceiveOptions) -> Self {
+        self.receive_options = options;
+        self
+    }
+}
+
+/// Multi-Mint Send Options
+///
+/// Controls transfer behavior when the target mint doesn't have sufficient balance
+#[derive(Debug, Clone, Default)]
+pub struct MultiMintSendOptions {
+    /// Whether to allow transferring funds from other mints to the sending mint
+    /// if the sending mint doesn't have sufficient balance
+    pub allow_transfer: bool,
+    /// Maximum amount to transfer from other mints (optional limit)
+    pub max_transfer_amount: Option<Amount>,
+    /// Specific mints allowed for transfers (empty means all mints allowed)
+    pub allowed_mints: Vec<MintUrl>,
+    /// Specific mints to exclude from transfers
+    pub excluded_mints: Vec<MintUrl>,
+    /// Base send options to apply to the wallet send
+    pub send_options: SendOptions,
+}
+
+impl MultiMintSendOptions {
+    /// Create new default options
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    /// Enable transferring funds from other mints if needed
+    pub fn allow_transfer(mut self, allow: bool) -> Self {
+        self.allow_transfer = allow;
+        self
+    }
+
+    /// Set maximum amount to transfer from other mints
+    pub fn max_transfer_amount(mut self, amount: Amount) -> Self {
+        self.max_transfer_amount = Some(amount);
+        self
+    }
+
+    /// Add a mint to the allowed list for transfers
+    pub fn allow_mint(mut self, mint_url: MintUrl) -> Self {
+        self.allowed_mints.push(mint_url);
+        self
+    }
+
+    /// Set all allowed mints for transfers
+    pub fn allowed_mints(mut self, mints: Vec<MintUrl>) -> Self {
+        self.allowed_mints = mints;
+        self
+    }
+
+    /// Add a mint to exclude from transfers
+    pub fn exclude_mint(mut self, mint_url: MintUrl) -> Self {
+        self.excluded_mints.push(mint_url);
+        self
+    }
+
+    /// Set all excluded mints for transfers
+    pub fn excluded_mints(mut self, mints: Vec<MintUrl>) -> Self {
+        self.excluded_mints = mints;
+        self
+    }
+
+    /// Set the base send options for the wallet operation
+    pub fn send_options(mut self, options: SendOptions) -> Self {
+        self.send_options = options;
+        self
     }
 }
 
