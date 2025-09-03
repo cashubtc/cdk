@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use cashu::quote_id::QuoteId;
 use cashu::{Amount, MintInfo};
-use uuid::Uuid;
 
 use super::Error;
 use crate::common::QuoteTTL;
@@ -89,7 +88,7 @@ pub trait QuotesTransaction<'a> {
     /// Get [`mint::MeltQuote`] and lock it for update in this transaction
     async fn get_melt_quote(
         &mut self,
-        quote_id: &Uuid,
+        quote_id: &QuoteId,
     ) -> Result<Option<mint::MeltQuote>, Self::Err>;
     /// Add [`mint::MeltQuote`]
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err>;
@@ -111,7 +110,7 @@ pub trait QuotesTransaction<'a> {
         payment_proof: Option<String>,
     ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err>;
     /// Remove [`mint::MeltQuote`]
-    async fn remove_melt_quote(&mut self, quote_id: &Uuid) -> Result<(), Self::Err>;
+    async fn remove_melt_quote(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err>;
     /// Get all [`MintMintQuote`]s and lock it for update in this transaction
     async fn get_mint_quote_by_request(
         &mut self,
@@ -165,7 +164,11 @@ pub trait ProofsTransaction<'a> {
     ///
     /// Adds proofs to the database. The database should error if the proof already exits, with a
     /// `AttemptUpdateSpentProof` if the proof is already spent or a `Duplicate` error otherwise.
-    async fn add_proofs(&mut self, proof: Proofs, quote_id: Option<Uuid>) -> Result<(), Self::Err>;
+    async fn add_proofs(
+        &mut self,
+        proof: Proofs,
+        quote_id: Option<QuoteId>,
+    ) -> Result<(), Self::Err>;
     /// Updates the proofs to a given states and return the previous states
     async fn update_proofs_states(
         &mut self,
@@ -177,7 +180,7 @@ pub trait ProofsTransaction<'a> {
     async fn remove_proofs(
         &mut self,
         ys: &[PublicKey],
-        quote_id: Option<Uuid>,
+        quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err>;
 }
 
@@ -190,7 +193,10 @@ pub trait ProofsDatabase {
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
     /// Get ys by quote id
-    async fn get_proof_ys_by_quote_id(&self, quote_id: &Uuid) -> Result<Vec<PublicKey>, Self::Err>;
+    async fn get_proof_ys_by_quote_id(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Vec<PublicKey>, Self::Err>;
     /// Get [`Proofs`] state
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
     /// Get [`Proofs`] by state

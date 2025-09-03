@@ -37,7 +37,6 @@ use cdk_common::{
 use lightning_invoice::Bolt11Invoice;
 use migrations::MIGRATIONS;
 use tracing::instrument;
-use uuid::Uuid;
 
 use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
@@ -172,7 +171,7 @@ where
     async fn add_proofs(
         &mut self,
         proofs: Proofs,
-        quote_id: Option<Uuid>,
+        quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
@@ -215,7 +214,7 @@ where
                 proof.witness.map(|w| serde_json::to_string(&w).unwrap()),
             )
             .bind("state", "UNSPENT".to_string())
-            .bind("quote_id", quote_id.map(|q| q.hyphenated().to_string()))
+            .bind("quote_id", quote_id.clone().map(|q| q.to_string()))
             .bind("created_time", current_time as i64)
             .execute(&self.inner)
             .await?;
@@ -256,7 +255,7 @@ where
     async fn remove_proofs(
         &mut self,
         ys: &[PublicKey],
-        _quote_id: Option<Uuid>,
+        _quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err> {
         if ys.is_empty() {
             return Ok(());
@@ -346,13 +345,7 @@ where
             quote_id=:quote_id
         "#,
     )?
-    .bind(
-        "quote_id",
-        match quote_id {
-            QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-            QuoteId::BASE64(s) => s.to_string(),
-        },
-    )
+    .bind("quote_id", quote_id.to_string())
     .fetch_all(conn)
     .await?
     .into_iter()
@@ -381,13 +374,7 @@ FROM mint_quote_issued
 WHERE quote_id=:quote_id
             "#,
     )?
-    .bind(
-        "quote_id",
-        match quote_id {
-            QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-            QuoteId::BASE64(s) => s.to_string(),
-        },
-    )
+    .bind("quote_id", quote_id.to_string())
     .fetch_all(conn)
     .await?
     .into_iter()
@@ -611,13 +598,7 @@ where
             FOR UPDATE
             "#,
         )?
-        .bind(
-            "quote_id",
-            match quote_id {
-                QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-                QuoteId::BASE64(s) => s.to_string(),
-            },
-        )
+        .bind("quote_id", quote_id.to_string())
         .fetch_one(&self.inner)
         .await
         .inspect_err(|err| {
@@ -652,13 +633,7 @@ where
             "#,
         )?
         .bind("amount_paid", new_amount_paid.to_i64())
-        .bind(
-            "quote_id",
-            match quote_id {
-                QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-                QuoteId::BASE64(s) => s.to_string(),
-            },
-        )
+        .bind("quote_id", quote_id.to_string())
         .execute(&self.inner)
         .await
         .inspect_err(|err| {
@@ -673,13 +648,7 @@ where
             VALUES (:quote_id, :payment_id, :amount, :timestamp)
             "#,
         )?
-        .bind(
-            "quote_id",
-            match quote_id {
-                QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-                QuoteId::BASE64(s) => s.to_string(),
-            },
-        )
+        .bind("quote_id", quote_id.to_string())
         .bind("payment_id", payment_id)
         .bind("amount", amount_paid.to_i64())
         .bind("timestamp", unix_time() as i64)
@@ -708,13 +677,7 @@ where
             FOR UPDATE
             "#,
         )?
-        .bind(
-            "quote_id",
-            match quote_id {
-                QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-                QuoteId::BASE64(s) => s.to_string(),
-            },
-        )
+        .bind("quote_id", quote_id.to_string())
         .fetch_one(&self.inner)
         .await
         .inspect_err(|err| {
@@ -742,13 +705,7 @@ where
             "#,
         )?
         .bind("amount_issued", new_amount_issued.to_i64())
-        .bind(
-            "quote_id",
-            match quote_id {
-                QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-                QuoteId::BASE64(s) => s.to_string(),
-            },
-        )
+        .bind("quote_id", quote_id.to_string())
         .execute(&self.inner)
         .await
         .inspect_err(|err| {
@@ -764,13 +721,7 @@ INSERT INTO mint_quote_issued
 VALUES (:quote_id, :amount, :timestamp);
             "#,
         )?
-        .bind(
-            "quote_id",
-            match quote_id {
-                QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-                QuoteId::BASE64(s) => s.to_string(),
-            },
-        )
+        .bind("quote_id", quote_id.to_string())
         .bind("amount", amount_issued.to_i64())
         .bind("timestamp", current_time as i64)
         .execute(&self.inner)
@@ -812,13 +763,7 @@ VALUES (:quote_id, :amount, :timestamp);
 
     async fn remove_mint_quote(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err> {
         query(r#"DELETE FROM mint_quote WHERE id=:id"#)?
-            .bind(
-                "id",
-                match quote_id {
-                    QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-                    QuoteId::BASE64(s) => s.to_string(),
-                },
-            )
+            .bind("id", quote_id.to_string())
             .execute(&self.inner)
             .await?;
         Ok(())
@@ -881,10 +826,7 @@ VALUES (:quote_id, :amount, :timestamp);
         query(r#"UPDATE melt_quote SET request_lookup_id = :new_req_id, request_lookup_id_kind = :new_kind WHERE id = :id"#)?
             .bind("new_req_id", new_request_lookup_id.to_string())
             .bind("new_kind",new_request_lookup_id.kind() )
-            .bind("id", match quote_id {
-                QuoteId::BASE64(s) => s.to_string(),
-                QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-            })
+            .bind("id", quote_id.to_string())
             .execute(&self.inner)
             .await?;
         Ok(())
@@ -920,13 +862,7 @@ VALUES (:quote_id, :amount, :timestamp);
                 AND state != :state
             "#,
         )?
-        .bind(
-            "id",
-            match quote_id {
-                QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-                QuoteId::BASE64(s) => s.to_string(),
-            },
-        )
+        .bind("id", quote_id.to_string())
         .bind("state", state.to_string())
         .fetch_one(&self.inner)
         .await?
@@ -940,22 +876,13 @@ VALUES (:quote_id, :amount, :timestamp);
                 .bind("state", state.to_string())
                 .bind("paid_time", current_time as i64)
                 .bind("payment_preimage", payment_proof)
-                .bind("id", match quote_id {
-                    QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-                    QuoteId::BASE64(s) => s.to_string(),
-                })
+                .bind("id", quote_id.to_string())
                 .execute(&self.inner)
                 .await
         } else {
             query(r#"UPDATE melt_quote SET state = :state WHERE id = :id"#)?
                 .bind("state", state.to_string())
-                .bind(
-                    "id",
-                    match quote_id {
-                        QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-                        QuoteId::BASE64(s) => s.to_string(),
-                    },
-                )
+                .bind("id", quote_id.to_string())
                 .execute(&self.inner)
                 .await
         };
@@ -974,14 +901,14 @@ VALUES (:quote_id, :amount, :timestamp);
         Ok((old_state, quote))
     }
 
-    async fn remove_melt_quote(&mut self, quote_id: &Uuid) -> Result<(), Self::Err> {
+    async fn remove_melt_quote(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err> {
         query(
             r#"
             DELETE FROM melt_quote
             WHERE id=?
             "#,
         )?
-        .bind("id", quote_id.as_hyphenated().to_string())
+        .bind("id", quote_id.to_string())
         .execute(&self.inner)
         .await?;
 
@@ -1013,13 +940,7 @@ VALUES (:quote_id, :amount, :timestamp);
             FOR UPDATE
             "#,
         )?
-        .bind(
-            "id",
-            match quote_id {
-                QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-                QuoteId::BASE64(s) => s.to_string(),
-            },
-        )
+        .bind("id", quote_id.to_string())
         .fetch_one(&self.inner)
         .await?
         .map(|row| sql_row_to_mint_quote(row, payments, issuance))
@@ -1028,7 +949,7 @@ VALUES (:quote_id, :amount, :timestamp);
 
     async fn get_melt_quote(
         &mut self,
-        quote_id: &Uuid,
+        quote_id: &QuoteId,
     ) -> Result<Option<mint::MeltQuote>, Self::Err> {
         Ok(query(
             r#"
@@ -1053,7 +974,7 @@ VALUES (:quote_id, :amount, :timestamp);
                 id=:id
             "#,
         )?
-        .bind("id", quote_id.as_hyphenated().to_string())
+        .bind("id", quote_id.to_string())
         .fetch_one(&self.inner)
         .await?
         .map(sql_row_to_melt_quote)
@@ -1183,13 +1104,7 @@ where
                     mint_quote
                 WHERE id = :id"#,
             )?
-            .bind(
-                "id",
-                match quote_id {
-                    QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-                    QuoteId::BASE64(s) => s.to_string(),
-                },
-            )
+            .bind("id", quote_id.to_string())
             .fetch_one(&*conn)
             .await?
             .map(|row| sql_row_to_mint_quote(row, payments, issuance))
@@ -1369,13 +1284,7 @@ where
                     id=:id
                 "#,
             )?
-            .bind(
-                "id",
-                match quote_id {
-                    QuoteId::BASE64(s) => s.to_string(),
-                    QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-                },
-            )
+            .bind("id", quote_id.to_string())
             .fetch_one(&*conn)
             .await?
             .map(sql_row_to_melt_quote)
@@ -1473,7 +1382,10 @@ where
         Ok(ys.iter().map(|y| proofs.remove(y)).collect())
     }
 
-    async fn get_proof_ys_by_quote_id(&self, quote_id: &Uuid) -> Result<Vec<PublicKey>, Self::Err> {
+    async fn get_proof_ys_by_quote_id(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Vec<PublicKey>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -1489,7 +1401,7 @@ where
                 quote_id = :quote_id
             "#,
         )?
-        .bind("quote_id", quote_id.as_hyphenated().to_string())
+        .bind("quote_id", quote_id.to_string())
         .fetch_all(&*conn)
         .await?
         .into_iter()
@@ -1728,13 +1640,7 @@ where
                 quote_id=:quote_id
             "#,
         )?
-        .bind(
-            "quote_id",
-            match quote_id {
-                QuoteId::BASE64(s) => s.to_string(),
-                QuoteId::UUID(u) => u.as_hyphenated().to_string(),
-            },
-        )
+        .bind("quote_id", quote_id.to_string())
         .fetch_all(&*conn)
         .await?
         .into_iter()
