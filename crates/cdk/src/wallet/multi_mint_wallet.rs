@@ -809,7 +809,146 @@ impl MultiMintWallet {
         wallet.verify_token_dleq(token).await
     }
 
-    /// Melt (pay invoice) with automatic wallet selection
+    /// Create a melt quote for a specific mint
+    #[instrument(skip(self, bolt11))]
+    pub async fn melt_quote(
+        &self,
+        mint_url: &MintUrl,
+        bolt11: String,
+        options: Option<MeltOptions>,
+    ) -> Result<crate::wallet::types::MeltQuote, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.melt_quote(bolt11, options).await
+    }
+
+    /// Melt (pay invoice) from a specific mint using a quote ID
+    #[instrument(skip(self))]
+    pub async fn melt_with_mint(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+    ) -> Result<Melted, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.melt(quote_id).await
+    }
+
+    /// Create MPP (Multi-Path Payment) melt quotes from multiple mints
+    ///
+    /// This function allows manual specification of which mints and amounts to use for MPP.
+    /// Returns a vector of (MintUrl, MeltQuote) pairs.
+    #[instrument(skip(self, bolt11))]
+    pub async fn mpp_melt_quote(
+        &self,
+        bolt11: String,
+        mint_amounts: Vec<(MintUrl, Amount)>,
+    ) -> Result<Vec<(MintUrl, crate::wallet::types::MeltQuote)>, Error> {
+        let mut quotes = Vec::new();
+        let mut tasks = Vec::new();
+
+        // Spawn parallel tasks to get quotes from each mint
+        for (mint_url, amount) in mint_amounts {
+            let wallets = self.wallets.read().await;
+            let wallet = wallets
+                .get(&mint_url)
+                .ok_or(Error::UnknownMint {
+                    mint_url: mint_url.to_string(),
+                })?
+                .clone();
+            drop(wallets);
+
+            let bolt11_clone = bolt11.clone();
+            let mint_url_clone = mint_url.clone();
+
+            // Convert amount to millisats for MeltOptions
+            let amount_msat = u64::from(amount) * 1000;
+            let options = Some(MeltOptions::new_mpp(amount_msat));
+
+            let task = tokio::spawn(async move {
+                let quote = wallet.melt_quote(bolt11_clone, options).await;
+                (mint_url_clone, quote)
+            });
+
+            tasks.push(task);
+        }
+
+        // Collect all quote results
+        for task in tasks {
+            match task.await {
+                Ok((mint_url, Ok(quote))) => {
+                    quotes.push((mint_url, quote));
+                }
+                Ok((mint_url, Err(e))) => {
+                    tracing::error!("Failed to get melt quote from {}: {}", mint_url, e);
+                    return Err(e);
+                }
+                Err(e) => {
+                    tracing::error!("Task failed: {}", e);
+                    return Err(Error::Internal);
+                }
+            }
+        }
+
+        Ok(quotes)
+    }
+
+    /// Execute MPP melts using previously obtained quotes
+    #[instrument(skip(self))]
+    pub async fn mpp_melt(
+        &self,
+        quotes: Vec<(MintUrl, String)>, // (mint_url, quote_id)
+    ) -> Result<Vec<(MintUrl, Melted)>, Error> {
+        let mut results = Vec::new();
+        let mut tasks = Vec::new();
+
+        for (mint_url, quote_id) in quotes {
+            let wallets = self.wallets.read().await;
+            let wallet = wallets
+                .get(&mint_url)
+                .ok_or(Error::UnknownMint {
+                    mint_url: mint_url.to_string(),
+                })?
+                .clone();
+            drop(wallets);
+
+            let mint_url_clone = mint_url.clone();
+
+            let task = tokio::spawn(async move {
+                let melted = wallet.melt(&quote_id).await;
+                (mint_url_clone, melted)
+            });
+
+            tasks.push(task);
+        }
+
+        // Collect all melt results
+        for task in tasks {
+            match task.await {
+                Ok((mint_url, Ok(melted))) => {
+                    results.push((mint_url, melted));
+                }
+                Ok((mint_url, Err(e))) => {
+                    tracing::error!("Failed to melt from {}: {}", mint_url, e);
+                    return Err(e);
+                }
+                Err(e) => {
+                    tracing::error!("Task failed: {}", e);
+                    return Err(Error::Internal);
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Melt (pay invoice) with automatic wallet selection (deprecated, use specific mint functions for better control)
     ///
     /// Automatically selects the best wallet to pay from based on:
     /// - Available balance  
