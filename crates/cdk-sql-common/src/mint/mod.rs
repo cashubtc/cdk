@@ -32,8 +32,8 @@ use cdk_common::secret::Secret;
 use cdk_common::state::check_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
-    Amount, BlindSignature, BlindSignatureDleq, CurrencyUnit, Id, MeltQuoteState, MintInfo,
-    PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
+    Amount, BlindSignature, BlindSignatureDleq, BlindedMessage, CurrencyUnit, Id, MeltQuoteState,
+    MintInfo, PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
 };
 use lightning_invoice::Bolt11Invoice;
 use migrations::MIGRATIONS;
@@ -274,6 +274,33 @@ where
         }
 
         Ok(())
+    }
+
+    async fn get_proof_ys_by_quote_id(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Vec<PublicKey>, Self::Err> {
+        Ok(query(
+            r#"
+            SELECT
+                amount,
+                keyset_id,
+                secret,
+                c,
+                witness
+            FROM
+                proof
+            WHERE
+                quote_id = :quote_id
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(sql_row_to_proof)
+        .collect::<Result<Vec<Proof>, _>>()?
+        .ys()?)
     }
 }
 
@@ -544,6 +571,122 @@ where
 {
     type Err = Error;
 
+    async fn add_melt_request_and_blinded_messages(
+        &mut self,
+        quote_id: &QuoteId,
+        inputs_amount: Amount,
+        inputs_fee: Amount,
+        blinded_messages: &[BlindedMessage],
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            INSERT INTO melt_request
+            (quote_id, inputs_amount, inputs_fee)
+            VALUES
+            (:quote_id, :inputs_amount, :inputs_fee)
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .bind("inputs_amount", inputs_amount.to_i64())
+        .bind("inputs_fee", inputs_fee.to_i64())
+        .execute(&self.inner)
+        .await?;
+
+        for message in blinded_messages {
+            query(
+                r#"
+                INSERT INTO blinded_messages
+                (quote_id, blinded_message, keyset_id, amount)
+                VALUES
+                (:quote_id, :blinded_message, :keyset_id, :amount)
+                "#,
+            )?
+            .bind("quote_id", quote_id.to_string())
+            .bind(
+                "blinded_message",
+                message.blinded_secret.to_bytes().to_vec(),
+            )
+            .bind("keyset_id", message.keyset_id.to_string())
+            .bind("amount", message.amount.to_i64())
+            .execute(&self.inner)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn get_melt_request_and_blinded_messages(
+        &mut self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<((Amount, Amount), Vec<BlindedMessage>)>, Self::Err> {
+        let melt_request_row = query(
+            r#"
+            SELECT inputs_amount, inputs_fee
+            FROM melt_request
+            WHERE quote_id = :quote_id
+            FOR UPDATE
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .fetch_one(&self.inner)
+        .await?;
+
+        if let Some(row) = melt_request_row {
+            let inputs_amount: u64 = column_as_number!(row[0].clone());
+            let inputs_fee: u64 = column_as_number!(row[1].clone());
+
+            let blinded_messages_rows = query(
+                r#"
+                SELECT blinded_message, keyset_id, amount
+                FROM blinded_messages
+                WHERE quote_id = :quote_id
+                "#,
+            )?
+            .bind("quote_id", quote_id.to_string())
+            .fetch_all(&self.inner)
+            .await?;
+
+            let blinded_messages: Result<Vec<BlindedMessage>, Error> = blinded_messages_rows
+                .into_iter()
+                .map(|row| -> Result<BlindedMessage, Error> {
+                    let blinded_message_key =
+                        column_as_string!(&row[0], PublicKey::from_hex, PublicKey::from_slice);
+                    let keyset_id = column_as_string!(&row[1], Id::from_str, Id::from_bytes);
+                    let amount: u64 = column_as_number!(row[2].clone());
+
+                    Ok(BlindedMessage {
+                        blinded_secret: blinded_message_key,
+                        keyset_id,
+                        amount: Amount::from(amount),
+                        witness: None, // Not storing witness in database currently
+                    })
+                })
+                .collect();
+            let blinded_messages = blinded_messages?;
+
+            Ok(Some((
+                (Amount::from(inputs_amount), Amount::from(inputs_fee)),
+                blinded_messages,
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn delete_melt_request(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err> {
+        query(
+            r#"
+            DELETE FROM melt_request
+            WHERE quote_id = :quote_id
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
     #[instrument(skip(self))]
     async fn increment_mint_quote_amount_paid(
         &mut self,
@@ -755,8 +898,6 @@ VALUES (:quote_id, :amount, :timestamp);
     }
 
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
-        // First try to find and replace any expired UNPAID quotes with the same request_lookup_id
-
         // Now insert the new quote
         query(
             r#"
@@ -882,6 +1023,10 @@ VALUES (:quote_id, :amount, :timestamp);
 
         let old_state = quote.state;
         quote.state = state;
+
+        if state == MeltQuoteState::Unpaid || state == MeltQuoteState::Failed {
+            self.delete_melt_request(quote_id).await?;
+        }
 
         Ok((old_state, quote))
     }
