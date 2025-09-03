@@ -2,10 +2,10 @@ use std::str::FromStr;
 
 use anyhow::bail;
 use cdk_common::amount::amount_for_offer;
+use cdk_common::database::mint::MeltRequestInfo;
 use cdk_common::database::{self, MintTransaction};
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
-use cdk_common::nut00::ProofsMethods;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::{
     Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, OutgoingPaymentOptions,
@@ -501,6 +501,25 @@ impl Mint {
         input_verification: Verification,
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<(ProofWriter, MeltQuote), Error> {
+        let Verification {
+            amount: input_amount,
+            unit: input_unit,
+        } = input_verification;
+
+        ensure_cdk!(input_unit.is_some(), Error::UnsupportedUnit);
+
+        let mut proof_writer =
+            ProofWriter::new(self.localstore.clone(), self.pubsub_manager.clone());
+
+        proof_writer
+            .add_proofs(
+                tx,
+                melt_request.inputs(),
+                Some(melt_request.quote_id().to_owned()),
+            )
+            .await?;
+
+        // Only after proof verification succeeds, proceed with quote state check
         let (state, quote) = tx
             .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending, None)
             .await?;
@@ -514,13 +533,6 @@ impl Mint {
 
         self.pubsub_manager
             .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
-
-        let Verification {
-            amount: input_amount,
-            unit: input_unit,
-        } = input_verification;
-
-        ensure_cdk!(input_unit.is_some(), Error::UnsupportedUnit);
 
         let fee = self.get_proofs_fee(melt_request.inputs()).await?;
 
@@ -541,11 +553,6 @@ impl Mint {
                 (fee + quote.fee_reserve).into(),
             ));
         }
-
-        let mut proof_writer =
-            ProofWriter::new(self.localstore.clone(), self.pubsub_manager.clone());
-
-        proof_writer.add_proofs(tx, melt_request.inputs()).await?;
 
         let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs().clone());
 
@@ -618,6 +625,16 @@ impl Mint {
                 return Err(err);
             }
         };
+
+        let inputs_fee = self.get_proofs_fee(melt_request.inputs()).await?;
+
+        tx.add_melt_request_and_blinded_messages(
+            melt_request.quote_id(),
+            melt_request.inputs_amount()?,
+            inputs_fee,
+            melt_request.outputs().as_ref().unwrap_or(&Vec::new()),
+        )
+        .await?;
 
         let settled_internally_amount = match self
             .handle_internal_melt_mint(&mut tx, &quote, melt_request)
@@ -811,14 +828,7 @@ impl Mint {
         // If we made it here the payment has been made.
         // We process the melt burning the inputs and returning change
         let res = match self
-            .process_melt_request(
-                tx,
-                proof_writer,
-                quote,
-                melt_request,
-                preimage,
-                amount_spent_quote_unit,
-            )
+            .process_melt_request(tx, proof_writer, quote, preimage, amount_spent_quote_unit)
             .await
         {
             Ok(response) => response,
@@ -854,14 +864,22 @@ impl Mint {
         mut tx: Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
         mut proof_writer: ProofWriter,
         quote: MeltQuote,
-        melt_request: &MeltRequest<QuoteId>,
         payment_preimage: Option<String>,
         total_spent: Amount,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("process_melt_request");
 
-        let input_ys = melt_request.inputs().ys()?;
+        // Try to get input_ys from the stored melt request, fall back to original request if not found
+        let input_ys: Vec<_> = tx.get_proof_ys_by_quote_id(&quote.id).await?;
+
+        assert!(!input_ys.is_empty());
+
+        tracing::debug!(
+            "Updating {} proof states to Spent for quote {}",
+            input_ys.len(),
+            quote.id
+        );
 
         let update_proof_states_result = proof_writer
             .update_proofs_states(&mut tx, &input_ys, State::Spent)
@@ -872,22 +890,28 @@ impl Mint {
             self.record_melt_quote_failure("process_melt_request");
             return Err(update_proof_states_result.err().unwrap());
         }
+        tracing::debug!("Successfully updated proof states to Spent");
 
-        tx.update_melt_quote_state(
-            melt_request.quote(),
-            MeltQuoteState::Paid,
-            payment_preimage.clone(),
-        )
-        .await?;
+        tx.update_melt_quote_state(&quote.id, MeltQuoteState::Paid, payment_preimage.clone())
+            .await?;
 
         let mut change = None;
 
-        let inputs_amount = melt_request.inputs_amount()?;
+        let MeltRequestInfo {
+            inputs_amount,
+            inputs_fee,
+            change_outputs,
+        } = tx
+            .get_melt_request_and_blinded_messages(&quote.id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
 
         // Check if there is change to return
         if inputs_amount > total_spent {
             // Check if wallet provided change outputs
-            if let Some(outputs) = melt_request.outputs().clone() {
+            if !change_outputs.is_empty() {
+                let outputs = change_outputs;
+
                 let blinded_messages: Vec<PublicKey> =
                     outputs.iter().map(|b| b.blinded_secret).collect();
 
@@ -904,9 +928,7 @@ impl Mint {
                     return Err(Error::BlindedMessageAlreadySigned);
                 }
 
-                let fee = self.get_proofs_fee(melt_request.inputs()).await?;
-
-                let change_target = melt_request.inputs_amount()? - total_spent - fee;
+                let change_target = inputs_amount - total_spent - inputs_fee;
 
                 let mut amounts = change_target.split();
 
