@@ -326,34 +326,32 @@ impl Wallet {
 
     /// Get amounts needed to refill proof state
     #[instrument(skip(self))]
-    pub async fn amounts_needed_for_state_target(&self) -> Result<Vec<Amount>, Error> {
+    pub async fn amounts_needed_for_state_target(
+        &self,
+        amounts_ppk: &[u64],
+    ) -> Result<Vec<Amount>, Error> {
         let unspent_proofs = self.get_unspent_proofs().await?;
 
-        let amounts_count: HashMap<usize, usize> =
+        let amounts_count: HashMap<u64, u64> =
             unspent_proofs
                 .iter()
                 .fold(HashMap::new(), |mut acc, proof| {
                     let amount = proof.amount;
-                    let counter = acc.entry(u64::from(amount) as usize).or_insert(0);
+                    let counter = acc.entry(u64::from(amount)).or_insert(0);
                     *counter += 1;
                     acc
                 });
 
-        let all_possible_amounts: Vec<usize> = (0..32).map(|i| 2usize.pow(i as u32)).collect();
+        let needed_amounts = amounts_ppk.iter().fold(Vec::new(), |mut acc, amount| {
+            let count_needed = (self.target_proof_count as u64)
+                .saturating_sub(*amounts_count.get(amount).unwrap_or(&0));
 
-        let needed_amounts = all_possible_amounts
-            .iter()
-            .fold(Vec::new(), |mut acc, amount| {
-                let count_needed: usize = self
-                    .target_proof_count
-                    .saturating_sub(*amounts_count.get(amount).unwrap_or(&0));
+            for _i in 0..count_needed {
+                acc.push(Amount::from(*amount));
+            }
 
-                for _i in 0..count_needed {
-                    acc.push(Amount::from(*amount as u64));
-                }
-
-                acc
-            });
+            acc
+        });
         Ok(needed_amounts)
     }
 
@@ -362,8 +360,9 @@ impl Wallet {
     async fn determine_split_target_values(
         &self,
         change_amount: Amount,
+        amounts_ppk: &[u64],
     ) -> Result<SplitTarget, Error> {
-        let mut amounts_needed_refill = self.amounts_needed_for_state_target().await?;
+        let mut amounts_needed_refill = self.amounts_needed_for_state_target(amounts_ppk).await?;
 
         amounts_needed_refill.sort();
 

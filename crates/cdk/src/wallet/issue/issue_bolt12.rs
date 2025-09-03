@@ -100,6 +100,9 @@ impl Wallet {
         };
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
+        let (_, amounts_ppk) = self
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await?;
 
         let amount = match amount {
             Some(amount) => amount,
@@ -123,10 +126,11 @@ impl Wallet {
                 amount,
                 &amount_split_target,
                 spending_conditions,
+                &amounts_ppk,
             )?,
             None => {
                 // Calculate how many secrets we'll need without generating them
-                let amount_split = amount.split_targeted(&amount_split_target)?;
+                let amount_split = amount.split_targeted(&amount_split_target, &amounts_ppk)?;
                 let num_secrets = amount_split.len() as u32;
 
                 tracing::debug!(
@@ -149,6 +153,7 @@ impl Wallet {
                     &self.seed,
                     amount,
                     &amount_split_target,
+                    &amounts_ppk,
                 )?
             }
         };
