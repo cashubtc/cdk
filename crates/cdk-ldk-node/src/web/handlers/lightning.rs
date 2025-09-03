@@ -1,14 +1,10 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::Html,
-};
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::Html;
 use maud::html;
 
-use crate::web::{
-    handlers::utils::AppState,
-    templates::{format_sats_as_btc, layout},
-};
+use crate::web::handlers::utils::AppState;
+use crate::web::templates::{format_sats_as_btc, layout};
 
 pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let balances = state.node.inner.list_balances();

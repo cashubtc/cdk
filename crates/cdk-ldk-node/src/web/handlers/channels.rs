@@ -226,14 +226,14 @@ pub async fn close_channel_page(
                 a href="/balance" { button { "← Back to Lightning" } }
             }
         };
-        return Ok(Html(
-            layout("Close Channel Error", content).into_string(),
-        ));
+        return Ok(Html(layout("Close Channel Error", content).into_string()));
     }
 
     // Get channel information for amount display
     let channels = state.node.inner.list_channels();
-    let channel = channels.iter().find(|c| c.user_channel_id.0.to_string() == channel_id);
+    let channel = channels
+        .iter()
+        .find(|c| c.user_channel_id.0.to_string() == channel_id);
 
     let content = form_card(
         "Close Channel",
@@ -291,7 +291,9 @@ pub async fn force_close_channel_page(
 
     // Get channel information for amount display
     let channels = state.node.inner.list_channels();
-    let channel = channels.iter().find(|c| c.user_channel_id.0.to_string() == channel_id);
+    let channel = channels
+        .iter()
+        .find(|c| c.user_channel_id.0.to_string() == channel_id);
 
     let content = form_card(
         "Force Close Channel",
