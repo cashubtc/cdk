@@ -1,5 +1,3 @@
-#[prometheus]
-#enabled = true
 
 [info]
 url = "https://mint.thesimplekid.dev/"
@@ -23,7 +21,11 @@ enabled = false
 # address = "127.0.0.1"
 # port = 8086
 
-
+#[prometheus]
+#enabled = true
+#address = "127.0.0.1"
+#port = 9090
+# 
 [info.http_cache]
 # memory or redis
 backend = "memory"
