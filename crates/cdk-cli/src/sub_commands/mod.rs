@@ -16,4 +16,5 @@ pub mod pending_mints;
 pub mod receive;
 pub mod restore;
 pub mod send;
+pub mod transfer;
 pub mod update_mint_url;
