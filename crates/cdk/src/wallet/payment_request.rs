@@ -9,8 +9,11 @@ use std::str::FromStr;
 use anyhow::Result;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use cdk_common::{Amount, PaymentRequest, PaymentRequestPayload, TransportType};
+#[cfg(feature = "nostr")]
 use nostr_sdk::nips::nip19::Nip19Profile;
+#[cfg(feature = "nostr")]
 use nostr_sdk::prelude::*;
+#[cfg(feature = "nostr")]
 use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32};
 use reqwest::Client;
 use tokio::sync::Mutex;
@@ -69,7 +72,7 @@ impl Wallet {
         // We need the keysets information to properly convert from token proof to proof
         let keysets_info = match self.localstore.get_mint_keysets(token.mint_url()?).await? {
             Some(keysets_info) => keysets_info,
-            None => self.load_mint_keysets().await?, // Hit the keysets endpoint if we don't have the keysets for this Mint
+            None => self.load_mint_keysets().await?,
         };
         let proofs = token.proofs(&keysets_info)?;
 
@@ -84,57 +87,62 @@ impl Wallet {
 
             match transport._type {
                 TransportType::Nostr => {
-                    let keys = Keys::generate();
-                    let client = NostrClient::new(keys);
-                    let nprofile = Nip19Profile::from_bech32(&transport.target)
-                        .map_err(|e| Error::Custom(format!("Invalid nprofile: {e}")))?;
+                    #[cfg(feature = "nostr")]
+                    {
+                        let keys = Keys::generate();
+                        let client = NostrClient::new(keys);
+                        let nprofile = Nip19Profile::from_bech32(&transport.target)
+                            .map_err(|e| Error::Custom(format!("Invalid nprofile: {e}")))?;
 
-                    let rumor = EventBuilder::new(
-                        nostr_sdk::Kind::from_u16(14),
-                        serde_json::to_string(&payload)
-                            .map_err(|e| Error::Custom(format!("Serialize payload: {e}")))?,
-                    )
-                    .build(nprofile.public_key);
-                    let relays = nprofile.relays;
+                        let rumor = EventBuilder::new(
+                            nostr_sdk::Kind::from_u16(14),
+                            serde_json::to_string(&payload)
+                                .map_err(|e| Error::Custom(format!("Serialize payload: {e}")))?,
+                        )
+                        .build(nprofile.public_key);
+                        let relays = nprofile.relays;
 
-                    for relay in relays.iter() {
-                        client
-                            .add_write_relay(relay)
+                        for relay in relays.iter() {
+                            client
+                                .add_write_relay(relay)
+                                .await
+                                .map_err(|e| Error::Custom(format!("Add relay {relay}: {e}")))?;
+                        }
+
+                        client.connect().await;
+
+                        let gift_wrap = client
+                            .gift_wrap_to(relays, &nprofile.public_key, rumor, None)
                             .await
-                            .map_err(|e| Error::Custom(format!("Add relay {relay}: {e}")))?;
-                    }
+                            .map_err(|e| Error::Custom(format!("Publish Nostr event: {e}")))?;
 
-                    client.connect().await;
-
-                    let gift_wrap = client
-                        .gift_wrap_to(relays, &nprofile.public_key, rumor, None)
-                        .await
-                        .map_err(|e| Error::Custom(format!("Publish Nostr event: {e}")))?;
-
-                    println!(
-                        "Published event {} successfully to {}",
-                        gift_wrap.val,
-                        gift_wrap
-                            .success
-                            .iter()
-                            .map(|s| s.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-
-                    if !gift_wrap.failed.is_empty() {
                         println!(
-                            "Could not publish to {}",
+                            "Published event {} successfully to {}",
+                            gift_wrap.val,
                             gift_wrap
-                                .failed
-                                .keys()
-                                .map(|relay| relay.to_string())
+                                .success
+                                .iter()
+                                .map(|s| s.to_string())
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         );
-                    }
 
-                    Ok(())
+                        if !gift_wrap.failed.is_empty() {
+                            println!(
+                                "Could not publish to {}",
+                                gift_wrap
+                                    .failed
+                                    .keys()
+                                    .map(|relay| relay.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            );
+                        }
+
+                        Ok(())
+                    }
+                    #[cfg(not(feature = "nostr"))]
+                    Err(Error::Custom("Nostr is not enabled in this build"))
                 }
 
                 TransportType::HttpPost => {
@@ -200,6 +208,7 @@ pub struct CreateRequestParams {
 /// Returned by `create_request` when the transport is `nostr`. Pass this to
 /// `wait_for_nostr_payment` to connect, subscribe, and receive the incoming
 /// payment on the specified relays.
+#[cfg(feature = "nostr")]
 #[derive(Debug, Clone)]
 pub struct NostrWaitInfo {
     /// Ephemeral keys used to connect to relays and unwrap the gift-wrapped event
@@ -229,45 +238,50 @@ impl MultiMintWallet {
         let (transports, nostr_info): (Vec<Transport>, Option<NostrWaitInfo>) =
             match transport_type.as_str() {
                 "nostr" => {
-                    let keys = Keys::generate();
-                    let relays = if let Some(custom_relays) = &params.nostr_relays {
-                        if !custom_relays.is_empty() {
-                            custom_relays.clone()
+                    #[cfg(feature = "nostr")]
+                    {
+                        let keys = Keys::generate();
+                        let relays = if let Some(custom_relays) = &params.nostr_relays {
+                            if !custom_relays.is_empty() {
+                                custom_relays.clone()
+                            } else {
+                                vec![
+                                    "wss://relay.nos.social".to_string(),
+                                    "wss://relay.damus.io".to_string(),
+                                ]
+                            }
                         } else {
                             vec![
                                 "wss://relay.nos.social".to_string(),
                                 "wss://relay.damus.io".to_string(),
                             ]
-                        }
-                    } else {
-                        vec![
-                            "wss://relay.nos.social".to_string(),
-                            "wss://relay.damus.io".to_string(),
-                        ]
-                    };
+                        };
 
-                    // Parse relay URLs for nprofile
-                    let relay_urls = relays
-                        .iter()
-                        .map(|r| RelayUrl::parse(r))
-                        .collect::<Result<Vec<_>, _>>()?;
+                        // Parse relay URLs for nprofile
+                        let relay_urls = relays
+                            .iter()
+                            .map(|r| RelayUrl::parse(r))
+                            .collect::<Result<Vec<_>, _>>()?;
 
-                    let nprofile =
-                        nostr_sdk::nips::nip19::Nip19Profile::new(keys.public_key, relay_urls);
-                    let nostr_transport = Transport {
-                        _type: TransportType::Nostr,
-                        target: nprofile.to_bech32()?,
-                        tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
-                    };
+                        let nprofile =
+                            nostr_sdk::nips::nip19::Nip19Profile::new(keys.public_key, relay_urls);
+                        let nostr_transport = Transport {
+                            _type: TransportType::Nostr,
+                            target: nprofile.to_bech32()?,
+                            tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
+                        };
 
-                    (
-                        vec![nostr_transport],
-                        Some(NostrWaitInfo {
-                            keys,
-                            relays,
-                            pubkey: nprofile.public_key,
-                        }),
-                    )
+                        (
+                            vec![nostr_transport],
+                            Some(NostrWaitInfo {
+                                keys,
+                                relays,
+                                pubkey: nprofile.public_key,
+                            }),
+                        )
+                    }
+                    #[cfg(not(feature = "nostr"))]
+                    Err(Error::Custom("Nostr is not enabled in this build"))
                 }
                 "http" => {
                     if let Some(url) = &params.http_url {
@@ -378,6 +392,7 @@ impl MultiMintWallet {
     }
 
     /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
+    #[cfg(feature = "nostr")]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
         let NostrWaitInfo {
             keys,
