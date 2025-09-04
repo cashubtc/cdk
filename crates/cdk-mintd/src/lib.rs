@@ -937,8 +937,12 @@ async fn start_services_with_shutdown(
             );
         }
     }
+    // Create a broadcast channel to share shutdown signal between services
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
+    // Start Prometheus server if enabled
     #[cfg(feature = "prometheus")]
-    {
+    let prometheus_handle = {
         if let Some(prometheus_settings) = &settings.prometheus {
             if prometheus_settings.enabled {
                 let addr = prometheus_settings
@@ -955,12 +959,26 @@ async fn start_services_with_shutdown(
                     .bind_address(address)
                     .build_with_cdk_metrics()?;
 
-                if let Err(e) = server.start().await {
-                    tracing::error!("Failed to start prometheus server: {}", e);
-                }
+                let mut shutdown_rx = shutdown_tx.subscribe();
+                let prometheus_shutdown = async move {
+                    let _ = shutdown_rx.recv().await;
+                };
+
+                Some(tokio::spawn(async move {
+                    if let Err(e) = server.start(prometheus_shutdown).await {
+                        tracing::error!("Failed to start prometheus server: {}", e);
+                    }
+                }))
+            } else {
+                None
             }
+        } else {
+            None
         }
-    }
+    };
+
+    #[cfg(not(feature = "prometheus"))]
+    let prometheus_handle: Option<tokio::task::JoinHandle<()>> = None;
     for router in ln_routers {
         mint_service = mint_service.merge(router);
     }
@@ -973,8 +991,24 @@ async fn start_services_with_shutdown(
 
     tracing::info!("listening on {}", listener.local_addr().unwrap());
 
+    // Create a task to wait for the shutdown signal and broadcast it
+    let shutdown_broadcast_task = {
+        let shutdown_tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            shutdown_signal.await;
+            tracing::info!("Shutdown signal received, broadcasting to all services");
+            let _ = shutdown_tx.send(());
+        })
+    };
+
+    // Create shutdown future for axum server
+    let mut axum_shutdown_rx = shutdown_tx.subscribe();
+    let axum_shutdown = async move {
+        let _ = axum_shutdown_rx.recv().await;
+    };
+
     // Wait for axum server to complete with custom shutdown signal
-    let axum_result = axum::serve(listener, mint_service).with_graceful_shutdown(shutdown_signal);
+    let axum_result = axum::serve(listener, mint_service).with_graceful_shutdown(axum_shutdown);
 
     match axum_result.await {
         Ok(_) => {
@@ -984,6 +1018,17 @@ async fn start_services_with_shutdown(
             tracing::warn!("Axum server stopped with error");
             tracing::error!("{}", err);
             bail!("Axum exited with error")
+        }
+    }
+
+    // Wait for the shutdown broadcast task to complete
+    let _ = shutdown_broadcast_task.await;
+
+    // Wait for prometheus server to shutdown if it was started
+    #[cfg(feature = "prometheus")]
+    if let Some(handle) = prometheus_handle {
+        if let Err(e) = handle.await {
+            tracing::warn!("Prometheus server task failed: {}", e);
         }
     }
 

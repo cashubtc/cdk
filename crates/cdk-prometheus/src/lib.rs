@@ -75,17 +75,10 @@ pub fn create_cdk_metrics() -> Result<CdkMetrics> {
 ///
 /// # Errors
 /// Returns an error if the server cannot be created or started
-pub async fn start_default_server_with_metrics() -> Result<()> {
+pub async fn start_default_server_with_metrics(
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
     let server = PrometheusBuilder::new().build_with_cdk_metrics()?;
 
-    server.start().await
-}
-
-/// Convenience function to start a Prometheus server in the background with specific metrics
-///
-/// # Errors
-/// Returns an error if the server cannot be created
-pub fn start_background_server_with_metrics() -> Result<tokio::task::JoinHandle<Result<()>>> {
-    let server = PrometheusBuilder::new().build_with_cdk_metrics()?;
-    Ok(server.start_background())
+    server.start(shutdown_signal).await
 }

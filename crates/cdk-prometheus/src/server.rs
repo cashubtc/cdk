@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use prometheus::{Registry, TextEncoder};
-use tokio::time;
 
 use crate::metrics::METRICS;
 #[cfg(feature = "system-metrics")]
@@ -122,7 +121,10 @@ impl PrometheusServer {
     ///
     /// # Errors
     /// This function always returns Ok as errors are handled internally
-    pub async fn start(self) -> crate::Result<()> {
+    pub async fn start(
+        self,
+        shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> crate::Result<()> {
         // Create and start the exporter
         let binding = self.config.bind_address;
         let registry_clone = Arc::<Registry>::clone(&self.registry);
@@ -138,30 +140,44 @@ impl PrometheusServer {
         // Start the exporter in a background task
         let path = self.config.metrics_path.clone();
 
-        tokio::spawn(async move {
+        // Create a channel for signaling the server task to shutdown
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        // Spawn the server task
+        let server_handle = tokio::spawn(async move {
             // We're using a simple HTTP server to expose our metrics
             use std::io::{Read, Write};
             use std::net::TcpListener;
 
             // Create a TCP listener
             let listener = match TcpListener::bind(binding) {
-                Ok(listener) => listener,
+                Ok(listener) => {
+                    // Set non-blocking mode to allow for shutdown checking
+                    if let Err(e) = listener.set_nonblocking(true) {
+                        tracing::error!("Failed to set non-blocking mode: {e}");
+                        return;
+                    }
+                    listener
+                }
                 Err(e) => {
                     tracing::error!("Failed to bind TCP listener: {e}");
                     return;
                 }
             };
-            tracing::info!(
-                "Started Prometheus server on {} at path {}",
-                self.config.bind_address,
-                self.config.metrics_path
-            );
+            tracing::info!("Started Prometheus server on {} at path {}", binding, path);
 
-            // Accept connections
-            for stream in listener.incoming() {
-                match stream {
-                    Ok(mut stream) => {
-                        // Read the request
+            // Accept connections with shutdown signal handling
+            loop {
+                // Check for shutdown signal
+                if shutdown_rx.try_recv().is_ok() {
+                    tracing::info!("Shutdown signal received, stopping Prometheus server");
+                    break;
+                }
+
+                // Try to accept a connection (non-blocking)
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        // Handle the connection
                         let mut buffer = [0; 1024];
                         match stream.read(&mut buffer) {
                             Ok(0) => {}
@@ -181,13 +197,13 @@ impl PrometheusServer {
                                         metrics
                                     );
 
-                                    if let Err(e) = stream.write(response.as_bytes()) {
+                                    if let Err(e) = stream.write_all(response.as_bytes()) {
                                         tracing::error!("Failed to write response: {e}");
                                     }
                                 } else {
                                     // Write a 404 response
                                     let response = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nNot Found";
-                                    if let Err(e) = stream.write(response.as_bytes()) {
+                                    if let Err(e) = stream.write_all(response.as_bytes()) {
                                         tracing::error!("Failed to write response: {e}");
                                     }
                                 }
@@ -197,23 +213,40 @@ impl PrometheusServer {
                             }
                         }
                     }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // No connection available, continue the loop
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
                     Err(e) => {
                         tracing::error!("Failed to accept connection: {e}");
+                        // Add a small delay to prevent busy looping on persistent errors
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                 }
             }
+
+            tracing::info!("Prometheus server stopped");
         });
 
-        // Wait a bit to ensure the server has started
-        time::sleep(Duration::from_millis(100)).await;
+        // Wait for the shutdown signal
+        shutdown_signal.await;
+
+        // Signal the server to shutdown
+        let _ = shutdown_tx.send(());
+
+        // Wait for the server task to complete (with a timeout)
+        match tokio::time::timeout(Duration::from_secs(5), server_handle).await {
+            Ok(result) => {
+                if let Err(e) = result {
+                    tracing::error!("Server task failed: {e}");
+                }
+            }
+            Err(_) => {
+                tracing::warn!("Server shutdown timed out after 5 seconds");
+            }
+        }
 
         Ok(())
-    }
-
-    /// Start the server in the background and return a handle
-    #[must_use]
-    pub fn start_background(self) -> tokio::task::JoinHandle<crate::Result<()>> {
-        tokio::spawn(async move { self.start().await })
     }
 }
 
