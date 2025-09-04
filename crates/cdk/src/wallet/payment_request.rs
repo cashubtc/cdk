@@ -16,12 +16,16 @@ use nostr_sdk::prelude::*;
 #[cfg(feature = "nostr")]
 use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32};
 use reqwest::Client;
+#[cfg(feature = "nostr")]
 use tokio::sync::Mutex;
 
+use crate::error::Error;
 use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
 use crate::nuts::nut18::Nut10SecretRequest;
 use crate::nuts::{CurrencyUnit, Transport};
-use crate::wallet::{MultiMintWallet, ReceiveOptions, SendOptions};
+#[cfg(feature = "nostr")]
+use crate::wallet::ReceiveOptions;
+use crate::wallet::{MultiMintWallet, SendOptions};
 use crate::Wallet;
 
 impl Wallet {
@@ -34,9 +38,7 @@ impl Wallet {
         &self,
         payment_request: PaymentRequest,
         custom_amount: Option<Amount>,
-    ) -> Result<(), crate::error::Error> {
-        use crate::error::Error;
-
+    ) -> Result<(), Error> {
         let amount = match payment_request.amount {
             Some(amount) => amount,
             None => match custom_amount {
@@ -142,7 +144,9 @@ impl Wallet {
                         Ok(())
                     }
                     #[cfg(not(feature = "nostr"))]
-                    Err(Error::Custom("Nostr is not enabled in this build"))
+                    Err(Error::Custom(
+                        "Nostr is not enabled in this build".to_string(),
+                    ))
                 }
 
                 TransportType::HttpPost => {
@@ -220,86 +224,31 @@ pub struct NostrWaitInfo {
 }
 
 impl MultiMintWallet {
-    /// Construct a PaymentRequest and, if transport is Nostr, return the params needed to wait for payment.
-    pub async fn create_request(
+    /// Derive enforceable NUT-10 spending conditions from high-level request params.
+    ///
+    /// Why:
+    /// - Centralizes translation of CLI/SDK inputs (P2PK multisig and HTLC variants) into
+    ///   a single, canonical `SpendingConditions` shape so requests are consistent.
+    /// - Prevents ambiguous construction by capping `num_sigs` to the number of provided keys
+    ///   and rejecting malformed hashes/inputs early.
+    /// - Encourages safe defaults by selecting `SigFlag::SigInputs` and composing conditions
+    ///   that can be verified by recipients and mints.
+    ///
+    /// Behavior notes (rationale):
+    /// - If no P2PK or HTLC data is given, returns `Ok(None)` so callers emit a plain request
+    ///   without additional constraints.
+    /// - With `pubkeys` only, constructs P2PK-style conditions where the first key is used as
+    ///   the primary spend key and the remainder contribute to multisig according to `num_sigs`.
+    /// - With `hash` or `preimage`, constructs an HTLC condition, optionally embedding P2PK
+    ///   conditions to require signatures in addition to the hash lock.
+    ///
+    /// Errors:
+    /// - Invalid SHA-256 `hash` strings or invalid HTLC/P2PK parameterizations surface as errors
+    ///   from parsing and `SpendingConditions` constructors.
+    fn get_pr_spending_conditions(
         &self,
-        params: CreateRequestParams,
-    ) -> Result<(PaymentRequest, Option<NostrWaitInfo>)> {
-        // Collect available mints for the selected unit
-        let mints = self
-            .get_balances(&CurrencyUnit::from_str(&params.unit)?)
-            .await?
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-
-        // Transports
-        let transport_type = params.transport.to_lowercase();
-        let (transports, nostr_info): (Vec<Transport>, Option<NostrWaitInfo>) =
-            match transport_type.as_str() {
-                "nostr" => {
-                    #[cfg(feature = "nostr")]
-                    {
-                        let keys = Keys::generate();
-                        let relays = if let Some(custom_relays) = &params.nostr_relays {
-                            if !custom_relays.is_empty() {
-                                custom_relays.clone()
-                            } else {
-                                vec![
-                                    "wss://relay.nos.social".to_string(),
-                                    "wss://relay.damus.io".to_string(),
-                                ]
-                            }
-                        } else {
-                            vec![
-                                "wss://relay.nos.social".to_string(),
-                                "wss://relay.damus.io".to_string(),
-                            ]
-                        };
-
-                        // Parse relay URLs for nprofile
-                        let relay_urls = relays
-                            .iter()
-                            .map(|r| RelayUrl::parse(r))
-                            .collect::<Result<Vec<_>, _>>()?;
-
-                        let nprofile =
-                            nostr_sdk::nips::nip19::Nip19Profile::new(keys.public_key, relay_urls);
-                        let nostr_transport = Transport {
-                            _type: TransportType::Nostr,
-                            target: nprofile.to_bech32()?,
-                            tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
-                        };
-
-                        (
-                            vec![nostr_transport],
-                            Some(NostrWaitInfo {
-                                keys,
-                                relays,
-                                pubkey: nprofile.public_key,
-                            }),
-                        )
-                    }
-                    #[cfg(not(feature = "nostr"))]
-                    Err(Error::Custom("Nostr is not enabled in this build"))
-                }
-                "http" => {
-                    if let Some(url) = &params.http_url {
-                        let http_transport = Transport {
-                            _type: TransportType::HttpPost,
-                            target: url.clone(),
-                            tags: None,
-                        };
-                        (vec![http_transport], None)
-                    } else {
-                        // No URL provided, skip transport
-                        (vec![], None)
-                    }
-                }
-                "none" => (vec![], None),
-                _ => (vec![], None),
-            };
-
+        params: &CreateRequestParams,
+    ) -> Result<Option<SpendingConditions>, Error> {
         // Spending conditions
         let spending_conditions: Option<SpendingConditions> =
             if let Some(pubkey_strings) = &params.pubkeys {
@@ -331,7 +280,9 @@ impl MultiMintWallet {
                                 data: hash,
                                 conditions: Some(conditions),
                             }),
-                            Err(err) => anyhow::bail!("Error parsing hash: {err}"),
+                            Err(err) => {
+                                return Err(Error::Custom(format!("Error parsing hash: {err}")))
+                            }
                         }
                     } else if let Some(preimage) = &params.preimage {
                         let conditions = Conditions {
@@ -367,15 +318,117 @@ impl MultiMintWallet {
                         data: hash,
                         conditions: None,
                     }),
-                    Err(err) => anyhow::bail!("Error parsing hash: {err}"),
+                    Err(err) => return Err(Error::Custom(format!("Error parsing hash: {err}"))),
                 }
             } else if let Some(preimage) = &params.preimage {
                 Some(SpendingConditions::new_htlc(preimage.to_string(), None)?)
             } else {
                 None
             };
+        Ok(spending_conditions)
+    }
 
-        let nut10 = spending_conditions.map(Nut10SecretRequest::from);
+    /// Create a NUT-18 PaymentRequest from high-level parameters.
+    ///
+    /// Why:
+    /// - Ensures the CLI and SDKs construct requests consistently using wallet context.
+    /// - Advertises available mints for the chosen unit so payers can select compatible proofs.
+    /// - Optionally embeds a transport; Nostr is preferred to reduce IP exposure for the payer.
+    ///
+    /// Behavior summary (focus on rationale rather than steps):
+    /// - Uses `unit` to discover mints with balances as a hint to senders (helps route payments without leaking more data than necessary).
+    /// - Translates P2PK/multisig and HTLC inputs (pubkeys/num_sigs/hash/preimage) into a NUT-10 secret request so the receiver can enforce spending constraints.
+    /// - For `transport == "nostr"`, generates ephemeral keys and an nprofile pointing at the chosen relays; returns `NostrWaitInfo` so callers can wait for the incoming payment without coupling construction and reception logic.
+    /// - For `transport == "http"`, attaches the provided endpoint; for `none` or unknown, omits transports to let the caller deliver out-of-band.
+    ///
+    /// Returns:
+    /// - `(PaymentRequest, Some(NostrWaitInfo))` when `transport == "nostr"`.
+    /// - `(PaymentRequest, None)` otherwise.
+    ///
+    /// Errors when:
+    /// - `unit` cannot be parsed, relay URLs are invalid, or P2PK/HTLC parameters are malformed.
+    ///
+    /// Notes:
+    /// - Sets `single_use = true` to discourage replays.
+    /// - Ephemeral Nostr keys are intentional; keep `NostrWaitInfo` only as long as needed for reception.
+    #[cfg(feature = "nostr")]
+    pub async fn create_request(
+        &self,
+        params: CreateRequestParams,
+    ) -> Result<(PaymentRequest, Option<NostrWaitInfo>)> {
+        // Collect available mints for the selected unit
+        let mints = self
+            .get_balances(&CurrencyUnit::from_str(&params.unit)?)
+            .await?
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        // Transports
+        let transport_type = params.transport.to_lowercase();
+        let (transports, nostr_info): (Vec<Transport>, Option<NostrWaitInfo>) =
+            match transport_type.as_str() {
+                "nostr" => {
+                    let keys = Keys::generate();
+                    let relays = if let Some(custom_relays) = &params.nostr_relays {
+                        if !custom_relays.is_empty() {
+                            custom_relays.clone()
+                        } else {
+                            vec![
+                                "wss://relay.nos.social".to_string(),
+                                "wss://relay.damus.io".to_string(),
+                            ]
+                        }
+                    } else {
+                        vec![
+                            "wss://relay.nos.social".to_string(),
+                            "wss://relay.damus.io".to_string(),
+                        ]
+                    };
+
+                    // Parse relay URLs for nprofile
+                    let relay_urls = relays
+                        .iter()
+                        .map(|r| RelayUrl::parse(r))
+                        .collect::<Result<Vec<_>, _>>()?;
+
+                    let nprofile =
+                        nostr_sdk::nips::nip19::Nip19Profile::new(keys.public_key, relay_urls);
+                    let nostr_transport = Transport {
+                        _type: TransportType::Nostr,
+                        target: nprofile.to_bech32()?,
+                        tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
+                    };
+
+                    (
+                        vec![nostr_transport],
+                        Some(NostrWaitInfo {
+                            keys,
+                            relays,
+                            pubkey: nprofile.public_key,
+                        }),
+                    )
+                }
+                "http" => {
+                    if let Some(url) = &params.http_url {
+                        let http_transport = Transport {
+                            _type: TransportType::HttpPost,
+                            target: url.clone(),
+                            tags: None,
+                        };
+                        (vec![http_transport], None)
+                    } else {
+                        // No URL provided, skip transport
+                        (vec![], None)
+                    }
+                }
+                "none" => (vec![], None),
+                _ => (vec![], None),
+            };
+
+        let nut10 = self
+            .get_pr_spending_conditions(&params)?
+            .map(Nut10SecretRequest::from);
 
         let req = PaymentRequest {
             payment_id: None,
@@ -389,6 +442,73 @@ impl MultiMintWallet {
         };
 
         Ok((req, nostr_info))
+    }
+
+    /// Create a NUT-18 PaymentRequest from high-level parameters (Nostr disabled build).
+    ///
+    /// Why:
+    /// - Keep request construction consistent even when Nostr is not compiled in.
+    /// - Still advertise available mints for the unit so payers can route proofs correctly.
+    /// - Allow callers to attach an HTTP transport when out-of-band delivery is acceptable.
+    ///
+    /// Behavior notes:
+    /// - Rejects `transport == "nostr"` early so callers can surface a clear UX error.
+    /// - Encodes P2PK/multisig and HTLC constraints into a NUT-10 secret request for enforceable spending conditions.
+    ///
+    /// Returns the constructed PaymentRequest and sets `single_use = true` to discourage replay.
+    #[cfg(not(feature = "nostr"))]
+    pub async fn create_request(
+        &self,
+        params: CreateRequestParams,
+    ) -> Result<PaymentRequest, Error> {
+        // Collect available mints for the selected unit
+        let mints = self
+            .get_balances(&CurrencyUnit::from_str(&params.unit)?)
+            .await?
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        // Transports
+        let transport_type = params.transport.to_lowercase();
+        let transports: Vec<Transport> = match transport_type.as_str() {
+            "nostr" => {
+                return Err(Error::Custom(
+                    "Nostr is not supported in this build".to_string(),
+                ))
+            }
+            "http" => {
+                if let Some(url) = &params.http_url {
+                    let http_transport = Transport {
+                        _type: TransportType::HttpPost,
+                        target: url.clone(),
+                        tags: None,
+                    };
+                    vec![http_transport]
+                } else {
+                    // No URL provided, skip transport
+                    vec![]
+                }
+            }
+            _ => vec![],
+        };
+
+        let nut10 = self
+            .get_pr_spending_conditions(&params)?
+            .map(Nut10SecretRequest::from);
+
+        let req = PaymentRequest {
+            payment_id: None,
+            amount: params.amount.map(Amount::from),
+            unit: Some(CurrencyUnit::from_str(&params.unit)?),
+            single_use: Some(true),
+            mints: Some(mints),
+            description: params.description,
+            transports,
+            nut10,
+        };
+
+        Ok(req)
     }
 
     /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
