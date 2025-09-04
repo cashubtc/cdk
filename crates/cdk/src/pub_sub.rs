@@ -39,7 +39,7 @@ pub const DEFAULT_CHANNEL_SIZE: usize = 10;
 /// type
 pub struct Manager<T, I, F>
 where
-    T: Indexable<Type = I> + Clone + Send + Sync + 'static,
+    T: Indexable<Type = I> + Debug + Clone + Send + Sync + 'static,
     I: PartialOrd + Clone + Debug + Ord + Send + Sync + 'static,
     F: OnNewSubscription<Index = I, Event = T> + Send + Sync + 'static,
 {
@@ -52,7 +52,7 @@ where
 
 impl<T, I, F> Default for Manager<T, I, F>
 where
-    T: Indexable<Type = I> + Clone + Send + Sync + 'static,
+    T: Indexable<Type = I> + Debug + Clone + Send + Sync + 'static,
     I: PartialOrd + Clone + Debug + Ord + Send + Sync + 'static,
     F: OnNewSubscription<Index = I, Event = T> + Send + Sync + 'static,
 {
@@ -77,7 +77,7 @@ where
 
 impl<T, I, F> From<F> for Manager<T, I, F>
 where
-    T: Indexable<Type = I> + Clone + Send + Sync + 'static,
+    T: Indexable<Type = I> + Debug + Clone + Send + Sync + 'static,
     I: PartialOrd + Clone + Debug + Ord + Send + Sync + 'static,
     F: OnNewSubscription<Index = I, Event = T> + Send + Sync + 'static,
 {
@@ -90,7 +90,7 @@ where
 
 impl<T, I, F> Manager<T, I, F>
 where
-    T: Indexable<Type = I> + Clone + Send + Sync + 'static,
+    T: Indexable<Type = I> + Debug + Clone + Send + Sync + 'static,
     I: PartialOrd + Clone + Debug + Ord + Send + Sync + 'static,
     F: OnNewSubscription<Index = I, Event = T> + Send + Sync + 'static,
 {
@@ -112,7 +112,15 @@ where
                     continue;
                 }
                 sent.insert(sub_id);
-                let _ = sender.try_send((key.into(), event.clone()));
+                let _ = sender
+                    .try_send((key.into(), event.clone()))
+                    .inspect_err(|err| {
+                        tracing::info!(
+                            "Failed to send notification {:?} with error {:?}",
+                            event,
+                            err
+                        );
+                    });
             }
         }
     }
@@ -168,7 +176,15 @@ where
                 {
                     Ok(events) => {
                         for event in events {
-                            let _ = sender.try_send((sub_id_for_worker.clone(), event));
+                            let _ = sender
+                                .try_send((sub_id_for_worker.clone(), event.clone()))
+                                .inspect_err(|err| {
+                                    tracing::info!(
+                                        "Failed to send on_new_subscription notification {:?} with error {:?}",
+                                        event,
+                                        err
+                                    );
+                                });
                         }
                     }
                     Err(err) => {
@@ -243,7 +259,7 @@ where
 /// Manager goes out of scope, stop all background tasks
 impl<T, I, F> Drop for Manager<T, I, F>
 where
-    T: Indexable<Type = I> + Clone + Send + Sync + 'static,
+    T: Indexable<Type = I> + Debug + Clone + Send + Sync + 'static,
     I: Clone + Debug + PartialOrd + Ord + Send + Sync + 'static,
     F: OnNewSubscription<Index = I, Event = T> + Send + Sync + 'static,
 {
