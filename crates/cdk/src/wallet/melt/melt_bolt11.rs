@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use cdk_common::amount::SplitTarget;
 use cdk_common::wallet::{Transaction, TransactionDirection};
+use cdk_common::PaymentMethod;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
@@ -87,6 +88,7 @@ impl Wallet {
             state: quote_res.state,
             expiry: quote_res.expiry,
             payment_preimage: quote_res.payment_preimage,
+            payment_method: PaymentMethod::Bolt11,
         };
 
         self.localstore.add_melt_quote(quote.clone()).await?;
@@ -183,7 +185,13 @@ impl Wallet {
             Some(premint_secrets.blinded_messages()),
         );
 
-        let melt_response = self.client.post_melt(request).await;
+        let melt_response = match quote_info.payment_method {
+            cdk_common::PaymentMethod::Bolt11 => self.client.post_melt(request).await,
+            cdk_common::PaymentMethod::Bolt12 => self.client.post_melt_bolt12(request).await,
+            cdk_common::PaymentMethod::Custom(_) => {
+                return Err(Error::UnsupportedPaymentMethod);
+            }
+        };
 
         let melt_response = match melt_response {
             Ok(melt_response) => melt_response,
