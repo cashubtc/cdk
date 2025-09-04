@@ -42,10 +42,10 @@ use cdk_axum::cache::HttpCache;
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
 use cdk_common::payment::MintPayment;
-#[cfg(feature = "postgres")]
-use cdk_postgres::MintPgDatabase;
 #[cfg(feature = "auth")]
 use cdk_postgres::MintPgAuthDatabase;
+#[cfg(feature = "postgres")]
+use cdk_postgres::MintPgDatabase;
 #[cfg(all(feature = "auth", feature = "sqlite"))]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 #[cfg(feature = "sqlite")]
