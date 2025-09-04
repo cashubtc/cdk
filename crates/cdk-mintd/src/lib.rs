@@ -43,21 +43,17 @@ use cdk_axum::cache::HttpCache;
 use cdk_common::payment::MetricsMintPayment;
 use cdk_common::payment::MintPayment;
 #[cfg(feature = "postgres")]
+use cdk_postgres::MintPgDatabase;
+#[cfg(feature = "auth")]
 use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase};
-#[cfg(feature = "prometheus")]
-use cdk_prometheus;
-#[cfg(feature = "prometheus")]
-use cdk_prometheus::metrics;
-#[cfg(feature = "prometheus")]
-use cdk_prometheus::prometheus::proto::Metric;
-#[cfg(feature = "prometheus")]
-use cdk_prometheus::METRICS;
 #[cfg(all(feature = "auth", feature = "sqlite"))]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
-use config::{AuthType, DatabaseEngine, LnBackend};
+#[cfg(feature = "auth")]
+use config::AuthType;
+use config::{DatabaseEngine, LnBackend};
 use env_vars::ENV_WORK_DIR;
 use setup::LnBackendSetup;
 use tower::ServiceBuilder;
