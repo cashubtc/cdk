@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::response::Html;
 use maud::html;
 
-use crate::web::handlers::AppState;
+use crate::web::handlers::utils::AppState;
 use crate::web::templates::{format_sats_as_btc, layout};
 
 pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
@@ -26,18 +26,35 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
         html! {
             h2 style="text-align: center; margin-bottom: 3rem;" { "Lightning" }
 
-            // Quick Actions section - matching dashboard style
+            // Quick Actions section - individual cards
             div class="card" style="margin-bottom: 2rem;" {
                 h2 { "Quick Actions" }
-                div style="display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap;" {
-                    a href="/channels/open" style="text-decoration: none; flex: 1; min-width: 200px;" {
-                        button class="button-primary" style="width: 100%;" { "Open Channel" }
+                div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;" {
+                    // Open Channel Card
+                    div class="quick-action-card" {
+                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Open Channel" }
+                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Create a new Lightning Network channel to connect with another node." }
+                        a href="/channels/open" style="text-decoration: none;" {
+                            button class="button-outline" { "Open Channel" }
+                        }
                     }
-                    a href="/invoices" style="text-decoration: none; flex: 1; min-width: 200px;" {
-                        button class="button-primary" style="width: 100%;" { "Create Invoice" }
+
+                    // Create Invoice Card
+                    div class="quick-action-card" {
+                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Create Invoice" }
+                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Generate a Lightning invoice to receive payments from other users or services." }
+                        a href="/invoices" style="text-decoration: none;" {
+                            button class="button-outline" { "Create Invoice" }
+                        }
                     }
-                    a href="/payments/send" style="text-decoration: none; flex: 1; min-width: 200px;" {
-                        button class="button-primary" style="width: 100%;" { "Make Lightning Payment" }
+
+                    // Make Payment Card
+                    div class="quick-action-card" {
+                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Make Lightning Payment" }
+                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send Lightning payments to other users using invoices. BOLT 11 & 12 supported." }
+                        a href="/invoices" style="text-decoration: none;" {
+                            button class="button-outline" { "Make Payment" }
+                        }
                     }
                 }
             }
@@ -73,18 +90,35 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
         html! {
             h2 style="text-align: center; margin-bottom: 3rem;" { "Lightning" }
 
-            // Quick Actions section - matching dashboard style
+            // Quick Actions section - individual cards
             div class="card" style="margin-bottom: 2rem;" {
                 h2 { "Quick Actions" }
-                div style="display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap;" {
-                    a href="/channels/open" style="text-decoration: none; flex: 1; min-width: 200px;" {
-                        button class="button-primary" style="width: 100%;" { "Open Channel" }
+                div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;" {
+                    // Open Channel Card
+                    div class="quick-action-card" {
+                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Open Channel" }
+                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Create a new Lightning channel by connecting with another node." }
+                        a href="/channels/open" style="text-decoration: none;" {
+                            button class="button-outline" { "Open Channel" }
+                        }
                     }
-                    a href="/invoices" style="text-decoration: none; flex: 1; min-width: 200px;" {
-                        button class="button-primary" style="width: 100%;" { "Create Invoice" }
+
+                    // Create Invoice Card
+                    div class="quick-action-card" {
+                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Create Invoice" }
+                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Generate a Lightning invoice to receive payments." }
+                        a href="/invoices" style="text-decoration: none;" {
+                            button class="button-outline" { "Create Invoice" }
+                        }
                     }
-                    a href="/payments/send" style="text-decoration: none; flex: 1; min-width: 200px;" {
-                        button class="button-primary" style="width: 100%;" { "Make Lightning Payment" }
+
+                    // Make Payment Card
+                    div class="quick-action-card" {
+                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Make Lightning Payment" }
+                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send Lightning payments to other users using invoices." }
+                        a href="/payments/send" style="text-decoration: none;" {
+                            button class="button-outline" { "Make Payment" }
+                        }
                     }
                 }
             }
@@ -112,57 +146,72 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                 }
             }
 
-            div class="card" {
-                h2 { "Channel Details" }
+            // Channel Details header (outside card)
+            h2 class="section-header" { "Channel Details" }
 
-                // Channels list
-                @for channel in &channels {
-                    div class="channel-item" {
-                        div class="channel-header" {
-                            span class="channel-id" { "Channel ID: " (channel.channel_id.to_string()) }
+            // Channels list
+            @for (index, channel) in channels.iter().enumerate() {
+                @let node_id = channel.counterparty_node_id.to_string();
+                @let channel_number = index + 1;
+
+                div class="channel-box" {
+                    // Channel number as prominent header
+                    div class="channel-alias" { (format!("Channel {}", channel_number)) }
+
+                    // Channel details in left-aligned format
+                    div class="channel-details" {
+                        div class="detail-row" {
+                            span class="detail-label" { "Channel ID" }
+                            span class="detail-value-amount" { (channel.channel_id.to_string()) }
+                        }
+                        @if let Some(short_channel_id) = channel.short_channel_id {
+                            div class="detail-row" {
+                                span class="detail-label" { "Short Channel ID" }
+                                span class="detail-value-amount" { (short_channel_id.to_string()) }
+                            }
+                        }
+                        div class="detail-row" {
+                            span class="detail-label" { "Node ID" }
+                            span class="detail-value-amount" { (node_id) }
+                        }
+                        div class="detail-row" {
+                            span class="detail-label" { "Status" }
                             @if channel.is_usable {
                                 span class="status-badge status-active" { "Active" }
                             } @else {
                                 span class="status-badge status-inactive" { "Inactive" }
                             }
                         }
-                        div class="info-item" {
-                            span class="info-label" { "Counterparty" }
-                            span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (channel.counterparty_node_id.to_string()) }
+                    }
+
+                    // Balance information cards (keeping existing style)
+                    div class="balance-info" {
+                        div class="balance-item" {
+                            div class="balance-amount" { (format_sats_as_btc(channel.outbound_capacity_msat / 1000)) }
+                            div class="balance-label" { "Outbound" }
                         }
-                        @if let Some(short_channel_id) = channel.short_channel_id {
-                            div class="info-item" {
-                                span class="info-label" { "Short Channel ID" }
-                                span class="info-value" { (short_channel_id.to_string()) }
-                            }
+                        div class="balance-item" {
+                            div class="balance-amount" { (format_sats_as_btc(channel.inbound_capacity_msat / 1000)) }
+                            div class="balance-label" { "Inbound" }
                         }
-                        div class="balance-info" {
-                            div class="balance-item" {
-                                div class="balance-amount" { (format_sats_as_btc(channel.outbound_capacity_msat / 1000)) }
-                                div class="balance-label" { "Outbound" }
-                            }
-                            div class="balance-item" {
-                                div class="balance-amount" { (format_sats_as_btc(channel.inbound_capacity_msat / 1000)) }
-                                div class="balance-label" { "Inbound" }
-                            }
-                            div class="balance-item" {
-                                div class="balance-amount" { (format_sats_as_btc(channel.channel_value_sats)) }
-                                div class="balance-label" { "Total" }
-                            }
+                        div class="balance-item" {
+                            div class="balance-amount" { (format_sats_as_btc(channel.channel_value_sats)) }
+                            div class="balance-label" { "Total" }
                         }
-                        @if channel.is_usable {
-                            div style="margin-top: 1rem; display: flex; gap: 0.5rem;" {
-                                a href=(format!("/channels/close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
-                                    button style="background: #dc3545;" { "Close Channel" }
-                                }
-                                a href=(format!("/channels/force-close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
-                                    button style="background: #d63384;" title="Force close should not be used if normal close is preferred. Force close will broadcast the latest commitment transaction immediately." { "Force Close" }
-                                }
+                    }
+
+                    // Action buttons
+                    @if channel.is_usable {
+                        div class="channel-actions" {
+                            a href=(format!("/channels/close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
+                                button class="button-secondary" { "Close Channel" }
+                            }
+                            a href=(format!("/channels/force-close?channel_id={}&node_id={}", channel.user_channel_id.0, channel.counterparty_node_id)) {
+                                button class="button-destructive" title="Force close should not be used if normal close is preferred. Force close will broadcast the latest commitment transaction immediately." { "Force Close" }
                             }
                         }
                     }
                 }
-
             }
         }
     };

@@ -19,7 +19,7 @@ use cdk_common::common::FeeReserve;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
     self, Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
-    CreateIncomingPaymentResponse, IncomingPaymentOptions, MakePaymentResponse, MintPayment,
+    CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse, MintPayment,
     OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk_common::util::{hex, unix_time};
@@ -89,9 +89,9 @@ impl MintPayment for Cln {
     }
 
     #[instrument(skip_all)]
-    async fn wait_any_incoming_payment(
+    async fn wait_payment_event(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
         tracing::info!(
             "CLN: Starting wait_any_incoming_payment with socket: {:?}",
             self.rpc_socket
@@ -243,8 +243,9 @@ impl MintPayment for Cln {
                                 payment_id: payment_hash.to_string()
                             };
                             tracing::info!("CLN: Created WaitPaymentResponse with amount {} msats", amount_msats.msat());
+                            let event = Event::PaymentReceived(response);
 
-                            break Some((response, (cln_client, last_pay_idx, cancel_token, is_active)));
+                            break Some((event, (cln_client, last_pay_idx, cancel_token, is_active)));
                                 }
                                 Err(e) => {
                                     tracing::warn!("CLN: Error fetching invoice: {e}");

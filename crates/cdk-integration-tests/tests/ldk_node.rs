@@ -10,7 +10,7 @@ async fn test_ldk_node_mint_info() -> Result<()> {
     let client = reqwest::Client::new();
 
     // Make a request to the info endpoint
-    let response = client.get(&format!("{}/v1/info", mint_url)).send().await?;
+    let response = client.get(format!("{}/v1/info", mint_url)).send().await?;
 
     // Check that we got a successful response
     assert_eq!(response.status(), 200);
@@ -44,7 +44,7 @@ async fn test_ldk_node_mint_quote() -> Result<()> {
 
     // Make a request to create a mint quote
     let response = client
-        .post(&format!("{}/v1/mint/quote/bolt11", mint_url))
+        .post(format!("{}/v1/mint/quote/bolt11", mint_url))
         .json(&quote_request)
         .send()
         .await?;

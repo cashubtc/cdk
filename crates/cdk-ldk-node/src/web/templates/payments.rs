@@ -17,7 +17,7 @@ pub fn payment_list_item(
     let status_class = match status {
         "Succeeded" => "status-active",
         "Failed" => "status-inactive",
-        "Pending" => "status-badge",
+        "Pending" => "status-pending",
         _ => "status-badge",
     };
 

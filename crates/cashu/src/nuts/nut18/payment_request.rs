@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(request.unit.clone().unwrap(), CurrencyUnit::Sat);
         assert_eq!(request.mints.clone().unwrap(), vec![mint_url]);
 
-        let t = request.transports.first().clone().unwrap();
+        let t = request.transports.first().unwrap();
         assert_eq!(&transport, t);
 
         // Test serialization and deserialization

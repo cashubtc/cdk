@@ -54,6 +54,10 @@ pub use auth::{AuthMintConnector, AuthWallet};
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
 #[cfg(feature = "auth")]
+pub use mint_connector::http_client::AuthHttpClient as BaseAuthHttpClient;
+pub use mint_connector::http_client::HttpClient as BaseHttpClient;
+pub use mint_connector::transport::Transport as HttpTransport;
+#[cfg(feature = "auth")]
 pub use mint_connector::AuthHttpClient;
 pub use mint_connector::{HttpClient, MintConnector};
 pub use multi_mint_wallet::MultiMintWallet;

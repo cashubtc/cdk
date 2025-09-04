@@ -15,11 +15,14 @@ use crate::nuts::{
 #[cfg(feature = "auth")]
 use crate::wallet::AuthWallet;
 
-mod http_client;
+pub mod http_client;
+pub mod transport;
 
+/// Auth HTTP Client with async transport
 #[cfg(feature = "auth")]
-pub use http_client::AuthHttpClient;
-pub use http_client::HttpClient;
+pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;
+/// Http Client with async transport
+pub type HttpClient = http_client::HttpClient<transport::Async>;
 
 /// Interface that connects a wallet to a mint. Typically represents an [HttpClient].
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
