@@ -520,7 +520,21 @@ impl MultiMintWallet {
             let target_wallet_clone = target_wallet.clone();
 
             // Spawn parallel transfer task
+            #[cfg(not(target_arch = "wasm32"))]
             let task = tokio::spawn(async move {
+                self_clone
+                    .transfer_single(
+                        &source_mint_url_clone,
+                        &source_wallet_clone,
+                        &target_mint_url_clone,
+                        &target_wallet_clone,
+                        transfer_amount,
+                    )
+                    .await
+            });
+
+            #[cfg(target_arch = "wasm32")]
+            let task = tokio::task::spawn_local(async move {
                 self_clone
                     .transfer_single(
                         &source_mint_url_clone,
@@ -871,7 +885,14 @@ impl MultiMintWallet {
             let amount_msat = u64::from(amount) * 1000;
             let options = Some(MeltOptions::new_mpp(amount_msat));
 
+            #[cfg(not(target_arch = "wasm32"))]
             let task = tokio::spawn(async move {
+                let quote = wallet.melt_quote(bolt11_clone, options).await;
+                (mint_url_clone, quote)
+            });
+
+            #[cfg(target_arch = "wasm32")]
+            let task = tokio::task::spawn_local(async move {
                 let quote = wallet.melt_quote(bolt11_clone, options).await;
                 (mint_url_clone, quote)
             });
@@ -920,7 +941,14 @@ impl MultiMintWallet {
 
             let mint_url_clone = mint_url.clone();
 
+            #[cfg(not(target_arch = "wasm32"))]
             let task = tokio::spawn(async move {
+                let melted = wallet.melt(&quote_id).await;
+                (mint_url_clone, melted)
+            });
+
+            #[cfg(target_arch = "wasm32")]
+            let task = tokio::task::spawn_local(async move {
                 let melted = wallet.melt(&quote_id).await;
                 (mint_url_clone, melted)
             });
