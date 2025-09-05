@@ -553,13 +553,12 @@ impl MintKeySet {
         secp: &Secp256k1<C>,
         xpriv: Xpriv,
         unit: CurrencyUnit,
-        max_order: u8,
+        amounts: &[u64],
         final_expiry: Option<u64>,
         version: KeySetVersion,
     ) -> Self {
         let mut map = BTreeMap::new();
-        for i in 0..max_order {
-            let amount = Amount::from(2_u64.pow(i as u32));
+        for (i, amount) in amounts.iter().enumerate() {
             let secret_key = xpriv
                 .derive_priv(
                     secp,
@@ -569,7 +568,7 @@ impl MintKeySet {
                 .private_key;
             let public_key = secret_key.public_key(secp);
             map.insert(
-                amount,
+                amount.into(),
                 MintKeyPair {
                     secret_key: secret_key.into(),
                     public_key: public_key.into(),
@@ -594,7 +593,7 @@ impl MintKeySet {
     pub fn generate_from_seed<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         seed: &[u8],
-        max_order: u8,
+        amounts: &[u64],
         currency_unit: CurrencyUnit,
         derivation_path: DerivationPath,
         final_expiry: Option<u64>,
@@ -607,7 +606,7 @@ impl MintKeySet {
                 .derive_priv(secp, &derivation_path)
                 .expect("RNG busted"),
             currency_unit,
-            max_order,
+            amounts,
             final_expiry,
             version,
         )
@@ -617,7 +616,7 @@ impl MintKeySet {
     pub fn generate_from_xpriv<C: secp256k1::Signing>(
         secp: &Secp256k1<C>,
         xpriv: Xpriv,
-        max_order: u8,
+        amounts: &[u64],
         currency_unit: CurrencyUnit,
         derivation_path: DerivationPath,
         final_expiry: Option<u64>,
@@ -629,7 +628,7 @@ impl MintKeySet {
                 .derive_priv(secp, &derivation_path)
                 .expect("RNG busted"),
             currency_unit,
-            max_order,
+            amounts,
             final_expiry,
             version,
         )

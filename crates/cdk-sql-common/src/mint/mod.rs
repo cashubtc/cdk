@@ -383,11 +383,11 @@ where
         INSERT INTO
             keyset (
                 id, unit, active, valid_from, valid_to, derivation_path,
-                max_order, input_fee_ppk, derivation_path_index
+                max_order, amounts, input_fee_ppk, derivation_path_index
             )
         VALUES (
             :id, :unit, :active, :valid_from, :valid_to, :derivation_path,
-            :max_order, :input_fee_ppk, :derivation_path_index
+            :max_order, :amounts, :input_fee_ppk, :derivation_path_index
         )
         ON CONFLICT(id) DO UPDATE SET
             unit = excluded.unit,
@@ -396,6 +396,7 @@ where
             valid_to = excluded.valid_to,
             derivation_path = excluded.derivation_path,
             max_order = excluded.max_order,
+            amounts = excluded.amounts,
             input_fee_ppk = excluded.input_fee_ppk,
             derivation_path_index = excluded.derivation_path_index
         "#,
@@ -407,6 +408,7 @@ where
         .bind("valid_to", keyset.final_expiry.map(|v| v as i64))
         .bind("derivation_path", keyset.derivation_path.to_string())
         .bind("max_order", keyset.max_order)
+        .bind("amounts", serde_json::to_string(&keyset.amounts).ok())
         .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
         .bind("derivation_path_index", keyset.derivation_path_index)
         .execute(&self.inner)
@@ -496,6 +498,7 @@ where
                 derivation_path,
                 derivation_path_index,
                 max_order,
+                amounts,
                 input_fee_ppk
             FROM
                 keyset
@@ -520,6 +523,7 @@ where
                 derivation_path,
                 derivation_path_index,
                 max_order,
+                amounts,
                 input_fee_ppk
             FROM
                 keyset
@@ -1837,9 +1841,15 @@ fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo, Error> {
             derivation_path,
             derivation_path_index,
             max_order,
+            amounts,
             row_keyset_ppk
         ) = row
     );
+
+    let max_order: u8 = column_as_number!(max_order);
+    let amounts = column_as_nullable_string!(amounts)
+        .and_then(|str| serde_json::from_str(&str).ok())
+        .unwrap_or_else(|| (0..max_order).map(|m| 2u64.pow(m.into())).collect());
 
     Ok(MintKeySetInfo {
         id: column_as_string!(id, Id::from_str, Id::from_bytes),
@@ -1848,7 +1858,8 @@ fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo, Error> {
         valid_from: column_as_number!(valid_from),
         derivation_path: column_as_string!(derivation_path, DerivationPath::from_str),
         derivation_path_index: column_as_nullable_number!(derivation_path_index),
-        max_order: column_as_number!(max_order),
+        max_order,
+        amounts,
         input_fee_ppk: column_as_number!(row_keyset_ppk),
         final_expiry: column_as_nullable_number!(valid_to),
     })
@@ -2061,4 +2072,98 @@ fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Error>
         c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
         dleq,
     })
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    mod max_order_to_amounts_migrations {
+        use super::*;
+
+        #[test]
+        fn legacy_payload() {
+            let result = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Null,
+                Column::Integer(0),
+            ]);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn migrated_payload() {
+            let legacy = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Null,
+                Column::Integer(0),
+            ]);
+            assert!(legacy.is_ok());
+
+            let amounts = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
+            let migrated = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Text(serde_json::to_string(&amounts).expect("valid json")),
+                Column::Integer(0),
+            ]);
+            assert!(migrated.is_ok());
+            assert_eq!(legacy.unwrap(), migrated.unwrap());
+        }
+
+        #[test]
+        fn amounts_over_max_order() {
+            let legacy = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Null,
+                Column::Integer(0),
+            ]);
+            assert!(legacy.is_ok());
+
+            let amounts = (0..16).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
+            let migrated = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Text(serde_json::to_string(&amounts).expect("valid json")),
+                Column::Integer(0),
+            ]);
+            assert!(migrated.is_ok());
+            let migrated = migrated.unwrap();
+            assert_ne!(legacy.unwrap(), migrated);
+            assert_eq!(migrated.amounts.len(), 16);
+        }
+    }
 }

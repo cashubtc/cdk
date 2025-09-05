@@ -66,7 +66,7 @@ pub async fn init_keysets(
                     let keyset = MintKeySet::generate_from_xpriv(
                         secp_ctx,
                         xpriv,
-                        highest_index_keyset.max_order,
+                        &highest_index_keyset.amounts,
                         highest_index_keyset.unit.clone(),
                         highest_index_keyset.derivation_path.clone(),
                         highest_index_keyset.final_expiry,
@@ -98,7 +98,7 @@ pub async fn init_keysets(
                         derivation_path,
                         Some(derivation_path_index),
                         unit.clone(),
-                        *max_order,
+                        &highest_index_keyset.amounts,
                         *input_fee_ppk,
                         // TODO: add Mint settings for a final expiry of newly generated keysets
                         None,
@@ -128,7 +128,7 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
     derivation_path: DerivationPath,
     derivation_path_index: Option<u32>,
     unit: CurrencyUnit,
-    max_order: u8,
+    amounts: &[u64],
     input_fee_ppk: u64,
     final_expiry: Option<u64>,
 ) -> (MintKeySet, MintKeySetInfo) {
@@ -138,7 +138,7 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
             .derive_priv(secp, &derivation_path)
             .expect("RNG busted"),
         unit,
-        max_order,
+        amounts,
         final_expiry,
         // TODO: change this to Version01 to generate keysets v2
         cdk_common::nut02::KeySetVersion::Version00,
@@ -151,7 +151,8 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
         final_expiry: keyset.final_expiry,
         derivation_path,
         derivation_path_index,
-        max_order,
+        max_order: 0,
+        amounts: amounts.to_owned(),
         input_fee_ppk,
     };
     (keyset, keyset_info)

@@ -29,6 +29,7 @@ where
         derivation_path_index: Some(0),
         max_order: 32,
         input_fee_ppk: 0,
+        amounts: vec![],
     };
     let mut writer = db.begin_transaction().await.expect("db.begin()");
     writer.add_keyset_info(keyset_info).await.unwrap();

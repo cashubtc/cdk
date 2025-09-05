@@ -65,13 +65,17 @@ impl DbSignatory {
                     }
                 };
 
+                let amounts = (0..max_order)
+                    .map(|i| 2_u64.pow(i as u32))
+                    .collect::<Vec<_>>();
+
                 let (keyset, keyset_info) = create_new_keyset(
                     &secp_ctx,
                     xpriv,
                     derivation_path,
                     Some(0),
                     unit.clone(),
-                    max_order,
+                    &amounts,
                     fee,
                     // TODO: add and connect settings for this
                     None,
@@ -132,7 +136,7 @@ impl DbSignatory {
         MintKeySet::generate_from_xpriv(
             &self.secp_ctx,
             self.xpriv,
-            keyset_info.max_order,
+            &keyset_info.amounts,
             keyset_info.unit.clone(),
             keyset_info.derivation_path.clone(),
             keyset_info.final_expiry,
@@ -241,7 +245,7 @@ impl Signatory for DbSignatory {
             derivation_path,
             Some(path_index),
             args.unit.clone(),
-            args.max_order,
+            &args.amounts,
             args.input_fee_ppk,
             // TODO: add and connect settings for this
             None,
@@ -274,7 +278,7 @@ mod test {
         let keyset = MintKeySet::generate_from_seed(
             &Secp256k1::new(),
             seed,
-            2,
+            &[1, 2],
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
             None,
@@ -320,7 +324,7 @@ mod test {
         let keyset = MintKeySet::generate_from_xpriv(
             &Secp256k1::new(),
             xpriv,
-            2,
+            &[1, 2],
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
             None,

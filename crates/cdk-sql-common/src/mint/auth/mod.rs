@@ -284,6 +284,7 @@ where
                 derivation_path,
                 derivation_path_index,
                 max_order,
+                amounts,
                 input_fee_ppk
             FROM
                 keyset
@@ -308,6 +309,7 @@ where
                 derivation_path,
                 derivation_path_index,
                 max_order,
+                amounts,
                 input_fee_ppk
             FROM
                 keyset
