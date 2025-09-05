@@ -115,7 +115,7 @@ where
                 let _ = sender
                     .try_send((key.into(), event.clone()))
                     .inspect_err(|err| {
-                        tracing::info!(
+                        tracing::warn!(
                             "Failed to send notification {:?} with error {:?}",
                             event,
                             err
@@ -179,7 +179,7 @@ where
                             let _ = sender
                                 .try_send((sub_id_for_worker.clone(), event.clone()))
                                 .inspect_err(|err| {
-                                    tracing::info!(
+                                    tracing::warn!(
                                         "Failed to send on_new_subscription notification {:?} with error {:?}",
                                         event,
                                         err
@@ -188,7 +188,7 @@ where
                         }
                     }
                     Err(err) => {
-                        tracing::info!(
+                        tracing::warn!(
                             "Failed to get initial state for subscription: {:?}, {}",
                             sub_id_for_worker,
                             err
