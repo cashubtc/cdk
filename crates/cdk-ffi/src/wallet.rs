@@ -238,24 +238,6 @@ impl Wallet {
         Ok(quote.into())
     }
 
-    /// Get a quote for a BIP353 melt
-    ///
-    /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Lightning offer
-    /// and then creates a melt quote for that offer.
-    #[cfg(feature = "bip353")]
-    pub async fn melt_bip353_quote(
-        &self,
-        bip353_address: String,
-        amount_msat: Amount,
-    ) -> Result<MeltQuote, FfiError> {
-        let cdk_amount: cdk::Amount = amount_msat.into();
-        let quote = self
-            .inner
-            .melt_bip353_quote(&bip353_address, cdk_amount)
-            .await?;
-        Ok(quote.into())
-    }
-
     /// Swap proofs
     pub async fn swap(
         &self,
@@ -361,44 +343,6 @@ impl Wallet {
         Ok(())
     }
 
-    /// Set Clear Auth Token (CAT) for authentication
-    #[cfg(feature = "auth")]
-    pub async fn set_cat(&self, cat: String) -> Result<(), FfiError> {
-        self.inner.set_cat(cat).await?;
-        Ok(())
-    }
-
-    /// Set refresh token for authentication
-    #[cfg(feature = "auth")]
-    pub async fn set_refresh_token(&self, refresh_token: String) -> Result<(), FfiError> {
-        self.inner.set_refresh_token(refresh_token).await?;
-        Ok(())
-    }
-
-    /// Refresh access token using the stored refresh token
-    #[cfg(feature = "auth")]
-    pub async fn refresh_access_token(&self) -> Result<(), FfiError> {
-        self.inner.refresh_access_token().await?;
-        Ok(())
-    }
-
-    /// Mint blind auth tokens
-    #[cfg(feature = "auth")]
-    pub async fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, FfiError> {
-        let proofs = self.inner.mint_blind_auth(amount.into()).await?;
-        Ok(proofs
-            .into_iter()
-            .map(|p| std::sync::Arc::new(p.into()))
-            .collect())
-    }
-
-    /// Get unspent auth proofs
-    #[cfg(feature = "auth")]
-    pub async fn get_unspent_auth_proofs(&self) -> Result<Vec<AuthProof>, FfiError> {
-        let auth_proofs = self.inner.get_unspent_auth_proofs().await?;
-        Ok(auth_proofs.into_iter().map(Into::into).collect())
-    }
-
     /// Subscribe to wallet events
     pub async fn subscribe(
         &self,
@@ -456,6 +400,66 @@ impl Wallet {
         let fee_ppk = self.inner.get_keyset_fees_by_id(id).await?;
         let total_fee = (proof_count as u64 * fee_ppk) / 1000; // fee is per thousand
         Ok(Amount::new(total_fee))
+    }
+}
+
+/// BIP353 methods for Wallet
+#[cfg(feature = "bip353")]
+#[uniffi::export(async_runtime = "tokio")]
+impl Wallet {
+    /// Get a quote for a BIP353 melt
+    ///
+    /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Lightning offer
+    /// and then creates a melt quote for that offer.
+    pub async fn melt_bip353_quote(
+        &self,
+        bip353_address: String,
+        amount_msat: Amount,
+    ) -> Result<MeltQuote, FfiError> {
+        let cdk_amount: cdk::Amount = amount_msat.into();
+        let quote = self
+            .inner
+            .melt_bip353_quote(&bip353_address, cdk_amount)
+            .await?;
+        Ok(quote.into())
+    }
+}
+
+/// Auth methods for Wallet
+#[cfg(feature = "auth")]
+#[uniffi::export(async_runtime = "tokio")]
+impl Wallet {
+    /// Set Clear Auth Token (CAT) for authentication
+    pub async fn set_cat(&self, cat: String) -> Result<(), FfiError> {
+        self.inner.set_cat(cat).await?;
+        Ok(())
+    }
+
+    /// Set refresh token for authentication
+    pub async fn set_refresh_token(&self, refresh_token: String) -> Result<(), FfiError> {
+        self.inner.set_refresh_token(refresh_token).await?;
+        Ok(())
+    }
+
+    /// Refresh access token using the stored refresh token
+    pub async fn refresh_access_token(&self) -> Result<(), FfiError> {
+        self.inner.refresh_access_token().await?;
+        Ok(())
+    }
+
+    /// Mint blind auth tokens
+    pub async fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, FfiError> {
+        let proofs = self.inner.mint_blind_auth(amount.into()).await?;
+        Ok(proofs
+            .into_iter()
+            .map(|p| std::sync::Arc::new(p.into()))
+            .collect())
+    }
+
+    /// Get unspent auth proofs
+    pub async fn get_unspent_auth_proofs(&self) -> Result<Vec<AuthProof>, FfiError> {
+        let auth_proofs = self.inner.get_unspent_auth_proofs().await?;
+        Ok(auth_proofs.into_iter().map(Into::into).collect())
     }
 }
 

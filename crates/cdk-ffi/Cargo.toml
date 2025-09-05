@@ -12,7 +12,7 @@ name = "cdk_ffi"
 
 [features]
 default = ["auth", "bip353"]
-auth = ["cdk/auth"]
+auth = ["cdk/auth", "cdk-common/auth", "cashu/auth"]
 bip353 = ["cdk/bip353"]
 
 [dependencies]
