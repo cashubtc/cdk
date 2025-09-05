@@ -9,13 +9,13 @@
 
 use std::task::Poll;
 
+use cdk_common::PaymentRequestPayload;
 use futures::{FutureExt, Stream};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 use crate::wallet::streams::RecvFuture;
-use cdk_common::PaymentRequestPayload;
 
 pub struct NostrPaymentEventStream {
     cancel: CancellationToken,
@@ -26,15 +26,19 @@ pub struct NostrPaymentEventStream {
     // Future to detect external cancellation
     cancel_fut: Option<RecvFuture<'static, ()>>,
     // Future awaiting the next item from `rx`
-    rx_future: Option<RecvFuture<'static, (Option<Result<PaymentRequestPayload, Error>>, mpsc::Receiver<Result<PaymentRequestPayload, Error>>)>>,
+    rx_future: Option<
+        RecvFuture<
+            'static,
+            (
+                Option<Result<PaymentRequestPayload, Error>>,
+                mpsc::Receiver<Result<PaymentRequestPayload, Error>>,
+            ),
+        >,
+    >,
 }
 
 impl NostrPaymentEventStream {
-    pub fn new(
-        keys: nostr_sdk::Keys,
-        relays: Vec<String>,
-        pubkey: nostr_sdk::PublicKey,
-    ) -> Self {
+    pub fn new(keys: nostr_sdk::Keys, relays: Vec<String>, pubkey: nostr_sdk::PublicKey) -> Self {
         let cancel = CancellationToken::new();
         let (tx, rx) = mpsc::channel::<Result<PaymentRequestPayload, Error>>(32);
 
@@ -72,12 +76,15 @@ impl NostrPaymentEventStream {
                             if cancel.is_cancelled() {
                                 return Ok(true);
                             }
-                            if let nostr_sdk::RelayPoolNotification::Event { event, .. } = notification
+                            if let nostr_sdk::RelayPoolNotification::Event { event, .. } =
+                                notification
                             {
                                 match client.unwrap_gift_wrap(&event).await {
                                     Ok(unwrapped) => {
                                         let rumor = unwrapped.rumor;
-                                        match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {
+                                        match serde_json::from_str::<PaymentRequestPayload>(
+                                            &rumor.content,
+                                        ) {
                                             Ok(payload) => {
                                                 // Best-effort send; if receiver closed, instruct exit
                                                 if tx.send(Ok(payload)).await.is_err() {

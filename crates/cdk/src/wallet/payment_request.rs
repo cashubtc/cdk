@@ -372,10 +372,10 @@ impl MultiMintWallet {
                         if !custom_relays.is_empty() {
                             custom_relays.clone()
                         } else {
-                            return Err(Error::Custom("No relays provided".to_string()))
+                            return Err(Error::Custom("No relays provided".to_string()));
                         }
                     } else {
-                        return Err(Error::Custom("No relays provided".to_string()))
+                        return Err(Error::Custom("No relays provided".to_string()));
                     };
 
                     // Parse relay URLs for nprofile
@@ -389,7 +389,9 @@ impl MultiMintWallet {
                         nostr_sdk::nips::nip19::Nip19Profile::new(keys.public_key, relay_urls);
                     let nostr_transport = Transport {
                         _type: TransportType::Nostr,
-                        target: nprofile.to_bech32().map_err(|e| Error::Custom(format!("Couldn't convert nprofile to bech32: {e}")))?,
+                        target: nprofile.to_bech32().map_err(|e| {
+                            Error::Custom(format!("Couldn't convert nprofile to bech32: {e}"))
+                        })?,
                         tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
                     };
 
@@ -508,9 +510,14 @@ impl MultiMintWallet {
     #[cfg(feature = "nostr")]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
         use futures::StreamExt;
+
         use crate::wallet::streams::nostr::NostrPaymentEventStream;
 
-        let NostrWaitInfo { keys, relays, pubkey } = info;
+        let NostrWaitInfo {
+            keys,
+            relays,
+            pubkey,
+        } = info;
 
         let mut stream = NostrPaymentEventStream::new(keys, relays, pubkey);
         let cancel = stream.cancel_token();
