@@ -1,11 +1,7 @@
 //! Nostr payment event stream
 //!
-//! Why: `wait_for_nostr_payment` currently uses `handle_notifications` with an inline closure
-//! which makes it hard to compose with other async logic and to cancel cleanly. This stream
-//! exposes incoming Nostr payment messages as a standard `Stream<Item = Result<PaymentRequestPayload, Error>>`
+//! This stream exposes incoming Nostr payment messages as a standard `Stream<Item = Result<PaymentRequestPayload, Error>>`
 //! so callers can `select!`/`next().await`, cancel via `CancellationToken`, or combine with other streams.
-
-#![cfg(feature = "nostr")]
 
 use std::task::Poll;
 
@@ -17,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::error::Error;
 use crate::wallet::streams::RecvFuture;
 
+#[allow(clippy::type_complexity)]
 pub struct NostrPaymentEventStream {
     cancel: CancellationToken,
     // Internal channel receiver for parsed payloads
