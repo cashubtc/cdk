@@ -13,7 +13,7 @@ use std::env;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use bip39::Mnemonic;
@@ -30,6 +30,17 @@ use serde_json::json;
 use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
+
+static INIT: Once = Once::new();
+
+fn init_tracing() {
+    INIT.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_env_filter("debug")
+            .with_test_writer() // ensures compatibility with `cargo test`
+            .init();
+    });
+}
 
 // Helper function to get temp directory from environment or fallback
 fn get_test_temp_dir() -> PathBuf {
@@ -85,6 +96,7 @@ async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: De
 /// WebSocket notifications are properly sent at each state transition.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_happy_mint_melt_round_trip() {
+    init_tracing();
     let wallet = Wallet::new(
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
@@ -211,6 +223,7 @@ async fn test_happy_mint_melt_round_trip() {
 /// This ensures the basic minting flow works correctly from quote to token issuance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_happy_mint() {
+    init_tracing();
     let wallet = Wallet::new(
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
@@ -262,6 +275,7 @@ async fn test_happy_mint() {
 /// the mint properly tracks spent proofs across wallet instances.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_restore() {
+    init_tracing();
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
     let wallet = Wallet::new(
         &get_mint_url_from_env(),
@@ -344,6 +358,7 @@ async fn test_restore() {
 /// and that the wallet can properly verify the change amounts match expectations.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_change_in_quote() {
+    init_tracing();
     let wallet = Wallet::new(
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
@@ -404,6 +419,7 @@ async fn test_fake_melt_change_in_quote() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_pay_invoice_twice() {
+    init_tracing();
     let ln_backend = match env::var("LN_BACKEND") {
         Ok(val) => Some(val),
         Err(_) => env::var("CDK_MINTD_LN_BACKEND").ok(),

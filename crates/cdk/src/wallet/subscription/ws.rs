@@ -132,10 +132,17 @@ pub async fn ws_main(
                         Message::Text(msg) => msg,
                         _ => continue,
                     };
+
+                    tracing::debug!("Received msg on ws {}", msg);
+
                     let msg = match serde_json::from_str::<WsMessageOrResponse>(&msg) {
                         Ok(msg) => msg,
-                        Err(_) => continue,
+                        Err(err) => {
+                            tracing::warn!("Failed to parse msg {} with {:?}",  msg , err);
+                            continue;
+                        }
                     };
+
 
                     match msg {
                         WsMessageOrResponse::Notification(payload) => {
