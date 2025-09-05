@@ -1,3 +1,4 @@
+
 [info]
 url = "https://mint.thesimplekid.dev/"
 listen_host = "127.0.0.1"
@@ -20,7 +21,11 @@ enabled = false
 # address = "127.0.0.1"
 # port = 8086
 
-
+#[prometheus]
+#enabled = true
+#address = "127.0.0.1"
+#port = 9090
+# 
 [info.http_cache]
 # memory or redis
 backend = "memory"
@@ -130,12 +135,12 @@ reserve_fee_min = 4
 # webserver_host = "127.0.0.1"  # Default: 127.0.0.1
 # webserver_port = 0  # 0 = auto-assign available port
 
-# [fake_wallet]
-# supported_units = ["sat"]
-# fee_percent = 0.02
-# reserve_fee_min = 1
-# min_delay_time = 1
-# max_delay_time = 3
+[fake_wallet]
+supported_units = ["sat"]
+fee_percent = 0.02
+reserve_fee_min = 1
+min_delay_time = 1
+max_delay_time = 3
 
 # [grpc_processor]
 # gRPC Payment Processor configuration
