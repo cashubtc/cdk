@@ -438,6 +438,16 @@ impl ErrorResponse {
     }
 }
 
+/// Maps NUT11 errors to appropriate error codes
+fn map_nut11_error(nut11_error: &crate::nuts::nut11::Error) -> ErrorCode {
+    match nut11_error {
+        crate::nuts::nut11::Error::SignaturesNotProvided => ErrorCode::WitnessMissingOrInvalid,
+        crate::nuts::nut11::Error::InvalidSignature => ErrorCode::WitnessMissingOrInvalid,
+        crate::nuts::nut11::Error::DuplicateSignature => ErrorCode::Unknown(20009), // Custom code for this case
+        _ => ErrorCode::Unknown(9999), // Parsing/validation errors
+    }
+}
+
 impl From<Error> for ErrorResponse {
     fn from(err: Error) -> ErrorResponse {
         match err {
@@ -554,6 +564,18 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::QuoteNotPaid,
                 error: Some(err.to_string()),
                 detail: None
+            },
+            Error::NUT11(err) => {
+                let code = map_nut11_error(&err);
+                let mut detail = None;
+                if matches!(err, crate::nuts::nut11::Error::SignaturesNotProvided) {
+                    detail = Some("P2PK signatures are required but not provided".to_string());
+                }
+                ErrorResponse {
+                    code,
+                    error: Some(err.to_string()),
+                    detail,
+                }
             },
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(9999),
