@@ -16,8 +16,6 @@ use nostr_sdk::prelude::*;
 #[cfg(feature = "nostr")]
 use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32};
 use reqwest::Client;
-#[cfg(feature = "nostr")]
-use tokio::sync::Mutex;
 
 use crate::error::Error;
 use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
@@ -509,60 +507,43 @@ impl MultiMintWallet {
     /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
     #[cfg(feature = "nostr")]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
-        let NostrWaitInfo {
-            keys,
-            relays,
-            pubkey,
-        } = info;
-        let client = nostr_sdk::Client::new(keys);
+        use futures::StreamExt;
+        use crate::wallet::streams::nostr::NostrPaymentEventStream;
 
-        let filter = nostr_sdk::Filter::new().pubkey(pubkey);
+        let NostrWaitInfo { keys, relays, pubkey } = info;
 
-        for relay in &relays {
-            client.add_read_relay(relay.clone()).await?;
-        }
-        client.connect().await;
-        client.subscribe(filter, None).await?;
+        let mut stream = NostrPaymentEventStream::new(keys, relays, pubkey);
+        let cancel = stream.cancel_token();
 
-        let amount_received: std::sync::Arc<Mutex<Option<Amount>>> =
-            std::sync::Arc::new(Mutex::new(None));
-        let amount_cell = amount_received.clone();
-        let client_for_handler = client.clone();
-        let mmw = self.clone();
+        // Optional: you may expose cancel to caller, or use a timeout here.
+        // tokio::spawn(async move { tokio::time::sleep(Duration::from_secs(120)).await; cancel.cancel(); });
 
-        // Handle subscription notifications with `handle_notifications` method
-        client
-            .handle_notifications(move |notification| {
-                let amount_cell = amount_cell.clone();
-                let client = client_for_handler.clone();
-                let mmw = mmw.clone();
-                async move {
-                    let mut exit = false;
-                    if let nostr_sdk::RelayPoolNotification::Event { event, .. } = notification {
-                        let unwrapped = client.unwrap_gift_wrap(&event).await?;
-                        let rumor = unwrapped.rumor;
-                        let payload: PaymentRequestPayload = serde_json::from_str(&rumor.content)?;
-                        let token = crate::nuts::Token::new(
-                            payload.mint,
-                            payload.proofs,
-                            payload.memo,
-                            payload.unit,
-                        );
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(payload) => {
+                    let token = crate::nuts::Token::new(
+                        payload.mint,
+                        payload.proofs,
+                        payload.memo,
+                        payload.unit,
+                    );
 
-                        let amount = mmw
-                            .receive(&token.to_string(), ReceiveOptions::default())
-                            .await?;
+                    let amount = self
+                        .receive(&token.to_string(), ReceiveOptions::default())
+                        .await?;
 
-                        let mut guard = amount_cell.lock().await;
-                        *guard = Some(amount);
-                        exit = true;
-                    }
-                    Ok(exit)
+                    // Stop after first successful receipt
+                    cancel.cancel();
+                    return Ok(amount);
                 }
-            })
-            .await?;
+                Err(_) => {
+                    // Keep listening on parse errors; if you prefer fail-fast, return the error
+                    continue;
+                }
+            }
+        }
 
-        let result = amount_received.lock().await.unwrap_or_default();
-        Ok(result)
+        // If stream ended without receiving a payment, return zero.
+        Ok(Amount::ZERO)
     }
 }
