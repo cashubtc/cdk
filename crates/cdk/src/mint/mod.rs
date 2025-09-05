@@ -12,7 +12,6 @@ use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase, MintTransaction};
 use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
 use cdk_common::payment::WaitPaymentResponse;
-pub use cdk_common::quote_id::QuoteId;
 use cdk_common::secret;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
@@ -22,6 +21,7 @@ use subscription::PubSubManager;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::instrument;
+use uuid::Uuid;
 
 use crate::cdk_payment::{self, MintPayment};
 use crate::error::Error;
@@ -536,20 +536,16 @@ impl Mint {
                     processor.cancel_wait_invoice();
                     break;
                 }
-                result = processor.wait_payment_event() => {
+                result = processor.wait_any_incoming_payment() => {
                     match result {
                         Ok(mut stream) => {
-                            while let Some(event) = stream.next().await {
-                                match event {
-                                    cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
-                                        if let Err(e) = Self::handle_payment_notification(
-                                            &localstore,
-                                            &pubsub_manager,
-                                            wait_payment_response,
-                                        ).await {
-                                            tracing::warn!("Payment notification error: {:?}", e);
-                                        }
-                                    }
+                            while let Some(request_lookup_id) = stream.next().await {
+                                if let Err(e) = Self::handle_payment_notification(
+                                    &localstore,
+                                    &pubsub_manager,
+                                    request_lookup_id,
+                                ).await {
+                                    tracing::warn!("Payment notification error: {:?}", e);
                                 }
                             }
                         }
@@ -770,7 +766,7 @@ impl Mint {
         &self,
         tx: &mut Box<dyn MintTransaction<'_, cdk_database::Error> + Send + Sync + '_>,
         melt_quote: &MeltQuote,
-        melt_request: &MeltRequest<QuoteId>,
+        melt_request: &MeltRequest<Uuid>,
     ) -> Result<Option<Amount>, Error> {
         let mint_quote = match tx
             .get_mint_quote_by_request(&melt_quote.request.to_string())

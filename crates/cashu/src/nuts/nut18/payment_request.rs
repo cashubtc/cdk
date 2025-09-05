@@ -3,6 +3,7 @@
 //! <https://github.com/cashubtc/nuts/blob/main/18.md>
 
 use std::fmt;
+use std::ops::Not;
 use std::str::FromStr;
 
 use bitcoin::base64::engine::{general_purpose, GeneralPurpose};
@@ -39,8 +40,8 @@ pub struct PaymentRequest {
     pub description: Option<String>,
     /// Transport
     #[serde(rename = "t")]
-    #[serde(skip_serializing_if = "Vec::is_empty", default = "Vec::default")]
-    pub transports: Vec<Transport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transports: Option<Vec<Transport>>,
     /// Nut10
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nut10: Option<Nut10SecretRequest>,
@@ -167,6 +168,8 @@ impl PaymentRequestBuilder {
 
     /// Build the PaymentRequest
     pub fn build(self) -> PaymentRequest {
+        let transports = self.transports.is_empty().not().then_some(self.transports);
+
         PaymentRequest {
             payment_id: self.payment_id,
             amount: self.amount,
@@ -174,7 +177,7 @@ impl PaymentRequestBuilder {
             single_use: self.single_use,
             mints: self.mints,
             description: self.description,
-            transports: self.transports,
+            transports,
             nut10: self.nut10,
         }
     }
@@ -221,7 +224,8 @@ mod tests {
         );
         assert_eq!(req.unit.unwrap(), CurrencyUnit::Sat);
 
-        let transport = req.transports.first().unwrap();
+        let transport = req.transports.unwrap();
+        let transport = transport.first().unwrap();
 
         let expected_transport = Transport {_type: TransportType::Nostr, target: "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5".to_string(), tags: Some(vec![vec!["n".to_string(), "17".to_string()]])};
 
@@ -241,7 +245,7 @@ mod tests {
                 .parse()
                 .expect("valid mint url")]),
             description: None,
-            transports: vec![transport.clone()],
+            transports: Some(vec![transport.clone()]),
             nut10: None,
         };
 
@@ -258,7 +262,8 @@ mod tests {
         );
         assert_eq!(req.unit.unwrap(), CurrencyUnit::Sat);
 
-        let t = req.transports.first().unwrap();
+        let t = req.transports.unwrap();
+        let t = t.first().unwrap();
         assert_eq!(&transport, t);
     }
 
@@ -288,7 +293,8 @@ mod tests {
         assert_eq!(request.unit.clone().unwrap(), CurrencyUnit::Sat);
         assert_eq!(request.mints.clone().unwrap(), vec![mint_url]);
 
-        let t = request.transports.first().unwrap();
+        let t = request.transports.clone().unwrap();
+        let t = t.first().unwrap();
         assert_eq!(&transport, t);
 
         // Test serialization and deserialization
@@ -491,7 +497,8 @@ mod tests {
             vec![MintUrl::from_str("https://8333.space:3338").unwrap()]
         );
 
-        let transport = payment_request.transports.first().unwrap();
+        let transport = payment_request.transports.as_ref().unwrap();
+        let transport = transport.first().unwrap();
         assert_eq!(transport._type, TransportType::Nostr);
         assert_eq!(transport.target, "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5");
         assert_eq!(
@@ -555,7 +562,8 @@ mod tests {
             ]
         );
 
-        let transport = payment_request_cloned.transports.first().unwrap();
+        let transport = payment_request_cloned.transports.unwrap();
+        let transport = transport.first().unwrap();
         assert_eq!(transport._type, TransportType::Nostr);
         assert_eq!(
             transport.target,
@@ -606,7 +614,7 @@ mod tests {
             payment_request_cloned.mints.unwrap(),
             vec![MintUrl::from_str("https://mint.example.com").unwrap()]
         );
-        assert_eq!(payment_request_cloned.transports, vec![]);
+        assert_eq!(payment_request_cloned.transports, None);
 
         // Test round-trip serialization
         let encoded = payment_request.to_string();

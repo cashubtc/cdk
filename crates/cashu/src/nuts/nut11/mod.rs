@@ -1262,7 +1262,6 @@ impl<'de> Deserialize<'de> for Tag {
     }
 }
 
-#[cfg(feature = "mint")]
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -1271,7 +1270,6 @@ mod tests {
 
     use super::*;
     use crate::nuts::Id;
-    use crate::quote_id::QuoteId;
     use crate::secret::Secret;
     use crate::{Amount, BlindedMessage};
 
@@ -1516,11 +1514,7 @@ mod tests {
         let blinded_msg = create_test_blinded_msg(pubkey);
 
         // Create melt request
-        let mut melt = MeltRequest::new(
-            QuoteId::UUID(Uuid::new_v4()),
-            vec![proof],
-            Some(vec![blinded_msg]),
-        );
+        let mut melt = MeltRequest::new(Uuid::new_v4(), vec![proof], Some(vec![blinded_msg]));
 
         // Before signing, should fail verification
         assert!(

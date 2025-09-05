@@ -1,7 +1,6 @@
 //! Mint types
 
 use bitcoin::bip32::DerivationPath;
-use cashu::quote_id::QuoteId;
 use cashu::util::unix_time;
 use cashu::{
     Bolt11Invoice, MeltOptions, MeltQuoteBolt11Response, MintQuoteBolt11Response,
@@ -20,7 +19,7 @@ use crate::{Amount, CurrencyUnit, Id, KeySetInfo, PublicKey};
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintQuote {
     /// Quote id
-    pub id: QuoteId,
+    pub id: Uuid,
     /// Amount of quote
     pub amount: Option<Amount>,
     /// Unit of quote
@@ -57,7 +56,7 @@ impl MintQuote {
     /// Create new [`MintQuote`]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        id: Option<QuoteId>,
+        id: Option<Uuid>,
         request: String,
         unit: CurrencyUnit,
         amount: Option<Amount>,
@@ -71,7 +70,7 @@ impl MintQuote {
         payments: Vec<IncomingPayment>,
         issuance: Vec<Issuance>,
     ) -> Self {
-        let id = id.unwrap_or_else(QuoteId::new_uuid);
+        let id = id.unwrap_or(Uuid::new_v4());
 
         Self {
             id,
@@ -231,7 +230,7 @@ impl Issuance {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltQuote {
     /// Quote id
-    pub id: QuoteId,
+    pub id: Uuid,
     /// Quote unit
     pub unit: CurrencyUnit,
     /// Quote amount
@@ -278,7 +277,7 @@ impl MeltQuote {
         let id = Uuid::new_v4();
 
         Self {
-            id: QuoteId::UUID(id),
+            id,
             amount,
             unit,
             request,
@@ -337,10 +336,10 @@ impl From<MintKeySetInfo> for KeySetInfo {
     }
 }
 
-impl From<MintQuote> for MintQuoteBolt11Response<QuoteId> {
-    fn from(mint_quote: crate::mint::MintQuote) -> MintQuoteBolt11Response<QuoteId> {
+impl From<MintQuote> for MintQuoteBolt11Response<Uuid> {
+    fn from(mint_quote: crate::mint::MintQuote) -> MintQuoteBolt11Response<Uuid> {
         MintQuoteBolt11Response {
-            quote: mint_quote.id.clone(),
+            quote: mint_quote.id,
             state: mint_quote.state(),
             request: mint_quote.request,
             expiry: Some(mint_quote.expiry),
@@ -353,18 +352,18 @@ impl From<MintQuote> for MintQuoteBolt11Response<QuoteId> {
 
 impl From<MintQuote> for MintQuoteBolt11Response<String> {
     fn from(quote: MintQuote) -> Self {
-        let quote: MintQuoteBolt11Response<QuoteId> = quote.into();
+        let quote: MintQuoteBolt11Response<Uuid> = quote.into();
 
         quote.into()
     }
 }
 
-impl TryFrom<crate::mint::MintQuote> for MintQuoteBolt12Response<QuoteId> {
+impl TryFrom<crate::mint::MintQuote> for MintQuoteBolt12Response<Uuid> {
     type Error = crate::Error;
 
     fn try_from(mint_quote: crate::mint::MintQuote) -> Result<Self, Self::Error> {
         Ok(MintQuoteBolt12Response {
-            quote: mint_quote.id.clone(),
+            quote: mint_quote.id,
             request: mint_quote.request,
             expiry: Some(mint_quote.expiry),
             amount_paid: mint_quote.amount_paid,
@@ -380,16 +379,16 @@ impl TryFrom<MintQuote> for MintQuoteBolt12Response<String> {
     type Error = crate::Error;
 
     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
-        let quote: MintQuoteBolt12Response<QuoteId> = quote.try_into()?;
+        let quote: MintQuoteBolt12Response<Uuid> = quote.try_into()?;
 
         Ok(quote.into())
     }
 }
 
-impl From<&MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
-    fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response<QuoteId> {
+impl From<&MeltQuote> for MeltQuoteBolt11Response<Uuid> {
+    fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response<Uuid> {
         MeltQuoteBolt11Response {
-            quote: melt_quote.id.clone(),
+            quote: melt_quote.id,
             payment_preimage: None,
             change: None,
             state: melt_quote.state,
@@ -403,11 +402,11 @@ impl From<&MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
     }
 }
 
-impl From<MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
-    fn from(melt_quote: MeltQuote) -> MeltQuoteBolt11Response<QuoteId> {
+impl From<MeltQuote> for MeltQuoteBolt11Response<Uuid> {
+    fn from(melt_quote: MeltQuote) -> MeltQuoteBolt11Response<Uuid> {
         let paid = melt_quote.state == MeltQuoteState::Paid;
         MeltQuoteBolt11Response {
-            quote: melt_quote.id.clone(),
+            quote: melt_quote.id,
             amount: melt_quote.amount,
             fee_reserve: melt_quote.fee_reserve,
             paid: Some(paid),

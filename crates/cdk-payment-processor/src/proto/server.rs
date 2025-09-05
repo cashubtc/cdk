@@ -401,23 +401,19 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         ln.cancel_wait_invoice();
                         break;
                     }
-                    result = ln.wait_payment_event() => {
+                    result = ln.wait_any_incoming_payment() => {
                         match result {
                             Ok(mut stream) => {
-                                while let Some(event) = stream.next().await {
-                                    match event {
-                                        cdk_common::payment::Event::PaymentReceived(payment_response) => {
-                                            match tx.send(Result::<_, Status>::Ok(payment_response.into()))
-                                            .await
-                                            {
-                                                Ok(_) => {
-                                                    // Response was queued to be sent to client
-                                                }
-                                                Err(item) => {
-                                                    tracing::error!("Error adding incoming payment to stream: {}", item);
-                                                    break;
-                                                }
-                                            }
+                                while let Some(payment_response) = stream.next().await {
+                                    match tx.send(Result::<_, Status>::Ok(payment_response.into()))
+                                    .await
+                                    {
+                                        Ok(_) => {
+                                            // Response was queued to be sent to client
+                                        }
+                                        Err(item) => {
+                                            tracing::error!("Error adding incoming payment to stream: {}", item);
+                                            break;
                                         }
                                     }
                                 }

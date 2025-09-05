@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use axum::extract::ws::{Message, WebSocket};
-use cdk::mint::QuoteId;
 use cdk::nuts::nut17::NotificationPayload;
 use cdk::pub_sub::SubId;
 use cdk::ws::{
@@ -10,6 +9,7 @@ use cdk::ws::{
 };
 use futures::StreamExt;
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 use crate::MintState;
 
@@ -37,7 +37,7 @@ pub use error::WsError;
 pub struct WsContext {
     state: MintState,
     subscriptions: HashMap<SubId, tokio::task::JoinHandle<()>>,
-    publisher: mpsc::Sender<(SubId, NotificationPayload<QuoteId>)>,
+    publisher: mpsc::Sender<(SubId, NotificationPayload<Uuid>)>,
 }
 
 /// Main function for websocket connections
