@@ -10,7 +10,25 @@ fn main() {
         // Step 2: Collect all files inside the migrations dir
         let mut files = Vec::new();
         visit_dirs(&migration_path, &mut files).expect("Failed to read migrations directory");
-        files.sort();
+        files.sort_by(|path_a, path_b| {
+            let path_a = path_a.file_name().unwrap().to_str().unwrap();
+            let path_b = path_b.file_name().unwrap().to_str().unwrap();
+
+            let prefix_a = path_a
+                .split("_")
+                .next()
+                .and_then(|prefix| prefix.parse::<usize>().ok());
+            let prefix_b = path_b
+                .split("_")
+                .next()
+                .and_then(|prefix| prefix.parse::<usize>().ok());
+
+            if prefix_a.is_some() && prefix_b.is_some() {
+                prefix_a.unwrap().cmp(&prefix_b.unwrap())
+            } else {
+                path_a.cmp(&path_b)
+            }
+        });
 
         // Step 3: Output file path (e.g., `src/db/migrations.rs`)
         let parent = migration_path.parent().unwrap();
