@@ -2073,3 +2073,97 @@ fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Error>
         dleq,
     })
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    mod max_order_to_amounts_migrations {
+        use super::*;
+
+        #[test]
+        fn legacy_payload() {
+            let result = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Null,
+                Column::Integer(0),
+            ]);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn migrated_payload() {
+            let legacy = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Null,
+                Column::Integer(0),
+            ]);
+            assert!(legacy.is_ok());
+
+            let amounts = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
+            let migrated = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Text(serde_json::to_string(&amounts).expect("valid json")),
+                Column::Integer(0),
+            ]);
+            assert!(migrated.is_ok());
+            assert_eq!(legacy.unwrap(), migrated.unwrap());
+        }
+
+        #[test]
+        fn amounts_over_max_order() {
+            let legacy = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Null,
+                Column::Integer(0),
+            ]);
+            assert!(legacy.is_ok());
+
+            let amounts = (0..16).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
+            let migrated = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Text(serde_json::to_string(&amounts).expect("valid json")),
+                Column::Integer(0),
+            ]);
+            assert!(migrated.is_ok());
+            let migrated = migrated.unwrap();
+            assert_ne!(legacy.unwrap(), migrated);
+            assert_eq!(migrated.amounts.len(), 16);
+        }
+    }
+}
