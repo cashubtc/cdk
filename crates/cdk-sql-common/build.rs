@@ -17,16 +17,18 @@ fn main() {
             let prefix_a = path_a
                 .split("_")
                 .next()
-                .and_then(|prefix| prefix.parse::<usize>().ok());
+                .and_then(|prefix| prefix.parse::<usize>().ok())
+                .unwrap_or_default();
             let prefix_b = path_b
                 .split("_")
                 .next()
-                .and_then(|prefix| prefix.parse::<usize>().ok());
+                .and_then(|prefix| prefix.parse::<usize>().ok())
+                .unwrap_or_default();
 
-            if prefix_a.is_some() && prefix_b.is_some() {
-                prefix_a.unwrap().cmp(&prefix_b.unwrap())
+            if prefix_a != 0 && prefix_b != 0 {
+                prefix_a.cmp(&prefix_b)
             } else {
-                path_a.cmp(&path_b)
+                path_a.cmp(path_b)
             }
         });
 
