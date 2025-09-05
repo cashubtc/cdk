@@ -355,7 +355,7 @@ impl MultiMintWallet {
     pub async fn create_request(
         &self,
         params: CreateRequestParams,
-    ) -> Result<(PaymentRequest, Option<NostrWaitInfo>)> {
+    ) -> Result<(PaymentRequest, Option<NostrWaitInfo>), Error> {
         // Collect available mints for the selected unit
         let mints = self
             .get_balances(&CurrencyUnit::from_str(&params.unit)?)
@@ -374,29 +374,24 @@ impl MultiMintWallet {
                         if !custom_relays.is_empty() {
                             custom_relays.clone()
                         } else {
-                            vec![
-                                "wss://relay.nos.social".to_string(),
-                                "wss://relay.damus.io".to_string(),
-                            ]
+                            return Err(Error::Custom("No relays provided".to_string()))
                         }
                     } else {
-                        vec![
-                            "wss://relay.nos.social".to_string(),
-                            "wss://relay.damus.io".to_string(),
-                        ]
+                        return Err(Error::Custom("No relays provided".to_string()))
                     };
 
                     // Parse relay URLs for nprofile
                     let relay_urls = relays
                         .iter()
                         .map(|r| RelayUrl::parse(r))
-                        .collect::<Result<Vec<_>, _>>()?;
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| Error::Custom(format!("Couldn't parse relays: {e}")))?;
 
                     let nprofile =
                         nostr_sdk::nips::nip19::Nip19Profile::new(keys.public_key, relay_urls);
                     let nostr_transport = Transport {
                         _type: TransportType::Nostr,
-                        target: nprofile.to_bech32()?,
+                        target: nprofile.to_bech32().map_err(|e| Error::Custom(format!("Couldn't convert nprofile to bech32: {e}")))?,
                         tags: Some(vec![vec!["n".to_string(), "17".to_string()]]),
                     };
 
