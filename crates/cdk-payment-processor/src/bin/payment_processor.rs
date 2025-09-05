@@ -1,5 +1,5 @@
 #[cfg(feature = "fake")]
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
 #[cfg(any(feature = "cln", feature = "lnd", feature = "fake"))]
@@ -110,6 +110,9 @@ async fn main() -> anyhow::Result<()> {
                 }
                 #[cfg(feature = "fake")]
                 "FAKEWALLET" => {
+                    use std::collections::HashMap;
+                    use std::sync::Arc;
+
                     let fee_reserve = FeeReserve {
                         min_fee_reserve: 1.into(),
                         percent_fee_reserve: 0.0,

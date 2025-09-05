@@ -142,19 +142,17 @@ mod tests {
     #[test]
     pub fn test_public_key_from_hex() {
         // Compressed
-        assert!(
-            (PublicKey::from_hex(
-                "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"
-            )
-            .is_ok())
-        );
+        assert!(PublicKey::from_hex(
+            "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"
+        )
+        .is_ok());
     }
 
     #[test]
     pub fn test_invalid_public_key_from_hex() {
         // Uncompressed (is valid but is cashu must be compressed?)
-        assert!((PublicKey::from_hex("04fd4ce5a16b65576145949e6f99f445f8249fee17c606b688b504a849cdc452de3625246cb2c27dac965cb7200a5986467eee92eb7d496bbf1453b074e223e481")
-            .is_err()))
+        assert!(PublicKey::from_hex("04fd4ce5a16b65576145949e6f99f445f8249fee17c606b688b504a849cdc452de3625246cb2c27dac965cb7200a5986467eee92eb7d496bbf1453b074e223e481")
+            .is_err())
     }
 }
 
