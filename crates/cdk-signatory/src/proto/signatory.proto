@@ -131,28 +131,6 @@ message BlindSignatureDLEQ {
   bytes s = 2;
 }
 
-// Witness type
-message Witness {
-  oneof witness_type {
-    P2PKWitness p2pk_witness = 1;
-    HTLCWitness htlc_witness = 2;
-  }
-}
-
-// P2PKWitness type
-message P2PKWitness {
-  // List of signatures
-  repeated string signatures = 1;
-}
-
-// HTLCWitness type
-message HTLCWitness {
-  // Preimage
-  string preimage = 1;
-  // List of signatures
-  repeated string signatures = 2;
-}
-
 enum ErrorCode {
   ERROR_CODE_UNSPECIFIED = 0;
   ERROR_CODE_AMOUNT_OUTSIDE_LIMIT = 1;
