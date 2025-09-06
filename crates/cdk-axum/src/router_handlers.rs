@@ -561,6 +561,7 @@ where
         | ErrorCode::TransactionUnbalanced
         | ErrorCode::AmountOutofLimitRange
         | ErrorCode::WitnessMissingOrInvalid
+        | ErrorCode::DuplicateSignature
         | ErrorCode::DuplicateInputs
         | ErrorCode::DuplicateOutputs
         | ErrorCode::MultipleUnits
