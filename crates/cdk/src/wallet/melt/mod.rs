@@ -74,6 +74,7 @@ impl Wallet {
                         timestamp: unix_time(),
                         memo: None,
                         metadata: HashMap::new(),
+                        quote_id: Some(quote.id.clone()),
                     })
                     .await?;
             }
