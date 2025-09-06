@@ -1,7 +1,5 @@
 use anyhow::{anyhow, Result};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::CurrencyUnit;
-use cdk::wallet::types::WalletKey;
 use cdk::wallet::MultiMintWallet;
 use clap::Args;
 
@@ -23,10 +21,7 @@ pub async fn update_mint_url(
     } = sub_command_args;
 
     let mut wallet = multi_mint_wallet
-        .get_wallet(&WalletKey::new(
-            sub_command_args.old_mint_url.clone(),
-            CurrencyUnit::Sat,
-        ))
+        .get_wallet(&sub_command_args.old_mint_url)
         .await
         .ok_or(anyhow!("Unknown mint url"))?
         .clone();
