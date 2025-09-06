@@ -105,16 +105,7 @@ message Proof {
   bytes c = 4;
 }
 
-message ProofDLEQ {
-  bytes e = 1;
-  bytes s = 2;
-  bytes r = 3;
-}
 
-message SigningResponse {
-  Error error = 1;
-  BlindSignatures blind_signatures = 2;
-}
 message BlindSignatures {
   repeated BlindSignature blind_signatures = 1;
 }
