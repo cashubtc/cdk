@@ -137,6 +137,7 @@ export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_0;
 export CDK_MINTD_LN_BACKEND="grpcprocessor";
 export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ADDRESS="http://127.0.0.1";
 export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_PORT="8090";
+export CDK_MINTD_LOGGING_CONSOLE_LEVEL="debug"
 export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS="sat";
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal";
  
@@ -177,14 +178,14 @@ while true; do
 done
 
 
-cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+RUST_LOG=info cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 
 # Capture the exit status of cargo test
 test_status=$?
 
 if [ "$LN_BACKEND" = "CLN" ]; then
     echo "Running bolt12 tests for CLN backend"
-    cargo test -p cdk-integration-tests --test bolt12
+    RUST_LOG=info cargo test -p cdk-integration-tests --test bolt12
     bolt12_test_status=$?
     
     # Exit with non-zero status if either test failed
