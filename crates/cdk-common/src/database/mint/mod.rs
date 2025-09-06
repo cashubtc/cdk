@@ -80,9 +80,6 @@ mod auth;
 #[cfg(feature = "test")]
 pub mod test;
 
-#[cfg(test)]
-mod test_kvstore;
-
 #[cfg(feature = "auth")]
 pub use auth::{MintAuthDatabase, MintAuthTransaction};
 

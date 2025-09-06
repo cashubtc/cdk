@@ -3,6 +3,8 @@
 //! This set is generic and checks the default and expected behaviour for a mint database
 //! implementation
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // For derivation path parsing
 use bitcoin::bip32::DerivationPath;
@@ -12,6 +14,13 @@ use cashu::{Amount, CurrencyUnit, SecretKey};
 use super::*;
 use crate::database::MintKVStoreDatabase;
 use crate::mint::MintKeySetInfo;
+
+mod kvstore;
+mod mint;
+mod proofs;
+
+pub use self::mint::*;
+pub use self::proofs::*;
 
 #[inline]
 async fn setup_keyset<DB>(db: &DB) -> Id
@@ -79,52 +88,6 @@ where
         .await
         .is_err());
     tx.commit().await.unwrap();
-}
-
-/// Test the basic storing and retrieving proofs from the database. Probably the database would use
-/// binary/`Vec<u8>` to store data, that's why this test would quickly identify issues before running
-/// other tests
-pub async fn add_and_find_proofs<DB>(db: DB)
-where
-    DB: Database<crate::database::Error> + KeysDatabase<Err = crate::database::Error>,
-{
-    let keyset_id = setup_keyset(&db).await;
-
-    let quote_id = QuoteId::new_uuid();
-
-    let proofs = vec![
-        Proof {
-            amount: Amount::from(100),
-            keyset_id,
-            secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
-            witness: None,
-            dleq: None,
-        },
-        Proof {
-            amount: Amount::from(200),
-            keyset_id,
-            secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
-            witness: None,
-            dleq: None,
-        },
-    ];
-
-    // Add proofs to database
-    let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs.clone(), Some(quote_id.clone()))
-        .await
-        .unwrap();
-    assert!(tx.commit().await.is_ok());
-
-    let proofs_from_db = db.get_proofs_by_ys(&[proofs[0].c, proofs[1].c]).await;
-    assert!(proofs_from_db.is_ok());
-    assert_eq!(proofs_from_db.unwrap().len(), 2);
-
-    let proofs_from_db = db.get_proof_ys_by_quote_id(&quote_id).await;
-    assert!(proofs_from_db.is_ok());
-    assert_eq!(proofs_from_db.unwrap().len(), 2);
 }
 
 /// Test KV store functionality including write, read, list, update, and remove operations
@@ -213,18 +176,73 @@ where
     }
 }
 
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Returns a unique, random-looking Base62 string (no external crates).
+/// Not cryptographically secure, but great for ids, keys, temp names, etc.
+fn unique_string() -> String {
+    // 1) high-res timestamp (nanos since epoch)
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+
+    // 2) per-process monotonic counter to avoid collisions in the same instant
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed) as u128;
+
+    // 3) process id to reduce collision chance across processes
+    let pid = std::process::id() as u128;
+
+    // Mix the components (simple XOR/shift mix; good enough for "random-looking")
+    let mixed = now ^ (pid << 64) ^ (n << 32);
+
+    base62_encode(mixed)
+}
+
+fn base62_encode(mut x: u128) -> String {
+    const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    if x == 0 {
+        return "0".to_string();
+    }
+    let mut buf = [0u8; 26]; // enough for base62(u128)
+    let mut i = buf.len();
+    while x > 0 {
+        let rem = (x % 62) as usize;
+        x /= 62;
+        i -= 1;
+        buf[i] = ALPHABET[rem];
+    }
+    String::from_utf8_lossy(&buf[i..]).into_owned()
+}
+
 /// Unit test that is expected to be passed for a correct database implementation
 #[macro_export]
 macro_rules! mint_db_test {
     ($make_db_fn:ident) => {
-        mint_db_test!(state_transition, $make_db_fn);
-        mint_db_test!(add_and_find_proofs, $make_db_fn);
-        mint_db_test!(kvstore_functionality, $make_db_fn);
+        mint_db_test!(
+            $make_db_fn,
+            state_transition,
+            add_and_find_proofs,
+            add_duplicate_proofs,
+            kvstore_functionality,
+            add_mint_quote,
+            add_mint_quote_only_once,
+            register_payments,
+            read_mint_from_db_and_tx,
+            reject_duplicate_payments_same_tx,
+            reject_duplicate_payments_diff_tx,
+            reject_over_issue_same_tx,
+            reject_over_issue_different_tx,
+            reject_over_issue_with_payment,
+            reject_over_issue_with_payment_different_tx
+        );
     };
-    ($name:ident, $make_db_fn:ident) => {
-        #[tokio::test]
-        async fn $name() {
-            cdk_common::database::mint::test::$name($make_db_fn().await).await;
-        }
+    ($make_db_fn:ident, $($name:ident),+ $(,)?) => {
+        $(
+            #[tokio::test]
+            async fn $name() {
+                cdk_common::database::mint::test::$name($make_db_fn().await).await;
+            }
+        )+
     };
 }
