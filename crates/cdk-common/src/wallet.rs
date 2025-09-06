@@ -202,6 +202,8 @@ pub struct Transaction {
     pub memo: Option<String>,
     /// User-defined metadata
     pub metadata: HashMap<String, String>,
+    /// Quote ID if this is a mint or melt transaction
+    pub quote_id: Option<String>,
 }
 
 impl Transaction {

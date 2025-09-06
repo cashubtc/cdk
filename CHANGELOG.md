@@ -16,6 +16,8 @@
 - cdk-common: Added comprehensive test module for KV store functionality with transaction and isolation testing ([thesimplekid]).
 - cdk-sql-common: Database migration to add `kv_store` table for generic key-value storage in SQLite and PostgreSQL ([thesimplekid]).
 - cdk-sql-common: Implementation of `MintKVStoreDatabase` trait for SQL-based databases with namespace support ([thesimplekid]).
+- cdk-common: Added `quote_id` field to `Transaction` struct for tracking associated mint or melt quote IDs ([thesimplekid]).
+- cdk-sql-common: Database migration to add `quote_id` column to transactions table for SQLite and PostgreSQL ([thesimplekid]).
 
 ### Changed
 - cdk-common: Refactored `MintPayment` trait method `wait_any_incoming_payment` to `wait_payment_event` with event-driven architecture ([thesimplekid]).

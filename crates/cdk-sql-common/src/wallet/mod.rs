@@ -903,9 +903,9 @@ ON CONFLICT(id) DO UPDATE SET
         query(
             r#"
 INSERT INTO transactions
-(id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata)
+(id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id)
 VALUES
-(:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata)
+(:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id)
 ON CONFLICT(id) DO UPDATE SET
     mint_url = excluded.mint_url,
     direction = excluded.direction,
@@ -915,7 +915,8 @@ ON CONFLICT(id) DO UPDATE SET
     ys = excluded.ys,
     timestamp = excluded.timestamp,
     memo = excluded.memo,
-    metadata = excluded.metadata
+    metadata = excluded.metadata,
+    quote_id = excluded.quote_id
 ;
         "#,
         )?
@@ -932,6 +933,7 @@ ON CONFLICT(id) DO UPDATE SET
             "metadata",
             serde_json::to_string(&transaction.metadata).map_err(Error::from)?,
         )
+        .bind("quote_id", transaction.quote_id)
         .execute(&*conn)
         .await?;
 
@@ -955,7 +957,8 @@ ON CONFLICT(id) DO UPDATE SET
                 ys,
                 timestamp,
                 memo,
-                metadata
+                metadata,
+                quote_id
             FROM
                 transactions
             WHERE
@@ -989,7 +992,8 @@ ON CONFLICT(id) DO UPDATE SET
                 ys,
                 timestamp,
                 memo,
-                metadata
+                metadata,
+                quote_id
             FROM
                 transactions
             "#,
@@ -1226,7 +1230,8 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             ys,
             timestamp,
             memo,
-            metadata
+            metadata,
+            quote_id
         ) = row
     );
 
@@ -1249,5 +1254,6 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             serde_json::from_slice(&v).ok()
         })
         .unwrap_or_default(),
+        quote_id: column_as_nullable_string!(quote_id),
     })
 }
