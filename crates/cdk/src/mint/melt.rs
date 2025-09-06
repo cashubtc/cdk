@@ -520,25 +520,6 @@ impl Mint {
         &self,
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
-        use std::sync::Arc;
-        async fn check_payment_state(
-            ln: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
-            lookup_id: &PaymentIdentifier,
-        ) -> anyhow::Result<MakePaymentResponse> {
-            match ln.check_outgoing_payment(lookup_id).await {
-                Ok(response) => Ok(response),
-                Err(check_err) => {
-                    // If we cannot check the status of the payment we keep the proofs stuck as pending.
-                    tracing::error!(
-                        "Could not check the status of payment for {},. Proofs stuck as pending",
-                        lookup_id
-                    );
-                    tracing::error!("Checking payment error: {}", check_err);
-                    bail!("Could not check payment status")
-                }
-            }
-        }
-
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
         let mut tx = self.localstore.begin_transaction().await?;
@@ -569,172 +550,229 @@ impl Mint {
                 err
             })?;
 
-        let (tx, preimage, amount_spent_quote_unit, quote) = match settled_internally_amount {
-            Some(amount_spent) => (tx, None, amount_spent, quote),
-
-            None => {
-                // If the quote unit is SAT or MSAT we can check that the expected fees are
-                // provided. We also check if the quote is less then the invoice
-                // amount in the case that it is a mmp However, if the quote is not
-                // of a bitcoin unit we cannot do these checks as the mint
-                // is unaware of a conversion rate. In this case it is assumed that the quote is
-                // correct and the mint should pay the full invoice amount if inputs
-                // > `then quote.amount` are included. This is checked in the
-                // `verify_melt` method.
-                let _partial_amount = match quote.unit {
-                    CurrencyUnit::Sat | CurrencyUnit::Msat => {
-                        match self.check_melt_expected_ln_fees(&quote, melt_request).await {
-                            Ok(amount) => amount,
-                            Err(err) => {
-                                tracing::error!("Fee is not expected: {}", err);
-                                return Err(Error::Internal);
-                            }
-                        }
-                    }
-                    _ => None,
-                };
-
-                let ln = match self.payment_processors.get(&PaymentProcessorKey::new(
-                    quote.unit.clone(),
-                    quote.payment_method.clone(),
-                )) {
-                    Some(ln) => ln,
-                    None => {
-                        tracing::info!("Could not get ln backend for {}, bolt11 ", quote.unit);
-                        return Err(Error::UnsupportedUnit);
-                    }
-                };
-
-                // Commit before talking to the external call
-                tx.commit().await?;
-
-                let pre = match ln
-                    .make_payment(&quote.unit, quote.clone().try_into()?)
+        let res = match settled_internally_amount {
+            Some(amount_spent) => {
+                // Handle internal melt processing
+                self.handle_internal_melt(tx, proof_writer, quote, amount_spent)
                     .await
-                {
-                    Ok(pay)
-                        if pay.status == MeltQuoteState::Unknown
-                            || pay.status == MeltQuoteState::Failed =>
-                    {
-                        tracing::warn!("Got {} status when paying melt quote {} for {} {}. Checking with backend...", pay.status, quote.id, quote.amount, quote.unit);
-                        let check_response = if let Ok(ok) =
-                            check_payment_state(Arc::clone(ln), &pay.payment_lookup_id).await
-                        {
-                            ok
-                        } else {
-                            return Err(Error::Internal);
-                        };
-
-                        if check_response.status == MeltQuoteState::Paid {
-                            tracing::warn!("Pay invoice returned {} but check returned {}. Proofs stuck as pending", pay.status.to_string(), check_response.status.to_string());
-
-                            proof_writer.commit();
-
-                            return Err(Error::Internal);
-                        }
-
-                        check_response
-                    }
-                    Ok(pay) => pay,
-                    Err(err) => {
-                        // If the error is that the invoice was already paid we do not want to hold
-                        // hold the proofs as pending to we reset them  and return an error.
-                        if matches!(err, cdk_payment::Error::InvoiceAlreadyPaid) {
-                            tracing::debug!("Invoice already paid, resetting melt quote");
-                            return Err(Error::RequestAlreadyPaid);
-                        }
-
-                        tracing::error!("Error returned attempting to pay: {} {}", quote.id, err);
-
-                        let lookup_id = quote.request_lookup_id.as_ref().ok_or_else(|| {
-                            tracing::error!(
-                                "No payment id could not lookup payment for {} after error.",
-                                quote.id
-                            );
-                            Error::Internal
-                        })?;
-
-                        let check_response =
-                            if let Ok(ok) = check_payment_state(Arc::clone(ln), lookup_id).await {
-                                ok
-                            } else {
-                                proof_writer.commit();
-                                return Err(Error::Internal);
-                            };
-                        // If there error is something else we want to check the status of the payment ensure it is not pending or has been made.
-                        if check_response.status == MeltQuoteState::Paid {
-                            tracing::warn!("Pay invoice returned an error but check returned {}. Proofs stuck as pending", check_response.status.to_string());
-                            proof_writer.commit();
-                            return Err(Error::Internal);
-                        }
-                        check_response
-                    }
-                };
-
-                match pre.status {
-                    MeltQuoteState::Paid => (),
-                    MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => {
-                        tracing::info!(
-                            "Lightning payment for quote {} failed.",
-                            melt_request.quote()
-                        );
-                        proof_writer.rollback().await?;
-                        return Err(Error::PaymentFailed);
-                    }
-                    MeltQuoteState::Pending => {
-                        tracing::warn!(
-                            "LN payment pending, proofs are stuck as pending for quote: {}",
-                            melt_request.quote()
-                        );
-                        proof_writer.commit();
-                        return Err(Error::PendingQuote);
-                    }
-                }
-
-                // Convert from unit of backend to quote unit
-                // Note: this should never fail since these conversions happen earlier and would fail there.
-                // Since it will not fail and even if it does the ln payment has already been paid, proofs should still be burned
-                let amount_spent =
-                    to_unit(pre.total_spent, &pre.unit, &quote.unit).unwrap_or_default();
-
-                let payment_lookup_id = pre.payment_lookup_id;
-                let mut tx = self.localstore.begin_transaction().await?;
-
-                if Some(payment_lookup_id.clone()).as_ref() != quote.request_lookup_id.as_ref() {
-                    tracing::info!(
-                        "Payment lookup id changed post payment from {:?} to {}",
-                        &quote.request_lookup_id,
-                        payment_lookup_id
-                    );
-
-                    let mut melt_quote = quote;
-                    melt_quote.request_lookup_id = Some(payment_lookup_id.clone());
-
-                    if let Err(err) = tx
-                        .update_melt_quote_request_lookup_id(&melt_quote.id, &payment_lookup_id)
-                        .await
-                    {
-                        tracing::warn!("Could not update payment lookup id: {}", err);
-                    }
-
-                    (tx, pre.payment_proof, amount_spent, melt_quote)
-                } else {
-                    (tx, pre.payment_proof, amount_spent, quote)
-                }
+            }
+            None => {
+                // Handle external payment processing
+                self.handle_external_melt(tx, proof_writer, quote, melt_request)
+                    .await
             }
         };
 
         // If we made it here the payment has been made.
-        // We process the melt burning the inputs and returning change
-        let res = self
-            .process_melt_request(tx, proof_writer, quote, preimage, amount_spent_quote_unit)
-            .await
-            .map_err(|err| {
-                tracing::error!("Could not process melt request: {}", err);
-                err
-            })?;
+        // The melt request has already been processed in the handle functions above
+        res
+    }
 
-        Ok(res)
+    /// Handle internal melt processing when the payment is settled internally
+    #[instrument(skip_all)]
+    async fn handle_internal_melt(
+        &self,
+        tx: Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
+        proof_writer: ProofWriter,
+        quote: MeltQuote,
+        amount_spent_quote_unit: Amount,
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        // Process the melt request - marks proofs as spent and handles change
+        self.process_melt_request(
+            tx,
+            proof_writer,
+            quote,
+            None, // No preimage for internal payments
+            amount_spent_quote_unit,
+        )
+        .await
+    }
+
+    /// Handle external payment processing when the payment goes through an external network
+    #[instrument(skip_all)]
+    async fn handle_external_melt(
+        &self,
+        tx: Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
+        proof_writer: ProofWriter,
+        quote: MeltQuote,
+        melt_request: &MeltRequest<QuoteId>,
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        use std::sync::Arc;
+        async fn check_payment_state(
+            ln: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+            lookup_id: &PaymentIdentifier,
+        ) -> anyhow::Result<MakePaymentResponse> {
+            match ln.check_outgoing_payment(lookup_id).await {
+                Ok(response) => Ok(response),
+                Err(check_err) => {
+                    // If we cannot check the status of the payment we keep the proofs stuck as pending.
+                    tracing::error!(
+                        "Could not check the status of payment for {},. Proofs stuck as pending",
+                        lookup_id
+                    );
+                    tracing::error!("Checking payment error: {}", check_err);
+                    bail!("Could not check payment status")
+                }
+            }
+        }
+
+        // If the quote unit is SAT or MSAT we can check that the expected fees are
+        // provided. We also check if the quote is less then the invoice
+        // amount in the case that it is a mmp However, if the quote is not
+        // of a bitcoin unit we cannot do these checks as the mint
+        // is unaware of a conversion rate. In this case it is assumed that the quote is
+        // correct and the mint should pay the full invoice amount if inputs
+        // > `then quote.amount` are included. This is checked in the
+        // `verify_melt` method.
+        let _partial_amount = match quote.unit {
+            CurrencyUnit::Sat | CurrencyUnit::Msat => {
+                match self.check_melt_expected_ln_fees(&quote, melt_request).await {
+                    Ok(amount) => amount,
+                    Err(err) => {
+                        tracing::error!("Fee is not expected: {}", err);
+                        return Err(Error::Internal);
+                    }
+                }
+            }
+            _ => None,
+        };
+
+        let ln = match self.payment_processors.get(&PaymentProcessorKey::new(
+            quote.unit.clone(),
+            quote.payment_method.clone(),
+        )) {
+            Some(ln) => ln,
+            None => {
+                tracing::info!("Could not get ln backend for {}, bolt11 ", quote.unit);
+                return Err(Error::UnsupportedUnit);
+            }
+        };
+
+        // Commit before talking to the external call
+        tx.commit().await?;
+
+        let pre = match ln
+            .make_payment(&quote.unit, quote.clone().try_into()?)
+            .await
+        {
+            Ok(pay)
+                if pay.status == MeltQuoteState::Unknown
+                    || pay.status == MeltQuoteState::Failed =>
+            {
+                tracing::warn!(
+                    "Got {} status when paying melt quote {} for {} {}. Checking with backend...",
+                    pay.status,
+                    quote.id,
+                    quote.amount,
+                    quote.unit
+                );
+                let check_response = if let Ok(ok) =
+                    check_payment_state(Arc::clone(ln), &pay.payment_lookup_id).await
+                {
+                    ok
+                } else {
+                    return Err(Error::Internal);
+                };
+
+                if check_response.status == MeltQuoteState::Paid {
+                    tracing::warn!(
+                        "Pay invoice returned {} but check returned {}. Proofs stuck as pending",
+                        pay.status.to_string(),
+                        check_response.status.to_string()
+                    );
+
+                    proof_writer.commit();
+
+                    return Err(Error::Internal);
+                }
+
+                check_response
+            }
+            Ok(pay) => pay,
+            Err(err) => {
+                // If the error is that the invoice was already paid we do not want to hold
+                // hold the proofs as pending to we reset them  and return an error.
+                if matches!(err, cdk_payment::Error::InvoiceAlreadyPaid) {
+                    tracing::debug!("Invoice already paid, resetting melt quote");
+                    return Err(Error::RequestAlreadyPaid);
+                }
+
+                tracing::error!("Error returned attempting to pay: {} {}", quote.id, err);
+
+                let lookup_id = quote.request_lookup_id.as_ref().ok_or_else(|| {
+                    tracing::error!(
+                        "No payment id could not lookup payment for {} after error.",
+                        quote.id
+                    );
+                    Error::Internal
+                })?;
+
+                let check_response =
+                    if let Ok(ok) = check_payment_state(Arc::clone(ln), lookup_id).await {
+                        ok
+                    } else {
+                        proof_writer.commit();
+                        return Err(Error::Internal);
+                    };
+                // If there error is something else we want to check the status of the payment ensure it is not pending or has been made.
+                if check_response.status == MeltQuoteState::Paid {
+                    tracing::warn!("Pay invoice returned an error but check returned {}. Proofs stuck as pending", check_response.status.to_string());
+                    proof_writer.commit();
+                    return Err(Error::Internal);
+                }
+                check_response
+            }
+        };
+
+        match pre.status {
+            MeltQuoteState::Paid => (),
+            MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => {
+                tracing::info!(
+                    "Lightning payment for quote {} failed.",
+                    melt_request.quote()
+                );
+                proof_writer.rollback().await?;
+                return Err(Error::PaymentFailed);
+            }
+            MeltQuoteState::Pending => {
+                tracing::warn!(
+                    "LN payment pending, proofs are stuck as pending for quote: {}",
+                    melt_request.quote()
+                );
+                proof_writer.commit();
+                return Err(Error::PendingQuote);
+            }
+        }
+
+        // Convert from unit of backend to quote unit
+        // Note: this should never fail since these conversions happen earlier and would fail there.
+        // Since it will not fail and even if it does the ln payment has already been paid, proofs should still be burned
+        let amount_spent = to_unit(pre.total_spent, &pre.unit, &quote.unit).unwrap_or_default();
+
+        let payment_lookup_id = pre.payment_lookup_id;
+        let mut tx = self.localstore.begin_transaction().await?;
+
+        let mut quote = quote;
+
+        if Some(payment_lookup_id.clone()).as_ref() != quote.request_lookup_id.as_ref() {
+            tracing::info!(
+                "Payment lookup id changed post payment from {:?} to {}",
+                &quote.request_lookup_id,
+                payment_lookup_id
+            );
+
+            quote.request_lookup_id = Some(payment_lookup_id.clone());
+
+            if let Err(err) = tx
+                .update_melt_quote_request_lookup_id(&quote.id, &payment_lookup_id)
+                .await
+            {
+                tracing::warn!("Could not update payment lookup id: {}", err);
+            }
+        }
+        // Process the melt request - marks proofs as spent and handles change
+        self.process_melt_request(tx, proof_writer, quote, pre.payment_proof, amount_spent)
+            .await
     }
 
     /// Process melt request marking proofs as spent
