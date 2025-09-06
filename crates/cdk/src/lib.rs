@@ -68,3 +68,6 @@ pub type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 /// Re-export futures::Stream
 #[cfg(any(feature = "wallet", feature = "mint"))]
 pub use futures::{Stream, StreamExt};
+/// Payment Request
+#[cfg(feature = "wallet")]
+pub use wallet::payment_request;

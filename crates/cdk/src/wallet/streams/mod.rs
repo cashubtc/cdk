@@ -120,3 +120,5 @@ impl Wallet {
         PaymentStream::new(self, events.into().into_subscription())
     }
 }
+#[cfg(feature = "nostr")]
+pub mod nostr;
