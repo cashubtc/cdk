@@ -618,7 +618,7 @@ where
     async fn get_melt_request_and_blinded_messages(
         &mut self,
         quote_id: &QuoteId,
-    ) -> Result<Option<((Amount, Amount), Vec<BlindedMessage>)>, Self::Err> {
+    ) -> Result<Option<database::mint::MeltRequestInfo>, Self::Err> {
         let melt_request_row = query(
             r#"
             SELECT inputs_amount, inputs_fee
@@ -664,10 +664,11 @@ where
                 .collect();
             let blinded_messages = blinded_messages?;
 
-            Ok(Some((
-                (Amount::from(inputs_amount), Amount::from(inputs_fee)),
-                blinded_messages,
-            )))
+            Ok(Some(database::mint::MeltRequestInfo {
+                inputs_amount: Amount::from(inputs_amount),
+                inputs_fee: Amount::from(inputs_fee),
+                change_outputs: blinded_messages,
+            }))
         } else {
             Ok(None)
         }

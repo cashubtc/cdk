@@ -2,6 +2,7 @@ use std::str::FromStr;
 
 use anyhow::bail;
 use cdk_common::amount::amount_for_offer;
+use cdk_common::database::mint::MeltRequestInfo;
 use cdk_common::database::{self, MintTransaction};
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
@@ -556,7 +557,7 @@ impl Mint {
             melt_request.quote_id(),
             melt_request.inputs_amount()?,
             inputs_fee,
-            &melt_request.outputs().as_ref().unwrap_or(&Vec::new()),
+            melt_request.outputs().as_ref().unwrap_or(&Vec::new()),
         )
         .await?;
 
@@ -759,7 +760,11 @@ impl Mint {
 
         let mut change = None;
 
-        let ((inputs_amount, inputs_fee), change_outputs) = tx
+        let MeltRequestInfo {
+            inputs_amount,
+            inputs_fee,
+            change_outputs,
+        } = tx
             .get_melt_request_and_blinded_messages(&quote.id)
             .await?
             .ok_or(Error::UnknownQuote)?;

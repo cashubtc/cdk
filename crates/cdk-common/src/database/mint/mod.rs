@@ -83,6 +83,16 @@ pub mod test;
 
 #[cfg(test)]
 mod test_kvstore;
+/// Information about a melt request stored in the database
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeltRequestInfo {
+    /// Total amount of all input proofs in the melt request
+    pub inputs_amount: Amount,
+    /// Fee amount associated with the input proofs
+    pub inputs_fee: Amount,
+    /// Blinded messages for change outputs
+    pub change_outputs: Vec<BlindedMessage>,
+}
 
 #[cfg(feature = "auth")]
 pub use auth::{MintAuthDatabase, MintAuthTransaction};
@@ -140,7 +150,7 @@ pub trait QuotesTransaction<'a> {
     async fn get_melt_request_and_blinded_messages(
         &mut self,
         quote_id: &QuoteId,
-    ) -> Result<Option<((Amount, Amount), Vec<BlindedMessage>)>, Self::Err>;
+    ) -> Result<Option<MeltRequestInfo>, Self::Err>;
 
     /// Delete melt_request and associated blinded_messages by quote_id
     async fn delete_melt_request(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err>;
