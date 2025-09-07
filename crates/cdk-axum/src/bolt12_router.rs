@@ -194,7 +194,7 @@ pub async fn post_melt_bolt12_quote(
 /// Requests tokens to be destroyed and sent out via Lightning.
 pub async fn post_melt_bolt12(
     #[cfg(feature = "auth")] auth: AuthHeader,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     State(state): State<MintState>,
     Json(payload): Json<MeltRequest<QuoteId>>,
 ) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
@@ -210,7 +210,21 @@ pub async fn post_melt_bolt12(
             .map_err(into_response)?;
     }
 
-    let (res, _rx) = state.mint.melt(&payload).await.map_err(into_response)?;
+    let is_async_preferred = headers
+        .get("PREFER")
+        .and_then(|value| value.to_str().ok())
+        .map(|prefer_value| prefer_value.contains("respond-async"))
+        .unwrap_or(false);
 
-    Ok(Json(res))
+    let (res, receiver) = state.mint.melt(&payload).await.map_err(into_response)?;
+
+    if !is_async_preferred && receiver.is_some() {
+        let rx = receiver.expect("Checked above");
+
+        let res = rx.await.unwrap().map_err(into_response)?;
+
+        Ok(Json(res))
+    } else {
+        Ok(Json(res))
+    }
 }
