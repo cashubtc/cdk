@@ -122,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
                         fee_reserve,
                         HashMap::default(),
                         HashSet::default(),
-                        0,
+                        2,
                         cashu::CurrencyUnit::Sat,
                     );
 
