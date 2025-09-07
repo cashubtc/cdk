@@ -1,7 +1,7 @@
 use anyhow::Result;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Json, Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use cdk::error::{ErrorCode, ErrorResponse};
 use cdk::mint::QuoteId;
@@ -25,6 +25,46 @@ use crate::MintState;
 /// Macro to add cache to endpoint
 #[macro_export]
 macro_rules! post_cache_wrapper {
+    ($handler:ident, $request_type:ty, $response_type:ty) => {
+        paste! {
+            /// Cache wrapper function for $handler:
+            /// Wrap $handler into a function that caches responses using the request as key
+            pub async fn [<cache_ $handler>](
+                #[cfg(feature = "auth")] auth: AuthHeader,
+                headers: HeaderMap,
+                state: State<MintState>,
+                payload: Json<$request_type>
+            ) -> Result<Json<$response_type>, Response> {
+                use std::ops::Deref;
+                let json_extracted_payload = payload.deref();
+                let State(mint_state) = state.clone();
+                let cache_key = match mint_state.cache.calculate_key(&json_extracted_payload) {
+                    Some(key) => key,
+                    None => {
+                        // Could not calculate key, just return the handler result
+                        #[cfg(feature = "auth")]
+                        return $handler(auth, headers, state, payload).await;
+                        #[cfg(not(feature = "auth"))]
+                        return $handler(headers, state, payload).await;
+                    }
+                };
+                if let Some(cached_response) = mint_state.cache.get::<$response_type>(&cache_key).await {
+                    return Ok(Json(cached_response));
+                }
+                #[cfg(feature = "auth")]
+                let response = $handler(auth, headers, state, payload).await?;
+                #[cfg(not(feature = "auth"))]
+                let response = $handler(headers, state, payload).await?;
+                mint_state.cache.set(cache_key, &response.deref()).await;
+                Ok(response)
+            }
+        }
+    };
+}
+
+/// Macro to add cache to endpoint
+#[macro_export]
+macro_rules! post_cache_wrapper_no_headers {
     ($handler:ident, $request_type:ty, $response_type:ty) => {
         paste! {
             /// Cache wrapper function for $handler:
@@ -61,8 +101,8 @@ macro_rules! post_cache_wrapper {
     };
 }
 
-post_cache_wrapper!(post_swap, SwapRequest, SwapResponse);
-post_cache_wrapper!(post_mint_bolt11, MintRequest<QuoteId>, MintResponse);
+post_cache_wrapper_no_headers!(post_swap, SwapRequest, SwapResponse);
+post_cache_wrapper_no_headers!(post_mint_bolt11, MintRequest<QuoteId>, MintResponse);
 post_cache_wrapper!(
     post_melt_bolt11,
     MeltRequest<QuoteId>,
@@ -366,9 +406,11 @@ pub(crate) async fn get_check_melt_bolt11_quote(
 /// Melt tokens for a Bitcoin payment that the mint will make for the user in exchange
 ///
 /// Requests tokens to be destroyed and sent out via Lightning.
+/// Optional Prefer header with "respond-async" can be used to request async processing.
 #[instrument(skip_all)]
 pub(crate) async fn post_melt_bolt11(
     #[cfg(feature = "auth")] auth: AuthHeader,
+    headers: HeaderMap,
     State(state): State<MintState>,
     Json(payload): Json<MeltRequest<QuoteId>>,
 ) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
@@ -384,9 +426,24 @@ pub(crate) async fn post_melt_bolt11(
             .map_err(into_response)?;
     }
 
-    let res = state.mint.melt(&payload).await.map_err(into_response)?;
+    // Check if Prefer header contains "respond-async"
+    let is_async_preferred = headers
+        .get("PREFER")
+        .and_then(|value| value.to_str().ok())
+        .map(|prefer_value| prefer_value.contains("respond-async"))
+        .unwrap_or(false);
 
-    Ok(Json(res))
+    let (res, receiver) = state.mint.melt(&payload).await.map_err(into_response)?;
+
+    if !is_async_preferred && receiver.is_some() {
+        let rx = receiver.expect("Checked above");
+
+        let res = rx.await.unwrap().map_err(into_response)?;
+
+        Ok(Json(res))
+    } else {
+        Ok(Json(res))
+    }
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(

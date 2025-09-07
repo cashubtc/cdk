@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::bail;
 use cdk_common::amount::amount_for_offer;
@@ -14,6 +16,8 @@ use cdk_common::payment::{
 use cdk_common::quote_id::QuoteId;
 use cdk_common::{MeltOptions, MeltQuoteBolt12Request};
 use lightning::offers::offer::Offer;
+use tokio::spawn;
+use tokio::sync::oneshot;
 use tracing::instrument;
 
 use super::{
@@ -23,6 +27,7 @@ use super::{
 use crate::amount::to_unit;
 use crate::cdk_payment::{MakePaymentResponse, MintPayment};
 use crate::mint::proof_writer::ProofWriter;
+use crate::mint::subscription::PubSubManager;
 use crate::mint::verification::Verification;
 use crate::mint::SigFlag;
 use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
@@ -519,7 +524,13 @@ impl Mint {
     pub async fn melt(
         &self,
         melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    ) -> Result<
+        (
+            MeltQuoteBolt11Response<QuoteId>,
+            Option<oneshot::Receiver<Result<MeltQuoteBolt11Response<QuoteId>, Error>>>,
+        ),
+        Error,
+    > {
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
         let mut tx = self.localstore.begin_transaction().await?;
@@ -553,19 +564,65 @@ impl Mint {
         let res = match settled_internally_amount {
             Some(amount_spent) => {
                 // Handle internal melt processing
-                self.handle_internal_melt(tx, proof_writer, quote, amount_spent)
-                    .await
+                (
+                    self.handle_internal_melt(
+                        tx,
+                        proof_writer,
+                        quote,
+                        amount_spent,
+                        self.signatory.clone(),
+                    )
+                    .await?,
+                    None,
+                )
             }
             None => {
-                // Handle external payment processing
-                self.handle_external_melt(tx, proof_writer, quote, melt_request)
-                    .await
+                // Handle external payment processing asynchronously
+                let melt_request_clone = melt_request.clone();
+                let quote_clone = quote.clone();
+
+                let mint_clone = self.clone();
+                // Commit before talking to the external call
+                tx.commit().await?;
+
+                let (sender, rx) = oneshot::channel();
+
+                spawn(async move {
+                    let res = Self::handle_external_melt(
+                        mint_clone.localstore,
+                        mint_clone.pubsub_manager,
+                        mint_clone.payment_processors,
+                        mint_clone.signatory,
+                        proof_writer,
+                        quote_clone,
+                        &melt_request_clone,
+                    )
+                    .await;
+
+                    sender.send(res).ok();
+                });
+
+                (
+                    MeltQuoteBolt11Response {
+                        quote: melt_request.quote().clone(),
+                        paid: None, // Processing is pending
+                        state: MeltQuoteState::Pending,
+                        expiry: quote.expiry, // Use the quote's expiry
+                        amount: quote.amount,
+                        fee_reserve: quote.fee_reserve,
+                        payment_preimage: None,
+                        change: None,
+                        request: Some(quote.request.to_string()),
+                        unit: Some(quote.unit.clone()),
+                    },
+                    Some(rx),
+                )
             }
         };
 
         // If we made it here the payment has been made.
         // The melt request has already been processed in the handle functions above
-        res
+        Ok(res)
     }
 
     /// Handle internal melt processing when the payment is settled internally
@@ -576,9 +633,13 @@ impl Mint {
         proof_writer: ProofWriter,
         quote: MeltQuote,
         amount_spent_quote_unit: Amount,
+        signatory: Arc<dyn cdk_signatory::signatory::Signatory + Send + Sync>,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         // Process the melt request - marks proofs as spent and handles change
-        self.process_melt_request(
+        Self::process_melt_request(
+            self.localstore.clone(),
+            self.pubsub_manager.clone(),
+            signatory,
             tx,
             proof_writer,
             quote,
@@ -591,8 +652,15 @@ impl Mint {
     /// Handle external payment processing when the payment goes through an external network
     #[instrument(skip_all)]
     async fn handle_external_melt(
-        &self,
-        tx: Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
+        localstore: Arc<dyn super::MintDatabase<database::Error> + Send + Sync>,
+        pubsub_manager: Arc<PubSubManager>,
+        payment_processors: Arc<
+            HashMap<
+                super::PaymentProcessorKey,
+                Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+            >,
+        >,
+        signatory: Arc<dyn cdk_signatory::signatory::Signatory + Send + Sync>,
         proof_writer: ProofWriter,
         quote: MeltQuote,
         melt_request: &MeltRequest<QuoteId>,
@@ -616,40 +684,16 @@ impl Mint {
             }
         }
 
-        // If the quote unit is SAT or MSAT we can check that the expected fees are
-        // provided. We also check if the quote is less then the invoice
-        // amount in the case that it is a mmp However, if the quote is not
-        // of a bitcoin unit we cannot do these checks as the mint
-        // is unaware of a conversion rate. In this case it is assumed that the quote is
-        // correct and the mint should pay the full invoice amount if inputs
-        // > `then quote.amount` are included. This is checked in the
-        // `verify_melt` method.
-        let _partial_amount = match quote.unit {
-            CurrencyUnit::Sat | CurrencyUnit::Msat => {
-                match self.check_melt_expected_ln_fees(&quote, melt_request).await {
-                    Ok(amount) => amount,
-                    Err(err) => {
-                        tracing::error!("Fee is not expected: {}", err);
-                        return Err(Error::Internal);
-                    }
-                }
-            }
-            _ => None,
-        };
-
-        let ln = match self.payment_processors.get(&PaymentProcessorKey::new(
+        let ln = match payment_processors.get(&super::PaymentProcessorKey::new(
             quote.unit.clone(),
             quote.payment_method.clone(),
         )) {
-            Some(ln) => ln,
+            Some(ln) => ln.clone(),
             None => {
                 tracing::info!("Could not get ln backend for {}, bolt11 ", quote.unit);
                 return Err(Error::UnsupportedUnit);
             }
         };
-
-        // Commit before talking to the external call
-        tx.commit().await?;
 
         let pre = match ln
             .make_payment(&quote.unit, quote.clone().try_into()?)
@@ -667,7 +711,7 @@ impl Mint {
                     quote.unit
                 );
                 let check_response = if let Ok(ok) =
-                    check_payment_state(Arc::clone(ln), &pay.payment_lookup_id).await
+                    check_payment_state(Arc::clone(&ln), &pay.payment_lookup_id).await
                 {
                     ok
                 } else {
@@ -708,7 +752,7 @@ impl Mint {
                 })?;
 
                 let check_response =
-                    if let Ok(ok) = check_payment_state(Arc::clone(ln), lookup_id).await {
+                    if let Ok(ok) = check_payment_state(Arc::clone(&ln), lookup_id).await {
                         ok
                     } else {
                         proof_writer.commit();
@@ -750,7 +794,8 @@ impl Mint {
         let amount_spent = to_unit(pre.total_spent, &pre.unit, &quote.unit).unwrap_or_default();
 
         let payment_lookup_id = pre.payment_lookup_id;
-        let mut tx = self.localstore.begin_transaction().await?;
+        let localstore_clone = Arc::clone(&localstore);
+        let mut tx = localstore.begin_transaction().await?;
 
         let mut quote = quote;
 
@@ -771,16 +816,27 @@ impl Mint {
             }
         }
         // Process the melt request - marks proofs as spent and handles change
-        self.process_melt_request(tx, proof_writer, quote, pre.payment_proof, amount_spent)
-            .await
+        Self::process_melt_request(
+            localstore_clone,
+            pubsub_manager,
+            signatory,
+            tx,
+            proof_writer,
+            quote,
+            pre.payment_proof,
+            amount_spent,
+        )
+        .await
     }
 
     /// Process melt request marking proofs as spent
     /// The melt request must be verifyed using [`Self::verify_melt_request`]
     /// before calling [`Self::process_melt_request`]
     #[instrument(skip_all)]
-    pub async fn process_melt_request(
-        &self,
+    async fn process_melt_request(
+        localstore: Arc<dyn super::MintDatabase<database::Error> + Send + Sync>,
+        pubsub_manager: Arc<PubSubManager>,
+        signatory: Arc<dyn cdk_signatory::signatory::Signatory + Send + Sync>,
         mut tx: Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
         mut proof_writer: ProofWriter,
         quote: MeltQuote,
@@ -856,9 +912,9 @@ impl Mint {
                 // commit db transaction before calling the signatory
                 tx.commit().await?;
 
-                let change_sigs = self.blind_sign(blinded_messages).await?;
+                let change_sigs = signatory.blind_sign(blinded_messages).await?;
 
-                let mut tx = self.localstore.begin_transaction().await?;
+                let mut tx = localstore.begin_transaction().await?;
 
                 tx.add_blind_signatures(
                     &outputs[0..change_sigs.len()]
@@ -890,7 +946,7 @@ impl Mint {
             tx.commit().await?;
         }
 
-        self.pubsub_manager.melt_quote_status(
+        pubsub_manager.melt_quote_status(
             &quote,
             payment_preimage.clone(),
             change.clone(),

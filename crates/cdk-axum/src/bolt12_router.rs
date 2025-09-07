@@ -1,5 +1,6 @@
 use anyhow::Result;
 use axum::extract::{Json, Path, State};
+use axum::http::HeaderMap;
 use axum::response::Response;
 #[cfg(feature = "swagger")]
 use cdk::error::ErrorResponse;
@@ -15,9 +16,9 @@ use tracing::instrument;
 
 #[cfg(feature = "auth")]
 use crate::auth::AuthHeader;
-use crate::{into_response, post_cache_wrapper, MintState};
+use crate::{into_response, post_cache_wrapper, post_cache_wrapper_no_headers, MintState};
 
-post_cache_wrapper!(post_mint_bolt12, MintRequest<QuoteId>, MintResponse);
+post_cache_wrapper_no_headers!(post_mint_bolt12, MintRequest<QuoteId>, MintResponse);
 post_cache_wrapper!(
     post_melt_bolt12,
     MeltRequest<QuoteId>,
@@ -153,6 +154,7 @@ pub async fn post_mint_bolt12(
 ))]
 pub async fn post_melt_bolt12_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
+    _headers: HeaderMap,
     State(state): State<MintState>,
     Json(payload): Json<MeltQuoteBolt12Request>,
 ) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
@@ -192,6 +194,7 @@ pub async fn post_melt_bolt12_quote(
 /// Requests tokens to be destroyed and sent out via Lightning.
 pub async fn post_melt_bolt12(
     #[cfg(feature = "auth")] auth: AuthHeader,
+    _headers: HeaderMap,
     State(state): State<MintState>,
     Json(payload): Json<MeltRequest<QuoteId>>,
 ) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
@@ -207,7 +210,7 @@ pub async fn post_melt_bolt12(
             .map_err(into_response)?;
     }
 
-    let res = state.mint.melt(&payload).await.map_err(into_response)?;
+    let (res, _rx) = state.mint.melt(&payload).await.map_err(into_response)?;
 
     Ok(Json(res))
 }

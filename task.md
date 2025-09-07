@@ -1,0 +1,4 @@
+- [x] Modify handle_external_melt to remove &self dependency (spawnable)
+- [x] Revert handle_internal_melt to use &self (not spawned)
+- [x] Keep process_melt_request standalone for compatibility
+- [x] Fix compilation errors (imports, lifetimes, traits)
