@@ -36,6 +36,22 @@ use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
 use crate::{cdk_payment, ensure_cdk, Amount, Error};
 
+/// Context for melt processing operations
+pub struct MeltProcessingContext {
+    pub localstore: Arc<dyn super::MintDatabase<database::Error> + Send + Sync>,
+    pub pubsub_manager: Arc<PubSubManager>,
+    pub signatory: Arc<dyn cdk_signatory::signatory::Signatory + Send + Sync>,
+}
+
+/// Type alias for the complex return type of the melt function
+pub type MeltResult = Result<
+    (
+        MeltQuoteBolt11Response<QuoteId>,
+        Option<oneshot::Receiver<Result<MeltQuoteBolt11Response<QuoteId>, Error>>>,
+    ),
+    Error,
+>;
+
 impl Mint {
     #[instrument(skip_all)]
     async fn check_melt_request_acceptable(
@@ -521,16 +537,7 @@ impl Mint {
 
     /// Melt Bolt11
     #[instrument(skip_all)]
-    pub async fn melt(
-        &self,
-        melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<
-        (
-            MeltQuoteBolt11Response<QuoteId>,
-            Option<oneshot::Receiver<Result<MeltQuoteBolt11Response<QuoteId>, Error>>>,
-        ),
-        Error,
-    > {
+    pub async fn melt(&self, melt_request: &MeltRequest<QuoteId>) -> MeltResult {
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
         let mut tx = self.localstore.begin_transaction().await?;
@@ -637,9 +644,11 @@ impl Mint {
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         // Process the melt request - marks proofs as spent and handles change
         Self::process_melt_request(
-            self.localstore.clone(),
-            self.pubsub_manager.clone(),
-            signatory,
+            MeltProcessingContext {
+                localstore: self.localstore.clone(),
+                pubsub_manager: self.pubsub_manager.clone(),
+                signatory,
+            },
             tx,
             proof_writer,
             quote,
@@ -817,9 +826,11 @@ impl Mint {
         }
         // Process the melt request - marks proofs as spent and handles change
         Self::process_melt_request(
-            localstore_clone,
-            pubsub_manager,
-            signatory,
+            MeltProcessingContext {
+                localstore: localstore_clone,
+                pubsub_manager,
+                signatory,
+            },
             tx,
             proof_writer,
             quote,
@@ -834,9 +845,7 @@ impl Mint {
     /// before calling [`Self::process_melt_request`]
     #[instrument(skip_all)]
     async fn process_melt_request(
-        localstore: Arc<dyn super::MintDatabase<database::Error> + Send + Sync>,
-        pubsub_manager: Arc<PubSubManager>,
-        signatory: Arc<dyn cdk_signatory::signatory::Signatory + Send + Sync>,
+        context: MeltProcessingContext,
         mut tx: Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
         mut proof_writer: ProofWriter,
         quote: MeltQuote,
@@ -912,9 +921,9 @@ impl Mint {
                 // commit db transaction before calling the signatory
                 tx.commit().await?;
 
-                let change_sigs = signatory.blind_sign(blinded_messages).await?;
+                let change_sigs = context.signatory.blind_sign(blinded_messages).await?;
 
-                let mut tx = localstore.begin_transaction().await?;
+                let mut tx = context.localstore.begin_transaction().await?;
 
                 tx.add_blind_signatures(
                     &outputs[0..change_sigs.len()]
@@ -946,7 +955,7 @@ impl Mint {
             tx.commit().await?;
         }
 
-        pubsub_manager.melt_quote_status(
+        context.pubsub_manager.melt_quote_status(
             &quote,
             payment_preimage.clone(),
             change.clone(),

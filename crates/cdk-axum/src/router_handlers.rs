@@ -179,16 +179,19 @@ pub async fn cache_post_melt_bolt11(
 
     let (res, receiver) = state.mint.melt(&payload).await.map_err(into_response)?;
 
-    let (final_response, actual_status_code) = if !is_async_preferred && receiver.is_some() {
-        let rx = receiver.expect("Checked above");
-        let final_res = rx
-            .await
-            .map_err(|e| {
-                tracing::error!("Task join error: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(())).into_response()
-            })?
-            .map_err(into_response)?;
-        (final_res, 202u16) // ACCEPTED for synchronous processing
+    let (final_response, actual_status_code) = if !is_async_preferred {
+        if let Some(rx) = receiver {
+            let final_res = rx
+                .await
+                .map_err(|e| {
+                    tracing::error!("Task join error: {}", e);
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(())).into_response()
+                })?
+                .map_err(into_response)?;
+            (final_res, 202u16) // ACCEPTED for synchronous processing
+        } else {
+            (res, 200u16) // OK for async preferred or immediate responses
+        }
     } else {
         (res, 200u16) // OK for async preferred or immediate responses
     };
@@ -532,19 +535,22 @@ pub(crate) async fn post_melt_bolt11(
 
     let (res, receiver) = state.mint.melt(&payload).await.map_err(into_response)?;
 
-    if !is_async_preferred && receiver.is_some() {
-        let rx = receiver.expect("Checked above");
+    if !is_async_preferred {
+        if let Some(rx) = receiver {
+            let res = rx
+                .await
+                .map_err(|e| {
+                    tracing::error!("Task join error: {}", e);
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(())).into_response()
+                })?
+                .map_err(into_response)?;
 
-        let res = rx
-            .await
-            .map_err(|e| {
-                tracing::error!("Task join error: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(())).into_response()
-            })?
-            .map_err(into_response)?;
-
-        // Return 202 Accepted for synchronous processing
-        Ok((StatusCode::ACCEPTED, Json(res)).into_response())
+            // Return 202 Accepted for synchronous processing
+            Ok((StatusCode::ACCEPTED, Json(res)).into_response())
+        } else {
+            // Return 200 OK for async preferred or no receiver
+            Ok((StatusCode::OK, Json(res)).into_response())
+        }
     } else {
         // Return 200 OK for async preferred or no receiver
         Ok((StatusCode::OK, Json(res)).into_response())
