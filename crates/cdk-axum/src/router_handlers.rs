@@ -15,7 +15,6 @@ use cdk::nuts::{
 };
 use cdk::util::unix_time;
 use paste::paste;
-use serde_json;
 use tracing::instrument;
 
 #[cfg(feature = "auth")]
@@ -123,8 +122,8 @@ macro_rules! post_cache_wrapper_no_headers {
 post_cache_wrapper_no_headers!(post_swap, SwapRequest, SwapResponse);
 post_cache_wrapper_no_headers!(post_mint_bolt11, MintRequest<QuoteId>, MintResponse);
 
-// Cache wrapper for post_melt_bolt11 that handles different status codes (200/202)
-// Uses the request payload to generate cache key and cache successful final results
+// Cache wrapper for post_melt_bolt11 - NUT-19 compliant implementation
+// Properly caches successful responses (status 200) for idempotent operations
 pub async fn cache_post_melt_bolt11(
     #[cfg(feature = "auth")] auth: AuthHeader,
     headers: HeaderMap,
@@ -132,6 +131,9 @@ pub async fn cache_post_melt_bolt11(
     payload: Json<MeltRequest<QuoteId>>,
 ) -> Result<Response, Response> {
     use std::ops::Deref;
+
+    use cdk::nuts::MeltQuoteBolt11Response;
+
     let json_extracted_payload = payload.deref();
     let State(mint_state) = state.clone();
     let cache_key = match mint_state.cache.calculate_key(&json_extracted_payload) {
@@ -145,24 +147,63 @@ pub async fn cache_post_melt_bolt11(
         }
     };
 
-    // Check if we have a cached response - only cache the final successful result
-    if let Some(cached_response) = mint_state.cache.get::<serde_json::Value>(&cache_key).await {
-        return Ok((StatusCode::OK, Json(cached_response)).into_response());
+    // Check for cached successful responses (status 200)
+    if let Some((cached_status, cached_data)) = mint_state
+        .cache
+        .get::<(u16, MeltQuoteBolt11Response<QuoteId>)>(&cache_key)
+        .await
+    {
+        let status_code = StatusCode::from_u16(cached_status).unwrap_or(StatusCode::OK);
+        return Ok((status_code, Json(cached_data)).into_response());
     }
 
-    // No cached response, execute the handler
+    // Extract headers before moving them into the handler
+    let is_async_preferred = headers
+        .get("PREFER")
+        .and_then(|value| value.to_str().ok())
+        .map(|prefer_value| prefer_value.contains("respond-async"))
+        .unwrap_or(false);
+
+    // Execute the mint's melt operation directly to get typed response
     #[cfg(feature = "auth")]
-    let response = post_melt_bolt11(auth, headers, state, payload).await?;
-    #[cfg(not(feature = "auth"))]
-    let response = post_melt_bolt11(headers, state, payload).await?;
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
 
-    // For caching purposes, we only cache the final successful responses (status OK)
-    // This means we cache completed melts, not intermediate async responses
-    // Note: Due to the complexity of extracting JSON from Response bodies in async contexts,
-    // we currently check for cache hits but don't implement response body caching.
-    // This could be enhanced in the future with a more sophisticated caching layer.
+    let (res, receiver) = state.mint.melt(&payload).await.map_err(into_response)?;
 
-    Ok(response)
+    let (final_response, actual_status_code) = if !is_async_preferred && receiver.is_some() {
+        let rx = receiver.expect("Checked above");
+        let final_res = rx
+            .await
+            .map_err(|e| {
+                tracing::error!("Task join error: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(())).into_response()
+            })?
+            .map_err(into_response)?;
+        (final_res, 202u16) // ACCEPTED for synchronous processing
+    } else {
+        (res, 200u16) // OK for async preferred or immediate responses
+    };
+
+    // Cache successful responses (status 200) as per NUT-19 spec
+    // Only cache final successful results to avoid caching intermediate states
+    if actual_status_code == 200 {
+        mint_state
+            .cache
+            .set(cache_key, &(actual_status_code, final_response.clone()))
+            .await;
+    }
+
+    let status_code = StatusCode::from_u16(actual_status_code).unwrap_or(StatusCode::OK);
+    Ok((status_code, Json(final_response)).into_response())
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(

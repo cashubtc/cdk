@@ -640,13 +640,21 @@ async fn configure_backend_for_unit(
     Ok(mint_builder)
 }
 
-/// Configures cache settings
+/// Configures cache settings - NUT-19 compliant
+/// Caches successful responses for idempotent operations on Bolt11 and Bolt12 endpoints
 fn configure_cache(settings: &config::Settings, mint_builder: MintBuilder) -> MintBuilder {
-    let cached_endpoints = vec![
+    let mut cached_endpoints = vec![
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::MintBolt11),
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::MeltBolt11),
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::Swap),
     ];
+
+    // Add Bolt12 endpoints to ensure full NUT-19 compliance for both payment protocols
+    // This enables proper caching for Bolt12 mint and melt operations
+    cached_endpoints.extend(vec![
+        CachedEndpoint::new(NUT19Method::Post, NUT19Path::MintBolt12),
+        CachedEndpoint::new(NUT19Method::Post, NUT19Path::MeltBolt12),
+    ]);
 
     let cache: HttpCache = settings.info.http_cache.clone().into();
     mint_builder.with_cache(Some(cache.ttl.as_secs()), cached_endpoints)

@@ -63,8 +63,8 @@ pub async fn cache_post_mint_bolt12(
     Ok(response)
 }
 
-// Cache wrapper for post_melt_bolt12 that caches (status_code, response_data) tuple
-// This handles different status codes (200/202) properly by storing them in the cache
+// Cache wrapper for post_melt_bolt12 that implements full NUT-19 compliant caching
+// This properly caches successful responses (status_code == 200) as per NUT-19 spec
 pub async fn cache_post_melt_bolt12(
     #[cfg(feature = "auth")] auth: AuthHeader,
     headers: HeaderMap,
@@ -90,46 +90,62 @@ pub async fn cache_post_melt_bolt12(
     };
 
     // Check if we have a cached response tuple (status_code, data)
-    if let Some((cached_status, _cached_data)) = mint_state
+    if let Some((cached_status, cached_data)) = mint_state
         .cache
         .get::<(u16, MeltQuoteBolt11Response<QuoteId>)>(&cache_key)
         .await
     {
         let status_code = StatusCode::from_u16(cached_status).unwrap_or(StatusCode::OK);
-        return Ok((status_code, Json(_cached_data)).into_response());
+        return Ok((status_code, Json(cached_data)).into_response());
     }
 
-    // Clone headers for status code determination before moving them
-    let headers_clone = headers.clone();
-
-    // No cached response, execute the handler
-    #[cfg(feature = "auth")]
-    let response = post_melt_bolt12(auth, headers, state, payload).await?;
-    #[cfg(not(feature = "auth"))]
-    let response = post_melt_bolt12(headers, state, payload).await?;
-
-    // Extract the status code and body from the response for caching
-    // We need to extract the JSON body and status code from the axum Response
-    // This is a bit complex in axum, but for caching we can store based on the expected status
-
-    // For now, we'll determine the status code based on the response type
-    // In a more sophisticated implementation, we could extract this from the actual response
-    let _status_code = if headers_clone
+    // Extract headers before moving them into the handler
+    let is_async_preferred = headers
         .get("PREFER")
         .and_then(|value| value.to_str().ok())
         .map(|prefer_value| prefer_value.contains("respond-async"))
-        .unwrap_or(false)
+        .unwrap_or(false);
+
+    // Execute the mint's melt operation directly to get typed response and status
+    #[cfg(feature = "auth")]
     {
-        200 // OK for async preferred or immediate responses
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt12),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
+    let (res, receiver) = state.mint.melt(&payload).await.map_err(into_response)?;
+
+    let (final_response, actual_status_code) = if !is_async_preferred && receiver.is_some() {
+        let rx = receiver.expect("Checked above");
+        let final_res = rx
+            .await
+            .map_err(|e| {
+                tracing::error!("Task join error: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(())).into_response()
+            })?
+            .map_err(into_response)?;
+        (final_res, 202u16) // ACCEPTED for synchronous processing
     } else {
-        202 // ACCEPTED for synchronous processing
+        (res, 200u16) // OK for async preferred or immediate responses
     };
 
-    // We can't easily extract the JSON body from an existing axum Response
-    // so for now, we'll skip caching melt responses (they're typically not repeated anyway)
-    // In the future, we could modify this to cache the successful responses properly
+    // Cache successful responses (status 200) as per NUT-19 spec
+    // Only cache final successful results to avoid caching intermediate states
+    if actual_status_code == 200 {
+        mint_state
+            .cache
+            .set(cache_key, &(actual_status_code, final_response.clone()))
+            .await;
+    }
 
-    Ok(response)
+    let status_code = StatusCode::from_u16(actual_status_code).unwrap_or(StatusCode::OK);
+    Ok((status_code, Json(final_response)).into_response())
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(
