@@ -654,9 +654,9 @@ where
         amount_issued: Amount,
     ) -> Result<Amount, Self::Err> {
         // Get current amount_issued from quote
-        let current_amount = query(
+        let current_amounts = query(
             r#"
-            SELECT amount_issued
+            SELECT amount_issued, amount_paid
             FROM mint_quote
             WHERE id = :quote_id
             FOR UPDATE
@@ -667,19 +667,32 @@ where
         .await
         .inspect_err(|err| {
             tracing::error!("SQLite could not get mint quote amount_issued: {}", err);
-        })?;
+        })?
+        .ok_or(Error::QuoteNotFound)?;
 
-        let current_amount_issued = if let Some(current_amount) = current_amount {
-            let amount: u64 = column_as_number!(current_amount[0].clone());
-            Amount::from(amount)
-        } else {
-            Amount::ZERO
+        let new_amount_issued = {
+            // Make sure the db protects issuing not paid quotes
+            unpack_into!(
+                let (current_amount_issued, current_amount_paid) = current_amounts
+            );
+
+            let current_amount_issued: u64 = column_as_number!(current_amount_issued);
+            let current_amount_paid: u64 = column_as_number!(current_amount_paid);
+
+            let current_amount_issued = Amount::from(current_amount_issued);
+            let current_amount_paid = Amount::from(current_amount_paid);
+
+            // Calculate new amount_issued with overflow check
+            let new_amount_issued = current_amount_issued
+                .checked_add(amount_issued)
+                .ok_or_else(|| database::Error::AmountOverflow)?;
+
+            current_amount_paid
+                .checked_sub(new_amount_issued)
+                .ok_or(Error::Internal("Over-issued not allowed".to_owned()))?;
+
+            new_amount_issued
         };
-
-        // Calculate new amount_issued with overflow check
-        let new_amount_issued = current_amount_issued
-            .checked_add(amount_issued)
-            .ok_or_else(|| database::Error::AmountOverflow)?;
 
         // Update the amount_issued
         query(
