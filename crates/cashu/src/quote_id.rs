@@ -48,7 +48,7 @@ impl From<Uuid> for QuoteId {
 impl fmt::Display for QuoteId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            QuoteId::BASE64(s) => write!(f, "{}", s),
+            QuoteId::BASE64(s) => write!(f, "{s}"),
             QuoteId::UUID(u) => write!(f, "{}", u.hyphenated()),
         }
     }

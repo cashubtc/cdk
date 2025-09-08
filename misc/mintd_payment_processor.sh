@@ -147,7 +147,7 @@ CDK_MINTD_PID=$!
 
 echo $CDK_ITESTS_DIR
 
-TIMEOUT=100
+TIMEOUT=300
 START_TIME=$(date +%s)
 # Loop until the endpoint returns a 200 OK status or timeout is reached
 while true; do
