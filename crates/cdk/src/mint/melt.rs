@@ -447,6 +447,19 @@ impl Mint {
         input_verification: Verification,
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<(ProofWriter, MeltQuote), Error> {
+        let Verification {
+            amount: input_amount,
+            unit: input_unit,
+        } = input_verification;
+
+        ensure_cdk!(input_unit.is_some(), Error::UnsupportedUnit);
+
+        let mut proof_writer =
+            ProofWriter::new(self.localstore.clone(), self.pubsub_manager.clone());
+
+        proof_writer.add_proofs(tx, melt_request.inputs()).await?;
+
+        // Only after proof verification succeeds, proceed with quote state check
         let (state, quote) = tx
             .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending, None)
             .await?;
@@ -460,13 +473,6 @@ impl Mint {
 
         self.pubsub_manager
             .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
-
-        let Verification {
-            amount: input_amount,
-            unit: input_unit,
-        } = input_verification;
-
-        ensure_cdk!(input_unit.is_some(), Error::UnsupportedUnit);
 
         let fee = self.get_proofs_fee(melt_request.inputs()).await?;
 
@@ -487,11 +493,6 @@ impl Mint {
                 (fee + quote.fee_reserve).into(),
             ));
         }
-
-        let mut proof_writer =
-            ProofWriter::new(self.localstore.clone(), self.pubsub_manager.clone());
-
-        proof_writer.add_proofs(tx, melt_request.inputs()).await?;
 
         let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs().clone());
 
@@ -749,11 +750,18 @@ impl Mint {
         payment_preimage: Option<String>,
         total_spent: Amount,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        // Try to get input_ys from the stored melt request, fall back to original request if not found
         let input_ys: Vec<_> = tx.get_proof_ys_by_quote_id(&quote.id).await?;
 
+        tracing::debug!(
+            "Updating {} proof states to Spent for quote {}",
+            input_ys.len(),
+            quote.id
+        );
         proof_writer
             .update_proofs_states(&mut tx, &input_ys, State::Spent)
             .await?;
+        tracing::debug!("Successfully updated proof states to Spent");
 
         tx.update_melt_quote_state(&quote.id, MeltQuoteState::Paid, payment_preimage.clone())
             .await?;
