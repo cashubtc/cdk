@@ -507,7 +507,7 @@ impl MultiMintWallet {
     }
 
     /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
-    #[cfg(feature = "nostr")]
+    #[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
         use futures::StreamExt;
 
@@ -551,6 +551,76 @@ impl MultiMintWallet {
         }
 
         // If stream ended without receiving a payment, return zero.
+        Ok(Amount::ZERO)
+    }
+
+    /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
+    ///
+    /// wasm32 fallback: Streams are not available; we await the first matching notification and process it.
+    #[cfg(all(feature = "nostr", target_arch = "wasm32"))]
+    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
+        use nostr_sdk::prelude::*;
+
+        let NostrWaitInfo {
+            keys,
+            relays,
+            pubkey,
+        } = info;
+
+        let client = nostr_sdk::Client::new(keys);
+
+        for r in &relays {
+            client
+                .add_read_relay(r.clone())
+                .await
+                .map_err(|e| Error::Custom(format!("Add relay {r}: {e}")))?;
+        }
+
+        client.connect().await;
+
+        // Subscribe to events addressed to `pubkey`
+        let filter = Filter::new().pubkey(pubkey);
+        client
+            .subscribe(filter, None)
+            .await
+            .map_err(|e| Error::Custom(format!("Subscribe: {e}")))?;
+
+        // Await notifications until we successfully parse a payment payload and receive it
+        let mut notifications = client.notifications();
+        while let Ok(notification) = notifications.recv().await {
+            if let RelayPoolNotification::Event { event, .. } = notification {
+                match client.unwrap_gift_wrap(&event).await {
+                    Ok(unwrapped) => {
+                        let rumor = unwrapped.rumor;
+                        match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {
+                            Ok(payload) => {
+                                let token = crate::nuts::Token::new(
+                                    payload.mint,
+                                    payload.proofs,
+                                    payload.memo,
+                                    payload.unit,
+                                );
+
+                                let amount = self
+                                    .receive(&token.to_string(), ReceiveOptions::default())
+                                    .await?;
+
+                                return Ok(amount);
+                            }
+                            Err(_) => {
+                                // Ignore malformed payloads and continue listening
+                                continue;
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Ignore unwrap errors and continue listening
+                        continue;
+                    }
+                }
+            }
+        }
+
         Ok(Amount::ZERO)
     }
 }

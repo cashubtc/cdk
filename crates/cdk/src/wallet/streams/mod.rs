@@ -120,5 +120,5 @@ impl Wallet {
         PaymentStream::new(self, events.into().into_subscription())
     }
 }
-#[cfg(feature = "nostr")]
+#[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
 pub mod nostr;
