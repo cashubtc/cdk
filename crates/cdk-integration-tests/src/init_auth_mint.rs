@@ -33,7 +33,7 @@ where
         fee_reserve,
         HashMap::default(),
         HashSet::default(),
-        0,
+        2,
         CurrencyUnit::Sat,
     );
 

@@ -247,7 +247,7 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         fee_reserve.clone(),
         HashMap::default(),
         HashSet::default(),
-        0,
+        2,
         CurrencyUnit::Sat,
     );
 
