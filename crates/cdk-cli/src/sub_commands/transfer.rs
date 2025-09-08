@@ -36,7 +36,7 @@ async fn select_mint(
     // Filter out excluded mint if provided
     let available_mints: Vec<_> = balances
         .iter()
-        .filter(|(url, _)| exclude_mint.map_or(true, |excluded| url != &excluded))
+        .filter(|(url, _)| exclude_mint.is_none_or(|excluded| url != &excluded))
         .collect();
 
     if available_mints.is_empty() {
