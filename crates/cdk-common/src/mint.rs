@@ -313,6 +313,8 @@ pub struct MintKeySetInfo {
     pub derivation_path_index: Option<u32>,
     /// Max order of keyset
     pub max_order: u8,
+    /// Supported amounts
+    pub amounts: Vec<u64>,
     /// Input Fee ppk
     #[serde(default = "default_fee")]
     pub input_fee_ppk: u64,

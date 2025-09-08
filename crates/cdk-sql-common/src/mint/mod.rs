@@ -16,6 +16,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::common::QuoteTTL;
+use cdk_common::database::mint::validate_kvstore_params;
 use cdk_common::database::{
     self, ConversionError, Error, MintDatabase, MintDbWriterFinalizer, MintKeyDatabaseTransaction,
     MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase, MintQuotesTransaction,
@@ -382,11 +383,11 @@ where
         INSERT INTO
             keyset (
                 id, unit, active, valid_from, valid_to, derivation_path,
-                max_order, input_fee_ppk, derivation_path_index
+                max_order, amounts, input_fee_ppk, derivation_path_index
             )
         VALUES (
             :id, :unit, :active, :valid_from, :valid_to, :derivation_path,
-            :max_order, :input_fee_ppk, :derivation_path_index
+            :max_order, :amounts, :input_fee_ppk, :derivation_path_index
         )
         ON CONFLICT(id) DO UPDATE SET
             unit = excluded.unit,
@@ -395,6 +396,7 @@ where
             valid_to = excluded.valid_to,
             derivation_path = excluded.derivation_path,
             max_order = excluded.max_order,
+            amounts = excluded.amounts,
             input_fee_ppk = excluded.input_fee_ppk,
             derivation_path_index = excluded.derivation_path_index
         "#,
@@ -406,6 +408,7 @@ where
         .bind("valid_to", keyset.final_expiry.map(|v| v as i64))
         .bind("derivation_path", keyset.derivation_path.to_string())
         .bind("max_order", keyset.max_order)
+        .bind("amounts", serde_json::to_string(&keyset.amounts).ok())
         .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
         .bind("derivation_path_index", keyset.derivation_path_index)
         .execute(&self.inner)
@@ -495,6 +498,7 @@ where
                 derivation_path,
                 derivation_path_index,
                 max_order,
+                amounts,
                 input_fee_ppk
             FROM
                 keyset
@@ -519,6 +523,7 @@ where
                 derivation_path,
                 derivation_path_index,
                 max_order,
+                amounts,
                 input_fee_ppk
             FROM
                 keyset
@@ -649,9 +654,9 @@ where
         amount_issued: Amount,
     ) -> Result<Amount, Self::Err> {
         // Get current amount_issued from quote
-        let current_amount = query(
+        let current_amounts = query(
             r#"
-            SELECT amount_issued
+            SELECT amount_issued, amount_paid
             FROM mint_quote
             WHERE id = :quote_id
             FOR UPDATE
@@ -662,19 +667,32 @@ where
         .await
         .inspect_err(|err| {
             tracing::error!("SQLite could not get mint quote amount_issued: {}", err);
-        })?;
+        })?
+        .ok_or(Error::QuoteNotFound)?;
 
-        let current_amount_issued = if let Some(current_amount) = current_amount {
-            let amount: u64 = column_as_number!(current_amount[0].clone());
-            Amount::from(amount)
-        } else {
-            Amount::ZERO
+        let new_amount_issued = {
+            // Make sure the db protects issuing not paid quotes
+            unpack_into!(
+                let (current_amount_issued, current_amount_paid) = current_amounts
+            );
+
+            let current_amount_issued: u64 = column_as_number!(current_amount_issued);
+            let current_amount_paid: u64 = column_as_number!(current_amount_paid);
+
+            let current_amount_issued = Amount::from(current_amount_issued);
+            let current_amount_paid = Amount::from(current_amount_paid);
+
+            // Calculate new amount_issued with overflow check
+            let new_amount_issued = current_amount_issued
+                .checked_add(amount_issued)
+                .ok_or_else(|| database::Error::AmountOverflow)?;
+
+            current_amount_paid
+                .checked_sub(new_amount_issued)
+                .ok_or(Error::Internal("Over-issued not allowed".to_owned()))?;
+
+            new_amount_issued
         };
-
-        // Calculate new amount_issued with overflow check
-        let new_amount_issued = current_amount_issued
-            .checked_add(amount_issued)
-            .ok_or_else(|| database::Error::AmountOverflow)?;
 
         // Update the amount_issued
         query(
@@ -1583,6 +1601,224 @@ where
 }
 
 #[async_trait]
+impl<RM> database::MintKVStoreTransaction<'_, Error> for SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn kv_read(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        // Validate parameters according to KV store requirements
+        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
+        Ok(query(
+            r#"
+            SELECT value
+            FROM kv_store
+            WHERE primary_namespace = :primary_namespace
+            AND secondary_namespace = :secondary_namespace
+            AND key = :key
+            "#,
+        )?
+        .bind("primary_namespace", primary_namespace.to_owned())
+        .bind("secondary_namespace", secondary_namespace.to_owned())
+        .bind("key", key.to_owned())
+        .pluck(&self.inner)
+        .await?
+        .and_then(|col| match col {
+            Column::Blob(data) => Some(data),
+            _ => None,
+        }))
+    }
+
+    async fn kv_write(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        value: &[u8],
+    ) -> Result<(), Error> {
+        // Validate parameters according to KV store requirements
+        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
+
+        let current_time = unix_time();
+
+        query(
+            r#"
+            INSERT INTO kv_store
+            (primary_namespace, secondary_namespace, key, value, created_time, updated_time)
+            VALUES (:primary_namespace, :secondary_namespace, :key, :value, :created_time, :updated_time)
+            ON CONFLICT(primary_namespace, secondary_namespace, key)
+            DO UPDATE SET
+                value = excluded.value,
+                updated_time = excluded.updated_time
+            "#,
+        )?
+        .bind("primary_namespace", primary_namespace.to_owned())
+        .bind("secondary_namespace", secondary_namespace.to_owned())
+        .bind("key", key.to_owned())
+        .bind("value", value.to_vec())
+        .bind("created_time", current_time as i64)
+        .bind("updated_time", current_time as i64)
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn kv_remove(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<(), Error> {
+        // Validate parameters according to KV store requirements
+        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
+        query(
+            r#"
+            DELETE FROM kv_store
+            WHERE primary_namespace = :primary_namespace
+            AND secondary_namespace = :secondary_namespace
+            AND key = :key
+            "#,
+        )?
+        .bind("primary_namespace", primary_namespace.to_owned())
+        .bind("secondary_namespace", secondary_namespace.to_owned())
+        .bind("key", key.to_owned())
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn kv_list(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, Error> {
+        // Validate namespace parameters according to KV store requirements
+        cdk_common::database::mint::validate_kvstore_string(primary_namespace)?;
+        cdk_common::database::mint::validate_kvstore_string(secondary_namespace)?;
+
+        // Check empty namespace rules
+        if primary_namespace.is_empty() && !secondary_namespace.is_empty() {
+            return Err(Error::KVStoreInvalidKey(
+                "If primary_namespace is empty, secondary_namespace must also be empty".to_string(),
+            ));
+        }
+        Ok(query(
+            r#"
+            SELECT key
+            FROM kv_store
+            WHERE primary_namespace = :primary_namespace
+            AND secondary_namespace = :secondary_namespace
+            ORDER BY key
+            "#,
+        )?
+        .bind("primary_namespace", primary_namespace.to_owned())
+        .bind("secondary_namespace", secondary_namespace.to_owned())
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(|row| Ok(column_as_string!(&row[0])))
+        .collect::<Result<Vec<_>, Error>>()?)
+    }
+}
+
+#[async_trait]
+impl<RM> database::MintKVStoreDatabase for SQLMintDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = Error;
+
+    async fn kv_read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        // Validate parameters according to KV store requirements
+        validate_kvstore_params(primary_namespace, secondary_namespace, key)?;
+
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT value
+            FROM kv_store
+            WHERE primary_namespace = :primary_namespace
+            AND secondary_namespace = :secondary_namespace
+            AND key = :key
+            "#,
+        )?
+        .bind("primary_namespace", primary_namespace.to_owned())
+        .bind("secondary_namespace", secondary_namespace.to_owned())
+        .bind("key", key.to_owned())
+        .pluck(&*conn)
+        .await?
+        .and_then(|col| match col {
+            Column::Blob(data) => Some(data),
+            _ => None,
+        }))
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, Error> {
+        // Validate namespace parameters according to KV store requirements
+        cdk_common::database::mint::validate_kvstore_string(primary_namespace)?;
+        cdk_common::database::mint::validate_kvstore_string(secondary_namespace)?;
+
+        // Check empty namespace rules
+        if primary_namespace.is_empty() && !secondary_namespace.is_empty() {
+            return Err(Error::KVStoreInvalidKey(
+                "If primary_namespace is empty, secondary_namespace must also be empty".to_string(),
+            ));
+        }
+
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT key
+            FROM kv_store
+            WHERE primary_namespace = :primary_namespace
+            AND secondary_namespace = :secondary_namespace
+            ORDER BY key
+            "#,
+        )?
+        .bind("primary_namespace", primary_namespace.to_owned())
+        .bind("secondary_namespace", secondary_namespace.to_owned())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(|row| Ok(column_as_string!(&row[0])))
+        .collect::<Result<Vec<_>, Error>>()?)
+    }
+}
+
+#[async_trait]
+impl<RM> database::MintKVStore for SQLMintDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn begin_transaction<'a>(
+        &'a self,
+    ) -> Result<Box<dyn database::MintKVStoreTransaction<'a, Self::Err> + Send + Sync + 'a>, Error>
+    {
+        Ok(Box::new(SQLTransaction {
+            inner: ConnectionWithTransaction::new(
+                self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
+            )
+            .await?,
+        }))
+    }
+}
+
+#[async_trait]
 impl<RM> MintDatabase<Error> for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
@@ -1618,9 +1854,15 @@ fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo, Error> {
             derivation_path,
             derivation_path_index,
             max_order,
+            amounts,
             row_keyset_ppk
         ) = row
     );
+
+    let max_order: u8 = column_as_number!(max_order);
+    let amounts = column_as_nullable_string!(amounts)
+        .and_then(|str| serde_json::from_str(&str).ok())
+        .unwrap_or_else(|| (0..max_order).map(|m| 2u64.pow(m.into())).collect());
 
     Ok(MintKeySetInfo {
         id: column_as_string!(id, Id::from_str, Id::from_bytes),
@@ -1629,7 +1871,8 @@ fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo, Error> {
         valid_from: column_as_number!(valid_from),
         derivation_path: column_as_string!(derivation_path, DerivationPath::from_str),
         derivation_path_index: column_as_nullable_number!(derivation_path_index),
-        max_order: column_as_number!(max_order),
+        max_order,
+        amounts,
         input_fee_ppk: column_as_number!(row_keyset_ppk),
         final_expiry: column_as_nullable_number!(valid_to),
     })
@@ -1842,4 +2085,98 @@ fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Error>
         c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
         dleq,
     })
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    mod max_order_to_amounts_migrations {
+        use super::*;
+
+        #[test]
+        fn legacy_payload() {
+            let result = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Null,
+                Column::Integer(0),
+            ]);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn migrated_payload() {
+            let legacy = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Null,
+                Column::Integer(0),
+            ]);
+            assert!(legacy.is_ok());
+
+            let amounts = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
+            let migrated = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Text(serde_json::to_string(&amounts).expect("valid json")),
+                Column::Integer(0),
+            ]);
+            assert!(migrated.is_ok());
+            assert_eq!(legacy.unwrap(), migrated.unwrap());
+        }
+
+        #[test]
+        fn amounts_over_max_order() {
+            let legacy = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Null,
+                Column::Integer(0),
+            ]);
+            assert!(legacy.is_ok());
+
+            let amounts = (0..16).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
+            let migrated = sql_row_to_keyset_info(vec![
+                Column::Text("0083a60439303340".to_owned()),
+                Column::Text("sat".to_owned()),
+                Column::Integer(1),
+                Column::Integer(1749844864),
+                Column::Null,
+                Column::Text("0'/0'/0'".to_owned()),
+                Column::Integer(0),
+                Column::Integer(32),
+                Column::Text(serde_json::to_string(&amounts).expect("valid json")),
+                Column::Integer(0),
+            ]);
+            assert!(migrated.is_ok());
+            let migrated = migrated.unwrap();
+            assert_ne!(legacy.unwrap(), migrated);
+            assert_eq!(migrated.amounts.len(), 16);
+        }
+    }
 }
