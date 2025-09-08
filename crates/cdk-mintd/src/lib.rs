@@ -609,6 +609,9 @@ async fn configure_backend_for_unit(
                     Arc::clone(&backend),
                 )
                 .await?;
+
+            let nut17_supported = SupportedMethods::default_bolt12(unit.clone());
+            mint_builder = mint_builder.with_supported_websockets(nut17_supported);
         }
     }
 
@@ -630,7 +633,8 @@ async fn configure_backend_for_unit(
         feature = "lnbits",
         feature = "lnd",
         feature = "fakewallet",
-        feature = "grpc-processor"
+        feature = "grpc-processor",
+        feature = "ldk-node"
     ))]
     {
         let nut17_supported = SupportedMethods::default_bolt11(unit);
