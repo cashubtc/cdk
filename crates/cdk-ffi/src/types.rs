@@ -1852,6 +1852,8 @@ pub struct Transaction {
     pub memo: Option<String>,
     /// User-defined metadata
     pub metadata: HashMap<String, String>,
+    /// Quote ID if this is a mint or melt transaction
+    pub quote_id: Option<String>,
 }
 
 impl From<cdk_common::wallet::Transaction> for Transaction {
@@ -1867,6 +1869,7 @@ impl From<cdk_common::wallet::Transaction> for Transaction {
             timestamp: tx.timestamp,
             memo: tx.memo,
             metadata: tx.metadata,
+            quote_id: tx.quote_id,
         }
     }
 }
@@ -1890,6 +1893,7 @@ impl TryFrom<Transaction> for cdk_common::wallet::Transaction {
             timestamp: tx.timestamp,
             memo: tx.memo,
             metadata: tx.metadata,
+            quote_id: tx.quote_id,
         })
     }
 }
