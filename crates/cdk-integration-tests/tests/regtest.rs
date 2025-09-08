@@ -437,3 +437,103 @@ async fn test_attempt_to_mint_unpaid() {
         }
     }
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_ldk_node_backend() {
+    // This test specifically tests the run_mintd_with_shutdown_and_ldk_node function
+    // which integrates mintd with an LDK Node backend
+
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use cdk_mintd::{config, run_mintd_with_shutdown_and_ldk_node};
+    use ldk_node::bitcoin::Network;
+    use ldk_node::lightning::ln::msgs::SocketAddress;
+    use ldk_node::Builder;
+    use tokio::sync::oneshot;
+
+    // Skip if CDK_TEST_REGTEST environment variable is not set
+    if std::env::var("CDK_TEST_REGTEST").is_err() {
+        return;
+    }
+
+    // Create LDK Node using Builder pattern
+    let temp_dir = std::env::temp_dir().join("cdk-ldk-test");
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let listening_addresses = vec![SocketAddress::TcpIpV4 {
+        addr: [127, 0, 0, 1],
+        port: 8092,
+    }];
+
+    let mut builder = Builder::new();
+    builder.set_network(Network::Regtest);
+    builder.set_storage_dir_path(temp_dir.to_string_lossy().to_string());
+    builder
+        .set_listening_addresses(listening_addresses)
+        .unwrap();
+
+    let node = builder.build().unwrap();
+    node.start().unwrap();
+
+    let ldk_node = Arc::new(node);
+
+    // Create mint configuration with LDK node settings
+    let mut mint_config: config::Settings = config::Settings::default();
+
+    // Configure LDK Node settings
+    mint_config.ln.ln_backend = config::LnBackend::LdkNode;
+    let ldk_node_config = config::LdkNode {
+        reserve_fee_min: 2000u64.into(),
+        fee_percent: 0.5,
+        ..Default::default()
+    };
+    mint_config.ldk_node = Some(ldk_node_config);
+
+    // Configure mint info
+    mint_config.mint_info.name = "Test LDK Mint".to_string();
+    mint_config.info.listen_host = "127.0.0.1".to_string();
+    mint_config.info.listen_port = 8090;
+
+    // Configure database (using sqlite for simplicity)
+    mint_config.database.engine = config::DatabaseEngine::Sqlite;
+
+    // Use a test work directory
+    let work_dir = PathBuf::from("target/test_ldk_mintd");
+    std::fs::create_dir_all(&work_dir).unwrap();
+
+    // Create a shutdown signal using oneshot channel
+    let (_shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let shutdown_signal = async {
+        shutdown_rx.await.ok();
+        tracing::info!("Received shutdown signal");
+    };
+
+    // Run mintd with LDK node
+    let (mint_result, _) = tokio::join!(
+        run_mintd_with_shutdown_and_ldk_node(
+            &work_dir,
+            mint_config,
+            Arc::clone(&ldk_node),
+            shutdown_signal,
+            None,
+            None
+        ),
+        tokio::time::sleep(std::time::Duration::from_secs(1)) // Brief setup time
+    );
+
+    // Mintd should start successfully (this test focuses on startup, not full operation
+    // since full LDK integration testing requires a complete Lightning environment)
+    assert!(
+        mint_result.is_ok(),
+        "Mintd with LDK node should start successfully"
+    );
+
+    // Stop the LDK node
+    ldk_node.stop().unwrap();
+
+    // Clean up work directory
+    if work_dir.exists() {
+        std::fs::remove_dir_all(work_dir).ok();
+    }
+}

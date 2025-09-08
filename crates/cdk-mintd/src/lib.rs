@@ -41,6 +41,8 @@ use cdk::nuts::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
+#[cfg(feature = "ldk-node")]
+use cdk_ldk_node::Node;
 #[cfg(feature = "postgres")]
 use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase};
 #[cfg(all(feature = "auth", feature = "sqlite"))]
@@ -48,7 +50,7 @@ use cdk_sqlite::mint::MintSqliteAuthDatabase;
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
-use config::{AuthType, DatabaseEngine, LnBackend};
+use config::{DatabaseEngine, LnBackend};
 use env_vars::ENV_WORK_DIR;
 use setup::LnBackendSetup;
 use tower::ServiceBuilder;
@@ -609,6 +611,9 @@ async fn configure_backend_for_unit(
                     Arc::clone(&backend),
                 )
                 .await?;
+
+            let nut17_supported = SupportedMethods::default_bolt12(unit.clone());
+            mint_builder = mint_builder.with_supported_websockets(nut17_supported);
         }
     }
 
@@ -660,6 +665,8 @@ async fn setup_authentication(
     _password: Option<String>,
 ) -> Result<MintBuilder> {
     if let Some(auth_settings) = settings.auth.clone() {
+        use crate::config::AuthType;
+
         tracing::info!("Auth settings are defined. {:?}", auth_settings);
         let auth_localstore: Arc<
             dyn cdk_database::MintAuthDatabase<Err = cdk_database::Error> + Send + Sync,
@@ -1098,4 +1105,140 @@ pub async fn run_mintd_with_shutdown(
     tracing::debug!("Flushing remaining trace data");
 
     result
+}
+
+/// Run mintd with a custom shutdown signal and LDK Node integration
+///
+/// This function starts the mintd daemon with shutdown signal handling
+/// and integration with an LDK Node for Lightning Network functionality.
+///
+/// The LDK Node provides Lightning Network capabilities that can be used
+/// for minting proofs via Lightning payments.
+///
+/// # Arguments
+/// * `work_dir` - Working directory for the mint
+/// * `settings` - Application settings (will be configured to use the provided LDK Node)
+/// * `ldk_node` - The LDK Node instance to integrate with mintd
+/// * `shutdown_signal` - A future that resolves when shutdown is requested
+/// * `db_password` - Optional database password for SQLite encryption
+/// * `runtime` - Optional tokio runtime
+///
+/// # Returns
+/// A Result indicating success or failure
+///
+/// # Feature Gate
+/// This function is only available when the "ldk-node" feature is enabled.
+#[cfg(feature = "ldk-node")]
+pub async fn run_mintd_with_shutdown_and_ldk_node(
+    work_dir: &Path,
+    mut settings: config::Settings,
+    ldk_node: Arc<Node>,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    db_password: Option<String>,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+) -> Result<()> {
+    // Configure settings to use the provided LDK Node
+    settings.ln.ln_backend = LnBackend::LdkNode;
+
+    let (localstore, keystore, _kv) =
+        initial_setup(work_dir, &settings, db_password.clone()).await?;
+
+    let mint_builder = MintBuilder::new(localstore);
+
+    // Create LDK node backend from the provided node
+    let fee_reserve = if let Some(ldk_config) = settings.ldk_node.clone() {
+        cdk::types::FeeReserve {
+            min_fee_reserve: ldk_config.reserve_fee_min,
+            percent_fee_reserve: ldk_config.fee_percent,
+        }
+    } else {
+        cdk::types::FeeReserve {
+            min_fee_reserve: 2000.into(),
+            percent_fee_reserve: 0.5,
+        }
+    };
+
+    let cdk_ldk_node = cdk_ldk_node::CdkLdkNode::with_node(ldk_node, fee_reserve, runtime.clone());
+
+    // Configure the mint builder with the LDK node backend
+    let mint_builder =
+        configure_mint_builder_with_ldk_node(&settings, mint_builder, Arc::new(cdk_ldk_node))
+            .await?;
+
+    #[cfg(feature = "auth")]
+    let mint_builder = setup_authentication(&settings, work_dir, mint_builder, db_password).await?;
+
+    let mint = build_mint(&settings, keystore, mint_builder).await?;
+
+    tracing::debug!("Mint built from builder with LDK node integration.");
+
+    let mint = Arc::new(mint);
+
+    // Checks the status of all pending melt quotes
+    mint.check_pending_melt_quotes().await?;
+
+    let result = start_services_with_shutdown(
+        mint.clone(),
+        &settings,
+        vec![],
+        work_dir,
+        mint.mint_info().await?,
+        shutdown_signal,
+    )
+    .await;
+
+    // Ensure any remaining tracing data is flushed
+    tracing::debug!("Flushing remaining trace data");
+
+    result
+}
+
+/// Configure mint builder specifically for LDK node integration
+#[cfg(feature = "ldk-node")]
+async fn configure_mint_builder_with_ldk_node(
+    settings: &config::Settings,
+    mint_builder: MintBuilder,
+    cdk_ldk_node: Arc<cdk_ldk_node::CdkLdkNode>,
+) -> Result<MintBuilder> {
+    // Configure basic mint information
+    let mint_builder = configure_basic_info(settings, mint_builder);
+
+    // Configure mint limits
+    let mint_melt_limits = MintMeltLimits {
+        mint_min: settings.ln.min_mint,
+        mint_max: settings.ln.max_mint,
+        melt_min: settings.ln.min_melt,
+        melt_max: settings.ln.max_melt,
+    };
+
+    // Configure with the provided LDK node backend
+    let mint_builder =
+        configure_ldk_node_backend(settings, mint_builder, mint_melt_limits, cdk_ldk_node).await?;
+
+    // Configure caching
+    let mint_builder = configure_cache(settings, mint_builder);
+
+    Ok(mint_builder)
+}
+
+/// Configure LDK node backend for the mint
+#[cfg(feature = "ldk-node")]
+async fn configure_ldk_node_backend(
+    settings: &config::Settings,
+    mut mint_builder: MintBuilder,
+    mint_melt_limits: MintMeltLimits,
+    backend: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+) -> Result<MintBuilder> {
+    tracing::info!("Configuring mint with provided LDK node backend");
+
+    mint_builder = configure_backend_for_unit(
+        settings,
+        mint_builder,
+        CurrencyUnit::Sat,
+        mint_melt_limits,
+        backend,
+    )
+    .await?;
+
+    Ok(mint_builder)
 }
