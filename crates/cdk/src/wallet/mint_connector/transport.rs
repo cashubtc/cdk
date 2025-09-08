@@ -89,9 +89,11 @@ impl Transport for Async {
                         .filter(|host| regex.is_match(host))
                         .map(|_| proxy.clone())
                 }))
-            },
+            }
             // Apply proxy to all requests when no matcher is provided
-            None => builder.proxy(reqwest::Proxy::all(proxy).map_err(|e| Error::Custom(e.to_string()))?)
+            None => {
+                builder.proxy(reqwest::Proxy::all(proxy).map_err(|e| Error::Custom(e.to_string()))?)
+            }
         };
 
         self.inner = builder
