@@ -46,7 +46,7 @@ impl Mint {
         let mut proof_writer =
             ProofWriter::new(self.localstore.clone(), self.pubsub_manager.clone());
         let input_ys = proof_writer
-            .add_proofs(&mut tx, swap_request.inputs())
+            .add_proofs(&mut tx, swap_request.inputs(), None)
             .await?;
 
         proof_writer

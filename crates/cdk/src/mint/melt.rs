@@ -457,7 +457,13 @@ impl Mint {
         let mut proof_writer =
             ProofWriter::new(self.localstore.clone(), self.pubsub_manager.clone());
 
-        proof_writer.add_proofs(tx, melt_request.inputs()).await?;
+        proof_writer
+            .add_proofs(
+                tx,
+                melt_request.inputs(),
+                Some(melt_request.quote_id().to_owned()),
+            )
+            .await?;
 
         // Only after proof verification succeeds, proceed with quote state check
         let (state, quote) = tx
@@ -752,6 +758,8 @@ impl Mint {
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         // Try to get input_ys from the stored melt request, fall back to original request if not found
         let input_ys: Vec<_> = tx.get_proof_ys_by_quote_id(&quote.id).await?;
+
+        assert!(!input_ys.is_empty());
 
         tracing::debug!(
             "Updating {} proof states to Spent for quote {}",
