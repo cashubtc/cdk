@@ -1,7 +1,7 @@
 use anyhow::Result;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Json, Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use cdk::error::{ErrorCode, ErrorResponse};
 use cdk::mint::QuoteId;
@@ -22,19 +22,69 @@ use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
 use crate::MintState;
 
-/// Macro to add cache to endpoint
+/// Macro to add cache to endpoint that stores (status_code, response_data) tuple
 #[macro_export]
 macro_rules! post_cache_wrapper {
     ($handler:ident, $request_type:ty, $response_type:ty) => {
         paste! {
             /// Cache wrapper function for $handler:
-            /// Wrap $handler into a function that caches responses using the request as key
+            /// Wrap $handler into a function that caches (status_code, response_data) tuples using the request as key
+            pub async fn [<cache_ $handler>](
+                #[cfg(feature = "auth")] auth: AuthHeader,
+                headers: HeaderMap,
+                state: State<MintState>,
+                payload: Json<$request_type>
+            ) -> Result<Json<$response_type>, Response> {
+                use std::ops::Deref;
+                use axum::http::StatusCode;
+
+                let json_extracted_payload = payload.deref();
+                let State(mint_state) = state.clone();
+                let cache_key = match mint_state.cache.calculate_key(&json_extracted_payload) {
+                    Some(key) => key,
+                    None => {
+                        // Could not calculate key, just return the handler result
+                        #[cfg(feature = "auth")]
+                        return $handler(auth, headers, state, payload).await;
+                        #[cfg(not(feature = "auth"))]
+                        return $handler(headers, state, payload).await;
+                    }
+                };
+
+                // Check cache for tuple (status_code, response_data)
+                if let Some((_cached_status, cached_data)) = mint_state.cache.get::<(u16, $response_type)>(&cache_key).await {
+                    return Ok(Json(cached_data));
+                }
+
+                // No cached response, execute handler
+                #[cfg(feature = "auth")]
+                let response = $handler(auth, headers, state, payload).await?;
+                #[cfg(not(feature = "auth"))]
+                let response = $handler(headers, state, payload).await?;
+
+                // Cache the tuple (status_code, response_data) - using 200 as default for these endpoints
+                mint_state.cache.set(cache_key, &(200u16, response.deref().clone())).await;
+
+                Ok(response)
+            }
+        }
+    };
+}
+
+/// Macro to add cache to endpoint that stores (status_code, response_data) tuple
+#[macro_export]
+macro_rules! post_cache_wrapper_no_headers {
+    ($handler:ident, $request_type:ty, $response_type:ty) => {
+        paste! {
+            /// Cache wrapper function for $handler:
+            /// Wrap $handler into a function that caches (status_code, response_data) tuples using the request as key
             pub async fn [<cache_ $handler>](
                 #[cfg(feature = "auth")] auth: AuthHeader,
                 state: State<MintState>,
                 payload: Json<$request_type>
             ) -> Result<Json<$response_type>, Response> {
                 use std::ops::Deref;
+
                 let json_extracted_payload = payload.deref();
                 let State(mint_state) = state.clone();
                 let cache_key = match mint_state.cache.calculate_key(&json_extracted_payload) {
@@ -44,30 +94,120 @@ macro_rules! post_cache_wrapper {
                         #[cfg(feature = "auth")]
                         return $handler(auth, state, payload).await;
                         #[cfg(not(feature = "auth"))]
-                        return $handler( state, payload).await;
+                        return $handler(state, payload).await;
                     }
                 };
-                if let Some(cached_response) = mint_state.cache.get::<$response_type>(&cache_key).await {
-                    return Ok(Json(cached_response));
+
+                // Check cache for tuple (status_code, response_data)
+                if let Some((_cached_status, cached_data)) = mint_state.cache.get::<(u16, $response_type)>(&cache_key).await {
+                    return Ok(Json(cached_data));
                 }
+
+                // No cached response, execute handler
                 #[cfg(feature = "auth")]
                 let response = $handler(auth, state, payload).await?;
                 #[cfg(not(feature = "auth"))]
                 let response = $handler(state, payload).await?;
-                mint_state.cache.set(cache_key, &response.deref()).await;
+
+                // Cache the tuple (status_code, response_data) - using 200 as default for these endpoints
+                mint_state.cache.set(cache_key, &(200u16, response.deref().clone())).await;
+
                 Ok(response)
             }
         }
     };
 }
 
-post_cache_wrapper!(post_swap, SwapRequest, SwapResponse);
-post_cache_wrapper!(post_mint_bolt11, MintRequest<QuoteId>, MintResponse);
-post_cache_wrapper!(
-    post_melt_bolt11,
-    MeltRequest<QuoteId>,
-    MeltQuoteBolt11Response<QuoteId>
-);
+// Cache wrapper functions using the macro - this will create cache_post_swap and cache_post_mint_bolt11
+post_cache_wrapper_no_headers!(post_swap, SwapRequest, SwapResponse);
+post_cache_wrapper_no_headers!(post_mint_bolt11, MintRequest<QuoteId>, MintResponse);
+
+// Cache wrapper for post_melt_bolt11 - NUT-19 compliant implementation
+// Properly caches successful responses (status 200) for idempotent operations
+pub async fn cache_post_melt_bolt11(
+    #[cfg(feature = "auth")] auth: AuthHeader,
+    headers: HeaderMap,
+    state: State<MintState>,
+    payload: Json<MeltRequest<QuoteId>>,
+) -> Result<Response, Response> {
+    use std::ops::Deref;
+
+    use cdk::nuts::MeltQuoteBolt11Response;
+
+    let json_extracted_payload = payload.deref();
+    let State(mint_state) = state.clone();
+    let cache_key = match mint_state.cache.calculate_key(&json_extracted_payload) {
+        Some(key) => key,
+        None => {
+            // Could not calculate key, just return the handler result
+            #[cfg(feature = "auth")]
+            return post_melt_bolt11(auth, headers, state, payload).await;
+            #[cfg(not(feature = "auth"))]
+            return post_melt_bolt11(headers, state, payload).await;
+        }
+    };
+
+    // Check for cached successful responses (status 200)
+    if let Some((cached_status, cached_data)) = mint_state
+        .cache
+        .get::<(u16, MeltQuoteBolt11Response<QuoteId>)>(&cache_key)
+        .await
+    {
+        let status_code = StatusCode::from_u16(cached_status).unwrap_or(StatusCode::OK);
+        return Ok((status_code, Json(cached_data)).into_response());
+    }
+
+    // Extract headers before moving them into the handler
+    let is_async_preferred = headers
+        .get("PREFER")
+        .and_then(|value| value.to_str().ok())
+        .map(|prefer_value| prefer_value.contains("respond-async"))
+        .unwrap_or(false);
+
+    // Execute the mint's melt operation directly to get typed response
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
+    let (res, receiver) = state.mint.melt(&payload).await.map_err(into_response)?;
+
+    let (final_response, actual_status_code) = if !is_async_preferred {
+        if let Some(rx) = receiver {
+            let final_res = rx
+                .await
+                .map_err(|e| {
+                    tracing::error!("Task join error: {}", e);
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(())).into_response()
+                })?
+                .map_err(into_response)?;
+            (final_res, 202u16) // ACCEPTED for synchronous processing
+        } else {
+            (res, 200u16) // OK for async preferred or immediate responses
+        }
+    } else {
+        (res, 200u16) // OK for async preferred or immediate responses
+    };
+
+    // Cache successful responses (status 200) as per NUT-19 spec
+    // Only cache final successful results to avoid caching intermediate states
+    if actual_status_code == 200 {
+        mint_state
+            .cache
+            .set(cache_key, &(actual_status_code, final_response.clone()))
+            .await;
+    }
+
+    let status_code = StatusCode::from_u16(actual_status_code).unwrap_or(StatusCode::OK);
+    Ok((status_code, Json(final_response)).into_response())
+}
 
 #[cfg_attr(feature = "swagger", utoipa::path(
     get,
@@ -366,12 +506,14 @@ pub(crate) async fn get_check_melt_bolt11_quote(
 /// Melt tokens for a Bitcoin payment that the mint will make for the user in exchange
 ///
 /// Requests tokens to be destroyed and sent out via Lightning.
+/// Optional Prefer header with "respond-async" can be used to request async processing.
 #[instrument(skip_all)]
 pub(crate) async fn post_melt_bolt11(
     #[cfg(feature = "auth")] auth: AuthHeader,
+    headers: HeaderMap,
     State(state): State<MintState>,
     Json(payload): Json<MeltRequest<QuoteId>>,
-) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
+) -> Result<Response, Response> {
     #[cfg(feature = "auth")]
     {
         state
@@ -384,9 +526,35 @@ pub(crate) async fn post_melt_bolt11(
             .map_err(into_response)?;
     }
 
-    let res = state.mint.melt(&payload).await.map_err(into_response)?;
+    // Check if Prefer header contains "respond-async"
+    let is_async_preferred = headers
+        .get("PREFER")
+        .and_then(|value| value.to_str().ok())
+        .map(|prefer_value| prefer_value.contains("respond-async"))
+        .unwrap_or(false);
 
-    Ok(Json(res))
+    let (res, receiver) = state.mint.melt(&payload).await.map_err(into_response)?;
+
+    if !is_async_preferred {
+        if let Some(rx) = receiver {
+            let res = rx
+                .await
+                .map_err(|e| {
+                    tracing::error!("Task join error: {}", e);
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(())).into_response()
+                })?
+                .map_err(into_response)?;
+
+            // Return 202 Accepted for synchronous processing
+            Ok((StatusCode::ACCEPTED, Json(res)).into_response())
+        } else {
+            // Return 200 OK for async preferred or no receiver
+            Ok((StatusCode::OK, Json(res)).into_response())
+        }
+    } else {
+        // Return 200 OK for async preferred or no receiver
+        Ok((StatusCode::OK, Json(res)).into_response())
+    }
 }
 
 #[cfg_attr(feature = "swagger", utoipa::path(

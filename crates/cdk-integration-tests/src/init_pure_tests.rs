@@ -117,7 +117,7 @@ impl MintConnector for DirectMintConnection {
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let request_uuid = request.try_into().unwrap();
-        self.mint.melt(&request_uuid).await.map(Into::into)
+        Ok(self.mint.melt(&request_uuid).await.unwrap().0.into())
     }
 
     async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {

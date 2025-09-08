@@ -17,6 +17,8 @@ use cache::HttpCache;
 use cdk::mint::Mint;
 use router_handlers::*;
 
+use crate::bolt12_router::cache_post_mint_bolt12;
+
 #[cfg(feature = "auth")]
 mod auth;
 mod bolt12_router;
@@ -56,8 +58,8 @@ mod swagger_imports {
 use swagger_imports::*;
 
 use crate::bolt12_router::{
-    cache_post_melt_bolt12, cache_post_mint_bolt12, get_check_mint_bolt12_quote,
-    post_melt_bolt12_quote, post_mint_bolt12_quote,
+    cache_post_melt_bolt12, get_check_mint_bolt12_quote, post_melt_bolt12_quote,
+    post_mint_bolt12_quote,
 };
 
 /// CDK Mint State

@@ -70,7 +70,8 @@ use super::Error;
 use crate::common::QuoteTTL;
 use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
 use crate::nuts::{
-    BlindSignature, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey, State,
+    BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
+    State,
 };
 use crate::payment::PaymentIdentifier;
 
@@ -82,6 +83,16 @@ pub mod test;
 
 #[cfg(test)]
 mod test_kvstore;
+/// Information about a melt request stored in the database
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeltRequestInfo {
+    /// Total amount of all input proofs in the melt request
+    pub inputs_amount: Amount,
+    /// Fee amount associated with the input proofs
+    pub inputs_fee: Amount,
+    /// Blinded messages for change outputs
+    pub change_outputs: Vec<BlindedMessage>,
+}
 
 #[cfg(feature = "auth")]
 pub use auth::{MintAuthDatabase, MintAuthTransaction};
@@ -125,6 +136,24 @@ pub trait KeysDatabase {
 pub trait QuotesTransaction<'a> {
     /// Mint Quotes Database Error
     type Err: Into<Error> + From<Error>;
+
+    /// Add melt_request with quote_id, inputs_amount, and blinded_messages
+    async fn add_melt_request_and_blinded_messages(
+        &mut self,
+        quote_id: &QuoteId,
+        inputs_amount: Amount,
+        inputs_fee: Amount,
+        blinded_messages: &[BlindedMessage],
+    ) -> Result<(), Self::Err>;
+
+    /// Get melt_request and associated blinded_messages by quote_id
+    async fn get_melt_request_and_blinded_messages(
+        &mut self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<MeltRequestInfo>, Self::Err>;
+
+    /// Delete melt_request and associated blinded_messages by quote_id
+    async fn delete_melt_request(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err>;
 
     /// Get [`MintMintQuote`] and lock it for update in this transaction
     async fn get_mint_quote(
@@ -245,6 +274,12 @@ pub trait ProofsTransaction<'a> {
         ys: &[PublicKey],
         quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err>;
+
+    /// Get ys by quote id
+    async fn get_proof_ys_by_quote_id(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Vec<PublicKey>, Self::Err>;
 }
 
 /// Mint Proof Database trait

@@ -7,7 +7,9 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cashu::amount::SplitTarget;
 use cashu::nut23::Amountless;
-use cashu::{Amount, CurrencyUnit, MintRequest, MintUrl, PreMintSecrets, ProofsMethods};
+use cashu::{
+    Amount, CurrencyUnit, MeltQuoteState, MintRequest, MintUrl, PreMintSecrets, ProofsMethods,
+};
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletBuilder};
 use cdk_integration_tests::get_mint_url_from_env;
 use cdk_integration_tests::init_regtest::{get_cln_dir, get_temp_dir};
@@ -243,10 +245,12 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
         .await?;
 
     let melted = wallet_one.melt(&wallet_one_melt_quote.id).await?;
+    assert!(melted.state == MeltQuoteState::Paid);
 
     assert!(melted.preimage.is_some());
 
     let melted_two = wallet_two.melt(&wallet_two_melt_quote.id).await?;
+    assert!(melted_two.state == MeltQuoteState::Paid);
 
     assert!(melted_two.preimage.is_some());
 

@@ -63,8 +63,9 @@ pub struct Mint {
     #[cfg(feature = "auth")]
     auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>>,
     /// Payment processors for mint
-    payment_processors:
+    payment_processors: Arc<
         HashMap<PaymentProcessorKey, Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>>,
+    >,
     /// Subscription manager
     pubsub_manager: Arc<PubSubManager>,
     #[cfg(feature = "auth")]
@@ -186,7 +187,7 @@ impl Mint {
                     Some(nut21.client_id.clone()),
                 )
             }),
-            payment_processors,
+            payment_processors: Arc::new(payment_processors),
             #[cfg(feature = "auth")]
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
@@ -220,7 +221,7 @@ impl Mint {
         // Start all payment processors first
         tracing::info!("Starting payment processors...");
         let mut seen_processors = Vec::new();
-        for (key, processor) in &self.payment_processors {
+        for (key, processor) in self.payment_processors.iter() {
             // Skip if we've already spawned a task for this processor instance
             if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
                 continue;
@@ -332,7 +333,7 @@ impl Mint {
         tracing::info!("Stopping payment processors...");
         let mut seen_processors = Vec::new();
 
-        for (key, processor) in &self.payment_processors {
+        for (key, processor) in self.payment_processors.iter() {
             // Skip if we've already spawned a task for this processor instance
             if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
                 continue;
