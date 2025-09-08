@@ -573,7 +573,7 @@ impl MultiMintWallet {
             client
                 .add_read_relay(r.clone())
                 .await
-                .map_err(|e| Error::Custom(format!("Add relay {r}: {e}")))?;
+                .map_err(|e| crate::error::Error::Custom(format!("Add relay {r}: {e}")))?;
         }
 
         client.connect().await;
@@ -583,7 +583,7 @@ impl MultiMintWallet {
         client
             .subscribe(filter, None)
             .await
-            .map_err(|e| Error::Custom(format!("Subscribe: {e}")))?;
+            .map_err(|e| crate::error::Error::Custom(format!("Subscribe: {e}")))?;
 
         // Await notifications until we successfully parse a payment payload and receive it
         let mut notifications = client.notifications();
