@@ -10,7 +10,7 @@ use super::Error;
 use crate::common::ProofInfo;
 use crate::mint_url::MintUrl;
 use crate::nuts::{
-    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
+    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SecretKey, SpendingConditions, State,
 };
 use crate::wallet::{
     self, MintQuote as WalletMintQuote, Transaction, TransactionDirection, TransactionId,
@@ -118,4 +118,23 @@ pub trait Database: Debug {
     ) -> Result<Vec<Transaction>, Self::Err>;
     /// Remove transaction from storage
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), Self::Err>;
+
+    // --- P2PK signing key storage ---
+    /// Store a P2PK signing key. Implementations should upsert by derived pubkey.
+    /// Default no-op for backends that don't support it.
+    async fn add_p2pk_key(&self, _secret_key: SecretKey) -> Result<(), Self::Err> {
+        Ok(())
+    }
+    /// Get a stored P2PK secret key by pubkey. Default returns None.
+    async fn get_p2pk_key(&self, _pubkey: PublicKey) -> Result<Option<SecretKey>, Self::Err> {
+        Ok(None)
+    }
+    /// List all stored P2PK signing keys. Default returns empty list.
+    async fn list_p2pk_keys(&self) -> Result<Vec<SecretKey>, Self::Err> {
+        Ok(vec![])
+    }
+    /// Remove a stored P2PK signing key by pubkey. Default no-op.
+    async fn remove_p2pk_key(&self, _pubkey: PublicKey) -> Result<(), Self::Err> {
+        Ok(())
+    }
 }

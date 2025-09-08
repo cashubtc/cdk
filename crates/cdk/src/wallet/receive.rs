@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -51,9 +51,29 @@ impl Wallet {
             })
             .collect::<Result<HashMap<String, &String>, _>>()?;
 
-        let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = opts
-            .p2pk_signing_keys
-            .iter()
+        // Build map of X-only pubkey -> SecretKey from stored keys and provided options
+        let mut merged_keys: Vec<SecretKey> = Vec::new();
+        let mut seen: HashSet<XOnlyPublicKey> = HashSet::new();
+
+        // Add keys explicitly provided in options first
+        for sk in &opts.p2pk_signing_keys {
+            let x = sk.x_only_public_key(&SECP256K1).0;
+            if seen.insert(x) {
+                merged_keys.push(sk.clone());
+            }
+        }
+
+        // Merge in any keys stored in the wallet database
+        let stored_keys = self.localstore.list_p2pk_keys().await.unwrap_or_default();
+        for sk in stored_keys {
+            let x = sk.x_only_public_key(&SECP256K1).0;
+            if seen.insert(x) {
+                merged_keys.push(sk);
+            }
+        }
+
+        let p2pk_signing_keys: HashMap<XOnlyPublicKey, SecretKey> = merged_keys
+            .into_iter()
             .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
             .collect();
 
@@ -95,7 +115,7 @@ impl Wallet {
                     }
                     for pubkey in pubkeys {
                         if let Some(signing) = p2pk_signing_keys.get(&pubkey.x_only_public_key()) {
-                            proof.sign_p2pk(signing.to_owned().clone())?;
+                            proof.sign_p2pk(signing.clone())?;
                         }
                     }
 
@@ -123,7 +143,7 @@ impl Wallet {
         if sig_flag.eq(&SigFlag::SigAll) {
             for blinded_message in pre_swap.swap_request.outputs_mut() {
                 for signing_key in p2pk_signing_keys.values() {
-                    blinded_message.sign_p2pk(signing_key.to_owned().clone())?
+                    blinded_message.sign_p2pk(signing_key.clone())?
                 }
             }
         }

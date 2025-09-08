@@ -669,6 +669,28 @@ impl Wallet {
 
         Ok(())
     }
+
+    /// Add a P2PK signing key to the wallet's local store
+    pub async fn add_p2pk_signing_key(
+        &self,
+        secret_key: crate::nuts::SecretKey,
+    ) -> Result<(), Error> {
+        self.localstore.add_p2pk_key(secret_key).await?;
+        Ok(())
+    }
+
+    /// Generate a new P2PK signing key, store it, and return its public key
+    pub async fn generate_p2pk_signing_key(&self) -> Result<crate::nuts::PublicKey, Error> {
+        let sk = crate::nuts::SecretKey::generate();
+        let pk = sk.public_key();
+        self.localstore.add_p2pk_key(sk).await?;
+        Ok(pk)
+    }
+
+    /// List stored P2PK signing keys
+    pub async fn list_p2pk_signing_keys(&self) -> Result<Vec<crate::nuts::SecretKey>, Error> {
+        self.localstore.list_p2pk_keys().await.map_err(Into::into)
+    }
 }
 
 impl Drop for Wallet {
