@@ -80,17 +80,18 @@ impl Transport for Async {
     ) -> Result<(), Error> {
         let builder = reqwest::Client::builder().danger_accept_invalid_certs(accept_invalid_certs);
 
-        let builder = if let Some(pattern) = host_matcher {
-            // When a matcher is provided, only apply the proxy to matched hosts
-            let regex = regex::Regex::new(pattern).map_err(|e| Error::Custom(e.to_string()))?;
-            builder.proxy(reqwest::Proxy::custom(move |url| {
-                url.host_str()
-                    .filter(|host| regex.is_match(host))
-                    .map(|_| proxy.clone())
-            }))
-        } else {
+        let builder = match host_matcher {
+            Some(pattern) => {
+                // When a matcher is provided, only apply the proxy to matched hosts
+                let regex = regex::Regex::new(pattern).map_err(|e| Error::Custom(e.to_string()))?;
+                builder.proxy(reqwest::Proxy::custom(move |url| {
+                    url.host_str()
+                        .filter(|host| regex.is_match(host))
+                        .map(|_| proxy.clone())
+                }))
+            },
             // Apply proxy to all requests when no matcher is provided
-            builder.proxy(reqwest::Proxy::all(proxy).map_err(|e| Error::Custom(e.to_string()))?)
+            None => builder.proxy(reqwest::Proxy::all(proxy).map_err(|e| Error::Custom(e.to_string()))?)
         };
 
         self.inner = builder
