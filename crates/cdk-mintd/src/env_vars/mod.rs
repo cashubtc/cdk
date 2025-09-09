@@ -25,6 +25,8 @@ mod lnbits;
 mod lnd;
 #[cfg(feature = "management-rpc")]
 mod management_rpc;
+#[cfg(feature = "prometheus")]
+mod prometheus;
 
 use std::env;
 use std::str::FromStr;
@@ -50,6 +52,8 @@ pub use lnd::*;
 #[cfg(feature = "management-rpc")]
 pub use management_rpc::*;
 pub use mint_info::*;
+#[cfg(feature = "prometheus")]
+pub use prometheus::*;
 
 use crate::config::{DatabaseEngine, LnBackend, Settings};
 
@@ -96,6 +100,11 @@ impl Settings {
                     .unwrap_or_default()
                     .from_env(),
             );
+        }
+
+        #[cfg(feature = "prometheus")]
+        {
+            self.prometheus = Some(self.prometheus.clone().unwrap_or_default().from_env());
         }
 
         match self.ln.ln_backend {

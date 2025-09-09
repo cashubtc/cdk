@@ -17,6 +17,8 @@ use cache::HttpCache;
 use cdk::mint::Mint;
 use router_handlers::*;
 
+mod metrics;
+
 #[cfg(feature = "auth")]
 mod auth;
 mod bolt12_router;
@@ -322,6 +324,11 @@ pub async fn create_mint_router_with_custom_cache(
         mint_router
     };
 
+    #[cfg(feature = "prometheus")]
+    let mint_router = mint_router.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        metrics::global_metrics_middleware,
+    ));
     let mint_router = mint_router
         .layer(from_fn(cors_middleware))
         .with_state(state);

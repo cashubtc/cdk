@@ -286,6 +286,7 @@ fn create_ldk_settings(
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
         mint_management_rpc: None,
+        prometheus: None,
         auth: None,
     }
 }

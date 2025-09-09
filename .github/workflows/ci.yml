@@ -36,7 +36,7 @@ jobs:
           '
       - name: typos
         run: nix develop -i -L .#nightly --command typos
-  
+
   examples:
     name: "Run examples"
     runs-on: ubuntu-latest
@@ -167,7 +167,7 @@ jobs:
           [
             -p cdk-integration-tests,
           ]
-        database: 
+        database:
           [
             SQLITE,
             POSTGRES
@@ -195,7 +195,7 @@ jobs:
           shared-key: "stable"
       - name: Test
         run: nix develop -i -L .#stable --command just itest ${{ matrix.database }}
-          
+
   fake-mint-itest:
     name: "Integration fake mint tests"
     runs-on: ubuntu-latest
@@ -207,7 +207,7 @@ jobs:
           [
             -p cdk-integration-tests,
           ]
-        database: 
+        database:
           [
           SQLITE,
           ]
@@ -236,7 +236,7 @@ jobs:
         run: nix develop -i -L .#stable --command cargo clippy -- -D warnings
       - name: Test fake auth mint
         run: nix develop -i -L .#stable --command just fake-mint-itest ${{ matrix.database }}
-                
+
   pure-itest:
     name: "Integration fake wallet tests"
     runs-on: ubuntu-latest
@@ -244,7 +244,7 @@ jobs:
     needs: [pre-commit-checks, clippy]
     strategy:
       matrix:
-        database: 
+        database:
           [
           memory,
           sqlite,
@@ -256,7 +256,7 @@ jobs:
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
-          tool-cache: true          
+          tool-cache: true
           android: true
           dotnet: true
           haskell: true
@@ -286,7 +286,7 @@ jobs:
     needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest, regtest-itest]
     strategy:
       matrix:
-        ln: 
+        ln:
           [
           FAKEWALLET,
           CLN,
@@ -298,7 +298,7 @@ jobs:
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
-          tool-cache: true          
+          tool-cache: true
           android: true
           dotnet: true
           haskell: true
@@ -357,7 +357,7 @@ jobs:
       - name: Build
         run: nix develop -i -L .#msrv --command cargo build ${{ matrix.build-args }}
 
-  
+
   check-wasm:
     name: Check WASM
     runs-on: ubuntu-latest
@@ -389,7 +389,7 @@ jobs:
       - name: Build cdk and binding
         run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
 
-        
+
   check-wasm-msrv:
     name: Check WASM
     runs-on: ubuntu-latest
@@ -428,7 +428,7 @@ jobs:
     needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
     strategy:
       matrix:
-        database: 
+        database:
           [
           SQLITE,
           ]
@@ -456,7 +456,7 @@ jobs:
       - name: Stop and clean up Docker Compose
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml down
-          
+
   doc-tests:
     name: "Documentation Tests"
     runs-on: ubuntu-latest
@@ -475,7 +475,7 @@ jobs:
           shared-key: "stable"
       - name: Run doc tests
         run: nix develop -i -L .#stable --command cargo test --doc
-        
+
   strict-docs:
     name: "Strict Documentation Check"
     runs-on: ubuntu-latest

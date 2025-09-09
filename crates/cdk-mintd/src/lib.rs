@@ -13,10 +13,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
-// internal crate modules
 use cdk::cdk_database::{self, MintDatabase, MintKVStore, MintKeysDatabase};
-use cdk::cdk_payment;
-use cdk::cdk_payment::MintPayment;
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 #[cfg(any(
     feature = "cln",
@@ -41,14 +38,22 @@ use cdk::nuts::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
+// internal crate modules
+#[cfg(feature = "prometheus")]
+use cdk_common::payment::MetricsMintPayment;
+use cdk_common::payment::MintPayment;
+#[cfg(feature = "auth")]
+use cdk_postgres::MintPgAuthDatabase;
 #[cfg(feature = "postgres")]
-use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase};
+use cdk_postgres::MintPgDatabase;
 #[cfg(all(feature = "auth", feature = "sqlite"))]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
-use config::{AuthType, DatabaseEngine, LnBackend};
+#[cfg(feature = "auth")]
+use config::AuthType;
+use config::{DatabaseEngine, LnBackend};
 use env_vars::ENV_WORK_DIR;
 use setup::LnBackendSetup;
 use tower::ServiceBuilder;
@@ -440,6 +445,8 @@ async fn configure_lightning_backend(
                     None,
                 )
                 .await?;
+            #[cfg(feature = "prometheus")]
+            let cln = MetricsMintPayment::new(cln);
 
             mint_builder = configure_backend_for_unit(
                 settings,
@@ -463,6 +470,8 @@ async fn configure_lightning_backend(
                     None,
                 )
                 .await?;
+            #[cfg(feature = "prometheus")]
+            let lnbits = MetricsMintPayment::new(lnbits);
 
             mint_builder = configure_backend_for_unit(
                 settings,
@@ -486,6 +495,8 @@ async fn configure_lightning_backend(
                     None,
                 )
                 .await?;
+            #[cfg(feature = "prometheus")]
+            let lnd = MetricsMintPayment::new(lnd);
 
             mint_builder = configure_backend_for_unit(
                 settings,
@@ -512,6 +523,8 @@ async fn configure_lightning_backend(
                         _kv_store.clone(),
                     )
                     .await?;
+                #[cfg(feature = "prometheus")]
+                let fake = MetricsMintPayment::new(fake);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -541,6 +554,8 @@ async fn configure_lightning_backend(
                 let processor = grpc_processor
                     .setup(ln_routers, settings, unit.clone(), None, work_dir, None)
                     .await?;
+                #[cfg(feature = "prometheus")]
+                let processor = MetricsMintPayment::new(processor);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -595,7 +610,7 @@ async fn configure_backend_for_unit(
     mut mint_builder: MintBuilder,
     unit: cdk::nuts::CurrencyUnit,
     mint_melt_limits: MintMeltLimits,
-    backend: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+    backend: Arc<dyn MintPayment<Err = cdk_common::payment::Error> + Send + Sync>,
 ) -> Result<MintBuilder> {
     let payment_settings = backend.get_settings().await?;
 
@@ -974,7 +989,48 @@ async fn start_services_with_shutdown(
             );
         }
     }
+    // Create a broadcast channel to share shutdown signal between services
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
+    // Start Prometheus server if enabled
+    #[cfg(feature = "prometheus")]
+    let prometheus_handle = {
+        if let Some(prometheus_settings) = &settings.prometheus {
+            if prometheus_settings.enabled {
+                let addr = prometheus_settings
+                    .address
+                    .clone()
+                    .unwrap_or("127.0.0.1".to_string());
+                let port = prometheus_settings.port.unwrap_or(9000);
+
+                let address = format!("{}:{}", addr, port)
+                    .parse()
+                    .expect("Invalid prometheus address");
+
+                let server = cdk_prometheus::PrometheusBuilder::new()
+                    .bind_address(address)
+                    .build_with_cdk_metrics()?;
+
+                let mut shutdown_rx = shutdown_tx.subscribe();
+                let prometheus_shutdown = async move {
+                    let _ = shutdown_rx.recv().await;
+                };
+
+                Some(tokio::spawn(async move {
+                    if let Err(e) = server.start(prometheus_shutdown).await {
+                        tracing::error!("Failed to start prometheus server: {}", e);
+                    }
+                }))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    #[cfg(not(feature = "prometheus"))]
+    let prometheus_handle: Option<tokio::task::JoinHandle<()>> = None;
     for router in ln_routers {
         mint_service = mint_service.merge(router);
     }
@@ -987,8 +1043,24 @@ async fn start_services_with_shutdown(
 
     tracing::info!("listening on {}", listener.local_addr().unwrap());
 
+    // Create a task to wait for the shutdown signal and broadcast it
+    let shutdown_broadcast_task = {
+        let shutdown_tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            shutdown_signal.await;
+            tracing::info!("Shutdown signal received, broadcasting to all services");
+            let _ = shutdown_tx.send(());
+        })
+    };
+
+    // Create shutdown future for axum server
+    let mut axum_shutdown_rx = shutdown_tx.subscribe();
+    let axum_shutdown = async move {
+        let _ = axum_shutdown_rx.recv().await;
+    };
+
     // Wait for axum server to complete with custom shutdown signal
-    let axum_result = axum::serve(listener, mint_service).with_graceful_shutdown(shutdown_signal);
+    let axum_result = axum::serve(listener, mint_service).with_graceful_shutdown(axum_shutdown);
 
     match axum_result.await {
         Ok(_) => {
@@ -998,6 +1070,17 @@ async fn start_services_with_shutdown(
             tracing::warn!("Axum server stopped with error");
             tracing::error!("{}", err);
             bail!("Axum exited with error")
+        }
+    }
+
+    // Wait for the shutdown broadcast task to complete
+    let _ = shutdown_broadcast_task.await;
+
+    // Wait for prometheus server to shutdown if it was started
+    #[cfg(feature = "prometheus")]
+    if let Some(handle) = prometheus_handle {
+        if let Err(e) = handle.await {
+            tracing::warn!("Prometheus server task failed: {}", e);
         }
     }
 

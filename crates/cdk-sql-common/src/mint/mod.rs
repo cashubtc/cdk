@@ -57,6 +57,8 @@ mod migrations;
 
 #[cfg(feature = "auth")]
 pub use auth::SQLMintAuthDatabase;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::METRICS;
 
 /// Mint SQL Database
 #[derive(Debug, Clone)]
@@ -299,11 +301,27 @@ where
     type Err = Error;
 
     async fn commit(self: Box<Self>) -> Result<(), Error> {
-        self.inner.commit().await
+        let result = self.inner.commit().await;
+        #[cfg(feature = "prometheus")]
+        {
+            let success = result.is_ok();
+            METRICS.record_mint_operation("transaction_commit", success);
+            METRICS.record_mint_operation_histogram("transaction_commit", success, 1.0);
+        }
+
+        Ok(result?)
     }
 
     async fn rollback(self: Box<Self>) -> Result<(), Error> {
-        self.inner.rollback().await
+        let result = self.inner.rollback().await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            let success = result.is_ok();
+            METRICS.record_mint_operation("transaction_rollback", success);
+            METRICS.record_mint_operation_histogram("transaction_rollback", success, 1.0);
+        }
+        Ok(result?)
     }
 }
 
@@ -443,12 +461,14 @@ where
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn MintKeyDatabaseTransaction<'a, Error> + Send + Sync + 'a>, Error> {
-        Ok(Box::new(SQLTransaction {
+        let tx = SQLTransaction {
             inner: ConnectionWithTransaction::new(
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
-        }))
+        };
+
+        Ok(Box::new(tx))
     }
 
     async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
@@ -1072,35 +1092,58 @@ where
     type Err = Error;
 
     async fn get_mint_quote(&self, quote_id: &QuoteId) -> Result<Option<MintQuote>, Self::Err> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("get_mint_quote");
+
+        #[cfg(feature = "prometheus")]
+        let start_time = std::time::Instant::now();
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
-        let payments = get_mint_quote_payments(&*conn, quote_id).await?;
-        let issuance = get_mint_quote_issuance(&*conn, quote_id).await?;
+        let result = async {
+            let payments = get_mint_quote_payments(&*conn, quote_id).await?;
+            let issuance = get_mint_quote_issuance(&*conn, quote_id).await?;
 
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                amount,
-                unit,
-                request,
-                expiry,
-                request_lookup_id,
-                pubkey,
-                created_time,
-                amount_paid,
-                amount_issued,
-                payment_method,
-                request_lookup_id_kind
-            FROM
-                mint_quote
-            WHERE id = :id"#,
-        )?
-        .bind("id", quote_id.to_string())
-        .fetch_one(&*conn)
-        .await?
-        .map(|row| sql_row_to_mint_quote(row, payments, issuance))
-        .transpose()?)
+            query(
+                r#"
+                SELECT
+                    id,
+                    amount,
+                    unit,
+                    request,
+                    expiry,
+                    request_lookup_id,
+                    pubkey,
+                    created_time,
+                    amount_paid,
+                    amount_issued,
+                    payment_method,
+                    request_lookup_id_kind
+                FROM
+                    mint_quote
+                WHERE id = :id"#,
+            )?
+            .bind("id", quote_id.to_string())
+            .fetch_one(&*conn)
+            .await?
+            .map(|row| sql_row_to_mint_quote(row, payments, issuance))
+            .transpose()
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            let success = result.is_ok();
+
+            METRICS.record_mint_operation("get_mint_quote", success);
+            METRICS.record_mint_operation_histogram(
+                "get_mint_quote",
+                success,
+                start_time.elapsed().as_secs_f64(),
+            );
+            METRICS.dec_in_flight_requests("get_mint_quote");
+        }
+
+        result
     }
 
     async fn get_mint_quote_by_request(
@@ -1228,35 +1271,59 @@ where
         &self,
         quote_id: &QuoteId,
     ) -> Result<Option<mint::MeltQuote>, Self::Err> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("get_melt_quote");
+
+        #[cfg(feature = "prometheus")]
+        let start_time = std::time::Instant::now();
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                unit,
-                amount,
-                request,
-                fee_reserve,
-                expiry,
-                state,
-                payment_preimage,
-                request_lookup_id,
-                created_time,
-                paid_time,
-                payment_method,
-                options,
-                request_lookup_id_kind
-            FROM
-                melt_quote
-            WHERE
-                id=:id
-            "#,
-        )?
-        .bind("id", quote_id.to_string())
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_melt_quote)
-        .transpose()?)
+
+        let result = async {
+            query(
+                r#"
+                SELECT
+                    id,
+                    unit,
+                    amount,
+                    request,
+                    fee_reserve,
+                    expiry,
+                    state,
+                    payment_preimage,
+                    request_lookup_id,
+                    created_time,
+                    paid_time,
+                    payment_method,
+                    options,
+                    request_lookup_id_kind
+                FROM
+                    melt_quote
+                WHERE
+                    id=:id
+                "#,
+            )?
+            .bind("id", quote_id.to_string())
+            .fetch_one(&*conn)
+            .await?
+            .map(sql_row_to_melt_quote)
+            .transpose()
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            let success = result.is_ok();
+
+            METRICS.record_mint_operation("get_melt_quote", success);
+            METRICS.record_mint_operation_histogram(
+                "get_melt_quote",
+                success,
+                start_time.elapsed().as_secs_f64(),
+            );
+            METRICS.dec_in_flight_requests("get_melt_quote");
+        }
+
+        result
     }
 
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err> {
@@ -1826,20 +1893,64 @@ where
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn database::MintTransaction<'a, Error> + Send + Sync + 'a>, Error> {
-        Ok(Box::new(SQLTransaction {
+        let tx = SQLTransaction {
             inner: ConnectionWithTransaction::new(
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
-        }))
+        };
+
+        Ok(Box::new(tx))
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
-        Ok(self.fetch_from_config("mint_info").await?)
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("get_mint_info");
+
+        #[cfg(feature = "prometheus")]
+        let start_time = std::time::Instant::now();
+
+        let result = self.fetch_from_config("mint_info").await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            let success = result.is_ok();
+
+            METRICS.record_mint_operation("get_mint_info", success);
+            METRICS.record_mint_operation_histogram(
+                "get_mint_info",
+                success,
+                start_time.elapsed().as_secs_f64(),
+            );
+            METRICS.dec_in_flight_requests("get_mint_info");
+        }
+
+        Ok(result?)
     }
 
     async fn get_quote_ttl(&self) -> Result<QuoteTTL, Error> {
-        Ok(self.fetch_from_config("quote_ttl").await?)
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("get_quote_ttl");
+
+        #[cfg(feature = "prometheus")]
+        let start_time = std::time::Instant::now();
+
+        let result = self.fetch_from_config("quote_ttl").await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            let success = result.is_ok();
+
+            METRICS.record_mint_operation("get_quote_ttl", success);
+            METRICS.record_mint_operation_histogram(
+                "get_quote_ttl",
+                success,
+                start_time.elapsed().as_secs_f64(),
+            );
+            METRICS.dec_in_flight_requests("get_quote_ttl");
+        }
+
+        Ok(result?)
     }
 }
 

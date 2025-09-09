@@ -28,6 +28,7 @@ sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
 redis = ["cdk-axum/redis"]
 auth = ["cdk/auth", "cdk-axum/auth", "cdk-sqlite?/auth", "cdk-postgres?/auth"]
+prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
 
 [dependencies]
 anyhow.workspace = true
@@ -38,8 +39,9 @@ cdk = { workspace = true, features = [
 ] }
 cdk-sqlite = { workspace = true, features = [
     "mint"
-], optional = true }
-cdk-postgres = { workspace = true, features = ["mint"], optional = true }
+], optional = true  }
+cdk-common = {workspace = true, features = ["prometheus"]}
+cdk-postgres = { workspace = true, features = ["mint"], optional = true}
 cdk-cln = { workspace = true, optional = true }
 cdk-lnbits = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }
@@ -50,6 +52,7 @@ cdk-signatory.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
 cdk-payment-processor = { workspace = true, optional = true }
 config.workspace = true
+cdk-prometheus = { workspace = true, optional = true , features = ["system-metrics"]}
 clap.workspace = true
 bitcoin.workspace = true
 tokio = { workspace = true, default-features = false, features = ["signal"] }
@@ -63,11 +66,7 @@ tower-http = { workspace = true, features = ["compression-full", "decompression-
 tower.workspace = true
 lightning-invoice.workspace = true
 home.workspace = true
-url.workspace = true
 utoipa = { workspace = true, optional = true }
 utoipa-swagger-ui = { version = "9.0.0", features = ["axum"], optional = true }
 
 [build-dependencies]
-# Dep of utopia 2.5.0 breaks so keeping here for now
-zip = "=2.4.2"
-time = "=0.3.39"

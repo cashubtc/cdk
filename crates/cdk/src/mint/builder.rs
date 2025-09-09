@@ -268,7 +268,6 @@ impl MintBuilder {
         self.payment_processors.insert(key, payment_processor);
         Ok(())
     }
-
     /// Sets the input fee ppk for a given unit
     ///
     /// The unit **MUST** already have been added with a ln backend

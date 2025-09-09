@@ -10,6 +10,8 @@ use cdk_common::{
     MintQuoteBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response, MintQuoteState,
     MintRequest, MintResponse, NotificationPayload, PaymentMethod, PublicKey,
 };
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::METRICS;
 use tracing::instrument;
 
 use crate::mint::Verification;
@@ -187,130 +189,147 @@ impl Mint {
         &self,
         mint_quote_request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse, Error> {
-        let unit: CurrencyUnit;
-        let amount;
-        let pubkey;
-        let payment_method;
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("get_mint_quote");
 
-        let create_invoice_response = match mint_quote_request {
-            MintQuoteRequest::Bolt11(bolt11_request) => {
-                unit = bolt11_request.unit;
-                amount = Some(bolt11_request.amount);
-                pubkey = bolt11_request.pubkey;
-                payment_method = PaymentMethod::Bolt11;
+        let result = async {
+            let unit: CurrencyUnit;
+            let amount;
+            let pubkey;
+            let payment_method;
 
-                self.check_mint_request_acceptable(
-                    Some(bolt11_request.amount),
-                    &unit,
-                    &payment_method,
-                )
-                .await?;
+            let create_invoice_response = match mint_quote_request {
+                MintQuoteRequest::Bolt11(bolt11_request) => {
+                    unit = bolt11_request.unit;
+                    amount = Some(bolt11_request.amount);
+                    pubkey = bolt11_request.pubkey;
+                    payment_method = PaymentMethod::Bolt11;
 
-                let ln = self.get_payment_processor(unit.clone(), PaymentMethod::Bolt11)?;
-
-                let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
-
-                let quote_expiry = unix_time() + mint_ttl;
-
-                let settings = ln.get_settings().await?;
-                let settings: Bolt11Settings = serde_json::from_value(settings)?;
-
-                let description = bolt11_request.description;
-
-                if description.is_some() && !settings.invoice_description {
-                    tracing::error!("Backend does not support invoice description");
-                    return Err(Error::InvoiceDescriptionUnsupported);
-                }
-
-                let bolt11_options = Bolt11IncomingPaymentOptions {
-                    description,
-                    amount: bolt11_request.amount,
-                    unix_expiry: Some(quote_expiry),
-                };
-
-                let incoming_options = IncomingPaymentOptions::Bolt11(bolt11_options);
-
-                ln.create_incoming_payment_request(&unit, incoming_options)
-                    .await
-                    .map_err(|err| {
-                        tracing::error!("Could not create invoice: {}", err);
-                        Error::InvalidPaymentRequest
-                    })?
-            }
-            MintQuoteRequest::Bolt12(bolt12_request) => {
-                unit = bolt12_request.unit;
-                amount = bolt12_request.amount;
-                pubkey = Some(bolt12_request.pubkey);
-                payment_method = PaymentMethod::Bolt12;
-
-                self.check_mint_request_acceptable(amount, &unit, &payment_method)
+                    self.check_mint_request_acceptable(
+                        Some(bolt11_request.amount),
+                        &unit,
+                        &payment_method,
+                    )
                     .await?;
 
-                let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
+                    let ln = self.get_payment_processor(unit.clone(), PaymentMethod::Bolt11)?;
 
-                let description = bolt12_request.description;
+                    let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
 
-                let bolt12_options = Bolt12IncomingPaymentOptions {
-                    description,
-                    amount,
-                    unix_expiry: None,
-                };
+                    let quote_expiry = unix_time() + mint_ttl;
 
-                let incoming_options = IncomingPaymentOptions::Bolt12(Box::new(bolt12_options));
+                    let settings = ln.get_settings().await?;
+                    let settings: Bolt11Settings = serde_json::from_value(settings)?;
 
-                ln.create_incoming_payment_request(&unit, incoming_options)
-                    .await
-                    .map_err(|err| {
-                        tracing::error!("Could not create invoice: {}", err);
-                        Error::InvalidPaymentRequest
-                    })?
+                    let description = bolt11_request.description;
+
+                    if description.is_some() && !settings.invoice_description {
+                        tracing::error!("Backend does not support invoice description");
+                        return Err(Error::InvoiceDescriptionUnsupported);
+                    }
+
+                    let bolt11_options = Bolt11IncomingPaymentOptions {
+                        description,
+                        amount: bolt11_request.amount,
+                        unix_expiry: Some(quote_expiry),
+                    };
+
+                    let incoming_options = IncomingPaymentOptions::Bolt11(bolt11_options);
+
+                    ln.create_incoming_payment_request(&unit, incoming_options)
+                        .await
+                        .map_err(|err| {
+                            tracing::error!("Could not create invoice: {}", err);
+                            Error::InvalidPaymentRequest
+                        })?
+                }
+                MintQuoteRequest::Bolt12(bolt12_request) => {
+                    unit = bolt12_request.unit;
+                    amount = bolt12_request.amount;
+                    pubkey = Some(bolt12_request.pubkey);
+                    payment_method = PaymentMethod::Bolt12;
+
+                    self.check_mint_request_acceptable(amount, &unit, &payment_method)
+                        .await?;
+
+                    let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
+
+                    let description = bolt12_request.description;
+
+                    let bolt12_options = Bolt12IncomingPaymentOptions {
+                        description,
+                        amount,
+                        unix_expiry: None,
+                    };
+
+                    let incoming_options = IncomingPaymentOptions::Bolt12(Box::new(bolt12_options));
+
+                    ln.create_incoming_payment_request(&unit, incoming_options)
+                        .await
+                        .map_err(|err| {
+                            tracing::error!("Could not create invoice: {}", err);
+                            Error::InvalidPaymentRequest
+                        })?
+                }
+            };
+
+            let quote = MintQuote::new(
+                None,
+                create_invoice_response.request.to_string(),
+                unit.clone(),
+                amount,
+                create_invoice_response.expiry.unwrap_or(0),
+                create_invoice_response.request_lookup_id.clone(),
+                pubkey,
+                Amount::ZERO,
+                Amount::ZERO,
+                payment_method.clone(),
+                unix_time(),
+                vec![],
+                vec![],
+            );
+
+            tracing::debug!(
+                "New {} mint quote {} for {:?} {} with request id {:?}",
+                payment_method,
+                quote.id,
+                amount,
+                unit,
+                create_invoice_response.request_lookup_id.to_string(),
+            );
+
+            let mut tx = self.localstore.begin_transaction().await?;
+            tx.add_mint_quote(quote.clone()).await?;
+            tx.commit().await?;
+
+            match payment_method {
+                PaymentMethod::Bolt11 => {
+                    let res: MintQuoteBolt11Response<QuoteId> = quote.clone().into();
+                    self.pubsub_manager
+                        .broadcast(NotificationPayload::MintQuoteBolt11Response(res));
+                }
+                PaymentMethod::Bolt12 => {
+                    let res: MintQuoteBolt12Response<QuoteId> = quote.clone().try_into()?;
+                    self.pubsub_manager
+                        .broadcast(NotificationPayload::MintQuoteBolt12Response(res));
+                }
+                PaymentMethod::Custom(_) => {}
             }
-        };
 
-        let quote = MintQuote::new(
-            None,
-            create_invoice_response.request.to_string(),
-            unit.clone(),
-            amount,
-            create_invoice_response.expiry.unwrap_or(0),
-            create_invoice_response.request_lookup_id.clone(),
-            pubkey,
-            Amount::ZERO,
-            Amount::ZERO,
-            payment_method.clone(),
-            unix_time(),
-            vec![],
-            vec![],
-        );
+            quote.try_into()
+        }
+        .await;
 
-        tracing::debug!(
-            "New {} mint quote {} for {:?} {} with request id {:?}",
-            payment_method,
-            quote.id,
-            amount,
-            unit,
-            create_invoice_response.request_lookup_id.to_string(),
-        );
-
-        let mut tx = self.localstore.begin_transaction().await?;
-        tx.add_mint_quote(quote.clone()).await?;
-        tx.commit().await?;
-
-        match payment_method {
-            PaymentMethod::Bolt11 => {
-                let res: MintQuoteBolt11Response<QuoteId> = quote.clone().into();
-                self.pubsub_manager
-                    .broadcast(NotificationPayload::MintQuoteBolt11Response(res));
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("get_mint_quote");
+            METRICS.record_mint_operation("get_mint_quote", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
             }
-            PaymentMethod::Bolt12 => {
-                let res: MintQuoteBolt12Response<QuoteId> = quote.clone().try_into()?;
-                self.pubsub_manager
-                    .broadcast(NotificationPayload::MintQuoteBolt12Response(res));
-            }
-            PaymentMethod::Custom(_) => {}
         }
 
-        quote.try_into()
+        result
     }
 
     /// Retrieves all mint quotes from the database
@@ -320,8 +339,25 @@ impl Mint {
     /// * `Error` if database access fails
     #[instrument(skip_all)]
     pub async fn mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
-        let quotes = self.localstore.get_mint_quotes().await?;
-        Ok(quotes)
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("mint_quotes");
+
+        let result = async {
+            let quotes = self.localstore.get_mint_quotes().await?;
+            Ok(quotes)
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("mint_quotes");
+            METRICS.record_mint_operation("mint_quotes", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
+            }
+        }
+
+        result
     }
 
     /// Removes a mint quote from the database
@@ -334,11 +370,27 @@ impl Mint {
     /// * `Error` if the quote doesn't exist or removal fails
     #[instrument(skip_all)]
     pub async fn remove_mint_quote(&self, quote_id: &QuoteId) -> Result<(), Error> {
-        let mut tx = self.localstore.begin_transaction().await?;
-        tx.remove_mint_quote(quote_id).await?;
-        tx.commit().await?;
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("remove_mint_quote");
 
-        Ok(())
+        let result = async {
+            let mut tx = self.localstore.begin_transaction().await?;
+            tx.remove_mint_quote(quote_id).await?;
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("remove_mint_quote");
+            METRICS.record_mint_operation("remove_mint_quote", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
+            }
+        }
+
+        result
     }
 
     /// Marks a mint quote as paid based on the payment request ID
@@ -357,33 +409,48 @@ impl Mint {
         &self,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
-        if wait_payment_response.payment_amount == Amount::ZERO {
-            tracing::warn!(
-                "Received payment response with 0 amount with payment id {}.",
-                wait_payment_response.payment_id.to_string()
-            );
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("pay_mint_quote_for_request_id");
+        let result = async {
+            if wait_payment_response.payment_amount == Amount::ZERO {
+                tracing::warn!(
+                    "Received payment response with 0 amount with payment id {}.",
+                    wait_payment_response.payment_id.to_string()
+                );
+                return Err(Error::AmountUndefined);
+            }
 
-            return Err(Error::AmountUndefined);
+            let mut tx = self.localstore.begin_transaction().await?;
+
+            if let Ok(Some(mint_quote)) = tx
+                .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
+                .await
+            {
+                self.pay_mint_quote(&mut tx, &mint_quote, wait_payment_response)
+                    .await?;
+            } else {
+                tracing::warn!(
+                    "Could not get request for request lookup id {:?}.",
+                    wait_payment_response.payment_identifier
+                );
+            }
+
+            tx.commit().await?;
+
+            Ok(())
         }
+        .await;
 
-        let mut tx = self.localstore.begin_transaction().await?;
-
-        if let Ok(Some(mint_quote)) = tx
-            .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
-            .await
+        #[cfg(feature = "prometheus")]
         {
-            self.pay_mint_quote(&mut tx, &mint_quote, wait_payment_response)
-                .await?;
-        } else {
-            tracing::warn!(
-                "Could not get request for request lookup id {:?}.",
-                wait_payment_response.payment_identifier
-            );
+            METRICS.dec_in_flight_requests("pay_mint_quote_for_request_id");
+            METRICS.record_mint_operation("pay_mint_quote_for_request_id", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
+            }
         }
 
-        tx.commit().await?;
-
-        Ok(())
+        result
     }
 
     /// Marks a specific mint quote as paid
@@ -405,8 +472,30 @@ impl Mint {
         mint_quote: &MintQuote,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
-        Self::handle_mint_quote_payment(tx, mint_quote, wait_payment_response, &self.pubsub_manager)
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("pay_mint_quote");
+
+        let result = async {
+            Self::handle_mint_quote_payment(
+                tx,
+                mint_quote,
+                wait_payment_response,
+                &self.pubsub_manager,
+            )
             .await
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("pay_mint_quote");
+            METRICS.record_mint_operation("pay_mint_quote", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
+            }
+        }
+
+        result
     }
 
     /// Checks the status of a mint quote and updates it if necessary
@@ -422,17 +511,33 @@ impl Mint {
     /// * `Error` if the quote doesn't exist or checking fails
     #[instrument(skip(self))]
     pub async fn check_mint_quote(&self, quote_id: &QuoteId) -> Result<MintQuoteResponse, Error> {
-        let mut quote = self
-            .localstore
-            .get_mint_quote(quote_id)
-            .await?
-            .ok_or(Error::UnknownQuote)?;
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("check_mint_quote");
+        let result = async {
+            let mut quote = self
+                .localstore
+                .get_mint_quote(quote_id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
 
-        if quote.payment_method == PaymentMethod::Bolt11 {
-            self.check_mint_quote_paid(&mut quote).await?;
+            if quote.payment_method == PaymentMethod::Bolt11 {
+                self.check_mint_quote_paid(&mut quote).await?;
+            }
+
+            quote.try_into()
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("check_mint_quote");
+            METRICS.record_mint_operation("check_mint_quote", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
+            }
         }
 
-        quote.try_into()
+        result
     }
 
     /// Processes a mint request to issue new tokens
@@ -456,15 +561,18 @@ impl Mint {
         &self,
         mint_request: MintRequest<QuoteId>,
     ) -> Result<MintResponse, Error> {
-        let mut mint_quote = self
-            .localstore
-            .get_mint_quote(&mint_request.quote)
-            .await?
-            .ok_or(Error::UnknownQuote)?;
-        if mint_quote.payment_method == PaymentMethod::Bolt11 {
-            self.check_mint_quote_paid(&mut mint_quote).await?;
-        }
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("process_mint_request");
+        let result = async {
+            let mut mint_quote = self
+                .localstore
+                .get_mint_quote(&mint_request.quote)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
 
+            if mint_quote.payment_method == PaymentMethod::Bolt11 {
+                self.check_mint_quote_paid(&mut mint_quote).await?;
+            }
         // get the blind signatures before having starting the db transaction, if there are any
         // rollbacks this blind_signatures will be lost, and the signature is stateless. It is not a
         // good idea to call an external service (which is really a trait, it could be anything
@@ -504,10 +612,10 @@ impl Mint {
             PaymentMethod::Bolt12 => {
                 if mint_quote.amount_issued() > mint_quote.amount_paid() {
                     tracing::error!(
-                        "Quote state should not be issued if issued {} is > paid {}.",
-                        mint_quote.amount_issued(),
-                        mint_quote.amount_paid()
-                    );
+                            "Quote state should not be issued if issued {} is > paid {}.",
+                            mint_quote.amount_issued(),
+                            mint_quote.amount_paid()
+                        );
                     return Err(Error::UnpaidQuote);
                 }
                 mint_quote.amount_paid() - mint_quote.amount_issued()
@@ -565,7 +673,7 @@ impl Mint {
             &blind_signatures,
             Some(mint_request.quote.clone()),
         )
-        .await?;
+            .await?;
 
         let amount_issued = mint_request.total_amount()?;
 
@@ -581,5 +689,17 @@ impl Mint {
         Ok(MintResponse {
             signatures: blind_signatures,
         })
+    }
+    .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("process_mint_request");
+            METRICS.record_mint_operation("process_mint_request", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
+            }
+        }
+        result
     }
 }
