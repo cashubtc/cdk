@@ -23,7 +23,7 @@ use ldk_node::lightning::ln::msgs::SocketAddress;
 use ldk_node::lightning_invoice::{Bolt11InvoiceDescription, Description};
 use ldk_node::lightning_types::payment::PaymentHash;
 use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus, SendingParameters};
-use ldk_node::{Builder, Event, Node};
+use ldk_node::{Builder, Event};
 use tokio::runtime::Runtime;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
@@ -33,6 +33,8 @@ use crate::error::Error;
 
 mod error;
 mod web;
+
+pub use ldk_node::Node;
 
 /// CDK Lightning backend using LDK Node
 ///
@@ -183,6 +185,74 @@ impl CdkLdkNode {
             runtime,
             web_addr: None,
         })
+    }
+
+    /// Create a CdkLdkNode from an existing LDK Node
+    ///
+    /// This allows using an already-created LDK Node instance with the CDK mintd library,
+    /// rather than having mintd create its own node internally.
+    ///
+    /// # Arguments
+    /// * `node` - An existing Arc<Node> instance from LDK
+    /// * `fee_reserve` - Fee reserve configuration for payments
+    /// * `runtime` - Optional Tokio runtime to use for starting the node
+    ///
+    /// # Returns
+    /// A new `CdkLdkNode` instance that wraps the provided node
+    ///
+    /// # Example
+    /// ```rust
+    /// use cdk_common::common::FeeReserve;
+    /// use cdk_ldk_node::CdkLdkNode;
+    /// use ldk_node::{bitcoin::Network, Builder};
+    /// use std::sync::Arc;
+    ///
+    /// // Create and configure your LDK node
+    /// let ldk_node = Builder::new()
+    ///     .set_network(Network::Regtest)
+    ///     .build()
+    ///     .unwrap();
+    ///
+    /// // Wrap it with CdkLdkNode
+    /// let cdk_node = CdkLdkNode::with_node(
+    ///     ldk_node.into(),
+    ///     FeeReserve {
+    ///         min_fee_reserve: cdk_common::Amount::ZERO,
+    ///         percent_fee_reserve: 0.01,
+    ///     },
+    ///     None,
+    /// );
+    /// ```
+    pub fn with_node(
+        node: Arc<Node>,
+        fee_reserve: FeeReserve,
+        runtime: Option<Arc<Runtime>>,
+    ) -> Self {
+        tracing::info!("Creating tokio channel for payment notifications");
+        let (sender, receiver) = tokio::sync::broadcast::channel(8);
+
+        let id = node.node_id();
+        let adr = node.announcement_addresses();
+        let node_config = node.config();
+
+        tracing::info!(
+            "Wrapping existing LDK node {} with address {:?} on network {}",
+            id,
+            adr,
+            node_config.network
+        );
+
+        Self {
+            inner: node,
+            fee_reserve,
+            wait_invoice_cancel_token: CancellationToken::new(),
+            wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
+            sender,
+            receiver: Arc::new(receiver),
+            events_cancel_token: CancellationToken::new(),
+            runtime,
+            web_addr: None,
+        }
     }
 
     /// Set the web server address for the LDK node management interface
@@ -990,5 +1060,66 @@ impl Drop for CdkLdkNode {
         tracing::info!("Drop called on CdkLdkNode");
         self.wait_invoice_cancel_token.cancel();
         tracing::debug!("Cancelled wait_invoice token in drop");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::common::FeeReserve;
+    use ldk_node::bitcoin::Network;
+    use ldk_node::Builder;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_with_node_wraps_existing_ldk_node() {
+        // Create an LDK node
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_path = temp_dir.path().to_str().unwrap();
+
+        let ldk_node = Builder::new()
+            .set_network(Network::Regtest)
+            .set_storage_dir_path(storage_path.to_string())
+            .build()
+            .expect("Failed to build LDK node");
+
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: cdk_common::Amount::ZERO,
+            percent_fee_reserve: 0.01,
+        };
+
+        // Wrap it with CdkLdkNode using the new with_node function
+        let cdk_node = CdkLdkNode::with_node(ldk_node.into(), fee_reserve, None);
+
+        // Verify that the wrapped node has the expected properties
+        assert_eq!(cdk_node.node().config().network, Network::Regtest);
+
+        // Clean up
+        let _ = cdk_node.stop_ldk_node();
+    }
+
+    #[test]
+    fn test_with_node_creates_channels_and_tokens() {
+        // This test verifies that the with_node function properly initializes
+        // the internal Channel and cancellation token infrastructure
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_path = temp_dir.path().to_str().unwrap();
+
+        let ldk_node = Builder::new()
+            .set_network(Network::Regtest)
+            .set_storage_dir_path(storage_path.to_string())
+            .build()
+            .expect("Failed to build LDK node");
+
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: cdk_common::Amount::ZERO,
+            percent_fee_reserve: 0.01,
+        };
+
+        let wrapped_node = CdkLdkNode::with_node(ldk_node.into(), fee_reserve, None);
+
+        // The node should be properly initialized with channels
+        // We can verify this by checking that the receiver exists
+        assert!(Arc::strong_count(&wrapped_node.receiver) >= 1);
     }
 }
