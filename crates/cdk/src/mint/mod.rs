@@ -163,6 +163,14 @@ impl Mint {
                 .count()
         );
 
+        let mint_info = if mint_info.pubkey.is_none() {
+            let mut info = mint_info;
+            info.pubkey = Some(keysets.pubkey);
+            info
+        } else {
+            mint_info
+        };
+
         let mint_store = localstore.clone();
         let mut tx = mint_store.begin_transaction().await?;
         tx.set_mint_info(mint_info.clone()).await?;

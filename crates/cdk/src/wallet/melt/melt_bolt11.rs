@@ -285,6 +285,7 @@ impl Wallet {
                 timestamp: unix_time(),
                 memo: None,
                 metadata: HashMap::new(),
+                quote_id: Some(quote_id.to_string()),
             })
             .await?;
 

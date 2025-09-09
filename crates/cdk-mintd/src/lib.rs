@@ -13,7 +13,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use axum::Router;
 use bip39::Mnemonic;
-use cdk::cdk_database::{self, MintDatabase, MintKeysDatabase};
+use cdk::cdk_database::{self, MintDatabase, MintKVStore, MintKeysDatabase};
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 #[cfg(any(
     feature = "cln",
@@ -99,9 +99,10 @@ async fn initial_setup(
 ) -> Result<(
     Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
+    Arc<dyn MintKVStore<Err = cdk_database::Error> + Send + Sync>,
 )> {
-    let (localstore, keystore) = setup_database(settings, work_dir, db_password).await?;
-    Ok((localstore, keystore))
+    let (localstore, keystore, kv) = setup_database(settings, work_dir, db_password).await?;
+    Ok((localstore, keystore, kv))
 }
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
@@ -258,14 +259,16 @@ async fn setup_database(
 ) -> Result<(
     Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
+    Arc<dyn MintKVStore<Err = cdk_database::Error> + Send + Sync>,
 )> {
     match settings.database.engine {
         #[cfg(feature = "sqlite")]
         DatabaseEngine::Sqlite => {
             let db = setup_sqlite_database(_work_dir, _db_password).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
+            let kv: Arc<dyn MintKVStore<Err = cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
-            Ok((localstore, keystore))
+            Ok((localstore, keystore, kv))
         }
         #[cfg(feature = "postgres")]
         DatabaseEngine::Postgres => {
@@ -284,11 +287,13 @@ async fn setup_database(
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
                 pg_db.clone();
             #[cfg(feature = "postgres")]
+            let kv: Arc<dyn MintKVStore<Err = cdk_database::Error> + Send + Sync> = pg_db.clone();
+            #[cfg(feature = "postgres")]
             let keystore: Arc<
                 dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync,
             > = pg_db;
             #[cfg(feature = "postgres")]
-            return Ok((localstore, keystore));
+            return Ok((localstore, keystore, kv));
 
             #[cfg(not(feature = "postgres"))]
             bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
@@ -331,6 +336,7 @@ async fn configure_mint_builder(
     mint_builder: MintBuilder,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     work_dir: &Path,
+    kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
 ) -> Result<(MintBuilder, Vec<Router>)> {
     let mut ln_routers = vec![];
 
@@ -338,9 +344,15 @@ async fn configure_mint_builder(
     let mint_builder = configure_basic_info(settings, mint_builder);
 
     // Configure lightning backend
-    let mint_builder =
-        configure_lightning_backend(settings, mint_builder, &mut ln_routers, runtime, work_dir)
-            .await?;
+    let mint_builder = configure_lightning_backend(
+        settings,
+        mint_builder,
+        &mut ln_routers,
+        runtime,
+        work_dir,
+        kv_store,
+    )
+    .await?;
 
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
@@ -405,6 +417,7 @@ async fn configure_lightning_backend(
     ln_routers: &mut Vec<Router>,
     _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     work_dir: &Path,
+    _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
         mint_min: settings.ln.min_mint,
@@ -423,7 +436,14 @@ async fn configure_lightning_backend(
                 .clone()
                 .expect("Config checked at load that cln is some");
             let cln = cln_settings
-                .setup(ln_routers, settings, CurrencyUnit::Msat, None, work_dir)
+                .setup(
+                    ln_routers,
+                    settings,
+                    CurrencyUnit::Msat,
+                    None,
+                    work_dir,
+                    None,
+                )
                 .await?;
             #[cfg(feature = "prometheus")]
             let cln = MetricsMintPayment::new(cln);
@@ -441,7 +461,14 @@ async fn configure_lightning_backend(
         LnBackend::LNbits => {
             let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
             let lnbits = lnbits_settings
-                .setup(ln_routers, settings, CurrencyUnit::Sat, None, work_dir)
+                .setup(
+                    ln_routers,
+                    settings,
+                    CurrencyUnit::Sat,
+                    None,
+                    work_dir,
+                    None,
+                )
                 .await?;
             #[cfg(feature = "prometheus")]
             let lnbits = MetricsMintPayment::new(lnbits);
@@ -459,7 +486,14 @@ async fn configure_lightning_backend(
         LnBackend::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
             let lnd = lnd_settings
-                .setup(ln_routers, settings, CurrencyUnit::Msat, None, work_dir)
+                .setup(
+                    ln_routers,
+                    settings,
+                    CurrencyUnit::Msat,
+                    None,
+                    work_dir,
+                    None,
+                )
                 .await?;
             #[cfg(feature = "prometheus")]
             let lnd = MetricsMintPayment::new(lnd);
@@ -480,7 +514,14 @@ async fn configure_lightning_backend(
 
             for unit in fake_wallet.clone().supported_units {
                 let fake = fake_wallet
-                    .setup(ln_routers, settings, unit.clone(), None, work_dir)
+                    .setup(
+                        ln_routers,
+                        settings,
+                        unit.clone(),
+                        None,
+                        work_dir,
+                        _kv_store.clone(),
+                    )
                     .await?;
                 #[cfg(feature = "prometheus")]
                 let fake = MetricsMintPayment::new(fake);
@@ -511,7 +552,7 @@ async fn configure_lightning_backend(
             for unit in grpc_processor.clone().supported_units {
                 tracing::debug!("Adding unit: {:?}", unit);
                 let processor = grpc_processor
-                    .setup(ln_routers, settings, unit.clone(), None, work_dir)
+                    .setup(ln_routers, settings, unit.clone(), None, work_dir, None)
                     .await?;
                 #[cfg(feature = "prometheus")]
                 let processor = MetricsMintPayment::new(processor);
@@ -532,7 +573,14 @@ async fn configure_lightning_backend(
             tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
 
             let ldk_node = ldk_node_settings
-                .setup(ln_routers, settings, CurrencyUnit::Sat, _runtime, work_dir)
+                .setup(
+                    ln_routers,
+                    settings,
+                    CurrencyUnit::Sat,
+                    _runtime,
+                    work_dir,
+                    None,
+                )
                 .await?;
 
             mint_builder = configure_backend_for_unit(
@@ -576,6 +624,9 @@ async fn configure_backend_for_unit(
                     Arc::clone(&backend),
                 )
                 .await?;
+
+            let nut17_supported = SupportedMethods::default_bolt12(unit.clone());
+            mint_builder = mint_builder.with_supported_websockets(nut17_supported);
         }
     }
 
@@ -597,7 +648,8 @@ async fn configure_backend_for_unit(
         feature = "lnbits",
         feature = "lnd",
         feature = "fakewallet",
-        feature = "grpc-processor"
+        feature = "grpc-processor",
+        feature = "ldk-node"
     ))]
     {
         let nut17_supported = SupportedMethods::default_bolt11(unit);
@@ -1098,12 +1150,12 @@ pub async fn run_mintd_with_shutdown(
     db_password: Option<String>,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 ) -> Result<()> {
-    let (localstore, keystore) = initial_setup(work_dir, settings, db_password.clone()).await?;
+    let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
     let mint_builder = MintBuilder::new(localstore);
 
     let (mint_builder, ln_routers) =
-        configure_mint_builder(settings, mint_builder, runtime, work_dir).await?;
+        configure_mint_builder(settings, mint_builder, runtime, work_dir, Some(kv)).await?;
     #[cfg(feature = "auth")]
     let mint_builder = setup_authentication(settings, work_dir, mint_builder, db_password).await?;
 

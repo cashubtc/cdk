@@ -43,7 +43,7 @@ pub struct RotateKeyArguments {
     /// Unit
     pub unit: CurrencyUnit,
     /// Max order
-    pub max_order: u8,
+    pub amounts: Vec<u64>,
     /// Input fee
     pub input_fee_ppk: u64,
 }
@@ -110,6 +110,7 @@ impl From<SignatoryKeySet> for MintKeySetInfo {
             derivation_path: Default::default(),
             derivation_path_index: Default::default(),
             max_order: 0,
+            amounts: vec![],
             final_expiry: val.final_expiry,
             valid_from: 0,
         }
