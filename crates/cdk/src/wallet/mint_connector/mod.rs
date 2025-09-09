@@ -22,6 +22,9 @@ pub mod transport;
 #[cfg(feature = "auth")]
 pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;
 /// Http Client with async transport
+#[cfg(feature = "tor")]
+pub type HttpClient = http_client::HttpClient<transport::tor_transport::TorAsync>;
+#[cfg(not(feature = "tor"))]
 pub type HttpClient = http_client::HttpClient<transport::Async>;
 
 /// Interface that connects a wallet to a mint. Typically represents an [HttpClient].
