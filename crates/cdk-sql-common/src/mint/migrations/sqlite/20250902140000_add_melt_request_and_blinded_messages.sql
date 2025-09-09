@@ -1,5 +1,6 @@
 
--- Add melt_request table
+-- Drop existing melt_request table and recreate with new schema
+DROP TABLE IF EXISTS melt_request;
 CREATE TABLE melt_request (
     quote_id TEXT PRIMARY KEY,
     inputs_amount INTEGER NOT NULL,
