@@ -194,20 +194,20 @@ where
     }
 
     /// Try to subscribe to a specific event
-    pub async fn try_subscribe<P: AsRef<SubId> + TryInto<Vec<Index<I>>>>(
-        &self,
-        params: P,
-    ) -> Result<ActiveSubscription<T, I>, P::Error> {
+    pub async fn try_subscribe<P>(&self, params: P) -> Result<ActiveSubscription<T, I>, P::Error>
+    where
+        P: AsRef<SubId> + TryInto<Vec<Index<I>>>,
+    {
         Ok(self
             .subscribe_inner(params.as_ref().clone(), params.try_into()?)
             .await)
     }
 
     /// Subscribe to a specific event
-    pub async fn subscribe<P: AsRef<SubId> + Into<Vec<Index<I>>>>(
-        &self,
-        params: P,
-    ) -> ActiveSubscription<T, I> {
+    pub async fn subscribe<P>(&self, params: P) -> ActiveSubscription<T, I>
+    where
+        P: AsRef<SubId> + Into<Vec<Index<I>>>,
+    {
         self.subscribe_inner(params.as_ref().clone(), params.into())
             .await
     }
