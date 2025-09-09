@@ -1,0 +1,47 @@
+[package]
+name = "cdk-prometheus" 
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Prometheus metrics export server for CDK applications"
+
+[features]
+default = ["system-metrics"]
+system-metrics = ["sysinfo"]
+
+[dependencies]
+# Prometheus
+prometheus = "0.13"
+
+# Async runtime
+tokio.workspace = true
+futures.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# System metrics (optional)
+sysinfo = { version = "0.32", optional = true }
+
+# Tracing
+tracing.workspace = true
+
+# Utility
+once_cell.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+reqwest.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
