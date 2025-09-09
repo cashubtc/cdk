@@ -2,6 +2,28 @@
 
 use std::collections::HashMap;
 
+use async_trait::async_trait;
+use cashu::quote_id::QuoteId;
+use cashu::{Amount, MintInfo};
+
+use super::Error;
+use crate::common::QuoteTTL;
+use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
+use crate::nuts::{
+    BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
+    State,
+};
+use crate::payment::PaymentIdentifier;
+
+#[cfg(feature = "auth")]
+mod auth;
+
+#[cfg(feature = "test")]
+pub mod test;
+
+#[cfg(feature = "auth")]
+pub use auth::{MintAuthDatabase, MintAuthTransaction};
+
 /// Valid ASCII characters for namespace and key strings in KV store
 pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
@@ -62,31 +84,6 @@ pub fn validate_kvstore_params(
     Ok(())
 }
 
-use async_trait::async_trait;
-use cashu::quote_id::QuoteId;
-use cashu::{Amount, MintInfo};
-
-use super::Error;
-use crate::common::QuoteTTL;
-use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
-use crate::nuts::{
-    BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
-    State,
-};
-use crate::payment::PaymentIdentifier;
-
-#[cfg(feature = "auth")]
-mod auth;
-
-#[cfg(feature = "test")]
-pub mod test;
-
-#[cfg(test)]
-mod test_kvstore;
-
-#[cfg(feature = "auth")]
-pub use auth::{MintAuthDatabase, MintAuthTransaction};
-
 /// Information about a melt request stored in the database
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeltRequestInfo {
@@ -97,7 +94,6 @@ pub struct MeltRequestInfo {
     /// Blinded messages for change outputs
     pub change_outputs: Vec<BlindedMessage>,
 }
-
 
 /// KeysDatabaseWriter
 #[async_trait]
