@@ -851,6 +851,7 @@ async fn start_services_with_shutdown(
     work_dir: &Path,
     mint_builder_info: cdk::nuts::MintInfo,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    routers: Vec<Router>,
 ) -> Result<()> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
@@ -925,7 +926,7 @@ async fn start_services_with_shutdown(
         cdk_axum::create_mint_router_with_custom_cache(Arc::clone(&mint), cache, bolt12_supported)
             .await?;
 
-    let mint_service = Router::new()
+    let mut mint_service = Router::new()
         .merge(v1_service)
         .layer(
             ServiceBuilder::new()
@@ -933,6 +934,10 @@ async fn start_services_with_shutdown(
                 .layer(CompressionLayer::new()),
         )
         .layer(TraceLayer::new_for_http());
+
+    for router in routers {
+        mint_service = mint_service.merge(router);
+    }
 
     #[cfg(feature = "swagger")]
     {
@@ -1070,6 +1075,7 @@ pub async fn run_mintd(
     db_password: Option<String>,
     enable_logging: bool,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    routers: Vec<Router>,
 ) -> Result<()> {
     let _guard = if enable_logging {
         setup_tracing(work_dir, &settings.info.logging)?
@@ -1077,8 +1083,15 @@ pub async fn run_mintd(
         None
     };
 
-    let result =
-        run_mintd_with_shutdown(work_dir, settings, shutdown_signal(), db_password, runtime).await;
+    let result = run_mintd_with_shutdown(
+        work_dir,
+        settings,
+        shutdown_signal(),
+        db_password,
+        runtime,
+        routers,
+    )
+    .await;
 
     // Explicitly drop the guard to ensure proper cleanup
     if let Some(guard) = _guard {
@@ -1100,6 +1113,7 @@ pub async fn run_mintd_with_shutdown(
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     db_password: Option<String>,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    routers: Vec<Router>,
 ) -> Result<()> {
     let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
@@ -1127,6 +1141,7 @@ pub async fn run_mintd_with_shutdown(
         work_dir,
         mint.mint_info().await?,
         shutdown_signal,
+        routers,
     )
     .await;
 
