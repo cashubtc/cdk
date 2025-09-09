@@ -263,9 +263,9 @@ impl MintPayment for PaymentProcessorClient {
     }
 
     #[instrument(skip_all)]
-    async fn wait_any_incoming_payment(
+    async fn wait_payment_event(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = cdk_common::payment::Event> + Send>>, Self::Err> {
         self.wait_incoming_payment_stream_is_active
             .store(true, Ordering::SeqCst);
         tracing::debug!("Client waiting for payment");
@@ -288,7 +288,9 @@ impl MintPayment for PaymentProcessorClient {
             .filter_map(|item| async {
                 match item {
                     Ok(value) => match value.try_into() {
-                        Ok(payment_response) => Some(payment_response),
+                        Ok(payment_response) => Some(cdk_common::payment::Event::PaymentReceived(
+                            payment_response,
+                        )),
                         Err(e) => {
                             tracing::error!("Error converting payment response: {}", e);
                             None

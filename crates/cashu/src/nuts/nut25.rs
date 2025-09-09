@@ -1,10 +1,10 @@
 //! Bolt12
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-#[cfg(feature = "mint")]
-use uuid::Uuid;
 
 use super::{CurrencyUnit, MeltOptions, PublicKey};
+#[cfg(feature = "mint")]
+use crate::quote_id::QuoteId;
 use crate::Amount;
 
 /// NUT18 Error
@@ -76,8 +76,8 @@ impl<Q: ToString> MintQuoteBolt12Response<Q> {
 }
 
 #[cfg(feature = "mint")]
-impl From<MintQuoteBolt12Response<Uuid>> for MintQuoteBolt12Response<String> {
-    fn from(value: MintQuoteBolt12Response<Uuid>) -> Self {
+impl From<MintQuoteBolt12Response<QuoteId>> for MintQuoteBolt12Response<String> {
+    fn from(value: MintQuoteBolt12Response<QuoteId>) -> Self {
         Self {
             quote: value.quote.to_string(),
             request: value.request,
