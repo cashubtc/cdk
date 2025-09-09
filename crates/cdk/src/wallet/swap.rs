@@ -154,14 +154,14 @@ impl Wallet {
             )
             .await?;
 
-        let (available_proofs, proofs_sum) = available_proofs.into_iter().map(|p| p.proof).fold(
-            (Vec::new(), Amount::ZERO),
-            |(mut acc1, mut acc2), p| {
-                acc2 += p.amount;
+        let (available_proofs, proofs_sum) = available_proofs
+            .into_iter()
+            .map(|p| p.proof)
+            .try_fold((Vec::new(), Amount::ZERO), |(mut acc1, acc2), p| {
+                let new_sum = acc2.checked_add(p.amount).ok_or(Error::AmountOverflow)?;
                 acc1.push(p);
-                (acc1, acc2)
-            },
-        );
+                Ok::<_, Error>((acc1, new_sum))
+            })?;
 
         ensure_cdk!(proofs_sum >= amount, Error::InsufficientFunds);
 
@@ -215,7 +215,14 @@ impl Wallet {
 
         let fee = self.get_proofs_fee(&proofs).await?;
 
-        let change_amount: Amount = proofs_total - amount.unwrap_or(Amount::ZERO) - fee;
+        let total_to_subtract = amount
+            .unwrap_or(Amount::ZERO)
+            .checked_add(fee)
+            .ok_or(Error::AmountOverflow)?;
+
+        let change_amount: Amount = proofs_total
+            .checked_sub(total_to_subtract)
+            .ok_or(Error::InsufficientFunds)?;
 
         let (send_amount, change_amount) = match include_fees {
             true => {
@@ -230,8 +237,12 @@ impl Wallet {
                     .await?;
 
                 (
-                    amount.map(|a| a + fee_to_redeem),
-                    change_amount - fee_to_redeem,
+                    amount
+                        .map(|a| a.checked_add(fee_to_redeem).ok_or(Error::AmountOverflow))
+                        .transpose()?,
+                    change_amount
+                        .checked_sub(fee_to_redeem)
+                        .ok_or(Error::InsufficientFunds)?,
                 )
             }
             false => (amount, change_amount),

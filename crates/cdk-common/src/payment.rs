@@ -6,6 +6,8 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use cashu::util::hex;
 use cashu::{Bolt11Invoice, MeltOptions};
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::METRICS;
 use futures::Stream;
 use lightning::offers::offer::Offer;
 use lightning_invoice::ParseOrSemanticError;
@@ -402,5 +404,191 @@ impl TryFrom<Value> for Bolt11Settings {
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         serde_json::from_value(value).map_err(|err| err.into())
+    }
+}
+
+/// Metrics wrapper for MintPayment implementations
+///
+/// This wrapper implements the Decorator pattern to collect metrics on all
+/// MintPayment trait methods. It wraps any existing MintPayment implementation
+/// and automatically records timing and operation metrics.
+#[derive(Clone)]
+#[cfg(feature = "prometheus")]
+pub struct MetricsMintPayment<T> {
+    inner: T,
+}
+#[cfg(feature = "prometheus")]
+impl<T> MetricsMintPayment<T>
+where
+    T: MintPayment,
+{
+    /// Create a new metrics wrapper around a MintPayment implementation
+    pub fn new(inner: T) -> Self {
+        Self { inner }
+    }
+
+    /// Get reference to the underlying implementation
+    pub fn inner(&self) -> &T {
+        &self.inner
+    }
+
+    /// Consume the wrapper and return the inner implementation
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
+}
+
+#[async_trait]
+#[cfg(feature = "prometheus")]
+impl<T> MintPayment for MetricsMintPayment<T>
+where
+    T: MintPayment + Send + Sync,
+{
+    type Err = T::Err;
+
+    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err> {
+        let start = std::time::Instant::now();
+        METRICS.inc_in_flight_requests("get_settings");
+
+        let result = self.inner.get_settings().await;
+
+        let duration = start.elapsed().as_secs_f64();
+        METRICS.record_mint_operation_histogram("get_settings", result.is_ok(), duration);
+        METRICS.dec_in_flight_requests("get_settings");
+
+        result
+    }
+
+    async fn create_incoming_payment_request(
+        &self,
+        unit: &CurrencyUnit,
+        options: IncomingPaymentOptions,
+    ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        let start = std::time::Instant::now();
+        METRICS.inc_in_flight_requests("create_incoming_payment_request");
+
+        let result = self
+            .inner
+            .create_incoming_payment_request(unit, options)
+            .await;
+
+        let duration = start.elapsed().as_secs_f64();
+        METRICS.record_mint_operation_histogram(
+            "create_incoming_payment_request",
+            result.is_ok(),
+            duration,
+        );
+        METRICS.dec_in_flight_requests("create_incoming_payment_request");
+
+        result
+    }
+
+    async fn get_payment_quote(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        let start = std::time::Instant::now();
+        METRICS.inc_in_flight_requests("get_payment_quote");
+
+        let result = self.inner.get_payment_quote(unit, options).await;
+
+        let duration = start.elapsed().as_secs_f64();
+        let success = result.is_ok();
+
+        if let Ok(ref quote) = result {
+            let amount: f64 = u64::from(quote.amount) as f64;
+            let fee: f64 = u64::from(quote.fee) as f64;
+            METRICS.record_lightning_payment(amount, fee);
+        }
+
+        METRICS.record_mint_operation_histogram("get_payment_quote", success, duration);
+        METRICS.dec_in_flight_requests("get_payment_quote");
+
+        result
+    }
+    async fn wait_payment_event(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+        let start = std::time::Instant::now();
+        METRICS.inc_in_flight_requests("wait_payment_event");
+
+        let result = self.inner.wait_payment_event().await;
+
+        let duration = start.elapsed().as_secs_f64();
+        let success = result.is_ok();
+
+        METRICS.record_mint_operation_histogram("wait_payment_event", success, duration);
+        METRICS.dec_in_flight_requests("wait_payment_event");
+
+        result
+    }
+
+    async fn make_payment(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        let start = std::time::Instant::now();
+        METRICS.inc_in_flight_requests("make_payment");
+
+        let result = self.inner.make_payment(unit, options).await;
+
+        let duration = start.elapsed().as_secs_f64();
+        let success = result.is_ok();
+
+        METRICS.record_mint_operation_histogram("make_payment", success, duration);
+        METRICS.dec_in_flight_requests("make_payment");
+
+        result
+    }
+
+    fn is_wait_invoice_active(&self) -> bool {
+        self.inner.is_wait_invoice_active()
+    }
+
+    fn cancel_wait_invoice(&self) {
+        self.inner.cancel_wait_invoice()
+    }
+
+    async fn check_incoming_payment_status(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+        let start = std::time::Instant::now();
+        METRICS.inc_in_flight_requests("check_incoming_payment_status");
+
+        let result = self
+            .inner
+            .check_incoming_payment_status(payment_identifier)
+            .await;
+
+        let duration = start.elapsed().as_secs_f64();
+        METRICS.record_mint_operation_histogram(
+            "check_incoming_payment_status",
+            result.is_ok(),
+            duration,
+        );
+        METRICS.dec_in_flight_requests("check_incoming_payment_status");
+
+        result
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        let start = std::time::Instant::now();
+        METRICS.inc_in_flight_requests("check_outgoing_payment");
+
+        let result = self.inner.check_outgoing_payment(payment_identifier).await;
+
+        let duration = start.elapsed().as_secs_f64();
+        let success = result.is_ok();
+
+        METRICS.record_mint_operation_histogram("check_outgoing_payment", success, duration);
+        METRICS.dec_in_flight_requests("check_outgoing_payment");
+
+        result
     }
 }

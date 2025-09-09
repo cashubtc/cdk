@@ -11,10 +11,12 @@ use cdk_common::payment::{
     Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, OutgoingPaymentOptions,
     PaymentIdentifier,
 };
+use cdk_common::quote_id::QuoteId;
 use cdk_common::{MeltOptions, MeltQuoteBolt12Request};
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::METRICS;
 use lightning::offers::offer::Offer;
 use tracing::instrument;
-use uuid::Uuid;
 
 use super::{
     CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, Mint,
@@ -114,7 +116,7 @@ impl Mint {
     pub async fn get_melt_quote(
         &self,
         melt_quote_request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         match melt_quote_request {
             MeltQuoteRequest::Bolt11(bolt11_request) => {
                 self.get_melt_bolt11_quote_impl(&bolt11_request).await
@@ -130,7 +132,9 @@ impl Mint {
     async fn get_melt_bolt11_quote_impl(
         &self,
         melt_request: &MeltQuoteBolt11Request,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("get_melt_bolt11_quote");
         let MeltQuoteBolt11Request {
             request,
             unit,
@@ -183,6 +187,12 @@ impl Mint {
                     err
                 );
 
+                #[cfg(feature = "prometheus")]
+                {
+                    METRICS.dec_in_flight_requests("get_melt_bolt11_quote");
+                    METRICS.record_mint_operation("get_melt_bolt11_quote", false);
+                    METRICS.record_error();
+                }
                 Error::UnsupportedUnit
             })?;
 
@@ -222,7 +232,7 @@ impl Mint {
     async fn get_melt_bolt12_quote_impl(
         &self,
         melt_request: &MeltQuoteBolt12Request,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         let MeltQuoteBolt12Request {
             request,
             unit,
@@ -315,6 +325,12 @@ impl Mint {
         tx.add_melt_quote(quote.clone()).await?;
         tx.commit().await?;
 
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("get_melt_bolt11_quote");
+            METRICS.record_mint_operation("get_melt_bolt11_quote", true);
+        }
+
         Ok(quote.into())
     }
 
@@ -322,22 +338,52 @@ impl Mint {
     #[instrument(skip(self))]
     pub async fn check_melt_quote(
         &self,
-        quote_id: &Uuid,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
-        let quote = self
-            .localstore
-            .get_melt_quote(quote_id)
-            .await?
-            .ok_or(Error::UnknownQuote)?;
+        quote_id: &QuoteId,
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("check_melt_quote");
+        let quote = match self.localstore.get_melt_quote(quote_id).await {
+            Ok(Some(quote)) => quote,
+            Ok(None) => {
+                #[cfg(feature = "prometheus")]
+                {
+                    METRICS.dec_in_flight_requests("check_melt_quote");
+                    METRICS.record_mint_operation("check_melt_quote", false);
+                    METRICS.record_error();
+                }
+                return Err(Error::UnknownQuote);
+            }
+            Err(err) => {
+                #[cfg(feature = "prometheus")]
+                {
+                    METRICS.dec_in_flight_requests("check_melt_quote");
+                    METRICS.record_mint_operation("check_melt_quote", false);
+                    METRICS.record_error();
+                }
+                return Err(err.into());
+            }
+        };
 
-        let blind_signatures = self
+        let blind_signatures = match self
             .localstore
             .get_blind_signatures_for_quote(quote_id)
-            .await?;
+            .await
+        {
+            Ok(signatures) => signatures,
+            Err(err) => {
+                #[cfg(feature = "prometheus")]
+                {
+                    METRICS.dec_in_flight_requests("check_melt_quote");
+                    METRICS.record_mint_operation("check_melt_quote", false);
+                    METRICS.record_error();
+                }
+                return Err(err.into());
+            }
+        };
 
         let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
 
-        Ok(MeltQuoteBolt11Response {
+        let response = MeltQuoteBolt11Response {
             quote: quote.id,
             paid: Some(quote.state == MeltQuoteState::Paid),
             state: quote.state,
@@ -348,7 +394,15 @@ impl Mint {
             change,
             request: Some(quote.request.to_string()),
             unit: Some(quote.unit.clone()),
-        })
+        };
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("check_melt_quote");
+            METRICS.record_mint_operation("check_melt_quote", true);
+        }
+
+        Ok(response)
     }
 
     /// Get melt quotes
@@ -363,7 +417,7 @@ impl Mint {
     pub async fn check_melt_expected_ln_fees(
         &self,
         melt_quote: &MeltQuote,
-        melt_request: &MeltRequest<Uuid>,
+        melt_request: &MeltRequest<QuoteId>,
     ) -> Result<Option<Amount>, Error> {
         let quote_msats = to_unit(melt_quote.amount, &melt_quote.unit, &CurrencyUnit::Msat)
             .expect("Quote unit is checked above that it can convert to msat");
@@ -445,7 +499,7 @@ impl Mint {
         &self,
         tx: &mut Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
         input_verification: Verification,
-        melt_request: &MeltRequest<Uuid>,
+        melt_request: &MeltRequest<QuoteId>,
     ) -> Result<(ProofWriter, MeltQuote), Error> {
         let (state, quote) = tx
             .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending, None)
@@ -518,8 +572,11 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn melt(
         &self,
-        melt_request: &MeltRequest<Uuid>,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+        melt_request: &MeltRequest<QuoteId>,
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("melt_bolt11");
+
         use std::sync::Arc;
         async fn check_payment_state(
             ln: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
@@ -543,21 +600,43 @@ impl Mint {
 
         let mut tx = self.localstore.begin_transaction().await?;
 
-        let (proof_writer, quote) = self
+        let (proof_writer, quote) = match self
             .verify_melt_request(&mut tx, verification, melt_request)
             .await
-            .map_err(|err| {
+        {
+            Ok(result) => result,
+            Err(err) => {
                 tracing::debug!("Error attempting to verify melt quote: {}", err);
-                err
-            })?;
 
-        let settled_internally_amount = self
+                #[cfg(feature = "prometheus")]
+                {
+                    METRICS.dec_in_flight_requests("melt_bolt11");
+                    METRICS.record_mint_operation("melt_bolt11", false);
+                    METRICS.record_error();
+                }
+
+                return Err(err);
+            }
+        };
+
+        let settled_internally_amount = match self
             .handle_internal_melt_mint(&mut tx, &quote, melt_request)
             .await
-            .map_err(|err| {
+        {
+            Ok(amount) => amount,
+            Err(err) => {
                 tracing::error!("Attempting to settle internally failed: {}", err);
-                err
-            })?;
+
+                #[cfg(feature = "prometheus")]
+                {
+                    METRICS.dec_in_flight_requests("melt_bolt11");
+                    METRICS.record_mint_operation("melt_bolt11", false);
+                    METRICS.record_error();
+                }
+
+                return Err(err);
+            }
+        };
 
         let (tx, preimage, amount_spent_quote_unit, quote) = match settled_internally_amount {
             Some(amount_spent) => (tx, None, amount_spent, quote),
@@ -669,6 +748,14 @@ impl Mint {
                             melt_request.quote()
                         );
                         proof_writer.rollback().await?;
+
+                        #[cfg(feature = "prometheus")]
+                        {
+                            METRICS.dec_in_flight_requests("melt_bolt11");
+                            METRICS.record_mint_operation("melt_bolt11", false);
+                            METRICS.record_error();
+                        }
+
                         return Err(Error::PaymentFailed);
                     }
                     MeltQuoteState::Pending => {
@@ -677,6 +764,13 @@ impl Mint {
                             melt_request.quote()
                         );
                         proof_writer.commit();
+                        #[cfg(feature = "prometheus")]
+                        {
+                            METRICS.dec_in_flight_requests("melt_bolt11");
+                            METRICS.record_mint_operation("melt_bolt11", false);
+                            METRICS.record_error();
+                        }
+
                         return Err(Error::PendingQuote);
                     }
                 }
@@ -716,7 +810,7 @@ impl Mint {
 
         // If we made it here the payment has been made.
         // We process the melt burning the inputs and returning change
-        let res = self
+        let res = match self
             .process_melt_request(
                 tx,
                 proof_writer,
@@ -726,10 +820,27 @@ impl Mint {
                 amount_spent_quote_unit,
             )
             .await
-            .map_err(|err| {
+        {
+            Ok(response) => response,
+            Err(err) => {
                 tracing::error!("Could not process melt request: {}", err);
-                err
-            })?;
+
+                #[cfg(feature = "prometheus")]
+                {
+                    METRICS.dec_in_flight_requests("melt_bolt11");
+                    METRICS.record_mint_operation("melt_bolt11", false);
+                    METRICS.record_error();
+                }
+
+                return Err(err);
+            }
+        };
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("melt_bolt11");
+            METRICS.record_mint_operation("melt_bolt11", true);
+        }
 
         Ok(res)
     }
@@ -743,15 +854,24 @@ impl Mint {
         mut tx: Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
         mut proof_writer: ProofWriter,
         quote: MeltQuote,
-        melt_request: &MeltRequest<Uuid>,
+        melt_request: &MeltRequest<QuoteId>,
         payment_preimage: Option<String>,
         total_spent: Amount,
-    ) -> Result<MeltQuoteBolt11Response<Uuid>, Error> {
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("process_melt_request");
+
         let input_ys = melt_request.inputs().ys()?;
 
-        proof_writer
+        let update_proof_states_result = proof_writer
             .update_proofs_states(&mut tx, &input_ys, State::Spent)
-            .await?;
+            .await;
+
+        if update_proof_states_result.is_err() {
+            #[cfg(feature = "prometheus")]
+            self.record_melt_quote_failure("process_melt_request");
+            return Err(update_proof_states_result.err().unwrap());
+        }
 
         tx.update_melt_quote_state(
             melt_request.quote(),
@@ -823,7 +943,7 @@ impl Mint {
                         .map(|o| o.blinded_secret)
                         .collect::<Vec<PublicKey>>(),
                     &change_sigs,
-                    Some(quote.id),
+                    Some(quote.id.clone()),
                 )
                 .await?;
 
@@ -853,7 +973,6 @@ impl Mint {
             change.clone(),
             MeltQuoteState::Paid,
         );
-
         tracing::debug!(
             "Melt for quote {} completed total spent {}, total inputs: {}, change given: {}",
             quote.id,
@@ -865,8 +984,7 @@ impl Mint {
                     .expect("Change cannot overflow"))
                 .unwrap_or_default()
         );
-
-        Ok(MeltQuoteBolt11Response {
+        let response = MeltQuoteBolt11Response {
             amount: quote.amount,
             paid: Some(true),
             payment_preimage,
@@ -877,6 +995,21 @@ impl Mint {
             expiry: quote.expiry,
             request: Some(quote.request.to_string()),
             unit: Some(quote.unit.clone()),
-        })
+        };
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("process_melt_request");
+            METRICS.record_mint_operation("process_melt_request", true);
+        }
+
+        Ok(response)
+    }
+
+    #[cfg(feature = "prometheus")]
+    fn record_melt_quote_failure(&self, operation: &str) {
+        METRICS.dec_in_flight_requests(operation);
+        METRICS.record_mint_operation(operation, false);
+        METRICS.record_error();
     }
 }

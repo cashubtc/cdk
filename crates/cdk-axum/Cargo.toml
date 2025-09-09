@@ -15,7 +15,7 @@ default = ["auth"]
 redis = ["dep:redis"]
 swagger = ["cdk/swagger", "dep:utoipa"]
 auth = ["cdk/auth"]
-
+prometheus = ["dep:cdk-prometheus"]
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
@@ -27,6 +27,7 @@ tokio.workspace = true
 tracing.workspace = true
 utoipa = { workspace = true, optional = true }
 futures.workspace = true
+cdk-prometheus = { workspace = true , optional = true}
 moka = { version = "0.12.10", features = ["future"] }
 serde_json.workspace = true
 paste = "1.0.15"

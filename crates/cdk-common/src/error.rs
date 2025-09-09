@@ -209,6 +209,9 @@ pub enum Error {
     /// P2PK spending conditions not met
     #[error("P2PK condition not met `{0}`")]
     P2PKConditionsNotMet(String),
+    /// Duplicate signature from same pubkey in P2PK
+    #[error("Duplicate signature from same pubkey in P2PK")]
+    DuplicateSignatureError,
     /// Spending Locktime not provided
     #[error("Spending condition locktime not provided")]
     LocktimeNotProvided,
@@ -271,6 +274,9 @@ pub enum Error {
     /// Transaction not found
     #[error("Transaction not found")]
     TransactionNotFound,
+    /// KV Store invalid key or namespace
+    #[error("Invalid KV store key or namespace: {0}")]
+    KVStoreInvalidKey(String),
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),
@@ -431,6 +437,16 @@ impl ErrorResponse {
     }
 }
 
+/// Maps NUT11 errors to appropriate error codes
+fn map_nut11_error(nut11_error: &crate::nuts::nut11::Error) -> ErrorCode {
+    match nut11_error {
+        crate::nuts::nut11::Error::SignaturesNotProvided => ErrorCode::WitnessMissingOrInvalid,
+        crate::nuts::nut11::Error::InvalidSignature => ErrorCode::WitnessMissingOrInvalid,
+        crate::nuts::nut11::Error::DuplicateSignature => ErrorCode::DuplicateSignature,
+        _ => ErrorCode::Unknown(9999), // Parsing/validation errors
+    }
+}
+
 impl From<Error> for ErrorResponse {
     fn from(err: Error) -> ErrorResponse {
         match err {
@@ -548,6 +564,23 @@ impl From<Error> for ErrorResponse {
                 error: Some(err.to_string()),
                 detail: None
             },
+            Error::NUT11(err) => {
+                let code = map_nut11_error(&err);
+                let mut detail = None;
+                if matches!(err, crate::nuts::nut11::Error::SignaturesNotProvided) {
+                    detail = Some("P2PK signatures are required but not provided".to_string());
+                }
+                ErrorResponse {
+                    code,
+                    error: Some(err.to_string()),
+                    detail,
+                }
+            },
+            Error::DuplicateSignatureError => ErrorResponse {
+                code: ErrorCode::DuplicateSignature,
+                error: Some(err.to_string()),
+                detail: None,
+            },
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(9999),
                 error: Some(err.to_string()),
@@ -605,6 +638,7 @@ impl From<ErrorResponse> for Error {
             ErrorCode::UnitMismatch => Self::UnitMismatch,
             ErrorCode::ClearAuthRequired => Self::ClearAuthRequired,
             ErrorCode::BlindAuthRequired => Self::BlindAuthRequired,
+            ErrorCode::DuplicateSignature => Self::DuplicateSignatureError,
             _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
@@ -664,6 +698,8 @@ pub enum ErrorCode {
     BlindAuthRequired,
     /// Blind Auth Failed
     BlindAuthFailed,
+    /// Duplicate signature from same pubkey
+    DuplicateSignature,
     /// Unknown error code
     Unknown(u16),
 }
@@ -693,6 +729,7 @@ impl ErrorCode {
             20006 => Self::InvoiceAlreadyPaid,
             20007 => Self::QuoteExpired,
             20008 => Self::WitnessMissingOrInvalid,
+            20009 => Self::DuplicateSignature,
             30001 => Self::ClearAuthRequired,
             30002 => Self::ClearAuthFailed,
             31001 => Self::BlindAuthRequired,
@@ -725,6 +762,7 @@ impl ErrorCode {
             Self::InvoiceAlreadyPaid => 20006,
             Self::QuoteExpired => 20007,
             Self::WitnessMissingOrInvalid => 20008,
+            Self::DuplicateSignature => 20009,
             Self::ClearAuthRequired => 30001,
             Self::ClearAuthFailed => 30002,
             Self::BlindAuthRequired => 31001,

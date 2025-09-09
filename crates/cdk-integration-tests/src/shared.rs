@@ -218,6 +218,7 @@ pub fn create_fake_wallet_settings(
         },
         mint_management_rpc: None,
         auth: None,
+        prometheus: Some(Default::default()),
     }
 }
 
@@ -263,6 +264,7 @@ pub fn create_cln_settings(
         database: cdk_mintd::config::Database::default(),
         mint_management_rpc: None,
         auth: None,
+        prometheus: Some(Default::default()),
     }
 }
 
@@ -307,5 +309,6 @@ pub fn create_lnd_settings(
         database: cdk_mintd::config::Database::default(),
         mint_management_rpc: None,
         auth: None,
+        prometheus: Some(Default::default()),
     }
 }
