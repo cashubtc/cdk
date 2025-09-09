@@ -132,12 +132,16 @@ impl Amount {
     /// Splits amount into powers of two while accounting for the swap fee
     pub fn split_with_fee(&self, fee_ppk: u64) -> Result<Vec<Self>, Error> {
         let without_fee_amounts = self.split();
-        let fee_ppk = fee_ppk * without_fee_amounts.len() as u64;
+        let fee_ppk = fee_ppk
+            .checked_mul(without_fee_amounts.len() as u64)
+            .ok_or(Error::AmountOverflow)?;
         let fee = Amount::from(fee_ppk.div_ceil(1000));
         let new_amount = self.checked_add(fee).ok_or(Error::AmountOverflow)?;
 
         let split = new_amount.split();
-        let split_fee_ppk = split.len() as u64 * fee_ppk;
+        let split_fee_ppk = (split.len() as u64)
+            .checked_mul(fee_ppk)
+            .ok_or(Error::AmountOverflow)?;
         let split_fee = Amount::from(split_fee_ppk.div_ceil(1000));
 
         if let Some(net_amount) = new_amount.checked_sub(split_fee) {
@@ -258,13 +262,16 @@ impl std::ops::Add for Amount {
     type Output = Amount;
 
     fn add(self, rhs: Amount) -> Self::Output {
-        Amount(self.0.checked_add(rhs.0).expect("Addition error"))
+        self.checked_add(rhs)
+            .expect("Addition overflow: the sum of the amounts exceeds the maximum value")
     }
 }
 
 impl std::ops::AddAssign for Amount {
     fn add_assign(&mut self, rhs: Self) {
-        self.0 = self.0.checked_add(rhs.0).expect("Addition error");
+        *self = self
+            .checked_add(rhs)
+            .expect("AddAssign overflow: the sum of the amounts exceeds the maximum value");
     }
 }
 
@@ -272,13 +279,16 @@ impl std::ops::Sub for Amount {
     type Output = Amount;
 
     fn sub(self, rhs: Amount) -> Self::Output {
-        Amount(self.0 - rhs.0)
+        self.checked_sub(rhs)
+            .expect("Subtraction underflow: cannot subtract a larger amount from a smaller amount")
     }
 }
 
 impl std::ops::SubAssign for Amount {
     fn sub_assign(&mut self, other: Self) {
-        self.0 -= other.0;
+        *self = self
+            .checked_sub(other)
+            .expect("SubAssign underflow: cannot subtract a larger amount from a smaller amount");
     }
 }
 
@@ -286,7 +296,8 @@ impl std::ops::Mul for Amount {
     type Output = Self;
 
     fn mul(self, other: Self) -> Self::Output {
-        Amount(self.0 * other.0)
+        self.checked_mul(other)
+            .expect("Multiplication overflow: the product of the amounts exceeds the maximum value")
     }
 }
 
@@ -294,7 +305,8 @@ impl std::ops::Div for Amount {
     type Output = Self;
 
     fn div(self, other: Self) -> Self::Output {
-        Amount(self.0 / other.0)
+        self.checked_div(other)
+            .expect("Division error: cannot divide by zero or overflow occurred")
     }
 }
 
@@ -347,7 +359,10 @@ where
     match (current_unit, target_unit) {
         (CurrencyUnit::Sat, CurrencyUnit::Sat) => Ok(amount.into()),
         (CurrencyUnit::Msat, CurrencyUnit::Msat) => Ok(amount.into()),
-        (CurrencyUnit::Sat, CurrencyUnit::Msat) => Ok((amount * MSAT_IN_SAT).into()),
+        (CurrencyUnit::Sat, CurrencyUnit::Msat) => amount
+            .checked_mul(MSAT_IN_SAT)
+            .map(Amount::from)
+            .ok_or(Error::AmountOverflow),
         (CurrencyUnit::Msat, CurrencyUnit::Sat) => Ok((amount / MSAT_IN_SAT).into()),
         (CurrencyUnit::Usd, CurrencyUnit::Usd) => Ok(amount.into()),
         (CurrencyUnit::Eur, CurrencyUnit::Eur) => Ok(amount.into()),
