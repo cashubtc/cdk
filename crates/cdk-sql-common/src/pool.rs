@@ -6,9 +6,10 @@ use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use tokio::time::Instant;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::metrics::METRICS;
 
 use crate::database::DatabaseConnector;
 
@@ -86,6 +87,8 @@ where
 {
     resource: Option<(Arc<AtomicBool>, RM::Connection)>,
     pool: Arc<Pool<RM>>,
+    #[cfg(feature = "prometheus")]
+    start_time: Instant,
 }
 
 impl<RM> Debug for PooledResource<RM>
@@ -105,7 +108,16 @@ where
         if let Some(resource) = self.resource.take() {
             let mut active_resource = self.pool.queue.lock().expect("active_resource");
             active_resource.push(resource);
-            self.pool.in_use.fetch_sub(1, Ordering::AcqRel);
+            let _in_use = self.pool.in_use.fetch_sub(1, Ordering::AcqRel);
+
+            #[cfg(feature = "prometheus")]
+            {
+                METRICS.set_db_connections_active(_in_use as i64);
+
+                let duration = self.start_time.elapsed().as_secs_f64();
+
+                METRICS.record_db_operation(duration, "drop");
+            }
 
             // Notify a waiting thread
             self.pool.waiter.notify_one();
@@ -155,6 +167,18 @@ where
         self.get_timeout(self.default_timeout)
     }
 
+    /// Increments the in_use connection counter and updates the metric
+    fn increment_connection_counter(&self) -> usize {
+        let in_use = self.in_use.fetch_add(1, Ordering::AcqRel);
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.set_db_connections_active(in_use as i64);
+        }
+
+        in_use
+    }
+
     /// Get a new resource or fail after timeout is reached.
     ///
     /// This function will return a free resource or create a new one if there is still room for it;
@@ -171,18 +195,20 @@ where
             if let Some((stale, resource)) = resources.pop() {
                 if !stale.load(Ordering::SeqCst) {
                     drop(resources);
-                    self.in_use.fetch_add(1, Ordering::AcqRel);
+                    self.increment_connection_counter();
 
                     return Ok(PooledResource {
                         resource: Some((stale, resource)),
                         pool: self.clone(),
+                        #[cfg(feature = "prometheus")]
+                        start_time: Instant::now(),
                     });
                 }
             }
 
             if self.in_use.load(Ordering::Relaxed) < self.max_size {
                 drop(resources);
-                self.in_use.fetch_add(1, Ordering::AcqRel);
+                self.increment_connection_counter();
                 let stale: Arc<AtomicBool> = Arc::new(false.into());
 
                 return Ok(PooledResource {
@@ -191,6 +217,8 @@ where
                         RM::new_resource(&self.config, stale, timeout)?,
                     )),
                     pool: self.clone(),
+                    #[cfg(feature = "prometheus")]
+                    start_time: Instant::now(),
                 });
             }
 

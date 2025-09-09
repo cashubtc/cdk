@@ -60,6 +60,7 @@ cdk-sqlite = { path = "./crates/cdk-sqlite", default-features = true, version = 
 cdk-postgres = { path = "./crates/cdk-postgres", default-features = true, version = "=0.12.0" }
 cdk-signatory = { path = "./crates/cdk-signatory", version = "=0.12.0", default-features = false }
 cdk-mintd = { path = "./crates/cdk-mintd", version = "=0.12.0", default-features = false }
+cdk-prometheus = { path = "./crates/cdk-prometheus", version = "=0.12.0", default-features = false }
 clap = { version = "4.5.31", features = ["derive"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"
@@ -108,6 +109,8 @@ tonic-build = "0.13.1"
 strum = "0.27.1"
 strum_macros = "0.27.1"
 rustls = { version = "0.23.27", default-features = false, features = ["ring"] }
+prometheus = { version = "0.13.4", features = ["process"], default-features = false }
+
 
 
 

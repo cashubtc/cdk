@@ -14,6 +14,8 @@ use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, K
 use cdk_common::payment::WaitPaymentResponse;
 pub use cdk_common::quote_id::QuoteId;
 use cdk_common::secret;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::global;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
 #[cfg(feature = "auth")]
@@ -160,6 +162,14 @@ impl Mint {
                 .filter(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
                 .count()
         );
+
+        let mint_info = if mint_info.pubkey.is_none() {
+            let mut info = mint_info;
+            info.pubkey = Some(keysets.pubkey);
+            info
+        } else {
+            mint_info
+        };
 
         let mint_store = localstore.clone();
         let mut tx = mint_store.begin_transaction().await?;
@@ -716,41 +726,66 @@ impl Mint {
     #[tracing::instrument(skip_all)]
     pub async fn blind_sign(
         &self,
-        blinded_messages: Vec<BlindedMessage>,
+        blinded_message: Vec<BlindedMessage>,
     ) -> Result<Vec<BlindSignature>, Error> {
-        self.signatory.blind_sign(blinded_messages).await
+        #[cfg(feature = "prometheus")]
+        global::inc_in_flight_requests("blind_sign");
+
+        let result = self.signatory.blind_sign(blinded_message).await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            global::dec_in_flight_requests("blind_sign");
+            global::record_mint_operation("blind_sign", result.is_ok());
+        }
+
+        result
     }
 
     /// Verify [`Proof`] meets conditions and is signed
     #[tracing::instrument(skip_all)]
     pub async fn verify_proofs(&self, proofs: Proofs) -> Result<(), Error> {
-        proofs
-            .iter()
-            .map(|proof| {
-                // Check if secret is a nut10 secret with conditions
-                if let Ok(secret) =
-                    <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
-                {
-                    // Checks and verifies known secret kinds.
-                    // If it is an unknown secret kind it will be treated as a normal secret.
-                    // Spending conditions will **not** be check. It is up to the wallet to ensure
-                    // only supported secret kinds are used as there is no way for the mint to
-                    // enforce only signing supported secrets as they are blinded at
-                    // that point.
-                    match secret.kind() {
-                        Kind::P2PK => {
-                            proof.verify_p2pk()?;
-                        }
-                        Kind::HTLC => {
-                            proof.verify_htlc()?;
+        #[cfg(feature = "prometheus")]
+        global::inc_in_flight_requests("verify_proofs");
+
+        let result = async {
+            proofs
+                .iter()
+                .map(|proof| {
+                    // Check if secret is a nut10 secret with conditions
+                    if let Ok(secret) =
+                        <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
+                    {
+                        // Checks and verifies known secret kinds.
+                        // If it is an unknown secret kind it will be treated as a normal secret.
+                        // Spending conditions will **not** be check. It is up to the wallet to ensure
+                        // only supported secret kinds are used as there is no way for the mint to
+                        // enforce only signing supported secrets as they are blinded at
+                        // that point.
+                        match secret.kind() {
+                            Kind::P2PK => {
+                                proof.verify_p2pk()?;
+                            }
+                            Kind::HTLC => {
+                                proof.verify_htlc()?;
+                            }
                         }
                     }
-                }
-                Ok(())
-            })
-            .collect::<Result<Vec<()>, Error>>()?;
+                    Ok(())
+                })
+                .collect::<Result<Vec<()>, Error>>()?;
 
-        self.signatory.verify_proofs(proofs).await
+            self.signatory.verify_proofs(proofs).await
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            global::dec_in_flight_requests("verify_proofs");
+            global::record_mint_operation("verify_proofs", result.is_ok());
+        }
+
+        result
     }
 
     /// Verify melt request is valid
@@ -828,61 +863,92 @@ impl Mint {
     /// Restore
     #[instrument(skip_all)]
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
-        let output_len = request.outputs.len();
+        #[cfg(feature = "prometheus")]
+        global::inc_in_flight_requests("restore");
 
-        let mut outputs = Vec::with_capacity(output_len);
-        let mut signatures = Vec::with_capacity(output_len);
+        let result = async {
+            let output_len = request.outputs.len();
 
-        let blinded_message: Vec<PublicKey> =
-            request.outputs.iter().map(|b| b.blinded_secret).collect();
+            let mut outputs = Vec::with_capacity(output_len);
+            let mut signatures = Vec::with_capacity(output_len);
 
-        let blinded_signatures = self
-            .localstore
-            .get_blind_signatures(&blinded_message)
-            .await?;
+            let blinded_message: Vec<PublicKey> =
+                request.outputs.iter().map(|b| b.blinded_secret).collect();
 
-        assert_eq!(blinded_signatures.len(), output_len);
+            let blinded_signatures = self
+                .localstore
+                .get_blind_signatures(&blinded_message)
+                .await?;
 
-        for (blinded_message, blinded_signature) in
-            request.outputs.into_iter().zip(blinded_signatures)
-        {
-            if let Some(blinded_signature) = blinded_signature {
-                outputs.push(blinded_message);
-                signatures.push(blinded_signature);
+            assert_eq!(blinded_signatures.len(), output_len);
+
+            for (blinded_message, blinded_signature) in
+                request.outputs.into_iter().zip(blinded_signatures)
+            {
+                if let Some(blinded_signature) = blinded_signature {
+                    outputs.push(blinded_message);
+                    signatures.push(blinded_signature);
+                }
             }
+
+            Ok(RestoreResponse {
+                outputs,
+                signatures: signatures.clone(),
+                promises: Some(signatures),
+            })
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            global::dec_in_flight_requests("restore");
+            global::record_mint_operation("restore", result.is_ok());
         }
 
-        Ok(RestoreResponse {
-            outputs,
-            signatures: signatures.clone(),
-            promises: Some(signatures),
-        })
+        result
     }
 
     /// Get the total amount issed by keyset
     #[instrument(skip_all)]
     pub async fn total_issued(&self) -> Result<HashMap<Id, Amount>, Error> {
-        let keysets = self.keysets().keysets;
+        #[cfg(feature = "prometheus")]
+        global::inc_in_flight_requests("total_issued");
 
-        let mut total_issued = HashMap::new();
+        let result = async {
+            let keysets = self.keysets().keysets;
 
-        for keyset in keysets {
-            let blinded = self
-                .localstore
-                .get_blind_signatures_for_keyset(&keyset.id)
-                .await?;
+            let mut total_issued = HashMap::new();
 
-            let total = Amount::try_sum(blinded.iter().map(|b| b.amount))?;
+            for keyset in keysets {
+                let blinded = self
+                    .localstore
+                    .get_blind_signatures_for_keyset(&keyset.id)
+                    .await?;
 
-            total_issued.insert(keyset.id, total);
+                let total = Amount::try_sum(blinded.iter().map(|b| b.amount))?;
+
+                total_issued.insert(keyset.id, total);
+            }
+
+            Ok(total_issued)
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            global::dec_in_flight_requests("total_issued");
+            global::record_mint_operation("total_issued", result.is_ok());
         }
 
-        Ok(total_issued)
+        result
     }
 
     /// Total redeemed for keyset
     #[instrument(skip_all)]
     pub async fn total_redeemed(&self) -> Result<HashMap<Id, Amount>, Error> {
+        #[cfg(feature = "prometheus")]
+        global::inc_in_flight_requests("total_redeemed");
+
         let keysets = self.signatory.keysets().await?;
 
         let mut total_redeemed = HashMap::new();
@@ -900,6 +966,9 @@ impl Mint {
 
             total_redeemed.insert(keyset.id, total_spent);
         }
+
+        #[cfg(feature = "prometheus")]
+        global::dec_in_flight_requests("total_redeemed");
 
         Ok(total_redeemed)
     }

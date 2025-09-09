@@ -12,8 +12,8 @@ pub mod cdk_database {
     pub use cdk_common::database::WalletDatabase;
     #[cfg(feature = "mint")]
     pub use cdk_common::database::{
-        MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
-        MintSignaturesDatabase, MintTransaction,
+        MintDatabase, MintKVStore, MintKVStoreDatabase, MintKVStoreTransaction, MintKeysDatabase,
+        MintProofsDatabase, MintQuotesDatabase, MintSignaturesDatabase, MintTransaction,
     };
 }
 
