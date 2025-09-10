@@ -1,0 +1,43 @@
+[package]
+name = "cdk-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+name = "cdk_ffi"
+
+[features]
+default = ["auth", "bip353"]
+auth = ["cdk/auth", "cdk-common/auth", "cashu/auth"]
+bip353 = ["cdk/bip353"]
+
+[dependencies]
+async-trait = { workspace = true }
+bip39 = { workspace = true }
+cashu = { workspace = true }
+cdk = { workspace = true, default-features = false, features = ["wallet"] }
+cdk-common = { workspace = true }
+cdk-sqlite = { workspace = true }
+ctor = "0.2"
+futures = { workspace = true }
+once_cell = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
+uniffi = { version = "0.29", features = ["cli", "tokio"] }
+url = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+
+
+[dev-dependencies]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+

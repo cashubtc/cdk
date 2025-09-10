@@ -348,6 +348,13 @@ release m="":
     echo
   done
 
+  # Extract version from the cdk-ffi crate
+  VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "cdk-ffi") | .version')
+  
+  # Trigger Swift package release after Rust crates are published
+  echo "📦 Triggering Swift package release for version $VERSION..."
+  just ffi-release-swift $VERSION
+
 check-docs:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -404,3 +411,147 @@ docs-strict:
     RUSTDOCFLAGS="-D warnings" cargo doc $arg --all-features --no-deps
     echo
   done
+
+# =============================================================================
+# FFI Commands - CDK Foreign Function Interface bindings
+# =============================================================================
+
+# Helper function to get library extension based on platform
+_ffi-lib-ext:
+  #!/usr/bin/env bash
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    echo "dylib"
+  else
+    echo "so"
+  fi
+
+# Build the FFI library
+ffi-build *ARGS="--release":
+  cargo build {{ARGS}} --package cdk-ffi
+
+# Generate bindings for a specific language
+ffi-generate LANGUAGE *ARGS="--release": ffi-build
+  #!/usr/bin/env bash
+  set -euo pipefail
+  LANG="{{LANGUAGE}}"
+  
+  # Validate language
+  case "$LANG" in
+    python|swift|kotlin)
+      ;;
+    *)
+      echo "❌ Unsupported language: $LANG"
+      echo "Supported languages: python, swift, kotlin"
+      exit 1
+      ;;
+  esac
+  
+  # Set emoji and build type
+  case "$LANG" in
+    python) EMOJI="🐍" ;;
+    swift) EMOJI="🍎" ;;
+    kotlin) EMOJI="🎯" ;;
+  esac
+  
+  # Determine build type and library path
+  if [[ "{{ARGS}}" == *"--release"* ]] || [[ "{{ARGS}}" == "" ]]; then
+    BUILD_TYPE="release"
+  else
+    BUILD_TYPE="debug"
+    cargo build --package cdk-ffi
+  fi
+  
+  LIB_EXT=$(just _ffi-lib-ext)
+  
+  echo "$EMOJI Generating $LANG bindings..."
+  mkdir -p target/bindings/$LANG
+  
+  cargo run --bin uniffi-bindgen generate \
+    --library target/$BUILD_TYPE/libcdk_ffi.$LIB_EXT \
+    --language $LANG \
+    --out-dir target/bindings/$LANG
+  
+  echo "✅ $LANG bindings generated in target/bindings/$LANG/"
+
+# Generate Python bindings (shorthand)
+ffi-generate-python *ARGS="--release": 
+  just ffi-generate python {{ARGS}}
+
+# Generate Swift bindings (shorthand)
+ffi-generate-swift *ARGS="--release":
+  just ffi-generate swift {{ARGS}}
+
+# Generate Kotlin bindings (shorthand)
+ffi-generate-kotlin *ARGS="--release":
+  just ffi-generate kotlin {{ARGS}}
+
+# Generate bindings for all supported languages
+ffi-generate-all *ARGS="--release": ffi-build
+  @echo "🔧 Generating UniFFI bindings for all languages..."
+  just ffi-generate python {{ARGS}}
+  just ffi-generate swift {{ARGS}}
+  just ffi-generate kotlin {{ARGS}}
+  @echo "✅ All bindings generated successfully!"
+
+# Build debug version and generate Python bindings quickly (for development)
+ffi-dev-python:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  
+  # Generate Python bindings first
+  just ffi-generate python --debug
+  
+  # Copy library to Python bindings directory
+  LIB_EXT=$(just _ffi-lib-ext)
+  echo "📦 Copying library to Python bindings directory..."
+  cp target/debug/libcdk_ffi.$LIB_EXT target/bindings/python/
+  
+  # Launch Python REPL with CDK FFI loaded
+  cd target/bindings/python
+  echo "🐍 Launching Python REPL with CDK FFI library loaded..."
+  echo "💡 The 'cdk_ffi' module is pre-imported and ready to use!"
+  python3 -i -c "from cdk_ffi import *; print('✅ CDK FFI library loaded successfully!');"
+
+# Test language bindings with a simple import
+ffi-test-bindings LANGUAGE: (ffi-generate LANGUAGE "--debug")
+  #!/usr/bin/env bash
+  set -euo pipefail
+  LANG="{{LANGUAGE}}"
+  LIB_EXT=$(just _ffi-lib-ext)
+  
+  echo "📦 Copying library to $LANG bindings directory..."
+  cp target/debug/libcdk_ffi.$LIB_EXT target/bindings/$LANG/
+  
+  cd target/bindings/$LANG
+  echo "🧪 Testing $LANG bindings..."
+  
+  case "$LANG" in
+    python)
+      python3 -c "import cdk_ffi; print('✅ Python bindings work!')"
+      ;;
+    *)
+      echo "✅ $LANG bindings generated (manual testing required)"
+      ;;
+  esac
+
+# Test Python bindings (shorthand)
+ffi-test-python:
+  just ffi-test-bindings python
+
+# Trigger Swift Package release workflow
+ffi-release-swift VERSION:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  
+  echo "🚀 Triggering Publish Swift Package workflow..."
+  echo "   Version: {{VERSION}}"
+  echo "   CDK Ref: v{{VERSION}}"
+  
+  # Trigger the workflow using GitHub CLI
+  gh workflow run "Publish Swift Package" \
+    --repo cashubtc/cdk-swift \
+    --field version="{{VERSION}}" \
+    --field cdk_repo="cashubtc/cdk" \
+    --field cdk_ref="v{{VERSION}}"
+  
+  echo "✅ Workflow triggered successfully!"
