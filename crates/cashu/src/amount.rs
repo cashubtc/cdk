@@ -132,10 +132,10 @@ impl Amount {
     /// Splits amount into powers of two while accounting for the swap fee
     pub fn split_with_fee(&self, fee_ppk: u64) -> Result<Vec<Self>, Error> {
         let without_fee_amounts = self.split();
-        let fee_ppk = fee_ppk
+        let total_fee_ppk = fee_ppk
             .checked_mul(without_fee_amounts.len() as u64)
             .ok_or(Error::AmountOverflow)?;
-        let fee = Amount::from(fee_ppk.div_ceil(1000));
+        let fee = Amount::from(total_fee_ppk.div_ceil(1000));
         let new_amount = self.checked_add(fee).ok_or(Error::AmountOverflow)?;
 
         let split = new_amount.split();
@@ -456,7 +456,135 @@ mod tests {
         let fee_ppk = 1000;
 
         let split = amount.split_with_fee(fee_ppk).unwrap();
-        assert_eq!(split, vec![Amount(32)]);
+        // With fee_ppk=1000 (100%), amount 3 requires proofs totaling at least 5
+        // to cover both the amount (3) and fees (~2 for 2 proofs)
+        assert_eq!(split, vec![Amount(4), Amount(1)]);
+    }
+
+    #[test]
+    fn test_split_with_fee_reported_issue() {
+        // Test the reported issue: mint 600, send 300 with fee_ppk=100
+        let amount = Amount(300);
+        let fee_ppk = 100;
+
+        let split = amount.split_with_fee(fee_ppk).unwrap();
+
+        // Calculate the total fee for the split
+        let total_fee_ppk = (split.len() as u64) * fee_ppk;
+        let total_fee = Amount::from(total_fee_ppk.div_ceil(1000));
+
+        // The split should cover the amount plus fees
+        let split_total = Amount::try_sum(split.iter().copied()).unwrap();
+        assert!(
+            split_total >= amount + total_fee,
+            "Split total {} should be >= amount {} + fee {}",
+            split_total,
+            amount,
+            total_fee
+        );
+    }
+
+    #[test]
+    fn test_split_with_fee_edge_cases() {
+        // Test various amounts with fee_ppk=100
+        let test_cases = vec![
+            (Amount(1), 100),
+            (Amount(10), 100),
+            (Amount(50), 100),
+            (Amount(100), 100),
+            (Amount(200), 100),
+            (Amount(300), 100),
+            (Amount(500), 100),
+            (Amount(600), 100),
+            (Amount(1000), 100),
+            (Amount(1337), 100),
+            (Amount(5000), 100),
+        ];
+
+        for (amount, fee_ppk) in test_cases {
+            let result = amount.split_with_fee(fee_ppk);
+            assert!(
+                result.is_ok(),
+                "split_with_fee failed for amount {} with fee_ppk {}: {:?}",
+                amount,
+                fee_ppk,
+                result.err()
+            );
+
+            let split = result.unwrap();
+
+            // Verify the split covers the required amount
+            let split_total = Amount::try_sum(split.iter().copied()).unwrap();
+            let fee_for_split = (split.len() as u64) * fee_ppk;
+            let total_fee = Amount::from(fee_for_split.div_ceil(1000));
+
+            // The net amount after fees should be at least the original amount
+            let net_amount = split_total.checked_sub(total_fee);
+            assert!(
+                net_amount.is_some(),
+                "Net amount calculation failed for amount {} with fee_ppk {}",
+                amount,
+                fee_ppk
+            );
+            assert!(
+                net_amount.unwrap() >= amount,
+                "Net amount {} is less than required {} for amount {} with fee_ppk {}",
+                net_amount.unwrap(),
+                amount,
+                amount,
+                fee_ppk
+            );
+        }
+    }
+
+    #[test]
+    fn test_split_with_fee_high_fees() {
+        // Test with very high fees
+        let test_cases = vec![
+            (Amount(10), 500),  // 50% fee
+            (Amount(10), 1000), // 100% fee
+            (Amount(10), 2000), // 200% fee
+            (Amount(100), 500),
+            (Amount(100), 1000),
+            (Amount(100), 2000),
+        ];
+
+        for (amount, fee_ppk) in test_cases {
+            let result = amount.split_with_fee(fee_ppk);
+            assert!(
+                result.is_ok(),
+                "split_with_fee failed for amount {} with fee_ppk {}: {:?}",
+                amount,
+                fee_ppk,
+                result.err()
+            );
+
+            let split = result.unwrap();
+            let split_total = Amount::try_sum(split.iter().copied()).unwrap();
+
+            // With high fees, we just need to ensure we can cover the amount
+            assert!(
+                split_total > amount,
+                "Split total {} should be greater than amount {} for fee_ppk {}",
+                split_total,
+                amount,
+                fee_ppk
+            );
+        }
+    }
+
+    #[test]
+    fn test_split_with_fee_recursion_limit() {
+        // Test that the recursion doesn't go infinite
+        // This tests the edge case where the method keeps adding Amount::ONE
+        let amount = Amount(1);
+        let fee_ppk = 10000; // Very high fee that might cause recursion
+
+        let result = amount.split_with_fee(fee_ppk);
+        assert!(
+            result.is_ok(),
+            "split_with_fee should handle extreme fees without infinite recursion"
+        );
     }
 
     #[test]
