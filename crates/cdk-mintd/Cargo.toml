@@ -51,6 +51,7 @@ cdk-axum.workspace = true
 cdk-signatory.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
 cdk-payment-processor = { workspace = true, optional = true }
+ohttp-gateway = { path = "../ohttp-gateway" }
 config.workspace = true
 cdk-prometheus = { workspace = true, optional = true , features = ["system-metrics"]}
 clap.workspace = true
@@ -68,5 +69,6 @@ lightning-invoice.workspace = true
 home.workspace = true
 utoipa = { workspace = true, optional = true }
 utoipa-swagger-ui = { version = "9.0.0", features = ["axum"], optional = true }
+url.workspace = true
 
 [build-dependencies]

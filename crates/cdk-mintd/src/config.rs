@@ -454,6 +454,7 @@ pub struct Settings {
     pub auth: Option<Auth>,
     #[cfg(feature = "prometheus")]
     pub prometheus: Option<Prometheus>,
+    pub ohttp_gateway: Option<OhttpGateway>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -462,6 +463,19 @@ pub struct Prometheus {
     pub enabled: bool,
     pub address: Option<String>,
     pub port: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OhttpGateway {
+    /// Whether OHTTP Gateway is enabled
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl Default for OhttpGateway {
+    fn default() -> Self {
+        Self { enabled: false }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

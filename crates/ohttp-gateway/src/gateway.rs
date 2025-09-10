@@ -1,0 +1,391 @@
+use std::str::FromStr;
+
+use axum::http::{StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
+use bytes::Bytes;
+use tracing::{debug, error, info};
+use url::Url;
+use {reqwest, serde_json};
+
+use crate::key_config::OhttpConfig;
+
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+#[derive(Debug)]
+struct BackendResponse {
+    status: u16,
+    headers: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
+    body: Vec<u8>,
+}
+
+/// Handle OHTTP gateway requests
+pub async fn handle_ohttp_request(
+    axum::extract::Extension(ohttp): axum::extract::Extension<OhttpConfig>,
+    axum::extract::Extension(backend_url): axum::extract::Extension<Url>,
+    body: Bytes,
+) -> Result<Response, GatewayError> {
+    debug!("Received OHTTP request, size: {}", body.len());
+
+    // Decapsulate the OHTTP request
+    let (bhttp_req, response_context) = match ohttp.server.decapsulate(&body) {
+        Ok(result) => result,
+        Err(e) => {
+            error!("Failed to decapsulate OHTTP request: {}", e);
+            return Err(GatewayError::OhttpDecapsulation);
+        }
+    };
+
+    // Parse the inner BHTTP request
+    let inner_req = match parse_bhttp_request(&bhttp_req) {
+        Ok(req) => req,
+        Err(e) => {
+            error!("Failed to parse BHTTP request: {}", e);
+            return Err(GatewayError::InvalidRequest);
+        }
+    };
+
+    debug!(
+        "Forwarding request to configured backend: {} ({} {})",
+        backend_url, inner_req.method, inner_req.uri
+    );
+
+    // Forward the request to the configured backend
+    let response = match forward_request(&backend_url, &inner_req).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!("Failed to forward request: {}", e);
+            return Err(GatewayError::ForwardingFailed);
+        }
+    };
+
+    // Convert the response back to BHTTP format
+    let bhttp_resp = match convert_to_bhttp_response(&response).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!("Failed to convert response to BHTTP: {}", e);
+            return Err(GatewayError::ResponseEncodingFailed);
+        }
+    };
+
+    // Re-encapsulate the response
+    let ohttp_resp = match response_context.encapsulate(&bhttp_resp) {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!("Failed to re-encapsulate OHTTP response: {}", e);
+            return Err(GatewayError::OhttpEncapsulation);
+        }
+    };
+
+    debug!("Sending OHTTP response, size: {}", ohttp_resp.len());
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "message/ohttp-res")
+        .body(axum::body::Body::from(ohttp_resp))
+        .unwrap())
+}
+
+/// Handle requests for OHTTP keys
+pub async fn handle_ohttp_keys(
+    axum::extract::Extension(ohttp): axum::extract::Extension<OhttpConfig>,
+) -> Result<Response, GatewayError> {
+    let keys = match ohttp.server.config().encode() {
+        Ok(keys) => keys,
+        Err(e) => {
+            error!("Failed to encode OHTTP keys: {}", e);
+            return Err(GatewayError::KeyEncodingFailed);
+        }
+    };
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/ohttp-keys")
+        .body(axum::body::Body::from(keys))
+        .unwrap())
+}
+
+/// Handle test requests (accepts JSON format for testing)
+pub async fn handle_test_request(
+    axum::extract::Extension(_backend_url): axum::extract::Extension<Url>,
+    body: Bytes,
+) -> Result<Response, GatewayError> {
+    use serde::Deserialize;
+
+    #[derive(Deserialize, Debug)]
+    struct TestRequest {
+        method: String,
+        path: String,
+        headers: Vec<(String, String)>,
+        body: String,
+    }
+
+    debug!("Received test request, size: {}", body.len());
+
+    // Parse the JSON request
+    let test_req: TestRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(e) => {
+            error!("Failed to parse JSON test request: {}", e);
+            return Err(GatewayError::InvalidRequest);
+        }
+    };
+
+    info!(
+        "Test request received: {} {}",
+        test_req.method, test_req.path
+    );
+    debug!(
+        "Test request body size: {} base64 chars",
+        test_req.body.len()
+    );
+
+    // Decode base64 body
+    let decoded_body =
+        match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &test_req.body) {
+            Ok(data) => data,
+            Err(e) => {
+                error!("Failed to decode base64 body: {}", e);
+                return Err(GatewayError::InvalidRequest);
+            }
+        };
+
+    debug!("Decoded body size: {} bytes", decoded_body.len());
+
+    // Create inner request structure for processing
+    let inner_req = InnerRequest {
+        method: test_req.method,
+        uri: test_req.path.clone(),
+        headers: test_req.headers,
+        body: decoded_body,
+    };
+
+    // Forward the request (similar to OHTTP processing but skip encapsulation)
+    let response = match forward_request(&_backend_url, &inner_req).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            error!("Failed to forward test request: {}", e);
+            return Err(GatewayError::ForwardingFailed);
+        }
+    };
+
+    // Convert response to JSON format for testing
+    let json_response = serde_json::json!({
+        "status": response.status,
+        "headers": response.headers.iter().map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string())).collect::<Vec<_>>(),
+        "body": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &response.body)
+    });
+
+    let response_body = match serde_json::to_string(&json_response) {
+        Ok(json) => json,
+        Err(e) => {
+            error!("Failed to serialize response to JSON: {}", e);
+            return Err(GatewayError::ResponseEncodingFailed);
+        }
+    };
+
+    debug!("Sending test response, size: {}", response_body.len());
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(response_body))
+        .unwrap())
+}
+
+#[derive(Clone)]
+pub struct InnerRequest {
+    pub method: String,
+    pub uri: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub enum GatewayError {
+    OhttpDecapsulation,
+    OhttpEncapsulation,
+    InvalidRequest,
+    ForwardingFailed,
+    ResponseEncodingFailed,
+    KeyEncodingFailed,
+}
+
+impl IntoResponse for GatewayError {
+    fn into_response(self) -> Response {
+        let (status, message) = match self {
+            GatewayError::OhttpDecapsulation => (StatusCode::BAD_REQUEST, "Invalid OHTTP request"),
+            GatewayError::OhttpEncapsulation => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "OHTTP encapsulation failed",
+            ),
+            GatewayError::InvalidRequest => (StatusCode::BAD_REQUEST, "Invalid inner request"),
+            GatewayError::ForwardingFailed => {
+                (StatusCode::BAD_GATEWAY, "Failed to forward request")
+            }
+            GatewayError::ResponseEncodingFailed => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Response encoding failed",
+            ),
+            GatewayError::KeyEncodingFailed => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "Key encoding failed")
+            }
+        };
+
+        Response::builder()
+            .status(status)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "error": message,
+                    "type": "gateway_error"
+                }))
+                .unwrap_or_else(|_| "{}".to_string()),
+            ))
+            .unwrap()
+    }
+}
+
+fn parse_bhttp_request(bhttp_bytes: &[u8]) -> Result<InnerRequest, BoxError> {
+    use bhttp::Message;
+
+    debug!("Parsing BHTTP request, size: {} bytes", bhttp_bytes.len());
+
+    let mut cursor = std::io::Cursor::new(bhttp_bytes);
+    let req = Message::read_bhttp(&mut cursor)?;
+
+    let method =
+        String::from_utf8_lossy(req.control().method().ok_or("Missing method")?).to_string();
+
+    let scheme = req.control().scheme().unwrap_or(b"https");
+    let authority = req.control().authority().unwrap_or(b"");
+    let path = req.control().path().unwrap_or(b"/");
+
+    let uri = format!(
+        "{}://{}{}",
+        String::from_utf8_lossy(scheme),
+        String::from_utf8_lossy(authority),
+        String::from_utf8_lossy(path)
+    );
+
+    info!("Parsed inner request: {} {}", method, uri);
+    debug!(
+        "URI components - scheme: '{}', authority: '{}', path: '{}'",
+        String::from_utf8_lossy(scheme),
+        String::from_utf8_lossy(authority),
+        String::from_utf8_lossy(path)
+    );
+
+    let mut headers = Vec::new();
+    for header in req.header().fields() {
+        headers.push((
+            String::from_utf8_lossy(header.name()).to_string(),
+            String::from_utf8_lossy(header.value()).to_string(),
+        ));
+    }
+
+    let body = req.content().to_vec();
+    debug!("Inner request body size: {} bytes", body.len());
+
+    Ok(InnerRequest {
+        method,
+        uri,
+        headers,
+        body,
+    })
+}
+
+async fn forward_request(
+    backend_url: &Url,
+    inner_req: &InnerRequest,
+) -> Result<BackendResponse, BoxError> {
+    info!(
+        "Gateway forwarding request: {} {}",
+        inner_req.method, inner_req.uri
+    );
+
+    // Extract path from inner request's URI for forwarding
+    let inner_uri = Uri::from_str(&inner_req.uri)?;
+    let path_and_query = inner_uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+
+    info!("Extracted path from inner request: '{}'", path_and_query);
+
+    // Construct backend URL with the path from the inner request
+    let mut backend_url_with_path = backend_url.clone();
+    backend_url_with_path.set_path(path_and_query);
+    if let Some(query) = inner_uri.query() {
+        backend_url_with_path.set_query(Some(query));
+        info!("Added query parameters: '{}'", query);
+    }
+
+    info!("Final backend URL: {}", backend_url_with_path);
+    debug!("Request headers: {:?}", inner_req.headers);
+    debug!("Request body size: {} bytes", inner_req.body.len());
+
+    // Use reqwest for the actual HTTP request (simpler than hyper's low-level API)
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()?;
+
+    let mut req_builder = client.request(
+        reqwest::Method::from_str(&inner_req.method)?,
+        backend_url_with_path.as_str(),
+    );
+
+    // Add headers from the inner request
+    for (name, value) in &inner_req.headers {
+        req_builder = req_builder.header(name, value);
+    }
+
+    // Add body if present
+    let request = if inner_req.body.is_empty() {
+        req_builder.build()?
+    } else {
+        req_builder.body(inner_req.body.clone()).build()?
+    };
+
+    let response = client.execute(request).await?;
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body_bytes = response.bytes().await?;
+
+    info!("Backend responded with status: {}", status);
+    debug!("Response headers: {:?}", headers);
+    debug!("Response body size: {} bytes", body_bytes.len());
+
+    // Create a simple response structure for processing
+    let backend_response = BackendResponse {
+        status: status.as_u16(),
+        headers: headers
+            .into_iter()
+            .filter_map(|(k, v)| k.map(|key| (key, v.clone())))
+            .collect(),
+        body: body_bytes.to_vec(),
+    };
+
+    Ok(backend_response)
+}
+
+async fn convert_to_bhttp_response(resp: &BackendResponse) -> Result<Vec<u8>, BoxError> {
+    use bhttp::{Message, StatusCode as BhttpStatus};
+
+    let status_code = BhttpStatus::try_from(resp.status).map_err(|_| "Invalid status code")?;
+
+    let mut bhttp_resp = Message::response(status_code);
+
+    // Add response headers
+    for (name, value) in &resp.headers {
+        bhttp_resp.put_header(name.as_str(), value.to_str()?);
+    }
+
+    // Write the response body
+    bhttp_resp.write_content(&resp.body);
+
+    let mut bhttp_bytes = Vec::new();
+    bhttp_resp.write_bhttp(bhttp::Mode::KnownLength, &mut bhttp_bytes)?;
+
+    Ok(bhttp_bytes)
+}

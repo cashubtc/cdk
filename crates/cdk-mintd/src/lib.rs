@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 // external crates
 use anyhow::{anyhow, bail, Result};
+use axum::routing::{get, post};
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase, MintKVStore, MintKeysDatabase};
@@ -989,7 +990,7 @@ async fn start_services_with_shutdown(
     };
 
     #[cfg(not(feature = "prometheus"))]
-    let prometheus_handle: Option<tokio::task::JoinHandle<()>> = None;
+    let _prometheus_handle: Option<tokio::task::JoinHandle<()>> = None;
 
     mint.start().await?;
 
@@ -1066,6 +1067,56 @@ fn work_dir() -> Result<PathBuf> {
     std::fs::create_dir_all(&dir)?;
 
     Ok(dir)
+}
+
+/// Creates an OHTTP gateway router that forwards encapsulated requests to the mint
+pub fn create_ohttp_gateway_router(settings: &config::Settings, work_dir: &Path) -> Result<Router> {
+    let ohttp_config = settings
+        .ohttp_gateway
+        .as_ref()
+        .ok_or_else(|| anyhow!("OHTTP gateway configuration not found"))?;
+
+    if !ohttp_config.enabled {
+        bail!("OHTTP gateway is not enabled in configuration");
+    }
+
+    // Use the mint's own URL as the backend URL
+    // This is the URL where the mint API is actually running
+    let mint_url = {
+        let mint_url_str = format!(
+            "http://{}:{}",
+            settings.info.listen_host, settings.info.listen_port
+        );
+        url::Url::parse(&mint_url_str)
+            .map_err(|e| anyhow!("Failed to construct mint URL: {}", e))?
+    };
+
+    tracing::info!("Creating OHTTP gateway router");
+    tracing::info!("Mint backend URL: {}", mint_url);
+
+    // OHTTP keys are always stored in the work directory
+    let ohttp_keys_path = work_dir.join("ohttp_keys.json");
+    tracing::info!("OHTTP keys file: {:?}", ohttp_keys_path);
+
+    // Load or generate OHTTP keys
+    let ohttp = ohttp_gateway::load_or_generate_keys(&ohttp_keys_path)?;
+
+    // Create the router with OHTTP gateway endpoints
+    let router = Router::new()
+        .route(
+            "/.well-known/ohttp-gateway",
+            post(ohttp_gateway::handle_ohttp_request),
+        )
+        .route("/ohttp-keys", get(ohttp_gateway::handle_ohttp_keys))
+        .route("/test-gateway", post(ohttp_gateway::handle_test_request))
+        // Catch-all route to handle any path with OHTTP requests
+        .fallback(ohttp_gateway::handle_ohttp_request)
+        .layer(axum::extract::Extension(ohttp))
+        .layer(axum::extract::Extension(mint_url));
+
+    tracing::info!("OHTTP gateway router created successfully");
+
+    Ok(router)
 }
 
 /// The main entry point for the application when used as a library

@@ -26,13 +26,31 @@ fn main() -> Result<()> {
         #[cfg(not(feature = "sqlcipher"))]
         let password = None;
 
+        // Create OHTTP gateway router if enabled
+        let mut routers = vec![];
+
+        if let Some(ohttp_config) = &settings.ohttp_gateway {
+            if ohttp_config.enabled {
+                match cdk_mintd::create_ohttp_gateway_router(&settings, &work_dir) {
+                    Ok(router) => {
+                        tracing::info!("OHTTP gateway enabled and router created");
+                        routers.push(router);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create OHTTP gateway router: {}", e);
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
         cdk_mintd::run_mintd(
             &work_dir,
             &settings,
             password,
             args.enable_logging,
             Some(rt_clone),
-            vec![],
+            routers,
         )
         .await
     })

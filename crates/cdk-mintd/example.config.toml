@@ -20,6 +20,10 @@ mnemonic = ""
 enabled = false
 # address = "127.0.0.1"
 # port = 8086
+#
+
+# [ohttp_gateway]
+# enabled = false
 
 #[prometheus]
 #enabled = true
