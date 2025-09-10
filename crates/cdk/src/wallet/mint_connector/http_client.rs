@@ -137,7 +137,7 @@ where
             .map(Duration::from_secs)
             .unwrap_or_default();
 
-        let transport = self.transport.new_isolated();
+        let transport = self.transport.clone();
         loop {
             let url = self.mint_url.join_paths(&match path {
                 nut19::Path::MintBolt11 => vec!["v1", "mint", "bolt11"],
@@ -195,7 +195,7 @@ where
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
         let url = self.mint_url.join_paths(&["v1", "keys"])?;
-        let transport = self.transport.new_isolated();
+        let transport = self.transport.clone();
 
         Ok(transport.http_get::<KeysResponse>(url, None).await?.keysets)
     }
@@ -207,7 +207,7 @@ where
             .mint_url
             .join_paths(&["v1", "keys", &keyset_id.to_string()])?;
 
-        let transport = self.transport.new_isolated();
+        let transport = self.transport.clone();
         let keys_response = transport.http_get::<KeysResponse>(url, None).await?;
 
         Ok(keys_response.keysets.first().unwrap().clone())
@@ -217,7 +217,7 @@ where
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "keysets"])?;
-        let transport = self.transport.new_isolated();
+        let transport = self.transport.clone();
         transport.http_get(url, None).await
     }
 
@@ -365,7 +365,7 @@ where
     /// Helper to get mint info
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
         let url = self.mint_url.join_paths(&["v1", "info"])?;
-        let transport = self.transport.new_isolated();
+        let transport = self.transport.clone();
         let info: MintInfo = transport.http_get(url, None).await?;
 
         if let Ok(mut cache_support) = self.cache_support.write() {
