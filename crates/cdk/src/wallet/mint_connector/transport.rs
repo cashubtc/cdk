@@ -355,7 +355,16 @@ pub mod tor_transport {
                 .build()
                 .map_err(|e| Error::Custom(format!("{e:?}")))?;
 
-            let connector = ArtiHttpConnector::new(tor_client.clone(), tls);
+            // Choose client for this request based on isolation
+            let client_for_request = if let Some(token) = &self.isolation {
+                let mut prefs = StreamPrefs::new();
+                prefs.set_isolation(token.clone());
+                tor_client.clone_with_prefs(prefs)
+            } else {
+                tor_client.clone()
+            };
+
+            let connector = ArtiHttpConnector::new(client_for_request, tls);
             let client: Client<_> = Client::builder().build(connector);
 
             let uri: Uri = url
