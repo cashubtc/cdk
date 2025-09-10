@@ -116,6 +116,8 @@ jobs:
             
             -p cdk-signatory,
             -p cdk-mint-rpc,
+
+            -p cdk-prometheus,
             
             # Binaries
             --bin cdk-cli,
