@@ -21,7 +21,7 @@ use crate::cdk_database;
 use crate::mint::Mint;
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
-    MppMethodSettings, PaymentMethod, ProtectedEndpoint,
+    MppMethodSettings, OhttpSettings, PaymentMethod, ProtectedEndpoint,
 };
 use crate::types::PaymentProcessorKey;
 
@@ -369,6 +369,23 @@ impl MintBuilder {
         self.supported_units
             .insert(unit, (config.input_fee_ppk, config.amounts));
         Ok(())
+    }
+
+    /// Add support for NUT26 OHTTP
+    pub fn with_ohttp(
+        mut self,
+        enabled: bool,
+        gateway_url: Option<String>,
+        mint_url: Option<String>,
+    ) -> Self {
+        let final_gateway_url = match (gateway_url, mint_url) {
+            (Some(gateway), Some(mint)) if gateway == mint => None,
+            (gateway, _) => gateway,
+        };
+
+        let ohttp_settings = OhttpSettings::new(enabled, final_gateway_url);
+        self.mint_info.nuts.nut26 = Some(ohttp_settings);
+        self
     }
 
     /// Add a payment processor for the given unit and payment method

@@ -332,6 +332,10 @@ pub struct Nuts {
     #[serde(rename = "22")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nut22: Option<BlindAuthSettings>,
+    /// NUT26 Settings
+    #[serde(rename = "26")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut26: Option<OhttpSettings>,
     /// NUT29 Settings
     #[serde(default)]
     #[serde(rename = "29")]
@@ -454,6 +458,14 @@ impl Nuts {
         }
     }
 
+    /// Nut26 OHTTP settings
+    pub fn nut26(self, ohttp_settings: OhttpSettings) -> Self {
+        Self {
+            nut26: Some(ohttp_settings),
+            ..self
+        }
+    }
+
     /// Nut29 settings
     pub fn nut29(self, settings: nut29::Settings) -> Self {
         Self {
@@ -482,6 +494,42 @@ impl Nuts {
             .collect::<HashSet<_>>()
             .into_iter()
             .collect()
+    }
+}
+
+/// NUT-26 OHTTP Settings
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct OhttpSettings {
+    /// Ohttp is supported
+    pub supported: bool,
+    /// OHTTP gateway URL
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_url: Option<String>,
+}
+
+impl OhttpSettings {
+    /// Create new [`OhttpSettings`]
+    pub fn new(supported: bool, gateway_url: Option<String>) -> Self {
+        Self {
+            supported,
+            gateway_url,
+        }
+    }
+}
+
+impl MintInfo {
+    /// Check if mint supports OHTTP
+    pub fn supports_ohttp(&self) -> bool {
+        self.nuts
+            .nut26
+            .as_ref()
+            .map(|s| s.supported)
+            .unwrap_or_default()
+    }
+
+    /// Get OHTTP configuration if supported
+    pub fn ohttp_config(&self) -> Option<&OhttpSettings> {
+        self.nuts.nut26.as_ref()
     }
 }
 

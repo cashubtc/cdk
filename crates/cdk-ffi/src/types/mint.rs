@@ -405,6 +405,30 @@ impl TryFrom<BlindAuthSettings> for cdk::nuts::BlindAuthSettings {
     }
 }
 
+/// FFI-compatible OhttpSettings (NUT-26)
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct OhttpSettings {
+    /// OHTTP is supported
+    pub supported: bool,
+    /// OHTTP gateway URL
+    pub gateway_url: Option<String>,
+}
+
+impl From<cdk::nuts::OhttpSettings> for OhttpSettings {
+    fn from(settings: cdk::nuts::OhttpSettings) -> Self {
+        Self {
+            supported: settings.supported,
+            gateway_url: settings.gateway_url,
+        }
+    }
+}
+
+impl From<OhttpSettings> for cdk::nuts::OhttpSettings {
+    fn from(settings: OhttpSettings) -> Self {
+        Self::new(settings.supported, settings.gateway_url)
+    }
+}
+
 /// FFI-compatible Nut29Settings (NUT-29)
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record, Default)]
 pub struct Nut29Settings {
@@ -495,6 +519,8 @@ pub struct Nuts {
     pub nut21: Option<ClearAuthSettings>,
     /// NUT22 Settings - Blind authentication
     pub nut22: Option<BlindAuthSettings>,
+    /// NUT26 Settings - OHTTP
+    pub nut26: Option<OhttpSettings>,
     /// NUT29 Settings - Batch minting
     pub nut29: Nut29Settings,
     /// Supported currency units for minting
@@ -529,6 +555,7 @@ impl From<cdk::nuts::Nuts> for Nuts {
             nut20_supported: nuts.nut20.supported,
             nut21: nuts.nut21.map(Into::into),
             nut22: nuts.nut22.map(Into::into),
+            nut26: nuts.nut26.map(Into::into),
             nut29: nuts.nut29.into(),
             mint_units,
             melt_units,
@@ -572,6 +599,7 @@ impl TryFrom<Nuts> for cdk::nuts::Nuts {
             },
             nut21: n.nut21.map(|s| s.try_into()).transpose()?,
             nut22: n.nut22.map(|s| s.try_into()).transpose()?,
+            nut26: n.nut26.map(Into::into),
             nut29: n.nut29.into(),
         })
     }
@@ -747,6 +775,7 @@ mod tests {
                     ),
                 )],
             }),
+            nut26: None,
             nut29: Default::default(),
         }
     }
@@ -887,6 +916,7 @@ mod tests {
             nut20: cdk::nuts::nut06::SupportedSettings { supported: false },
             nut21: None,
             nut22: None,
+            nut26: None,
             nut29: Default::default(),
         };
 
@@ -919,6 +949,7 @@ mod tests {
             nut20_supported: false,
             nut21: None,
             nut22: None,
+            nut26: None,
             nut29: Default::default(),
             mint_units: vec![],
             melt_units: vec![],
@@ -1080,6 +1111,7 @@ mod tests {
                         path: "/v1/unknown-custom-endpoint".to_string(),
                     }],
                 }),
+                nut26: None,
                 nut29: Nut29Settings::default(),
                 mint_units: vec![],
                 melt_units: vec![],

@@ -84,7 +84,11 @@ pub use cdk_common::wallet::{
 };
 pub use keysets::KeysetFilter;
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
+#[cfg(feature = "ohttp")]
+pub use mint_connector::ohttp_transport;
 pub use mint_connector::transport::Transport as HttpTransport;
+#[cfg(feature = "ohttp")]
+pub use mint_connector::OhttpHttpClient;
 pub use mint_connector::{
     AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector,
 };

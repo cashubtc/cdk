@@ -17,6 +17,7 @@ nostr = ["wallet", "dep:nostr-sdk", "cdk-common/nostr"]
 npubcash = ["wallet", "nostr", "dep:cdk-npubcash"]
 mint = ["dep:futures", "cdk-common/mint", "cdk-common/http", "cdk-signatory"]
 bip353 = ["dep:hickory-resolver", "cdk-common/bip353"]
+ohttp = ["wallet", "dep:ohttp-client"]
 bench = []
 http_subscription = []
 tor = [
@@ -58,6 +59,7 @@ cdk-npubcash = { workspace = true, optional = true }
 cdk-prometheus = {workspace = true, optional = true}
 bitcoin-payment-instructions = { workspace = true }
 web-time.workspace = true
+ohttp-client = { path = "../ohttp-client", optional = true }
 zeroize = "1"
 tokio-util.workspace = true
 

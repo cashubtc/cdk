@@ -70,6 +70,10 @@ struct Cli {
     #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
     #[arg(long = "tor", value_enum, default_value_t = TorToggle::On)]
     transport: TorToggle,
+    /// OHTTP Relay URL for proxying requests (advanced usage)
+    #[cfg(feature = "ohttp")]
+    #[arg(long)]
+    ohttp_relay: Option<Url>,
     /// Subcommand to run
     #[command(subcommand)]
     command: Commands,
