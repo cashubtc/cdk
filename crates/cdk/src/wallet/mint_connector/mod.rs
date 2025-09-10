@@ -21,9 +21,10 @@ pub mod transport;
 /// Auth HTTP Client with async transport
 #[cfg(feature = "auth")]
 pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;
-/// Http Client with async transport
+/// Tor Http Client with async transport
 #[cfg(feature = "tor")]
 pub type HttpClient = http_client::HttpClient<transport::tor_transport::TorAsync>;
+/// Http Client with async transport
 #[cfg(not(feature = "tor"))]
 pub type HttpClient = http_client::HttpClient<transport::Async>;
 
