@@ -337,27 +337,18 @@ async fn configure_mint_builder(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     work_dir: &Path,
     kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
-) -> Result<(MintBuilder, Vec<Router>)> {
-    let mut ln_routers = vec![];
-
+) -> Result<MintBuilder> {
     // Configure basic mint information
     let mint_builder = configure_basic_info(settings, mint_builder);
 
     // Configure lightning backend
-    let mint_builder = configure_lightning_backend(
-        settings,
-        mint_builder,
-        &mut ln_routers,
-        runtime,
-        work_dir,
-        kv_store,
-    )
-    .await?;
+    let mint_builder =
+        configure_lightning_backend(settings, mint_builder, runtime, work_dir, kv_store).await?;
 
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
 
-    Ok((mint_builder, ln_routers))
+    Ok(mint_builder)
 }
 
 /// Configures basic mint information (name, contact info, descriptions, etc.)
@@ -414,7 +405,6 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
 async fn configure_lightning_backend(
     settings: &config::Settings,
     mut mint_builder: MintBuilder,
-    ln_routers: &mut Vec<Router>,
     _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     work_dir: &Path,
     _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
@@ -436,14 +426,7 @@ async fn configure_lightning_backend(
                 .clone()
                 .expect("Config checked at load that cln is some");
             let cln = cln_settings
-                .setup(
-                    ln_routers,
-                    settings,
-                    CurrencyUnit::Msat,
-                    None,
-                    work_dir,
-                    None,
-                )
+                .setup(settings, CurrencyUnit::Msat, None, work_dir, None)
                 .await?;
             #[cfg(feature = "prometheus")]
             let cln = MetricsMintPayment::new(cln);
@@ -461,14 +444,7 @@ async fn configure_lightning_backend(
         LnBackend::LNbits => {
             let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
             let lnbits = lnbits_settings
-                .setup(
-                    ln_routers,
-                    settings,
-                    CurrencyUnit::Sat,
-                    None,
-                    work_dir,
-                    None,
-                )
+                .setup(settings, CurrencyUnit::Sat, None, work_dir, None)
                 .await?;
             #[cfg(feature = "prometheus")]
             let lnbits = MetricsMintPayment::new(lnbits);
@@ -486,14 +462,7 @@ async fn configure_lightning_backend(
         LnBackend::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
             let lnd = lnd_settings
-                .setup(
-                    ln_routers,
-                    settings,
-                    CurrencyUnit::Msat,
-                    None,
-                    work_dir,
-                    None,
-                )
+                .setup(settings, CurrencyUnit::Msat, None, work_dir, None)
                 .await?;
             #[cfg(feature = "prometheus")]
             let lnd = MetricsMintPayment::new(lnd);
@@ -514,14 +483,7 @@ async fn configure_lightning_backend(
 
             for unit in fake_wallet.clone().supported_units {
                 let fake = fake_wallet
-                    .setup(
-                        ln_routers,
-                        settings,
-                        unit.clone(),
-                        None,
-                        work_dir,
-                        _kv_store.clone(),
-                    )
+                    .setup(settings, unit.clone(), None, work_dir, _kv_store.clone())
                     .await?;
                 #[cfg(feature = "prometheus")]
                 let fake = MetricsMintPayment::new(fake);
@@ -552,7 +514,7 @@ async fn configure_lightning_backend(
             for unit in grpc_processor.clone().supported_units {
                 tracing::debug!("Adding unit: {:?}", unit);
                 let processor = grpc_processor
-                    .setup(ln_routers, settings, unit.clone(), None, work_dir, None)
+                    .setup(settings, unit.clone(), None, work_dir, None)
                     .await?;
                 #[cfg(feature = "prometheus")]
                 let processor = MetricsMintPayment::new(processor);
@@ -573,14 +535,7 @@ async fn configure_lightning_backend(
             tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
 
             let ldk_node = ldk_node_settings
-                .setup(
-                    ln_routers,
-                    settings,
-                    CurrencyUnit::Sat,
-                    _runtime,
-                    work_dir,
-                    None,
-                )
+                .setup(settings, CurrencyUnit::Sat, _runtime, work_dir, None)
                 .await?;
 
             mint_builder = configure_backend_for_unit(
@@ -893,10 +848,10 @@ async fn build_mint(
 async fn start_services_with_shutdown(
     mint: Arc<cdk::mint::Mint>,
     settings: &config::Settings,
-    ln_routers: Vec<Router>,
     work_dir: &Path,
     mint_builder_info: cdk::nuts::MintInfo,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    routers: Vec<Router>,
 ) -> Result<()> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
@@ -980,6 +935,10 @@ async fn start_services_with_shutdown(
         )
         .layer(TraceLayer::new_for_http());
 
+    for router in routers {
+        mint_service = mint_service.merge(router);
+    }
+
     #[cfg(feature = "swagger")]
     {
         if settings.info.enable_swagger_ui.unwrap_or(false) {
@@ -1031,9 +990,6 @@ async fn start_services_with_shutdown(
 
     #[cfg(not(feature = "prometheus"))]
     let prometheus_handle: Option<tokio::task::JoinHandle<()>> = None;
-    for router in ln_routers {
-        mint_service = mint_service.merge(router);
-    }
 
     mint.start().await?;
 
@@ -1119,6 +1075,7 @@ pub async fn run_mintd(
     db_password: Option<String>,
     enable_logging: bool,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    routers: Vec<Router>,
 ) -> Result<()> {
     let _guard = if enable_logging {
         setup_tracing(work_dir, &settings.info.logging)?
@@ -1126,8 +1083,15 @@ pub async fn run_mintd(
         None
     };
 
-    let result =
-        run_mintd_with_shutdown(work_dir, settings, shutdown_signal(), db_password, runtime).await;
+    let result = run_mintd_with_shutdown(
+        work_dir,
+        settings,
+        shutdown_signal(),
+        db_password,
+        runtime,
+        routers,
+    )
+    .await;
 
     // Explicitly drop the guard to ensure proper cleanup
     if let Some(guard) = _guard {
@@ -1149,12 +1113,13 @@ pub async fn run_mintd_with_shutdown(
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     db_password: Option<String>,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    routers: Vec<Router>,
 ) -> Result<()> {
     let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
     let mint_builder = MintBuilder::new(localstore);
 
-    let (mint_builder, ln_routers) =
+    let mint_builder =
         configure_mint_builder(settings, mint_builder, runtime, work_dir, Some(kv)).await?;
     #[cfg(feature = "auth")]
     let mint_builder = setup_authentication(settings, work_dir, mint_builder, db_password).await?;
@@ -1173,10 +1138,10 @@ pub async fn run_mintd_with_shutdown(
     let result = start_services_with_shutdown(
         mint.clone(),
         settings,
-        ln_routers,
         work_dir,
         mint.mint_info().await?,
         shutdown_signal,
+        routers,
     )
     .await;
 

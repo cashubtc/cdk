@@ -107,8 +107,15 @@ async fn start_cln_mint(
             println!("CLN mint shutdown signal received");
         };
 
-        match cdk_mintd::run_mintd_with_shutdown(&temp_dir, &settings, shutdown_future, None, None)
-            .await
+        match cdk_mintd::run_mintd_with_shutdown(
+            &temp_dir,
+            &settings,
+            shutdown_future,
+            None,
+            None,
+            vec![],
+        )
+        .await
         {
             Ok(_) => println!("CLN mint exited normally"),
             Err(e) => eprintln!("CLN mint exited with error: {e}"),
@@ -172,6 +179,7 @@ async fn start_lnd_mint(
             shutdown_future,
             None,
             None,
+            vec![],
         )
         .await
         {
@@ -238,6 +246,7 @@ async fn start_ldk_mint(
             shutdown_future,
             None,
             runtime,
+            vec![],
         )
         .await
         {

@@ -32,6 +32,7 @@ fn main() -> Result<()> {
             password,
             args.enable_logging,
             Some(rt_clone),
+            vec![],
         )
         .await
     })
