@@ -14,7 +14,6 @@ use serde::Serialize;
 use url::Url;
 
 use super::Error;
-
 use crate::error::ErrorResponse;
 
 /// Expected HTTP Transport
@@ -40,7 +39,11 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
     }
 
     /// HTTP Get request
-    async fn http_get<R>(&self, url: url::Url, auth: Option<cdk_common::AuthToken>) -> Result<R, super::Error>
+    async fn http_get<R>(
+        &self,
+        url: url::Url,
+        auth: Option<cdk_common::AuthToken>,
+    ) -> Result<R, super::Error>
     where
         R: serde::de::DeserializeOwned;
 
@@ -55,7 +58,6 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
         P: serde::Serialize + ?Sized + Send + Sync,
         R: serde::de::DeserializeOwned;
 }
-
 
 /// Async transport for Http
 #[derive(Debug, Clone)]
@@ -229,27 +231,23 @@ impl Transport for Async {
 
 #[cfg(feature = "tor")]
 pub mod tor_transport {
-    use super::Error;
-    use crate::error::ErrorResponse;
+    use std::sync::Arc;
+
+    use arti_client::{IsolationToken, StreamPrefs, TorClient, TorClientConfig};
+    use arti_hyper::ArtiHttpConnector;
     use async_trait::async_trait;
     use cdk_common::AuthToken;
     use http::header::{self, HeaderName, HeaderValue};
-    use std::sync::Arc;
-    use arti_client::{IsolationToken, StreamPrefs, TorClient, TorClientConfig};
-    use arti_hyper::ArtiHttpConnector;
     use hyper::http::{Method, Request, Uri};
     use hyper::{Body, Client};
-    use tokio::sync::OnceCell;
-    use serde::de::DeserializeOwned;
-
-    use tls_api::TlsConnectorBuilder as _;
-
     use regex::Regex;
-
+    use serde::de::DeserializeOwned;
+    use tls_api::{TlsConnector as _, TlsConnectorBuilder as _};
+    use tokio::sync::OnceCell;
     use url::Url;
 
-
-    use tls_api::TlsConnector as _;
+    use super::Error;
+    use crate::error::ErrorResponse;
 
     #[derive(Clone)]
     pub struct TorAsync {
@@ -297,11 +295,16 @@ pub mod tor_transport {
             cloned
         }
 
-        async fn http_get<R>(&self, url: url::Url, auth: Option<cdk_common::AuthToken>) -> Result<R, super::Error>
+        async fn http_get<R>(
+            &self,
+            url: url::Url,
+            auth: Option<cdk_common::AuthToken>,
+        ) -> Result<R, super::Error>
         where
             R: serde::de::DeserializeOwned,
         {
-            self.request::<Vec<u8>, R>(Method::GET, url, auth, None).await
+            self.request::<Vec<u8>, R>(Method::GET, url, auth, None)
+                .await
         }
 
         async fn http_post<P, R>(
@@ -393,8 +396,7 @@ pub mod tor_transport {
                 req.headers_mut().insert(
                     HeaderName::from_bytes(key.as_bytes())
                         .map_err(|e| Error::Custom(e.to_string()))?,
-                    HeaderValue::from_str(&val)
-                        .map_err(|e| Error::Custom(e.to_string()))?,
+                    HeaderValue::from_str(&val).map_err(|e| Error::Custom(e.to_string()))?,
                 );
             }
 

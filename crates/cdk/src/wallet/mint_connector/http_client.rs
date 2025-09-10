@@ -197,10 +197,7 @@ where
         let url = self.mint_url.join_paths(&["v1", "keys"])?;
         let transport = self.transport.new_isolated();
 
-        Ok(transport
-            .http_get::<KeysResponse>(url, None)
-            .await?
-            .keysets)
+        Ok(transport.http_get::<KeysResponse>(url, None).await?.keysets)
     }
 
     /// Get Keyset Keys [NUT-01]
