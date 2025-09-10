@@ -22,12 +22,6 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
         accept_invalid_certs: bool,
     ) -> Result<(), super::Error>;
 
-    /// Create a new isolated instance of this transport. For Tor-backed transports,
-    /// this returns a clone bound to a fresh isolation token; for others this is a clone.
-    fn new_isolated(&self) -> Self {
-        self.clone()
-    }
-
     /// HTTP Get request
     async fn http_get<R>(
         &self,
@@ -71,12 +65,6 @@ impl Default for Async {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl Transport for Async {
-    /// Create a new isolated instance of this transport. For Tor-backed transports,
-    /// this returns a clone bound to a fresh isolation token; for others this is a clone.
-    fn new_isolated(&self) -> Self {
-        self.clone()
-    }
-
     #[cfg(target_arch = "wasm32")]
     fn with_proxy(
         &mut self,
@@ -206,7 +194,6 @@ pub mod tor_transport {
     use http::header::{self, HeaderName, HeaderValue};
     use hyper::http::{Method, Request, Uri};
     use hyper::{Body, Client};
-    use regex::Regex;
     use serde::de::DeserializeOwned;
     use tls_api::{TlsConnector as _, TlsConnectorBuilder as _};
     use tokio::sync::OnceCell;
@@ -215,17 +202,24 @@ pub mod tor_transport {
     use super::Error;
     use crate::error::ErrorResponse;
 
-    #[derive(Clone)]
     pub struct TorAsync {
         tor: std::sync::Arc<OnceCell<arti_client::TorClient<tor_rtcompat::PreferredRuntime>>>,
-        isolation: Option<IsolationToken>,
-        host_matcher: Option<Regex>,
+        isolation: IsolationToken,
+    }
+
+    impl Clone for TorAsync {
+        fn clone(&self) -> Self {
+            Self {
+                tor: self.tor.clone(),
+                isolation: IsolationToken::new(),
+            }
+        }
     }
 
     impl std::fmt::Debug for TorAsync {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("TorAsync")
-                .field("isolation", &self.isolation.is_some())
+                .field("isolation", &self.isolation)
                 .finish()
         }
     }
@@ -234,8 +228,7 @@ pub mod tor_transport {
         fn default() -> Self {
             Self {
                 tor: Arc::new(OnceCell::new()),
-                isolation: None,
-                host_matcher: None,
+                isolation: IsolationToken::new(),
             }
         }
     }
@@ -245,20 +238,10 @@ pub mod tor_transport {
         fn with_proxy(
             &mut self,
             _proxy: Url,
-            host_matcher: Option<&str>,
+            _host_matcher: Option<&str>,
             _accept_invalid_certs: bool,
         ) -> Result<(), Error> {
-            self.host_matcher = host_matcher
-                .map(Regex::new)
-                .transpose()
-                .map_err(|e| Error::Custom(e.to_string()))?;
-            Ok(())
-        }
-
-        fn new_isolated(&self) -> Self {
-            let mut cloned = self.clone();
-            cloned.isolation = Some(IsolationToken::new());
-            cloned
+            panic!("not supported with TorAsync transport");
         }
 
         async fn http_get<R>(
@@ -301,14 +284,6 @@ pub mod tor_transport {
             B: Into<Vec<u8>>,
             R: DeserializeOwned,
         {
-            if let Some(matcher) = &self.host_matcher {
-                if let Some(host) = url.host_str() {
-                    if !matcher.is_match(host) {
-                        return Err(Error::Custom("Tor transport host not matched".to_string()));
-                    }
-                }
-            }
-
             let tor_client = self
                 .tor
                 .get_or_init(|| async move {
@@ -324,14 +299,10 @@ pub mod tor_transport {
                 .build()
                 .map_err(|e| Error::Custom(format!("{e:?}")))?;
 
-            // Choose client for this request based on isolation
-            let client_for_request = if let Some(token) = &self.isolation {
-                let mut prefs = StreamPrefs::new();
-                prefs.set_isolation(token.clone());
-                tor_client.clone_with_prefs(prefs)
-            } else {
-                tor_client.clone()
-            };
+            // Set isolation
+            let mut prefs = StreamPrefs::new();
+            prefs.set_isolation(self.isolation.clone());
+            let client_for_request = tor_client.clone_with_prefs(prefs);
 
             let connector = ArtiHttpConnector::new(client_for_request, tls);
             let client: Client<_> = Client::builder().build(connector);
@@ -364,14 +335,6 @@ pub mod tor_transport {
                         .map_err(|e| Error::Custom(e.to_string()))?,
                     HeaderValue::from_str(&val).map_err(|e| Error::Custom(e.to_string()))?,
                 );
-            }
-
-            if let Some(token) = &self.isolation {
-                let mut prefs = StreamPrefs::new();
-                prefs.set_isolation(token.clone());
-                // arti-hyper 0.19 does not export helpers; it inspects headers internally from StreamPrefs on the client clone.
-                // We clone the TorClient with our prefs so that the request uses them.
-                let _client_with_prefs = tor_client.clone_with_prefs(prefs);
             }
 
             let resp = client
