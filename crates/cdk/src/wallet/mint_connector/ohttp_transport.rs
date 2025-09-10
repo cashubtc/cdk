@@ -1,0 +1,200 @@
+//! OHTTP Transport implementation
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use cdk_common::AuthToken;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use url::Url;
+
+use super::transport::Transport;
+use super::Error;
+use crate::error::ErrorResponse;
+
+/// OHTTP Transport for communicating through OHTTP gateways/relays
+#[derive(Clone)]
+pub struct OhttpTransport {
+    client: Arc<ohttp_client::OhttpClient>,
+}
+
+impl std::fmt::Debug for OhttpTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OhttpTransport")
+            .field("client", &"Arc<OhttpClient>")
+            .finish()
+    }
+}
+
+impl OhttpTransport {
+    /// Create new OHTTP transport with a gateway URL
+    pub fn new_with_gateway(gateway_url: Url) -> Self {
+        let client = ohttp_client::OhttpClient::new(
+            gateway_url.clone(),
+            false,       // not a relay
+            None,        // no relay gateway URL
+            None,        // no pre-loaded keys
+            gateway_url, // keys source URL
+        );
+
+        Self {
+            client: Arc::new(client),
+        }
+    }
+
+    /// Create new OHTTP transport with a relay URL
+    pub fn new_with_relay(relay_url: Url, gateway_url: Option<Url>) -> Self {
+        let keys_source = gateway_url.clone().unwrap_or_else(|| relay_url.clone());
+
+        let client = ohttp_client::OhttpClient::new(
+            relay_url,
+            true,        // is a relay
+            gateway_url, // optional relay gateway URL
+            None,        // no pre-loaded keys
+            keys_source, // keys source URL
+        );
+
+        Self {
+            client: Arc::new(client),
+        }
+    }
+
+    /// Create new OHTTP transport with pre-loaded keys
+    pub fn new_with_keys(
+        target_url: Url,
+        is_relay: bool,
+        relay_gateway_url: Option<Url>,
+        ohttp_keys: Vec<u8>,
+        keys_source_url: Url,
+    ) -> Self {
+        let client = ohttp_client::OhttpClient::new(
+            target_url,
+            is_relay,
+            relay_gateway_url,
+            Some(ohttp_keys),
+            keys_source_url,
+        );
+
+        Self {
+            client: Arc::new(client),
+        }
+    }
+}
+
+impl Default for OhttpTransport {
+    fn default() -> Self {
+        // Default implementation is not useful for OHTTP, but required by trait
+        // This will panic if used without proper initialization
+        panic!("OhttpTransport requires explicit initialization with gateway or relay URL")
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+impl Transport for OhttpTransport {
+    fn with_proxy(
+        &mut self,
+        _proxy: Url,
+        _host_matcher: Option<&str>,
+        _accept_invalid_certs: bool,
+    ) -> Result<(), Error> {
+        // OHTTP transport doesn't support traditional proxies since it already
+        // provides privacy through the OHTTP protocol
+        Err(Error::Custom(
+            "OHTTP transport does not support traditional proxies".to_string(),
+        ))
+    }
+
+    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>
+    where
+        R: DeserializeOwned,
+    {
+        // Extract path from URL
+        let path = url.path();
+
+        // Prepare headers
+        let mut headers = Vec::new();
+        if let Some(auth_token) = auth {
+            headers.push((auth_token.header_key().to_string(), auth_token.to_string()));
+        }
+
+        // Send GET request through OHTTP
+        let response = self
+            .client
+            .send_request("GET", &[], &headers, path)
+            .await
+            .map_err(|e| Error::Custom(format!("OHTTP request failed: {}", e)))?;
+
+        // Check for HTTP errors
+        if response.status >= 400 {
+            return Err(Error::HttpError(
+                Some(response.status),
+                format!("HTTP {} error", response.status),
+            ));
+        }
+
+        // Parse response body
+        let response_text = response
+            .text()
+            .map_err(|e| Error::Custom(format!("Failed to decode response: {}", e)))?;
+
+        serde_json::from_str::<R>(&response_text).map_err(|err| {
+            tracing::warn!("OHTTP Response error: {}", err);
+            match ErrorResponse::from_json(&response_text) {
+                Ok(error_response) => error_response.into(),
+                Err(parse_err) => parse_err.into(),
+            }
+        })
+    }
+
+    async fn http_post<P, R>(
+        &self,
+        url: Url,
+        auth_token: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<R, Error>
+    where
+        P: Serialize + ?Sized + Send + Sync,
+        R: DeserializeOwned,
+    {
+        // Extract path from URL
+        let path = url.path();
+
+        // Serialize payload to JSON
+        let body = serde_json::to_vec(payload)
+            .map_err(|e| Error::Custom(format!("Failed to serialize payload: {}", e)))?;
+
+        // Prepare headers
+        let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+        if let Some(auth) = auth_token {
+            headers.push((auth.header_key().to_string(), auth.to_string()));
+        }
+
+        // Send POST request through OHTTP
+        let response = self
+            .client
+            .send_request("POST", &body, &headers, path)
+            .await
+            .map_err(|e| Error::Custom(format!("OHTTP request failed: {}", e)))?;
+
+        // Check for HTTP errors
+        if response.status >= 400 {
+            return Err(Error::HttpError(
+                Some(response.status),
+                format!("HTTP {} error", response.status),
+            ));
+        }
+
+        // Parse response body
+        let response_text = response
+            .text()
+            .map_err(|e| Error::Custom(format!("Failed to decode response: {}", e)))?;
+
+        serde_json::from_str::<R>(&response_text).map_err(|err| {
+            tracing::warn!("OHTTP Response error: {}", err);
+            match ErrorResponse::from_json(&response_text) {
+                Ok(error_response) => error_response.into(),
+                Err(parse_err) => parse_err.into(),
+            }
+        })
+    }
+}

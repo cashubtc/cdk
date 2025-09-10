@@ -9,6 +9,8 @@ use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::nuts::CurrencyUnit;
+#[cfg(feature = "ohttp")]
+use cdk::wallet::OhttpClient;
 use cdk::wallet::{HttpClient, MultiMintWallet, Wallet, WalletBuilder};
 #[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
@@ -49,6 +51,18 @@ struct Cli {
     /// NWS Proxy
     #[arg(short, long)]
     proxy: Option<Url>,
+    /// Enable OHTTP mode (mint serves as both mint and gateway)
+    #[cfg(feature = "ohttp")]
+    #[arg(long)]
+    ohttp: bool,
+    /// OHTTP Relay URL for proxying requests (advanced usage)
+    #[cfg(feature = "ohttp")]
+    #[arg(long)]
+    ohttp_relay: Option<Url>,
+    /// OHTTP Gateway URL (advanced usage, overrides mint URL as gateway)
+    #[cfg(feature = "ohttp")]
+    #[arg(long)]
+    ohttp_gateway: Option<Url>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -179,10 +193,22 @@ async fn main() -> Result<()> {
             vec![CurrencyUnit::Sat]
         };
 
-        let proxy_client = if let Some(proxy_url) = args.proxy.as_ref() {
+        // Check for custom client configuration
+        let use_ohttp = {
+            #[cfg(feature = "ohttp")]
+            {
+                args.ohttp || args.ohttp_relay.is_some() || args.ohttp_gateway.is_some()
+            }
+            #[cfg(not(feature = "ohttp"))]
+            {
+                false
+            }
+        };
+
+        let _proxy_client = if !use_ohttp && args.proxy.is_some() {
             Some(HttpClient::with_proxy(
                 mint_url.clone(),
-                proxy_url.clone(),
+                args.proxy.as_ref().unwrap().clone(),
                 None,
                 true,
             )?)
@@ -194,17 +220,66 @@ async fn main() -> Result<()> {
 
         for unit in units {
             let mint_url_clone = mint_url.clone();
-            let mut builder = WalletBuilder::new()
-                .mint_url(mint_url_clone.clone())
-                .unit(unit)
-                .localstore(localstore.clone())
-                .seed(seed);
+            let wallet = {
+                #[allow(unused_mut)] // mut needed for ohttp feature
+                let mut builder = WalletBuilder::new()
+                    .mint_url(mint_url_clone.clone())
+                    .unit(unit)
+                    .localstore(localstore.clone())
+                    .seed(seed);
 
-            if let Some(http_client) = &proxy_client {
-                builder = builder.client(http_client.clone());
-            }
+                // Configure client based on arguments
+                #[cfg(feature = "ohttp")]
+                if use_ohttp {
+                    match (&args.ohttp_relay, &args.ohttp_gateway, args.ohttp) {
+                        (Some(relay_url), Some(gateway_url), _) => {
+                            // Both relay and gateway provided - use relay with explicit gateway
+                            let ohttp_client = OhttpClient::new_with_relay(
+                                mint_url_clone.clone(),
+                                relay_url.clone(),
+                                Some(gateway_url.clone()),
+                                None, // No auth wallet for now
+                            );
+                            builder = builder.client(ohttp_client);
+                        }
+                        (Some(relay_url), None, _) => {
+                            // Only relay provided - use relay with auto-discovery
+                            let ohttp_client = OhttpClient::new_with_relay(
+                                mint_url_clone.clone(),
+                                relay_url.clone(),
+                                None,
+                                None, // No auth wallet for now
+                            );
+                            builder = builder.client(ohttp_client);
+                        }
+                        (None, Some(gateway_url), _) => {
+                            // Only gateway provided - use gateway directly
+                            let ohttp_client = OhttpClient::new_with_gateway(
+                                mint_url_clone.clone(),
+                                gateway_url.clone(),
+                                None, // No auth wallet for now
+                            );
+                            builder = builder.client(ohttp_client);
+                        }
+                        (None, None, true) => {
+                            // OHTTP flag enabled without explicit URLs - use mint URL as gateway
+                            // Convert MintUrl to Url for OhttpClient by joining with empty path
+                            let gateway_url: Url = mint_url_clone.join_paths(&[])?;
+                            let ohttp_client = OhttpClient::new_with_gateway(
+                                mint_url_clone.clone(),
+                                gateway_url,
+                                None, // No auth wallet for now
+                            );
+                            builder = builder.client(ohttp_client);
+                        }
+                        _ => {}
+                    }
+                } else if let Some(client) = &_proxy_client {
+                    builder = builder.client(client.clone());
+                }
 
-            let wallet = builder.build()?;
+                builder.build()?
+            };
 
             let wallet_clone = wallet.clone();
 

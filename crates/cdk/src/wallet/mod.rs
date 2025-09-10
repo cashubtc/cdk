@@ -59,6 +59,10 @@ pub use mint_connector::http_client::HttpClient as BaseHttpClient;
 pub use mint_connector::transport::Transport as HttpTransport;
 #[cfg(feature = "auth")]
 pub use mint_connector::AuthHttpClient;
+#[cfg(all(feature = "auth", feature = "ohttp"))]
+pub use mint_connector::AuthOhttpClient;
+#[cfg(feature = "ohttp")]
+pub use mint_connector::OhttpClient;
 pub use mint_connector::{HttpClient, MintConnector};
 pub use multi_mint_wallet::MultiMintWallet;
 pub use receive::ReceiveOptions;

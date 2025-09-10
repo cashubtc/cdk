@@ -1,0 +1,33 @@
+[package]
+name = "ohttp-client"
+version = "0.1.0"
+authors = ["Dan Gould <d@ngould.dev>"]
+description = "Generic OHTTP client for sending arbitrary data through OHTTP gateways"
+repository = "https://github.com/payjoin/rust-payjoin"
+readme = "README.md"
+keywords = ["bip78", "bip77", "payjoin", "bitcoin", "ohttp"]
+categories = ["cryptography::cryptocurrencies", "command-line-utilities"]
+license = "MITNFA"
+edition = "2021"
+rust-version = "1.85"
+
+[[bin]]
+name = "ohttp-client"
+path = "src/bin/main.rs"
+
+[dependencies]
+anyhow = "1.0.99"
+bhttp = { version = "0.6.1", features = ["http"] }
+bitcoin = { version = "0.32.7", features = ["base64", "rand-std"] }
+bytes = "1.9.0"
+clap = { version = "4.5.45", features = ["derive", "env"] }
+http = "1.2.0"
+ohttp = { package = "bitcoin-ohttp", version = "0.6.0" }
+reqwest = { version = "0.12.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.47.1", features = ["full"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+base64 = "0.22.1"
+url = "2.5.2"

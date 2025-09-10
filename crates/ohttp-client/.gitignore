@@ -1,0 +1,4 @@
+target/
+*.log
+.env
+.env.local
