@@ -69,8 +69,6 @@ pub async fn ws_main(
         };
         tracing::debug!("Connected to {}", url);
 
-        failure_count = 0;
-
         let (mut write, mut read) = ws_stream.split();
         let req_id = AtomicUsize::new(0);
 
@@ -147,23 +145,31 @@ pub async fn ws_main(
                         WsMessageOrResponse::Response(response) => {
                             tracing::debug!("Received response from server: {:?}", response);
                             subscription_requests.remove(&response.id);
+                            // reset connection failure after a successful response from the serer
+                            failure_count = 0;
                         }
                         WsMessageOrResponse::ErrorResponse(error) => {
                             tracing::error!("Received error from server: {:?}", error);
-                            if subscription_requests.contains(&error.id) {
-                                tracing::error!(
-                                    "Falling back to HTTP client"
-                                );
 
-                                return http_main(
-                                    active_subscriptions.into_keys(),
-                                    http_client,
-                                    subscriptions,
-                                    new_subscription_recv,
-                                    on_drop,
-                                    wallet,
-                                )
-                                .await;
+                            if subscription_requests.contains(&error.id) {
+                                failure_count += 1;
+                                if failure_count > MAX_ATTEMPT_FALLBACK_HTTP {
+                                    tracing::error!(
+                                        "Falling back to HTTP client"
+                                    );
+
+                                    return http_main(
+                                        active_subscriptions.into_keys(),
+                                        http_client,
+                                        subscriptions,
+                                        new_subscription_recv,
+                                        on_drop,
+                                        wallet,
+                                    )
+                                    .await;
+                                }
+
+                                break; // break connection to force a reconnection, to attempt to recover form this error
                             }
                         }
                     }
