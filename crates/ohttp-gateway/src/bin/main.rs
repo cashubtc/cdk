@@ -30,7 +30,6 @@ async fn main() -> Result<()> {
             post(gateway::handle_ohttp_request),
         )
         .route("/ohttp-keys", get(gateway::handle_ohttp_keys))
-        .route("/test-gateway", post(gateway::handle_test_request))
         // Catch-all route to handle any path with OHTTP requests
         .fallback(gateway::handle_ohttp_request)
         .layer(axum::extract::Extension(ohttp))

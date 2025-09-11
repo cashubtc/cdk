@@ -1108,9 +1108,6 @@ pub fn create_ohttp_gateway_router(settings: &config::Settings, work_dir: &Path)
             post(ohttp_gateway::handle_ohttp_request),
         )
         .route("/ohttp-keys", get(ohttp_gateway::handle_ohttp_keys))
-        .route("/test-gateway", post(ohttp_gateway::handle_test_request))
-        // Catch-all route to handle any path with OHTTP requests
-        .fallback(ohttp_gateway::handle_ohttp_request)
         .layer(axum::extract::Extension(ohttp))
         .layer(axum::extract::Extension(mint_url));
 
