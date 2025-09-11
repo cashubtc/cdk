@@ -349,6 +349,9 @@ async fn configure_mint_builder(
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
 
+    // Configure OHTTP
+    let mint_builder = configure_ohttp(settings, mint_builder);
+
     Ok(mint_builder)
 }
 
@@ -625,6 +628,32 @@ fn configure_cache(settings: &config::Settings, mint_builder: MintBuilder) -> Mi
 
     let cache: HttpCache = settings.info.http_cache.clone().into();
     mint_builder.with_cache(Some(cache.ttl.as_secs()), cached_endpoints)
+}
+
+/// Configures OHTTP settings
+fn configure_ohttp(settings: &config::Settings, mint_builder: MintBuilder) -> MintBuilder {
+    if let Some(ohttp_config) = &settings.ohttp_gateway {
+        if ohttp_config.enabled {
+            // Get the mint URL for comparison with gateway URL
+            let mint_url = format!(
+                "http://{}:{}",
+                settings.info.listen_host, settings.info.listen_port
+            );
+
+            tracing::info!("Configuring OHTTP support");
+            tracing::debug!("OHTTP enabled: {}", ohttp_config.enabled);
+            tracing::debug!("Gateway URL: {:?}", ohttp_config.gateway_url);
+            tracing::debug!("Mint URL: {}", mint_url);
+
+            return mint_builder.with_ohttp(
+                ohttp_config.enabled,
+                ohttp_config.gateway_url.clone(),
+                Some(mint_url),
+            );
+        }
+    }
+
+    mint_builder
 }
 
 #[cfg(feature = "auth")]

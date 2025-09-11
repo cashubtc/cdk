@@ -470,11 +470,16 @@ pub struct OhttpGateway {
     /// Whether OHTTP Gateway is enabled
     #[serde(default)]
     pub enabled: bool,
+    /// OHTTP gateway URL (if different from mint URL)
+    pub gateway_url: Option<String>,
 }
 
 impl Default for OhttpGateway {
     fn default() -> Self {
-        Self { enabled: false }
+        Self {
+            enabled: false,
+            gateway_url: None,
+        }
     }
 }
 

@@ -11,7 +11,7 @@ use cdk::cdk_database::WalletDatabase;
 use cdk::nuts::CurrencyUnit;
 #[cfg(feature = "ohttp")]
 use cdk::wallet::{ohttp_transport::OhttpTransport, BaseHttpClient};
-use cdk::wallet::{HttpClient, MultiMintWallet, Wallet, WalletBuilder};
+use cdk::wallet::{HttpClient, MintConnector, MultiMintWallet, Wallet, WalletBuilder};
 #[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
@@ -200,6 +200,10 @@ async fn main() -> Result<()> {
 
         for unit in units {
             let mint_url_clone = mint_url.clone();
+            let client = HttpClient::new(mint_url.clone(), None);
+
+            let mint_info = client.get_mint_info().await?;
+
             let wallet = {
                 #[allow(unused_mut)] // mut needed for ohttp feature
                 let mut builder = WalletBuilder::new()
@@ -210,7 +214,7 @@ async fn main() -> Result<()> {
 
                 // Configure client based on arguments
                 #[cfg(feature = "ohttp")]
-                if args.ohttp_relay.is_some() {
+                if args.ohttp_relay.is_some() && mint_info.supports_ohttp() {
                     let ohttp_relay = args.ohttp_relay.as_ref().unwrap();
                     let gateway_url: Url = mint_url_clone.join_paths(&[])?;
                     let keys_source_url = gateway_url.clone();
@@ -224,6 +228,8 @@ async fn main() -> Result<()> {
                     let ohttp_client =
                         BaseHttpClient::with_transport(mint_url_clone.clone(), ohttp_transport);
                     builder = builder.client(ohttp_client).use_http_subscription();
+                } else if mint_info.supports_ohttp() {
+                    tracing::warn!("This mint supports ohttp but you have not provided a relay");
                 } else if let Some(client) = &proxy_client {
                     builder = builder.client(client.clone());
                 }

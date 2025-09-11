@@ -268,6 +268,20 @@ impl MintInfo {
 
         units.into_iter().collect()
     }
+
+    /// Check if mint supports OHTTP (NUT-26)
+    pub fn supports_ohttp(&self) -> bool {
+        self.nuts
+            .nut26
+            .as_ref()
+            .map(|s| s.enabled)
+            .unwrap_or_default()
+    }
+
+    /// Get OHTTP configuration if supported
+    pub fn ohttp_config(&self) -> Option<&OhttpSettings> {
+        self.nuts.nut26.as_ref()
+    }
 }
 
 /// Supported nuts and settings
@@ -336,6 +350,10 @@ pub struct Nuts {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg(feature = "auth")]
     pub nut22: Option<BlindAuthSettings>,
+    /// NUT26 Settings
+    #[serde(rename = "26")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut26: Option<OhttpSettings>,
 }
 
 impl Nuts {
@@ -453,6 +471,14 @@ impl Nuts {
         }
     }
 
+    /// Nut23 OHTTP settings
+    pub fn nut23(self, ohttp_settings: OhttpSettings) -> Self {
+        Self {
+            nut26: Some(ohttp_settings),
+            ..self
+        }
+    }
+
     /// Units where minting is supported
     pub fn supported_mint_units(&self) -> Vec<&CurrencyUnit> {
         self.nut04
@@ -473,6 +499,38 @@ impl Nuts {
             .collect::<HashSet<_>>()
             .into_iter()
             .collect()
+    }
+}
+
+/// NUT-23 OHTTP Settings
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct OhttpSettings {
+    /// Ohttp is enabled
+    pub enabled: bool,
+    /// OHTTP gateway URL (actual destination, typically same as mint URL)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_url: Option<String>,
+}
+
+impl OhttpSettings {
+    /// Create new [`OhttpSettings`]
+    pub fn new(enabled: bool, gateway_url: Option<String>) -> Self {
+        Self {
+            enabled,
+            gateway_url,
+        }
+    }
+
+    /// Validate OHTTP settings URLs
+    pub fn validate(&self) -> Result<(), String> {
+        use url::Url;
+
+        if let Some(url) = self.gateway_url.as_ref() {
+            Url::parse(url).map_err(|_| format!("Invalid gateway URL: {}", url))?;
+        }
+
+        Ok(())
     }
 }
 
