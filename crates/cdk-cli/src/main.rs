@@ -51,18 +51,10 @@ struct Cli {
     /// NWS Proxy
     #[arg(short, long)]
     proxy: Option<Url>,
-    /// Enable OHTTP mode (mint serves as both mint and gateway)
-    #[cfg(feature = "ohttp")]
-    #[arg(long)]
-    ohttp: bool,
     /// OHTTP Relay URL for proxying requests (advanced usage)
     #[cfg(feature = "ohttp")]
     #[arg(long)]
     ohttp_relay: Option<Url>,
-    /// OHTTP Gateway URL (advanced usage, overrides mint URL as gateway)
-    #[cfg(feature = "ohttp")]
-    #[arg(long)]
-    ohttp_gateway: Option<Url>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -193,19 +185,7 @@ async fn main() -> Result<()> {
             vec![CurrencyUnit::Sat]
         };
 
-        // Check for custom client configuration
-        let use_ohttp = {
-            #[cfg(feature = "ohttp")]
-            {
-                args.ohttp || args.ohttp_relay.is_some() || args.ohttp_gateway.is_some()
-            }
-            #[cfg(not(feature = "ohttp"))]
-            {
-                false
-            }
-        };
-
-        let _proxy_client = if !use_ohttp && args.proxy.is_some() {
+        let proxy_client = if !args.ohttp_relay.is_some() && args.proxy.is_some() {
             Some(HttpClient::with_proxy(
                 mint_url.clone(),
                 args.proxy.as_ref().unwrap().clone(),
@@ -230,49 +210,13 @@ async fn main() -> Result<()> {
 
                 // Configure client based on arguments
                 #[cfg(feature = "ohttp")]
-                if use_ohttp {
-                    match (&args.ohttp_relay, &args.ohttp_gateway, args.ohttp) {
-                        (Some(relay_url), Some(gateway_url), _) => {
-                            // Both relay and gateway provided
-                            let ohttp_client = OhttpClient::new(
-                                mint_url_clone.clone(),
-                                gateway_url.clone(),
-                                relay_url.clone(),
-                            );
-                            builder = builder.client(ohttp_client);
-                        }
-                        (Some(relay_url), None, _) => {
-                            // Only relay provided - use mint URL as gateway
-                            let gateway_url: Url = mint_url_clone.join_paths(&[])?;
-                            let ohttp_client = OhttpClient::new(
-                                mint_url_clone.clone(),
-                                gateway_url,
-                                relay_url.clone(),
-                            );
-                            builder = builder.client(ohttp_client);
-                        }
-                        (None, Some(gateway_url), _) => {
-                            // Only gateway provided - use gateway as relay too
-                            let ohttp_client = OhttpClient::new(
-                                mint_url_clone.clone(),
-                                gateway_url.clone(),
-                                gateway_url.clone(),
-                            );
-                            builder = builder.client(ohttp_client);
-                        }
-                        (None, None, true) => {
-                            // OHTTP flag enabled without explicit URLs - use mint URL as both gateway and relay
-                            let gateway_url: Url = mint_url_clone.join_paths(&[])?;
-                            let ohttp_client = OhttpClient::new(
-                                mint_url_clone.clone(),
-                                gateway_url.clone(),
-                                gateway_url.clone(),
-                            );
-                            builder = builder.client(ohttp_client);
-                        }
-                        _ => {}
-                    }
-                } else if let Some(client) = &_proxy_client {
+                if args.ohttp_relay.is_some() {
+                    let ohttp_relay = args.ohttp_relay.as_ref().unwrap();
+                    let gateway_url: Url = mint_url_clone.join_paths(&[])?;
+                    let ohttp_client =
+                        OhttpClient::new(mint_url_clone.clone(), gateway_url, ohttp_relay.clone());
+                    builder = builder.client(ohttp_client).use_http_subscription();
+                } else if let Some(client) = &proxy_client {
                     builder = builder.client(client.clone());
                 }
 
