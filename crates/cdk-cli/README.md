@@ -4,14 +4,14 @@ Cashu CLI wallet built on CDK.
 
 ## Installation
 
-Build with OHTTP support:
+Build with OHTTP support (default):
 ```bash
-cargo build --release --features ohttp
+cargo build --release
 ```
 
 Build without OHTTP support:
 ```bash
-cargo build --release
+cargo build --release --no-default-features
 ```
 
 ## Usage
@@ -35,68 +35,62 @@ cdk-cli receive <TOKEN>
 
 ### OHTTP Support
 
-The CLI supports OHTTP (Oblivious HTTP) for enhanced privacy when communicating with mints. This requires building with the `ohttp` feature flag.
+The CLI supports OHTTP (Oblivious HTTP) for enhanced privacy when communicating with mints. OHTTP is enabled by default and automatically used when:
 
-#### Simple OHTTP Usage
+1. The mint supports OHTTP (advertised in mint info)
+2. You provide an OHTTP relay URL using `--ohttp-relay`
 
-For most users, simply add the `--ohttp` flag to enable OHTTP mode. The CLI will use the mint URL as both the mint and gateway:
+#### OHTTP Usage
+
+To use OHTTP, simply provide a relay URL. The CLI will automatically detect if the mint supports OHTTP and configure the connection appropriately:
 
 ```bash
-# Enable OHTTP mode (mint serves as both mint and gateway)
-cdk-cli --ohttp balance
-cdk-cli --ohttp send --amount 100
-cdk-cli --ohttp receive <TOKEN>
-```
-
-#### Advanced OHTTP Configuration
-
-For advanced usage, you can specify custom relay and gateway URLs:
-
-1. **Both relay and gateway specified:**
-```bash
-cdk-cli --ohttp-relay https://relay.example.com --ohttp-gateway https://gateway.example.com balance
-```
-
-2. **Only relay specified (gateway auto-discovery):**
-```bash
+# Use OHTTP relay - CLI auto-detects OHTTP support and gateway URL from mint
 cdk-cli --ohttp-relay https://relay.example.com balance
+cdk-cli --ohttp-relay https://relay.example.com send --amount 100
+cdk-cli --ohttp-relay https://relay.example.com receive <TOKEN>
 ```
 
-3. **Only gateway specified (direct gateway connection):**
-```bash
-cdk-cli --ohttp-gateway https://gateway.example.com balance
-```
+#### How OHTTP Works in CDK-CLI
+
+1. **Automatic Detection**: When `--ohttp-relay` is provided, the CLI checks if the mint supports OHTTP
+2. **Gateway Discovery**: The gateway URL is automatically discovered from the mint's OHTTP configuration, or falls back to using the mint URL directly
+3. **Transport Setup**: An OHTTP transport layer is created with the mint URL, relay, and gateway
+4. **Privacy Protection**: Requests are routed through the relay, providing privacy from both the relay and the gateway
 
 #### OHTTP Arguments
 
-- `--ohttp`: Enable OHTTP mode (mint serves as both mint and gateway) 
-- `--ohttp-relay <URL>`: OHTTP relay URL for proxying requests through a relay server (advanced usage)
-- `--ohttp-gateway <URL>`: OHTTP gateway URL (advanced usage, overrides mint URL as gateway)
+- `--ohttp-relay <URL>`: OHTTP relay URL for routing requests through a privacy relay
 
 #### Example OHTTP Usage
 
 ```bash
-# Simple OHTTP mode - most common usage
-cdk-cli --ohttp send --amount 100
+# Standard OHTTP usage with relay
+cdk-cli --ohttp-relay https://ohttp-relay.example.com balance
 
-# Advanced: Use OHTTP relay with auto-discovery
-cdk-cli --ohttp-relay https://ohttp-relay.example.com send --amount 100
-
-# Advanced: Use OHTTP with explicit relay and gateway
-cdk-cli --ohttp-relay https://relay.example.com --ohttp-gateway https://gateway.example.com receive <TOKEN>
-
-# Advanced: Use OHTTP gateway directly
-cdk-cli --ohttp-gateway https://ohttp-gateway.example.com balance
+# All commands work with OHTTP
+cdk-cli --ohttp-relay https://relay.example.com send --amount 100
+cdk-cli --ohttp-relay https://relay.example.com receive <TOKEN>
+cdk-cli --ohttp-relay https://relay.example.com mint --amount 1000
 ```
 
 #### OHTTP vs Regular Proxy
 
-OHTTP provides better privacy compared to regular HTTP proxies:
+OHTTP provides significantly better privacy compared to regular HTTP proxies:
 
 - **Regular proxy:** `cdk-cli --proxy https://proxy.example.com balance`
+  - Proxy can see all request content and your IP
 - **OHTTP relay:** `cdk-cli --ohttp-relay https://relay.example.com balance`
+  - Relay cannot see request content (cryptographically protected)
+  - Gateway cannot see your real IP address
+  - Provides true metadata protection
 
-OHTTP uses cryptographic techniques to ensure that the relay cannot see the content of requests while the gateway cannot see the client's identity.
+#### Important Notes
+
+- OHTTP requires the mint to explicitly support it
+- If you specify `--ohttp-relay` but the mint doesn't support OHTTP, you'll see a warning and fall back to regular HTTP
+- Gateway URL is automatically determined from the mint's OHTTP configuration
+- When OHTTP is used, WebSocket subscriptions are automatically disabled in favor of HTTP polling
 
 ## Building
 
