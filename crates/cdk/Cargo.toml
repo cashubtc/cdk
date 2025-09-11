@@ -117,10 +117,6 @@ required-features = ["wallet"]
 name = "mint-token-bolt12"
 required-features = ["wallet"]
 
-[[example]]
-name = "ohttp_mint_connector"
-required-features = ["wallet", "ohttp"]
-
 [dev-dependencies]
 rand.workspace = true
 cdk-sqlite.workspace = true

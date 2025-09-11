@@ -1,7 +1,9 @@
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
-use base64::Engine;
 use http::HeaderMap;
 use reqwest::Client;
+use tokio::sync::RwLock;
 use tracing::debug;
 use url::Url;
 
@@ -9,21 +11,13 @@ use url::Url;
 pub struct OhttpClient {
     client: Client,
     target_url: Url,
-    is_relay: bool,
-    relay_gateway_url: Option<Url>,
-    ohttp_keys: Option<Vec<u8>>,
+    ohttp_keys: Arc<RwLock<Option<Vec<u8>>>>,
     keys_source_url: Url,
 }
 
 impl OhttpClient {
     /// Create a new OHTTP client
-    pub fn new(
-        target_url: Url,
-        is_relay: bool,
-        relay_gateway_url: Option<Url>,
-        ohttp_keys: Option<Vec<u8>>,
-        keys_source_url: Url,
-    ) -> Self {
+    pub fn new(target_url: Url, ohttp_keys: Option<Vec<u8>>, keys_source_url: Url) -> Self {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -32,9 +26,7 @@ impl OhttpClient {
         Self {
             client,
             target_url,
-            is_relay,
-            relay_gateway_url,
-            ohttp_keys,
+            ohttp_keys: Arc::new(RwLock::new(ohttp_keys)),
             keys_source_url,
         }
     }
@@ -50,20 +42,11 @@ impl OhttpClient {
         let keys = response.bytes().await?;
         debug!("Fetched OHTTP keys, size: {} bytes", keys.len());
 
-        Ok(keys.to_vec())
-    }
+        let mut ohttp_keys = self.ohttp_keys.write().await;
 
-    /// Send a request through OHTTP to the target's backend
-    pub async fn send_request(
-        &self,
-        method: &str,
-        body: &[u8],
-        headers: &[(String, String)],
-        request_path: &str,
-    ) -> Result<OhttpResponse> {
-        // Use proper OHTTP encapsulation
-        self.send_ohttp_request(method, body, headers, request_path)
-            .await
+        *ohttp_keys = Some(keys.to_vec());
+
+        Ok(keys.to_vec())
     }
 
     /// Send a request using proper OHTTP encapsulation
@@ -75,10 +58,14 @@ impl OhttpClient {
         request_path: &str,
     ) -> Result<OhttpResponse> {
         // Fetch OHTTP keys if not already available
-        let keys_data = if let Some(keys) = &self.ohttp_keys {
-            keys.clone()
-        } else {
-            self.fetch_keys().await?
+        let maybe_keys = {
+            let guard = self.ohttp_keys.read().await;
+            guard.clone()
+        };
+
+        let keys_data = match maybe_keys {
+            Some(keys) => keys,
+            None => self.fetch_keys().await?,
         };
 
         // Parse the OHTTP keys and create client request
@@ -247,190 +234,14 @@ impl OhttpClient {
         Ok((status.into(), headers, body))
     }
 
-    // /// Send a raw HTTP request to the target (gateway or relay) (for testing/migration to full OHTTP)
-    // pub async fn send_relay_compatible_request(
-    //     &self,
-    //     method: &str,
-    //     body: &[u8],
-    //     headers: &[(String, String)],
-    //     request_path: &str,
-    // ) -> Result<OhttpResponse> {
-    //     if self.is_relay {
-    //         self.send_relay_request(method, body, headers, request_path)
-    //             .await
-    //     } else {
-    //         self.send_gateway_request(method, body, headers, request_path)
-    //             .await
-    //     }
-    // }
-
-    /// Send a raw HTTP request to a gateway
-    pub async fn send_gateway_request(
-        &self,
-        method: &str,
-        body: &[u8],
-        headers: &[(String, String)],
-        request_path: &str,
-    ) -> Result<OhttpResponse> {
-        // Create a URL for the gateway test endpoint
-        let mut gateway_endpoint = self.target_url.clone();
-        gateway_endpoint.set_path("/test-gateway");
-
-        debug!(
-            "Sending {} request to gateway test endpoint: {}",
-            method, gateway_endpoint
-        );
-        debug!("Forwarding to backend path: {}", request_path);
-
-        // Create the inner request as JSON for testing
-        let body_b64 = base64::engine::general_purpose::STANDARD.encode(body);
-        let inner_request = serde_json::json!({
-            "method": method,
-            "path": request_path,
-            "headers": headers,
-            "body": body_b64
-        });
-
-        let request_body = serde_json::to_string(&inner_request)?;
-
-        let mut request_builder = self.client.post(gateway_endpoint);
-        request_builder = request_builder.header("content-type", "application/json");
-
-        let start_time = std::time::Instant::now();
-
-        let response = request_builder.body(request_body).send().await?;
-        let elapsed = start_time.elapsed();
-
-        debug!(
-            "Gateway response received in {:.2}ms: {} {}",
-            elapsed.as_millis(),
-            response.status(),
-            response.url()
-        );
-
-        // Get response text
-        let _status = response.status();
-        let _headers = response.headers().clone();
-        let body = response.bytes().await?;
-
-        debug!("Gateway response body size: {} bytes", body.len());
-
-        // Parse the JSON response from the test gateway
-        let json_str = std::str::from_utf8(&body)?;
-        let json_resp: serde_json::Value = serde_json::from_str(json_str)?;
-
-        // Extract the actual response data
-        let actual_status = json_resp["status"].as_u64().unwrap_or(500) as u16;
-        let actual_body_b64 = json_resp["body"].as_str().unwrap_or("");
-
-        let actual_body = base64::engine::general_purpose::STANDARD.decode(actual_body_b64)?;
-
-        Ok(OhttpResponse {
-            status: actual_status,
-            headers: HeaderMap::new(), // Initialize empty headers
-            body: actual_body,
-            elapsed,
-        })
-    }
-
-    /// Send a request to a relay with optional custom gateway override
-    pub async fn send_relay_request(
-        &self,
-        method: &str,
-        body: &[u8],
-        headers: &[(String, String)],
-        request_path: &str,
-    ) -> Result<OhttpResponse> {
-        // For relays, the request path can include the target gateway URL
-        let relay_path = if let Some(gateway_url) = &self.relay_gateway_url {
-            // Prepend the gateway URL to the path
-            format!("/{}{}", gateway_url, request_path)
-        } else {
-            // Use the original path (relay will use its configured default gateway)
-            request_path.to_string()
-        };
-
-        debug!(
-            "Sending {} request to relay endpoint: {} with path: {}",
-            method, self.target_url, relay_path
-        );
-
-        // For now, we send requests to the relay as JSON for testing
-        // In a real OHTTP implementation, this should use proper OHTTP encapsulation
-        let body_b64 = base64::engine::general_purpose::STANDARD.encode(body);
-        let inner_request = serde_json::json!({
-            "method": method,
-            "path": relay_path,
-            "headers": headers,
-            "body": body_b64
-        });
-
-        let request_body = serde_json::to_string(&inner_request)?;
-        let relay_endpoint = self.target_url.join("/test-gateway")?; // Use test endpoint for now
-
-        let mut request_builder = self.client.post(relay_endpoint);
-        request_builder = request_builder.header("content-type", "application/json");
-
-        let start_time = std::time::Instant::now();
-
-        let response = request_builder.body(request_body).send().await?;
-        let elapsed = start_time.elapsed();
-
-        debug!(
-            "Relay response received in {:.2}ms: {} {}",
-            elapsed.as_millis(),
-            response.status(),
-            response.url()
-        );
-
-        // Get response text
-        let _status = response.status();
-        let _headers = response.headers().clone();
-        let body = response.bytes().await?;
-
-        debug!("Relay response body size: {} bytes", body.len());
-
-        // Parse the JSON response from the relay
-        let json_str = std::str::from_utf8(&body)?;
-        let json_resp: serde_json::Value = serde_json::from_str(json_str)?;
-
-        // Extract the actual response data
-        let actual_status = json_resp["status"].as_u64().unwrap_or(500) as u16;
-        let actual_body_b64 = json_resp["body"].as_str().unwrap_or("");
-
-        let actual_body = base64::engine::general_purpose::STANDARD.decode(actual_body_b64)?;
-
-        Ok(OhttpResponse {
-            status: actual_status,
-            headers: HeaderMap::new(), // Initialize empty headers
-            body: actual_body,
-            elapsed,
-        })
-    }
-
     /// Get target information
     pub async fn get_target_info(&self) -> Result<TargetInfo> {
         let keys = self.fetch_keys().await?;
 
         Ok(TargetInfo {
             target_url: self.target_url.clone(),
-            is_relay: self.is_relay,
             keys_available: true,
             keys_size: keys.len(),
-        })
-    }
-
-    /// Send health check
-    pub async fn health_check(&self) -> Result<OhttpResponse> {
-        let start_time = std::time::Instant::now();
-        let response = self.client.get(self.target_url.as_str()).send().await?;
-        let elapsed = start_time.elapsed();
-
-        Ok(OhttpResponse {
-            status: response.status().as_u16(),
-            headers: response.headers().clone(),
-            body: response.bytes().await?.to_vec(),
-            elapsed,
         })
     }
 }
@@ -476,36 +287,6 @@ pub struct GatewayInfo {
 #[derive(Debug)]
 pub struct TargetInfo {
     pub target_url: Url,
-    pub is_relay: bool,
     pub keys_available: bool,
     pub keys_size: usize,
-}
-
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    #[tokio::test]
-    async fn test_health_check() {
-        let gateway_url = Url::parse("http://httpbin.org").unwrap();
-        let client = OhttpClient::new(gateway_url.clone(), false, None, None, gateway_url);
-
-        let response = client.health_check().await;
-        // This will fail if httpbin.org is down, but tests the structure
-        match response {
-            Ok(_) => {}
-            Err(e) => {
-                // Expected to fail if no real gateway, but should be connection error
-                assert!(e.to_string().contains("connect") || e.to_string().contains("gateway"));
-            }
-        }
-    }
-
-    #[test]
-    fn test_url_operations() {
-        let base = Url::parse("http://example.com").unwrap();
-        let keys_url = base.join("/ohttp-keys").unwrap();
-        assert_eq!(keys_url.as_str(), "http://example.com/ohttp-keys");
-    }
 }

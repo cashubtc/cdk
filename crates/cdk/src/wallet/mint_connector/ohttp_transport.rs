@@ -26,53 +26,18 @@ impl std::fmt::Debug for OhttpTransport {
 }
 
 impl OhttpTransport {
-    /// Create new OHTTP transport with a gateway URL
-    pub fn new_with_gateway(gateway_url: Url) -> Self {
-        let client = ohttp_client::OhttpClient::new(
-            gateway_url.clone(),
-            false,       // not a relay
-            None,        // no relay gateway URL
-            None,        // no pre-loaded keys
-            gateway_url, // keys source URL
-        );
-
-        Self {
-            client: Arc::new(client),
-        }
-    }
-
-    /// Create new OHTTP transport with a relay URL
-    pub fn new_with_relay(relay_url: Url, gateway_url: Option<Url>) -> Self {
-        let keys_source = gateway_url.clone().unwrap_or_else(|| relay_url.clone());
-
-        let client = ohttp_client::OhttpClient::new(
-            relay_url,
-            true,        // is a relay
-            gateway_url, // optional relay gateway URL
-            None,        // no pre-loaded keys
-            keys_source, // keys source URL
-        );
-
-        Self {
-            client: Arc::new(client),
-        }
-    }
-
-    /// Create new OHTTP transport with pre-loaded keys
-    pub fn new_with_keys(
-        target_url: Url,
-        is_relay: bool,
-        relay_gateway_url: Option<Url>,
-        ohttp_keys: Vec<u8>,
-        keys_source_url: Url,
-    ) -> Self {
-        let client = ohttp_client::OhttpClient::new(
-            target_url,
-            is_relay,
-            relay_gateway_url,
-            Some(ohttp_keys),
-            keys_source_url,
-        );
+    /// Create new OHTTP transport with gateway and relay URLs
+    ///
+    /// The request flow:
+    /// 1. Send to relay_url
+    /// 2. Relay forwards to gateway_url
+    /// 3. Gateway forwards to target_url (mint)
+    /// 4. Keys are fetched from keys_source_url (same as target)
+    pub fn new(_target_url: Url, _gateway_url: Url, relay_url: Url, keys_source_url: Url) -> Self {
+        // For now, use the relay_url as the endpoint for the OHTTP client
+        // The OHTTP protocol will handle routing through gateway to target
+        // TODO: Implement proper OHTTP relay/gateway routing
+        let client = ohttp_client::OhttpClient::new(relay_url, None, keys_source_url);
 
         Self {
             client: Arc::new(client),
@@ -120,7 +85,7 @@ impl Transport for OhttpTransport {
         // Send GET request through OHTTP
         let response = self
             .client
-            .send_request("GET", &[], &headers, path)
+            .send_ohttp_request("GET", &[], &headers, path)
             .await
             .map_err(|e| Error::Custom(format!("OHTTP request failed: {}", e)))?;
 
@@ -172,7 +137,7 @@ impl Transport for OhttpTransport {
         // Send POST request through OHTTP
         let response = self
             .client
-            .send_request("POST", &body, &headers, path)
+            .send_ohttp_request("POST", &body, &headers, path)
             .await
             .map_err(|e| Error::Custom(format!("OHTTP request failed: {}", e)))?;
 

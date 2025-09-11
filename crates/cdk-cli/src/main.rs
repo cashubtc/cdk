@@ -233,42 +233,40 @@ async fn main() -> Result<()> {
                 if use_ohttp {
                     match (&args.ohttp_relay, &args.ohttp_gateway, args.ohttp) {
                         (Some(relay_url), Some(gateway_url), _) => {
-                            // Both relay and gateway provided - use relay with explicit gateway
-                            let ohttp_client = OhttpClient::new_with_relay(
+                            // Both relay and gateway provided
+                            let ohttp_client = OhttpClient::new(
                                 mint_url_clone.clone(),
+                                gateway_url.clone(),
                                 relay_url.clone(),
-                                Some(gateway_url.clone()),
-                                None, // No auth wallet for now
                             );
                             builder = builder.client(ohttp_client);
                         }
                         (Some(relay_url), None, _) => {
-                            // Only relay provided - use relay with auto-discovery
-                            let ohttp_client = OhttpClient::new_with_relay(
+                            // Only relay provided - use mint URL as gateway
+                            let gateway_url: Url = mint_url_clone.join_paths(&[])?;
+                            let ohttp_client = OhttpClient::new(
                                 mint_url_clone.clone(),
+                                gateway_url,
                                 relay_url.clone(),
-                                None,
-                                None, // No auth wallet for now
                             );
                             builder = builder.client(ohttp_client);
                         }
                         (None, Some(gateway_url), _) => {
-                            // Only gateway provided - use gateway directly
-                            let ohttp_client = OhttpClient::new_with_gateway(
+                            // Only gateway provided - use gateway as relay too
+                            let ohttp_client = OhttpClient::new(
                                 mint_url_clone.clone(),
                                 gateway_url.clone(),
-                                None, // No auth wallet for now
+                                gateway_url.clone(),
                             );
                             builder = builder.client(ohttp_client);
                         }
                         (None, None, true) => {
-                            // OHTTP flag enabled without explicit URLs - use mint URL as gateway
-                            // Convert MintUrl to Url for OhttpClient by joining with empty path
+                            // OHTTP flag enabled without explicit URLs - use mint URL as both gateway and relay
                             let gateway_url: Url = mint_url_clone.join_paths(&[])?;
-                            let ohttp_client = OhttpClient::new_with_gateway(
+                            let ohttp_client = OhttpClient::new(
                                 mint_url_clone.clone(),
-                                gateway_url,
-                                None, // No auth wallet for now
+                                gateway_url.clone(),
+                                gateway_url.clone(),
                             );
                             builder = builder.client(ohttp_client);
                         }

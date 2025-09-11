@@ -5,12 +5,8 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use cdk_common::{nut19, MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
-#[cfg(feature = "auth")]
-use cdk_common::{Method, ProtectedEndpoint, RoutePath};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-#[cfg(feature = "auth")]
-use tokio::sync::RwLock;
 use tracing::instrument;
 use url::Url;
 
@@ -18,16 +14,14 @@ use super::ohttp_transport::OhttpTransport;
 use super::transport::Transport;
 use super::{Error, MintConnector};
 use crate::mint_url::MintUrl;
-#[cfg(feature = "auth")]
-use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
-    AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
+    CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
     MintQuoteBolt11Response, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
     SwapRequest, SwapResponse,
 };
 #[cfg(feature = "auth")]
-use crate::wallet::auth::{AuthMintConnector, AuthWallet};
+use crate::wallet::AuthWallet;
 
 type Cache = (u64, HashSet<(nut19::Method, nut19::Path)>);
 
@@ -37,137 +31,30 @@ pub struct OhttpClient {
     transport: Arc<OhttpTransport>,
     mint_url: MintUrl,
     cache_support: Arc<StdRwLock<Cache>>,
-    #[cfg(feature = "auth")]
-    auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
 }
 
 impl OhttpClient {
-    /// Create new OHTTP client with gateway
-    #[cfg(feature = "auth")]
-    pub fn new_with_gateway(
-        mint_url: MintUrl,
-        gateway_url: Url,
-        auth_wallet: Option<AuthWallet>,
-    ) -> Self {
-        let transport = OhttpTransport::new_with_gateway(gateway_url);
+    /// Create new OHTTP client with gateway and relay URLs
+    ///
+    /// The OHTTP request flow:
+    /// 1. Request is sent to the relay URL
+    /// 2. Relay forwards it to the gateway URL
+    /// 3. Gateway forwards it to the target (mint) URL
+    ///
+    /// The mint URL is used as both the target URL and for fetching keys
+    pub fn new(mint_url: MintUrl, gateway_url: Url, relay_url: Url) -> Self {
+        // Use mint URL as target and keys source since the mint serves both roles
+        let target_url = mint_url
+            .join_paths(&[])
+            .expect("Failed to create target URL");
+        let keys_source_url = target_url.clone();
 
-        Self {
-            transport: Arc::new(transport),
-            mint_url,
-            auth_wallet: Arc::new(RwLock::new(auth_wallet)),
-            cache_support: Default::default(),
-        }
-    }
-
-    #[cfg(not(feature = "auth"))]
-    /// Create new OHTTP client with gateway
-    pub fn new_with_gateway(mint_url: MintUrl, gateway_url: Url) -> Self {
-        let transport = OhttpTransport::new_with_gateway(gateway_url);
+        let transport = OhttpTransport::new(target_url, gateway_url, relay_url, keys_source_url);
 
         Self {
             transport: Arc::new(transport),
             mint_url,
             cache_support: Default::default(),
-        }
-    }
-
-    /// Create new OHTTP client with relay
-    #[cfg(feature = "auth")]
-    pub fn new_with_relay(
-        mint_url: MintUrl,
-        relay_url: Url,
-        gateway_url: Option<Url>,
-        auth_wallet: Option<AuthWallet>,
-    ) -> Self {
-        let transport = OhttpTransport::new_with_relay(relay_url, gateway_url);
-
-        Self {
-            transport: Arc::new(transport),
-            mint_url,
-            auth_wallet: Arc::new(RwLock::new(auth_wallet)),
-            cache_support: Default::default(),
-        }
-    }
-
-    #[cfg(not(feature = "auth"))]
-    /// Create new OHTTP client with relay
-    pub fn new_with_relay(mint_url: MintUrl, relay_url: Url, gateway_url: Option<Url>) -> Self {
-        let transport = OhttpTransport::new_with_relay(relay_url, gateway_url);
-
-        Self {
-            transport: Arc::new(transport),
-            mint_url,
-            cache_support: Default::default(),
-        }
-    }
-
-    /// Create new OHTTP client with pre-loaded keys
-    #[cfg(feature = "auth")]
-    pub fn new_with_keys(
-        mint_url: MintUrl,
-        target_url: Url,
-        is_relay: bool,
-        relay_gateway_url: Option<Url>,
-        ohttp_keys: Vec<u8>,
-        keys_source_url: Url,
-        auth_wallet: Option<AuthWallet>,
-    ) -> Self {
-        let transport = OhttpTransport::new_with_keys(
-            target_url,
-            is_relay,
-            relay_gateway_url,
-            ohttp_keys,
-            keys_source_url,
-        );
-
-        Self {
-            transport: Arc::new(transport),
-            mint_url,
-            auth_wallet: Arc::new(RwLock::new(auth_wallet)),
-            cache_support: Default::default(),
-        }
-    }
-
-    #[cfg(not(feature = "auth"))]
-    /// Create new OHTTP client with pre-loaded keys
-    pub fn new_with_keys(
-        mint_url: MintUrl,
-        target_url: Url,
-        is_relay: bool,
-        relay_gateway_url: Option<Url>,
-        ohttp_keys: Vec<u8>,
-        keys_source_url: Url,
-    ) -> Self {
-        let transport = OhttpTransport::new_with_keys(
-            target_url,
-            is_relay,
-            relay_gateway_url,
-            ohttp_keys,
-            keys_source_url,
-        );
-
-        Self {
-            transport: Arc::new(transport),
-            mint_url,
-            cache_support: Default::default(),
-        }
-    }
-
-    /// Get auth token for a protected endpoint
-    #[cfg(feature = "auth")]
-    #[instrument(skip(self))]
-    async fn get_auth_token(
-        &self,
-        method: Method,
-        path: RoutePath,
-    ) -> Result<Option<AuthToken>, Error> {
-        let auth_wallet = self.auth_wallet.read().await;
-        match auth_wallet.as_ref() {
-            Some(auth_wallet) => {
-                let endpoint = ProtectedEndpoint::new(method, path);
-                auth_wallet.get_auth_for_request(&endpoint).await
-            }
-            None => Ok(None),
         }
     }
 
@@ -179,7 +66,6 @@ impl OhttpClient {
         &self,
         method: nut19::Method,
         path: nut19::Path,
-        auth_token: Option<AuthToken>,
         payload: &P,
     ) -> Result<R, Error>
     where
@@ -211,12 +97,8 @@ impl OhttpClient {
             })?;
 
             let result = match method {
-                nut19::Method::Get => self.transport.http_get(url, auth_token.clone()).await,
-                nut19::Method::Post => {
-                    self.transport
-                        .http_post(url, auth_token.clone(), payload)
-                        .await
-                }
+                nut19::Method::Get => self.transport.http_get(url, None).await,
+                nut19::Method::Post => self.transport.http_post(url, None, payload).await,
             };
 
             if result.is_ok() {
@@ -252,7 +134,6 @@ impl MintConnector for OhttpClient {
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
         let url = self.mint_url.join_paths(&["v1", "keys"])?;
-
         Ok(self
             .transport
             .http_get::<KeysResponse>(url, None)
@@ -266,9 +147,7 @@ impl MintConnector for OhttpClient {
         let url = self
             .mint_url
             .join_paths(&["v1", "keys", &keyset_id.to_string()])?;
-
         let keys_response = self.transport.http_get::<KeysResponse>(url, None).await?;
-
         Ok(keys_response.keysets.first().unwrap().clone())
     }
 
@@ -288,16 +167,7 @@ impl MintConnector for OhttpClient {
         let url = self
             .mint_url
             .join_paths(&["v1", "mint", "quote", "bolt11"])?;
-
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintQuoteBolt11)
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-
-        self.transport.http_post(url, auth_token, &request).await
+        self.transport.http_post(url, None, &request).await
     }
 
     /// Mint Quote status
@@ -309,34 +179,14 @@ impl MintConnector for OhttpClient {
         let url = self
             .mint_url
             .join_paths(&["v1", "mint", "quote", "bolt11", quote_id])?;
-
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MintQuoteBolt11)
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-        self.transport.http_get(url, auth_token).await
+        self.transport.http_get(url, None).await
     }
 
     /// Mint Tokens [NUT-04]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_mint(&self, request: MintRequest<String>) -> Result<MintResponse, Error> {
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintBolt11)
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-        self.retriable_http_request(
-            nut19::Method::Post,
-            nut19::Path::MintBolt11,
-            auth_token,
-            &request,
-        )
-        .await
+        self.retriable_http_request(nut19::Method::Post, nut19::Path::MintBolt11, &request)
+            .await
     }
 
     /// Melt Quote [NUT-05]
@@ -348,14 +198,7 @@ impl MintConnector for OhttpClient {
         let url = self
             .mint_url
             .join_paths(&["v1", "melt", "quote", "bolt11"])?;
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MeltQuoteBolt11)
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-        self.transport.http_post(url, auth_token, &request).await
+        self.transport.http_post(url, None, &request).await
     }
 
     /// Melt Quote Status
@@ -367,15 +210,7 @@ impl MintConnector for OhttpClient {
         let url = self
             .mint_url
             .join_paths(&["v1", "melt", "quote", "bolt11", quote_id])?;
-
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MeltQuoteBolt11)
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-        self.transport.http_get(url, auth_token).await
+        self.transport.http_get(url, None).await
     }
 
     /// Melt [NUT-05]
@@ -385,39 +220,15 @@ impl MintConnector for OhttpClient {
         &self,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MeltBolt11)
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-
-        self.retriable_http_request(
-            nut19::Method::Post,
-            nut19::Path::MeltBolt11,
-            auth_token,
-            &request,
-        )
-        .await
+        self.retriable_http_request(nut19::Method::Post, nut19::Path::MeltBolt11, &request)
+            .await
     }
 
     /// Swap Token [NUT-03]
     #[instrument(skip(self, swap_request), fields(mint_url = %self.mint_url))]
     async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
-        #[cfg(feature = "auth")]
-        let auth_token = self.get_auth_token(Method::Post, RoutePath::Swap).await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-
-        self.retriable_http_request(
-            nut19::Method::Post,
-            nut19::Path::Swap,
-            auth_token,
-            &swap_request,
-        )
-        .await
+        self.retriable_http_request(nut19::Method::Post, nut19::Path::Swap, &swap_request)
+            .await
     }
 
     /// Helper to get mint info
@@ -441,14 +252,16 @@ impl MintConnector for OhttpClient {
         Ok(info)
     }
 
+    /// Get the auth wallet for the client (not supported in OHTTP)
     #[cfg(feature = "auth")]
     async fn get_auth_wallet(&self) -> Option<AuthWallet> {
-        self.auth_wallet.read().await.clone()
+        None
     }
 
+    /// Set auth wallet on client (not supported in OHTTP)
     #[cfg(feature = "auth")]
-    async fn set_auth_wallet(&self, wallet: Option<AuthWallet>) {
-        *self.auth_wallet.write().await = wallet;
+    async fn set_auth_wallet(&self, _wallet: Option<AuthWallet>) {
+        // OHTTP client does not support auth
     }
 
     /// Spendable check [NUT-07]
@@ -458,28 +271,14 @@ impl MintConnector for OhttpClient {
         request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "checkstate"])?;
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::Checkstate)
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-        self.transport.http_post(url, auth_token, &request).await
+        self.transport.http_post(url, None, &request).await
     }
 
     /// Restore request [NUT-13]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "restore"])?;
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::Restore)
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-        self.transport.http_post(url, auth_token, &request).await
+        self.transport.http_post(url, None, &request).await
     }
 
     /// Mint Quote Bolt12 [NUT-23]
@@ -491,16 +290,7 @@ impl MintConnector for OhttpClient {
         let url = self
             .mint_url
             .join_paths(&["v1", "mint", "quote", "bolt12"])?;
-
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintQuoteBolt12)
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-
-        self.transport.http_post(url, auth_token, &request).await
+        self.transport.http_post(url, None, &request).await
     }
 
     /// Mint Quote Bolt12 status
@@ -512,15 +302,7 @@ impl MintConnector for OhttpClient {
         let url = self
             .mint_url
             .join_paths(&["v1", "mint", "quote", "bolt12", quote_id])?;
-
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MintQuoteBolt12)
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-        self.transport.http_get(url, auth_token).await
+        self.transport.http_get(url, None).await
     }
 
     /// Melt Quote Bolt12 [NUT-23]
@@ -532,14 +314,7 @@ impl MintConnector for OhttpClient {
         let url = self
             .mint_url
             .join_paths(&["v1", "melt", "quote", "bolt12"])?;
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MeltQuoteBolt12)
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-        self.transport.http_post(url, auth_token, &request).await
+        self.transport.http_post(url, None, &request).await
     }
 
     /// Melt Quote Bolt12 Status [NUT-23]
@@ -551,15 +326,7 @@ impl MintConnector for OhttpClient {
         let url = self
             .mint_url
             .join_paths(&["v1", "melt", "quote", "bolt12", quote_id])?;
-
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MeltQuoteBolt12)
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-        self.transport.http_get(url, auth_token).await
+        self.transport.http_get(url, None).await
     }
 
     /// Melt Bolt12 [NUT-23]
@@ -568,121 +335,7 @@ impl MintConnector for OhttpClient {
         &self,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MeltBolt12)
-            .await?;
-
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-        self.retriable_http_request(
-            nut19::Method::Post,
-            nut19::Path::MeltBolt12,
-            auth_token,
-            &request,
-        )
-        .await
-    }
-}
-
-/// OHTTP Auth Client
-#[derive(Debug, Clone)]
-#[cfg(feature = "auth")]
-pub struct AuthOhttpClient {
-    transport: Arc<OhttpTransport>,
-    mint_url: MintUrl,
-    cat: Arc<RwLock<AuthToken>>,
-}
-
-#[cfg(feature = "auth")]
-impl AuthOhttpClient {
-    /// Create new Auth OHTTP client with gateway
-    pub fn new_with_gateway(mint_url: MintUrl, gateway_url: Url, cat: Option<AuthToken>) -> Self {
-        let transport = OhttpTransport::new_with_gateway(gateway_url);
-
-        Self {
-            transport: Arc::new(transport),
-            mint_url,
-            cat: Arc::new(RwLock::new(
-                cat.unwrap_or(AuthToken::ClearAuth("".to_string())),
-            )),
-        }
-    }
-
-    /// Create new Auth OHTTP client with relay
-    pub fn new_with_relay(
-        mint_url: MintUrl,
-        relay_url: Url,
-        gateway_url: Option<Url>,
-        cat: Option<AuthToken>,
-    ) -> Self {
-        let transport = OhttpTransport::new_with_relay(relay_url, gateway_url);
-
-        Self {
-            transport: Arc::new(transport),
-            mint_url,
-            cat: Arc::new(RwLock::new(
-                cat.unwrap_or(AuthToken::ClearAuth("".to_string())),
-            )),
-        }
-    }
-}
-
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-#[cfg(feature = "auth")]
-impl AuthMintConnector for AuthOhttpClient {
-    async fn get_auth_token(&self) -> Result<AuthToken, Error> {
-        Ok(self.cat.read().await.clone())
-    }
-
-    async fn set_auth_token(&self, token: AuthToken) -> Result<(), Error> {
-        *self.cat.write().await = token;
-        Ok(())
-    }
-
-    /// Get Mint Info [NUT-06]
-    async fn get_mint_info(&self) -> Result<MintInfo, Error> {
-        let url = self.mint_url.join_paths(&["v1", "info"])?;
-        let mint_info: MintInfo = self.transport.http_get::<MintInfo>(url, None).await?;
-
-        Ok(mint_info)
-    }
-
-    /// Get Auth Keyset Keys [NUT-22]
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
-    async fn get_mint_blind_auth_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
-        let url =
-            self.mint_url
-                .join_paths(&["v1", "auth", "blind", "keys", &keyset_id.to_string()])?;
-
-        let mut keys_response = self.transport.http_get::<KeysResponse>(url, None).await?;
-
-        let keyset = keys_response
-            .keysets
-            .drain(0..1)
-            .next()
-            .ok_or_else(|| Error::UnknownKeySet)?;
-
-        Ok(keyset)
-    }
-
-    /// Get Auth Keysets [NUT-22]
-    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
-    async fn get_mint_blind_auth_keysets(&self) -> Result<KeysetResponse, Error> {
-        let url = self
-            .mint_url
-            .join_paths(&["v1", "auth", "blind", "keysets"])?;
-
-        self.transport.http_get(url, None).await
-    }
-
-    /// Mint Tokens [NUT-22]
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_mint_blind_auth(&self, request: MintAuthRequest) -> Result<MintResponse, Error> {
-        let url = self.mint_url.join_paths(&["v1", "auth", "blind", "mint"])?;
-        self.transport
-            .http_post(url, Some(self.cat.read().await.clone()), &request)
+        self.retriable_http_request(nut19::Method::Post, nut19::Path::MeltBolt12, &request)
             .await
     }
 }

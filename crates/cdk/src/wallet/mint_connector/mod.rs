@@ -31,9 +31,6 @@ pub type HttpClient = http_client::HttpClient<transport::Async>;
 /// OHTTP Client
 #[cfg(feature = "ohttp")]
 pub type OhttpClient = ohttp_client::OhttpClient;
-/// Auth OHTTP Client
-#[cfg(all(feature = "auth", feature = "ohttp"))]
-pub type AuthOhttpClient = ohttp_client::AuthOhttpClient;
 
 /// Interface that connects a wallet to a mint. Typically represents an [HttpClient].
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
