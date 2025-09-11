@@ -9,14 +9,20 @@ use url::Url;
 /// OHTTP client for sending requests through gateways or relays
 pub struct OhttpClient {
     client: Client,
-    target_url: Url,
+    relay_url: Url,
     ohttp_keys: Arc<RwLock<Option<Vec<u8>>>>,
-    keys_source_url: Url,
+    gateway_url: Url,
+    target_url: Url,
 }
 
 impl OhttpClient {
     /// Create a new OHTTP client
-    pub fn new(target_url: Url, ohttp_keys: Option<Vec<u8>>, keys_source_url: Url) -> Self {
+    pub fn new(
+        relay_url: Url,
+        ohttp_keys: Option<Vec<u8>>,
+        gateway_url: Url,
+        target_url: Url,
+    ) -> Self {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -24,15 +30,16 @@ impl OhttpClient {
 
         Self {
             client,
-            target_url,
+            relay_url,
             ohttp_keys: Arc::new(RwLock::new(ohttp_keys)),
-            keys_source_url,
+            gateway_url,
+            target_url,
         }
     }
 
     /// Fetch OHTTP keys from the keys source (can be different from target URL)
     pub async fn fetch_keys(&self) -> Result<Vec<u8>> {
-        let keys_url = self.keys_source_url.join("/ohttp-keys")?;
+        let keys_url = self.gateway_url.join("/ohttp-keys")?;
 
         tracing::debug!("Fetching OHTTP keys from: {}", keys_url);
 
@@ -88,7 +95,7 @@ impl OhttpClient {
         );
 
         // Send directly to the target URL without appending .well-known/ohttp-gateway
-        let endpoint_url = self.target_url.clone();
+        let endpoint_url = self.relay_url.clone();
 
         tracing::debug!("Sending OHTTP request to: {}", endpoint_url);
 
@@ -164,12 +171,32 @@ impl OhttpClient {
 
         tracing::debug!("Creating BHTTP request: {} {}", method, request_path);
 
+        // Extract proper authority from target URL (host:port only, no scheme)
+        let authority = if let Some(port) = self.target_url.port() {
+            format!(
+                "{}:{}",
+                self.target_url.host_str().unwrap_or("localhost"),
+                port
+            )
+        } else {
+            self.target_url
+                .host_str()
+                .unwrap_or("localhost")
+                .to_string()
+        };
+
+        tracing::debug!(
+            "Using authority: {} for target: {}",
+            authority,
+            self.target_url
+        );
+
         // Create the BHTTP message
         let mut bhttp_msg = Message::request(
             method.as_bytes().to_vec(),
-            b"https".to_vec(),                // scheme
-            b"backend.example.com".to_vec(),  // authority (will be overridden by gateway)
-            request_path.as_bytes().to_vec(), // path
+            self.target_url.scheme().as_bytes().to_vec(), // scheme from target URL
+            authority.as_bytes().to_vec(),                // authority (host:port only)
+            request_path.as_bytes().to_vec(),             // path
         );
 
         // Add headers
@@ -238,7 +265,7 @@ impl OhttpClient {
         let keys = self.fetch_keys().await?;
 
         Ok(TargetInfo {
-            target_url: self.target_url.clone(),
+            target_url: self.relay_url.clone(),
             keys_available: true,
             keys_size: keys.len(),
         })
@@ -288,4 +315,62 @@ pub struct TargetInfo {
     pub target_url: Url,
     pub keys_available: bool,
     pub keys_size: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_authority_extraction() {
+        // Test with port
+        let target_url = Url::parse("http://127.0.0.1:8085").unwrap();
+        let _client = OhttpClient::new(
+            target_url.clone(),
+            None,
+            target_url.clone(),
+            target_url.clone(),
+        );
+
+        let authority = if let Some(port) = target_url.port() {
+            format!("{}:{}", target_url.host_str().unwrap_or("localhost"), port)
+        } else {
+            target_url.host_str().unwrap_or("localhost").to_string()
+        };
+
+        assert_eq!(authority, "127.0.0.1:8085");
+
+        // Test without explicit port (default ports)
+        let target_url_no_port = Url::parse("https://example.com").unwrap();
+        let authority_no_port = if let Some(port) = target_url_no_port.port() {
+            format!(
+                "{}:{}",
+                target_url_no_port.host_str().unwrap_or("localhost"),
+                port
+            )
+        } else {
+            target_url_no_port
+                .host_str()
+                .unwrap_or("localhost")
+                .to_string()
+        };
+
+        assert_eq!(authority_no_port, "example.com");
+    }
+
+    #[test]
+    fn test_authority_does_not_include_scheme() {
+        let target_url = Url::parse("https://example.com:8443/some/path").unwrap();
+
+        let authority = if let Some(port) = target_url.port() {
+            format!("{}:{}", target_url.host_str().unwrap_or("localhost"), port)
+        } else {
+            target_url.host_str().unwrap_or("localhost").to_string()
+        };
+
+        // Authority should NOT include scheme or path
+        assert_eq!(authority, "example.com:8443");
+        assert!(!authority.contains("https://"));
+        assert!(!authority.contains("/some/path"));
+    }
 }

@@ -33,11 +33,8 @@ impl OhttpTransport {
     /// 2. Relay forwards to gateway_url
     /// 3. Gateway forwards to target_url (mint)
     /// 4. Keys are fetched from keys_source_url (same as target)
-    pub fn new(_target_url: Url, relay_url: Url, keys_source_url: Url) -> Self {
-        // For now, use the relay_url as the endpoint for the OHTTP client
-        // The OHTTP protocol will handle routing through gateway to target
-        // TODO: Implement proper OHTTP relay/gateway routing
-        let client = ohttp_client::OhttpClient::new(relay_url, None, keys_source_url);
+    pub fn new(target_url: Url, relay_url: Url, gateway_url: Url) -> Self {
+        let client = ohttp_client::OhttpClient::new(relay_url, None, gateway_url, target_url);
 
         Self {
             client: Arc::new(client),

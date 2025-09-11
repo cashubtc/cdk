@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use bip39::rand::{thread_rng, Rng};
 use bip39::Mnemonic;
 use cdk::cdk_database;
@@ -215,14 +215,24 @@ async fn main() -> Result<()> {
                 // Configure client based on arguments
                 #[cfg(feature = "ohttp")]
                 if args.ohttp_relay.is_some() && mint_info.supports_ohttp() {
-                    let ohttp_relay = args.ohttp_relay.as_ref().unwrap();
-                    let gateway_url: Url = mint_url_clone.join_paths(&[])?;
-                    let keys_source_url = gateway_url.clone();
+                    let mint_ohttp_settings =
+                        mint_info.ohttp_config().expect("Checked its enabled");
 
-                    // Create OHTTP transport with relay
-                    let target_url = mint_url_clone.join_paths(&[])?; // Convert MintUrl to Url
-                    let ohttp_transport =
-                        OhttpTransport::new(target_url, ohttp_relay.clone(), keys_source_url);
+                    let ohttp_relay = args
+                        .ohttp_relay
+                        .as_ref()
+                        .ok_or(anyhow!("Relay url is invalid"))?;
+
+                    let gateway_url = mint_ohttp_settings
+                        .gateway_url
+                        .clone()
+                        .unwrap_or(mint_url_clone.to_string());
+
+                    let ohttp_transport = OhttpTransport::new(
+                        mint_url_clone.to_string().parse()?,
+                        ohttp_relay.clone(),
+                        gateway_url.parse()?,
+                    );
 
                     // Create HttpClient with OHTTP transport
                     let ohttp_client =
