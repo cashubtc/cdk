@@ -52,7 +52,7 @@ struct Cli {
     #[arg(short, long)]
     proxy: Option<Url>,
     /// Choose transport to use for HTTP operations (default|tor|auto)
-    #[arg(long, value_parser = ["default", "tor", "auto"], default_value = "default")]
+    #[arg(long, value_parser = ["clearnet", "tor", "auto"], default_value = "clearnet")]
     transport: String,
     #[command(subcommand)]
     command: Commands,
@@ -233,18 +233,30 @@ async fn main() -> Result<()> {
             if let Some(http_client) = &proxy_client {
                 builder = builder.client(http_client.clone());
             } else {
-                // Inject a concrete HttpClient<T> based on selected transport
                 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
                 {
                     if transport_is_tor {
+                        if transport_mode == "auto" {
+                            tracing::info!(
+                                "Using Tor transport (auto) for mint {}",
+                                mint_url_clone
+                            );
+                        } else {
+                            tracing::info!(
+                                "Using Tor transport (forced) for mint {}",
+                                mint_url_clone
+                            );
+                        }
                         builder = builder.client(TorHttpClient::new(mint_url_clone.clone(), None));
                     } else {
+                        tracing::debug!("Using default transport for mint {}", mint_url_clone);
                         builder =
                             builder.client(DefaultHttpClient::new(mint_url_clone.clone(), None));
                     }
                 }
                 #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
                 {
+                    tracing::debug!("Using default transport for mint {}", mint_url_clone);
                     builder = builder.client(DefaultHttpClient::new(mint_url_clone.clone(), None));
                 }
             }
