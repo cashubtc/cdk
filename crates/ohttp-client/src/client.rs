@@ -2,10 +2,8 @@ use anyhow::{anyhow, Result};
 use base64::Engine;
 use http::HeaderMap;
 use reqwest::Client;
-use tracing::{debug, info};
+use tracing::debug;
 use url::Url;
-
-use crate::cli::{Cli, Commands};
 
 /// OHTTP client for sending requests through gateways or relays
 pub struct OhttpClient {
@@ -249,22 +247,22 @@ impl OhttpClient {
         Ok((status.into(), headers, body))
     }
 
-    /// Send a raw HTTP request to the target (gateway or relay) (for testing/migration to full OHTTP)
-    pub async fn send_relay_compatible_request(
-        &self,
-        method: &str,
-        body: &[u8],
-        headers: &[(String, String)],
-        request_path: &str,
-    ) -> Result<OhttpResponse> {
-        if self.is_relay {
-            self.send_relay_request(method, body, headers, request_path)
-                .await
-        } else {
-            self.send_gateway_request(method, body, headers, request_path)
-                .await
-        }
-    }
+    // /// Send a raw HTTP request to the target (gateway or relay) (for testing/migration to full OHTTP)
+    // pub async fn send_relay_compatible_request(
+    //     &self,
+    //     method: &str,
+    //     body: &[u8],
+    //     headers: &[(String, String)],
+    //     request_path: &str,
+    // ) -> Result<OhttpResponse> {
+    //     if self.is_relay {
+    //         self.send_relay_request(method, body, headers, request_path)
+    //             .await
+    //     } else {
+    //         self.send_gateway_request(method, body, headers, request_path)
+    //             .await
+    //     }
+    // }
 
     /// Send a raw HTTP request to a gateway
     pub async fn send_gateway_request(
@@ -481,220 +479,6 @@ pub struct TargetInfo {
     pub is_relay: bool,
     pub keys_available: bool,
     pub keys_size: usize,
-}
-
-/// Execute CLI command
-pub async fn execute_command(cli: Cli) -> Result<()> {
-    // Determine target URL and whether it's a relay
-    let (target_url, is_relay, relay_gateway_url, keys_url) = match (
-        cli.gateway_url.clone(),
-        cli.relay_url.clone(),
-        cli.relay_gateway_url.clone(),
-    ) {
-        // Gateway only mode
-        (Some(gateway), None, None) => (gateway.clone(), false, None, gateway),
-        // Invalid: relay_gateway_url without relay_url
-        (Some(_), None, Some(_)) => {
-            return Err(anyhow!(
-                "--relay-gateway-url requires --relay-url to be specified"
-            ))
-        }
-        // Relay only mode
-        (None, Some(relay), relay_gateway) => (relay.clone(), true, relay_gateway, relay),
-        // Combined mode: use relay for requests, gateway for keys
-        (Some(gateway), Some(relay), relay_gateway) => (relay, true, relay_gateway, gateway),
-        // No URLs provided
-        (None, None, _) => {
-            return Err(anyhow!(
-                "At least one of --gateway-url or --relay-url must be specified"
-            ))
-        }
-    };
-
-    // Load OHTTP keys from file if provided
-    let ohttp_keys = if let Some(key_path) = &cli.ohttp_keys {
-        match std::fs::read(key_path) {
-            Ok(keys) => Some(keys),
-            Err(e) => {
-                info!(
-                    "Failed to load OHTTP keys from {}: {}, will fetch from target",
-                    key_path.display(),
-                    e
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let client = OhttpClient::new(
-        target_url,
-        is_relay,
-        relay_gateway_url,
-        ohttp_keys,
-        keys_url,
-    );
-
-    // Add any custom headers
-    let headers = cli.header;
-
-    match cli.command {
-        Commands::Send {
-            method,
-            data,
-            file,
-            json,
-            request_path,
-        } => {
-            // Validate that only one data source is provided
-            let data_sources = [
-                data.as_ref().map(|_| 1).unwrap_or(0),
-                file.as_ref().map(|_| 1).unwrap_or(0),
-                json.as_ref().map(|_| 1).unwrap_or(0),
-            ];
-            let data_source_count = data_sources.iter().sum::<i32>();
-
-            if data_source_count > 1 {
-                return Err(anyhow!(
-                    "Only one of --data, --file, or --json can be specified"
-                ));
-            }
-
-            let body_data = if let Some(data) = data {
-                data.into_bytes()
-            } else if let Some(file_path) = file {
-                info!("Reading data from file: {}", file_path.display());
-                std::fs::read(&file_path)
-                    .map_err(|e| anyhow!("Failed to read file {}: {}", file_path.display(), e))?
-            } else if let Some(json_data) = json {
-                let mut headers = headers.clone();
-                headers.push(("Content-Type".to_string(), "application/json".to_string()));
-                json_data.into_bytes()
-            } else {
-                Vec::new()
-            };
-
-            let target_type = if client.is_relay { "relay" } else { "gateway" };
-            info!(
-                "Sending {} request through {} to path: {}",
-                method, target_type, request_path
-            );
-            info!("Request body size: {} bytes", body_data.len());
-
-            let response = client
-                .send_request(&method, &body_data, &headers, &request_path)
-                .await?;
-            print_response(&response)?;
-        }
-
-        Commands::GetKeys => {
-            let target_type = if client.is_relay { "relay" } else { "gateway" };
-            info!("Fetching OHTTP keys from {}...", target_type);
-            let keys = client.fetch_keys().await?;
-            info!(
-                "Successfully fetched {} bytes of OHTTP key material",
-                keys.len()
-            );
-
-            // Display keys as base64 for debugging
-            if tracing::enabled!(tracing::Level::DEBUG) {
-                let engine = base64::engine::general_purpose::STANDARD;
-                debug!("Keys (base64): {}", engine.encode(&keys));
-            }
-        }
-
-        Commands::Health => {
-            let target_type = if client.is_relay { "relay" } else { "gateway" };
-            info!("Sending health check to {}...", target_type);
-            let response = client.health_check().await?;
-            print_response(&response)?;
-        }
-
-        Commands::Info => {
-            let target_type = if client.is_relay { "relay" } else { "gateway" };
-            info!("Fetching {} information...", target_type);
-            let info = client.get_target_info().await?;
-
-            println!(
-                "{} Information:",
-                if info.is_relay { "Relay" } else { "Gateway" }
-            );
-            println!("  URL: {}", info.target_url);
-            println!("  Keys available: {}", info.keys_available);
-            println!("  Keys size: {} bytes", info.keys_size);
-
-            println!();
-            println!("Available endpoints:");
-            if info.is_relay {
-                println!(
-                    "  POST {}<gateway-uri> - Forward OHTTP requests to gateway",
-                    info.target_url
-                );
-                println!("  GET {}/health - Health check endpoint", info.target_url);
-            } else {
-                println!(
-                    "  POST {}.well-known/ohttp-gateway - Send OHTTP requests",
-                    info.target_url
-                );
-                println!("  GET {}/ohttp-keys - Fetch OHTTP keys", info.target_url);
-                println!(
-                    "  POST {}/test-gateway - Send test requests",
-                    info.target_url
-                );
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Print response to stdout
-fn print_response(response: &OhttpResponse) -> Result<()> {
-    println!("HTTP/{:?} {}", response.status, response.status);
-    println!("Response time: {:.2}ms", response.elapsed.as_millis());
-    println!();
-
-    // Print headers
-    if !response.headers.is_empty() {
-        println!("Response Headers:");
-        for (name, value) in &response.headers {
-            println!("  {}: {}", name, value.to_str().unwrap_or("<non-utf8>"));
-        }
-        println!();
-    }
-
-    // Print body
-    if !response.body.is_empty() {
-        println!("Response Body:");
-
-        if response.is_json() {
-            // Pretty print JSON
-            if let Ok(text) = response.text() {
-                if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text) {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&json_value).unwrap_or_else(|_| text)
-                    );
-                } else {
-                    println!("{}", text);
-                }
-            } else {
-                println!("<{} bytes of binary data>", response.body.len());
-            }
-        } else {
-            // Print as text if possible
-            if let Ok(text) = response.text() {
-                println!("{}", text);
-            } else {
-                println!("<{} bytes of binary data>", response.body.len());
-            }
-        }
-    } else {
-        println!("(empty response body)");
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

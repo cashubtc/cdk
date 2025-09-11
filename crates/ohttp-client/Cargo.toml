@@ -11,10 +11,6 @@ license = "MITNFA"
 edition = "2021"
 rust-version = "1.85"
 
-[[bin]]
-name = "ohttp-client"
-path = "src/bin/main.rs"
-
 [dependencies]
 anyhow = "1.0.99"
 bhttp = { version = "0.6.1", features = ["http"] }
