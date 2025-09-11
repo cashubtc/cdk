@@ -189,7 +189,7 @@ impl Stream for NostrPaymentEventStream {
             }));
         }
 
-        let mut fut = this.rx_future.take().expect("future present");
+        let mut fut = this.rx_future.take().ok_or(Error::Internal)?;
         match fut.poll_unpin(cx) {
             Poll::Pending => {
                 this.rx_future = Some(fut);
