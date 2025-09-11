@@ -12,10 +12,9 @@ use serde::de::DeserializeOwned;
 use tls_api::{TlsConnector as _, TlsConnectorBuilder as _};
 use tokio::sync::OnceCell;
 use url::Url;
-use crate::wallet::mint_connector::transport::ErrorResponse;
 
 use super::super::Error;
-use crate::wallet::mint_connector::transport::Transport;
+use crate::wallet::mint_connector::transport::{ErrorResponse, Transport};
 
 pub struct TorAsync {
     tor: Arc<OnceCell<arti_client::TorClient<tor_rtcompat::PreferredRuntime>>>,
@@ -67,7 +66,8 @@ impl Transport for TorAsync {
     where
         R: serde::de::DeserializeOwned,
     {
-        self.request::<Vec<u8>, R>(Method::GET, url, auth, None).await
+        self.request::<Vec<u8>, R>(Method::GET, url, auth, None)
+            .await
     }
 
     async fn http_post<P, R>(
@@ -144,8 +144,7 @@ impl TorAsync {
             let key = auth.header_key();
             let val = auth.to_string();
             req.headers_mut().insert(
-                HeaderName::from_bytes(key.as_bytes())
-                    .map_err(|e| Error::Custom(e.to_string()))?,
+                HeaderName::from_bytes(key.as_bytes()).map_err(|e| Error::Custom(e.to_string()))?,
                 HeaderValue::from_str(&val).map_err(|e| Error::Custom(e.to_string()))?,
             );
         }
