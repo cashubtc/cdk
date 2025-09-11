@@ -17,8 +17,6 @@ use crate::wallet::AuthWallet;
 
 pub mod http_client;
 #[cfg(feature = "ohttp")]
-pub mod ohttp_client;
-#[cfg(feature = "ohttp")]
 pub mod ohttp_transport;
 pub mod transport;
 
@@ -28,9 +26,9 @@ pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;
 /// Http Client with async transport
 pub type HttpClient = http_client::HttpClient<transport::Async>;
 
-/// OHTTP Client
+/// OHTTP Client using HttpClient with OHTTP transport
 #[cfg(feature = "ohttp")]
-pub type OhttpClient = ohttp_client::OhttpClient;
+pub type OhttpHttpClient = http_client::HttpClient<ohttp_transport::OhttpTransport>;
 
 /// Interface that connects a wallet to a mint. Typically represents an [HttpClient].
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]

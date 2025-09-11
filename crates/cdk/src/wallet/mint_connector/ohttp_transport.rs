@@ -33,7 +33,7 @@ impl OhttpTransport {
     /// 2. Relay forwards to gateway_url
     /// 3. Gateway forwards to target_url (mint)
     /// 4. Keys are fetched from keys_source_url (same as target)
-    pub fn new(_target_url: Url, _gateway_url: Url, relay_url: Url, keys_source_url: Url) -> Self {
+    pub fn new(_target_url: Url, relay_url: Url, keys_source_url: Url) -> Self {
         // For now, use the relay_url as the endpoint for the OHTTP client
         // The OHTTP protocol will handle routing through gateway to target
         // TODO: Implement proper OHTTP relay/gateway routing
@@ -47,9 +47,10 @@ impl OhttpTransport {
 
 impl Default for OhttpTransport {
     fn default() -> Self {
-        // Default implementation is not useful for OHTTP, but required by trait
-        // This will panic if used without proper initialization
-        panic!("OhttpTransport requires explicit initialization with gateway or relay URL")
+        // Provide a minimal default that won't panic, but won't work until properly configured
+        // This is needed for the Transport trait, but users should use ::new() instead
+        let dummy_url = Url::parse("http://localhost").expect("Invalid default URL");
+        Self::new(dummy_url.clone(), dummy_url.clone(), dummy_url)
     }
 }
 

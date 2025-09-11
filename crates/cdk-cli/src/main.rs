@@ -10,7 +10,7 @@ use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::nuts::CurrencyUnit;
 #[cfg(feature = "ohttp")]
-use cdk::wallet::OhttpClient;
+use cdk::wallet::{ohttp_transport::OhttpTransport, BaseHttpClient};
 use cdk::wallet::{HttpClient, MultiMintWallet, Wallet, WalletBuilder};
 #[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
@@ -213,8 +213,16 @@ async fn main() -> Result<()> {
                 if args.ohttp_relay.is_some() {
                     let ohttp_relay = args.ohttp_relay.as_ref().unwrap();
                     let gateway_url: Url = mint_url_clone.join_paths(&[])?;
+                    let keys_source_url = gateway_url.clone();
+
+                    // Create OHTTP transport with relay
+                    let target_url = mint_url_clone.join_paths(&[])?; // Convert MintUrl to Url
+                    let ohttp_transport =
+                        OhttpTransport::new(target_url, ohttp_relay.clone(), keys_source_url);
+
+                    // Create HttpClient with OHTTP transport
                     let ohttp_client =
-                        OhttpClient::new(mint_url_clone.clone(), gateway_url, ohttp_relay.clone());
+                        BaseHttpClient::with_transport(mint_url_clone.clone(), ohttp_transport);
                     builder = builder.client(ohttp_client).use_http_subscription();
                 } else if let Some(client) = &proxy_client {
                     builder = builder.client(client.clone());
