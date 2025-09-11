@@ -47,6 +47,31 @@ impl<T> HttpClient<T>
 where
     T: Transport + Send + Sync + 'static,
 {
+    /// Create new [`HttpClient`] with a provided transport implementation.
+    #[cfg(feature = "auth")]
+    pub fn with_transport(
+        mint_url: MintUrl,
+        transport: T,
+        auth_wallet: Option<AuthWallet>,
+    ) -> Self {
+        Self {
+            transport: transport.into(),
+            mint_url,
+            auth_wallet: Arc::new(RwLock::new(auth_wallet)),
+            cache_support: Default::default(),
+        }
+    }
+
+    /// Create new [`HttpClient`] with a provided transport implementation.
+    #[cfg(not(feature = "auth"))]
+    pub fn with_transport(mint_url: MintUrl, transport: T) -> Self {
+        Self {
+            transport: transport.into(),
+            mint_url,
+            cache_support: Default::default(),
+        }
+    }
+
     /// Create new [`HttpClient`]
     #[cfg(feature = "auth")]
     pub fn new(mint_url: MintUrl, auth_wallet: Option<AuthWallet>) -> Self {

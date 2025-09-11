@@ -120,7 +120,8 @@ async fn main() -> Result<()> {
         }
     };
 
-    fs::create_dir_all(&work_dir)?;
+    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+    let transport_mode = args.transport.as_str();
 
     let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
         match args.engine.as_str() {
