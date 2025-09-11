@@ -87,26 +87,15 @@ where
     }
 
     /// Create new [`HttpClient`] with a pre-configured transport
-    pub fn with_transport(mint_url: MintUrl, transport: T) -> Self {
-        Self {
-            transport: transport.into(),
-            mint_url,
-            #[cfg(feature = "auth")]
-            auth_wallet: Arc::new(RwLock::new(None)),
-            cache_support: Default::default(),
-        }
-    }
-
-    /// Create new [`HttpClient`] with auth wallet and pre-configured transport  
-    #[cfg(feature = "auth")]
-    pub fn with_transport_and_auth(
+    pub fn with_transport(
         mint_url: MintUrl,
         transport: T,
-        auth_wallet: Option<AuthWallet>,
+        #[cfg(feature = "auth")] auth_wallet: Option<AuthWallet>,
     ) -> Self {
         Self {
             transport: transport.into(),
             mint_url,
+            #[cfg(feature = "auth")]
             auth_wallet: Arc::new(RwLock::new(auth_wallet)),
             cache_support: Default::default(),
         }

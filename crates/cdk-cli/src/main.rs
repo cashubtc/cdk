@@ -235,8 +235,11 @@ async fn main() -> Result<()> {
                     );
 
                     // Create HttpClient with OHTTP transport
-                    let ohttp_client =
-                        BaseHttpClient::with_transport(mint_url_clone.clone(), ohttp_transport);
+                    let ohttp_client = BaseHttpClient::with_transport(
+                        mint_url_clone.clone(),
+                        ohttp_transport,
+                        None,
+                    );
                     builder = builder.client(ohttp_client).use_http_subscription();
                 } else if mint_info.supports_ohttp() {
                     tracing::warn!("This mint supports ohttp but you have not provided a relay");
