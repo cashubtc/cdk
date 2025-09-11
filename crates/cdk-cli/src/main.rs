@@ -9,7 +9,9 @@ use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{HttpClient, MultiMintWallet, Wallet, WalletBuilder};
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+use cdk::wallet::TorHttpClient;
+use cdk::wallet::{HttpClient as DefaultHttpClient, MultiMintWallet, Wallet, WalletBuilder};
 #[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
@@ -49,6 +51,9 @@ struct Cli {
     /// NWS Proxy
     #[arg(short, long)]
     proxy: Option<Url>,
+    /// Choose transport to use for HTTP operations (default|tor|auto)
+    #[arg(long, value_parser = ["default", "tor", "auto"], default_value = "default")]
+    transport: String,
     #[command(subcommand)]
     command: Commands,
 }
@@ -115,7 +120,8 @@ async fn main() -> Result<()> {
         }
     };
 
-    fs::create_dir_all(&work_dir)?;
+    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+    let transport_mode = args.transport.as_str();
 
     let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
         match args.engine.as_str() {
@@ -166,7 +172,6 @@ async fn main() -> Result<()> {
             mnemonic
         }
     };
-    let seed = mnemonic.to_seed_normalized("");
 
     let mut wallets: Vec<Wallet> = Vec::new();
 
@@ -179,13 +184,37 @@ async fn main() -> Result<()> {
             vec![CurrencyUnit::Sat]
         };
 
+        #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+        let transport_is_tor = match transport_mode {
+            "tor" => true,
+            "auto" => mint_url.to_string().contains(".onion"),
+            _ => false,
+        };
+
         let proxy_client = if let Some(proxy_url) = args.proxy.as_ref() {
-            Some(HttpClient::with_proxy(
-                mint_url.clone(),
-                proxy_url.clone(),
-                None,
-                true,
-            )?)
+            // Only apply proxy to default transport, Tor transport does not support proxy
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            {
+                if transport_is_tor {
+                    None
+                } else {
+                    Some(DefaultHttpClient::with_proxy(
+                        mint_url.clone(),
+                        proxy_url.clone(),
+                        None,
+                        true,
+                    )?)
+                }
+            }
+            #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
+            {
+                Some(DefaultHttpClient::with_proxy(
+                    mint_url.clone(),
+                    proxy_url.clone(),
+                    None,
+                    true,
+                )?)
+            }
         } else {
             None
         };
@@ -199,6 +228,26 @@ async fn main() -> Result<()> {
                 .unit(unit)
                 .localstore(localstore.clone())
                 .seed(seed);
+
+            // Prefer explicit proxy client (default transport) if provided; otherwise inject chosen transport
+            if let Some(http_client) = &proxy_client {
+                builder = builder.client(http_client.clone());
+            } else {
+                // Inject a concrete HttpClient<T> based on selected transport
+                #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+                {
+                    if transport_is_tor {
+                        builder = builder.client(TorHttpClient::new(mint_url_clone.clone(), None));
+                    } else {
+                        builder =
+                            builder.client(DefaultHttpClient::new(mint_url_clone.clone(), None));
+                    }
+                }
+                #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
+                {
+                    builder = builder.client(DefaultHttpClient::new(mint_url_clone.clone(), None));
+                }
+            }
 
             if let Some(http_client) = &proxy_client {
                 builder = builder.client(http_client.clone());
@@ -223,6 +272,7 @@ async fn main() -> Result<()> {
         }
     }
 
+    let seed = mnemonic.to_seed_normalized("");
     let multi_mint_wallet = MultiMintWallet::new(localstore, seed, wallets);
 
     match &args.command {
