@@ -1,6 +1,4 @@
-//! Tor transport implementation (non-wasm32 only)
-#![cfg(all(feature = "tor", not(target_arch = "wasm32")))]
-
+///! Tor transport implementation (non-wasm32 only)
 use std::sync::Arc;
 
 use arti_client::{IsolationToken, StreamPrefs, TorClient, TorClientConfig};
