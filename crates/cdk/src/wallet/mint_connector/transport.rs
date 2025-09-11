@@ -217,7 +217,7 @@ impl Transport for Async {
     }
 }
 
-#[cfg(feature = "tor")]
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub mod tor_transport {
     use std::sync::Arc;
 
