@@ -3,7 +3,6 @@ use std::str::FromStr;
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use tracing::{debug, error, info};
 use url::Url;
 use {reqwest, serde_json};
 
@@ -24,13 +23,13 @@ pub async fn handle_ohttp_request(
     axum::extract::Extension(backend_url): axum::extract::Extension<Url>,
     body: Bytes,
 ) -> Result<Response, GatewayError> {
-    debug!("Received OHTTP request, size: {}", body.len());
+    tracing::trace!("Received OHTTP request, size: {}", body.len());
 
     // Decapsulate the OHTTP request
     let (bhttp_req, response_context) = match ohttp.server.decapsulate(&body) {
         Ok(result) => result,
         Err(e) => {
-            error!("Failed to decapsulate OHTTP request: {}", e);
+            tracing::error!("Failed to decapsulate OHTTP request: {}", e);
             return Err(GatewayError::OhttpDecapsulation);
         }
     };
@@ -39,21 +38,16 @@ pub async fn handle_ohttp_request(
     let inner_req = match parse_bhttp_request(&bhttp_req) {
         Ok(req) => req,
         Err(e) => {
-            error!("Failed to parse BHTTP request: {}", e);
+            tracing::error!("Failed to parse BHTTP request: {}", e);
             return Err(GatewayError::InvalidRequest);
         }
     };
-
-    debug!(
-        "Forwarding request to configured backend: {} ({} {})",
-        backend_url, inner_req.method, inner_req.uri
-    );
 
     // Forward the request to the configured backend
     let response = match forward_request(&backend_url, &inner_req).await {
         Ok(resp) => resp,
         Err(e) => {
-            error!("Failed to forward request: {}", e);
+            tracing::error!("Failed to forward request: {}", e);
             return Err(GatewayError::ForwardingFailed);
         }
     };
@@ -62,7 +56,7 @@ pub async fn handle_ohttp_request(
     let bhttp_resp = match convert_to_bhttp_response(&response).await {
         Ok(resp) => resp,
         Err(e) => {
-            error!("Failed to convert response to BHTTP: {}", e);
+            tracing::error!("Failed to convert response to BHTTP: {}", e);
             return Err(GatewayError::ResponseEncodingFailed);
         }
     };
@@ -71,12 +65,12 @@ pub async fn handle_ohttp_request(
     let ohttp_resp = match response_context.encapsulate(&bhttp_resp) {
         Ok(resp) => resp,
         Err(e) => {
-            error!("Failed to re-encapsulate OHTTP response: {}", e);
+            tracing::error!("Failed to re-encapsulate OHTTP response: {}", e);
             return Err(GatewayError::OhttpEncapsulation);
         }
     };
 
-    debug!("Sending OHTTP response, size: {}", ohttp_resp.len());
+    tracing::trace!("Sending OHTTP response, size: {}", ohttp_resp.len());
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -92,7 +86,7 @@ pub async fn handle_ohttp_keys(
     let keys = match ohttp.server.config().encode() {
         Ok(keys) => keys,
         Err(e) => {
-            error!("Failed to encode OHTTP keys: {}", e);
+            tracing::error!("Failed to encode OHTTP keys: {}", e);
             return Err(GatewayError::KeyEncodingFailed);
         }
     };
@@ -160,7 +154,7 @@ impl IntoResponse for GatewayError {
 fn parse_bhttp_request(bhttp_bytes: &[u8]) -> Result<InnerRequest, BoxError> {
     use bhttp::Message;
 
-    debug!("Parsing BHTTP request, size: {} bytes", bhttp_bytes.len());
+    tracing::trace!("Parsing BHTTP request, size: {} bytes", bhttp_bytes.len());
 
     let mut cursor = std::io::Cursor::new(bhttp_bytes);
     let req = Message::read_bhttp(&mut cursor)?;
@@ -179,8 +173,8 @@ fn parse_bhttp_request(bhttp_bytes: &[u8]) -> Result<InnerRequest, BoxError> {
         String::from_utf8_lossy(path)
     );
 
-    info!("Parsed inner request: {} {}", method, uri);
-    debug!(
+    tracing::info!("Gateway request: {} {}", method, uri);
+    tracing::trace!(
         "URI components - scheme: '{}', authority: '{}', path: '{}'",
         String::from_utf8_lossy(scheme),
         String::from_utf8_lossy(authority),
@@ -196,7 +190,7 @@ fn parse_bhttp_request(bhttp_bytes: &[u8]) -> Result<InnerRequest, BoxError> {
     }
 
     let body = req.content().to_vec();
-    debug!("Inner request body size: {} bytes", body.len());
+    tracing::trace!("Inner request body size: {} bytes", body.len());
 
     Ok(InnerRequest {
         method,
@@ -210,11 +204,6 @@ async fn forward_request(
     backend_url: &Url,
     inner_req: &InnerRequest,
 ) -> Result<BackendResponse, BoxError> {
-    info!(
-        "Gateway forwarding request: {} {}",
-        inner_req.method, inner_req.uri
-    );
-
     // Extract path from inner request's URI for forwarding
     let inner_uri = Uri::from_str(&inner_req.uri)?;
     let path_and_query = inner_uri
@@ -222,19 +211,22 @@ async fn forward_request(
         .map(|pq| pq.as_str())
         .unwrap_or("/");
 
-    info!("Extracted path from inner request: '{}'", path_and_query);
-
     // Construct backend URL with the path from the inner request
     let mut backend_url_with_path = backend_url.clone();
     backend_url_with_path.set_path(path_and_query);
     if let Some(query) = inner_uri.query() {
         backend_url_with_path.set_query(Some(query));
-        info!("Added query parameters: '{}'", query);
+        tracing::trace!("Added query parameters: '{}'", query);
     }
 
-    info!("Final backend URL: {}", backend_url_with_path);
-    debug!("Request headers: {:?}", inner_req.headers);
-    debug!("Request body size: {} bytes", inner_req.body.len());
+    tracing::debug!(
+        "Forwarding {} {} to {}",
+        inner_req.method,
+        inner_req.uri,
+        backend_url_with_path
+    );
+    tracing::trace!("Request headers: {:?}", inner_req.headers);
+    tracing::trace!("Request body size: {} bytes", inner_req.body.len());
 
     // Use reqwest for the actual HTTP request (simpler than hyper's low-level API)
     let client = reqwest::Client::builder()
@@ -264,9 +256,9 @@ async fn forward_request(
     let headers = response.headers().clone();
     let body_bytes = response.bytes().await?;
 
-    info!("Backend responded with status: {}", status);
-    debug!("Response headers: {:?}", headers);
-    debug!("Response body size: {} bytes", body_bytes.len());
+    tracing::debug!("Backend response: {}", status);
+    tracing::trace!("Response headers: {:?}", headers);
+    tracing::trace!("Response body size: {} bytes", body_bytes.len());
 
     // Create a simple response structure for processing
     let backend_response = BackendResponse {

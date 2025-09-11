@@ -185,7 +185,7 @@ async fn main() -> Result<()> {
             vec![CurrencyUnit::Sat]
         };
 
-        let proxy_client = if !args.ohttp_relay.is_some() && args.proxy.is_some() {
+        let proxy_client = if args.ohttp_relay.is_none() && args.proxy.is_some() {
             Some(HttpClient::with_proxy(
                 mint_url.clone(),
                 args.proxy.as_ref().unwrap().clone(),

@@ -4,7 +4,6 @@ use anyhow::{anyhow, Result};
 use http::HeaderMap;
 use reqwest::Client;
 use tokio::sync::RwLock;
-use tracing::debug;
 use url::Url;
 
 /// OHTTP client for sending requests through gateways or relays
@@ -35,12 +34,12 @@ impl OhttpClient {
     pub async fn fetch_keys(&self) -> Result<Vec<u8>> {
         let keys_url = self.keys_source_url.join("/ohttp-keys")?;
 
-        debug!("Fetching OHTTP keys from: {}", keys_url);
+        tracing::debug!("Fetching OHTTP keys from: {}", keys_url);
 
         let response = self.client.get(keys_url).send().await?.error_for_status()?;
 
         let keys = response.bytes().await?;
-        debug!("Fetched OHTTP keys, size: {} bytes", keys.len());
+        tracing::debug!("Fetched OHTTP keys, size: {} bytes", keys.len());
 
         let mut ohttp_keys = self.ohttp_keys.write().await;
 
@@ -72,18 +71,18 @@ impl OhttpClient {
         let client_request = ohttp::ClientRequest::from_encoded_config(&keys_data)
             .map_err(|e| anyhow!("Failed to decode OHTTP keys: {}", e))?;
 
-        debug!("Created OHTTP client request");
+        tracing::debug!("Created OHTTP client request");
 
         // Create BHTTP request
         let bhttp_request = self.create_bhttp_request(method, body, headers, request_path)?;
-        debug!("Created BHTTP request, size: {} bytes", bhttp_request.len());
+        tracing::debug!("Created BHTTP request, size: {} bytes", bhttp_request.len());
 
         // Encapsulate the request using OHTTP
         let (ohttp_request, response_context) = client_request
             .encapsulate(&bhttp_request)
             .map_err(|e| anyhow!("Failed to encapsulate OHTTP request: {}", e))?;
 
-        debug!(
+        tracing::debug!(
             "Encapsulated OHTTP request, size: {} bytes",
             ohttp_request.len()
         );
@@ -91,7 +90,7 @@ impl OhttpClient {
         // Send directly to the target URL without appending .well-known/ohttp-gateway
         let endpoint_url = self.target_url.clone();
 
-        debug!("Sending OHTTP request to: {}", endpoint_url);
+        tracing::debug!("Sending OHTTP request to: {}", endpoint_url);
 
         // Send the OHTTP request
         let start_time = std::time::Instant::now();
@@ -105,7 +104,7 @@ impl OhttpClient {
 
         let elapsed = start_time.elapsed();
 
-        debug!(
+        tracing::debug!(
             "OHTTP response received in {:.2}ms: {} {}",
             elapsed.as_millis(),
             response.status(),
@@ -120,14 +119,14 @@ impl OhttpClient {
             .unwrap_or("");
 
         if content_type != "message/ohttp-res" {
-            debug!("Warning: Unexpected content type: {}", content_type);
+            tracing::debug!("Warning: Unexpected content type: {}", content_type);
         }
 
         let _response_status = response.status().as_u16();
         let _response_headers = response.headers().clone();
         let ohttp_response_body = response.bytes().await?;
 
-        debug!(
+        tracing::debug!(
             "OHTTP response body size: {} bytes",
             ohttp_response_body.len()
         );
@@ -137,7 +136,7 @@ impl OhttpClient {
             .decapsulate(&ohttp_response_body)
             .map_err(|e| anyhow!("Failed to decapsulate OHTTP response: {}", e))?;
 
-        debug!(
+        tracing::debug!(
             "Decapsulated BHTTP response, size: {} bytes",
             bhttp_response.len()
         );
@@ -163,7 +162,7 @@ impl OhttpClient {
     ) -> Result<Vec<u8>> {
         use bhttp::Message;
 
-        debug!("Creating BHTTP request: {} {}", method, request_path);
+        tracing::debug!("Creating BHTTP request: {} {}", method, request_path);
 
         // Create the BHTTP message
         let mut bhttp_msg = Message::request(
@@ -176,13 +175,13 @@ impl OhttpClient {
         // Add headers
         for (name, value) in headers {
             bhttp_msg.put_header(name.as_bytes(), value.as_bytes());
-            debug!("Added header: {}: {}", name, value);
+            tracing::debug!("Added header: {}: {}", name, value);
         }
 
         // Add body
         if !body.is_empty() {
             bhttp_msg.write_content(body);
-            debug!("Added body, size: {} bytes", body.len());
+            tracing::debug!("Added body, size: {} bytes", body.len());
         }
 
         // Serialize to bytes
@@ -198,7 +197,7 @@ impl OhttpClient {
     fn parse_bhttp_response(&self, bhttp_bytes: &[u8]) -> Result<(u16, HeaderMap, Vec<u8>)> {
         use bhttp::Message;
 
-        debug!("Parsing BHTTP response, size: {} bytes", bhttp_bytes.len());
+        tracing::debug!("Parsing BHTTP response, size: {} bytes", bhttp_bytes.len());
 
         let mut cursor = std::io::Cursor::new(bhttp_bytes);
         let bhttp_msg = Message::read_bhttp(&mut cursor)
@@ -210,7 +209,7 @@ impl OhttpClient {
             .status()
             .ok_or_else(|| anyhow!("Missing status in BHTTP response"))?;
 
-        debug!("Parsed status: {}", u16::from(status));
+        tracing::debug!("Parsed status: {}", u16::from(status));
 
         // Extract headers
         let mut headers = HeaderMap::new();
@@ -223,13 +222,13 @@ impl OhttpClient {
                 http::HeaderValue::from_bytes(field.value()),
             ) {
                 headers.insert(header_name, header_value);
-                debug!("Parsed header: {}: {}", name, value);
+                tracing::debug!("Parsed header: {}: {}", name, value);
             }
         }
 
         // Extract body
         let body = bhttp_msg.content().to_vec();
-        debug!("Parsed body, size: {} bytes", body.len());
+        tracing::debug!("Parsed body, size: {} bytes", body.len());
 
         Ok((status.into(), headers, body))
     }

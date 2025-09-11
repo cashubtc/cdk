@@ -4,7 +4,6 @@ use axum::Router;
 use clap::Parser;
 use ohttp_gateway::cli::Cli;
 use ohttp_gateway::{gateway, key_config};
-use tracing::info;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
@@ -38,9 +37,8 @@ async fn main() -> Result<()> {
     // Create TCP listener
     let addr = format!("0.0.0.0:{}", cli.port);
 
-    info!("OHTTP Gateway listening on: {}", addr);
-    info!("Forwarding requests to: {}", cli.backend_url);
-    tracing::debug!("Forwarding requests to: {}", cli.backend_url);
+    tracing::info!("OHTTP Gateway listening on: {}", addr);
+    tracing::info!("Forwarding requests to: {}", cli.backend_url);
 
     // Run the server
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -61,5 +59,5 @@ fn init_logging() {
         .with_env_filter(env_filter)
         .init();
 
-    info!("Logging initialized");
+    tracing::info!("Logging initialized");
 }
