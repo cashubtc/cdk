@@ -38,7 +38,7 @@ impl From<secp256k1::SecretKey> for SecretKey {
 
 impl fmt::Display for SecretKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_secret_hex())
+        write!(f, "[REDACTED]")
     }
 }
 
