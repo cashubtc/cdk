@@ -229,6 +229,7 @@ macro_rules! mint_db_test {
             add_mint_quote_only_once,
             register_payments,
             read_mint_from_db_and_tx,
+            get_proofs_by_keyset_id,
             reject_duplicate_payments_same_tx,
             reject_duplicate_payments_diff_tx,
             reject_over_issue_same_tx,
@@ -241,7 +242,12 @@ macro_rules! mint_db_test {
         $(
             #[tokio::test]
             async fn $name() {
-                cdk_common::database::mint::test::$name($make_db_fn().await).await;
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards");
+
+                cdk_common::database::mint::test::$name($make_db_fn(format!("test_{}_{}", now.as_nanos(), stringify!($name))).await).await;
             }
         )+
     };
