@@ -25,7 +25,7 @@ mod test {
     use super::*;
     use crate::common::Config;
 
-    async fn provide_db() -> MintSqliteDatabase {
+    async fn provide_db(_test_name: String) -> MintSqliteDatabase {
         memory::empty().await.unwrap()
     }
 

@@ -923,7 +923,7 @@ VALUES (:quote_id, :amount, :timestamp);
         query(
             r#"
             DELETE FROM melt_quote
-            WHERE id=?
+            WHERE id=:id
             "#,
         )?
         .bind("id", quote_id.to_string())
@@ -1452,7 +1452,7 @@ where
             FROM
                 proof
             WHERE
-                keyset_id=?
+                keyset_id=:keyset_id
             "#,
         )?
         .bind("keyset_id", keyset_id.to_string())
