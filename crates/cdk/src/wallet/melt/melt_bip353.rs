@@ -66,7 +66,7 @@ impl Wallet {
         let address_string = address.to_string();
 
         // Resolve the address to get payment instructions
-        let payment_instructions = address.resolve().await.map_err(|e| {
+        let payment_instructions = address.resolve(&self.client).await.map_err(|e| {
             tracing::error!(
                 "Failed to resolve BIP353 address '{}': {}",
                 address_string,
