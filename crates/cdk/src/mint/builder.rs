@@ -22,12 +22,11 @@ use crate::amount::Amount;
 use crate::cdk_database;
 use crate::cdk_payment::{self, MintPayment};
 use crate::mint::Mint;
-use crate::nuts::nut06::OhttpSettings;
 #[cfg(feature = "auth")]
 use crate::nuts::ProtectedEndpoint;
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
-    MppMethodSettings, PaymentMethod,
+    MppMethodSettings, OhttpSettings, PaymentMethod,
 };
 use crate::types::PaymentProcessorKey;
 
@@ -428,14 +427,14 @@ mod tests {
         // Test that OhttpSettings can be created correctly
         let ohttp_settings =
             OhttpSettings::new(true, Some("https://gateway.example.com".to_string()));
-        assert!(ohttp_settings.enabled);
+        assert!(ohttp_settings.supported);
         assert_eq!(
             ohttp_settings.gateway_url,
             Some("https://gateway.example.com".to_string())
         );
 
         let ohttp_settings_no_gateway = OhttpSettings::new(true, None);
-        assert!(ohttp_settings_no_gateway.enabled);
+        assert!(ohttp_settings_no_gateway.supported);
         assert!(ohttp_settings_no_gateway.gateway_url.is_none());
     }
 }

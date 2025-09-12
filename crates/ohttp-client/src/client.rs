@@ -17,6 +17,27 @@ pub struct OhttpClient {
 
 impl OhttpClient {
     /// Create a new OHTTP client
+    ///
+    /// # Relay URL Construction
+    ///
+    /// When making requests, the gateway URL is normalized (scheme + authority only)
+    /// and appended as a path component to the relay URL. This provides privacy
+    /// protection by only revealing the gateway's base URL to the relay.
+    ///
+    /// ## Examples
+    ///
+    /// | Relay Base | Gateway URL | Final Relay URL |
+    /// |------------|-------------|-----------------|
+    /// | `https://relay.com` | `https://dir.com/session123` | `https://relay.com/https://dir.com/` |
+    /// | `https://relay.com/ohttp` | `https://payjoin.xyz:8080/api` | `https://relay.com/ohttp/https://payjoin.xyz:8080/` |
+    /// | `https://relay.com/` | `https://dir.com` | `https://relay.com/https://dir.com/` |
+    ///
+    /// # Arguments
+    ///
+    /// * `relay_url` - The OHTTP relay that will forward requests to the gateway
+    /// * `ohttp_keys` - Optional pre-fetched OHTTP keys (will fetch from gateway if None)
+    /// * `gateway_url` - The OHTTP gateway that will decrypt and forward to the target
+    /// * `target_url` - The final destination for the decrypted request
     pub fn new(
         relay_url: Url,
         ohttp_keys: Option<Vec<u8>>,
@@ -53,6 +74,49 @@ impl OhttpClient {
         *ohttp_keys = Some(keys.to_vec());
 
         Ok(keys.to_vec())
+    }
+
+    /// Construct the relay URL with normalized gateway URL as path component
+    ///
+    /// This implements the privacy protection mechanism where:
+    /// 1. Gateway URL is normalized to its base form (scheme + authority only)
+    /// 2. The normalized gateway base is appended as a path component to the relay URL
+    /// 3. Only scheme and authority are revealed to the relay, full path/query/fragments remain encrypted
+    fn construct_relay_url(&self) -> Result<Url> {
+        // Step 1: Normalize gateway URL to base form (scheme + authority only)
+        let gateway_base = self
+            .gateway_url
+            .join("/")
+            .map_err(|e| anyhow!("Failed to normalize gateway URL: {}", e))?;
+
+        tracing::debug!(
+            "Normalized gateway URL from '{}' to '{}'",
+            self.gateway_url,
+            gateway_base
+        );
+
+        // Step 2: Manually construct the full relay URL to avoid URL.join() issues with absolute URLs
+        let mut full_relay_url = self.relay_url.clone();
+
+        // Ensure the relay path ends with a slash
+        let relay_path = if full_relay_url.path().ends_with('/') {
+            full_relay_url.path().to_string()
+        } else {
+            format!("{}/", full_relay_url.path())
+        };
+
+        // Append the gateway URL as a path component
+        let new_path = format!("{}{}", relay_path, gateway_base);
+        full_relay_url.set_path(&new_path);
+
+        tracing::debug!(
+            "Constructed relay URL: '{}' + '{}' = '{}'",
+            self.relay_url,
+            gateway_base,
+            full_relay_url
+        );
+
+        Ok(full_relay_url)
     }
 
     /// Send a request using proper OHTTP encapsulation
@@ -94,8 +158,8 @@ impl OhttpClient {
             ohttp_request.len()
         );
 
-        // Send directly to the target URL without appending .well-known/ohttp-gateway
-        let endpoint_url = self.relay_url.clone();
+        // Construct relay URL with normalized gateway URL as path component
+        let endpoint_url = self.construct_relay_url()?;
 
         tracing::debug!("Sending OHTTP request to: {}", endpoint_url);
 
@@ -372,5 +436,106 @@ mod tests {
         assert_eq!(authority, "example.com:8443");
         assert!(!authority.contains("https://"));
         assert!(!authority.contains("/some/path"));
+    }
+
+    #[test]
+    fn test_construct_relay_url() {
+        // Test case 1: Basic URL construction
+        let relay_url = Url::parse("https://relay.com").unwrap();
+        let gateway_url =
+            Url::parse("https://payjoin-directory.com/session123?query=value#fragment").unwrap();
+        let target_url = Url::parse("https://target.com").unwrap();
+
+        let client = OhttpClient::new(relay_url, None, gateway_url, target_url);
+        let result = client.construct_relay_url().unwrap();
+
+        assert_eq!(
+            result.to_string(),
+            "https://relay.com/https://payjoin-directory.com/"
+        );
+
+        // Test case 2: Relay with existing path
+        let relay_url = Url::parse("https://relay.com/ohttp").unwrap();
+        let gateway_url = Url::parse("https://payjoin.xyz:8080/api").unwrap();
+        let target_url = Url::parse("https://target.com").unwrap();
+
+        let client = OhttpClient::new(relay_url, None, gateway_url, target_url);
+        let result = client.construct_relay_url().unwrap();
+
+        assert_eq!(
+            result.to_string(),
+            "https://relay.com/ohttp/https://payjoin.xyz:8080/"
+        );
+
+        // Test case 3: Relay URL with trailing slash
+        let relay_url = Url::parse("https://relay.com/").unwrap();
+        let gateway_url = Url::parse("https://dir.com").unwrap();
+        let target_url = Url::parse("https://target.com").unwrap();
+
+        let client = OhttpClient::new(relay_url, None, gateway_url, target_url);
+        let result = client.construct_relay_url().unwrap();
+
+        assert_eq!(result.to_string(), "https://relay.com/https://dir.com/");
+    }
+
+    #[test]
+    fn test_gateway_url_normalization() {
+        // Test that gateway URL normalization strips path, query, and fragment
+        let relay_url = Url::parse("https://relay.example.com").unwrap();
+        let target_url = Url::parse("https://target.com").unwrap();
+
+        // Test with complex gateway URL
+        let gateway_url = Url::parse(
+            "https://gateway.com:8443/some/deep/path?param1=value1&param2=value2#section",
+        )
+        .unwrap();
+        let client = OhttpClient::new(relay_url.clone(), None, gateway_url, target_url.clone());
+        let result = client.construct_relay_url().unwrap();
+
+        // Should normalize to just scheme + authority
+        assert_eq!(
+            result.to_string(),
+            "https://relay.example.com/https://gateway.com:8443/"
+        );
+
+        // Test with simple gateway URL
+        let gateway_url_simple = Url::parse("https://simple.gateway.com").unwrap();
+        let client_simple = OhttpClient::new(relay_url, None, gateway_url_simple, target_url);
+        let result_simple = client_simple.construct_relay_url().unwrap();
+
+        assert_eq!(
+            result_simple.to_string(),
+            "https://relay.example.com/https://simple.gateway.com/"
+        );
+    }
+
+    #[test]
+    fn test_privacy_protection_verification() {
+        // Verify that sensitive information from gateway URL is NOT exposed to relay
+        let relay_url = Url::parse("https://relay.com").unwrap();
+        let gateway_url = Url::parse(
+            "https://payjoin.com/sensitive/session/abc123?secret=token&user=alice#private",
+        )
+        .unwrap();
+        let target_url = Url::parse("https://target.com").unwrap();
+
+        let client = OhttpClient::new(relay_url, None, gateway_url, target_url);
+        let relay_request_url = client.construct_relay_url().unwrap();
+
+        let relay_url_str = relay_request_url.to_string();
+
+        // Verify only scheme and authority are included
+        assert!(relay_url_str.contains("https://payjoin.com/"));
+
+        // Verify sensitive parts are NOT included
+        assert!(!relay_url_str.contains("sensitive"));
+        assert!(!relay_url_str.contains("session"));
+        assert!(!relay_url_str.contains("abc123"));
+        assert!(!relay_url_str.contains("secret=token"));
+        assert!(!relay_url_str.contains("user=alice"));
+        assert!(!relay_url_str.contains("#private"));
+
+        // Expected format: https://relay.com/https://payjoin.com/
+        assert_eq!(relay_url_str, "https://relay.com/https://payjoin.com/");
     }
 }
