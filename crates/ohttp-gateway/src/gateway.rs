@@ -10,6 +10,9 @@ use crate::key_config::OhttpConfig;
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+/// Magic Cashu purpose string for gateway prober
+const MAGIC_CASHU_PURPOSE: &[u8] = b"CASHU 2253f530-151f-4800-a58e-c852a8dc8cff";
+
 #[derive(Debug)]
 struct BackendResponse {
     status: u16,
@@ -96,6 +99,72 @@ pub async fn handle_ohttp_keys(
         .header("content-type", "application/ohttp-keys")
         .body(axum::body::Body::from(keys))
         .unwrap())
+}
+
+/// Handle GET requests to /.well-known/ohttp-gateway
+///
+/// This endpoint handles two scenarios:
+/// 1. Without query params: returns OHTTP keys (standard behavior)
+/// 2. With ?allowed_purposes: returns Cashu opt-in information (gateway prober)
+pub async fn handle_gateway_get(
+    axum::extract::Extension(ohttp): axum::extract::Extension<OhttpConfig>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Response, GatewayError> {
+    tracing::debug!(
+        "Received GET request to /.well-known/ohttp-gateway with params: {:?}",
+        params
+    );
+
+    // Check if the allowed_purposes query parameter is present (gateway prober)
+    if params.contains_key("allowed_purposes") {
+        tracing::debug!("Received gateway prober request for allowed purposes");
+
+        // Encode the magic string in the same format as a TLS ALPN protocol list (a
+        // U16BE count of strings followed by U8 length encoded strings).
+        //
+        // The string is just "CASHU" followed by a UUID, that signals to relays
+        // that this OHTTP gateway will accept any requests associated with this
+        // purpose.
+        let mut alpn_encoded = Vec::new();
+
+        // Add 16-bit big-endian count of strings in the list
+        // We have 1 string
+        let num_strings = 1u16;
+        alpn_encoded.extend_from_slice(&num_strings.to_be_bytes());
+
+        // Add the Cashu purpose string with its length prefix
+        let purpose_len = MAGIC_CASHU_PURPOSE.len() as u8;
+        alpn_encoded.push(purpose_len);
+        alpn_encoded.extend_from_slice(MAGIC_CASHU_PURPOSE);
+
+        tracing::debug!(
+            "Responding with Cashu opt-in, purpose string: {}",
+            String::from_utf8_lossy(MAGIC_CASHU_PURPOSE)
+        );
+
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/x-ohttp-allowed-purposes")
+            .body(axum::body::Body::from(alpn_encoded))
+            .unwrap())
+    } else {
+        // Standard OHTTP keys request
+        tracing::debug!("Returning OHTTP keys");
+
+        let keys = match ohttp.server.config().encode() {
+            Ok(keys) => keys,
+            Err(e) => {
+                tracing::error!("Failed to encode OHTTP keys: {}", e);
+                return Err(GatewayError::KeyEncodingFailed);
+            }
+        };
+
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/ohttp-keys")
+            .body(axum::body::Body::from(keys))
+            .unwrap())
+    }
 }
 
 #[derive(Clone)]

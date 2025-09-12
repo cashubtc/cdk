@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route(
             "/.well-known/ohttp-gateway",
-            post(gateway::handle_ohttp_request),
+            post(gateway::handle_ohttp_request).get(gateway::handle_gateway_get),
         )
         .route("/ohttp-keys", get(gateway::handle_ohttp_keys))
         // Catch-all route to handle any path with OHTTP requests

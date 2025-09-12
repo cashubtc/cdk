@@ -1134,11 +1134,7 @@ pub fn create_ohttp_gateway_router(settings: &config::Settings, work_dir: &Path)
     let router = Router::new()
         .route(
             "/.well-known/ohttp-gateway",
-            post(ohttp_gateway::handle_ohttp_request),
-        )
-        .route(
-            "/.well-known/ohttp-gateway",
-            get(ohttp_gateway::handle_ohttp_keys),
+            post(ohttp_gateway::handle_ohttp_request).get(ohttp_gateway::handle_gateway_get),
         )
         .layer(axum::extract::Extension(ohttp))
         .layer(axum::extract::Extension(mint_url));
