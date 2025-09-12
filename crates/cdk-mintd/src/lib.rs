@@ -1136,7 +1136,10 @@ pub fn create_ohttp_gateway_router(settings: &config::Settings, work_dir: &Path)
             "/.well-known/ohttp-gateway",
             post(ohttp_gateway::handle_ohttp_request),
         )
-        .route("/ohttp-keys", get(ohttp_gateway::handle_ohttp_keys))
+        .route(
+            "/.well-known/ohttp-gateway",
+            get(ohttp_gateway::handle_ohttp_keys),
+        )
         .layer(axum::extract::Extension(ohttp))
         .layer(axum::extract::Extension(mint_url));
 

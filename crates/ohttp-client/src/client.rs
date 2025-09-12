@@ -39,7 +39,7 @@ impl OhttpClient {
 
     /// Fetch OHTTP keys from the keys source (can be different from target URL)
     pub async fn fetch_keys(&self) -> Result<Vec<u8>> {
-        let keys_url = self.gateway_url.join("/ohttp-keys")?;
+        let keys_url = self.gateway_url.join("/.well-known/ohttp-gateway")?;
 
         tracing::debug!("Fetching OHTTP keys from: {}", keys_url);
 
