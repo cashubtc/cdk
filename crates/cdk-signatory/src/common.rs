@@ -59,7 +59,7 @@ pub async fn init_keysets(
             if let Some((input_fee_ppk, max_order)) = supported_units.get(&unit) {
                 if !keysets.is_empty()
                     && &highest_index_keyset.input_fee_ppk == input_fee_ppk
-                    && &highest_index_keyset.max_order == max_order
+                    && highest_index_keyset.amounts.len() == (*max_order as usize)
                 {
                     tracing::debug!("Current highest index keyset matches expect fee and max order. Setting active");
                     let id = highest_index_keyset.id;
