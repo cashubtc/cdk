@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 // external crates
 use anyhow::{anyhow, bail, Result};
-use axum::routing::{get, post};
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, MintDatabase, MintKVStore, MintKeysDatabase};
@@ -1100,48 +1099,17 @@ fn work_dir() -> Result<PathBuf> {
 
 /// Creates an OHTTP gateway router that forwards encapsulated requests to the mint
 pub fn create_ohttp_gateway_router(settings: &config::Settings, work_dir: &Path) -> Result<Router> {
-    let ohttp_config = settings
-        .ohttp_gateway
-        .as_ref()
-        .ok_or_else(|| anyhow!("OHTTP gateway configuration not found"))?;
-
-    if !ohttp_config.enabled {
-        bail!("OHTTP gateway is not enabled in configuration");
-    }
-
     // Use the mint's own URL as the backend URL
-    // This is the URL where the mint API is actually running
-    let mint_url = {
-        let mint_url_str = format!(
-            "http://{}:{}",
-            settings.info.listen_host, settings.info.listen_port
-        );
-        url::Url::parse(&mint_url_str)
-            .map_err(|e| anyhow!("Failed to construct mint URL: {}", e))?
-    };
-
-    tracing::info!("Creating OHTTP gateway router");
-    tracing::info!("Mint backend URL: {}", mint_url);
+    let backend_url = format!(
+        "http://{}:{}",
+        settings.info.listen_host, settings.info.listen_port
+    );
 
     // OHTTP keys are always stored in the work directory
     let ohttp_keys_path = work_dir.join("ohttp_keys.json");
-    tracing::info!("OHTTP keys file: {:?}", ohttp_keys_path);
 
-    // Load or generate OHTTP keys
-    let ohttp = ohttp_gateway::load_or_generate_keys(&ohttp_keys_path)?;
-
-    // Create the router with OHTTP gateway endpoints
-    let router = Router::new()
-        .route(
-            "/.well-known/ohttp-gateway",
-            post(ohttp_gateway::handle_ohttp_request).get(ohttp_gateway::handle_gateway_get),
-        )
-        .layer(axum::extract::Extension(ohttp))
-        .layer(axum::extract::Extension(mint_url));
-
-    tracing::info!("OHTTP gateway router created successfully");
-
-    Ok(router)
+    // Use the ohttp-gateway crate's router creation function
+    ohttp_gateway::create_ohttp_gateway_router(&backend_url, ohttp_keys_path)
 }
 
 /// The main entry point for the application when used as a library
