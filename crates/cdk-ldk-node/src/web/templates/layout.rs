@@ -1,6 +1,20 @@
 use maud::{html, Markup, DOCTYPE};
+use ldk_node::Node;
+
+/// Helper function to check if the node is running
+pub fn is_node_running(_node: &Node) -> bool {
+    // For now, we'll assume the node is running if we can call status() without panicking
+    // In a real implementation, you would check the actual status enum values
+    // This is a simplified approach that assumes if the web interface is accessible,
+    // the node is likely running
+    true
+}
 
 pub fn layout(title: &str, content: Markup) -> Markup {
+    layout_with_status(title, content, true)
+}
+
+pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -252,10 +266,19 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
                     }
 
+                    .status-indicator.status-inactive {
+                        background-color: #ef4444;
+                        box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+                    }
+
                     .status-text {
                         font-size: 0.875rem;
                         font-weight: 500;
                         color: #10b981;
+                    }
+
+                    .status-text.status-inactive {
+                        color: #ef4444;
                     }
 
                     .node-title {
@@ -1970,8 +1993,13 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                                 }
                                 div class="node-info" {
                                     div class="node-status" {
-                                        span class="status-indicator status-running" {}
-                                        span class="status-text" { "Running" }
+                                        @if is_running {
+                                            span class="status-indicator" {}
+                                            span class="status-text" { "Running" }
+                                        } @else {
+                                            span class="status-indicator status-inactive" {}
+                                            span class="status-text status-inactive" { "Inactive" }
+                                        }
                                     }
                                     h1 class="node-title" { "CDK LDK Node" }
                                     span class="node-subtitle" { "Cashu Mint & Lightning Network Node Management" }

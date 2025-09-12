@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::web::handlers::utils::deserialize_optional_u64;
 use crate::web::handlers::AppState;
 use crate::web::templates::{
-    error_message, form_card, format_sats_as_btc, info_card, layout, success_message,
+    error_message, form_card, format_sats_as_btc, info_card, layout_with_status, is_node_running, success_message,
 };
 
 #[derive(Deserialize)]
@@ -43,7 +43,7 @@ pub async fn channels_page(State(_state): State<AppState>) -> Result<Response, S
         .unwrap())
 }
 
-pub async fn open_channel_page(State(_state): State<AppState>) -> Result<Html<String>, StatusCode> {
+pub async fn open_channel_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let content = form_card(
         "Open New Channel",
         html! {
@@ -76,7 +76,8 @@ pub async fn open_channel_page(State(_state): State<AppState>) -> Result<Html<St
         },
     );
 
-    Ok(Html(layout("Open Channel", content).into_string()))
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(layout_with_status("Open Channel", content, is_running).into_string()))
 }
 
 pub async fn post_open_channel(
@@ -106,7 +107,7 @@ pub async fn post_open_channel(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Open Channel Error", content).into_string(),
+                    layout_with_status("Open Channel Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -126,7 +127,7 @@ pub async fn post_open_channel(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Open Channel Error", content).into_string(),
+                    layout_with_status("Open Channel Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -150,7 +151,7 @@ pub async fn post_open_channel(
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .header("content-type", "text/html")
             .body(Body::from(
-                layout("Open Channel Error", content).into_string(),
+                layout_with_status("Open Channel Error", content, true).into_string(),
             ))
             .unwrap());
     }
@@ -208,7 +209,7 @@ pub async fn post_open_channel(
     Ok(Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
-            layout("Open Channel Result", content).into_string(),
+            layout_with_status("Open Channel Result", content, true).into_string(),
         ))
         .unwrap())
 }
@@ -227,7 +228,7 @@ pub async fn close_channel_page(
                 a href="/balance" { button { "← Back to Lightning" } }
             }
         };
-        return Ok(Html(layout("Close Channel Error", content).into_string()));
+        return Ok(Html(layout_with_status("Close Channel Error", content, true).into_string()));
     }
 
     // Get channel information for amount display
@@ -268,7 +269,8 @@ pub async fn close_channel_page(
         },
     );
 
-    Ok(Html(layout("Close Channel", content).into_string()))
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(layout_with_status("Close Channel", content, is_running).into_string()))
 }
 
 pub async fn force_close_channel_page(
@@ -286,7 +288,7 @@ pub async fn force_close_channel_page(
             }
         };
         return Ok(Html(
-            layout("Force Close Channel Error", content).into_string(),
+            layout_with_status("Force Close Channel Error", content, true).into_string(),
         ));
     }
 
@@ -336,7 +338,8 @@ pub async fn force_close_channel_page(
         },
     );
 
-    Ok(Html(layout("Force Close Channel", content).into_string()))
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(layout_with_status("Force Close Channel", content, is_running).into_string()))
 }
 
 pub async fn post_close_channel(
@@ -366,7 +369,7 @@ pub async fn post_close_channel(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Close Channel Error", content).into_string(),
+                    layout_with_status("Close Channel Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -386,7 +389,7 @@ pub async fn post_close_channel(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Close Channel Error", content).into_string(),
+                    layout_with_status("Close Channel Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -437,7 +440,7 @@ pub async fn post_close_channel(
     Ok(Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
-            layout("Close Channel Result", content).into_string(),
+            layout_with_status("Close Channel Result", content, true).into_string(),
         ))
         .unwrap())
 }
@@ -469,7 +472,7 @@ pub async fn post_force_close_channel(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Force Close Channel Error", content).into_string(),
+                    layout_with_status("Force Close Channel Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -489,7 +492,7 @@ pub async fn post_force_close_channel(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Force Close Channel Error", content).into_string(),
+                    layout_with_status("Force Close Channel Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -542,7 +545,7 @@ pub async fn post_force_close_channel(
     Ok(Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
-            layout("Force Close Channel Result", content).into_string(),
+            layout_with_status("Force Close Channel Result", content, true).into_string(),
         ))
         .unwrap())
 }

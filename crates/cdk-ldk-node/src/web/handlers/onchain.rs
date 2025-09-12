@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::web::handlers::utils::deserialize_optional_u64;
 use crate::web::handlers::AppState;
 use crate::web::templates::{
-    error_message, form_card, format_sats_as_btc, info_card, layout, success_message,
+    error_message, form_card, format_sats_as_btc, info_card, layout_with_status, is_node_running, success_message,
 };
 
 #[derive(Deserialize, Serialize)]
@@ -93,7 +93,8 @@ pub async fn get_new_address(State(state): State<AppState>) -> Result<Html<Strin
         }
     };
 
-    Ok(Html(layout("New Address", content).into_string()))
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(layout_with_status("New Address", content, is_running).into_string()))
 }
 
 pub async fn onchain_page(
@@ -213,7 +214,8 @@ pub async fn onchain_page(
         }
     }
 
-    Ok(Html(layout("On-chain", content).into_string()))
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(layout_with_status("On-chain", content, is_running).into_string()))
 }
 
 pub async fn post_send_onchain(
@@ -255,7 +257,7 @@ pub async fn onchain_confirm_page(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Send On-chain Error", content).into_string(),
+                    layout_with_status("Send On-chain Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -281,7 +283,7 @@ pub async fn onchain_confirm_page(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Send On-chain Error", content).into_string(),
+                    layout_with_status("Send On-chain Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -355,7 +357,7 @@ pub async fn onchain_confirm_page(
     Ok(Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
-            layout("Confirm Transaction", content).into_string(),
+            layout_with_status("Confirm Transaction", content, true).into_string(),
         ))
         .unwrap())
 }
@@ -388,7 +390,7 @@ async fn execute_onchain_transaction(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Send On-chain Error", content).into_string(),
+                    layout_with_status("Send On-chain Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -467,7 +469,7 @@ async fn execute_onchain_transaction(
     Ok(Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
-            layout("Send On-chain Result", content).into_string(),
+            layout_with_status("Send On-chain Result", content, true).into_string(),
         ))
         .unwrap())
 }
