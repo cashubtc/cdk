@@ -242,7 +242,12 @@ macro_rules! mint_db_test {
         $(
             #[tokio::test]
             async fn $name() {
-                cdk_common::database::mint::test::$name($make_db_fn().await).await;
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards");
+
+                cdk_common::database::mint::test::$name($make_db_fn(format!("test_{}_{}", now.as_nanos(), stringify!($name))).await).await;
             }
         )+
     };
