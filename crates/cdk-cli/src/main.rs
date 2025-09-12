@@ -9,7 +9,7 @@ use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{HttpClient, MultiMintWallet, Wallet, WalletBuilder};
+use cdk::wallet::MultiMintWallet;
 #[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
@@ -49,6 +49,9 @@ struct Cli {
     /// NWS Proxy
     #[arg(short, long)]
     proxy: Option<Url>,
+    /// Currency unit to use for the wallet
+    #[arg(short, long, default_value = "sat")]
+    unit: String,
     #[command(subcommand)]
     command: Commands,
 }
@@ -67,6 +70,8 @@ enum Commands {
     Receive(sub_commands::receive::ReceiveSubCommand),
     /// Send
     Send(sub_commands::send::SendSubCommand),
+    /// Transfer tokens between mints
+    Transfer(sub_commands::transfer::TransferSubCommand),
     /// Reclaim pending proofs that are no longer pending
     CheckPending,
     /// View mint info
@@ -168,62 +173,25 @@ async fn main() -> Result<()> {
     };
     let seed = mnemonic.to_seed_normalized("");
 
-    let mut wallets: Vec<Wallet> = Vec::new();
+    // Parse currency unit from args
+    let currency_unit = CurrencyUnit::from_str(&args.unit)
+        .unwrap_or_else(|_| CurrencyUnit::Custom(args.unit.clone()));
 
-    let mints = localstore.get_mints().await?;
-
-    for (mint_url, mint_info) in mints {
-        let units = if let Some(mint_info) = mint_info {
-            mint_info.supported_units().into_iter().cloned().collect()
-        } else {
-            vec![CurrencyUnit::Sat]
-        };
-
-        let proxy_client = if let Some(proxy_url) = args.proxy.as_ref() {
-            Some(HttpClient::with_proxy(
-                mint_url.clone(),
+    // Create MultiMintWallet with specified currency unit
+    // The constructor will automatically load wallets for this currency unit
+    let multi_mint_wallet = match &args.proxy {
+        Some(proxy_url) => {
+            // Create MultiMintWallet with proxy configuration
+            MultiMintWallet::new_with_proxy(
+                localstore.clone(),
+                seed,
+                currency_unit.clone(),
                 proxy_url.clone(),
-                None,
-                true,
-            )?)
-        } else {
-            None
-        };
-
-        let seed = mnemonic.to_seed_normalized("");
-
-        for unit in units {
-            let mint_url_clone = mint_url.clone();
-            let mut builder = WalletBuilder::new()
-                .mint_url(mint_url_clone.clone())
-                .unit(unit)
-                .localstore(localstore.clone())
-                .seed(seed);
-
-            if let Some(http_client) = &proxy_client {
-                builder = builder.client(http_client.clone());
-            }
-
-            let wallet = builder.build()?;
-
-            let wallet_clone = wallet.clone();
-
-            tokio::spawn(async move {
-                // We refresh keysets, this internally gets mint info
-                if let Err(err) = wallet_clone.refresh_keysets().await {
-                    tracing::error!(
-                        "Could not get mint quote for {}, {}",
-                        wallet_clone.mint_url,
-                        err
-                    );
-                }
-            });
-
-            wallets.push(wallet);
+            )
+            .await?
         }
-    }
-
-    let multi_mint_wallet = MultiMintWallet::new(localstore, seed, wallets);
+        None => MultiMintWallet::new(localstore.clone(), seed, currency_unit.clone()).await?,
+    };
 
     match &args.command {
         Commands::DecodeToken(sub_command_args) => {
@@ -238,6 +206,9 @@ async fn main() -> Result<()> {
         }
         Commands::Send(sub_command_args) => {
             sub_commands::send::send(&multi_mint_wallet, sub_command_args).await
+        }
+        Commands::Transfer(sub_command_args) => {
+            sub_commands::transfer::transfer(&multi_mint_wallet, sub_command_args).await
         }
         Commands::CheckPending => {
             sub_commands::check_pending::check_pending(&multi_mint_wallet).await

@@ -4,11 +4,11 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use cdk::mint_url::MintUrl;
 use cdk::nuts::{SecretKey, Token};
 use cdk::util::unix_time;
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
-use cdk::wallet::types::WalletKey;
-use cdk::wallet::ReceiveOptions;
+use cdk::wallet::{MultiMintReceiveOptions, ReceiveOptions};
 use cdk::Amount;
 use clap::Args;
 use nostr_sdk::nips::nip04;
@@ -36,6 +36,12 @@ pub struct ReceiveSubCommand {
     /// Preimage
     #[arg(short, long,  action = clap::ArgAction::Append)]
     preimage: Vec<String>,
+    /// Allow receiving from untrusted mints (mints not already in the wallet)
+    #[arg(long, default_value = "false")]
+    allow_untrusted: bool,
+    /// Transfer tokens from untrusted mints to this mint
+    #[arg(long, value_name = "MINT_URL")]
+    transfer_to: Option<String>,
 }
 
 pub async fn receive(
@@ -69,6 +75,8 @@ pub async fn receive(
                 token_str,
                 &signing_keys,
                 &sub_command_args.preimage,
+                sub_command_args.allow_untrusted,
+                sub_command_args.transfer_to.as_deref(),
             )
             .await?
         }
@@ -109,6 +117,8 @@ pub async fn receive(
                     token_str,
                     &signing_keys,
                     &sub_command_args.preimage,
+                    sub_command_args.allow_untrusted,
+                    sub_command_args.transfer_to.as_deref(),
                 )
                 .await
                 {
@@ -135,29 +145,40 @@ async fn receive_token(
     token_str: &str,
     signing_keys: &[SecretKey],
     preimage: &[String],
+    allow_untrusted: bool,
+    transfer_to: Option<&str>,
 ) -> Result<Amount> {
     let token: Token = Token::from_str(token_str)?;
 
     let mint_url = token.mint_url()?;
-    let unit = token.unit().unwrap_or_default();
 
-    if multi_mint_wallet
-        .get_wallet(&WalletKey::new(mint_url.clone(), unit.clone()))
-        .await
-        .is_none()
-    {
-        get_or_create_wallet(multi_mint_wallet, &mint_url, unit).await?;
+    // Parse transfer_to mint URL if provided
+    let transfer_to_mint = if let Some(mint_str) = transfer_to {
+        Some(MintUrl::from_str(mint_str)?)
+    } else {
+        None
+    };
+
+    // Check if the mint is already trusted
+    let is_trusted = multi_mint_wallet.get_wallet(&mint_url).await.is_some();
+
+    // If mint is not trusted and we don't allow untrusted, add it first (old behavior)
+    if !is_trusted && !allow_untrusted {
+        get_or_create_wallet(multi_mint_wallet, &mint_url).await?;
     }
 
+    // Create multi-mint receive options
+    let multi_mint_options = MultiMintReceiveOptions::default()
+        .allow_untrusted(allow_untrusted)
+        .transfer_to_mint(transfer_to_mint)
+        .receive_options(ReceiveOptions {
+            p2pk_signing_keys: signing_keys.to_vec(),
+            preimages: preimage.to_vec(),
+            ..Default::default()
+        });
+
     let amount = multi_mint_wallet
-        .receive(
-            token_str,
-            ReceiveOptions {
-                p2pk_signing_keys: signing_keys.to_vec(),
-                preimages: preimage.to_vec(),
-                ..Default::default()
-            },
-        )
+        .receive(token_str, multi_mint_options)
         .await?;
     Ok(amount)
 }

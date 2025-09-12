@@ -5,8 +5,8 @@ use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use cdk::nuts::nut01::PublicKey;
 use cdk::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
 use cdk::nuts::nut18::{Nut10SecretRequest, TransportType};
-use cdk::nuts::{CurrencyUnit, PaymentRequest, PaymentRequestPayload, Token, Transport};
-use cdk::wallet::{MultiMintWallet, ReceiveOptions};
+use cdk::nuts::{PaymentRequest, PaymentRequestPayload, Token, Transport};
+use cdk::wallet::MultiMintWallet;
 use clap::Args;
 use nostr_sdk::nips::nip19::Nip19Profile;
 use nostr_sdk::prelude::*;
@@ -16,9 +16,6 @@ use nostr_sdk::{Client as NostrClient, Filter, Keys, ToBech32};
 pub struct CreateRequestSubCommand {
     #[arg(short, long)]
     amount: Option<u64>,
-    /// Currency unit e.g. sat
-    #[arg(default_value = "sat")]
-    unit: String,
     /// Quote description
     description: Option<String>,
     /// P2PK: Public key(s) for which the token can be spent with valid signature(s)
@@ -57,7 +54,7 @@ pub async fn create_request(
 ) -> Result<()> {
     // Get available mints from the wallet
     let mints: Vec<cdk::mint_url::MintUrl> = multi_mint_wallet
-        .get_balances(&CurrencyUnit::Sat)
+        .get_balances()
         .await?
         .keys()
         .cloned()
@@ -239,7 +236,7 @@ pub async fn create_request(
     let req = PaymentRequest {
         payment_id: None,
         amount: sub_command_args.amount.map(|a| a.into()),
-        unit: Some(CurrencyUnit::from_str(&sub_command_args.unit)?),
+        unit: Some(multi_mint_wallet.unit().clone()),
         single_use: Some(true),
         mints: Some(mints),
         description: sub_command_args.description.clone(),
@@ -281,7 +278,10 @@ pub async fn create_request(
                         Token::new(payload.mint, payload.proofs, payload.memo, payload.unit);
 
                     let amount = multi_mint_wallet
-                        .receive(&token.to_string(), ReceiveOptions::default())
+                        .receive(
+                            &token.to_string(),
+                            cdk::wallet::MultiMintReceiveOptions::default(),
+                        )
                         .await?;
 
                     println!("Received {amount}");
