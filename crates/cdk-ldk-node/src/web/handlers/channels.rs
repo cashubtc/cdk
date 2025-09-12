@@ -68,9 +68,10 @@ pub async fn open_channel_page(State(_state): State<AppState>) -> Result<Html<St
                     label for="push_btc" { "Push Amount (optional)" }
                     input type="number" id="push_btc" name="push_btc" placeholder="₿0" step="1" {}
                 }
-                button type="submit" { "Open Channel" }
-                " "
-                a href="/balance" { button type="button" { "Cancel" } }
+                div class="form-actions" {
+                    a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
+                    button type="submit" class="button-primary" { "Open Channel" }
+                }
             }
         },
     );

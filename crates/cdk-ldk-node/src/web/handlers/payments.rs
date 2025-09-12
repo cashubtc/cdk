@@ -280,10 +280,6 @@ pub async fn send_payments_page(
             ))
         }
 
-        div class="card" {
-            h3 { "Payment History" }
-            a href="/payments" { button { "View All Payments" } }
-        }
     };
 
     Ok(Html(layout("Send Payments", content).into_string()))

@@ -645,6 +645,20 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         width: 100%;
                     }
 
+                    /* Dark mode input field improvements */
+                    @media (prefers-color-scheme: dark) {
+                        input, textarea, select {
+                            background-color: hsl(0 0% 8%);
+                            border: 1px solid hsl(0 0% 20%);
+                            color: hsl(var(--foreground));
+                        }
+
+                        input:focus, textarea:focus, select:focus {
+                            background-color: hsl(0 0% 10%);
+                            border-color: hsl(var(--ring));
+                        }
+                    }
+
                     input:focus, textarea:focus, select:focus {
                         outline: 2px solid transparent;
                         outline-offset: 2px;
@@ -655,6 +669,74 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                     input:disabled, textarea:disabled, select:disabled {
                         cursor: not-allowed;
                         opacity: 0.5;
+                    }
+
+                    /* Subtle pagination dropdown styling */
+                    .per-page-selector {
+                        display: flex;
+                        align-items: center;
+                        gap: 0.5rem;
+                        margin: 1rem 0 0 0;
+                        padding: 0;
+                        background-color: transparent;
+                        border: none;
+                        border-radius: 0;
+                        font-size: 0.875rem;
+                    }
+
+                    .per-page-selector label {
+                        color: hsl(var(--muted-foreground));
+                        font-weight: 500;
+                    }
+
+                    .per-page-selector select {
+                        background-color: transparent;
+                        border: 1px solid hsl(var(--muted));
+                        border-radius: calc(var(--radius) - 2px);
+                        padding: 0.25rem 0.5rem;
+                        font-size: 0.875rem;
+                        color: hsl(var(--muted-foreground));
+                        min-width: 50px;
+                        cursor: pointer;
+                        transition: all 0.2s ease;
+                        flex: none;
+                        width: auto;
+                    }
+
+                    .per-page-selector select:hover {
+                        border-color: hsl(var(--ring));
+                        background-color: hsl(var(--muted) / 0.5);
+                    }
+
+                    .per-page-selector select:focus {
+                        outline: 2px solid transparent;
+                        outline-offset: 2px;
+                        border-color: hsl(var(--ring));
+                        box-shadow: 0 0 0 2px hsl(var(--ring) / 0.2);
+                    }
+
+                    .per-page-selector span {
+                        color: hsl(var(--muted-foreground));
+                        font-weight: 500;
+                    }
+
+                    /* Form actions layout */
+                    .form-actions {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        gap: 1rem;
+                        margin-top: 1.5rem;
+                        padding-top: 1rem;
+                        border-top: 1px solid hsl(var(--border));
+                    }
+
+                    .form-actions .button-secondary {
+                        order: 1;
+                    }
+
+                    .form-actions .button-primary {
+                        order: 2;
                     }
 
                     button {
@@ -1140,6 +1222,14 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         margin-bottom: 1.5rem;
                     }
 
+                    /* Dark mode payment card improvements - match other cards */
+                    @media (prefers-color-scheme: dark) {
+                        .payment-item {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+                    }
+
                     .payment-header {
                         display: flex;
                         justify-content: space-between;
@@ -1322,6 +1412,39 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         background-color: hsl(32 95% 44% / 0.1);
                         color: hsl(32 95% 44%);
                         border: 1px solid hsl(32 95% 44% / 0.2);
+                    }
+
+                    /* Dark mode payment type badge improvements */
+                    @media (prefers-color-scheme: dark) {
+                        .payment-type-onchain {
+                            background-color: hsl(32 95% 60% / 0.15);
+                            color: hsl(32 95% 70%);
+                            border: 1px solid hsl(32 95% 60% / 0.3);
+                        }
+
+                        .payment-type-bolt11 {
+                            background-color: hsl(217 91% 70% / 0.15);
+                            color: hsl(217 91% 80%);
+                            border: 1px solid hsl(217 91% 70% / 0.3);
+                        }
+
+                        .payment-type-bolt12 {
+                            background-color: hsl(262 83% 70% / 0.15);
+                            color: hsl(262 83% 80%);
+                            border: 1px solid hsl(262 83% 70% / 0.3);
+                        }
+
+                        .payment-type-spontaneous {
+                            background-color: hsl(142.1 70.6% 60% / 0.15);
+                            color: hsl(142.1 70.6% 75%);
+                            border: 1px solid hsl(142.1 70.6% 60% / 0.3);
+                        }
+
+                        .payment-type-bolt11-jit {
+                            background-color: hsl(199 89% 65% / 0.15);
+                            color: hsl(199 89% 80%);
+                            border: 1px solid hsl(199 89% 65% / 0.3);
+                        }
                     }
 
                     .payment-type-spontaneous {
