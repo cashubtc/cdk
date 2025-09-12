@@ -10,7 +10,6 @@ use cdk_sql_common::pool::{DatabaseConfig, DatabasePool};
 use cdk_sql_common::stmt::{Column, Statement};
 use cdk_sql_common::{SQLMintDatabase, SQLWalletDatabase};
 use db::{pg_batch, pg_execute, pg_fetch_all, pg_fetch_one, pg_pluck};
-use futures_util::future::BoxFuture;
 use native_tls::TlsConnector;
 use postgres_native_tls::MakeTlsConnector;
 use tokio::sync::{Mutex, Notify};
@@ -173,20 +172,15 @@ impl PostgresConnection {
         let result_clone = result.clone();
         let notify_clone = notify.clone();
 
-        fn select_schema<'a>(
-            conn: &'a Client,
-            schema: &'a str,
-        ) -> BoxFuture<'a, Result<(), Error>> {
-            Box::pin(async move {
-                conn.batch_execute(&format!(
-                    r#"
+        async fn select_schema(conn: &Client, schema: &str) -> Result<(), Error> {
+            conn.batch_execute(&format!(
+                r#"
                     CREATE SCHEMA IF NOT EXISTS "{schema}";
                     SET search_path TO "{schema}"
                     "#
-                ))
-                .await
-                .map_err(|e| Error::Database(Box::new(e)))
-            })
+            ))
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))
         }
 
         tokio::spawn(async move {
