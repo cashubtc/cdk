@@ -5,6 +5,10 @@ use cdk_common::AuthToken;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+#[cfg(feature = "bip353")]
+use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
+#[cfg(feature = "bip353")]
+use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
 
 use super::Error;
@@ -14,6 +18,9 @@ use crate::error::ErrorResponse;
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait Transport: Default + Send + Sync + Debug + Clone {
+    /// DNS resolver to get a TXT record from a domain name
+    async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error>;
+
     /// Make the transport to use a given proxy
     fn with_proxy(
         &mut self,
@@ -100,6 +107,33 @@ impl Transport for Async {
             .build()
             .map_err(|e| Error::HttpError(e.status().map(|s| s.as_u16()), e.to_string()))?;
         Ok(())
+    }
+
+    /// DNS resolver to get a TXT record from a domain name
+    #[cfg(feature = "bip353")]
+    async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error> {
+        // Create a new resolver with DNSSEC validation
+        let mut opts = ResolverOpts::default();
+        opts.validate = true; // Enable DNSSEC validation
+
+        Ok(TokioAsyncResolver::tokio(ResolverConfig::default(), opts)
+            .txt_lookup(domain)
+            .await
+            .map_err(|e| Error::Custom(e.to_string()))?
+            .into_iter()
+            .map(|txt| {
+                txt.txt_data()
+                    .iter()
+                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .collect())
+    }
+
+    #[cfg(not(feature = "bip353"))]
+    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
+        Err(Error::Internal)
     }
 
     async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>

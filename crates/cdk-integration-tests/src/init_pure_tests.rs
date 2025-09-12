@@ -55,6 +55,10 @@ impl Debug for DirectMintConnection {
 /// Convert the requests and responses between the [String] and [Uuid] variants as necessary.
 #[async_trait]
 impl MintConnector for DirectMintConnection {
+    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
+        panic!("Not implemented");
+    }
+
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
         Ok(self.mint.pubkeys().keysets)
     }
