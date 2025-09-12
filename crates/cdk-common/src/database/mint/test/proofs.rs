@@ -1,10 +1,60 @@
 //! Proofs tests
 
+use std::str::FromStr;
+
 use cashu::secret::Secret;
-use cashu::{Amount, SecretKey};
+use cashu::{Amount, Id, SecretKey};
 
 use crate::database::mint::test::setup_keyset;
 use crate::database::mint::{Database, Error, KeysDatabase, Proof, QuoteId};
+
+/// Test get proofs by keyset id
+pub async fn get_proofs_by_keyset_id<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_keyset(&db).await;
+    let quote_id = QuoteId::new_uuid();
+    let proofs = vec![
+        Proof {
+            amount: Amount::from(100),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+        },
+        Proof {
+            amount: Amount::from(200),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+        },
+    ];
+
+    // Add proofs to database
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(proofs, Some(quote_id)).await.unwrap();
+    assert!(tx.commit().await.is_ok());
+
+    let (proofs, states) = db.get_proofs_by_keyset_id(&keyset_id).await.unwrap();
+    assert_eq!(proofs.len(), 2);
+    assert_eq!(proofs.len(), states.len());
+    assert_eq!(
+        states
+            .into_iter()
+            .map(|s| s.map(|x| x.to_string()).unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec!["UNSPENT".to_owned(), "UNSPENT".to_owned()]
+    );
+
+    let keyset_id = Id::from_str("00916bbf7ef91a34").unwrap();
+    let (proofs, states) = db.get_proofs_by_keyset_id(&keyset_id).await.unwrap();
+    assert_eq!(proofs.len(), 0);
+    assert_eq!(proofs.len(), states.len());
+}
 
 /// Test the basic storing and retrieving proofs from the database. Probably the database would use
 /// binary/`Vec<u8>` to store data, that's why this test would quickly identify issues before running

@@ -229,6 +229,7 @@ macro_rules! mint_db_test {
             add_mint_quote_only_once,
             register_payments,
             read_mint_from_db_and_tx,
+            get_proofs_by_keyset_id,
             reject_duplicate_payments_same_tx,
             reject_duplicate_payments_diff_tx,
             reject_over_issue_same_tx,
