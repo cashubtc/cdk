@@ -1635,6 +1635,147 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                             fill: rgba(156, 163, 175, 0.2);
                         }
                     }
+
+                    /* Address display styling */
+                    .address-display {
+                        margin: 1.5rem 0;
+                    }
+
+                    .address-container {
+                        padding: 1rem 0;
+                    }
+
+                    .address-text {
+                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
+                        font-size: 1.25rem;
+                        font-weight: 500;
+                        color: hsl(var(--foreground));
+                        word-break: break-all;
+                        overflow-wrap: break-word;
+                        hyphens: auto;
+                        flex: 1;
+                        min-width: 0;
+                        line-height: 1.4;
+                        background-color: transparent;
+                        border: none;
+                        padding: 0;
+                    }
+
+
+                    /* Dark mode address styling */
+                    @media (prefers-color-scheme: dark) {
+                        .address-text {
+                            color: var(--text-primary) !important;
+                        }
+                    }
+
+                    /* Responsive address display */
+                    @media (max-width: 640px) {
+                        .address-text {
+                            font-size: 1.125rem;
+                            text-align: center;
+                        }
+                    }
+
+                    /* Transaction confirmation styling */
+                    .transaction-details {
+                        margin-top: 1rem;
+                    }
+
+                    .transaction-details .detail-row {
+                        display: flex;
+                        align-items: baseline;
+                        margin-bottom: 1rem;
+                        gap: 1rem;
+                        padding: 0.75rem 0;
+                        border-bottom: 1px solid hsl(var(--border));
+                    }
+
+                    .transaction-details .detail-row:last-child {
+                        border-bottom: none;
+                        margin-bottom: 0;
+                    }
+
+                    .transaction-details .detail-label {
+                        font-weight: 500;
+                        color: hsl(var(--muted-foreground));
+                        font-size: 0.875rem;
+                        min-width: 180px;
+                        flex-shrink: 0;
+                    }
+
+                    .transaction-details .detail-value {
+                        color: hsl(var(--foreground));
+                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
+                        font-size: 0.875rem;
+                        word-break: break-all;
+                        flex: 1;
+                        min-width: 0;
+                    }
+
+                    .transaction-details .detail-value-amount {
+                        color: hsl(var(--foreground));
+                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
+                        font-size: 1rem;
+                        font-weight: 600;
+                        flex: 1;
+                        min-width: 0;
+                    }
+
+                    .send-all-notice {
+                        border: 1px solid hsl(32.6 75.4% 55.1%);
+                        background-color: hsl(32.6 75.4% 55.1% / 0.1);
+                    }
+
+                    .send-all-notice h3 {
+                        color: hsl(32.6 75.4% 55.1%);
+                        font-size: 1rem;
+                        font-weight: 600;
+                        margin-bottom: 0.5rem;
+                    }
+
+                    .send-all-notice p {
+                        color: hsl(32.6 75.4% 55.1%);
+                        font-size: 0.875rem;
+                        line-height: 1.4;
+                        margin: 0;
+                    }
+
+                    /* Dark mode transaction styling */
+                    @media (prefers-color-scheme: dark) {
+                        .transaction-details .detail-label {
+                            color: var(--text-muted) !important;
+                        }
+
+                        .transaction-details .detail-value,
+                        .transaction-details .detail-value-amount {
+                            color: var(--text-primary) !important;
+                        }
+
+                        .send-all-notice {
+                            background-color: hsl(32.6 75.4% 55.1% / 0.15) !important;
+                            border-color: hsl(32.6 75.4% 55.1% / 0.3) !important;
+                        }
+                    }
+
+                    /* Responsive transaction details */
+                    @media (max-width: 640px) {
+                        .transaction-details .detail-row {
+                            flex-direction: column;
+                            align-items: flex-start;
+                            gap: 0.5rem;
+                        }
+
+                        .transaction-details .detail-label {
+                            min-width: auto;
+                            font-size: 0.8125rem;
+                        }
+
+                        .transaction-details .detail-value,
+                        .transaction-details .detail-value-amount {
+                            font-size: 0.875rem;
+                        }
+                    }
                     "
                 }
             }
