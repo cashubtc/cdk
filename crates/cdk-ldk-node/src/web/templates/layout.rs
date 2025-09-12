@@ -281,38 +281,104 @@ pub fn layout(title: &str, content: Markup) -> Markup {
 
                     /* Responsive header */
                     @media (max-width: 768px) {
+                        header {
+                            height: 180px; /* Slightly taller for better mobile layout */
+                            padding: 1rem 0;
+                        }
+
+                        header .container {
+                            padding: 0 1rem;
+                            height: 100%;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                        }
+
                         .header-content {
                             flex-direction: column;
                             gap: 1rem;
                             text-align: center;
+                            width: 100%;
+                            justify-content: center;
                         }
 
                         .header-left {
                             flex-direction: column;
                             text-align: center;
+                            align-items: center;
+                            gap: 0.75rem;
+                        }
+
+                        .header-avatar {
+                            width: 64px;
+                            height: 64px;
+                            padding: 0.5rem;
+                        }
+
+                        .header-avatar-image {
+                            width: 40px;
+                            height: 40px;
                         }
 
                         .node-title {
                             font-size: 1.5rem;
                         }
+
+                        .node-subtitle {
+                            font-size: 0.8125rem;
+                            text-align: center;
+                        }
+
+                        .node-status {
+                            justify-content: center;
+                        }
                     }
 
+                    @media (max-width: 480px) {
+                        header {
+                            height: 160px;
+                        }
+
+                        .header-avatar {
+                            width: 56px;
+                            height: 56px;
+                            padding: 0.375rem;
+                        }
+
+                        .header-avatar-image {
+                            width: 36px;
+                            height: 36px;
+                        }
+
+                        .node-title {
+                            font-size: 1.25rem;
+                        }
+
+                        .node-subtitle {
+                            font-size: 0.75rem;
+                        }
+                    }
+
+                    /* Dark mode navigation styles */
+                    @media (prefers-color-scheme: dark) {
                         nav a {
                             color: var(--text-muted) !important;
                         }
 
                         nav a:hover {
                             color: var(--text-secondary) !important;
-                            background-color: rgba(255, 255, 255, 0.05) !important;
+                            background-color: rgba(255, 255, 255, 0.08) !important;
+                            transform: translateY(-1px) !important;
                         }
 
                         nav a.active {
                             color: var(--text-primary) !important;
-                            background-color: rgba(255, 255, 255, 0.08) !important;
+                            background-color: rgba(255, 255, 255, 0.1) !important;
                         }
 
                         nav a.active:hover {
-                            background-color: rgba(255, 255, 255, 0.1) !important;
+                            background-color: rgba(255, 255, 255, 0.12) !important;
+                            transform: translateY(-1px) !important;
                         }
                     }
 
@@ -409,23 +475,6 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         line-height: 1.6;
                     }
 
-                    @media (max-width: 768px) {
-                        header {
-                            height: 150px; /* Smaller height on mobile */
-                        }
-
-                        header .container {
-                            padding: 0 1rem;
-                        }
-
-                        h1 {
-                            font-size: 2.25rem;
-                        }
-
-                        .subtitle {
-                            font-size: 1.1rem;
-                        }
-                    }
 
                     /* Card fade-in animation */
                     @keyframes fade-in {
@@ -489,6 +538,15 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                     nav a:hover {
                         color: hsl(var(--foreground));
                         background-color: hsl(var(--muted));
+                    }
+
+                    /* Light mode navigation hover states */
+                    @media (prefers-color-scheme: light) {
+                        nav a:hover {
+                            color: hsl(var(--foreground));
+                            background-color: hsl(var(--muted) / 0.8);
+                            transform: translateY(-1px);
+                        }
                     }
 
                     nav a.active {
