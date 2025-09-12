@@ -11,10 +11,11 @@ license.workspace = true
 
 
 [features]
-default = ["mint", "wallet", "auth"]
+default = ["mint", "wallet", "auth", "ohttp"]
 wallet = ["dep:futures", "dep:reqwest", "cdk-common/wallet", "dep:rustls"]
 mint = ["dep:futures", "dep:reqwest", "cdk-common/mint", "cdk-signatory"]
 auth = ["dep:jsonwebtoken", "cdk-common/auth", "cdk-common/auth"]
+ohttp = ["wallet", "dep:ohttp-client"]
 bip353 = ["dep:trust-dns-resolver"]
 # We do not commit to a MSRV with swagger enabled
 swagger = ["mint", "dep:utoipa", "cdk-common/swagger"]
@@ -45,6 +46,7 @@ uuid.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
 trust-dns-resolver = { version = "0.23.2", optional = true }
 cdk-prometheus = {workspace = true, optional = true}
+ohttp-client = { path = "../ohttp-client", optional = true }
 # -Z minimal-versions
 sync_wrapper = "0.1.2"
 bech32 = "0.9.1"

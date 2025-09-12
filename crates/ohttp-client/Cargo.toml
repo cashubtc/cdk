@@ -1,0 +1,29 @@
+[package]
+name = "ohttp-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Generic OHTTP client for sending arbitrary data through OHTTP gateways"
+keywords = ["bitcoin", "e-cash", "cashu", "ohttp"]
+categories = ["cryptography::cryptocurrencies", "command-line-utilities"]
+
+[dependencies]
+anyhow.workspace = true
+bhttp = { version = "0.6.1", features = ["http"] }
+bitcoin.workspace = true
+bytes = "1.9.0"
+clap = { workspace = true, features = ["derive", "env"] }
+http = "1.2.0"
+ohttp = { package = "bitcoin-ohttp", version = "0.6.0" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+base64 = "0.22.1"
+url.workspace = true

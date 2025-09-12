@@ -3,13 +3,15 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use bip39::rand::{thread_rng, Rng};
 use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{HttpClient, MultiMintWallet, Wallet, WalletBuilder};
+#[cfg(feature = "ohttp")]
+use cdk::wallet::{ohttp_transport::OhttpTransport, BaseHttpClient};
+use cdk::wallet::{HttpClient, MintConnector, MultiMintWallet, Wallet, WalletBuilder};
 #[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
@@ -49,6 +51,10 @@ struct Cli {
     /// NWS Proxy
     #[arg(short, long)]
     proxy: Option<Url>,
+    /// OHTTP Relay URL for proxying requests (advanced usage)
+    #[cfg(feature = "ohttp")]
+    #[arg(long)]
+    ohttp_relay: Option<Url>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -179,10 +185,10 @@ async fn main() -> Result<()> {
             vec![CurrencyUnit::Sat]
         };
 
-        let proxy_client = if let Some(proxy_url) = args.proxy.as_ref() {
+        let proxy_client = if args.ohttp_relay.is_none() && args.proxy.is_some() {
             Some(HttpClient::with_proxy(
                 mint_url.clone(),
-                proxy_url.clone(),
+                args.proxy.as_ref().unwrap().clone(),
                 None,
                 true,
             )?)
@@ -194,17 +200,55 @@ async fn main() -> Result<()> {
 
         for unit in units {
             let mint_url_clone = mint_url.clone();
-            let mut builder = WalletBuilder::new()
-                .mint_url(mint_url_clone.clone())
-                .unit(unit)
-                .localstore(localstore.clone())
-                .seed(seed);
+            let client = HttpClient::new(mint_url.clone(), None);
 
-            if let Some(http_client) = &proxy_client {
-                builder = builder.client(http_client.clone());
-            }
+            let mint_info = client.get_mint_info().await?;
 
-            let wallet = builder.build()?;
+            let wallet = {
+                #[allow(unused_mut)] // mut needed for ohttp feature
+                let mut builder = WalletBuilder::new()
+                    .mint_url(mint_url_clone.clone())
+                    .unit(unit)
+                    .localstore(localstore.clone())
+                    .seed(seed);
+
+                // Configure client based on arguments
+                #[cfg(feature = "ohttp")]
+                if args.ohttp_relay.is_some() && mint_info.supports_ohttp() {
+                    let mint_ohttp_settings =
+                        mint_info.ohttp_config().expect("Checked its enabled");
+
+                    let ohttp_relay = args
+                        .ohttp_relay
+                        .as_ref()
+                        .ok_or(anyhow!("Relay url is invalid"))?;
+
+                    let gateway_url = mint_ohttp_settings
+                        .gateway_url
+                        .clone()
+                        .unwrap_or(mint_url_clone.to_string());
+
+                    let ohttp_transport = OhttpTransport::new(
+                        mint_url_clone.to_string().parse()?,
+                        ohttp_relay.clone(),
+                        gateway_url.parse()?,
+                    );
+
+                    // Create HttpClient with OHTTP transport
+                    let ohttp_client = BaseHttpClient::with_transport(
+                        mint_url_clone.clone(),
+                        ohttp_transport,
+                        None,
+                    );
+                    builder = builder.client(ohttp_client).use_http_subscription();
+                } else if mint_info.supports_ohttp() {
+                    tracing::warn!("This mint supports ohttp but you have not provided a relay");
+                } else if let Some(client) = &proxy_client {
+                    builder = builder.client(client.clone());
+                }
+
+                builder.build()?
+            };
 
             let wallet_clone = wallet.clone();
 

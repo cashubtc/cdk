@@ -14,6 +14,7 @@ use super::nut19::CachedEndpoint;
 use super::{nut04, nut05, nut15, nut19, MppMethodSettings};
 #[cfg(feature = "auth")]
 use super::{AuthRequired, BlindAuthSettings, ClearAuthSettings, ProtectedEndpoint};
+use crate::nut26::OhttpSettings;
 use crate::CurrencyUnit;
 
 /// Mint Version
@@ -336,6 +337,10 @@ pub struct Nuts {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg(feature = "auth")]
     pub nut22: Option<BlindAuthSettings>,
+    /// NUT26 Settings
+    #[serde(rename = "26")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut26: Option<OhttpSettings>,
 }
 
 impl Nuts {
@@ -449,6 +454,14 @@ impl Nuts {
     pub fn nut20(self, supported: bool) -> Self {
         Self {
             nut20: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// Nut23 OHTTP settings
+    pub fn nut23(self, ohttp_settings: OhttpSettings) -> Self {
+        Self {
+            nut26: Some(ohttp_settings),
             ..self
         }
     }

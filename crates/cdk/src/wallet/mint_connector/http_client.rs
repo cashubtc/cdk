@@ -86,6 +86,21 @@ where
         }
     }
 
+    /// Create new [`HttpClient`] with a pre-configured transport
+    pub fn with_transport(
+        mint_url: MintUrl,
+        transport: T,
+        #[cfg(feature = "auth")] auth_wallet: Option<AuthWallet>,
+    ) -> Self {
+        Self {
+            transport: transport.into(),
+            mint_url,
+            #[cfg(feature = "auth")]
+            auth_wallet: Arc::new(RwLock::new(auth_wallet)),
+            cache_support: Default::default(),
+        }
+    }
+
     /// Create new [`HttpClient`] with a proxy for specific TLDs.
     /// Specifying `None` for `host_matcher` will use the proxy for all
     /// requests.

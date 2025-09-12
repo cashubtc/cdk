@@ -26,7 +26,7 @@ use crate::mint::Mint;
 use crate::nuts::ProtectedEndpoint;
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
-    MppMethodSettings, PaymentMethod,
+    MppMethodSettings, OhttpSettings, PaymentMethod,
 };
 use crate::types::PaymentProcessorKey;
 
@@ -205,6 +205,24 @@ impl MintBuilder {
         self
     }
 
+    /// Add support for NUT26 OHTTP
+    /// If gateway_url is the same as the mint URL, it will be set to None
+    pub fn with_ohttp(
+        mut self,
+        enabled: bool,
+        gateway_url: Option<String>,
+        mint_url: Option<String>,
+    ) -> Self {
+        let final_gateway_url = match (gateway_url, mint_url) {
+            (Some(gateway), Some(mint)) if gateway == mint => None,
+            (gateway, _) => gateway,
+        };
+
+        let ohttp_settings = OhttpSettings::new(enabled, final_gateway_url);
+        self.mint_info.nuts.nut26 = Some(ohttp_settings);
+        self
+    }
+
     /// Add payment processor
     pub async fn add_payment_processor(
         &mut self,
@@ -351,5 +369,72 @@ impl MintMeltLimits {
             melt_min: min.into(),
             melt_max: max.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ohttp_url_logic_same_urls() {
+        // Test the logic for when gateway URL is same as mint URL
+        let gateway_url = Some("https://mint.example.com".to_string());
+        let mint_url = Some("https://mint.example.com".to_string());
+
+        let final_gateway_url = match (gateway_url, mint_url) {
+            (Some(gateway), Some(mint)) if gateway == mint => None,
+            (gateway, _) => gateway,
+        };
+
+        // When gateway URL is same as mint URL, it should be set to None
+        assert!(final_gateway_url.is_none());
+    }
+
+    #[test]
+    fn test_ohttp_url_logic_different_urls() {
+        // Test the logic for when gateway URL is different from mint URL
+        let gateway_url = Some("https://gateway.example.com".to_string());
+        let mint_url = Some("https://mint.example.com".to_string());
+        let expected_gateway = gateway_url.clone();
+
+        let final_gateway_url = match (gateway_url, mint_url) {
+            (Some(gateway), Some(mint)) if gateway == mint => None,
+            (gateway, _) => gateway,
+        };
+
+        // When gateway URL is different from mint URL, it should be preserved
+        assert_eq!(final_gateway_url, expected_gateway);
+    }
+
+    #[test]
+    fn test_ohttp_url_logic_no_gateway() {
+        // Test the logic for when no gateway URL is provided
+        let gateway_url: Option<String> = None;
+        let mint_url = Some("https://mint.example.com".to_string());
+
+        let final_gateway_url = match (gateway_url, mint_url) {
+            (Some(gateway), Some(mint)) if gateway == mint => None,
+            (gateway, _) => gateway,
+        };
+
+        // When no gateway URL is provided, it should remain None
+        assert!(final_gateway_url.is_none());
+    }
+
+    #[test]
+    fn test_ohttp_settings_creation() {
+        // Test that OhttpSettings can be created correctly
+        let ohttp_settings =
+            OhttpSettings::new(true, Some("https://gateway.example.com".to_string()));
+        assert!(ohttp_settings.supported);
+        assert_eq!(
+            ohttp_settings.gateway_url,
+            Some("https://gateway.example.com".to_string())
+        );
+
+        let ohttp_settings_no_gateway = OhttpSettings::new(true, None);
+        assert!(ohttp_settings_no_gateway.supported);
+        assert!(ohttp_settings_no_gateway.gateway_url.is_none());
     }
 }

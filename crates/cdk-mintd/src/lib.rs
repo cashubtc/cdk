@@ -348,6 +348,9 @@ async fn configure_mint_builder(
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
 
+    // Configure OHTTP
+    let mint_builder = configure_ohttp(settings, mint_builder);
+
     Ok(mint_builder)
 }
 
@@ -624,6 +627,32 @@ fn configure_cache(settings: &config::Settings, mint_builder: MintBuilder) -> Mi
 
     let cache: HttpCache = settings.info.http_cache.clone().into();
     mint_builder.with_cache(Some(cache.ttl.as_secs()), cached_endpoints)
+}
+
+/// Configures OHTTP settings
+fn configure_ohttp(settings: &config::Settings, mint_builder: MintBuilder) -> MintBuilder {
+    if let Some(ohttp_config) = &settings.ohttp_gateway {
+        if ohttp_config.enabled {
+            // Get the mint URL for comparison with gateway URL
+            let mint_url = format!(
+                "http://{}:{}",
+                settings.info.listen_host, settings.info.listen_port
+            );
+
+            tracing::info!("Configuring OHTTP support");
+            tracing::debug!("OHTTP enabled: {}", ohttp_config.enabled);
+            tracing::debug!("Gateway URL: {:?}", ohttp_config.gateway_url);
+            tracing::debug!("Mint URL: {}", mint_url);
+
+            return mint_builder.with_ohttp(
+                ohttp_config.enabled,
+                ohttp_config.gateway_url.clone(),
+                Some(mint_url),
+            );
+        }
+    }
+
+    mint_builder
 }
 
 #[cfg(feature = "auth")]
@@ -989,7 +1018,7 @@ async fn start_services_with_shutdown(
     };
 
     #[cfg(not(feature = "prometheus"))]
-    let prometheus_handle: Option<tokio::task::JoinHandle<()>> = None;
+    let _prometheus_handle: Option<tokio::task::JoinHandle<()>> = None;
 
     mint.start().await?;
 
@@ -1066,6 +1095,21 @@ fn work_dir() -> Result<PathBuf> {
     std::fs::create_dir_all(&dir)?;
 
     Ok(dir)
+}
+
+/// Creates an OHTTP gateway router that forwards encapsulated requests to the mint
+pub fn create_ohttp_gateway_router(settings: &config::Settings, work_dir: &Path) -> Result<Router> {
+    // Use the mint's own URL as the backend URL
+    let backend_url = format!(
+        "http://{}:{}",
+        settings.info.listen_host, settings.info.listen_port
+    );
+
+    // OHTTP keys are always stored in the work directory
+    let ohttp_keys_path = work_dir.join("ohttp_keys.json");
+
+    // Use the ohttp-gateway crate's router creation function
+    ohttp_gateway::create_ohttp_gateway_router(&backend_url, ohttp_keys_path)
 }
 
 /// The main entry point for the application when used as a library

@@ -11,10 +11,11 @@ rust-version.workspace = true
 readme = "README.md"
 
 [features]
-default = []
+default = ["ohttp"]
 sqlcipher = ["cdk-sqlite/sqlcipher"]
 # MSRV is not tracked with redb enabled
 redb = ["dep:cdk-redb"]
+ohttp = ["cdk/ohttp"]
 
 [dependencies]
 anyhow.workspace = true

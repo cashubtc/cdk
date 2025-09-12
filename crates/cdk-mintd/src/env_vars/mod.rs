@@ -8,6 +8,7 @@ mod database;
 mod info;
 mod ln;
 mod mint_info;
+mod ohttp_gateway;
 
 #[cfg(feature = "auth")]
 mod auth;
@@ -52,6 +53,7 @@ pub use lnd::*;
 #[cfg(feature = "management-rpc")]
 pub use management_rpc::*;
 pub use mint_info::*;
+pub use ohttp_gateway::*;
 #[cfg(feature = "prometheus")]
 pub use prometheus::*;
 
@@ -106,6 +108,9 @@ impl Settings {
         {
             self.prometheus = Some(self.prometheus.clone().unwrap_or_default().from_env());
         }
+
+        // Process OHTTP gateway configuration from environment variables
+        self.ohttp_gateway = Some(self.ohttp_gateway.clone().unwrap_or_default().from_env());
 
         match self.ln.ln_backend {
             #[cfg(feature = "cln")]
