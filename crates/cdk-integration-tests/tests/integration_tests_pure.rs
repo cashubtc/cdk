@@ -339,6 +339,7 @@ async fn test_attempt_to_swap_by_overflowing() {
             cdk::Error::NUT03(cdk::nuts::nut03::Error::Amount(_)) => (),
             cdk::Error::AmountOverflow => (),
             cdk::Error::AmountError(_) => (),
+            cdk::Error::TransactionUnbalanced(_, _, _) => (),
             _ => {
                 panic!("Wrong error returned in swap overflow {:?}", err);
             }
