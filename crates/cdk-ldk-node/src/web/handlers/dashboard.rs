@@ -5,7 +5,7 @@ use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus};
 use maud::html;
 
 use crate::web::handlers::AppState;
-use crate::web::templates::{format_sats_as_btc, layout_with_status, is_node_running};
+use crate::web::templates::{format_sats_as_btc, is_node_running, layout_with_status};
 
 #[derive(Debug)]
 pub struct UsageMetrics {
@@ -273,5 +273,7 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
     };
 
     let is_running = is_node_running(&state.node.inner);
-    Ok(Html(layout_with_status("Dashboard", content, is_running).into_string()))
+    Ok(Html(
+        layout_with_status("Dashboard", content, is_running).into_string(),
+    ))
 }

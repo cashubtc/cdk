@@ -4,7 +4,7 @@ use axum::response::Html;
 use maud::html;
 
 use crate::web::handlers::utils::AppState;
-use crate::web::templates::{format_sats_as_btc, layout_with_status, is_node_running};
+use crate::web::templates::{format_sats_as_btc, is_node_running, layout_with_status};
 
 pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let balances = state.node.inner.list_balances();
@@ -217,5 +217,7 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
     };
 
     let is_running = is_node_running(&state.node.inner);
-    Ok(Html(layout_with_status("Lightning", content, is_running).into_string()))
+    Ok(Html(
+        layout_with_status("Lightning", content, is_running).into_string(),
+    ))
 }

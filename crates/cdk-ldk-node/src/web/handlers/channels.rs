@@ -15,7 +15,8 @@ use serde::Deserialize;
 use crate::web::handlers::utils::deserialize_optional_u64;
 use crate::web::handlers::AppState;
 use crate::web::templates::{
-    error_message, form_card, format_sats_as_btc, info_card, layout_with_status, is_node_running, success_message,
+    error_message, form_card, format_sats_as_btc, info_card, is_node_running, layout_with_status,
+    success_message,
 };
 
 #[derive(Deserialize)]
@@ -77,7 +78,9 @@ pub async fn open_channel_page(State(state): State<AppState>) -> Result<Html<Str
     );
 
     let is_running = is_node_running(&state.node.inner);
-    Ok(Html(layout_with_status("Open Channel", content, is_running).into_string()))
+    Ok(Html(
+        layout_with_status("Open Channel", content, is_running).into_string(),
+    ))
 }
 
 pub async fn post_open_channel(
@@ -228,7 +231,9 @@ pub async fn close_channel_page(
                 a href="/balance" { button { "← Back to Lightning" } }
             }
         };
-        return Ok(Html(layout_with_status("Close Channel Error", content, true).into_string()));
+        return Ok(Html(
+            layout_with_status("Close Channel Error", content, true).into_string(),
+        ));
     }
 
     // Get channel information for amount display
@@ -270,7 +275,9 @@ pub async fn close_channel_page(
     );
 
     let is_running = is_node_running(&state.node.inner);
-    Ok(Html(layout_with_status("Close Channel", content, is_running).into_string()))
+    Ok(Html(
+        layout_with_status("Close Channel", content, is_running).into_string(),
+    ))
 }
 
 pub async fn force_close_channel_page(
@@ -339,7 +346,9 @@ pub async fn force_close_channel_page(
     );
 
     let is_running = is_node_running(&state.node.inner);
-    Ok(Html(layout_with_status("Force Close Channel", content, is_running).into_string()))
+    Ok(Html(
+        layout_with_status("Force Close Channel", content, is_running).into_string(),
+    ))
 }
 
 pub async fn post_close_channel(

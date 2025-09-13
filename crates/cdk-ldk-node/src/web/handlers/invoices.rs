@@ -10,7 +10,8 @@ use serde::Deserialize;
 use crate::web::handlers::utils::{deserialize_optional_f64, deserialize_optional_u32};
 use crate::web::handlers::AppState;
 use crate::web::templates::{
-    error_message, form_card, format_sats_as_btc, info_card, layout_with_status, is_node_running, success_message,
+    error_message, form_card, format_sats_as_btc, info_card, is_node_running, layout_with_status,
+    success_message,
 };
 
 #[derive(Deserialize)]
@@ -79,7 +80,9 @@ pub async fn invoices_page(State(state): State<AppState>) -> Result<Html<String>
     };
 
     let is_running = is_node_running(&state.node.inner);
-    Ok(Html(layout_with_status("Create Invoices", content, is_running).into_string()))
+    Ok(Html(
+        layout_with_status("Create Invoices", content, is_running).into_string(),
+    ))
 }
 
 pub async fn post_create_bolt11(

@@ -1,17 +1,9 @@
-use maud::{html, Markup, DOCTYPE};
 use ldk_node::Node;
+use maud::{html, Markup, DOCTYPE};
 
 /// Helper function to check if the node is running
-pub fn is_node_running(_node: &Node) -> bool {
-    // For now, we'll assume the node is running if we can call status() without panicking
-    // In a real implementation, you would check the actual status enum values
-    // This is a simplified approach that assumes if the web interface is accessible,
-    // the node is likely running
-    true
-}
-
-pub fn layout(title: &str, content: Markup) -> Markup {
-    layout_with_status(title, content, true)
+pub fn is_node_running(node: &Node) -> bool {
+    node.status().is_running
 }
 
 pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Markup {

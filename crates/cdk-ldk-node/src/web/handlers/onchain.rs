@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use crate::web::handlers::utils::deserialize_optional_u64;
 use crate::web::handlers::AppState;
 use crate::web::templates::{
-    error_message, form_card, format_sats_as_btc, info_card, layout_with_status, is_node_running, success_message,
+    error_message, form_card, format_sats_as_btc, info_card, is_node_running, layout_with_status,
+    success_message,
 };
 
 #[derive(Deserialize, Serialize)]
@@ -94,7 +95,9 @@ pub async fn get_new_address(State(state): State<AppState>) -> Result<Html<Strin
     };
 
     let is_running = is_node_running(&state.node.inner);
-    Ok(Html(layout_with_status("New Address", content, is_running).into_string()))
+    Ok(Html(
+        layout_with_status("New Address", content, is_running).into_string(),
+    ))
 }
 
 pub async fn onchain_page(
@@ -215,7 +218,9 @@ pub async fn onchain_page(
     }
 
     let is_running = is_node_running(&state.node.inner);
-    Ok(Html(layout_with_status("On-chain", content, is_running).into_string()))
+    Ok(Html(
+        layout_with_status("On-chain", content, is_running).into_string(),
+    ))
 }
 
 pub async fn post_send_onchain(
