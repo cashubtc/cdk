@@ -2,13 +2,15 @@
 use std::fmt::Debug;
 
 use cdk_common::AuthToken;
+#[cfg(feature = "bip353")]
+use hickory_resolver::config::ResolverConfig;
+#[cfg(feature = "bip353")]
+use hickory_resolver::name_server::TokioConnectionProvider;
+#[cfg(feature = "bip353")]
+use hickory_resolver::Resolver;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-#[cfg(feature = "bip353")]
-use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
-#[cfg(feature = "bip353")]
-use trust_dns_resolver::TokioAsyncResolver;
 use url::Url;
 
 use super::Error;
@@ -18,8 +20,11 @@ use crate::error::ErrorResponse;
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait Transport: Default + Send + Sync + Debug + Clone {
+    #[cfg(feature = "bip353")]
     /// DNS resolver to get a TXT record from a domain name
-    async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error>;
+    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
+        todo!()
+    }
 
     /// Make the transport to use a given proxy
     fn with_proxy(
@@ -112,11 +117,13 @@ impl Transport for Async {
     /// DNS resolver to get a TXT record from a domain name
     #[cfg(feature = "bip353")]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error> {
-        // Create a new resolver with DNSSEC validation
-        let mut opts = ResolverOpts::default();
-        opts.validate = true; // Enable DNSSEC validation
+        let resolver = Resolver::builder_with_config(
+            ResolverConfig::default(),
+            TokioConnectionProvider::default(),
+        )
+        .build();
 
-        Ok(TokioAsyncResolver::tokio(ResolverConfig::default(), opts)
+        Ok(resolver
             .txt_lookup(domain)
             .await
             .map_err(|e| Error::Custom(e.to_string()))?
@@ -128,12 +135,7 @@ impl Transport for Async {
                     .collect::<Vec<_>>()
                     .join("")
             })
-            .collect())
-    }
-
-    #[cfg(not(feature = "bip353"))]
-    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
-        Err(Error::Internal)
+            .collect::<Vec<_>>())
     }
 
     async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>
