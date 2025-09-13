@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::subscription::Params;
 use getrandom::getrandom;
@@ -328,7 +329,7 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn amounts_needed_for_state_target(
         &self,
-        amounts_ppk: &[u64],
+        fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Vec<Amount>, Error> {
         let unspent_proofs = self.get_unspent_proofs().await?;
 
@@ -342,16 +343,20 @@ impl Wallet {
                     acc
                 });
 
-        let needed_amounts = amounts_ppk.iter().fold(Vec::new(), |mut acc, amount| {
-            let count_needed = (self.target_proof_count as u64)
-                .saturating_sub(*amounts_count.get(amount).unwrap_or(&0));
+        let needed_amounts =
+            fee_and_amounts
+                .amounts()
+                .iter()
+                .fold(Vec::new(), |mut acc, amount| {
+                    let count_needed = (self.target_proof_count as u64)
+                        .saturating_sub(*amounts_count.get(amount).unwrap_or(&0));
 
-            for _i in 0..count_needed {
-                acc.push(Amount::from(*amount));
-            }
+                    for _i in 0..count_needed {
+                        acc.push(Amount::from(*amount));
+                    }
 
-            acc
-        });
+                    acc
+                });
         Ok(needed_amounts)
     }
 
@@ -360,9 +365,11 @@ impl Wallet {
     async fn determine_split_target_values(
         &self,
         change_amount: Amount,
-        amounts_ppk: &[u64],
+        fee_and_amounts: &FeeAndAmounts,
     ) -> Result<SplitTarget, Error> {
-        let mut amounts_needed_refill = self.amounts_needed_for_state_target(amounts_ppk).await?;
+        let mut amounts_needed_refill = self
+            .amounts_needed_for_state_target(fee_and_amounts)
+            .await?;
 
         amounts_needed_refill.sort();
 

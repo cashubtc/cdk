@@ -344,7 +344,6 @@ async fn test_restore() {
 /// and that the wallet can properly verify the change amounts match expectations.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_fake_melt_change_in_quote() {
-    let amounts_ppk = (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>();
     let wallet = Wallet::new(
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
@@ -377,10 +376,15 @@ async fn test_fake_melt_change_in_quote() {
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     let keyset = wallet.fetch_active_keyset().await.unwrap();
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
-    let premint_secrets =
-        PreMintSecrets::random(keyset.id, 100.into(), &SplitTarget::default(), &amounts_ppk)
-            .unwrap();
+    let premint_secrets = PreMintSecrets::random(
+        keyset.id,
+        100.into(),
+        &SplitTarget::default(),
+        &fee_and_amounts,
+    )
+    .unwrap();
 
     let client = HttpClient::new(get_mint_url_from_env().parse().unwrap(), None);
 

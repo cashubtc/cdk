@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use cdk_common::amount::KeysetFeeAndAmounts;
 use cdk_common::wallet::TransactionId;
 use cdk_common::Id;
 use tracing::instrument;
@@ -12,12 +13,6 @@ use crate::nuts::{
 };
 use crate::types::ProofInfo;
 use crate::{ensure_cdk, Amount, Error, Wallet};
-
-/// Fees and Amounts supported
-pub type FeesAndAmounts = (u64, Vec<u64>);
-
-/// Fees and Amounts for each Keyset
-pub type KeysetFeeAndAmount = HashMap<Id, FeesAndAmounts>;
 
 impl Wallet {
     /// Get unspent proofs for mint
@@ -194,14 +189,14 @@ impl Wallet {
         amount: Amount,
         proofs: Proofs,
         active_keyset_ids: &Vec<Id>,
-        fees_and_amounts_ppk: &KeysetFeeAndAmount,
+        fees_and_keyset_amounts: &KeysetFeeAndAmounts,
         include_fees: bool,
     ) -> Result<(Proofs, Option<(Proof, Amount)>), Error> {
         let mut input_proofs = Self::select_proofs(
             amount,
             proofs,
             active_keyset_ids,
-            fees_and_amounts_ppk,
+            fees_and_keyset_amounts,
             include_fees,
         )?;
         let mut exchange = None;
@@ -222,9 +217,9 @@ impl Wallet {
             input_proofs.sort_by(|a, b| a.amount.cmp(&b.amount));
 
             if let Some(proof_to_exchange) = input_proofs.pop() {
-                let fee_ppk = fees_and_amounts_ppk
+                let fee_ppk = fees_and_keyset_amounts
                     .get(&proof_to_exchange.keyset_id)
-                    .map(|(fee, _)| *fee)
+                    .map(|fee_and_amounts| fee_and_amounts.fee())
                     .unwrap_or_default()
                     .into();
 
@@ -250,7 +245,7 @@ impl Wallet {
         amount: Amount,
         proofs: Proofs,
         active_keyset_ids: &Vec<Id>,
-        fees_and_amounts_ppk: &KeysetFeeAndAmount,
+        fees_and_keyset_amounts: &KeysetFeeAndAmounts,
         include_fees: bool,
     ) -> Result<Proofs, Error> {
         tracing::debug!(
@@ -303,9 +298,9 @@ impl Wallet {
         };
 
         // Select proofs with the optimal amounts
-        for (_, (_, amounts)) in fees_and_amounts_ppk.iter() {
+        for (_, fee_and_amounts) in fees_and_keyset_amounts.iter() {
             // Split the amount into optimal amounts
-            for optimal_amount in amount.split(amounts) {
+            for optimal_amount in amount.split(fee_and_amounts) {
                 if !select_proof(&proofs, optimal_amount, true) {
                     // Add the remaining amount to the remaining amounts because proof with the optimal amount was not found
                     remaining_amounts.push(optimal_amount);
@@ -322,7 +317,7 @@ impl Wallet {
                     proofs,
                     selected_proofs.into_iter().collect(),
                     active_keyset_ids,
-                    fees_and_amounts_ppk,
+                    fees_and_keyset_amounts,
                 );
             } else {
                 return Ok(selected_proofs.into_iter().collect());
@@ -384,7 +379,7 @@ impl Wallet {
                 proofs,
                 selected_proofs,
                 active_keyset_ids,
-                fees_and_amounts_ppk,
+                fees_and_keyset_amounts,
             );
         }
 
@@ -440,14 +435,14 @@ impl Wallet {
         proofs: Proofs,
         mut selected_proofs: Proofs,
         active_keyset_ids: &Vec<Id>,
-        fees_and_amounts_ppk: &KeysetFeeAndAmount,
+        fees_and_keyset_amounts: &KeysetFeeAndAmounts,
     ) -> Result<Proofs, Error> {
         tracing::debug!("Including fees");
         let fee = calculate_fee(
             &selected_proofs.count_by_keyset(),
-            &fees_and_amounts_ppk
+            &fees_and_keyset_amounts
                 .iter()
-                .map(|(key, values)| (*key, values.0))
+                .map(|(key, values)| (*key, values.fee()))
                 .collect(),
         )
         .unwrap_or_default();
@@ -521,17 +516,17 @@ mod tests {
     #[test]
     fn test_select_proofs_empty() {
         let active_id = id();
-        let mut fee_and_amounts_ppk = HashMap::new();
-        fee_and_amounts_ppk.insert(
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
             active_id,
-            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
         );
         let proofs = vec![];
         let selected_proofs = Wallet::select_proofs(
             0.into(),
             proofs,
             &vec![active_id],
-            &fee_and_amounts_ppk,
+            &keyset_fee_and_amounts,
             false,
         )
         .unwrap();
@@ -541,17 +536,17 @@ mod tests {
     #[test]
     fn test_select_proofs_insufficient() {
         let active_id = id();
-        let mut fee_and_amounts_ppk = HashMap::new();
-        fee_and_amounts_ppk.insert(
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
             active_id,
-            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
         );
         let proofs = vec![proof(1), proof(2), proof(4)];
         let selected_proofs = Wallet::select_proofs(
             8.into(),
             proofs,
             &vec![active_id],
-            &fee_and_amounts_ppk,
+            &keyset_fee_and_amounts,
             false,
         );
         assert!(selected_proofs.is_err());
@@ -570,17 +565,17 @@ mod tests {
         ];
 
         let active_id = id();
-        let mut fee_and_amounts_ppk = HashMap::new();
-        fee_and_amounts_ppk.insert(
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
             active_id,
-            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
         );
 
         let mut selected_proofs = Wallet::select_proofs(
             77.into(),
             proofs,
             &vec![active_id],
-            &fee_and_amounts_ppk,
+            &keyset_fee_and_amounts,
             false,
         )
         .unwrap();
@@ -595,17 +590,17 @@ mod tests {
     #[test]
     fn test_select_proofs_over() {
         let active_id = id();
-        let mut fee_and_amounts_ppk = HashMap::new();
-        fee_and_amounts_ppk.insert(
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
             active_id,
-            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
         );
         let proofs = vec![proof(1), proof(2), proof(4), proof(8), proof(32), proof(64)];
         let selected_proofs = Wallet::select_proofs(
             31.into(),
             proofs,
             &vec![active_id],
-            &fee_and_amounts_ppk,
+            &keyset_fee_and_amounts,
             false,
         )
         .unwrap();
@@ -617,17 +612,17 @@ mod tests {
     fn test_select_proofs_smaller_over() {
         let proofs = vec![proof(8), proof(16), proof(32)];
         let active_id = id();
-        let mut fee_and_amounts_ppk = HashMap::new();
-        fee_and_amounts_ppk.insert(
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
             active_id,
-            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
         );
 
         let selected_proofs = Wallet::select_proofs(
             23.into(),
             proofs,
             &vec![active_id],
-            &fee_and_amounts_ppk,
+            &keyset_fee_and_amounts,
             false,
         )
         .unwrap();
@@ -639,17 +634,17 @@ mod tests {
     #[test]
     fn test_select_proofs_many_ones() {
         let active_id = id();
-        let mut fee_and_amounts_ppk = HashMap::new();
-        fee_and_amounts_ppk.insert(
+        let mut fee_and_keyset_amounts = HashMap::new();
+        fee_and_keyset_amounts.insert(
             active_id,
-            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
         );
         let proofs = (0..1024).map(|_| proof(1)).collect::<Vec<_>>();
         let selected_proofs = Wallet::select_proofs(
             1024.into(),
             proofs,
             &vec![active_id],
-            &fee_and_amounts_ppk,
+            &fee_and_keyset_amounts,
             false,
         )
         .unwrap();
@@ -662,17 +657,17 @@ mod tests {
     #[test]
     fn test_select_proof_change() {
         let active_id = id();
-        let mut fee_and_amounts_ppk = HashMap::new();
-        fee_and_amounts_ppk.insert(
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
             active_id,
-            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
         );
         let proofs = vec![proof(64), proof(4), proof(32)];
         let (selected_proofs, exchange) = Wallet::select_exact_proofs(
             97.into(),
             proofs,
             &vec![active_id],
-            &fee_and_amounts_ppk,
+            &keyset_fee_and_amounts,
             false,
         )
         .unwrap();
@@ -687,10 +682,10 @@ mod tests {
     #[test]
     fn test_select_proofs_huge_proofs() {
         let active_id = id();
-        let mut fee_and_amounts_ppk = HashMap::new();
-        fee_and_amounts_ppk.insert(
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
             active_id,
-            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
         );
         let proofs = (0..32)
             .flat_map(|i| (0..5).map(|_| proof(1 << i)).collect::<Vec<_>>())
@@ -699,7 +694,7 @@ mod tests {
             ((1u64 << 32) - 1).into(),
             proofs,
             &vec![active_id],
-            &fee_and_amounts_ppk,
+            &keyset_fee_and_amounts,
             false,
         )
         .unwrap();
@@ -715,10 +710,16 @@ mod tests {
     #[test]
     fn test_select_proofs_with_fees() {
         let proofs = vec![proof(64), proof(4), proof(32)];
-        let mut keyset_fees = HashMap::new();
-        keyset_fees.insert(id(), (100, (0..32).map(|x| 2u64.pow(x)).collect()));
-        let selected_proofs =
-            Wallet::select_proofs(10.into(), proofs, &vec![id()], &keyset_fees, false).unwrap();
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(id(), (100, (0..32).map(|x| 2u64.pow(x)).collect()).into());
+        let selected_proofs = Wallet::select_proofs(
+            10.into(),
+            proofs,
+            &vec![id()],
+            &keyset_fee_and_amounts,
+            false,
+        )
+        .unwrap();
         assert_eq!(selected_proofs.len(), 1);
         assert_eq!(selected_proofs[0].amount, 32.into());
     }

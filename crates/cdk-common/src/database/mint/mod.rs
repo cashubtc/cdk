@@ -34,8 +34,7 @@ pub const KVSTORE_NAMESPACE_KEY_MAX_LEN: usize = 120;
 pub fn validate_kvstore_string(s: &str) -> Result<(), Error> {
     if s.len() > KVSTORE_NAMESPACE_KEY_MAX_LEN {
         return Err(Error::KVStoreInvalidKey(format!(
-            "{} exceeds maximum length of key characters",
-            KVSTORE_NAMESPACE_KEY_MAX_LEN
+            "{KVSTORE_NAMESPACE_KEY_MAX_LEN} exceeds maximum length of key characters"
         )));
     }
 
@@ -72,11 +71,10 @@ pub fn validate_kvstore_params(
     }
 
     // Check for potential collisions between keys and namespaces in the same namespace
-    let namespace_key = format!("{}/{}", primary_namespace, secondary_namespace);
+    let namespace_key = format!("{primary_namespace}/{secondary_namespace}");
     if key == primary_namespace || key == secondary_namespace || key == namespace_key {
         return Err(Error::KVStoreInvalidKey(format!(
-            "Key '{}' conflicts with namespace names",
-            key
+            "Key '{key}' conflicts with namespace names"
         )));
     }
 

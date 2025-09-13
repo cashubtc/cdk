@@ -315,12 +315,13 @@ async fn test_cached_mint() {
         .expect("payment");
 
     let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
     let http_client = HttpClient::new(get_mint_url_from_env().parse().unwrap(), None);
     let premint_secrets = PreMintSecrets::random(
         active_keyset_id,
         100.into(),
         &SplitTarget::default().to_owned(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 

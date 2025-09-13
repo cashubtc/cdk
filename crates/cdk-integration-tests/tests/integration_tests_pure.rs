@@ -243,12 +243,13 @@ async fn test_mint_double_spend() {
 
     let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
     let keyset_id = keys.id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let preswap = PreMintSecrets::random(
         keyset_id,
         proofs.total_amount().unwrap(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -261,7 +262,7 @@ async fn test_mint_double_spend() {
         keyset_id,
         proofs.total_amount().unwrap(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -302,19 +303,20 @@ async fn test_attempt_to_swap_by_overflowing() {
 
     let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
     let keyset_id = keys.id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let pre_mint_amount = PreMintSecrets::random(
         keyset_id,
         amount.into(),
         &SplitTarget::default(),
-        &((0..64).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
     let pre_mint_amount_two = PreMintSecrets::random(
         keyset_id,
         amount.into(),
         &SplitTarget::default(),
-        &((0..64).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -322,7 +324,7 @@ async fn test_attempt_to_swap_by_overflowing() {
         keyset_id,
         1.into(),
         &SplitTarget::default(),
-        &((0..64).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -370,12 +372,14 @@ async fn test_swap_unbalanced() {
 
     let keyset_id = get_keyset_id(&mint_bob).await;
 
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+
     // Try to swap for less than the input amount (95 < 100)
     let preswap = PreMintSecrets::random(
         keyset_id,
         95.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .expect("Failed to create preswap");
 
@@ -394,7 +398,7 @@ async fn test_swap_unbalanced() {
         keyset_id,
         101.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .expect("Failed to create preswap");
 
@@ -434,13 +438,14 @@ pub async fn test_p2pk_swap() {
     let secret = SecretKey::generate();
 
     let spending_conditions = SpendingConditions::new_p2pk(secret.public_key(), None);
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let pre_swap = PreMintSecrets::with_conditions(
         keyset_id,
         100.into(),
         &SplitTarget::default(),
         &spending_conditions,
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -462,7 +467,7 @@ pub async fn test_p2pk_swap() {
         keyset_id,
         100.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -570,12 +575,13 @@ async fn test_swap_overpay_underpay_fee() {
 
     let keys = mint_bob.pubkeys().keysets.first().unwrap().clone().keys;
     let keyset_id = Id::v1_from_keys(&keys);
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let preswap = PreMintSecrets::random(
         keyset_id,
         9998.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -597,7 +603,7 @@ async fn test_swap_overpay_underpay_fee() {
         keyset_id,
         1000.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -648,6 +654,7 @@ async fn test_mint_enforce_fee() {
 
     let keys = mint_bob.pubkeys().keysets.first().unwrap().clone();
     let keyset_id = keys.id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let five_proofs: Vec<_> = proofs.drain(..5).collect();
 
@@ -655,7 +662,7 @@ async fn test_mint_enforce_fee() {
         keyset_id,
         5.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -677,7 +684,7 @@ async fn test_mint_enforce_fee() {
         keyset_id,
         4.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -693,7 +700,7 @@ async fn test_mint_enforce_fee() {
         keyset_id,
         1000.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -715,7 +722,7 @@ async fn test_mint_enforce_fee() {
         keyset_id,
         999.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -791,13 +798,14 @@ async fn test_concurrent_double_spend_swap() {
         .expect("Could not get proofs");
 
     let keyset_id = get_keyset_id(&mint_bob).await;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     // Create 3 identical swap requests with the same proofs
     let preswap1 = PreMintSecrets::random(
         keyset_id,
         100.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .expect("Failed to create preswap");
     let swap_request1 = SwapRequest::new(proofs.clone(), preswap1.blinded_messages());
@@ -806,7 +814,7 @@ async fn test_concurrent_double_spend_swap() {
         keyset_id,
         100.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .expect("Failed to create preswap");
     let swap_request2 = SwapRequest::new(proofs.clone(), preswap2.blinded_messages());
@@ -815,7 +823,7 @@ async fn test_concurrent_double_spend_swap() {
         keyset_id,
         100.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .expect("Failed to create preswap");
     let swap_request3 = SwapRequest::new(proofs.clone(), preswap3.blinded_messages());

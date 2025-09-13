@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use cdk_common::amount::{FeeAndAmounts, KeysetFeeAndAmounts};
 use cdk_common::nut02::{KeySetInfos, KeySetInfosMethods};
 use tracing::instrument;
 
@@ -144,7 +145,7 @@ impl Wallet {
     /// Returns a HashMap of keyset IDs to their input fee rates (per-proof-per-thousand)
     /// from cached keysets in the local database. This is an offline operation that does
     /// not contact the mint. If no keysets are found locally, returns an error.
-    pub async fn get_keyset_fees_and_amounts(&self) -> Result<HashMap<Id, (u64, Vec<u64>)>, Error> {
+    pub async fn get_keyset_fees_and_amounts(&self) -> Result<KeysetFeeAndAmounts, Error> {
         let keysets = self
             .localstore
             .get_mint_keysets(self.mint_url.clone())
@@ -161,8 +162,9 @@ impl Wallet {
                         .await?
                         .iter()
                         .map(|(amount, _)| amount.to_u64())
-                        .collect(),
-                ),
+                        .collect::<Vec<_>>(),
+                )
+                    .into(),
             );
         }
 
@@ -177,7 +179,7 @@ impl Wallet {
     pub async fn get_keyset_fees_and_amounts_by_id(
         &self,
         keyset_id: Id,
-    ) -> Result<(u64, Vec<u64>), Error> {
+    ) -> Result<FeeAndAmounts, Error> {
         self.get_keyset_fees_and_amounts()
             .await?
             .get(&keyset_id)
