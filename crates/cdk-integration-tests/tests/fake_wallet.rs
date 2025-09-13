@@ -392,12 +392,13 @@ async fn test_fake_melt_change_in_quote() {
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     let keyset = wallet.fetch_active_keyset().await.unwrap();
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let premint_secrets = PreMintSecrets::random(
         keyset.id,
         100.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -474,12 +475,13 @@ async fn test_fake_mint_without_witness() {
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
     let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let premint_secrets = PreMintSecrets::random(
         active_keyset_id,
         100.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -523,12 +525,13 @@ async fn test_fake_mint_with_wrong_witness() {
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
     let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let premint_secrets = PreMintSecrets::random(
         active_keyset_id,
         100.into(),
         &SplitTarget::default(),
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -576,12 +579,13 @@ async fn test_fake_mint_inflated() {
         .expect("no error");
 
     let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let pre_mint = PreMintSecrets::random(
         active_keyset_id,
         500.into(),
         &SplitTarget::None,
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -643,12 +647,13 @@ async fn test_fake_mint_multiple_units() {
         .expect("no error");
 
     let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let pre_mint = PreMintSecrets::random(
         active_keyset_id,
         50.into(),
         &SplitTarget::None,
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -667,7 +672,7 @@ async fn test_fake_mint_multiple_units() {
         active_keyset_id,
         50.into(),
         &SplitTarget::None,
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -758,6 +763,7 @@ async fn test_fake_mint_multiple_unit_swap() {
         .expect("no error");
 
     let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     {
         let inputs: Proofs = vec![
@@ -769,7 +775,7 @@ async fn test_fake_mint_multiple_unit_swap() {
             active_keyset_id,
             inputs.total_amount().unwrap(),
             &SplitTarget::None,
-            &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+            &fee_and_amounts,
         )
         .unwrap();
 
@@ -796,20 +802,21 @@ async fn test_fake_mint_multiple_unit_swap() {
         let inputs: Proofs = proofs.into_iter().take(2).collect();
 
         let total_inputs = inputs.total_amount().unwrap();
+        let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
         let half = total_inputs / 2.into();
         let usd_pre_mint = PreMintSecrets::random(
             usd_active_keyset_id,
             half,
             &SplitTarget::None,
-            &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+            &fee_and_amounts,
         )
         .unwrap();
         let pre_mint = PreMintSecrets::random(
             active_keyset_id,
             total_inputs - half,
             &SplitTarget::None,
-            &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+            &fee_and_amounts,
         )
         .unwrap();
 
@@ -911,6 +918,7 @@ async fn test_fake_mint_multiple_unit_melt() {
     }
 
     {
+        let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
         let inputs: Proofs = vec![proofs.first().expect("There is a proof").clone()];
 
         let input_amount: u64 = inputs.total_amount().unwrap().into();
@@ -923,14 +931,14 @@ async fn test_fake_mint_multiple_unit_melt() {
             usd_active_keyset_id,
             inputs.total_amount().unwrap() + 100.into(),
             &SplitTarget::None,
-            &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+            &fee_and_amounts,
         )
         .unwrap();
         let pre_mint = PreMintSecrets::random(
             active_keyset_id,
             100.into(),
             &SplitTarget::None,
-            &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+            &fee_and_amounts,
         )
         .unwrap();
 
@@ -991,6 +999,7 @@ async fn test_fake_mint_input_output_mismatch() {
     )
     .expect("failed to create new  usd wallet");
     let usd_active_keyset_id = wallet_usd.fetch_active_keyset().await.unwrap().id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let inputs = proofs;
 
@@ -998,7 +1007,7 @@ async fn test_fake_mint_input_output_mismatch() {
         usd_active_keyset_id,
         inputs.total_amount().unwrap(),
         &SplitTarget::None,
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -1033,6 +1042,7 @@ async fn test_fake_mint_swap_inflated() {
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let proofs = proof_streams
         .next()
@@ -1045,7 +1055,7 @@ async fn test_fake_mint_swap_inflated() {
         active_keyset_id,
         101.into(),
         &SplitTarget::None,
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -1090,12 +1100,13 @@ async fn test_fake_mint_swap_spend_after_fail() {
         .expect("no error");
 
     let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let pre_mint = PreMintSecrets::random(
         active_keyset_id,
         100.into(),
         &SplitTarget::None,
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -1110,7 +1121,7 @@ async fn test_fake_mint_swap_spend_after_fail() {
         active_keyset_id,
         101.into(),
         &SplitTarget::None,
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -1131,7 +1142,7 @@ async fn test_fake_mint_swap_spend_after_fail() {
         active_keyset_id,
         100.into(),
         &SplitTarget::None,
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -1176,12 +1187,13 @@ async fn test_fake_mint_melt_spend_after_fail() {
         .expect("no error");
 
     let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let pre_mint = PreMintSecrets::random(
         active_keyset_id,
         100.into(),
         &SplitTarget::None,
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -1196,7 +1208,7 @@ async fn test_fake_mint_melt_spend_after_fail() {
         active_keyset_id,
         101.into(),
         &SplitTarget::None,
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
@@ -1258,6 +1270,7 @@ async fn test_fake_mint_duplicate_proofs_swap() {
         .expect("no error");
 
     let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let inputs = vec![proofs[0].clone(), proofs[0].clone()];
 
@@ -1265,7 +1278,7 @@ async fn test_fake_mint_duplicate_proofs_swap() {
         active_keyset_id,
         inputs.total_amount().unwrap(),
         &SplitTarget::None,
-        &((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()),
+        &fee_and_amounts,
     )
     .unwrap();
 
