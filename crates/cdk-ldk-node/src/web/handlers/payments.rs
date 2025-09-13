@@ -15,8 +15,8 @@ use serde::Deserialize;
 use crate::web::handlers::utils::{deserialize_optional_u64, get_paginated_payments_streaming};
 use crate::web::handlers::AppState;
 use crate::web::templates::{
-    error_message, form_card, format_msats_as_btc, format_sats_as_btc, info_card, layout,
-    payment_list_item, success_message,
+    error_message, form_card, format_msats_as_btc, format_sats_as_btc, info_card, is_node_running,
+    layout_with_status, payment_list_item, success_message,
 };
 
 #[derive(Deserialize)]
@@ -236,12 +236,13 @@ pub async fn payments_page(
         }
     };
 
-    Ok(Html(layout("Payment History", content).into_string()))
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(
+        layout_with_status("Payment History", content, is_running).into_string(),
+    ))
 }
 
-pub async fn send_payments_page(
-    State(_state): State<AppState>,
-) -> Result<Html<String>, StatusCode> {
+pub async fn send_payments_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let content = html! {
         h2 style="text-align: center; margin-bottom: 3rem;" { "Send Payment" }
         div class="grid" {
@@ -280,13 +281,12 @@ pub async fn send_payments_page(
             ))
         }
 
-        div class="card" {
-            h3 { "Payment History" }
-            a href="/payments" { button { "View All Payments" } }
-        }
     };
 
-    Ok(Html(layout("Send Payments", content).into_string()))
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(
+        layout_with_status("Send Payments", content, is_running).into_string(),
+    ))
 }
 
 pub async fn post_pay_bolt11(
@@ -306,7 +306,9 @@ pub async fn post_pay_bolt11(
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
-                .body(Body::from(layout("Payment Error", content).into_string()))
+                .body(Body::from(
+                    layout_with_status("Payment Error", content, true).into_string(),
+                ))
                 .unwrap());
         }
     };
@@ -348,7 +350,9 @@ pub async fn post_pay_bolt11(
             return Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .header("content-type", "text/html")
-                .body(Body::from(layout("Payment Error", content).into_string()))
+                .body(Body::from(
+                    layout_with_status("Payment Error", content, true).into_string(),
+                ))
                 .unwrap());
         }
     };
@@ -433,7 +437,9 @@ pub async fn post_pay_bolt11(
 
     Ok(Response::builder()
         .header("content-type", "text/html")
-        .body(Body::from(layout("Payment Result", content).into_string()))
+        .body(Body::from(
+            layout_with_status("Payment Result", content, true).into_string(),
+        ))
         .unwrap())
 }
 
@@ -454,7 +460,9 @@ pub async fn post_pay_bolt12(
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
-                .body(Body::from(layout("Payment Error", content).into_string()))
+                .body(Body::from(
+                    layout_with_status("Payment Error", content, true).into_string(),
+                ))
                 .unwrap());
         }
     };
@@ -486,7 +494,9 @@ pub async fn post_pay_bolt12(
                     return Ok(Response::builder()
                         .status(StatusCode::BAD_REQUEST)
                         .header("content-type", "text/html")
-                        .body(Body::from(layout("Payment Error", content).into_string()))
+                        .body(Body::from(
+                            layout_with_status("Payment Error", content, true).into_string(),
+                        ))
                         .unwrap());
                 }
             };
@@ -518,7 +528,9 @@ pub async fn post_pay_bolt12(
             return Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .header("content-type", "text/html")
-                .body(Body::from(layout("Payment Error", content).into_string()))
+                .body(Body::from(
+                    layout_with_status("Payment Error", content, true).into_string(),
+                ))
                 .unwrap());
         }
     };
@@ -610,6 +622,8 @@ pub async fn post_pay_bolt12(
 
     Ok(Response::builder()
         .header("content-type", "text/html")
-        .body(Body::from(layout("Payment Result", content).into_string()))
+        .body(Body::from(
+            layout_with_status("Payment Result", content, true).into_string(),
+        ))
         .unwrap())
 }
