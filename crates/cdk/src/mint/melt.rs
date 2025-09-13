@@ -930,22 +930,24 @@ impl Mint {
 
                 let change_target = inputs_amount - total_spent - inputs_fee;
 
-                let amounts_ppk = self
+                let fee_and_amounts = self
                     .keysets
                     .load()
                     .iter()
                     .filter_map(|keyset| {
                         if keyset.active && Some(keyset.id) == outputs.first().map(|x| x.keyset_id)
                         {
-                            Some(keyset.amounts.clone())
+                            Some((keyset.input_fee_ppk, keyset.amounts.clone()).into())
                         } else {
                             None
                         }
                     })
                     .next()
-                    .unwrap_or_else(|| (0..32).map(|x| 2u64.pow(x)).collect());
+                    .unwrap_or_else(|| {
+                        (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into()
+                    });
 
-                let mut amounts = change_target.split(&amounts_ppk);
+                let mut amounts = change_target.split(&fee_and_amounts);
 
                 if outputs.len().lt(&amounts.len()) {
                     tracing::debug!(

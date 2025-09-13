@@ -130,15 +130,12 @@ impl Wallet {
     ) -> Result<PreparedSend, Error> {
         // Split amount with fee if necessary
         let active_keyset_id = self.get_active_keyset().await?.id;
-        let (_, amounts_ppk) = self
+        let fee_and_amounts = self
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
         let (send_amounts, send_fee) = if opts.include_fee {
-            let (keyset_fee_ppk, amounts_ppk) = self
-                .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-                .await?;
-            tracing::debug!("Keyset fee per proof: {:?}", keyset_fee_ppk);
-            let send_split = amount.split_with_fee(keyset_fee_ppk, &amounts_ppk)?;
+            tracing::debug!("Keyset fee per proof: {:?}", fee_and_amounts.fee());
+            let send_split = amount.split_with_fee(&fee_and_amounts)?;
             let send_fee = self
                 .get_proofs_fee_by_count(
                     vec![(active_keyset_id, send_split.len() as u64)]
@@ -148,7 +145,7 @@ impl Wallet {
                 .await?;
             (send_split, send_fee)
         } else {
-            let send_split = amount.split(&amounts_ppk);
+            let send_split = amount.split(&fee_and_amounts);
             let send_fee = Amount::ZERO;
             (send_split, send_fee)
         };

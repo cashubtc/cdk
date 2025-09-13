@@ -40,7 +40,7 @@ impl Wallet {
         let swap_response = self.client.post_swap(pre_swap.swap_request).await?;
 
         let active_keyset_id = pre_swap.pre_mint_secrets.keyset_id;
-        let (_, amounts_ppk) = self
+        let fee_and_amounts = self
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
 
@@ -78,7 +78,7 @@ impl Wallet {
                         let mut proofs_to_send = Proofs::new();
                         let mut proofs_to_keep = Proofs::new();
                         let mut amount_split =
-                            amount.split_targeted(&amount_split_target, &amounts_ppk)?;
+                            amount.split_targeted(&amount_split_target, &fee_and_amounts)?;
 
                         for proof in all_proofs {
                             if let Some(idx) = amount_split.iter().position(|&a| a == proof.amount)
@@ -228,7 +228,7 @@ impl Wallet {
             .checked_sub(total_to_subtract)
             .ok_or(Error::InsufficientFunds)?;
 
-        let (_, amounts_ppk) = self
+        let fee_and_amounts = self
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
 
@@ -236,7 +236,7 @@ impl Wallet {
             true => {
                 let split_count = amount
                     .unwrap_or(Amount::ZERO)
-                    .split_targeted(&SplitTarget::default(), &amounts_ppk)
+                    .split_targeted(&SplitTarget::default(), &fee_and_amounts)
                     .unwrap()
                     .len();
 
@@ -260,7 +260,7 @@ impl Wallet {
         // else use state refill
         let change_split_target = match amount_split_target {
             SplitTarget::None => {
-                self.determine_split_target_values(change_amount, &amounts_ppk)
+                self.determine_split_target_values(change_amount, &fee_and_amounts)
                     .await?
             }
             s => s,
@@ -273,17 +273,17 @@ impl Wallet {
             Some(_) => {
                 // For spending conditions, we only need to count change secrets
                 change_amount
-                    .split_targeted(&change_split_target, &amounts_ppk)?
+                    .split_targeted(&change_split_target, &fee_and_amounts)?
                     .len() as u32
             }
             None => {
                 // For no spending conditions, count both send and change secrets
                 let send_count = send_amount
                     .unwrap_or(Amount::ZERO)
-                    .split_targeted(&SplitTarget::default(), &amounts_ppk)?
+                    .split_targeted(&SplitTarget::default(), &fee_and_amounts)?
                     .len() as u32;
                 let change_count = change_amount
-                    .split_targeted(&change_split_target, &amounts_ppk)?
+                    .split_targeted(&change_split_target, &fee_and_amounts)?
                     .len() as u32;
                 send_count + change_count
             }
@@ -317,7 +317,7 @@ impl Wallet {
                     &self.seed,
                     change_amount,
                     &change_split_target,
-                    &amounts_ppk,
+                    &fee_and_amounts,
                 )?;
 
                 derived_secret_count = change_premint_secrets.len();
@@ -328,7 +328,7 @@ impl Wallet {
                         send_amount.unwrap_or(Amount::ZERO),
                         &SplitTarget::default(),
                         &conditions,
-                        &amounts_ppk,
+                        &fee_and_amounts,
                     )?,
                     change_premint_secrets,
                 )
@@ -340,7 +340,7 @@ impl Wallet {
                     &self.seed,
                     send_amount.unwrap_or(Amount::ZERO),
                     &SplitTarget::default(),
-                    &amounts_ppk,
+                    &fee_and_amounts,
                 )?;
 
                 count += premint_secrets.len() as u32;
@@ -351,7 +351,7 @@ impl Wallet {
                     &self.seed,
                     change_amount,
                     &change_split_target,
-                    &amounts_ppk,
+                    &fee_and_amounts,
                 )?;
 
                 derived_secret_count = change_premint_secrets.len() + premint_secrets.len();
