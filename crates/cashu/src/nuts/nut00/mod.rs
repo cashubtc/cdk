@@ -17,6 +17,7 @@ use super::nut02::ShortKeysetId;
 use super::nut10;
 #[cfg(feature = "wallet")]
 use super::nut11::SpendingConditions;
+#[cfg(feature = "wallet")]
 use crate::amount::FeeAndAmounts;
 #[cfg(feature = "wallet")]
 use crate::amount::SplitTarget;
