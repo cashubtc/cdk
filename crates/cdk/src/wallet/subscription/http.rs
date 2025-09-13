@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use cdk_common::MintQuoteBolt12Response;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time;
+use web_time::Duration;
 
 use super::WsSubscriptionBody;
 use crate::nuts::nut17::Kind;

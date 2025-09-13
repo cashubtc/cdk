@@ -1,7 +1,6 @@
 //! HTTP Mint client with pluggable transport
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock as StdRwLock};
-use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use cdk_common::{nut19, MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
@@ -13,6 +12,7 @@ use serde::Serialize;
 use tokio::sync::RwLock;
 use tracing::instrument;
 use url::Url;
+use web_time::{Duration, Instant};
 
 use super::transport::Transport;
 use super::{Error, MintConnector};

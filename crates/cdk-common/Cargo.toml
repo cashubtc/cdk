@@ -39,9 +39,9 @@ futures.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
+web-time.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-instant = { workspace = true, features = ["wasm-bindgen", "inaccurate"] }
 uuid = { workspace = true, features = ["js"], optional = true }
 
 [dev-dependencies]

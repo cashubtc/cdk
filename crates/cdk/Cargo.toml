@@ -45,6 +45,7 @@ uuid.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
 trust-dns-resolver = { version = "0.23.2", optional = true }
 cdk-prometheus = {workspace = true, optional = true}
+web-time.workspace = true
 # -Z minimal-versions
 sync_wrapper = "0.1.2"
 bech32 = "0.9.1"
