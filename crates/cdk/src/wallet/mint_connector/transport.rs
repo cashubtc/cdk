@@ -22,9 +22,7 @@ use crate::error::ErrorResponse;
 pub trait Transport: Default + Send + Sync + Debug + Clone {
     #[cfg(feature = "bip353")]
     /// DNS resolver to get a TXT record from a domain name
-    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
-        todo!()
-    }
+    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error>;
 
     /// Make the transport to use a given proxy
     fn with_proxy(

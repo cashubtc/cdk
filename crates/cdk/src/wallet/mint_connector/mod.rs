@@ -30,9 +30,7 @@ pub type HttpClient = http_client::HttpClient<transport::Async>;
 pub trait MintConnector: Debug {
     #[cfg(feature = "bip353")]
     /// Resolve the DNS record getting the TXT value
-    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
-        todo!()
-    }
+    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error>;
 
     /// Get Active Mint Keys [NUT-01]
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error>;
