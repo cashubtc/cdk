@@ -463,7 +463,7 @@ async fn configure_lightning_backend(
         LnBackend::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
             let lnd = lnd_settings
-                .setup(settings, CurrencyUnit::Msat, None, work_dir, None)
+                .setup(settings, CurrencyUnit::Msat, None, work_dir, _kv_store)
                 .await?;
             #[cfg(feature = "prometheus")]
             let lnd = MetricsMintPayment::new(lnd);

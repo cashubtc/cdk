@@ -176,11 +176,14 @@ pub async fn create_lnd_backend(lnd_client: &LndClient) -> Result<CdkLnd> {
         percent_fee_reserve: 1.0,
     };
 
+    let kv_store: DynMintKVStore = Arc::new(memory::empty().await?);
+
     Ok(CdkLnd::new(
         lnd_client.address.clone(),
         lnd_client.cert_file.clone(),
         lnd_client.macaroon_file.clone(),
         fee_reserve,
+        kv_store,
     )
     .await?)
 }

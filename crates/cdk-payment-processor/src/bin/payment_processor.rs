@@ -139,12 +139,14 @@ async fn main() -> anyhow::Result<()> {
                         percent_fee_reserve: lnd_settings.fee_percent,
                     };
 
+                    let kv_store = Arc::new(MintSqliteDatabase::new(":memory:").await?);
                     Arc::new(
                         cdk_lnd::Lnd::new(
                             lnd_settings.address,
                             lnd_settings.cert_file,
                             lnd_settings.macaroon_file,
                             fee_reserve,
+                            kv_store,
                         )
                         .await?,
                     )
