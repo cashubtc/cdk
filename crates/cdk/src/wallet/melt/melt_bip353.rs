@@ -7,7 +7,7 @@ use std::str::FromStr;
 use cdk_common::wallet::MeltQuote;
 use tracing::instrument;
 
-#[cfg(feature = "bip353")]
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use crate::bip353::{Bip353Address, PaymentType};
 use crate::nuts::MeltOptions;
 use crate::{Amount, Error, Wallet};
@@ -47,7 +47,7 @@ impl Wallet {
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg(feature = "bip353")]
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     #[instrument(skip(self, amount_msat), fields(address = %bip353_address))]
     pub async fn melt_bip353_quote(
         &self,

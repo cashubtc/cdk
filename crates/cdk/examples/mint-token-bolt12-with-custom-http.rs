@@ -40,7 +40,7 @@ impl Default for CustomHttp {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl HttpTransport for CustomHttp {
-    #[cfg(feature = "bip353")]
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
         panic!("Not supported");
     }

@@ -57,9 +57,9 @@ bech32 = "0.9.1"
 arc-swap = "1.7.1"
 zeroize = "1"
 tokio-util.workspace = true
-hickory-resolver = { version = "0.25.2", optional = true, features = ["dnssec-ring"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+hickory-resolver = { version = "0.25.2", optional = true, features = ["dnssec-ring"] }
 tokio = { workspace = true, features = [
     "rt-multi-thread",
     "time",

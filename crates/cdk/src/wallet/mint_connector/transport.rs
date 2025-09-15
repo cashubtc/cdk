@@ -2,11 +2,11 @@
 use std::fmt::Debug;
 
 use cdk_common::AuthToken;
-#[cfg(feature = "bip353")]
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use hickory_resolver::config::ResolverConfig;
-#[cfg(feature = "bip353")]
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use hickory_resolver::name_server::TokioConnectionProvider;
-#[cfg(feature = "bip353")]
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use hickory_resolver::Resolver;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
@@ -20,7 +20,7 @@ use crate::error::ErrorResponse;
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait Transport: Default + Send + Sync + Debug + Clone {
-    #[cfg(feature = "bip353")]
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     /// DNS resolver to get a TXT record from a domain name
     async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error>;
 
@@ -113,7 +113,7 @@ impl Transport for Async {
     }
 
     /// DNS resolver to get a TXT record from a domain name
-    #[cfg(feature = "bip353")]
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error> {
         let resolver = Resolver::builder_with_config(
             ResolverConfig::default(),
