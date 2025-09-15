@@ -16,7 +16,7 @@ pub struct BalanceSubCommand {
 }
 
 pub async fn balance(multi_mint_wallet: &MultiMintWallet, unit: &CurrencyUnit) -> Result<()> {
-    mint_balances(multi_mint_wallet, &unit).await?;
+    mint_balances(multi_mint_wallet, unit).await?;
     Ok(())
 }
 
