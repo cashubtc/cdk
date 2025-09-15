@@ -58,7 +58,7 @@ enum Commands {
     /// Decode a token
     DecodeToken(sub_commands::decode_token::DecodeTokenSubCommand),
     /// Balance
-    Balance,
+    Balance(sub_commands::balance::BalanceSubCommand),
     /// Pay bolt11 invoice
     Melt(sub_commands::melt::MeltSubCommand),
     /// Claim pending mint quotes that have been paid
@@ -229,7 +229,9 @@ async fn main() -> Result<()> {
         Commands::DecodeToken(sub_command_args) => {
             sub_commands::decode_token::decode_token(sub_command_args)
         }
-        Commands::Balance => sub_commands::balance::balance(&multi_mint_wallet).await,
+        Commands::Balance(sub_command_args) => {
+            sub_commands::balance::balance_command(&multi_mint_wallet, sub_command_args).await
+        }
         Commands::Melt(sub_command_args) => {
             sub_commands::melt::pay(&multi_mint_wallet, sub_command_args).await
         }

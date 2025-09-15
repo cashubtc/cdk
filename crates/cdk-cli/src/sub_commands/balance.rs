@@ -1,14 +1,31 @@
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::multi_mint_wallet::MultiMintWallet;
 use cdk::Amount;
+use clap::Args;
 
-pub async fn balance(multi_mint_wallet: &MultiMintWallet) -> Result<()> {
-    mint_balances(multi_mint_wallet, &CurrencyUnit::Sat).await?;
+#[derive(Args)]
+pub struct BalanceSubCommand {
+    /// Currency unit e.g. sat
+    #[arg(long, default_value = "sat")]
+    pub unit: String,
+}
+
+pub async fn balance(multi_mint_wallet: &MultiMintWallet, unit: &CurrencyUnit) -> Result<()> {
+    mint_balances(multi_mint_wallet, &unit).await?;
     Ok(())
+}
+
+pub async fn balance_command(
+    multi_mint_wallet: &MultiMintWallet,
+    sub_command_args: &BalanceSubCommand,
+) -> Result<()> {
+    let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
+    balance(multi_mint_wallet, &unit).await
 }
 
 pub async fn mint_balances(
