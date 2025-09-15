@@ -126,7 +126,9 @@ impl SecondaryRepaymentQueue {
 
                 if let Some(payment) = payment_to_process {
                     // Generate a random amount for this secondary payment (same range as initial payment: 1-1000)
-                    let random_amount: u64 = rng.gen_range(1..=1000);
+                    let random_amount: u64 = rng.gen_range(1000..=10000);
+
+                    // Convert to appropriate unit based on wallet's unit setting
                     let secondary_amount = Amount::from(random_amount);
 
                     // Generate a unique payment identifier for this secondary payment
@@ -517,16 +519,18 @@ impl MintPayment for FakeWallet {
             }
             IncomingPaymentOptions::Bolt11(bolt11_options) => {
                 let description = bolt11_options.description.unwrap_or_default();
-                let amount = if unit == &CurrencyUnit::Sat {
-                    to_unit(bolt11_options.amount, unit, &CurrencyUnit::Msat)
-                        .unwrap_or(bolt11_options.amount * Amount::from(1000))
-                } else {
-                    bolt11_options.amount
-                };
+                let amount = bolt11_options.amount;
                 let expiry = bolt11_options.unix_expiry;
 
-                // Since this is fake we just use the amount no matter the unit to create an invoice
-                let invoice = create_fake_invoice(amount.into(), description.clone());
+                // For fake invoices, always use msats regardless of unit
+                let amount_msat = if unit == &CurrencyUnit::Sat {
+                    (u64::from(amount) * 1000) as u64
+                } else {
+                    // If unit is Msat, use as-is
+                    u64::from(amount)
+                };
+
+                let invoice = create_fake_invoice(amount_msat, description.clone());
                 let payment_hash = invoice.payment_hash();
 
                 (
@@ -551,7 +555,12 @@ impl MintPayment for FakeWallet {
             use bitcoin::secp256k1::rand::Rng;
             let mut rng = OsRng;
             let random_amount: u64 = rng.gen_range(1..=1000);
-            random_amount.into()
+            // Use the same unit as the wallet for any-amount invoices
+            if *unit == CurrencyUnit::Sat {
+                Amount::from(random_amount)
+            } else {
+                Amount::from(random_amount * 1000)
+            }
         } else {
             amount
         };
