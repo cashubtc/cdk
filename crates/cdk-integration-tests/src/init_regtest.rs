@@ -6,7 +6,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use cdk::types::FeeReserve;
 use cdk_cln::Cln as CdkCln;
+use cdk_common::database::mint::DynMintKVStore;
 use cdk_lnd::Lnd as CdkLnd;
+use cdk_sqlite::mint::memory;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use ldk_node::Node;
 use ln_regtest_rs::bitcoin_client::BitcoinClient;
@@ -164,7 +166,8 @@ pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
         percent_fee_reserve: 1.0,
     };
 
-    Ok(CdkCln::new(rpc_path, fee_reserve).await?)
+    let kv_store: DynMintKVStore = Arc::new(memory::empty().await?);
+    Ok(CdkCln::new(rpc_path, fee_reserve, kv_store).await?)
 }
 
 pub async fn create_lnd_backend(lnd_client: &LndClient) -> Result<CdkLnd> {

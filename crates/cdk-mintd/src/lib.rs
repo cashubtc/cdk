@@ -427,7 +427,7 @@ async fn configure_lightning_backend(
                 .clone()
                 .expect("Config checked at load that cln is some");
             let cln = cln_settings
-                .setup(settings, CurrencyUnit::Msat, None, work_dir, None)
+                .setup(settings, CurrencyUnit::Msat, None, work_dir, _kv_store)
                 .await?;
             #[cfg(feature = "prometheus")]
             let cln = MetricsMintPayment::new(cln);

@@ -442,6 +442,9 @@ pub trait KVStore: KVStoreDatabase {
     ) -> Result<Box<dyn KVStoreTransaction<'a, Self::Err> + Send + Sync + 'a>, Error>;
 }
 
+/// Type alias for Mint Kv store
+pub type DynMintKVStore = std::sync::Arc<dyn KVStore<Err = Error> + Send + Sync>;
+
 /// Mint Database trait
 #[async_trait]
 pub trait Database<Error>:
@@ -462,5 +465,5 @@ pub trait Database<Error>:
     async fn get_quote_ttl(&self) -> Result<QuoteTTL, Error>;
 }
 
-/// Type alias for trait objects
+/// Type alias for Mint Database
 pub type DynMintDatabase = std::sync::Arc<dyn Database<Error> + Send + Sync>;
