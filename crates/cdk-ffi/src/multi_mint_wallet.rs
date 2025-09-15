@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use bip39::Mnemonic;
 use cdk::wallet::multi_mint_wallet::{
-    MultiMintWallet as CdkMultiMintWallet, TransferMode as CdkTransferMode,
-    TransferResult as CdkTransferResult, MultiMintReceiveOptions as CdkMultiMintReceiveOptions,
-    MultiMintSendOptions as CdkMultiMintSendOptions,
+    MultiMintReceiveOptions as CdkMultiMintReceiveOptions,
+    MultiMintSendOptions as CdkMultiMintSendOptions, MultiMintWallet as CdkMultiMintWallet,
+    TransferMode as CdkTransferMode, TransferResult as CdkTransferResult,
 };
 
 use crate::error::FfiError;
@@ -61,8 +61,8 @@ impl MultiMintWallet {
         let localstore = crate::database::create_cdk_database_from_ffi(db);
 
         // Parse proxy URL
-        let proxy_url = url::Url::parse(&proxy_url)
-            .map_err(|e| FfiError::InvalidUrl { msg: e.to_string() })?;
+        let proxy_url =
+            url::Url::parse(&proxy_url).map_err(|e| FfiError::InvalidUrl { msg: e.to_string() })?;
 
         let wallet =
             CdkMultiMintWallet::new_with_proxy(localstore, seed, unit.into(), proxy_url).await?;
@@ -207,10 +207,7 @@ impl MultiMintWallet {
             .inner
             .mint(&cdk_mint_url, &quote_id, conditions)
             .await?;
-        Ok(proofs
-            .into_iter()
-            .map(|p| Arc::new(p.into()))
-            .collect())
+        Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
     }
 
     /// Get a melt quote from a specific mint
@@ -230,7 +227,12 @@ impl MultiMintWallet {
     }
 
     /// Melt tokens (pay a bolt11 invoice)
-    pub async fn melt(&self, bolt11: String, options: Option<MeltOptions>, max_fee: Option<Amount>) -> Result<Melted, FfiError> {
+    pub async fn melt(
+        &self,
+        bolt11: String,
+        options: Option<MeltOptions>,
+        max_fee: Option<Amount>,
+    ) -> Result<Melted, FfiError> {
         let cdk_options = options.map(Into::into);
         let cdk_max_fee = max_fee.map(Into::into);
         let melted = self.inner.melt(&bolt11, cdk_options, cdk_max_fee).await?;
@@ -261,20 +263,9 @@ impl MultiMintWallet {
     ) -> Result<Option<Proofs>, FfiError> {
         let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
 
-        let result = self
-            .inner
-            .swap(
-                amount.map(Into::into),
-                conditions,
-            )
-            .await?;
+        let result = self.inner.swap(amount.map(Into::into), conditions).await?;
 
-        Ok(result.map(|proofs| {
-            proofs
-                .into_iter()
-                .map(|p| Arc::new(p.into()))
-                .collect()
-        }))
+        Ok(result.map(|proofs| proofs.into_iter().map(|p| Arc::new(p.into())).collect()))
     }
 
     /// List transactions from all mints
@@ -288,7 +279,10 @@ impl MultiMintWallet {
     }
 
     /// Check all mint quotes and mint if paid
-    pub async fn check_all_mint_quotes(&self, mint_url: Option<MintUrl>) -> Result<Amount, FfiError> {
+    pub async fn check_all_mint_quotes(
+        &self,
+        mint_url: Option<MintUrl>,
+    ) -> Result<Amount, FfiError> {
         let cdk_mint_url = mint_url.map(|url| url.try_into()).transpose()?;
         let amount = self.inner.check_all_mint_quotes(cdk_mint_url).await?;
         Ok(amount.into())
@@ -422,11 +416,13 @@ impl From<MultiMintSendOptions> for CdkMultiMintSendOptions {
         let mut opts = CdkMultiMintSendOptions::new();
         opts.allow_transfer = options.allow_transfer;
         opts.max_transfer_amount = options.max_transfer_amount.map(Into::into);
-        opts.allowed_mints = options.allowed_mints
+        opts.allowed_mints = options
+            .allowed_mints
             .into_iter()
             .filter_map(|url| url.try_into().ok())
             .collect();
-        opts.excluded_mints = options.excluded_mints
+        opts.excluded_mints = options
+            .excluded_mints
             .into_iter()
             .filter_map(|url| url.try_into().ok())
             .collect();
