@@ -133,12 +133,8 @@ impl Lnd {
             .await
             .map_err(|e| Error::Database(e.to_string()))?
         {
-            if let Ok(index_str) = std::str::from_utf8(&stored_index.as_slice()) {
-                if let Ok(index) = index_str.parse::<u64>() {
-                    Some(index)
-                } else {
-                    None
-                }
+            if let Ok(index_str) = std::str::from_utf8(stored_index.as_slice()) {
+                index_str.parse::<u64>().ok()
             } else {
                 None
             }
@@ -152,12 +148,8 @@ impl Lnd {
             .await
             .map_err(|e| Error::Database(e.to_string()))?
         {
-            if let Ok(index_str) = std::str::from_utf8(&stored_index.as_slice()) {
-                if let Ok(index) = index_str.parse::<u64>() {
-                    Some(index)
-                } else {
-                    None
-                }
+            if let Ok(index_str) = std::str::from_utf8(stored_index.as_slice()) {
+                index_str.parse::<u64>().ok()
             } else {
                 None
             }
