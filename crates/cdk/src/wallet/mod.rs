@@ -39,6 +39,7 @@ mod keysets;
 mod melt;
 mod mint_connector;
 pub mod multi_mint_wallet;
+pub mod payment_request;
 mod proofs;
 mod receive;
 mod send;
