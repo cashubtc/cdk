@@ -599,3 +599,6 @@ where
         result
     }
 }
+
+/// Type alias for Mint Payment trait
+pub type DynMintPayment = std::sync::Arc<dyn MintPayment<Err = Error> + Send + Sync>;

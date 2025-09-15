@@ -38,6 +38,7 @@ use cdk::nuts::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
+use cdk_common::database::DynMintDatabase;
 // internal crate modules
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
@@ -97,7 +98,7 @@ async fn initial_setup(
     settings: &config::Settings,
     db_password: Option<String>,
 ) -> Result<(
-    Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
+    DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn MintKVStore<Err = cdk_database::Error> + Send + Sync>,
 )> {
@@ -257,7 +258,7 @@ async fn setup_database(
     _work_dir: &Path,
     _db_password: Option<String>,
 ) -> Result<(
-    Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync>,
+    DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn MintKVStore<Err = cdk_database::Error> + Send + Sync>,
 )> {
@@ -634,10 +635,10 @@ async fn setup_authentication(
     _password: Option<String>,
 ) -> Result<MintBuilder> {
     if let Some(auth_settings) = settings.auth.clone() {
+        use cdk_common::database::DynMintAuthDatabase;
+
         tracing::info!("Auth settings are defined. {:?}", auth_settings);
-        let auth_localstore: Arc<
-            dyn cdk_database::MintAuthDatabase<Err = cdk_database::Error> + Send + Sync,
-        > = match settings.database.engine {
+        let auth_localstore: DynMintAuthDatabase = match settings.database.engine {
             #[cfg(feature = "sqlite")]
             DatabaseEngine::Sqlite => {
                 #[cfg(feature = "sqlite")]

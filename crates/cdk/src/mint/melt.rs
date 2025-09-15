@@ -8,8 +8,8 @@ use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::{
-    Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, OutgoingPaymentOptions,
-    PaymentIdentifier,
+    Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, DynMintPayment,
+    OutgoingPaymentOptions, PaymentIdentifier,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::{MeltOptions, MeltQuoteBolt12Request};
@@ -23,7 +23,7 @@ use super::{
     PaymentMethod, PublicKey, State,
 };
 use crate::amount::to_unit;
-use crate::cdk_payment::{MakePaymentResponse, MintPayment};
+use crate::cdk_payment::MakePaymentResponse;
 use crate::mint::proof_writer::ProofWriter;
 use crate::mint::verification::Verification;
 use crate::mint::SigFlag;
@@ -586,7 +586,7 @@ impl Mint {
 
         use std::sync::Arc;
         async fn check_payment_state(
-            ln: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+            ln: DynMintPayment,
             lookup_id: &PaymentIdentifier,
         ) -> anyhow::Result<MakePaymentResponse> {
             match ln.check_outgoing_payment(lookup_id).await {

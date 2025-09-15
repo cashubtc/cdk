@@ -22,7 +22,7 @@ mod auth;
 pub mod test;
 
 #[cfg(feature = "auth")]
-pub use auth::{MintAuthDatabase, MintAuthTransaction};
+pub use auth::{DynMintAuthDatabase, MintAuthDatabase, MintAuthTransaction};
 
 /// Valid ASCII characters for namespace and key strings in KV store
 pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str =
@@ -461,3 +461,6 @@ pub trait Database<Error>:
     /// Get [`QuoteTTL`]
     async fn get_quote_ttl(&self) -> Result<QuoteTTL, Error>;
 }
+
+/// Type alias for trait objects
+pub type DynMintDatabase = std::sync::Arc<dyn Database<Error> + Send + Sync>;
