@@ -1,6 +1,12 @@
+use ldk_node::Node;
 use maud::{html, Markup, DOCTYPE};
 
-pub fn layout(title: &str, content: Markup) -> Markup {
+/// Helper function to check if the node is running
+pub fn is_node_running(node: &Node) -> bool {
+    node.status().is_running
+}
+
+pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -252,10 +258,19 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
                     }
 
+                    .status-indicator.status-inactive {
+                        background-color: #ef4444;
+                        box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+                    }
+
                     .status-text {
                         font-size: 0.875rem;
                         font-weight: 500;
                         color: #10b981;
+                    }
+
+                    .status-text.status-inactive {
+                        color: #ef4444;
                     }
 
                     .node-title {
@@ -281,38 +296,104 @@ pub fn layout(title: &str, content: Markup) -> Markup {
 
                     /* Responsive header */
                     @media (max-width: 768px) {
+                        header {
+                            height: 180px; /* Slightly taller for better mobile layout */
+                            padding: 1rem 0;
+                        }
+
+                        header .container {
+                            padding: 0 1rem;
+                            height: 100%;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                        }
+
                         .header-content {
                             flex-direction: column;
                             gap: 1rem;
                             text-align: center;
+                            width: 100%;
+                            justify-content: center;
                         }
 
                         .header-left {
                             flex-direction: column;
                             text-align: center;
+                            align-items: center;
+                            gap: 0.75rem;
+                        }
+
+                        .header-avatar {
+                            width: 64px;
+                            height: 64px;
+                            padding: 0.5rem;
+                        }
+
+                        .header-avatar-image {
+                            width: 40px;
+                            height: 40px;
                         }
 
                         .node-title {
                             font-size: 1.5rem;
                         }
+
+                        .node-subtitle {
+                            font-size: 0.8125rem;
+                            text-align: center;
+                        }
+
+                        .node-status {
+                            justify-content: center;
+                        }
                     }
 
+                    @media (max-width: 480px) {
+                        header {
+                            height: 160px;
+                        }
+
+                        .header-avatar {
+                            width: 56px;
+                            height: 56px;
+                            padding: 0.375rem;
+                        }
+
+                        .header-avatar-image {
+                            width: 36px;
+                            height: 36px;
+                        }
+
+                        .node-title {
+                            font-size: 1.25rem;
+                        }
+
+                        .node-subtitle {
+                            font-size: 0.75rem;
+                        }
+                    }
+
+                    /* Dark mode navigation styles */
+                    @media (prefers-color-scheme: dark) {
                         nav a {
                             color: var(--text-muted) !important;
                         }
 
                         nav a:hover {
                             color: var(--text-secondary) !important;
-                            background-color: rgba(255, 255, 255, 0.05) !important;
+                            background-color: rgba(255, 255, 255, 0.08) !important;
+                            transform: translateY(-1px) !important;
                         }
 
                         nav a.active {
                             color: var(--text-primary) !important;
-                            background-color: rgba(255, 255, 255, 0.08) !important;
+                            background-color: rgba(255, 255, 255, 0.1) !important;
                         }
 
                         nav a.active:hover {
-                            background-color: rgba(255, 255, 255, 0.1) !important;
+                            background-color: rgba(255, 255, 255, 0.12) !important;
+                            transform: translateY(-1px) !important;
                         }
                     }
 
@@ -409,23 +490,6 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         line-height: 1.6;
                     }
 
-                    @media (max-width: 768px) {
-                        header {
-                            height: 150px; /* Smaller height on mobile */
-                        }
-
-                        header .container {
-                            padding: 0 1rem;
-                        }
-
-                        h1 {
-                            font-size: 2.25rem;
-                        }
-
-                        .subtitle {
-                            font-size: 1.1rem;
-                        }
-                    }
 
                     /* Card fade-in animation */
                     @keyframes fade-in {
@@ -489,6 +553,15 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                     nav a:hover {
                         color: hsl(var(--foreground));
                         background-color: hsl(var(--muted));
+                    }
+
+                    /* Light mode navigation hover states */
+                    @media (prefers-color-scheme: light) {
+                        nav a:hover {
+                            color: hsl(var(--foreground));
+                            background-color: hsl(var(--muted) / 0.8);
+                            transform: translateY(-1px);
+                        }
                     }
 
                     nav a.active {
@@ -587,6 +660,20 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         width: 100%;
                     }
 
+                    /* Dark mode input field improvements */
+                    @media (prefers-color-scheme: dark) {
+                        input, textarea, select {
+                            background-color: hsl(0 0% 8%);
+                            border: 1px solid hsl(0 0% 20%);
+                            color: hsl(var(--foreground));
+                        }
+
+                        input:focus, textarea:focus, select:focus {
+                            background-color: hsl(0 0% 10%);
+                            border-color: hsl(var(--ring));
+                        }
+                    }
+
                     input:focus, textarea:focus, select:focus {
                         outline: 2px solid transparent;
                         outline-offset: 2px;
@@ -597,6 +684,74 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                     input:disabled, textarea:disabled, select:disabled {
                         cursor: not-allowed;
                         opacity: 0.5;
+                    }
+
+                    /* Subtle pagination dropdown styling */
+                    .per-page-selector {
+                        display: flex;
+                        align-items: center;
+                        gap: 0.5rem;
+                        margin: 1rem 0 0 0;
+                        padding: 0;
+                        background-color: transparent;
+                        border: none;
+                        border-radius: 0;
+                        font-size: 0.875rem;
+                    }
+
+                    .per-page-selector label {
+                        color: hsl(var(--muted-foreground));
+                        font-weight: 500;
+                    }
+
+                    .per-page-selector select {
+                        background-color: transparent;
+                        border: 1px solid hsl(var(--muted));
+                        border-radius: calc(var(--radius) - 2px);
+                        padding: 0.25rem 0.5rem;
+                        font-size: 0.875rem;
+                        color: hsl(var(--muted-foreground));
+                        min-width: 50px;
+                        cursor: pointer;
+                        transition: all 0.2s ease;
+                        flex: none;
+                        width: auto;
+                    }
+
+                    .per-page-selector select:hover {
+                        border-color: hsl(var(--ring));
+                        background-color: hsl(var(--muted) / 0.5);
+                    }
+
+                    .per-page-selector select:focus {
+                        outline: 2px solid transparent;
+                        outline-offset: 2px;
+                        border-color: hsl(var(--ring));
+                        box-shadow: 0 0 0 2px hsl(var(--ring) / 0.2);
+                    }
+
+                    .per-page-selector span {
+                        color: hsl(var(--muted-foreground));
+                        font-weight: 500;
+                    }
+
+                    /* Form actions layout */
+                    .form-actions {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        gap: 1rem;
+                        margin-top: 1.5rem;
+                        padding-top: 1rem;
+                        border-top: 1px solid hsl(var(--border));
+                    }
+
+                    .form-actions .button-secondary {
+                        order: 1;
+                    }
+
+                    .form-actions .button-primary {
+                        order: 2;
                     }
 
                     button {
@@ -1082,6 +1237,14 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         margin-bottom: 1.5rem;
                     }
 
+                    /* Dark mode payment card improvements - match other cards */
+                    @media (prefers-color-scheme: dark) {
+                        .payment-item {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+                    }
+
                     .payment-header {
                         display: flex;
                         justify-content: space-between;
@@ -1264,6 +1427,39 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                         background-color: hsl(32 95% 44% / 0.1);
                         color: hsl(32 95% 44%);
                         border: 1px solid hsl(32 95% 44% / 0.2);
+                    }
+
+                    /* Dark mode payment type badge improvements */
+                    @media (prefers-color-scheme: dark) {
+                        .payment-type-onchain {
+                            background-color: hsl(32 95% 60% / 0.15);
+                            color: hsl(32 95% 70%);
+                            border: 1px solid hsl(32 95% 60% / 0.3);
+                        }
+
+                        .payment-type-bolt11 {
+                            background-color: hsl(217 91% 70% / 0.15);
+                            color: hsl(217 91% 80%);
+                            border: 1px solid hsl(217 91% 70% / 0.3);
+                        }
+
+                        .payment-type-bolt12 {
+                            background-color: hsl(262 83% 70% / 0.15);
+                            color: hsl(262 83% 80%);
+                            border: 1px solid hsl(262 83% 70% / 0.3);
+                        }
+
+                        .payment-type-spontaneous {
+                            background-color: hsl(142.1 70.6% 60% / 0.15);
+                            color: hsl(142.1 70.6% 75%);
+                            border: 1px solid hsl(142.1 70.6% 60% / 0.3);
+                        }
+
+                        .payment-type-bolt11-jit {
+                            background-color: hsl(199 89% 65% / 0.15);
+                            color: hsl(199 89% 80%);
+                            border: 1px solid hsl(199 89% 65% / 0.3);
+                        }
                     }
 
                     .payment-type-spontaneous {
@@ -1635,6 +1831,147 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                             fill: rgba(156, 163, 175, 0.2);
                         }
                     }
+
+                    /* Address display styling */
+                    .address-display {
+                        margin: 1.5rem 0;
+                    }
+
+                    .address-container {
+                        padding: 1rem 0;
+                    }
+
+                    .address-text {
+                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
+                        font-size: 1.25rem;
+                        font-weight: 500;
+                        color: hsl(var(--foreground));
+                        word-break: break-all;
+                        overflow-wrap: break-word;
+                        hyphens: auto;
+                        flex: 1;
+                        min-width: 0;
+                        line-height: 1.4;
+                        background-color: transparent;
+                        border: none;
+                        padding: 0;
+                    }
+
+
+                    /* Dark mode address styling */
+                    @media (prefers-color-scheme: dark) {
+                        .address-text {
+                            color: var(--text-primary) !important;
+                        }
+                    }
+
+                    /* Responsive address display */
+                    @media (max-width: 640px) {
+                        .address-text {
+                            font-size: 1.125rem;
+                            text-align: center;
+                        }
+                    }
+
+                    /* Transaction confirmation styling */
+                    .transaction-details {
+                        margin-top: 1rem;
+                    }
+
+                    .transaction-details .detail-row {
+                        display: flex;
+                        align-items: baseline;
+                        margin-bottom: 1rem;
+                        gap: 1rem;
+                        padding: 0.75rem 0;
+                        border-bottom: 1px solid hsl(var(--border));
+                    }
+
+                    .transaction-details .detail-row:last-child {
+                        border-bottom: none;
+                        margin-bottom: 0;
+                    }
+
+                    .transaction-details .detail-label {
+                        font-weight: 500;
+                        color: hsl(var(--muted-foreground));
+                        font-size: 0.875rem;
+                        min-width: 180px;
+                        flex-shrink: 0;
+                    }
+
+                    .transaction-details .detail-value {
+                        color: hsl(var(--foreground));
+                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
+                        font-size: 0.875rem;
+                        word-break: break-all;
+                        flex: 1;
+                        min-width: 0;
+                    }
+
+                    .transaction-details .detail-value-amount {
+                        color: hsl(var(--foreground));
+                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
+                        font-size: 1rem;
+                        font-weight: 600;
+                        flex: 1;
+                        min-width: 0;
+                    }
+
+                    .send-all-notice {
+                        border: 1px solid hsl(32.6 75.4% 55.1%);
+                        background-color: hsl(32.6 75.4% 55.1% / 0.1);
+                    }
+
+                    .send-all-notice h3 {
+                        color: hsl(32.6 75.4% 55.1%);
+                        font-size: 1rem;
+                        font-weight: 600;
+                        margin-bottom: 0.5rem;
+                    }
+
+                    .send-all-notice p {
+                        color: hsl(32.6 75.4% 55.1%);
+                        font-size: 0.875rem;
+                        line-height: 1.4;
+                        margin: 0;
+                    }
+
+                    /* Dark mode transaction styling */
+                    @media (prefers-color-scheme: dark) {
+                        .transaction-details .detail-label {
+                            color: var(--text-muted) !important;
+                        }
+
+                        .transaction-details .detail-value,
+                        .transaction-details .detail-value-amount {
+                            color: var(--text-primary) !important;
+                        }
+
+                        .send-all-notice {
+                            background-color: hsl(32.6 75.4% 55.1% / 0.15) !important;
+                            border-color: hsl(32.6 75.4% 55.1% / 0.3) !important;
+                        }
+                    }
+
+                    /* Responsive transaction details */
+                    @media (max-width: 640px) {
+                        .transaction-details .detail-row {
+                            flex-direction: column;
+                            align-items: flex-start;
+                            gap: 0.5rem;
+                        }
+
+                        .transaction-details .detail-label {
+                            min-width: auto;
+                            font-size: 0.8125rem;
+                        }
+
+                        .transaction-details .detail-value,
+                        .transaction-details .detail-value-amount {
+                            font-size: 0.875rem;
+                        }
+                    }
                     "
                 }
             }
@@ -1648,8 +1985,13 @@ pub fn layout(title: &str, content: Markup) -> Markup {
                                 }
                                 div class="node-info" {
                                     div class="node-status" {
-                                        span class="status-indicator status-running" {}
-                                        span class="status-text" { "Running" }
+                                        @if is_running {
+                                            span class="status-indicator" {}
+                                            span class="status-text" { "Running" }
+                                        } @else {
+                                            span class="status-indicator status-inactive" {}
+                                            span class="status-text status-inactive" { "Inactive" }
+                                        }
                                     }
                                     h1 class="node-title" { "CDK LDK Node" }
                                     span class="node-subtitle" { "Cashu Mint & Lightning Network Node Management" }
