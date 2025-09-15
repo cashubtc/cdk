@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use crate::web::handlers::utils::deserialize_optional_u64;
 use crate::web::handlers::AppState;
 use crate::web::templates::{
-    error_message, form_card, format_sats_as_btc, info_card, layout, success_message,
+    error_message, form_card, format_sats_as_btc, info_card, is_node_running, layout_with_status,
+    success_message,
 };
 
 #[derive(Deserialize, Serialize)]
@@ -32,54 +33,8 @@ pub struct ConfirmOnchainForm {
     confirmed: Option<String>,
 }
 
-pub async fn get_new_address(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
-    let address_result = state.node.inner.onchain_payment().new_address();
-
-    let content = match address_result {
-        Ok(address) => {
-            html! {
-                (success_message(&format!("New address generated: {address}")))
-                div class="card" {
-                    h2 { "Bitcoin Address" }
-                    div class="info-item" {
-                        span class="info-label" { "Address:" }
-                        span class="info-value" style="font-family: monospace; font-size: 0.9rem;" { (address.to_string()) }
-                    }
-                }
-                div class="card" {
-                    a href="/onchain" { button { "← Back to On-chain" } }
-                    " "
-                    a href="/onchain/new-address" { button { "Generate Another Address" } }
-                }
-            }
-        }
-        Err(e) => {
-            html! {
-                (error_message(&format!("Failed to generate address: {e}")))
-                div class="card" {
-                    a href="/onchain" { button { "← Back to On-chain" } }
-                }
-            }
-        }
-    };
-
-    Ok(Html(layout("New Address", content).into_string()))
-}
-
-pub async fn onchain_page(
-    State(state): State<AppState>,
-    query: Query<HashMap<String, String>>,
-) -> Result<Html<String>, StatusCode> {
-    let balances = state.node.inner.list_balances();
-    let action = query
-        .get("action")
-        .map(|s| s.as_str())
-        .unwrap_or("overview");
-
-    let mut content = html! {
-        h2 style="text-align: center; margin-bottom: 3rem;" { "On-chain" }
-
-        // Quick Actions section - individual cards
+fn quick_actions_section() -> maud::Markup {
+    html! {
         div class="card" style="margin-bottom: 2rem;" {
             h2 { "Quick Actions" }
             div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;" {
@@ -102,6 +57,64 @@ pub async fn onchain_page(
                 }
             }
         }
+    }
+}
+
+pub async fn get_new_address(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
+    let address_result = state.node.inner.onchain_payment().new_address();
+
+    let content = match address_result {
+        Ok(address) => {
+            html! {
+                div class="card" {
+                    h2 { "Bitcoin Address" }
+                    div class="address-display" {
+                        div class="address-container" {
+                            span class="address-text" { (address.to_string()) }
+                        }
+                    }
+                }
+                div class="card" {
+                    div style="display: flex; justify-content: space-between; gap: 1rem;" {
+                        a href="/onchain" { button class="button-secondary" { "Back" } }
+                        form method="post" action="/onchain/new-address" style="display: inline;" {
+                            button class="button-primary" type="submit" { "Generate Another Address" }
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            html! {
+                (error_message(&format!("Failed to generate address: {e}")))
+                div class="card" {
+                    a href="/onchain" { button class="button-primary" { "← Back to On-chain" } }
+                }
+            }
+        }
+    };
+
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(
+        layout_with_status("New Address", content, is_running).into_string(),
+    ))
+}
+
+pub async fn onchain_page(
+    State(state): State<AppState>,
+    query: Query<HashMap<String, String>>,
+) -> Result<Html<String>, StatusCode> {
+    let balances = state.node.inner.list_balances();
+    let action = query
+        .get("action")
+        .map(|s| s.as_str())
+        .unwrap_or("overview");
+
+    let mut content = html! {
+        h2 style="text-align: center; margin-bottom: 3rem;" { "On-chain" }
+
+        // Quick Actions section - only show on overview
+        (quick_actions_section())
 
         // On-chain Balance as metric cards
         div class="card" {
@@ -123,30 +136,6 @@ pub async fn onchain_page(
         "send" => {
             content = html! {
                 h2 style="text-align: center; margin-bottom: 3rem;" { "On-chain" }
-
-                // Quick Actions section - individual cards
-                div class="card" style="margin-bottom: 2rem;" {
-                    h2 { "Quick Actions" }
-                    div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;" {
-                        // Receive Bitcoin Card
-                        div class="quick-action-card" {
-                            h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Receive Bitcoin" }
-                            p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Generate a new Bitcoin address to receive on-chain payments from other users or services." }
-                            a href="/onchain?action=receive" style="text-decoration: none;" {
-                                button class="button-outline" { "Receive Bitcoin" }
-                            }
-                        }
-
-                        // Send Bitcoin Card
-                        div class="quick-action-card" {
-                            h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Send Bitcoin" }
-                            p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send Bitcoin to another address on the blockchain. Standard on-chain transactions." }
-                            a href="/onchain?action=send" style="text-decoration: none;" {
-                                button class="button-outline" { "Send Bitcoin" }
-                            }
-                        }
-                    }
-                }
 
                 // Send form above balance
                 (form_card(
@@ -193,30 +182,6 @@ pub async fn onchain_page(
             content = html! {
                 h2 style="text-align: center; margin-bottom: 3rem;" { "On-chain" }
 
-                // Quick Actions section - individual cards
-                div class="card" style="margin-bottom: 2rem;" {
-                    h2 { "Quick Actions" }
-                    div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;" {
-                        // Receive Bitcoin Card
-                        div class="quick-action-card" {
-                            h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Receive Bitcoin" }
-                            p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Generate a new Bitcoin address to receive on-chain payments from other users or services." }
-                            a href="/onchain?action=receive" style="text-decoration: none;" {
-                                button class="button-outline" { "Receive Bitcoin" }
-                            }
-                        }
-
-                        // Send Bitcoin Card
-                        div class="quick-action-card" {
-                            h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Send Bitcoin" }
-                            p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send Bitcoin to another address on the blockchain. Standard on-chain transactions." }
-                            a href="/onchain?action=send" style="text-decoration: none;" {
-                                button class="button-outline" { "Send Bitcoin" }
-                            }
-                        }
-                    }
-                }
-
                 // Generate address form above balance
                 (form_card(
                     "Generate New Address",
@@ -252,7 +217,10 @@ pub async fn onchain_page(
         }
     }
 
-    Ok(Html(layout("On-chain", content).into_string()))
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(
+        layout_with_status("On-chain", content, is_running).into_string(),
+    ))
 }
 
 pub async fn post_send_onchain(
@@ -294,7 +262,7 @@ pub async fn onchain_confirm_page(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Send On-chain Error", content).into_string(),
+                    layout_with_status("Send On-chain Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -320,7 +288,7 @@ pub async fn onchain_confirm_page(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Send On-chain Error", content).into_string(),
+                    layout_with_status("Send On-chain Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -345,46 +313,46 @@ pub async fn onchain_confirm_page(
     let content = html! {
         h2 style="text-align: center; margin-bottom: 3rem;" { "Confirm On-chain Transaction" }
 
-        div class="card" style="border: 2px solid hsl(var(--primary)); background-color: hsl(var(--primary) / 0.05);" {
-            h2 { "⚠️ Transaction Confirmation" }
-            p style="color: hsl(var(--muted-foreground)); margin-bottom: 1.5rem;" {
-                "Please review the transaction details carefully before proceeding. This action cannot be undone."
-            }
-        }
-
-        (info_card(
-            "Transaction Details",
-            vec![
-                ("Recipient Address", form.address.clone()),
-                ("Amount to Send", if is_send_all {
-                    format!("{} (All available funds)", format_sats_as_btc(amount_to_send))
-                } else {
-                    format_sats_as_btc(amount_to_send)
-                }),
-                ("Current Spendable Balance", format_sats_as_btc(spendable_balance)),
-            ]
-        ))
-
         @if is_send_all {
-            div class="card" style="border: 1px solid hsl(32.6 75.4% 55.1%); background-color: hsl(32.6 75.4% 55.1% / 0.1);" {
-                h3 style="color: hsl(32.6 75.4% 55.1%);" { "Send All Notice" }
-                p style="color: hsl(32.6 75.4% 55.1%);" {
-                    "This transaction will send all available funds to the recipient address. "
-                    "Network fees will be deducted from the total amount automatically."
+            div class="card send-all-notice" {
+                h3 { "Send All Notice" }
+                p {
+                    "This transaction will send all available funds to the recipient address. Network fees will be deducted from the total amount automatically."
                 }
             }
         }
 
+        // Transaction Details Card
         div class="card" {
-            div style="display: flex; justify-content: space-between; gap: 1rem; margin-top: 2rem;" {
+            h2 { "Transaction Details" }
+            div class="transaction-details" {
+                div class="detail-row" {
+                    span class="detail-label" { "Recipient Address:" }
+                    span class="detail-value" { (form.address.clone()) }
+                }
+                div class="detail-row" {
+                    span class="detail-label" { "Amount to Send:" }
+                    span class="detail-value-amount" {
+                        (if is_send_all {
+                            format!("{} (All available funds)", format_sats_as_btc(amount_to_send))
+                        } else {
+                            format_sats_as_btc(amount_to_send)
+                        })
+                    }
+                }
+                div class="detail-row" {
+                    span class="detail-label" { "Current Spendable Balance:" }
+                    span class="detail-value-amount" { (format_sats_as_btc(spendable_balance)) }
+                }
+            }
+
+            div style="display: flex; justify-content: space-between; gap: 1rem; margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid hsl(var(--border));" {
                 a href="/onchain?action=send" {
                     button type="button" class="button-secondary" { "Cancel" }
                 }
-                div style="display: flex; gap: 0.5rem;" {
-                    a href=(confirmation_url) {
-                        button class="button-primary" {
-                            "✓ Confirm & Send Transaction"
-                        }
+                a href=(confirmation_url) {
+                    button class="button-primary" {
+                        "Confirm"
                     }
                 }
             }
@@ -394,7 +362,7 @@ pub async fn onchain_confirm_page(
     Ok(Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
-            layout("Confirm Transaction", content).into_string(),
+            layout_with_status("Confirm Transaction", content, true).into_string(),
         ))
         .unwrap())
 }
@@ -427,7 +395,7 @@ async fn execute_onchain_transaction(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Send On-chain Error", content).into_string(),
+                    layout_with_status("Send On-chain Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -506,7 +474,7 @@ async fn execute_onchain_transaction(
     Ok(Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
-            layout("Send On-chain Result", content).into_string(),
+            layout_with_status("Send On-chain Result", content, true).into_string(),
         ))
         .unwrap())
 }

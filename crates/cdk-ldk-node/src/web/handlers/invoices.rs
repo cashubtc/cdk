@@ -10,7 +10,8 @@ use serde::Deserialize;
 use crate::web::handlers::utils::{deserialize_optional_f64, deserialize_optional_u32};
 use crate::web::handlers::AppState;
 use crate::web::templates::{
-    error_message, form_card, format_sats_as_btc, info_card, layout, success_message,
+    error_message, form_card, format_sats_as_btc, info_card, is_node_running, layout_with_status,
+    success_message,
 };
 
 #[derive(Deserialize)]
@@ -30,7 +31,7 @@ pub struct CreateBolt12Form {
     expiry_seconds: Option<u32>,
 }
 
-pub async fn invoices_page(State(_state): State<AppState>) -> Result<Html<String>, StatusCode> {
+pub async fn invoices_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let content = html! {
         h2 style="text-align: center; margin-bottom: 3rem;" { "Invoices" }
         div class="grid" {
@@ -78,7 +79,10 @@ pub async fn invoices_page(State(_state): State<AppState>) -> Result<Html<String
         }
     };
 
-    Ok(Html(layout("Create Invoices", content).into_string()))
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(
+        layout_with_status("Create Invoices", content, is_running).into_string(),
+    ))
 }
 
 pub async fn post_create_bolt11(
@@ -122,7 +126,7 @@ pub async fn post_create_bolt11(
                     .status(StatusCode::BAD_REQUEST)
                     .header("content-type", "text/html")
                     .body(Body::from(
-                        layout("Create Invoice Error", content).into_string(),
+                        layout_with_status("Create Invoice Error", content, true).into_string(),
                     ))
                     .unwrap());
             }
@@ -193,7 +197,7 @@ pub async fn post_create_bolt11(
     Ok(Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
-            layout("BOLT11 Invoice Created", content).into_string(),
+            layout_with_status("BOLT11 Invoice Created", content, true).into_string(),
         ))
         .unwrap())
 }
@@ -287,7 +291,7 @@ pub async fn post_create_bolt12(
     Ok(Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
-            layout("BOLT12 Offer Created", content).into_string(),
+            layout_with_status("BOLT12 Offer Created", content, true).into_string(),
         ))
         .unwrap())
 }
