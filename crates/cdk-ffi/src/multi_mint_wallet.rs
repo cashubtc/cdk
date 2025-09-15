@@ -354,7 +354,7 @@ impl From<CdkTransferResult> for TransferResult {
 }
 
 /// Options for receiving tokens in multi-mint context
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct MultiMintReceiveOptions {
     /// Whether to allow receiving from untrusted (not yet added) mints
     pub allow_untrusted: bool,
@@ -362,16 +362,6 @@ pub struct MultiMintReceiveOptions {
     pub transfer_to_mint: Option<MintUrl>,
     /// Base receive options to apply to the wallet receive
     pub receive_options: ReceiveOptions,
-}
-
-impl Default for MultiMintReceiveOptions {
-    fn default() -> Self {
-        Self {
-            allow_untrusted: false,
-            transfer_to_mint: None,
-            receive_options: ReceiveOptions::default(),
-        }
-    }
 }
 
 impl From<MultiMintReceiveOptions> for CdkMultiMintReceiveOptions {
@@ -385,7 +375,7 @@ impl From<MultiMintReceiveOptions> for CdkMultiMintReceiveOptions {
 }
 
 /// Options for sending tokens in multi-mint context
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Default, uniffi::Record)]
 pub struct MultiMintSendOptions {
     /// Whether to allow transferring funds from other mints if needed
     pub allow_transfer: bool,
@@ -397,18 +387,6 @@ pub struct MultiMintSendOptions {
     pub excluded_mints: Vec<MintUrl>,
     /// Base send options to apply to the wallet send
     pub send_options: SendOptions,
-}
-
-impl Default for MultiMintSendOptions {
-    fn default() -> Self {
-        Self {
-            allow_transfer: false,
-            max_transfer_amount: None,
-            allowed_mints: Vec::new(),
-            excluded_mints: Vec::new(),
-            send_options: SendOptions::default(),
-        }
-    }
 }
 
 impl From<MultiMintSendOptions> for CdkMultiMintSendOptions {
