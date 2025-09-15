@@ -55,19 +55,22 @@ const DEFAULT_REPAY_QUEUE_MAX_SIZE: usize = 100;
 struct SecondaryRepaymentQueue {
     queue: Arc<Mutex<VecDeque<PaymentIdentifier>>>,
     max_size: usize,
-    sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount, String)>,
+    sender: tokio::sync::mpsc::Sender<WaitPaymentResponse>,
+    unit: CurrencyUnit,
 }
 
 impl SecondaryRepaymentQueue {
     fn new(
         max_size: usize,
-        sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount, String)>,
+        sender: tokio::sync::mpsc::Sender<WaitPaymentResponse>,
+        unit: CurrencyUnit,
     ) -> Self {
         let queue = Arc::new(Mutex::new(VecDeque::new()));
         let repayment_queue = Self {
             queue: queue.clone(),
             max_size,
             sender,
+            unit,
         };
 
         // Start the background secondary repayment processor
@@ -101,6 +104,7 @@ impl SecondaryRepaymentQueue {
     fn start_secondary_repayment_processor(&self) {
         let queue = self.queue.clone();
         let sender = self.sender.clone();
+        let unit = self.unit.clone();
 
         tokio::spawn(async move {
             use bitcoin::secp256k1::rand::rngs::OsRng;
@@ -126,10 +130,14 @@ impl SecondaryRepaymentQueue {
 
                 if let Some(payment) = payment_to_process {
                     // Generate a random amount for this secondary payment (same range as initial payment: 1-1000)
-                    let random_amount: u64 = rng.gen_range(1000..=10000);
+                    let random_amount: u64 = rng.gen_range(1..=1000);
 
-                    // Convert to appropriate unit based on wallet's unit setting
-                    let secondary_amount = Amount::from(random_amount);
+                    // Create amount based on unit, ensuring minimum of 1 sat worth
+                    let secondary_amount = match &unit {
+                        CurrencyUnit::Sat => Amount::from(random_amount),
+                        CurrencyUnit::Msat => Amount::from(u64::max(random_amount * 1000, 1000)),
+                        _ => Amount::from(u64::max(random_amount, 1)), // fallback
+                    };
 
                     // Generate a unique payment identifier for this secondary payment
                     // We'll create a new payment hash by appending a timestamp and random bytes
@@ -159,14 +167,14 @@ impl SecondaryRepaymentQueue {
 
                     // Send the payment notification using the original payment identifier
                     // The mint will process this through the normal payment stream
-                    if let Err(e) = sender
-                        .send((
-                            payment.clone(),
-                            secondary_amount,
-                            unique_payment_id.to_string(),
-                        ))
-                        .await
-                    {
+                    let secondary_response = WaitPaymentResponse {
+                        payment_identifier: payment.clone(),
+                        payment_amount: secondary_amount,
+                        unit: unit.clone(),
+                        payment_id: unique_payment_id.to_string(),
+                    };
+
+                    if let Err(e) = sender.send(secondary_response).await {
                         tracing::error!(
                             "Failed to send secondary repayment notification for {:?}: {}",
                             unique_payment_id,
@@ -183,10 +191,8 @@ impl SecondaryRepaymentQueue {
 #[derive(Clone)]
 pub struct FakeWallet {
     fee_reserve: FeeReserve,
-    #[allow(clippy::type_complexity)]
-    sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount, String)>,
-    #[allow(clippy::type_complexity)]
-    receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<(PaymentIdentifier, Amount, String)>>>>,
+    sender: tokio::sync::mpsc::Sender<WaitPaymentResponse>,
+    receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<WaitPaymentResponse>>>>,
     payment_states: Arc<Mutex<HashMap<String, MeltQuoteState>>>,
     failed_payment_check: Arc<Mutex<HashSet<String>>>,
     payment_delay: u64,
@@ -229,7 +235,7 @@ impl FakeWallet {
         let incoming_payments = Arc::new(RwLock::new(HashMap::new()));
 
         let secondary_repayment_queue =
-            SecondaryRepaymentQueue::new(repay_queue_max_size, sender.clone());
+            SecondaryRepaymentQueue::new(repay_queue_max_size, sender.clone(), unit.clone());
 
         Self {
             fee_reserve,
@@ -308,19 +314,10 @@ impl MintPayment for FakeWallet {
             .take()
             .ok_or(Error::NoReceiver)
             .unwrap();
-        let unit = self.unit.clone();
         let receiver_stream = ReceiverStream::new(receiver);
-        Ok(Box::pin(receiver_stream.map(
-            move |(request_lookup_id, payment_amount, payment_id)| {
-                let wait_response = WaitPaymentResponse {
-                    payment_identifier: request_lookup_id.clone(),
-                    payment_amount,
-                    unit: unit.clone(),
-                    payment_id,
-                };
-                Event::PaymentReceived(wait_response)
-            },
-        )))
+        Ok(Box::pin(receiver_stream.map(move |wait_response| {
+            Event::PaymentReceived(wait_response)
+        })))
     }
 
     #[instrument(skip_all)]
@@ -524,7 +521,7 @@ impl MintPayment for FakeWallet {
 
                 // For fake invoices, always use msats regardless of unit
                 let amount_msat = if unit == &CurrencyUnit::Sat {
-                    (u64::from(amount) * 1000) as u64
+                    u64::from(amount) * 1000
                 } else {
                     // If unit is Msat, use as-is
                     u64::from(amount)
@@ -554,13 +551,9 @@ impl MintPayment for FakeWallet {
             use bitcoin::secp256k1::rand::rngs::OsRng;
             use bitcoin::secp256k1::rand::Rng;
             let mut rng = OsRng;
-            let random_amount: u64 = rng.gen_range(1..=1000);
+            let random_amount: u64 = rng.gen_range(1000..=10000);
             // Use the same unit as the wallet for any-amount invoices
-            if *unit == CurrencyUnit::Sat {
-                Amount::from(random_amount)
-            } else {
-                Amount::from(random_amount * 1000)
-            }
+            Amount::from(random_amount)
         } else {
             amount
         };
@@ -583,15 +576,7 @@ impl MintPayment for FakeWallet {
                 .push(response.clone());
 
             // Send the message after waiting for the specified duration
-            if sender
-                .send((
-                    payment_hash_clone.clone(),
-                    final_amount,
-                    payment_hash_clone.to_string(),
-                ))
-                .await
-                .is_err()
-            {
+            if sender.send(response.clone()).await.is_err() {
                 tracing::error!("Failed to send label: {:?}", payment_hash_clone);
             }
         });
