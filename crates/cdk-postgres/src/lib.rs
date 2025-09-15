@@ -142,14 +142,10 @@ impl DatabasePool for PgConnectionPool {
 
     fn new_resource(
         config: &Self::Config,
-        still_valid: Arc<AtomicBool>,
+        stale: Arc<AtomicBool>,
         timeout: Duration,
     ) -> Result<Self::Connection, cdk_sql_common::pool::Error<Self::Error>> {
-        Ok(PostgresConnection::new(
-            config.to_owned(),
-            timeout,
-            still_valid,
-        ))
+        Ok(PostgresConnection::new(config.to_owned(), timeout, stale))
     }
 }
 
@@ -164,7 +160,7 @@ pub struct PostgresConnection {
 
 impl PostgresConnection {
     /// Creates a new instance
-    pub fn new(config: PgConfig, timeout: Duration, still_valid: Arc<AtomicBool>) -> Self {
+    pub fn new(config: PgConfig, timeout: Duration, stale: Arc<AtomicBool>) -> Self {
         let failed = Arc::new(Mutex::new(None));
         let result = Arc::new(OnceLock::new());
         let notify = Arc::new(Notify::new());
@@ -191,22 +187,22 @@ impl PostgresConnection {
                         Err(err) => {
                             *error_clone.lock().await =
                                 Some(cdk_common::database::Error::Database(Box::new(err)));
-                            still_valid.store(false, std::sync::atomic::Ordering::Release);
+                            stale.store(false, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
                         }
                     };
 
-                    let still_valid_for_spawn = still_valid.clone();
+                    let stale_for_spawn = stale.clone();
                     tokio::spawn(async move {
                         let _ = connection.await;
-                        still_valid_for_spawn.store(false, std::sync::atomic::Ordering::Release);
+                        stale_for_spawn.store(true, std::sync::atomic::Ordering::Release);
                     });
 
                     if let Some(schema) = config.schema.as_ref() {
                         if let Err(err) = select_schema(&client, schema).await {
                             *error_clone.lock().await = Some(err);
-                            still_valid.store(false, std::sync::atomic::Ordering::Release);
+                            stale.store(false, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
                         }
@@ -221,22 +217,22 @@ impl PostgresConnection {
                         Err(err) => {
                             *error_clone.lock().await =
                                 Some(cdk_common::database::Error::Database(Box::new(err)));
-                            still_valid.store(false, std::sync::atomic::Ordering::Release);
+                            stale.store(false, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
                         }
                     };
 
-                    let still_valid_for_spawn = still_valid.clone();
+                    let stale_for_spawn = stale.clone();
                     tokio::spawn(async move {
                         let _ = connection.await;
-                        still_valid_for_spawn.store(false, std::sync::atomic::Ordering::Release);
+                        stale_for_spawn.store(true, std::sync::atomic::Ordering::Release);
                     });
 
                     if let Some(schema) = config.schema.as_ref() {
                         if let Err(err) = select_schema(&client, schema).await {
                             *error_clone.lock().await = Some(err);
-                            still_valid.store(false, std::sync::atomic::Ordering::Release);
+                            stale.store(true, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
                         }
