@@ -156,7 +156,9 @@ impl WalletRedbDatabase {
             drop(db);
         }
 
-        let db = Database::create(path)?;
+        let mut db = Database::create(path)?;
+
+        db.upgrade()?;
 
         Ok(Self { db: Arc::new(db) })
     }

@@ -8,7 +8,6 @@ resolver = "2"
 unsafe_code = "forbid"
 unreachable_pub = "warn"
 missing_debug_implementations = "warn"
-large_enum_variant = "warn"
 
 [workspace.lints.clippy]
 pedantic = "warn"
@@ -22,6 +21,7 @@ redundant_else = "warn"
 redundant_closure_for_method_calls = "warn"
 unneeded_field_pattern = "warn"
 use_debug = "warn"
+large_enum_variant = "warn"
 
 [workspace.lints.rustdoc]
 missing_docs = "warn"
@@ -99,7 +99,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "deflate",
 ]}
 once_cell = "1.20.2"
-instant = { version = "0.1", default-features = false }
+web-time = "1.1.0"
 rand = "0.9.1"
 regex = "1"
 home = "0.5.5"
