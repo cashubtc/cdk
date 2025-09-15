@@ -45,7 +45,8 @@ use uuid::Uuid;
 pub mod error;
 
 // KV Store constants for CLN
-const CLN_KV_NAMESPACE: &str = "cln";
+const CLN_KV_PRIMARY_NAMESPACE: &str = "cdk_cln_lightning_backend";
+const CLN_KV_SECONDARY_NAMESPACE: &str = "payment_indices";
 const LAST_PAY_INDEX_KV_KEY: &str = "last_pay_index";
 
 /// CLN mint backend
@@ -197,7 +198,7 @@ impl MintPayment for Cln {
                             if let Some(pay_index) = last_pay_idx {
                                 let index_str = pay_index.to_string();
                                 if let Ok(mut tx) = kv_store.begin_transaction().await {
-                                    if let Err(e) = tx.kv_write(CLN_KV_NAMESPACE, "", LAST_PAY_INDEX_KV_KEY, index_str.as_bytes()).await {
+                                    if let Err(e) = tx.kv_write(CLN_KV_PRIMARY_NAMESPACE, CLN_KV_SECONDARY_NAMESPACE, LAST_PAY_INDEX_KV_KEY, index_str.as_bytes()).await {
                                         tracing::warn!("CLN: Failed to write last pay index {} to KV store: {}", pay_index, e);
                                     } else if let Err(e) = tx.commit().await {
                                         tracing::warn!("CLN: Failed to commit last pay index {} to KV store: {}", pay_index, e);
@@ -766,7 +767,11 @@ impl Cln {
         // First try to read from KV store
         if let Some(stored_index) = self
             .kv_store
-            .kv_read(CLN_KV_NAMESPACE, "", LAST_PAY_INDEX_KV_KEY)
+            .kv_read(
+                CLN_KV_PRIMARY_NAMESPACE,
+                CLN_KV_SECONDARY_NAMESPACE,
+                LAST_PAY_INDEX_KV_KEY,
+            )
             .await
             .map_err(|e| Error::Database(e.to_string()))?
         {

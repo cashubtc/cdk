@@ -44,7 +44,8 @@ pub(crate) use proto::{lnrpc, routerrpc};
 use crate::lnrpc::invoice::InvoiceState;
 
 /// LND KV Store constants
-const LND_KV_NAMESPACE: &str = "lnd";
+const LND_KV_PRIMARY_NAMESPACE: &str = "cdk_lnd_lightning_backend";
+const LND_KV_SECONDARY_NAMESPACE: &str = "payment_indices";
 const LAST_ADD_INDEX_KV_KEY: &str = "last_add_index";
 const LAST_SETTLE_INDEX_KV_KEY: &str = "last_settle_index";
 
@@ -126,10 +127,15 @@ impl Lnd {
     }
 
     /// Get last add and settle indices from KV store
+    #[instrument(skip_all)]
     async fn get_last_indices(&self) -> Result<(Option<u64>, Option<u64>), Error> {
         let add_index = if let Some(stored_index) = self
             .kv_store
-            .kv_read(LND_KV_NAMESPACE, "", LAST_ADD_INDEX_KV_KEY)
+            .kv_read(
+                LND_KV_PRIMARY_NAMESPACE,
+                LND_KV_SECONDARY_NAMESPACE,
+                LAST_ADD_INDEX_KV_KEY,
+            )
             .await
             .map_err(|e| Error::Database(e.to_string()))?
         {
@@ -144,7 +150,11 @@ impl Lnd {
 
         let settle_index = if let Some(stored_index) = self
             .kv_store
-            .kv_read(LND_KV_NAMESPACE, "", LAST_SETTLE_INDEX_KV_KEY)
+            .kv_read(
+                LND_KV_PRIMARY_NAMESPACE,
+                LND_KV_SECONDARY_NAMESPACE,
+                LAST_SETTLE_INDEX_KV_KEY,
+            )
             .await
             .map_err(|e| Error::Database(e.to_string()))?
         {
@@ -219,7 +229,7 @@ impl MintPayment for Lnd {
         let cancel_token = self.wait_invoice_cancel_token.clone();
         let kv_store = self.kv_store.clone();
 
-        Ok(futures::stream::unfold(
+        let event_stream = futures::stream::unfold(
             (
                 stream,
                 cancel_token,
@@ -228,96 +238,108 @@ impl MintPayment for Lnd {
                 last_add_index.unwrap_or(0),
                 last_settle_index.unwrap_or(0),
             ),
-            |(mut stream, cancel_token, is_active, kv_store, mut current_add_index, mut current_settle_index)| async move {
+            |(
+                mut stream,
+                cancel_token,
+                is_active,
+                kv_store,
+                mut current_add_index,
+                mut current_settle_index,
+            )| async move {
                 is_active.store(true, Ordering::SeqCst);
 
-                tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        // Stream is cancelled
-                        is_active.store(false, Ordering::SeqCst);
-                        tracing::info!("Waiting for lnd invoice ending");
-                        None
-                    }
-                    msg = stream.message() => {
-                        match msg {
-                            Ok(Some(msg)) => {
-                                println!("{:?}", msg);
-                                // Update indices based on the message
-                                current_add_index = current_add_index.max(msg.add_index);
-                                current_settle_index = current_settle_index.max(msg.settle_index);
+                loop {
+                    tokio::select! {
+                        _ = cancel_token.cancelled() => {
+                            // Stream is cancelled
+                            is_active.store(false, Ordering::SeqCst);
+                            tracing::info!("Waiting for lnd invoice ending");
+                            return None;
+                        }
+                        msg = stream.message() => {
+                            match msg {
+                                Ok(Some(msg)) => {
+                                    // Update indices based on the message
+                                    current_add_index = current_add_index.max(msg.add_index);
+                                    current_settle_index = current_settle_index.max(msg.settle_index);
 
-                                // Store the updated indices in KV store regardless of settlement status
-                                let add_index_str = current_add_index.to_string();
-                                let settle_index_str = current_settle_index.to_string();
+                                    // Store the updated indices in KV store regardless of settlement status
+                                    let add_index_str = current_add_index.to_string();
+                                    let settle_index_str = current_settle_index.to_string();
 
-                                if let Ok(mut tx) = kv_store.begin_transaction().await {
-                                    let mut has_error = false;
+                                    if let Ok(mut tx) = kv_store.begin_transaction().await {
+                                        let mut has_error = false;
 
-                                    if let Err(e) = tx.kv_write(LND_KV_NAMESPACE, "", LAST_ADD_INDEX_KV_KEY, add_index_str.as_bytes()).await {
-                                        tracing::warn!("LND: Failed to write add_index {} to KV store: {}", current_add_index, e);
-                                        has_error = true;
-                                    }
-
-                                    if let Err(e) = tx.kv_write(LND_KV_NAMESPACE, "", LAST_SETTLE_INDEX_KV_KEY, settle_index_str.as_bytes()).await {
-                                        tracing::warn!("LND: Failed to write settle_index {} to KV store: {}", current_settle_index, e);
-                                        has_error = true;
-                                    }
-
-                                    if !has_error {
-                                        if let Err(e) = tx.commit().await {
-                                            tracing::warn!("LND: Failed to commit indices to KV store: {}", e);
-                                        } else {
-                                            tracing::debug!("LND: Stored updated indices - add_index: {}, settle_index: {}", current_add_index, current_settle_index);
+                                        if let Err(e) = tx.kv_write(LND_KV_PRIMARY_NAMESPACE, LND_KV_SECONDARY_NAMESPACE, LAST_ADD_INDEX_KV_KEY, add_index_str.as_bytes()).await {
+                                            tracing::warn!("LND: Failed to write add_index {} to KV store: {}", current_add_index, e);
+                                            has_error = true;
                                         }
-                                    }
-                                } else {
-                                    tracing::warn!("LND: Failed to begin KV transaction for storing indices");
-                                }
 
-                                // Only emit event for settled invoices
-                                if msg.state() == InvoiceState::Settled {
-                                    let hash_slice: Result<[u8;32], _> = msg.r_hash.try_into();
+                                        if let Err(e) = tx.kv_write(LND_KV_PRIMARY_NAMESPACE, LND_KV_SECONDARY_NAMESPACE, LAST_SETTLE_INDEX_KV_KEY, settle_index_str.as_bytes()).await {
+                                            tracing::warn!("LND: Failed to write settle_index {} to KV store: {}", current_settle_index, e);
+                                            has_error = true;
+                                        }
 
-                                    if let Ok(hash_slice) = hash_slice {
-                                        let hash = hex::encode(hash_slice);
-
-                                        tracing::info!("LND: Processing payment with hash: {}", hash);
-                                        let wait_response = WaitPaymentResponse {
-                                            payment_identifier: PaymentIdentifier::PaymentHash(hash_slice),
-                                            payment_amount: Amount::from(msg.amt_paid_msat as u64),
-                                            unit: CurrencyUnit::Msat,
-                                            payment_id: hash,
-                                        };
-                                        tracing::info!("LND: Created WaitPaymentResponse with amount {} msat", msg.amt_paid_msat);
-                                        let event = Event::PaymentReceived(wait_response);
-                                        Some((event, (stream, cancel_token, is_active, kv_store, current_add_index, current_settle_index)))
+                                        if !has_error {
+                                            if let Err(e) = tx.commit().await {
+                                                tracing::warn!("LND: Failed to commit indices to KV store: {}", e);
+                                            } else {
+                                                tracing::debug!("LND: Stored updated indices - add_index: {}, settle_index: {}", current_add_index, current_settle_index);
+                                            }
+                                        }
                                     } else {
-                                        // Invalid hash, skip this message but continue streaming
-                                        tracing::error!("LND returned invalid payment hash");
-                                        None
+                                        tracing::warn!("LND: Failed to begin KV transaction for storing indices");
                                     }
-                                } else {
-                                    // Not a settled invoice, continue but don't emit event
-                                    None
+
+                                    // Only emit event for settled invoices
+                                    if msg.state() == InvoiceState::Settled {
+                                        let hash_slice: Result<[u8;32], _> = msg.r_hash.try_into();
+
+                                        if let Ok(hash_slice) = hash_slice {
+                                            let hash = hex::encode(hash_slice);
+
+                                            tracing::info!("LND: Payment for {} with amount {} msat", hash,  msg.amt_paid_msat);
+
+                                            let wait_response = WaitPaymentResponse {
+                                                payment_identifier: PaymentIdentifier::PaymentHash(hash_slice),
+                                                payment_amount: Amount::from(msg.amt_paid_msat as u64),
+                                                unit: CurrencyUnit::Msat,
+                                                payment_id: hash,
+                                            };
+                                            let event = Event::PaymentReceived(wait_response);
+                                            return Some((event, (stream, cancel_token, is_active, kv_store, current_add_index, current_settle_index)));
+                                        } else {
+                                            // Invalid hash, skip this message but continue streaming
+                                            tracing::error!("LND returned invalid payment hash");
+                                            // Continue the loop without yielding
+                                            continue;
+                                        }
+                                    } else {
+                                        // Not a settled invoice, continue but don't emit event
+                                        tracing::debug!("LND: Received non-settled invoice, continuing to wait for settled invoices");
+                                        // Continue the loop without yielding
+                                        continue;
+                                    }
                                 }
-                            }
-                            Ok(None) => {
-                                is_active.store(false, Ordering::SeqCst);
-                                tracing::info!("LND invoice stream ended.");
-                                None
-                            }
-                            Err(err) => {
-                                is_active.store(false, Ordering::SeqCst);
-                                tracing::warn!("Encountered error in LND invoice stream. Stream ending");
-                                tracing::error!("{:?}", err);
-                                None
+                                Ok(None) => {
+                                    is_active.store(false, Ordering::SeqCst);
+                                    tracing::info!("LND invoice stream ended.");
+                                    return None;
+                                }
+                                Err(err) => {
+                                    is_active.store(false, Ordering::SeqCst);
+                                    tracing::warn!("Encountered error in LND invoice stream. Stream ending");
+                                    tracing::error!("{:?}", err);
+                                    return None;
+                                }
                             }
                         }
                     }
                 }
             },
-        )
-        .boxed())
+        );
+
+        Ok(Box::pin(event_stream))
     }
 
     #[instrument(skip_all)]
