@@ -608,17 +608,27 @@ impl Mint {
         }
 
         let mint_amount = match mint_quote.payment_method {
-            PaymentMethod::Bolt11 => mint_quote.amount.ok_or(Error::AmountUndefined)?,
+            PaymentMethod::Bolt11 => {
+                let quote_amount = mint_quote.amount.ok_or(Error::AmountUndefined)?;
+
+                if quote_amount != mint_quote.amount_mintable() {
+                    tracing::error!("The quote amount {} does not equal the amount paid {}.", quote_amount, mint_quote.amount_mintable());
+                    return Err(Error::IncorrectQuoteAmount);
+                }
+
+                quote_amount
+            },
             PaymentMethod::Bolt12 => {
-                if mint_quote.amount_issued() > mint_quote.amount_paid() {
+                if mint_quote.amount_mintable() == Amount::ZERO{
                     tracing::error!(
-                            "Quote state should not be issued if issued {} is > paid {}.",
+                            "Quote state should not be issued if issued {} is => paid {}.",
                             mint_quote.amount_issued(),
                             mint_quote.amount_paid()
                         );
                     return Err(Error::UnpaidQuote);
                 }
-                mint_quote.amount_paid() - mint_quote.amount_issued()
+
+                mint_quote.amount_mintable()
             }
             _ => return Err(Error::UnsupportedPaymentMethod),
         };
