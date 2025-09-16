@@ -6,11 +6,8 @@ use cdk::nuts::nut01::PublicKey;
 use cdk::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
 use cdk::nuts::nut18::{Nut10SecretRequest, TransportType};
 use cdk::nuts::{PaymentRequest, PaymentRequestPayload, Token, Transport};
-use cdk::wallet::MultiMintWallet;
+use cdk::wallet::{payment_request as pr, MultiMintWallet};
 use clap::Args;
-use nostr_sdk::nips::nip19::Nip19Profile;
-use nostr_sdk::prelude::*;
-use nostr_sdk::{Client as NostrClient, Filter, Keys, ToBech32};
 
 #[derive(Args)]
 pub struct CreateRequestSubCommand {
@@ -52,6 +49,7 @@ pub async fn create_request(
     multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &CreateRequestSubCommand,
 ) -> Result<()> {
+<<<<<<< HEAD
     // Get available mints from the wallet
     let mints: Vec<cdk::mint_url::MintUrl> = multi_mint_wallet
         .get_balances()
@@ -239,17 +237,31 @@ pub async fn create_request(
         unit: Some(multi_mint_wallet.unit().clone()),
         single_use: Some(true),
         mints: Some(mints),
+=======
+    // Gather parameters for library call
+    let params = pr::CreateRequestParams {
+        amount: sub_command_args.amount,
+        unit: sub_command_args.unit.clone(),
+>>>>>>> upstream/main
         description: sub_command_args.description.clone(),
-        transports,
-        nut10,
+        pubkeys: sub_command_args.pubkey.clone(),
+        num_sigs: sub_command_args.num_sigs,
+        hash: sub_command_args.hash.clone(),
+        preimage: sub_command_args.preimage.clone(),
+        transport: sub_command_args.transport.to_lowercase(),
+        http_url: sub_command_args.http_url.clone(),
+        nostr_relays: sub_command_args.nostr_relay.clone(),
     };
 
-    // Always print the request
-    println!("{req}");
+    let (req, nostr_wait) = multi_mint_wallet.create_request(params).await?;
 
-    // Only listen for Nostr payment if Nostr transport was selected
-    if let Some((keys, relays, pubkey)) = nostr_info {
+    // Print the request to stdout
+    println!("{}", req);
+
+    // If we set up Nostr transport, optionally wait for payment and receive it
+    if let Some(info) = nostr_wait {
         println!("Listening for payment via Nostr...");
+<<<<<<< HEAD
 
         let client = NostrClient::new(keys);
         let filter = Filter::new().pubkey(pubkey);
@@ -290,6 +302,10 @@ pub async fn create_request(
                 Ok(exit) // Set to true to exit from the loop
             })
             .await?;
+=======
+        let amount = multi_mint_wallet.wait_for_nostr_payment(info).await?;
+        println!("Received {}", amount);
+>>>>>>> upstream/main
     }
 
     Ok(())

@@ -7,7 +7,7 @@ use std::str::FromStr;
 use cdk_common::wallet::MeltQuote;
 use tracing::instrument;
 
-#[cfg(feature = "bip353")]
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use crate::bip353::{Bip353Address, PaymentType};
 use crate::nuts::MeltOptions;
 use crate::{Amount, Error, Wallet};
@@ -47,7 +47,7 @@ impl Wallet {
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg(feature = "bip353")]
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     #[instrument(skip(self, amount_msat), fields(address = %bip353_address))]
     pub async fn melt_bip353_quote(
         &self,
@@ -66,7 +66,7 @@ impl Wallet {
         let address_string = address.to_string();
 
         // Resolve the address to get payment instructions
-        let payment_instructions = address.resolve().await.map_err(|e| {
+        let payment_instructions = address.resolve(&self.client).await.map_err(|e| {
             tracing::error!(
                 "Failed to resolve BIP353 address '{}': {}",
                 address_string,

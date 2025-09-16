@@ -22,7 +22,7 @@ pub mod mint;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
-#[cfg(feature = "bip353")]
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 mod bip353;
 
 #[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
@@ -68,3 +68,6 @@ pub type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 /// Re-export futures::Stream
 #[cfg(any(feature = "wallet", feature = "mint"))]
 pub use futures::{Stream, StreamExt};
+/// Payment Request
+#[cfg(feature = "wallet")]
+pub use wallet::payment_request;

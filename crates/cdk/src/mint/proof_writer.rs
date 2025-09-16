@@ -2,12 +2,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use cdk_common::database::{self, MintDatabase, MintTransaction};
-use cdk_common::{Error, Proofs, ProofsMethods, PublicKey, State};
+use cdk_common::database::{self, DynMintDatabase, MintTransaction};
+use cdk_common::{Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 
 use super::subscription::PubSubManager;
 
-type Db = Arc<dyn MintDatabase<database::Error> + Send + Sync>;
 type Tx<'a, 'b> = Box<dyn MintTransaction<'a, database::Error> + Send + Sync + 'b>;
 
 /// Proof writer
@@ -22,14 +21,14 @@ type Tx<'a, 'b> = Box<dyn MintTransaction<'a, database::Error> + Send + Sync + '
 /// This struct is not fully ACID. If the process exits due to a panic, and the `Drop` function
 /// cannot be run, the reset process should reset the state.
 pub struct ProofWriter {
-    db: Option<Db>,
+    db: Option<DynMintDatabase>,
     pubsub_manager: Arc<PubSubManager>,
     proof_original_states: Option<HashMap<PublicKey, Option<State>>>,
 }
 
 impl ProofWriter {
     /// Creates a new ProofWriter on top of the database
-    pub fn new(db: Db, pubsub_manager: Arc<PubSubManager>) -> Self {
+    pub fn new(db: DynMintDatabase, pubsub_manager: Arc<PubSubManager>) -> Self {
         Self {
             db: Some(db),
             pubsub_manager,
@@ -49,6 +48,7 @@ impl ProofWriter {
         &mut self,
         tx: &mut Tx<'_, '_>,
         proofs: &Proofs,
+        quote_id: Option<QuoteId>,
     ) -> Result<Vec<PublicKey>, Error> {
         let proof_states = if let Some(proofs) = self.proof_original_states.as_mut() {
             proofs
@@ -56,7 +56,7 @@ impl ProofWriter {
             return Err(Error::Internal);
         };
 
-        if let Some(err) = tx.add_proofs(proofs.clone(), None).await.err() {
+        if let Some(err) = tx.add_proofs(proofs.clone(), quote_id).await.err() {
             return match err {
                 cdk_common::database::Error::Duplicate => Err(Error::TokenPending),
                 cdk_common::database::Error::AttemptUpdateSpentProof => {
@@ -202,7 +202,7 @@ async fn reset_proofs_to_original_state(
 
 #[inline(always)]
 async fn rollback(
-    db: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+    db: DynMintDatabase,
     ys: Vec<PublicKey>,
     original_states: Vec<Option<State>>,
 ) -> Result<(), Error> {
