@@ -44,6 +44,46 @@ impl From<MintQuoteBolt12Request> for MintQuoteRequest {
     }
 }
 
+impl MintQuoteRequest {
+    /// Get the amount from the mint quote request
+    ///
+    /// For Bolt11 requests, this returns `Some(amount)` as the amount is required.
+    /// For Bolt12 requests, this returns the optional amount.
+    pub fn amount(&self) -> Option<Amount> {
+        match self {
+            MintQuoteRequest::Bolt11(request) => Some(request.amount),
+            MintQuoteRequest::Bolt12(request) => request.amount,
+        }
+    }
+
+    /// Get the currency unit from the mint quote request
+    pub fn unit(&self) -> CurrencyUnit {
+        match self {
+            MintQuoteRequest::Bolt11(request) => request.unit.clone(),
+            MintQuoteRequest::Bolt12(request) => request.unit.clone(),
+        }
+    }
+
+    /// Get the payment method for the mint quote request
+    pub fn payment_method(&self) -> PaymentMethod {
+        match self {
+            MintQuoteRequest::Bolt11(_) => PaymentMethod::Bolt11,
+            MintQuoteRequest::Bolt12(_) => PaymentMethod::Bolt12,
+        }
+    }
+
+    /// Get the pubkey from the mint quote request
+    ///
+    /// For Bolt11 requests, this returns the optional pubkey.
+    /// For Bolt12 requests, this returns `Some(pubkey)` as the pubkey is required.
+    pub fn pubkey(&self) -> Option<PublicKey> {
+        match self {
+            MintQuoteRequest::Bolt11(request) => request.pubkey,
+            MintQuoteRequest::Bolt12(request) => Some(request.pubkey),
+        }
+    }
+}
+
 /// Response for a mint quote request
 ///
 /// This enum represents the different types of payment responses that can be returned
@@ -121,21 +161,18 @@ impl Mint {
     /// - The currency unit is supported
     /// - The amount (if provided) is within the allowed range for the payment method
     ///
-    /// # Arguments
-    /// * `amount` - Optional amount to validate
-    /// * `unit` - Currency unit for the request
-    /// * `payment_method` - Payment method (Bolt11, Bolt12, etc.)
-    ///
     /// # Returns
     /// * `Ok(())` if the request is acceptable
     /// * `Error` if any validation fails
     pub async fn check_mint_request_acceptable(
         &self,
-        amount: Option<Amount>,
-        unit: &CurrencyUnit,
-        payment_method: &PaymentMethod,
+        mint_quote_request: &MintQuoteRequest,
     ) -> Result<(), Error> {
         let mint_info = self.localstore.get_mint_info().await?;
+
+        let unit = mint_quote_request.unit();
+        let amount = mint_quote_request.amount();
+        let payment_method = mint_quote_request.payment_method();
 
         let nut04 = &mint_info.nuts.nut04;
         ensure_cdk!(!nut04.disabled, Error::MintingDisabled);
@@ -145,7 +182,7 @@ impl Mint {
         ensure_cdk!(!disabled, Error::MintingDisabled);
 
         let settings = nut04
-            .get_settings(unit, payment_method)
+            .get_settings(&unit, &payment_method)
             .ok_or(Error::UnsupportedUnit)?;
 
         let min_amount = settings.min_amount;
@@ -193,27 +230,22 @@ impl Mint {
         METRICS.inc_in_flight_requests("get_mint_quote");
 
         let result = async {
-            let unit: CurrencyUnit;
-            let amount;
-            let pubkey;
-            let payment_method;
+            // Use the new getters for cleaner code
+            let unit = mint_quote_request.unit();
+            let amount = mint_quote_request.amount();
+            let payment_method = mint_quote_request.payment_method();
 
-            let create_invoice_response = match mint_quote_request {
+            // Validate the request before processing
+            self.check_mint_request_acceptable(&mint_quote_request)
+                .await?;
+
+            // Extract pubkey using the getter
+            let pubkey = mint_quote_request.pubkey();
+
+            let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
+
+            let payment_options = match mint_quote_request {
                 MintQuoteRequest::Bolt11(bolt11_request) => {
-                    unit = bolt11_request.unit;
-                    amount = Some(bolt11_request.amount);
-                    pubkey = bolt11_request.pubkey;
-                    payment_method = PaymentMethod::Bolt11;
-
-                    self.check_mint_request_acceptable(
-                        Some(bolt11_request.amount),
-                        &unit,
-                        &payment_method,
-                    )
-                    .await?;
-
-                    let ln = self.get_payment_processor(unit.clone(), PaymentMethod::Bolt11)?;
-
                     let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
 
                     let quote_expiry = unix_time() + mint_ttl;
@@ -234,26 +266,9 @@ impl Mint {
                         unix_expiry: Some(quote_expiry),
                     };
 
-                    let incoming_options = IncomingPaymentOptions::Bolt11(bolt11_options);
-
-                    ln.create_incoming_payment_request(&unit, incoming_options)
-                        .await
-                        .map_err(|err| {
-                            tracing::error!("Could not create invoice: {}", err);
-                            Error::InvalidPaymentRequest
-                        })?
+                    IncomingPaymentOptions::Bolt11(bolt11_options)
                 }
                 MintQuoteRequest::Bolt12(bolt12_request) => {
-                    unit = bolt12_request.unit;
-                    amount = bolt12_request.amount;
-                    pubkey = Some(bolt12_request.pubkey);
-                    payment_method = PaymentMethod::Bolt12;
-
-                    self.check_mint_request_acceptable(amount, &unit, &payment_method)
-                        .await?;
-
-                    let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
-
                     let description = bolt12_request.description;
 
                     let bolt12_options = Bolt12IncomingPaymentOptions {
@@ -262,16 +277,17 @@ impl Mint {
                         unix_expiry: None,
                     };
 
-                    let incoming_options = IncomingPaymentOptions::Bolt12(Box::new(bolt12_options));
-
-                    ln.create_incoming_payment_request(&unit, incoming_options)
-                        .await
-                        .map_err(|err| {
-                            tracing::error!("Could not create invoice: {}", err);
-                            Error::InvalidPaymentRequest
-                        })?
+                    IncomingPaymentOptions::Bolt12(Box::new(bolt12_options))
                 }
             };
+
+            let create_invoice_response = ln
+                .create_incoming_payment_request(&unit, payment_options)
+                .await
+                .map_err(|err| {
+                    tracing::error!("Could not create invoice: {}", err);
+                    Error::InvalidPaymentRequest
+                })?;
 
             let quote = MintQuote::new(
                 None,
