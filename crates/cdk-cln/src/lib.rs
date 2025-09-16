@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use bitcoin::hashes::sha256::Hash;
 use cdk_common::amount::{to_unit, Amount};
 use cdk_common::common::FeeReserve;
+use cdk_common::database::mint::DynMintKVStore;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
     self, Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
@@ -43,6 +44,11 @@ use uuid::Uuid;
 
 pub mod error;
 
+// KV Store constants for CLN
+const CLN_KV_PRIMARY_NAMESPACE: &str = "cdk_cln_lightning_backend";
+const CLN_KV_SECONDARY_NAMESPACE: &str = "payment_indices";
+const LAST_PAY_INDEX_KV_KEY: &str = "last_pay_index";
+
 /// CLN mint backend
 #[derive(Clone)]
 pub struct Cln {
@@ -50,16 +56,22 @@ pub struct Cln {
     fee_reserve: FeeReserve,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
+    kv_store: DynMintKVStore,
 }
 
 impl Cln {
     /// Create new [`Cln`]
-    pub async fn new(rpc_socket: PathBuf, fee_reserve: FeeReserve) -> Result<Self, Error> {
+    pub async fn new(
+        rpc_socket: PathBuf,
+        fee_reserve: FeeReserve,
+        kv_store: DynMintKVStore,
+    ) -> Result<Self, Error> {
         Ok(Self {
             rpc_socket,
             fee_reserve,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
+            kv_store,
         })
     }
 }
@@ -114,14 +126,16 @@ impl MintPayment for Cln {
         };
 
         tracing::debug!("CLN: Creating stream processing pipeline");
+        let kv_store = self.kv_store.clone();
         let stream = futures::stream::unfold(
             (
                 cln_client,
                 last_pay_index,
                 self.wait_invoice_cancel_token.clone(),
                 Arc::clone(&self.wait_invoice_is_active),
+                kv_store,
             ),
-            |(mut cln_client, mut last_pay_idx, cancel_token, is_active)| async move {
+            |(mut cln_client, mut last_pay_idx, cancel_token, is_active, kv_store)| async move {
                 // Set the stream as active
                 is_active.store(true, Ordering::SeqCst);
                 tracing::debug!("CLN: Stream is now active, waiting for invoice events with lastpay_index: {:?}", last_pay_idx);
@@ -178,6 +192,23 @@ impl MintPayment for Cln {
 
                             last_pay_idx = wait_any_response.pay_index;
                             tracing::debug!("CLN: Updated last_pay_idx to {:?}", last_pay_idx);
+
+
+                            // Store the updated pay index in KV store for persistence
+                            if let Some(pay_index) = last_pay_idx {
+                                let index_str = pay_index.to_string();
+                                if let Ok(mut tx) = kv_store.begin_transaction().await {
+                                    if let Err(e) = tx.kv_write(CLN_KV_PRIMARY_NAMESPACE, CLN_KV_SECONDARY_NAMESPACE, LAST_PAY_INDEX_KV_KEY, index_str.as_bytes()).await {
+                                        tracing::warn!("CLN: Failed to write last pay index {} to KV store: {}", pay_index, e);
+                                    } else if let Err(e) = tx.commit().await {
+                                        tracing::warn!("CLN: Failed to commit last pay index {} to KV store: {}", pay_index, e);
+                                    } else {
+                                        tracing::debug!("CLN: Stored last pay index {} in KV store", pay_index);
+                                    }
+                                } else {
+                                    tracing::warn!("CLN: Failed to begin KV transaction for storing pay index {}", pay_index);
+                                }
+                            }
 
                             let payment_hash = wait_any_response.payment_hash;
                             tracing::debug!("CLN: Payment hash: {}", payment_hash);
@@ -245,7 +276,7 @@ impl MintPayment for Cln {
                             tracing::info!("CLN: Created WaitPaymentResponse with amount {} msats", amount_msats.msat());
                             let event = Event::PaymentReceived(response);
 
-                            break Some((event, (cln_client, last_pay_idx, cancel_token, is_active)));
+                            break Some((event, (cln_client, last_pay_idx, cancel_token, is_active, kv_store)));
                                 }
                                 Err(e) => {
                                     tracing::warn!("CLN: Error fetching invoice: {e}");
@@ -733,6 +764,27 @@ impl Cln {
 
     /// Get last pay index for cln
     async fn get_last_pay_index(&self) -> Result<Option<u64>, Error> {
+        // First try to read from KV store
+        if let Some(stored_index) = self
+            .kv_store
+            .kv_read(
+                CLN_KV_PRIMARY_NAMESPACE,
+                CLN_KV_SECONDARY_NAMESPACE,
+                LAST_PAY_INDEX_KV_KEY,
+            )
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?
+        {
+            if let Ok(index_str) = std::str::from_utf8(&stored_index) {
+                if let Ok(index) = index_str.parse::<u64>() {
+                    tracing::debug!("CLN: Retrieved last pay index {} from KV store", index);
+                    return Ok(Some(index));
+                }
+            }
+        }
+
+        // Fall back to querying CLN directly
+        tracing::debug!("CLN: No stored last pay index found in KV store, querying CLN directly");
         let mut cln_client = self.cln_client().await?;
         let listinvoices_response = cln_client
             .call_typed(&ListinvoicesRequest {
@@ -753,7 +805,7 @@ impl Cln {
         }
     }
 
-    /// Decode string    
+    /// Decode string
     #[instrument(skip(self))]
     async fn decode_string(&self, string: String) -> Result<DecodeResponse, Error> {
         let mut cln_client = self.cln_client().await?;
