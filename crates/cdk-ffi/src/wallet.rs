@@ -404,7 +404,7 @@ impl Wallet {
 }
 
 /// BIP353 methods for Wallet
-#[cfg(feature = "bip353")]
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 #[uniffi::export(async_runtime = "tokio")]
 impl Wallet {
     /// Get a quote for a BIP353 melt

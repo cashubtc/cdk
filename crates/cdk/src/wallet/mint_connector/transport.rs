@@ -2,6 +2,12 @@
 use std::fmt::Debug;
 
 use cdk_common::AuthToken;
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+use hickory_resolver::config::ResolverConfig;
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+use hickory_resolver::name_server::TokioConnectionProvider;
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+use hickory_resolver::Resolver;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -14,6 +20,10 @@ use crate::error::ErrorResponse;
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait Transport: Default + Send + Sync + Debug + Clone {
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    /// DNS resolver to get a TXT record from a domain name
+    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error>;
+
     /// Make the transport to use a given proxy
     fn with_proxy(
         &mut self,
@@ -100,6 +110,30 @@ impl Transport for Async {
             .build()
             .map_err(|e| Error::HttpError(e.status().map(|s| s.as_u16()), e.to_string()))?;
         Ok(())
+    }
+
+    /// DNS resolver to get a TXT record from a domain name
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error> {
+        let resolver = Resolver::builder_with_config(
+            ResolverConfig::default(),
+            TokioConnectionProvider::default(),
+        )
+        .build();
+
+        Ok(resolver
+            .txt_lookup(domain)
+            .await
+            .map_err(|e| Error::Custom(e.to_string()))?
+            .into_iter()
+            .map(|txt| {
+                txt.txt_data()
+                    .iter()
+                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .collect::<Vec<_>>())
     }
 
     async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>

@@ -22,7 +22,7 @@ pub mod mint;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
-#[cfg(feature = "bip353")]
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 mod bip353;
 
 #[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]

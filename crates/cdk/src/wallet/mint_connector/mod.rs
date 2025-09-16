@@ -28,6 +28,10 @@ pub type HttpClient = http_client::HttpClient<transport::Async>;
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait MintConnector: Debug {
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    /// Resolve the DNS record getting the TXT value
+    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error>;
+
     /// Get Active Mint Keys [NUT-01]
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error>;
     /// Get Keyset Keys [NUT-01]
