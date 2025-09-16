@@ -3,6 +3,8 @@
 use std::env;
 use std::str::FromStr;
 
+use cdk_common::common::QuoteTTL;
+
 use super::common::*;
 use crate::config::{Info, LoggingOutput};
 
@@ -84,6 +86,27 @@ impl Info {
         }
 
         self.http_cache = self.http_cache.from_env();
+
+        // Quote TTL from env
+        let mut mint_ttl_env: Option<u64> = None;
+        let mut melt_ttl_env: Option<u64> = None;
+        if let Ok(mint_ttl_str) = env::var(ENV_QUOTE_TTL_MINT) {
+            if let Ok(v) = mint_ttl_str.parse::<u64>() {
+                mint_ttl_env = Some(v);
+            }
+        }
+        if let Ok(melt_ttl_str) = env::var(ENV_QUOTE_TTL_MELT) {
+            if let Ok(v) = melt_ttl_str.parse::<u64>() {
+                melt_ttl_env = Some(v);
+            }
+        }
+        if mint_ttl_env.is_some() || melt_ttl_env.is_some() {
+            let current = self.quote_ttl.unwrap_or_default();
+            self.quote_ttl = Some(QuoteTTL {
+                mint_ttl: mint_ttl_env.unwrap_or(current.mint_ttl),
+                melt_ttl: melt_ttl_env.unwrap_or(current.melt_ttl),
+            });
+        }
 
         self
     }

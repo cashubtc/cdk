@@ -145,21 +145,6 @@ where
         tx.commit().await?;
         Ok(())
     }
-
-    #[inline(always)]
-    async fn fetch_from_config<R>(&self, id: &str) -> Result<R, Error>
-    where
-        R: serde::de::DeserializeOwned,
-    {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let value = column_as_string!(query(r#"SELECT value FROM config WHERE id = :id LIMIT 1"#)?
-            .bind("id", id.to_owned())
-            .pluck(&*conn)
-            .await?
-            .ok_or(Error::UnknownQuoteTTL)?);
-
-        Ok(serde_json::from_str(&value)?)
-    }
 }
 
 #[async_trait]
@@ -2047,56 +2032,6 @@ where
         };
 
         Ok(Box::new(tx))
-    }
-
-    async fn get_mint_info(&self) -> Result<MintInfo, Error> {
-        #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("get_mint_info");
-
-        #[cfg(feature = "prometheus")]
-        let start_time = std::time::Instant::now();
-
-        let result = self.fetch_from_config("mint_info").await;
-
-        #[cfg(feature = "prometheus")]
-        {
-            let success = result.is_ok();
-
-            METRICS.record_mint_operation("get_mint_info", success);
-            METRICS.record_mint_operation_histogram(
-                "get_mint_info",
-                success,
-                start_time.elapsed().as_secs_f64(),
-            );
-            METRICS.dec_in_flight_requests("get_mint_info");
-        }
-
-        Ok(result?)
-    }
-
-    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Error> {
-        #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("get_quote_ttl");
-
-        #[cfg(feature = "prometheus")]
-        let start_time = std::time::Instant::now();
-
-        let result = self.fetch_from_config("quote_ttl").await;
-
-        #[cfg(feature = "prometheus")]
-        {
-            let success = result.is_ok();
-
-            METRICS.record_mint_operation("get_quote_ttl", success);
-            METRICS.record_mint_operation_histogram(
-                "get_quote_ttl",
-                success,
-                start_time.elapsed().as_secs_f64(),
-            );
-            METRICS.dec_in_flight_requests("get_quote_ttl");
-        }
-
-        Ok(result?)
     }
 }
 

@@ -457,12 +457,6 @@ pub trait Database<Error>:
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn Transaction<'a, Error> + Send + Sync + 'a>, Error>;
-
-    /// Get [`MintInfo`]
-    async fn get_mint_info(&self) -> Result<MintInfo, Error>;
-
-    /// Get [`QuoteTTL`]
-    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Error>;
 }
 
 /// Type alias for Mint Database
