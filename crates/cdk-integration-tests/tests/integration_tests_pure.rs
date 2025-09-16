@@ -980,6 +980,103 @@ async fn test_concurrent_double_spend_melt() {
     }
 }
 
+/// Auto-sign receive should succeed when the signing key is stored in the wallet DB
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_autosign_receive_with_sqlite_memory_db() {
+    setup_tracing();
+
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+
+    fund_wallet(wallet.clone(), 100, Some(SplitTarget::default()))
+        .await
+        .expect("Failed to fund wallet");
+
+    let signing_sk = SecretKey::generate();
+    let signing_pk = signing_sk.public_key();
+    wallet
+        .add_p2pk_signing_key(signing_sk.clone())
+        .await
+        .expect("Failed to store P2PK signing key");
+
+    let spending = SpendingConditions::new_p2pk(signing_pk, None);
+    let prepared = wallet
+        .prepare_send(
+            10u64.into(),
+            SendOptions {
+                conditions: Some(spending),
+                include_fee: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("Failed to prepare send");
+    let expected_received = 10u64 - u64::from(prepared.fee());
+    let token = prepared
+        .confirm(None)
+        .await
+        .expect("Failed to finalize send");
+
+    let received = wallet
+        .receive(&token.to_string(), ReceiveOptions::default())
+        .await
+        .expect("Receive should auto-sign and succeed");
+
+    assert_eq!(u64::from(received), expected_received);
+}
+
+/// Ensure receiving fails when no signing key is available to satisfy the P2PK condition
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_receive_fails_without_signing_key() {
+    setup_tracing();
+
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+
+    fund_wallet(wallet.clone(), 100, Some(SplitTarget::default()))
+        .await
+        .expect("Failed to fund wallet");
+
+    let locking_sk = SecretKey::generate();
+    let spending = SpendingConditions::new_p2pk(locking_sk.public_key(), None);
+
+    let prepared = wallet
+        .prepare_send(
+            10u64.into(),
+            SendOptions {
+                conditions: Some(spending),
+                include_fee: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("Failed to prepare send");
+    let token = prepared
+        .confirm(None)
+        .await
+        .expect("Failed to finalize send");
+
+    let res = wallet
+        .receive(&token.to_string(), ReceiveOptions::default())
+        .await;
+
+    match res {
+        Ok(_) => panic!("Receive unexpectedly succeeded without signing key"),
+        Err(e) => match e {
+            cdk::Error::NUT11(cdk::nuts::nut11::Error::SignaturesNotProvided) => (),
+            other => panic!("Unexpected error: {:?}", other),
+        },
+    }
+}
+
 async fn get_keyset_id(mint: &Mint) -> Id {
     let keys = mint.pubkeys().keysets.first().unwrap().clone();
     keys.verify_id()
