@@ -139,6 +139,16 @@ impl MintQuote {
         self.payments.iter().map(|a| &a.payment_id).collect()
     }
 
+    /// Amount mintable
+    /// Returns the amount that is still available for minting.
+    ///
+    /// The value is computed as the difference between the total amount that
+    /// has been paid for this issuance (`self.amount_paid`) and the amount
+    /// that has already been issued (`self.amount_issued`). In other words,
+    pub fn amount_mintable(&self) -> Amount {
+        self.amount_paid - self.amount_issued
+    }
+
     /// Add a payment ID to the list of payment IDs
     ///
     /// Returns an error if the payment ID is already in the list
