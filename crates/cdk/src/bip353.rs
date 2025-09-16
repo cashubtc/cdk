@@ -6,10 +6,11 @@
 
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use anyhow::{bail, Result};
-use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
-use trust_dns_resolver::TokioAsyncResolver;
+
+use crate::wallet::MintConnector;
 
 /// BIP-353 human-readable Bitcoin address
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -37,35 +38,19 @@ impl Bip353Address {
     /// - No Bitcoin URI is found
     /// - Multiple Bitcoin URIs are found (BIP-353 requires exactly one)
     /// - The URI format is invalid
-    pub(crate) async fn resolve(self) -> Result<PaymentInstruction> {
+    pub(crate) async fn resolve(
+        self,
+        client: &Arc<dyn MintConnector + Send + Sync>,
+    ) -> Result<PaymentInstruction> {
         // Construct DNS name according to BIP-353
         let dns_name = format!("{}.user._bitcoin-payment.{}", self.user, self.domain);
 
-        // Create a new resolver with DNSSEC validation
-        let mut opts = ResolverOpts::default();
-        opts.validate = true; // Enable DNSSEC validation
-
-        let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), opts);
-
-        // Query TXT records - with opts.validate=true, this will fail if DNSSEC validation fails
-        let response = resolver.txt_lookup(&dns_name).await?;
-
-        // Extract and concatenate TXT record strings
-        let mut bitcoin_uris = Vec::new();
-
-        for txt in response.iter() {
-            let txt_data: Vec<String> = txt
-                .txt_data()
-                .iter()
-                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                .collect();
-
-            let concatenated = txt_data.join("");
-
-            if concatenated.to_lowercase().starts_with("bitcoin:") {
-                bitcoin_uris.push(concatenated);
-            }
-        }
+        let bitcoin_uris = client
+            .resolve_dns_txt(&dns_name)
+            .await?
+            .into_iter()
+            .filter(|txt_data| txt_data.to_lowercase().starts_with("bitcoin:"))
+            .collect::<Vec<_>>();
 
         // BIP-353 requires exactly one Bitcoin URI
         match bitcoin_uris.len() {

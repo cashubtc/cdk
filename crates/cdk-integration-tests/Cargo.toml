@@ -20,7 +20,7 @@ rand.workspace = true
 bip39 = { workspace = true, features = ["rand"] }
 anyhow.workspace = true
 cashu = { workspace = true, features = ["mint", "wallet"] }
-cdk = { workspace = true, features = ["mint", "wallet", "auth"] }
+cdk = { workspace = true, features = ["mint", "wallet", "auth", "bip353"] }
 cdk-cln = { workspace = true }
 cdk-lnd = { workspace = true }
 cdk-ldk-node = { workspace = true }
@@ -63,7 +63,6 @@ uuid = { workspace = true, features = ["js"] }
 [dev-dependencies]
 bip39 = { workspace = true, features = ["rand"] }
 anyhow.workspace = true
-cdk = { workspace = true, features = ["mint", "wallet"] }
 cdk-axum = { workspace = true }
 cdk-fake-wallet = { workspace = true }
 tower-http = { workspace = true, features = ["cors"] }
