@@ -32,6 +32,9 @@ pub enum Error {
     /// Bolt12 Error
     #[error("Bolt12 error: {0}")]
     Bolt12(String),
+    /// Database Error
+    #[error("Database error: {0}")]
+    Database(String),
 }
 
 impl From<Error> for cdk_common::payment::Error {

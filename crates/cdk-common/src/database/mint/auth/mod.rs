@@ -88,3 +88,7 @@ pub trait MintAuthDatabase {
         &self,
     ) -> Result<HashMap<ProtectedEndpoint, Option<AuthRequired>>, Self::Err>;
 }
+
+/// Type alias for trait objects
+pub type DynMintAuthDatabase =
+    std::sync::Arc<dyn MintAuthDatabase<Err = super::Error> + Send + Sync>;

@@ -39,6 +39,9 @@ pub enum Error {
     /// Could not read file
     #[error("Could not read file")]
     ReadFile,
+    /// Database Error
+    #[error("Database error: {0}")]
+    Database(String),
 }
 
 impl From<Error> for cdk_common::payment::Error {

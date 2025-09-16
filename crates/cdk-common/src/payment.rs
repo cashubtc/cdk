@@ -327,6 +327,19 @@ pub enum Event {
     PaymentReceived(WaitPaymentResponse),
 }
 
+impl Default for Event {
+    fn default() -> Self {
+        // We use this as a sentinel value for no-op events
+        // The actual processing will filter these out
+        Event::PaymentReceived(WaitPaymentResponse {
+            payment_identifier: PaymentIdentifier::CustomId("default".to_string()),
+            payment_amount: Amount::from(0),
+            unit: CurrencyUnit::Msat,
+            payment_id: "default".to_string(),
+        })
+    }
+}
+
 /// Wait any invoice response
 #[derive(Debug, Clone, Hash, Serialize, Deserialize)]
 pub struct WaitPaymentResponse {
@@ -599,3 +612,6 @@ where
         result
     }
 }
+
+/// Type alias for Mint Payment trait
+pub type DynMintPayment = std::sync::Arc<dyn MintPayment<Err = Error> + Send + Sync>;

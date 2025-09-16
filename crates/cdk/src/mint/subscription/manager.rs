@@ -1,8 +1,7 @@
 //! Specific Subscription for the cdk crate
 use std::ops::Deref;
-use std::sync::Arc;
 
-use cdk_common::database::{self, MintDatabase};
+use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::MintQuote;
 use cdk_common::nut17::Notification;
 use cdk_common::quote_id::QuoteId;
@@ -31,8 +30,8 @@ impl Default for PubSubManager {
     }
 }
 
-impl From<Arc<dyn MintDatabase<database::Error> + Send + Sync>> for PubSubManager {
-    fn from(val: Arc<dyn MintDatabase<database::Error> + Send + Sync>) -> Self {
+impl From<DynMintDatabase> for PubSubManager {
+    fn from(val: DynMintDatabase) -> Self {
         PubSubManager(OnSubscription(Some(val)).into())
     }
 }

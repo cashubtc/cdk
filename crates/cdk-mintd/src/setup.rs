@@ -47,7 +47,7 @@ impl LnBackendSetup for config::Cln {
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
-        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_cln::Cln> {
         let cln_socket = expand_path(
             self.rpc_path
@@ -61,7 +61,12 @@ impl LnBackendSetup for config::Cln {
             percent_fee_reserve: self.fee_percent,
         };
 
-        let cln = cdk_cln::Cln::new(cln_socket, fee_reserve).await?;
+        let cln = cdk_cln::Cln::new(
+            cln_socket,
+            fee_reserve,
+            kv_store.expect("Cln needs kv store"),
+        )
+        .await?;
 
         Ok(cln)
     }
@@ -110,7 +115,7 @@ impl LnBackendSetup for config::Lnd {
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
-        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_lnd::Lnd> {
         let address = &self.address;
         let cert_file = &self.cert_file;
@@ -126,6 +131,7 @@ impl LnBackendSetup for config::Lnd {
             cert_file.clone(),
             macaroon_file.clone(),
             fee_reserve,
+            kv_store.expect("Lnd needs kv store"),
         )
         .await?;
 

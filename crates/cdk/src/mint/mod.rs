@@ -8,10 +8,10 @@ use arc_swap::ArcSwap;
 use cdk_common::amount::to_unit;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
-use cdk_common::database::MintAuthDatabase;
-use cdk_common::database::{self, MintDatabase, MintTransaction};
+use cdk_common::database::DynMintAuthDatabase;
+use cdk_common::database::{self, DynMintDatabase, MintTransaction};
 use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
-use cdk_common::payment::WaitPaymentResponse;
+use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
 use cdk_common::secret;
 #[cfg(feature = "prometheus")]
@@ -25,7 +25,6 @@ use tokio::sync::{Mutex, Notify};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::instrument;
 
-use crate::cdk_payment::{self, MintPayment};
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::nuts::*;
@@ -60,13 +59,12 @@ pub struct Mint {
     /// be a gRPC client to a remote signatory server.
     signatory: Arc<dyn Signatory + Send + Sync>,
     /// Mint Storage backend
-    localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+    localstore: DynMintDatabase,
     /// Auth Storage backend (only available with auth feature)
     #[cfg(feature = "auth")]
-    auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>>,
+    auth_localstore: Option<DynMintAuthDatabase>,
     /// Payment processors for mint
-    payment_processors:
-        HashMap<PaymentProcessorKey, Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>>,
+    payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     /// Subscription manager
     pubsub_manager: Arc<PubSubManager>,
     #[cfg(feature = "auth")]
@@ -91,11 +89,8 @@ impl Mint {
     pub async fn new(
         mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
-        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
-        payment_processors: HashMap<
-            PaymentProcessorKey,
-            Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
-        >,
+        localstore: DynMintDatabase,
+        payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -113,12 +108,9 @@ impl Mint {
     pub async fn new_with_auth(
         mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
-        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
-        auth_localstore: Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>,
-        payment_processors: HashMap<
-            PaymentProcessorKey,
-            Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
-        >,
+        localstore: DynMintDatabase,
+        auth_localstore: DynMintAuthDatabase,
+        payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -135,14 +127,9 @@ impl Mint {
     async fn new_internal(
         mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
-        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
-        #[cfg(feature = "auth")] auth_localstore: Option<
-            Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>,
-        >,
-        payment_processors: HashMap<
-            PaymentProcessorKey,
-            Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
-        >,
+        localstore: DynMintDatabase,
+        #[cfg(feature = "auth")] auth_localstore: Option<DynMintAuthDatabase>,
+        payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     ) -> Result<Self, Error> {
         let keysets = signatory.keysets().await?;
         if !keysets
@@ -361,7 +348,7 @@ impl Mint {
         &self,
         unit: CurrencyUnit,
         payment_method: PaymentMethod,
-    ) -> Result<Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>, Error> {
+    ) -> Result<DynMintPayment, Error> {
         let key = PaymentProcessorKey::new(unit.clone(), payment_method.clone());
         self.payment_processors.get(&key).cloned().ok_or_else(|| {
             tracing::info!(
@@ -374,7 +361,7 @@ impl Mint {
     }
 
     /// Localstore
-    pub fn localstore(&self) -> Arc<dyn MintDatabase<database::Error> + Send + Sync> {
+    pub fn localstore(&self) -> DynMintDatabase {
         Arc::clone(&self.localstore)
     }
 
@@ -451,11 +438,8 @@ impl Mint {
     /// Once invoice is paid mint quote status is updated
     #[instrument(skip_all)]
     async fn wait_for_paid_invoices(
-        payment_processors: &HashMap<
-            PaymentProcessorKey,
-            Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
-        >,
-        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+        payment_processors: &HashMap<PaymentProcessorKey, DynMintPayment>,
+        localstore: DynMintDatabase,
         pubsub_manager: Arc<PubSubManager>,
         shutdown: Arc<Notify>,
     ) -> Result<(), Error> {
@@ -527,8 +511,8 @@ impl Mint {
     /// Handles payment waiting for a single processor
     #[instrument(skip_all)]
     async fn wait_for_processor_payments(
-        processor: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
-        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+        processor: DynMintPayment,
+        localstore: DynMintDatabase,
         pubsub_manager: Arc<PubSubManager>,
         shutdown: Arc<Notify>,
     ) -> Result<(), Error> {
@@ -570,7 +554,7 @@ impl Mint {
     /// This is a helper function that can be called with just the required components
     #[instrument(skip_all)]
     async fn handle_payment_notification(
-        localstore: &Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+        localstore: &DynMintDatabase,
         pubsub_manager: &Arc<PubSubManager>,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {

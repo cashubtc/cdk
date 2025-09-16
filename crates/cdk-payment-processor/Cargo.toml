@@ -17,7 +17,7 @@ path = "src/bin/payment_processor.rs"
 [features]
 default = ["cln", "fake", "lnd"]
 bench = []
-cln = ["dep:cdk-cln"]
+cln = ["dep:cdk-cln", "dep:cdk-sqlite"]
 fake = ["dep:cdk-fake-wallet"]
 lnd = ["dep:cdk-lnd"]
 
@@ -30,6 +30,7 @@ cdk-common = { workspace = true, features = ["mint"] }
 cdk-cln = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }
 cdk-fake-wallet = { workspace = true, optional = true }
+cdk-sqlite = { workspace = true, optional = true }
 clap = { workspace = true, features = ["derive"] }
 serde.workspace = true
 thiserror.workspace = true
