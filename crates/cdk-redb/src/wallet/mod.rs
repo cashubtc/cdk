@@ -13,15 +13,17 @@ use cdk_common::mint_url::MintUrl;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
 use cdk_common::{
-    database, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions,
-    State,
+    database, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SecretKey,
+    SpendingConditions, State,
 };
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tracing::instrument;
 
 use super::error::Error;
 use crate::migrations::migrate_00_to_01;
-use crate::wallet::migrations::{migrate_01_to_02, migrate_02_to_03, migrate_03_to_04};
+use crate::wallet::migrations::{
+    migrate_01_to_02, migrate_02_to_03, migrate_03_to_04, migrate_04_to_05,
+};
 
 mod migrations;
 
@@ -44,9 +46,12 @@ const KEYSET_COUNTER: TableDefinition<&str, u32> = TableDefinition::new("keyset_
 // <Transaction_id, Transaction>
 const TRANSACTIONS_TABLE: TableDefinition<&[u8], &str> = TableDefinition::new("transactions");
 
+const P2PK_SIGNING_KEYS_TABLE: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("p2pk_signing_keys");
+
 const KEYSET_U32_MAPPING: TableDefinition<u32, &str> = TableDefinition::new("keyset_u32_mapping");
 
-const DATABASE_VERSION: u32 = 4;
+const DATABASE_VERSION: u32 = 5;
 
 /// Wallet Redb Database
 #[derive(Debug, Clone)]
@@ -100,6 +105,10 @@ impl WalletRedbDatabase {
                                 current_file_version = migrate_03_to_04(Arc::clone(&db))?;
                             }
 
+                            if current_file_version == 4 {
+                                current_file_version = migrate_04_to_05(Arc::clone(&db))?;
+                            }
+
                             if current_file_version != DATABASE_VERSION {
                                 tracing::warn!(
                                     "Database upgrade did not complete at {} current is {}",
@@ -147,6 +156,7 @@ impl WalletRedbDatabase {
                         let _ = write_txn.open_table(KEYSET_COUNTER)?;
                         let _ = write_txn.open_table(TRANSACTIONS_TABLE)?;
                         let _ = write_txn.open_table(KEYSET_U32_MAPPING)?;
+                        let _ = write_txn.open_table(P2PK_SIGNING_KEYS_TABLE)?;
                         table.insert("db_version", DATABASE_VERSION.to_string().as_str())?;
                     }
 
@@ -877,6 +887,76 @@ impl WalletDatabase for WalletRedbDatabase {
             table
                 .remove(transaction_id.as_slice())
                 .map_err(Error::from)?;
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    async fn add_p2pk_key(&self, secret_key: SecretKey) -> Result<(), Self::Err> {
+        let pubkey_bytes = secret_key.public_key().to_bytes();
+        let secret_bytes = secret_key.to_secret_bytes();
+
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn
+                .open_table(P2PK_SIGNING_KEYS_TABLE)
+                .map_err(Error::from)?;
+            table
+                .insert(pubkey_bytes.as_slice(), secret_bytes.as_slice())
+                .map_err(Error::from)?;
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+
+        Ok(())
+    }
+
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<SecretKey>, Self::Err> {
+        let pubkey_bytes = pubkey.to_bytes();
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(P2PK_SIGNING_KEYS_TABLE)
+            .map_err(Error::from)?;
+
+        Ok(table
+            .get(pubkey_bytes.as_slice())
+            .map_err(Error::from)?
+            .map(|value| SecretKey::from_slice(value.value()).map_err(Error::from))
+            .transpose()?)
+    }
+
+    async fn list_p2pk_keys(&self) -> Result<Vec<(PublicKey, SecretKey)>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn
+            .open_table(P2PK_SIGNING_KEYS_TABLE)
+            .map_err(Error::from)?;
+
+        let keys = table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .map(|(stored_pubkey, stored_secret)| {
+                let pubkey = PublicKey::from_slice(stored_pubkey.value()).map_err(Error::from)?;
+                let secret = SecretKey::from_slice(stored_secret.value()).map_err(Error::from)?;
+                Ok((pubkey, secret))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+
+        Ok(keys)
+    }
+
+    async fn remove_p2pk_key(&self, pubkey: PublicKey) -> Result<(), Self::Err> {
+        let pubkey_bytes = pubkey.to_bytes();
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn
+                .open_table(P2PK_SIGNING_KEYS_TABLE)
+                .map_err(Error::from)?;
+            table.remove(pubkey_bytes.as_slice()).map_err(Error::from)?;
         }
 
         write_txn.commit().map_err(Error::from)?;

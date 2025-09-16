@@ -120,21 +120,12 @@ pub trait Database: Debug {
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), Self::Err>;
 
     // --- P2PK signing key storage ---
-    /// Store a P2PK signing key. Implementations should upsert by derived pubkey.
-    /// Default no-op for backends that don't support it.
-    async fn add_p2pk_key(&self, _secret_key: SecretKey) -> Result<(), Self::Err> {
-        Ok(())
-    }
-    /// Get a stored P2PK secret key by pubkey. Default returns None.
-    async fn get_p2pk_key(&self, _pubkey: PublicKey) -> Result<Option<SecretKey>, Self::Err> {
-        Ok(None)
-    }
-    /// List all stored P2PK signing keys. Default returns empty list.
-    async fn list_p2pk_keys(&self) -> Result<Vec<SecretKey>, Self::Err> {
-        Ok(vec![])
-    }
-    /// Remove a stored P2PK signing key by pubkey. Default no-op.
-    async fn remove_p2pk_key(&self, _pubkey: PublicKey) -> Result<(), Self::Err> {
-        Ok(())
-    }
+    /// Store a P2PK signing key. Implementations must upsert by derived pubkey.
+    async fn add_p2pk_key(&self, secret_key: SecretKey) -> Result<(), Self::Err>;
+    /// Get a stored P2PK secret key by pubkey.
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<SecretKey>, Self::Err>;
+    /// List all stored P2PK signing keys.
+    async fn list_p2pk_keys(&self) -> Result<Vec<(PublicKey, SecretKey)>, Self::Err>;
+    /// Remove a stored P2PK signing key by pubkey.
+    async fn remove_p2pk_key(&self, pubkey: PublicKey) -> Result<(), Self::Err>;
 }
