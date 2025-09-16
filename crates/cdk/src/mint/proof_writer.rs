@@ -2,8 +2,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use cdk_common::{Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 use cdk_common::database::{self, DynMintDatabase, MintTransaction};
+use cdk_common::{Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 
 use super::subscription::PubSubManager;
 
