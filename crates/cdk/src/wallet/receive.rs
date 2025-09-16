@@ -51,31 +51,16 @@ impl Wallet {
             })
             .collect::<Result<HashMap<String, &String>, _>>()?;
 
-        // Build map of X-only pubkey -> SecretKey from stored keys and provided options
-        let mut merged_keys: Vec<SecretKey> = Vec::new();
-        let mut seen: HashSet<XOnlyPublicKey> = HashSet::new();
+        // Build map of X-only pubkey -> SecretKey using provided keys and lazy DB lookups
+        let mut p2pk_signing_keys: HashMap<XOnlyPublicKey, SecretKey> = HashMap::new();
+        let mut missing_db_keys: HashSet<XOnlyPublicKey> = HashSet::new();
 
-        // Add keys explicitly provided in options first
         for sk in &opts.p2pk_signing_keys {
-            let x = sk.x_only_public_key(&SECP256K1).0;
-            if seen.insert(x) {
-                merged_keys.push(sk.clone());
-            }
+            let (x_only, _) = sk.x_only_public_key(&SECP256K1);
+            p2pk_signing_keys
+                .entry(x_only)
+                .or_insert_with(|| sk.clone());
         }
-
-        // Merge in any keys stored in the wallet database
-        let stored_keys = self.localstore.list_p2pk_keys().await.unwrap_or_default();
-        for sk in stored_keys {
-            let x = sk.x_only_public_key(&SECP256K1).0;
-            if seen.insert(x) {
-                merged_keys.push(sk);
-            }
-        }
-
-        let p2pk_signing_keys: HashMap<XOnlyPublicKey, SecretKey> = merged_keys
-            .into_iter()
-            .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
-            .collect();
 
         for proof in &mut proofs {
             // Verify that proof DLEQ is valid
@@ -114,7 +99,21 @@ impl Wallet {
                         }
                     }
                     for pubkey in pubkeys {
-                        if let Some(signing) = p2pk_signing_keys.get(&pubkey.x_only_public_key()) {
+                        let x_only = pubkey.x_only_public_key();
+
+                        if !p2pk_signing_keys.contains_key(&x_only)
+                            && !missing_db_keys.contains(&x_only)
+                        {
+                            if let Some(stored) =
+                                self.localstore.get_p2pk_key(pubkey.clone()).await?
+                            {
+                                p2pk_signing_keys.insert(x_only, stored);
+                            } else {
+                                missing_db_keys.insert(x_only);
+                            }
+                        }
+
+                        if let Some(signing) = p2pk_signing_keys.get(&x_only) {
                             proof.sign_p2pk(signing.clone())?;
                         }
                     }
