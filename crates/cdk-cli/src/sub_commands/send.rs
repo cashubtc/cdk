@@ -51,7 +51,7 @@ pub struct SendSubCommand {
     /// Allow transferring funds from other mints if the target mint has insufficient balance
     #[arg(long)]
     allow_transfer: bool,
-    /// Maximum amount to transfer from other mints (in sats)
+    /// Maximum amount to transfer from other mints
     #[arg(long)]
     max_transfer_amount: Option<u64>,
     /// Specific mints allowed for transfers (can be specified multiple times)
@@ -66,7 +66,10 @@ pub async fn send(
     multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &SendSubCommand,
 ) -> Result<()> {
-    let token_amount = Amount::from(get_number_input::<u64>("Enter value of token in sats")?);
+    let token_amount = Amount::from(get_number_input::<u64>(&format!(
+        "Enter value of token in {}",
+        multi_mint_wallet.unit()
+    ))?);
 
     // Check total balance across all wallets
     let total_balance = multi_mint_wallet.total_balance().await?;

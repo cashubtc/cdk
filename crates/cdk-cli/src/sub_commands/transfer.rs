@@ -17,7 +17,7 @@ pub struct TransferSubCommand {
     /// Target mint URL to transfer to (optional - will prompt if not provided)
     #[arg(long)]
     target_mint: Option<String>,
-    /// Amount to transfer in sats (optional - will prompt if not provided)
+    /// Amount to transfer (optional - will prompt if not provided)
     #[arg(short, long, conflicts_with = "full_balance")]
     amount: Option<u64>,
     /// Transfer all available balance from source mint
@@ -45,7 +45,13 @@ async fn select_mint(
 
     println!("\nAvailable mints:");
     for (i, (mint_url, balance)) in available_mints.iter().enumerate() {
-        println!("  {}: {} - {} sats", i, mint_url, balance);
+        println!(
+            "  {}: {} - {} {}",
+            i,
+            mint_url,
+            balance,
+            multi_mint_wallet.unit()
+        );
     }
 
     let mint_number: usize = get_number_input(prompt)?;
@@ -126,27 +132,38 @@ pub async fn transfer(
     // Determine transfer mode based on user input
     let transfer_mode = if sub_command_args.full_balance {
         println!(
-            "\nTransferring full balance ({} sats) from {} to {}...",
-            source_balance, source_mint_url, target_mint_url
+            "\nTransferring full balance ({} {}) from {} to {}...",
+            source_balance,
+            multi_mint_wallet.unit(),
+            source_mint_url,
+            target_mint_url
         );
         TransferMode::FullBalance
     } else {
         let amount = match sub_command_args.amount {
             Some(amt) => Amount::from(amt),
-            None => Amount::from(get_number_input::<u64>("Enter amount to transfer in sats")?),
+            None => Amount::from(get_number_input::<u64>(&format!(
+                "Enter amount to transfer in {}",
+                multi_mint_wallet.unit()
+            ))?),
         };
 
         if source_balance < amount {
             bail!(
-                "Insufficient funds in source mint. Available: {} sats, Required: {} sats",
+                "Insufficient funds in source mint. Available: {} {}, Required: {} {}",
                 source_balance,
-                amount
+                multi_mint_wallet.unit(),
+                amount,
+                multi_mint_wallet.unit()
             );
         }
 
         println!(
-            "\nTransferring {} sats from {} to {}...",
-            amount, source_mint_url, target_mint_url
+            "\nTransferring {} {} from {} to {}...",
+            amount,
+            multi_mint_wallet.unit(),
+            source_mint_url,
+            target_mint_url
         );
         TransferMode::ExactReceive(amount)
     };
@@ -157,19 +174,35 @@ pub async fn transfer(
         .await?;
 
     println!("\nTransfer completed successfully!");
-    println!("Amount sent: {} sats", transfer_result.amount_sent);
-    println!("Amount received: {} sats", transfer_result.amount_received);
+    println!(
+        "Amount sent: {} {}",
+        transfer_result.amount_sent,
+        multi_mint_wallet.unit()
+    );
+    println!(
+        "Amount received: {} {}",
+        transfer_result.amount_received,
+        multi_mint_wallet.unit()
+    );
     if transfer_result.fees_paid > Amount::ZERO {
-        println!("Fees paid: {} sats", transfer_result.fees_paid);
+        println!(
+            "Fees paid: {} {}",
+            transfer_result.fees_paid,
+            multi_mint_wallet.unit()
+        );
     }
     println!("\nUpdated balances:");
     println!(
-        "  Source mint ({}): {} sats",
-        source_mint_url, transfer_result.source_balance_after
+        "  Source mint ({}): {} {}",
+        source_mint_url,
+        transfer_result.source_balance_after,
+        multi_mint_wallet.unit()
     );
     println!(
-        "  Target mint ({}): {} sats",
-        target_mint_url, transfer_result.target_balance_after
+        "  Target mint ({}): {} {}",
+        target_mint_url,
+        transfer_result.target_balance_after,
+        multi_mint_wallet.unit()
     );
 
     Ok(())

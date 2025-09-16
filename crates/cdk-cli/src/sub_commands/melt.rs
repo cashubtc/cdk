@@ -84,7 +84,13 @@ pub async fn pay(
         let balances = multi_mint_wallet.get_balances().await?;
         println!("\nAvailable mints and balances:");
         for (i, (mint_url, balance)) in balances.iter().enumerate() {
-            println!("  {}: {} - {} sats", i, mint_url, balance);
+            println!(
+                "  {}: {} - {} {}",
+                i,
+                mint_url,
+                balance,
+                multi_mint_wallet.unit()
+            );
         }
 
         // Collect mint selections and amounts
@@ -103,7 +109,10 @@ pub async fn pay(
                 .map(|(url, _)| url.clone())
                 .ok_or_else(|| anyhow::anyhow!("Invalid mint index"))?;
 
-            let amount: u64 = get_number_input("Enter amount to use from this mint (sats)")?;
+            let amount: u64 = get_number_input(&format!(
+                "Enter amount to use from this mint ({})",
+                multi_mint_wallet.unit()
+            ))?;
             mint_amounts.push((mint_url, Amount::from(amount)));
         }
 
@@ -151,8 +160,8 @@ pub async fn pay(
             }
         }
 
-        println!("\nTotal paid: {} sats", total_paid);
-        println!("Total fees: {} sats", total_fees);
+        println!("\nTotal paid: {} {}", total_paid, multi_mint_wallet.unit());
+        println!("Total fees: {} {}", total_fees, multi_mint_wallet.unit());
     } else {
         let available_funds = <cdk::Amount as Into<u64>>::into(total_balance) * MSAT_IN_SAT;
 
@@ -164,10 +173,12 @@ pub async fn pay(
                 let bolt11 = Bolt11Invoice::from_str(&bolt11_str)?;
 
                 // Determine payment amount and options
-                let prompt =
-                    "Enter the amount you would like to pay in sats for this amountless invoice.";
+                let prompt = format!(
+                    "Enter the amount you would like to pay in {} for this amountless invoice.",
+                    multi_mint_wallet.unit()
+                );
                 let options =
-                    create_melt_options(available_funds, bolt11.amount_milli_satoshis(), prompt)?;
+                    create_melt_options(available_funds, bolt11.amount_milli_satoshis(), &prompt)?;
 
                 // Use mint-specific functions or auto-select
                 let melted = if let Some(mint_url) = &sub_command_args.mint_url {
@@ -205,14 +216,16 @@ pub async fn pay(
                     .map_err(|e| anyhow::anyhow!("Invalid BOLT12 offer: {:?}", e))?;
 
                 // Determine if offer has an amount
-                let prompt =
-                    "Enter the amount you would like to pay in sats for this amountless offer:";
+                let prompt = format!(
+                    "Enter the amount you would like to pay in {} for this amountless offer:",
+                    multi_mint_wallet.unit()
+                );
                 let amount_msat = match amount_for_offer(&offer, &CurrencyUnit::Msat) {
                     Ok(amount) => Some(u64::from(amount)),
                     Err(_) => None,
                 };
 
-                let options = create_melt_options(available_funds, amount_msat, prompt)?;
+                let options = create_melt_options(available_funds, amount_msat, &prompt)?;
 
                 // Get wallet for BOLT12
                 let wallet = if let Some(mint_url) = &sub_command_args.mint_url {
@@ -227,7 +240,13 @@ pub async fn pay(
                     let balances = multi_mint_wallet.get_balances().await?;
                     println!("\nAvailable mints:");
                     for (i, (mint_url, balance)) in balances.iter().enumerate() {
-                        println!("  {}: {} - {} sats", i, mint_url, balance);
+                        println!(
+                            "  {}: {} - {} {}",
+                            i,
+                            mint_url,
+                            balance,
+                            multi_mint_wallet.unit()
+                        );
                     }
 
                     let mint_number: usize = get_number_input("Enter mint number to melt from")?;
@@ -267,10 +286,12 @@ pub async fn pay(
             PaymentType::Bip353 => {
                 let bip353_addr = get_user_input("Enter Bip353 address")?;
 
-                let prompt =
-                    "Enter the amount you would like to pay in sats for this amountless offer:";
+                let prompt = format!(
+                    "Enter the amount you would like to pay in {} for this amountless offer:",
+                    multi_mint_wallet.unit()
+                );
                 // BIP353 payments are always amountless for now
-                let options = create_melt_options(available_funds, None, prompt)?;
+                let options = create_melt_options(available_funds, None, &prompt)?;
 
                 // Get wallet for BIP353
                 let wallet = if let Some(mint_url) = &sub_command_args.mint_url {
@@ -285,7 +306,13 @@ pub async fn pay(
                     let balances = multi_mint_wallet.get_balances().await?;
                     println!("\nAvailable mints:");
                     for (i, (mint_url, balance)) in balances.iter().enumerate() {
-                        println!("  {}: {} - {} sats", i, mint_url, balance);
+                        println!(
+                            "  {}: {} - {} {}",
+                            i,
+                            mint_url,
+                            balance,
+                            multi_mint_wallet.unit()
+                        );
                     }
 
                     let mint_number: usize = get_number_input("Enter mint number to melt from")?;
