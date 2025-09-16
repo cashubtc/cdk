@@ -13,6 +13,8 @@ use cdk_common::subscription::Params;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::error;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures;
 
 use super::Wallet;
 use crate::mint_url::MintUrl;
@@ -207,7 +209,7 @@ impl SubscriptionClient {
             new_subscription_notif,
             on_drop_notif,
             subscriptions: subscriptions.clone(),
-            worker: Some(Self::start_worker(
+            worker: Self::start_worker(
                 prefer_ws_method,
                 http_client,
                 url,
@@ -215,7 +217,7 @@ impl SubscriptionClient {
                 new_subscription_recv,
                 on_drop_recv,
                 wallet,
-            )),
+            ),
         }
     }
 
@@ -228,7 +230,7 @@ impl SubscriptionClient {
         new_subscription_recv: mpsc::Receiver<SubId>,
         on_drop_recv: mpsc::Receiver<SubId>,
         wallet: Arc<Wallet>,
-    ) -> JoinHandle<()> {
+    ) -> Option<JoinHandle<()>> {
         #[cfg(any(
             feature = "http_subscription",
             not(feature = "mint"),
@@ -293,7 +295,7 @@ impl SubscriptionClient {
         new_subscription_recv: mpsc::Receiver<SubId>,
         on_drop: mpsc::Receiver<SubId>,
         wallet: Arc<Wallet>,
-    ) -> JoinHandle<()> {
+    ) -> Option<JoinHandle<()>> {
         let http_worker = http::http_main(
             vec![],
             http_client,
@@ -304,12 +306,15 @@ impl SubscriptionClient {
         );
 
         #[cfg(target_arch = "wasm32")]
-        let ret = tokio::task::spawn_local(http_worker);
+        {
+            wasm_bindgen_futures::spawn_local(http_worker);
+            None
+        }
 
         #[cfg(not(target_arch = "wasm32"))]
-        let ret = tokio::spawn(http_worker);
-
-        ret
+        {
+            Some(tokio::spawn(http_worker))
+        }
     }
 
     /// WebSocket subscription client
@@ -328,22 +333,22 @@ impl SubscriptionClient {
         new_subscription_recv: mpsc::Receiver<SubId>,
         on_drop: mpsc::Receiver<SubId>,
         wallet: Arc<Wallet>,
-    ) -> JoinHandle<()> {
-        tokio::spawn(ws::ws_main(
+    ) -> Option<JoinHandle<()>> {
+        Some(tokio::spawn(ws::ws_main(
             http_client,
             url,
             subscriptions,
             new_subscription_recv,
             on_drop,
             wallet,
-        ))
+        )))
     }
 }
 
 impl Drop for SubscriptionClient {
     fn drop(&mut self) {
-        if let Some(sender) = self.worker.take() {
-            sender.abort();
+        if let Some(handle) = self.worker.take() {
+            handle.abort();
         }
     }
 }
