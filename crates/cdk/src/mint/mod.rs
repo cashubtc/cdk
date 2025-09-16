@@ -627,6 +627,13 @@ impl Mint {
                     return Err(Error::AmountUndefined);
                 }
 
+                if mint_quote.payment_method == PaymentMethod::Bolt11
+                    && mint_quote.amount != Some(payment_amount_quote_unit)
+                {
+                    tracing::error!("Bolt11 incoming payment should equal mint quote.");
+                    return Err(Error::IncorrectQuoteAmount);
+                }
+
                 tracing::debug!(
                     "Payment received amount in quote unit {} {}",
                     mint_quote.unit,
