@@ -81,6 +81,9 @@ cdk-signatory = { workspace = true, default-features = false }
 getrandom = { version = "0.2", features = ["js"] }
 ring = { version = "0.17.14", features = ["wasm32_unknown_unknown_js"] }
 uuid = { workspace = true, features = ["js"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+gloo-timers = { version = "0.3", features = ["futures"] }
 
 [[example]]
 name = "mint-token"
