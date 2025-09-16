@@ -696,12 +696,12 @@ ON CONFLICT(pubkey) DO UPDATE SET
         .transpose()?)
     }
 
-    async fn list_p2pk_keys(&self) -> Result<Vec<SecretKey>, Self::Err> {
+    async fn list_p2pk_keys(&self) -> Result<Vec<(PublicKey, SecretKey)>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         Ok(query(
             r#"
-            SELECT secret_key
+            SELECT pubkey, secret_key
             FROM p2pk_signing_key
             "#,
         )?
@@ -709,10 +709,15 @@ ON CONFLICT(pubkey) DO UPDATE SET
         .await?
         .into_iter()
         .map(|row| {
-            let bytes = column_as_binary!(row.first().unwrap());
-            SecretKey::from_slice(&bytes).map_err(Error::from)
+            let pubkey_bytes = column_as_binary!(&row[0]);
+            let secret_bytes = column_as_binary!(&row[1]);
+
+            let pubkey = PublicKey::from_slice(&pubkey_bytes).map_err(Error::from)?;
+            let secret = SecretKey::from_slice(&secret_bytes).map_err(Error::from)?;
+
+            Ok((pubkey, secret))
         })
-        .collect::<Result<Vec<_>, _>>()?)
+        .collect::<Result<Vec<_>, Error>>()?)
     }
 
     async fn remove_p2pk_key(&self, pubkey: PublicKey) -> Result<(), Self::Err> {

@@ -688,7 +688,9 @@ impl Wallet {
     }
 
     /// List stored P2PK signing keys
-    pub async fn list_p2pk_signing_keys(&self) -> Result<Vec<crate::nuts::SecretKey>, Error> {
+    pub async fn list_p2pk_signing_keys(
+        &self,
+    ) -> Result<Vec<(crate::nuts::PublicKey, crate::nuts::SecretKey)>, Error> {
         self.localstore.list_p2pk_keys().await.map_err(Into::into)
     }
 }
