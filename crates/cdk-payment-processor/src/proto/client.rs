@@ -53,7 +53,7 @@ impl PaymentProcessorClient {
             // check for ca cert
             let server_root_ca_cert = std::fs::read_to_string(&ca_pem_path)?;
             let server_root_ca_cert = Certificate::from_pem(server_root_ca_cert);
-            let tls: ClientTlsConfig = match client_pem_path.exists() && client_pem_path.exists() {
+            let tls: ClientTlsConfig = match client_pem_path.exists() && client_key_path.exists() {
                 true => {
                     let client_cert = std::fs::read_to_string(&client_pem_path)?;
                     let client_key = std::fs::read_to_string(&client_key_path)?;
