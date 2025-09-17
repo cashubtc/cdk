@@ -30,24 +30,6 @@ cargo build --bin cdk-mintd --release
 # Binary will be at ./target/release/cdk-mintd
 ```
 
-## Quick Start
-
-The fastest way to get started for testing:
-
-```bash
-# Create working directory and copy example config
-mkdir -p ~/.cdk-mintd
-cp example.config.toml ~/.cdk-mintd/config.toml
-
-# Start the mint (uses SQLite + fake wallet by default)
-cdk-mintd
-```
-
-The mint will be available at `http://127.0.0.1:8085`. Test it with:
-```bash
-curl http://127.0.0.1:8085/v1/info
-```
-
 ## Configuration
 
 > **Important**: You must create the working directory and configuration file before starting the mint. The mint does not create them automatically.
