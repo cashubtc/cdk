@@ -52,8 +52,9 @@ use crate::{
 mod auth;
 
 #[rustfmt::skip]
-mod migrations;
-
+mod migrations {
+    include!(concat!(env!("OUT_DIR"), "/migrations_mint.rs"));
+}
 
 #[cfg(feature = "auth")]
 pub use auth::SQLMintAuthDatabase;
