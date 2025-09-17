@@ -22,7 +22,7 @@ use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
 use crate::nuts::nut18::Nut10SecretRequest;
 use crate::nuts::{CurrencyUnit, Transport};
 #[cfg(feature = "nostr")]
-use crate::wallet::ReceiveOptions;
+use crate::wallet::MultiMintReceiveOptions;
 use crate::wallet::{MultiMintWallet, SendOptions};
 use crate::Wallet;
 
@@ -356,7 +356,7 @@ impl MultiMintWallet {
     ) -> Result<(PaymentRequest, Option<NostrWaitInfo>), Error> {
         // Collect available mints for the selected unit
         let mints = self
-            .get_balances(&CurrencyUnit::from_str(&params.unit)?)
+            .get_balances()
             .await?
             .keys()
             .cloned()
@@ -458,7 +458,7 @@ impl MultiMintWallet {
     ) -> Result<PaymentRequest, Error> {
         // Collect available mints for the selected unit
         let mints = self
-            .get_balances(&CurrencyUnit::from_str(&params.unit)?)
+            .get_balances()
             .await?
             .keys()
             .cloned()
@@ -536,7 +536,7 @@ impl MultiMintWallet {
                     );
 
                     let amount = self
-                        .receive(&token.to_string(), ReceiveOptions::default())
+                        .receive(&token.to_string(), MultiMintReceiveOptions::default())
                         .await?;
 
                     // Stop after first successful receipt
@@ -602,7 +602,7 @@ impl MultiMintWallet {
                                 );
 
                                 let amount = self
-                                    .receive(&token.to_string(), ReceiveOptions::default())
+                                    .receive(&token.to_string(), MultiMintReceiveOptions::default())
                                     .await?;
 
                                 return Ok(amount);

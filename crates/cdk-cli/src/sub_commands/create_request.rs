@@ -6,9 +6,6 @@ use clap::Args;
 pub struct CreateRequestSubCommand {
     #[arg(short, long)]
     amount: Option<u64>,
-    /// Currency unit e.g. sat
-    #[arg(default_value = "sat")]
-    unit: String,
     /// Quote description
     description: Option<String>,
     /// P2PK: Public key(s) for which the token can be spent with valid signature(s)
@@ -48,7 +45,7 @@ pub async fn create_request(
     // Gather parameters for library call
     let params = pr::CreateRequestParams {
         amount: sub_command_args.amount,
-        unit: sub_command_args.unit.clone(),
+        unit: multi_mint_wallet.unit().to_string(),
         description: sub_command_args.description.clone(),
         pubkeys: sub_command_args.pubkey.clone(),
         num_sigs: sub_command_args.num_sigs,

@@ -250,6 +250,32 @@ pub enum Error {
     /// Preimage not provided
     #[error("Preimage not provided")]
     PreimageNotProvided,
+
+    // MultiMint Wallet Errors
+    /// Currency unit mismatch in MultiMintWallet
+    #[error("Currency unit mismatch: wallet uses {expected}, but {found} provided")]
+    MultiMintCurrencyUnitMismatch {
+        /// Expected currency unit
+        expected: CurrencyUnit,
+        /// Found currency unit
+        found: CurrencyUnit,
+    },
+    /// Unknown mint in MultiMintWallet
+    #[error("Unknown mint: {mint_url}")]
+    UnknownMint {
+        /// URL of the unknown mint
+        mint_url: String,
+    },
+    /// Transfer between mints timed out
+    #[error("Transfer timeout: failed to transfer {amount} from {source_mint} to {target_mint}")]
+    TransferTimeout {
+        /// Source mint URL
+        source_mint: String,
+        /// Target mint URL  
+        target_mint: String,
+        /// Amount that failed to transfer
+        amount: Amount,
+    },
     /// Insufficient Funds
     #[error("Insufficient funds")]
     InsufficientFunds,

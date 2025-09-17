@@ -111,6 +111,12 @@ impl WalletBuilder {
         self
     }
 
+    /// Set a custom client connector from Arc
+    pub fn shared_client(mut self, client: Arc<dyn MintConnector + Send + Sync>) -> Self {
+        self.client = Some(client);
+        self
+    }
+
     /// Set auth CAT (Clear Auth Token)
     #[cfg(feature = "auth")]
     pub fn set_auth_cat(mut self, cat: String) -> Self {
