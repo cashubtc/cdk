@@ -61,7 +61,7 @@ pub use mint_connector::transport::Transport as HttpTransport;
 #[cfg(feature = "auth")]
 pub use mint_connector::AuthHttpClient;
 pub use mint_connector::{HttpClient, MintConnector};
-pub use multi_mint_wallet::MultiMintWallet;
+pub use multi_mint_wallet::{MultiMintReceiveOptions, MultiMintSendOptions, MultiMintWallet};
 pub use receive::ReceiveOptions;
 pub use send::{PreparedSend, SendMemo, SendOptions};
 pub use types::{MeltQuote, MintQuote, SendKind};
