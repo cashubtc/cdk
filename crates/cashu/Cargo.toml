@@ -13,13 +13,13 @@ readme = "README.md"
 [features]
 default = ["mint", "wallet", "auth"]
 swagger = ["dep:utoipa"]
-mint = ["dep:uuid"]
+mint = []
 wallet = []
 auth = ["dep:strum", "dep:strum_macros", "dep:regex"]
 bench = []
 
 [dependencies]
-uuid = { workspace = true, optional = true }
+uuid.workspace = true
 bitcoin.workspace = true
 cbor-diag.workspace = true
 ciborium.workspace = true
