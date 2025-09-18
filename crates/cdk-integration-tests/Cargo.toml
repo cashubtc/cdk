@@ -65,4 +65,5 @@ bip39 = { workspace = true, features = ["rand"] }
 anyhow.workspace = true
 cdk-axum = { workspace = true }
 cdk-fake-wallet = { workspace = true }
+cdk-ffi = { workspace = true }
 tower-http = { workspace = true, features = ["cors"] }
