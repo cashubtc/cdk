@@ -60,6 +60,7 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
                     .map(|(amount, pk)| PublicKey::from_slice(&pk).map(|pk| (amount.into(), pk)))
                     .collect::<Result<BTreeMap<Amount, _>, _>>()?,
             ),
+            amounts: self.amounts,
             final_expiry: self.final_expiry,
         })
     }
@@ -80,6 +81,7 @@ impl From<crate::signatory::SignatoryKeySet> for KeySet {
                     .collect(),
             }),
             final_expiry: keyset.final_expiry,
+            amounts: keyset.amounts,
             version: Default::default(),
         }
     }
@@ -361,6 +363,7 @@ impl From<cdk_common::KeySetInfo> for KeySet {
             input_fee_ppk: value.input_fee_ppk,
             keys: Default::default(),
             final_expiry: value.final_expiry,
+            amounts: vec![],
             version: Default::default(),
         }
     }
