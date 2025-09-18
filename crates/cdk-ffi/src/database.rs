@@ -579,10 +579,22 @@ impl WalletSqliteDatabase {
 impl WalletSqliteDatabase {
     /// Create a new WalletSqliteDatabase with the given work directory
     #[uniffi::constructor]
-    pub async fn new(file_path: String) -> Result<Arc<Self>, FfiError> {
-        let db = CdkWalletSqliteDatabase::new(file_path.as_str())
-            .await
-            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+    pub fn new(file_path: String) -> Result<Arc<Self>, FfiError> {
+        let db = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle
+                    .block_on(async move { CdkWalletSqliteDatabase::new(file_path.as_str()).await })
+            }),
+            Err(_) => {
+                // No current runtime, create a new one
+                tokio::runtime::Runtime::new()
+                    .map_err(|e| FfiError::Database {
+                        msg: format!("Failed to create runtime: {}", e),
+                    })?
+                    .block_on(async move { CdkWalletSqliteDatabase::new(file_path.as_str()).await })
+            }
+        }
+        .map_err(|e| FfiError::Database { msg: e.to_string() })?;
         Ok(Arc::new(Self {
             inner: Arc::new(db),
         }))
@@ -590,10 +602,21 @@ impl WalletSqliteDatabase {
 
     /// Create an in-memory database
     #[uniffi::constructor]
-    pub async fn new_in_memory() -> Result<Arc<Self>, FfiError> {
-        let db = cdk_sqlite::wallet::memory::empty()
-            .await
-            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+    pub fn new_in_memory() -> Result<Arc<Self>, FfiError> {
+        let db = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle.block_on(async move { cdk_sqlite::wallet::memory::empty().await })
+            }),
+            Err(_) => {
+                // No current runtime, create a new one
+                tokio::runtime::Runtime::new()
+                    .map_err(|e| FfiError::Database {
+                        msg: format!("Failed to create runtime: {}", e),
+                    })?
+                    .block_on(async move { cdk_sqlite::wallet::memory::empty().await })
+            }
+        }
+        .map_err(|e| FfiError::Database { msg: e.to_string() })?;
         Ok(Arc::new(Self {
             inner: Arc::new(db),
         }))

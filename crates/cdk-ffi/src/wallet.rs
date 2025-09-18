@@ -19,7 +19,7 @@ pub struct Wallet {
 impl Wallet {
     /// Create a new Wallet from mnemonic using WalletDatabase trait
     #[uniffi::constructor]
-    pub async fn new(
+    pub fn new(
         mint_url: String,
         unit: CurrencyUnit,
         mnemonic: String,

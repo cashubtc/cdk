@@ -2,6 +2,8 @@
 //!
 //! UniFFI bindings for the CDK Wallet and related types.
 
+#![warn(clippy::unused_async)]
+
 pub mod database;
 pub mod error;
 pub mod multi_mint_wallet;

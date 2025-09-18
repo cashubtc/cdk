@@ -24,7 +24,7 @@ pub struct MultiMintWallet {
 impl MultiMintWallet {
     /// Create a new MultiMintWallet from mnemonic using WalletDatabase trait
     #[uniffi::constructor]
-    pub async fn new(
+    pub fn new(
         unit: CurrencyUnit,
         mnemonic: String,
         db: Arc<dyn crate::database::WalletDatabase>,
@@ -37,7 +37,23 @@ impl MultiMintWallet {
         // Convert the FFI database trait to a CDK database implementation
         let localstore = crate::database::create_cdk_database_from_ffi(db);
 
-        let wallet = CdkMultiMintWallet::new(localstore, seed, unit.into()).await?;
+        let wallet = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle.block_on(async move {
+                    CdkMultiMintWallet::new(localstore, seed, unit.into()).await
+                })
+            }),
+            Err(_) => {
+                // No current runtime, create a new one
+                tokio::runtime::Runtime::new()
+                    .map_err(|e| FfiError::Database {
+                        msg: format!("Failed to create runtime: {}", e),
+                    })?
+                    .block_on(async move {
+                        CdkMultiMintWallet::new(localstore, seed, unit.into()).await
+                    })
+            }
+        }?;
 
         Ok(Self {
             inner: Arc::new(wallet),
@@ -46,7 +62,7 @@ impl MultiMintWallet {
 
     /// Create a new MultiMintWallet with proxy configuration
     #[uniffi::constructor]
-    pub async fn new_with_proxy(
+    pub fn new_with_proxy(
         unit: CurrencyUnit,
         mnemonic: String,
         db: Arc<dyn crate::database::WalletDatabase>,
@@ -64,8 +80,25 @@ impl MultiMintWallet {
         let proxy_url =
             url::Url::parse(&proxy_url).map_err(|e| FfiError::InvalidUrl { msg: e.to_string() })?;
 
-        let wallet =
-            CdkMultiMintWallet::new_with_proxy(localstore, seed, unit.into(), proxy_url).await?;
+        let wallet = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle.block_on(async move {
+                    CdkMultiMintWallet::new_with_proxy(localstore, seed, unit.into(), proxy_url)
+                        .await
+                })
+            }),
+            Err(_) => {
+                // No current runtime, create a new one
+                tokio::runtime::Runtime::new()
+                    .map_err(|e| FfiError::Database {
+                        msg: format!("Failed to create runtime: {}", e),
+                    })?
+                    .block_on(async move {
+                        CdkMultiMintWallet::new_with_proxy(localstore, seed, unit.into(), proxy_url)
+                            .await
+                    })
+            }
+        }?;
 
         Ok(Self {
             inner: Arc::new(wallet),

@@ -52,6 +52,7 @@ cdk-lnbits = { path = "./crates/cdk-lnbits", version = "=0.12.0" }
 cdk-lnd = { path = "./crates/cdk-lnd", version = "=0.12.0" }
 cdk-ldk-node = { path = "./crates/cdk-ldk-node", version = "=0.12.0" }
 cdk-fake-wallet = { path = "./crates/cdk-fake-wallet", version = "=0.12.0" }
+cdk-ffi = { path = "./crates/cdk-ffi", version = "=0.12.0" }
 cdk-payment-processor = { path = "./crates/cdk-payment-processor", default-features = true, version = "=0.12.0" }
 cdk-mint-rpc = { path = "./crates/cdk-mint-rpc", version = "=0.12.0" }
 cdk-redb = { path = "./crates/cdk-redb", default-features = true, version = "=0.12.0" }
