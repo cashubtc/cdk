@@ -419,32 +419,21 @@ pub enum Error {
 pub struct ErrorResponse {
     /// Error Code
     pub code: ErrorCode,
-    /// Human readable Text
-    pub error: Option<String>,
-    /// Longer human readable description
-    pub detail: Option<String>,
+    /// Human readable description
+    #[serde(default)]
+    pub detail: String,
 }
 
 impl fmt::Display for ErrorResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "code: {}, error: {}, detail: {}",
-            self.code,
-            self.error.clone().unwrap_or_default(),
-            self.detail.clone().unwrap_or_default()
-        )
+        write!(f, "code: {}, detail: {}", self.code, self.detail)
     }
 }
 
 impl ErrorResponse {
     /// Create new [`ErrorResponse`]
-    pub fn new(code: ErrorCode, error: Option<String>, detail: Option<String>) -> Self {
-        Self {
-            code,
-            error,
-            detail,
-        }
+    pub fn new(code: ErrorCode, detail: String) -> Self {
+        Self { code, detail }
     }
 
     /// Error response from json
@@ -460,8 +449,7 @@ impl ErrorResponse {
             Ok(res) => Ok(res),
             Err(_) => Ok(Self {
                 code: ErrorCode::Unknown(999),
-                error: Some(value.to_string()),
-                detail: None,
+                detail: value.to_string(),
             }),
         }
     }
@@ -482,139 +470,118 @@ impl From<Error> for ErrorResponse {
         match err {
             Error::TokenAlreadySpent => ErrorResponse {
                 code: ErrorCode::TokenAlreadySpent,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::UnsupportedUnit => ErrorResponse {
                 code: ErrorCode::UnsupportedUnit,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::PaymentFailed => ErrorResponse {
                 code: ErrorCode::LightningError,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::RequestAlreadyPaid => ErrorResponse {
                 code: ErrorCode::InvoiceAlreadyPaid,
-                error: Some("Invoice already paid.".to_string()),
-                detail: None,
+                detail: "Invoice already paid.".to_string(),
             },
             Error::TransactionUnbalanced(inputs_total, outputs_total, fee_expected) => {
                 ErrorResponse {
                     code: ErrorCode::TransactionUnbalanced,
-                    error: Some(format!(
-                        "Inputs: {inputs_total}, Outputs: {outputs_total}, expected_fee: {fee_expected}",
-                    )),
-                    detail: Some("Transaction inputs should equal outputs less fee".to_string()),
+                    detail: format!(
+                        "Inputs: {inputs_total}, Outputs: {outputs_total}, expected_fee: {fee_expected}. Transaction inputs should equal outputs less fee"
+                    ),
                 }
             }
             Error::MintingDisabled => ErrorResponse {
                 code: ErrorCode::MintingDisabled,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::BlindedMessageAlreadySigned => ErrorResponse {
                 code: ErrorCode::BlindedMessageAlreadySigned,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::InsufficientFunds => ErrorResponse {
                 code: ErrorCode::TransactionUnbalanced,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::AmountOutofLimitRange(_min, _max, _amount) => ErrorResponse {
                 code: ErrorCode::AmountOutofLimitRange,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::ExpiredQuote(_, _) => ErrorResponse {
                 code: ErrorCode::QuoteExpired,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::PendingQuote => ErrorResponse {
                 code: ErrorCode::QuotePending,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::TokenPending => ErrorResponse {
                 code: ErrorCode::TokenPending,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::ClearAuthRequired => ErrorResponse {
                 code: ErrorCode::ClearAuthRequired,
-                error: None,
-                detail: None,
+                detail: Error::ClearAuthRequired.to_string(),
             },
             Error::ClearAuthFailed => ErrorResponse {
                 code: ErrorCode::ClearAuthFailed,
-                error: None,
-                detail: None,
+                detail: Error::ClearAuthFailed.to_string(),
             },
             Error::BlindAuthRequired => ErrorResponse {
                 code: ErrorCode::BlindAuthRequired,
-                error: None,
-                detail: None,
+                detail: Error::BlindAuthRequired.to_string(),
             },
             Error::BlindAuthFailed => ErrorResponse {
                 code: ErrorCode::BlindAuthFailed,
-                error: None,
-                detail: None,
+                detail: Error::BlindAuthFailed.to_string(),
             },
             Error::NUT20(err) => ErrorResponse {
                 code: ErrorCode::WitnessMissingOrInvalid,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::DuplicateInputs => ErrorResponse {
                 code: ErrorCode::DuplicateInputs,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::DuplicateOutputs => ErrorResponse {
                 code: ErrorCode::DuplicateOutputs,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::MultipleUnits => ErrorResponse {
                 code: ErrorCode::MultipleUnits,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::UnitMismatch => ErrorResponse {
                 code: ErrorCode::UnitMismatch,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::UnpaidQuote => ErrorResponse {
                 code: ErrorCode::QuoteNotPaid,
-                error: Some(err.to_string()),
-                detail: None
+                detail: Error::UnpaidQuote.to_string(),
             },
             Error::NUT11(err) => {
                 let code = map_nut11_error(&err);
-                let mut detail = None;
-                if matches!(err, crate::nuts::nut11::Error::SignaturesNotProvided) {
-                    detail = Some("P2PK signatures are required but not provided".to_string());
-                }
+                let extra = if matches!(err, crate::nuts::nut11::Error::SignaturesNotProvided) {
+                    Some("P2PK signatures are required but not provided".to_string())
+                } else {
+                    None
+                };
                 ErrorResponse {
                     code,
-                    error: Some(err.to_string()),
-                    detail,
+                    detail: match extra {
+                        Some(extra) => format!("{err}. {extra}"),
+                        None => err.to_string(),
+                    },
                 }
             },
             Error::DuplicateSignatureError => ErrorResponse {
                 code: ErrorCode::DuplicateSignature,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(9999),
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
         }
     }
