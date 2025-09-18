@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -51,11 +51,16 @@ impl Wallet {
             })
             .collect::<Result<HashMap<String, &String>, _>>()?;
 
-        let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = opts
-            .p2pk_signing_keys
-            .iter()
-            .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
-            .collect();
+        // Build map of X-only pubkey -> SecretKey using provided keys and lazy DB lookups
+        let mut p2pk_signing_keys: HashMap<XOnlyPublicKey, SecretKey> = HashMap::new();
+        let mut missing_db_keys: HashSet<XOnlyPublicKey> = HashSet::new();
+
+        for sk in &opts.p2pk_signing_keys {
+            let (x_only, _) = sk.x_only_public_key(&SECP256K1);
+            p2pk_signing_keys
+                .entry(x_only)
+                .or_insert_with(|| sk.clone());
+        }
 
         for proof in &mut proofs {
             // Verify that proof DLEQ is valid
@@ -94,8 +99,22 @@ impl Wallet {
                         }
                     }
                     for pubkey in pubkeys {
-                        if let Some(signing) = p2pk_signing_keys.get(&pubkey.x_only_public_key()) {
-                            proof.sign_p2pk(signing.to_owned().clone())?;
+                        let x_only = pubkey.x_only_public_key();
+
+                        if !p2pk_signing_keys.contains_key(&x_only)
+                            && !missing_db_keys.contains(&x_only)
+                        {
+                            if let Some(stored) =
+                                self.localstore.get_p2pk_key(pubkey.clone()).await?
+                            {
+                                p2pk_signing_keys.insert(x_only, stored);
+                            } else {
+                                missing_db_keys.insert(x_only);
+                            }
+                        }
+
+                        if let Some(signing) = p2pk_signing_keys.get(&x_only) {
+                            proof.sign_p2pk(signing.clone())?;
                         }
                     }
 
@@ -123,7 +142,7 @@ impl Wallet {
         if sig_flag.eq(&SigFlag::SigAll) {
             for blinded_message in pre_swap.swap_request.outputs_mut() {
                 for signing_key in p2pk_signing_keys.values() {
-                    blinded_message.sign_p2pk(signing_key.to_owned().clone())?
+                    blinded_message.sign_p2pk(signing_key.clone())?
                 }
             }
         }

@@ -4,6 +4,7 @@ pub static MIGRATIONS: &[(&str, &str, &str)] = &[
     ("postgres", "1_initial.sql", include_str!(r#"./migrations/postgres/1_initial.sql"#)),
     ("postgres", "20250831215438_melt_quote_method.sql", include_str!(r#"./migrations/postgres/20250831215438_melt_quote_method.sql"#)),
     ("postgres", "20250906200000_add_transaction_quote_id.sql", include_str!(r#"./migrations/postgres/20250906200000_add_transaction_quote_id.sql"#)),
+    ("postgres", "20250908090000_p2pk_signing_key.sql", include_str!(r#"./migrations/postgres/20250908090000_p2pk_signing_key.sql"#)),
     ("sqlite", "1_fix_sqlx_migration.sql", include_str!(r#"./migrations/sqlite/1_fix_sqlx_migration.sql"#)),
     ("sqlite", "20240612132920_init.sql", include_str!(r#"./migrations/sqlite/20240612132920_init.sql"#)),
     ("sqlite", "20240618200350_quote_state.sql", include_str!(r#"./migrations/sqlite/20240618200350_quote_state.sql"#)),
@@ -26,4 +27,5 @@ pub static MIGRATIONS: &[(&str, &str, &str)] = &[
     ("sqlite", "20250812084621_keyset_plus_one.sql", include_str!(r#"./migrations/sqlite/20250812084621_keyset_plus_one.sql"#)),
     ("sqlite", "20250831215438_melt_quote_method.sql", include_str!(r#"./migrations/sqlite/20250831215438_melt_quote_method.sql"#)),
     ("sqlite", "20250906200000_add_transaction_quote_id.sql", include_str!(r#"./migrations/sqlite/20250906200000_add_transaction_quote_id.sql"#)),
+    ("sqlite", "20250908090000_p2pk_signing_key.sql", include_str!(r#"./migrations/sqlite/20250908090000_p2pk_signing_key.sql"#)),
 ];

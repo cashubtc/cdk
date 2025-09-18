@@ -650,6 +650,85 @@ ON CONFLICT(id) DO UPDATE SET
         Ok(())
     }
 
+    // --- P2PK signing key storage ---
+    async fn add_p2pk_key(&self, secret_key: SecretKey) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        let pubkey = secret_key.public_key();
+
+        query(
+            r#"
+INSERT INTO p2pk_signing_key
+    (pubkey, secret_key)
+VALUES
+    (:pubkey, :secret_key)
+ON CONFLICT(pubkey) DO UPDATE SET
+    secret_key = excluded.secret_key
+;            "#,
+        )?
+        .bind("pubkey", pubkey.to_bytes().to_vec())
+        .bind("secret_key", secret_key.to_secret_bytes().to_vec())
+        .execute(&*conn)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<SecretKey>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        Ok(query(
+            r#"
+            SELECT secret_key
+            FROM p2pk_signing_key
+            WHERE pubkey = :pubkey
+            "#,
+        )?
+        .bind("pubkey", pubkey.to_bytes().to_vec())
+        .pluck(&*conn)
+        .await?
+        .map(|sk| {
+            let bytes = column_as_binary!(sk);
+            SecretKey::from_slice(&bytes).map_err(Error::from)
+        })
+        .transpose()?)
+    }
+
+    async fn list_p2pk_keys(&self) -> Result<Vec<(PublicKey, SecretKey)>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        Ok(query(
+            r#"
+            SELECT pubkey, secret_key
+            FROM p2pk_signing_key
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(|row| {
+            let pubkey_bytes = column_as_binary!(&row[0]);
+            let secret_bytes = column_as_binary!(&row[1]);
+
+            let pubkey = PublicKey::from_slice(&pubkey_bytes).map_err(Error::from)?;
+            let secret = SecretKey::from_slice(&secret_bytes).map_err(Error::from)?;
+
+            Ok((pubkey, secret))
+        })
+        .collect::<Result<Vec<_>, Error>>()?)
+    }
+
+    async fn remove_p2pk_key(&self, pubkey: PublicKey) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        query(r#"DELETE FROM p2pk_signing_key WHERE pubkey = :pubkey"#)?
+            .bind("pubkey", pubkey.to_bytes().to_vec())
+            .execute(&*conn)
+            .await?;
+
+        Ok(())
+    }
+
     #[instrument(skip_all)]
     async fn add_keys(&self, keyset: KeySet) -> Result<(), Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
