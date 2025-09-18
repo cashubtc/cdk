@@ -485,7 +485,7 @@ pub async fn test_p2pk_swap() {
 
     let mut listener = mint_bob
         .pubsub_manager()
-        .try_subscribe::<IndexableParams>(
+        .subscribe::<IndexableParams>(
             Params {
                 kind: cdk::nuts::nut17::Kind::ProofState,
                 filters: public_keys_to_listen.clone(),
@@ -493,7 +493,6 @@ pub async fn test_p2pk_swap() {
             }
             .into(),
         )
-        .await
         .expect("valid subscription");
 
     match mint_bob.process_swap_request(swap_request).await {
@@ -520,9 +519,8 @@ pub async fn test_p2pk_swap() {
     sleep(Duration::from_secs(1)).await;
 
     let mut msgs = HashMap::new();
-    while let Ok((sub_id, msg)) = listener.try_recv() {
-        assert_eq!(sub_id, "test".into());
-        match msg {
+    while let Some(msg) = listener.try_recv() {
+        match msg.inner() {
             NotificationPayload::ProofState(ProofState { y, state, .. }) => {
                 msgs.entry(y.to_string())
                     .or_insert_with(Vec::new)
@@ -544,7 +542,7 @@ pub async fn test_p2pk_swap() {
         );
     }
 
-    assert!(listener.try_recv().is_err(), "no other event is happening");
+    assert!(listener.try_recv().is_none(), "no other event is happening");
     assert!(msgs.is_empty(), "Only expected key events are received");
 }
 

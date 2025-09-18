@@ -1,20 +1,13 @@
 //! Subscription types and traits
-#[cfg(feature = "mint")]
+use std::ops::Deref;
 use std::str::FromStr;
 
-use cashu::nut17::{self};
-#[cfg(feature = "mint")]
-use cashu::nut17::{Error, Kind, Notification};
-#[cfg(feature = "mint")]
+use cashu::nut17::{self, Kind, NotificationId};
 use cashu::quote_id::QuoteId;
-#[cfg(feature = "mint")]
-use cashu::{NotificationPayload, PublicKey};
-#[cfg(feature = "mint")]
+use cashu::PublicKey;
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "mint")]
-use crate::pub_sub::index::{Index, Indexable, SubscriptionGlobalId};
-use crate::pub_sub::SubId;
+use crate::pub_sub::{Error, SubscriptionRequest};
 
 /// Subscription parameters.
 ///
@@ -22,7 +15,6 @@ use crate::pub_sub::SubId;
 pub type Params = nut17::Params<SubId>;
 
 /// Wrapper around `nut17::Params` to implement `Indexable` for `Notification`.
-#[cfg(feature = "mint")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexableParams(Params);
 
@@ -33,11 +25,78 @@ impl From<Params> for IndexableParams {
     }
 }
 
+/// Subscription Id wrapper
+///
+/// This is the place to add some sane default (like a max length) to the
+/// subscription ID
+#[derive(Debug, Clone, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+pub struct SubId(String);
+
+impl From<&str> for SubId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<String> for SubId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl FromStr for SubId {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_string()))
+    }
+}
+
+impl Deref for SubId {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl SubscriptionRequest for IndexableParams {
+    type Index = NotificationId;
+
+    type SubscriptionName = SubId;
+
+    fn subscription_name(&self) -> Self::SubscriptionName {
+        self.0.id.clone()
+    }
+
+    fn try_get_indexes(&self) -> Result<Vec<Self::Index>, Error> {
+        self.0
+            .filters
+            .iter()
+            .map(|filter| match self.0.kind {
+                Kind::Bolt11MeltQuote => QuoteId::from_str(filter)
+                    .map(NotificationId::MeltQuoteBolt11)
+                    .map_err(|_| Error::ParsingError(filter.to_owned())),
+                Kind::Bolt11MintQuote => QuoteId::from_str(filter)
+                    .map(NotificationId::MintQuoteBolt11)
+                    .map_err(|_| Error::ParsingError(filter.to_owned())),
+                Kind::ProofState => PublicKey::from_str(filter)
+                    .map(NotificationId::ProofState)
+                    .map_err(|_| Error::ParsingError(filter.to_owned())),
+
+                Kind::Bolt12MintQuote => QuoteId::from_str(filter)
+                    .map(NotificationId::MintQuoteBolt12)
+                    .map_err(|_| Error::ParsingError(filter.to_owned())),
+            })
+            .collect::<Result<Vec<_>, _>>()
+    }
+}
+
+/*
 #[cfg(feature = "mint")]
-impl TryFrom<IndexableParams> for Vec<Index<Notification>> {
+impl TryFrom<IndexableParams> for Vec<Notification> {
     type Error = Error;
     fn try_from(params: IndexableParams) -> Result<Self, Self::Error> {
-        let sub_id: SubscriptionGlobalId = Default::default();
         let params = params.0;
         params
             .filters
@@ -71,9 +130,9 @@ impl AsRef<SubId> for IndexableParams {
 
 #[cfg(feature = "mint")]
 impl Indexable for NotificationPayload<QuoteId> {
-    type Type = Notification;
+    type Index = Notification;
 
-    fn to_indexes(&self) -> Vec<Index<Self::Type>> {
+    fn to_indexes(&self) -> Vec<Index<Self::Index>> {
         match self {
             NotificationPayload::ProofState(proof_state) => {
                 vec![Index::from(Notification::ProofState(proof_state.y))]
@@ -96,3 +155,4 @@ impl Indexable for NotificationPayload<QuoteId> {
         }
     }
 }
+*/

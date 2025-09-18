@@ -20,7 +20,7 @@ use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
 #[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
-use subscription::PubSubManager;
+use pubsub_manager::PubSubManager;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::instrument;
@@ -41,8 +41,8 @@ mod keysets;
 mod ln;
 mod melt;
 mod proof_writer;
+mod pubsub_manager;
 mod start_up_check;
-pub mod subscription;
 mod swap;
 mod verification;
 
@@ -205,7 +205,7 @@ impl Mint {
 
         Ok(Self {
             signatory,
-            pubsub_manager: Arc::new(localstore.clone().into()),
+            pubsub_manager: PubSubManager::new(localstore.clone()),
             localstore,
             #[cfg(feature = "auth")]
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {

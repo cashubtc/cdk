@@ -5,7 +5,7 @@ use std::str::FromStr;
 use std::sync::Mutex;
 
 use cdk::nuts::{CurrencyUnit as CdkCurrencyUnit, State as CdkState};
-use cdk::pub_sub::SubId;
+use cdk::subscription::SubId;
 use cdk::Amount as CdkAmount;
 use serde::{Deserialize, Serialize};
 
@@ -1806,7 +1806,7 @@ pub fn encode_nuts(nuts: Nuts) -> Result<String, FfiError> {
 pub struct MintInfo {
     /// name of the mint and should be recognizable
     pub name: Option<String>,
-    /// hex pubkey of the mint  
+    /// hex pubkey of the mint
     pub pubkey: Option<String>,
     /// implementation name and the version running
     pub version: Option<MintVersion>,
@@ -2020,7 +2020,7 @@ pub enum Witness {
         /// Signatures
         signatures: Vec<String>,
     },
-    /// HTLC Witness  
+    /// HTLC Witness
     HTLC {
         /// Preimage
         preimage: String,
@@ -2409,7 +2409,7 @@ pub struct SubscribeParams {
     pub id: Option<String>,
 }
 
-impl From<SubscribeParams> for cdk::nuts::nut17::Params<cdk::pub_sub::SubId> {
+impl From<SubscribeParams> for cdk::nuts::nut17::Params<SubId> {
     fn from(params: SubscribeParams) -> Self {
         let sub_id = params
             .id
@@ -2730,7 +2730,7 @@ pub fn encode_keys(keys: Keys) -> Result<String, FfiError> {
 pub struct KeySet {
     /// Keyset ID
     pub id: String,
-    /// Currency unit  
+    /// Currency unit
     pub unit: CurrencyUnit,
     /// The keys (map of amount to public key hex)
     pub keys: HashMap<u64, String>,

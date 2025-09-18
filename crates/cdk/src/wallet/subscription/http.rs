@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use cdk_common::subscription::SubId;
 use cdk_common::MintQuoteBolt12Response;
 use tokio::sync::{mpsc, RwLock};
 #[cfg(not(target_arch = "wasm32"))]
@@ -10,7 +11,6 @@ use web_time::Duration;
 use super::WsSubscriptionBody;
 use crate::nuts::nut17::Kind;
 use crate::nuts::{nut01, nut05, nut07, nut23, CheckStateRequest, NotificationPayload};
-use crate::pub_sub::SubId;
 use crate::wallet::MintConnector;
 use crate::Wallet;
 

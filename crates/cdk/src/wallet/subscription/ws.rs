@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use cdk_common::subscription::Params;
+use cdk_common::subscription::{Params, SubId};
 use cdk_common::ws::{WsMessageOrResponse, WsMethodRequest, WsRequest, WsUnsubscribeRequest};
 #[cfg(feature = "auth")]
 use cdk_common::{Method, RoutePath};
@@ -15,7 +15,6 @@ use tokio_tungstenite::tungstenite::Message;
 use super::http::http_main;
 use super::WsSubscriptionBody;
 use crate::mint_url::MintUrl;
-use crate::pub_sub::SubId;
 use crate::wallet::MintConnector;
 use crate::Wallet;
 

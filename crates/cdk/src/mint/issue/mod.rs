@@ -322,12 +322,12 @@ impl Mint {
                 PaymentMethod::Bolt11 => {
                     let res: MintQuoteBolt11Response<QuoteId> = quote.clone().into();
                     self.pubsub_manager
-                        .broadcast(NotificationPayload::MintQuoteBolt11Response(res));
+                        .publish(NotificationPayload::MintQuoteBolt11Response(res));
                 }
                 PaymentMethod::Bolt12 => {
                     let res: MintQuoteBolt12Response<QuoteId> = quote.clone().try_into()?;
                     self.pubsub_manager
-                        .broadcast(NotificationPayload::MintQuoteBolt12Response(res));
+                        .publish(NotificationPayload::MintQuoteBolt12Response(res));
                 }
                 PaymentMethod::Custom(_) => {}
             }

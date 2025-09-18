@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use cdk_common::subscription::Params;
+use cdk_common::subscription::{Params, SubId};
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::error;
@@ -18,7 +18,6 @@ use wasm_bindgen_futures;
 
 use super::Wallet;
 use crate::mint_url::MintUrl;
-use crate::pub_sub::SubId;
 use crate::wallet::MintConnector;
 
 mod http;

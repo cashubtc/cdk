@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
+use cdk::subscription::SubId;
 use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
 
 use crate::error::FfiError;
@@ -349,7 +350,7 @@ impl Wallet {
         &self,
         params: SubscribeParams,
     ) -> Result<std::sync::Arc<ActiveSubscription>, FfiError> {
-        let cdk_params: cdk::nuts::nut17::Params<cdk::pub_sub::SubId> = params.clone().into();
+        let cdk_params: cdk::nuts::nut17::Params<SubId> = params.clone().into();
         let sub_id = cdk_params.id.to_string();
         let active_sub = self.inner.subscribe(cdk_params).await;
         Ok(std::sync::Arc::new(ActiveSubscription::new(

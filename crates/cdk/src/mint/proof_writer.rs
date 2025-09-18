@@ -5,7 +5,7 @@ use std::sync::Arc;
 use cdk_common::database::{self, DynMintDatabase, MintTransaction};
 use cdk_common::{Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 
-use super::subscription::PubSubManager;
+use super::pubsub_manager::PubSubManager;
 
 type Tx<'a, 'b> = Box<dyn MintTransaction<'a, database::Error> + Send + Sync + 'b>;
 

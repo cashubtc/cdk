@@ -21,16 +21,16 @@ pub(crate) async fn handle(
         .state
         .mint
         .pubsub_manager()
-        .try_subscribe(params)
-        .await
+        .subscribe(params)
         .map_err(|_| WsError::ParseError)?;
 
     let publisher = context.publisher.clone();
+    let sub_id_for_sender = sub_id.clone();
     context.subscriptions.insert(
         sub_id.clone(),
         tokio::spawn(async move {
             while let Some(response) = subscription.recv().await {
-                let _ = publisher.send(response).await;
+                let _ = publisher.try_send((sub_id_for_sender.clone(), response.into()));
             }
         }),
     );

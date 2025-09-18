@@ -2,12 +2,10 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "mint")]
 use super::PublicKey;
 use crate::nuts::{
     CurrencyUnit, MeltQuoteBolt11Response, MintQuoteBolt11Response, PaymentMethod, ProofState,
 };
-#[cfg(feature = "mint")]
 use crate::quote_id::{QuoteId, QuoteIdError};
 use crate::MintQuoteBolt12Response;
 
@@ -130,28 +128,9 @@ pub enum NotificationPayload<T> {
     MintQuoteBolt12Response(MintQuoteBolt12Response<T>),
 }
 
-impl<T> From<ProofState> for NotificationPayload<T> {
-    fn from(proof_state: ProofState) -> NotificationPayload<T> {
-        NotificationPayload::ProofState(proof_state)
-    }
-}
-
-impl<T> From<MeltQuoteBolt11Response<T>> for NotificationPayload<T> {
-    fn from(melt_quote: MeltQuoteBolt11Response<T>) -> NotificationPayload<T> {
-        NotificationPayload::MeltQuoteBolt11Response(melt_quote)
-    }
-}
-
-impl<T> From<MintQuoteBolt11Response<T>> for NotificationPayload<T> {
-    fn from(mint_quote: MintQuoteBolt11Response<T>) -> NotificationPayload<T> {
-        NotificationPayload::MintQuoteBolt11Response(mint_quote)
-    }
-}
-
-#[cfg(feature = "mint")]
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Hash, Serialize)]
 /// A parsed notification
-pub enum Notification {
+pub enum NotificationId {
     /// ProofState id is a Pubkey
     ProofState(PublicKey),
     /// MeltQuote id is an QuoteId
@@ -187,7 +166,6 @@ impl<I> AsRef<I> for Params<I> {
 /// Parsing error
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[cfg(feature = "mint")]
     #[error("Uuid Error: {0}")]
     /// Uuid Error
     QuoteId(#[from] QuoteIdError),
