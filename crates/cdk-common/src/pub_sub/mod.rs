@@ -1,77 +1,172 @@
-//! Publish–subscribe pattern.
+//! Publish–subscribe manager.
+//!
+//! This is a event-agnostic Publish-subscriber producer and consumer.
 //!
 //! This is a generic implementation for
 //! [NUT-17](<https://github.com/cashubtc/nuts/blob/main/17.md>) with a type
 //! agnostic Publish-subscribe manager.
 //!
 //! The manager has a method for subscribers to subscribe to events with a
-//! generic type that must be converted to a vector of indexes.
+//! generic type that must be converted to a vector of topics.
 //!
-//! Events are also generic that should implement the `Indexable` trait.
-use std::fmt::Debug;
-use std::ops::Deref;
-use std::str::FromStr;
+//! Events are also generic that should implement the `Event` trait.
 
-use serde::{Deserialize, Serialize};
+mod error;
+mod pubsub;
+pub mod remote_consumer;
+mod subscriber;
+mod types;
 
-pub mod index;
+pub use self::error::Error;
+pub use self::pubsub::Pubsub;
+pub use self::subscriber::{Subscriber, SubscriptionRequest};
+pub use self::types::*;
 
-/// Default size of the remove channel
-pub const DEFAULT_REMOVE_SIZE: usize = 10_000;
+#[cfg(test)]
+mod test {
+    use std::collections::HashMap;
+    use std::sync::{Arc, RwLock};
 
-/// Default channel size for subscription buffering
-pub const DEFAULT_CHANNEL_SIZE: usize = 10;
+    use serde::{Deserialize, Serialize};
 
-#[async_trait::async_trait]
-/// On New Subscription trait
-///
-/// This trait is optional and it is used to notify the application when a new
-/// subscription is created. This is useful when the application needs to send
-/// the initial state to the subscriber upon subscription
-pub trait OnNewSubscription {
-    /// Index type
-    type Index;
-    /// Subscription event type
-    type Event;
+    use super::subscriber::SubscriptionRequest;
+    use super::{Error, Event, Pubsub, Spec, Subscriber};
 
-    /// Called when a new subscription is created
-    async fn on_new_subscription(
-        &self,
-        request: &[&Self::Index],
-    ) -> Result<Vec<Self::Event>, String>;
-}
-
-/// Subscription Id wrapper
-///
-/// This is the place to add some sane default (like a max length) to the
-/// subscription ID
-#[derive(Debug, Clone, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
-pub struct SubId(String);
-
-impl From<&str> for SubId {
-    fn from(s: &str) -> Self {
-        Self(s.to_string())
+    #[derive(Clone, Debug, Serialize, Eq, PartialEq, Deserialize)]
+    pub struct Message {
+        pub foo: u64,
+        pub bar: u64,
     }
-}
 
-impl From<String> for SubId {
-    fn from(s: String) -> Self {
-        Self(s)
+    #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Deserialize, Serialize)]
+    pub enum IndexTest {
+        Foo(u64),
+        Bar(u64),
     }
-}
 
-impl FromStr for SubId {
-    type Err = ();
+    impl Event for Message {
+        type Topic = IndexTest;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(s.to_string()))
+        fn get_topics(&self) -> Vec<Self::Topic> {
+            vec![IndexTest::Foo(self.foo), IndexTest::Bar(self.bar)]
+        }
     }
-}
 
-impl Deref for SubId {
-    type Target = String;
+    pub struct CustomPubSub {
+        pub storage: Arc<RwLock<HashMap<IndexTest, Message>>>,
+    }
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+    #[async_trait::async_trait]
+    impl Spec for CustomPubSub {
+        type Topic = IndexTest;
+
+        type Event = Message;
+
+        type SubscriptionId = String;
+
+        type Context = ();
+
+        fn new_instance(_context: Self::Context) -> Arc<Self>
+        where
+            Self: Sized,
+        {
+            Arc::new(Self {
+                storage: Default::default(),
+            })
+        }
+
+        async fn fetch_events(
+            self: &Arc<Self>,
+            topics: Vec<<Self::Event as Event>::Topic>,
+            reply_to: Subscriber<Self>,
+        ) where
+            Self: Sized,
+        {
+            let storage = self.storage.read().unwrap();
+
+            for index in topics {
+                if let Some(value) = storage.get(&index) {
+                    let _ = reply_to.send(value.clone());
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub enum SubscriptionReq {
+        Foo(u64),
+        Bar(u64),
+    }
+
+    impl SubscriptionRequest for SubscriptionReq {
+        type Topic = IndexTest;
+
+        type SubscriptionId = String;
+
+        fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error> {
+            Ok(vec![match self {
+                SubscriptionReq::Bar(n) => IndexTest::Bar(*n),
+                SubscriptionReq::Foo(n) => IndexTest::Foo(*n),
+            }])
+        }
+
+        fn subscription_name(&self) -> Arc<Self::SubscriptionId> {
+            Arc::new("test".to_owned())
+        }
+    }
+
+    #[tokio::test]
+    async fn delivery_twice_realtime() {
+        let pubsub = Pubsub::new(CustomPubSub::new_instance(()));
+
+        assert_eq!(pubsub.active_subscribers(), 0);
+
+        let mut subscriber = pubsub.subscribe(SubscriptionReq::Foo(2)).unwrap();
+
+        assert_eq!(pubsub.active_subscribers(), 1);
+
+        let _ = pubsub.publish_now(Message { foo: 2, bar: 1 });
+        let _ = pubsub.publish_now(Message { foo: 2, bar: 2 });
+
+        assert_eq!(subscriber.recv().await.map(|x| x.bar), Some(1));
+        assert_eq!(subscriber.recv().await.map(|x| x.bar), Some(2));
+        assert!(subscriber.try_recv().is_none());
+
+        drop(subscriber);
+
+        assert_eq!(pubsub.active_subscribers(), 0);
+    }
+
+    #[tokio::test]
+    async fn read_from_storage() {
+        let x = CustomPubSub::new_instance(());
+        let storage = x.storage.clone();
+
+        let pubsub = Pubsub::new(x);
+
+        {
+            // set previous value
+            let mut s = storage.write().unwrap();
+            s.insert(IndexTest::Bar(2), Message { foo: 3, bar: 2 });
+        }
+
+        let mut subscriber = pubsub.subscribe(SubscriptionReq::Bar(2)).unwrap();
+
+        // Just should receive the latest
+        assert_eq!(subscriber.recv().await.map(|x| x.foo), Some(3));
+
+        // realtime delivery test
+        let _ = pubsub.publish_now(Message { foo: 1, bar: 2 });
+        assert_eq!(subscriber.recv().await.map(|x| x.foo), Some(1));
+
+        {
+            // set previous value
+            let mut s = storage.write().unwrap();
+            s.insert(IndexTest::Bar(2), Message { foo: 1, bar: 2 });
+        }
+
+        // new subscription should only get the latest state (it is up to the Topic trait)
+        let mut y = pubsub.subscribe(SubscriptionReq::Bar(2)).unwrap();
+        assert_eq!(y.recv().await.map(|x| x.foo), Some(1));
     }
 }
