@@ -13,9 +13,9 @@ use cdk::wallet::MultiMintWallet;
 #[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
-use clap::{Parser, Subcommand};
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 use clap::ValueEnum;
+use clap::{Parser, Subcommand};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 use url::Url;
@@ -130,7 +130,6 @@ async fn main() -> Result<()> {
             home_dir.join(DEFAULT_WORK_DIR)
         }
     };
-
 
     let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
         match args.engine.as_str() {
@@ -273,7 +272,8 @@ async fn main() -> Result<()> {
             sub_commands::pay_request::pay_request(&multi_mint_wallet, &sub_command_args).await
         }
         Commands::CreateRequest(sub_command_args) => {
-            sub_commands::create_request::create_request(&multi_mint_wallet, &sub_command_args).await
+            sub_commands::create_request::create_request(&multi_mint_wallet, &sub_command_args)
+                .await
         }
         Commands::MintBlindAuth(sub_command_args) => {
             sub_commands::mint_blind_auth::mint_blind_auth(

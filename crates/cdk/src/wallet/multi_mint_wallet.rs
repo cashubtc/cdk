@@ -25,11 +25,10 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut23::QuoteState;
 use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SpendingConditions, Token};
 use crate::types::Melted;
-use crate::wallet::types::MintQuote;
-use crate::{Amount, Wallet};
-
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 use crate::wallet::mint_connector::transport::tor_transport::TorAsync;
+use crate::wallet::types::MintQuote;
+use crate::{Amount, Wallet};
 
 // Transfer timeout constants
 /// Total timeout for waiting for Lightning payment confirmation during transfers
@@ -247,10 +246,7 @@ impl MultiMintWallet {
                     }
                     #[cfg(not(feature = "auth"))]
                     {
-                        crate::wallet::TorHttpClient::with_transport(
-                            mint_url.clone(),
-                            transport,
-                        )
+                        crate::wallet::TorHttpClient::with_transport(mint_url.clone(), transport)
                     }
                 };
 

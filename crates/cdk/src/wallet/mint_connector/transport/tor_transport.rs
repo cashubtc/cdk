@@ -30,7 +30,6 @@ impl Clone for TorAsync {
     }
 }
 
-
 impl std::fmt::Debug for TorAsync {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TorAsync")
@@ -139,8 +138,8 @@ impl Transport for TorAsync {
             }
         }
 
-        let mut url = Url::parse("https://dns.google/resolve")
-            .map_err(|e| Error::Custom(e.to_string()))?;
+        let mut url =
+            Url::parse("https://dns.google/resolve").map_err(|e| Error::Custom(e.to_string()))?;
         {
             let mut qp = url.query_pairs_mut();
             qp.append_pair("name", domain);
