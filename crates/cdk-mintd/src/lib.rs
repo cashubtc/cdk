@@ -1178,7 +1178,7 @@ pub async fn run_mintd_with_shutdown(
     // Pending melt quotes where the payment has **failed** inputs are reset to unspent
     mint.check_pending_melt_quotes().await?;
 
-    let result = start_services_with_shutdown(
+    start_services_with_shutdown(
         mint.clone(),
         settings,
         work_dir,
@@ -1186,7 +1186,5 @@ pub async fn run_mintd_with_shutdown(
         shutdown_signal,
         routers,
     )
-    .await;
-
-    result
+    .await
 }
