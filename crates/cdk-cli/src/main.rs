@@ -14,6 +14,8 @@ use cdk::wallet::MultiMintWallet;
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
 use clap::{Parser, Subcommand};
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+use clap::ValueEnum;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 use url::Url;
@@ -27,11 +29,15 @@ const DEFAULT_WORK_DIR: &str = ".cdk-cli";
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 
 /// Simple CLI application to interact with cashu
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum TorToggle {
+    On,
+    Off,
+}
+
 #[derive(Parser)]
-#[command(name = "cdk-cli")]
-#[command(author = "thesimplekid <tsk@thesimplekid.com>")]
-#[command(version = CARGO_PKG_VERSION.unwrap_or("Unknown"))]
-#[command(author, version, about, long_about = None)]
+#[command(name = "cdk-cli", author = "thesimplekid <tsk@thesimplekid.com>", version = CARGO_PKG_VERSION.unwrap_or("Unknown"), about, long_about = None)]
 struct Cli {
     /// Database engine to use (sqlite/redb)
     #[arg(short, long, default_value = "sqlite")]
@@ -52,6 +58,11 @@ struct Cli {
     /// Currency unit to use for the wallet
     #[arg(short, long, default_value = "sat")]
     unit: String,
+    /// Use Tor transport (only when built with --features tor). Defaults to 'on' when feature is enabled.
+    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+    #[arg(long = "tor", value_enum, default_value_t = TorToggle::On)]
+    transport: TorToggle,
+    /// Subcommand to run
     #[command(subcommand)]
     command: Commands,
 }
@@ -120,8 +131,6 @@ async fn main() -> Result<()> {
         }
     };
 
-    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
-    let transport_mode = args.transport.as_str();
 
     let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
         match args.engine.as_str() {
@@ -182,7 +191,6 @@ async fn main() -> Result<()> {
     // The constructor will automatically load wallets for this currency unit
     let multi_mint_wallet = match &args.proxy {
         Some(proxy_url) => {
-            // Create MultiMintWallet with proxy configuration
             MultiMintWallet::new_with_proxy(
                 localstore.clone(),
                 seed,
@@ -191,76 +199,98 @@ async fn main() -> Result<()> {
             )
             .await?
         }
-        None => MultiMintWallet::new(localstore.clone(), seed, currency_unit.clone()).await?,
+        None => {
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            {
+                match args.transport {
+                    TorToggle::On => {
+                        MultiMintWallet::new_with_tor(
+                            localstore.clone(),
+                            seed,
+                            currency_unit.clone(),
+                        )
+                        .await?
+                    }
+                    TorToggle::Off => {
+                        MultiMintWallet::new(localstore.clone(), seed, currency_unit.clone())
+                            .await?
+                    }
+                }
+            }
+            #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
+            {
+                MultiMintWallet::new(localstore.clone(), seed, currency_unit.clone()).await?
+            }
+        }
     };
 
     match &args.command {
         Commands::DecodeToken(sub_command_args) => {
-            sub_commands::decode_token::decode_token(sub_command_args)
+            sub_commands::decode_token::decode_token(&sub_command_args)
         }
         Commands::Balance => sub_commands::balance::balance(&multi_mint_wallet).await,
         Commands::Melt(sub_command_args) => {
-            sub_commands::melt::pay(&multi_mint_wallet, sub_command_args).await
+            sub_commands::melt::pay(&multi_mint_wallet, &sub_command_args).await
         }
         Commands::Receive(sub_command_args) => {
-            sub_commands::receive::receive(&multi_mint_wallet, sub_command_args, &work_dir).await
+            sub_commands::receive::receive(&multi_mint_wallet, &sub_command_args, &work_dir).await
         }
         Commands::Send(sub_command_args) => {
-            sub_commands::send::send(&multi_mint_wallet, sub_command_args).await
+            sub_commands::send::send(&multi_mint_wallet, &sub_command_args).await
         }
         Commands::Transfer(sub_command_args) => {
-            sub_commands::transfer::transfer(&multi_mint_wallet, sub_command_args).await
+            sub_commands::transfer::transfer(&multi_mint_wallet, &sub_command_args).await
         }
         Commands::CheckPending => {
             sub_commands::check_pending::check_pending(&multi_mint_wallet).await
         }
         Commands::MintInfo(sub_command_args) => {
-            sub_commands::mint_info::mint_info(args.proxy, sub_command_args).await
+            sub_commands::mint_info::mint_info(args.proxy, &sub_command_args).await
         }
         Commands::Mint(sub_command_args) => {
-            sub_commands::mint::mint(&multi_mint_wallet, sub_command_args).await
+            sub_commands::mint::mint(&multi_mint_wallet, &sub_command_args).await
         }
         Commands::MintPending => {
             sub_commands::pending_mints::mint_pending(&multi_mint_wallet).await
         }
         Commands::Burn(sub_command_args) => {
-            sub_commands::burn::burn(&multi_mint_wallet, sub_command_args).await
+            sub_commands::burn::burn(&multi_mint_wallet, &sub_command_args).await
         }
         Commands::Restore(sub_command_args) => {
-            sub_commands::restore::restore(&multi_mint_wallet, sub_command_args).await
+            sub_commands::restore::restore(&multi_mint_wallet, &sub_command_args).await
         }
         Commands::UpdateMintUrl(sub_command_args) => {
-            sub_commands::update_mint_url::update_mint_url(&multi_mint_wallet, sub_command_args)
+            sub_commands::update_mint_url::update_mint_url(&multi_mint_wallet, &sub_command_args)
                 .await
         }
         Commands::ListMintProofs => {
             sub_commands::list_mint_proofs::proofs(&multi_mint_wallet).await
         }
         Commands::DecodeRequest(sub_command_args) => {
-            sub_commands::decode_request::decode_payment_request(sub_command_args)
+            sub_commands::decode_request::decode_payment_request(&sub_command_args)
         }
         Commands::PayRequest(sub_command_args) => {
-            sub_commands::pay_request::pay_request(&multi_mint_wallet, sub_command_args).await
+            sub_commands::pay_request::pay_request(&multi_mint_wallet, &sub_command_args).await
         }
         Commands::CreateRequest(sub_command_args) => {
-            sub_commands::create_request::create_request(&multi_mint_wallet, sub_command_args).await
+            sub_commands::create_request::create_request(&multi_mint_wallet, &sub_command_args).await
         }
         Commands::MintBlindAuth(sub_command_args) => {
             sub_commands::mint_blind_auth::mint_blind_auth(
                 &multi_mint_wallet,
-                sub_command_args,
+                &sub_command_args,
                 &work_dir,
             )
             .await
         }
         Commands::CatLogin(sub_command_args) => {
-            sub_commands::cat_login::cat_login(&multi_mint_wallet, sub_command_args, &work_dir)
+            sub_commands::cat_login::cat_login(&multi_mint_wallet, &sub_command_args, &work_dir)
                 .await
         }
         Commands::CatDeviceLogin(sub_command_args) => {
             sub_commands::cat_device_login::cat_device_login(
                 &multi_mint_wallet,
-                sub_command_args,
+                &sub_command_args,
                 &work_dir,
             )
             .await

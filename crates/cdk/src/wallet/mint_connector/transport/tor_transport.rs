@@ -30,6 +30,7 @@ impl Clone for TorAsync {
     }
 }
 
+
 impl std::fmt::Debug for TorAsync {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TorAsync")
@@ -83,6 +84,81 @@ impl Transport for TorAsync {
         let body = serde_json::to_vec(payload).map_err(|e| Error::Custom(e.to_string()))?;
         self.request::<Vec<u8>, R>(Method::POST, url, auth_token, Some(body))
             .await
+    }
+
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error> {
+        // Use DNS over HTTPS through Tor to avoid clearnet DNS leaks
+        // Google DoH JSON API: https://dns.google/resolve?name=<domain>&type=TXT
+        // We parse the JSON and extract TXT strings, concatenating quoted chunks if present
+        #[derive(serde::Deserialize)]
+        struct Answer {
+            #[serde(default)]
+            data: String,
+            #[allow(dead_code)]
+            #[serde(default)]
+            name: String,
+            #[allow(dead_code)]
+            #[serde(default)]
+            r#type: u32,
+        }
+
+        #[allow(non_snake_case)]
+        #[derive(serde::Deserialize)]
+        struct DnsResp {
+            #[serde(default)]
+            Answer: Option<Vec<Answer>>,
+            #[allow(dead_code)]
+            #[serde(default)]
+            Status: Option<u32>,
+        }
+
+        fn dequote_txt(s: &str) -> String {
+            // TXT answers often look like: "part1" "part2" or just "value"
+            // Concatenate segments between quotes. Fallback: trim surrounding quotes.
+            let mut result = String::new();
+            let mut in_quote = false;
+            let mut buf = String::new();
+            for ch in s.chars() {
+                if ch == '"' {
+                    if in_quote {
+                        result.push_str(&buf);
+                        buf.clear();
+                        in_quote = false;
+                    } else {
+                        in_quote = true;
+                    }
+                } else if in_quote {
+                    buf.push(ch);
+                }
+            }
+            if !result.is_empty() {
+                result
+            } else {
+                s.trim_matches('"').to_string()
+            }
+        }
+
+        let mut url = Url::parse("https://dns.google/resolve")
+            .map_err(|e| Error::Custom(e.to_string()))?;
+        {
+            let mut qp = url.query_pairs_mut();
+            qp.append_pair("name", domain);
+            qp.append_pair("type", "TXT");
+        }
+
+        let resp: DnsResp = self
+            .request::<Vec<u8>, DnsResp>(Method::GET, url, None, None::<Vec<u8>>)
+            .await?;
+
+        let answers = resp.Answer.unwrap_or_default();
+        let txts = answers
+            .into_iter()
+            .filter(|a| !a.data.is_empty())
+            .map(|a| dequote_txt(&a.data))
+            .collect::<Vec<_>>();
+
+        Ok(txts)
     }
 }
 

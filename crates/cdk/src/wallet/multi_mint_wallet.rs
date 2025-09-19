@@ -28,6 +28,9 @@ use crate::types::Melted;
 use crate::wallet::types::MintQuote;
 use crate::{Amount, Wallet};
 
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+use crate::wallet::mint_connector::transport::tor_transport::TorAsync;
+
 // Transfer timeout constants
 /// Total timeout for waiting for Lightning payment confirmation during transfers
 /// This needs to be long enough to handle slow networks and Lightning routing
@@ -114,6 +117,9 @@ pub struct MultiMintWallet {
     wallets: Arc<RwLock<BTreeMap<MintUrl, Wallet>>>,
     /// Proxy configuration for HTTP clients (optional)
     proxy_config: Option<url::Url>,
+    /// Shared Tor transport to be cloned into each TorHttpClient (if enabled)
+    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+    shared_tor_transport: Option<TorAsync>,
 }
 
 impl MultiMintWallet {
@@ -129,6 +135,8 @@ impl MultiMintWallet {
             unit,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
             proxy_config: None,
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            shared_tor_transport: None,
         };
 
         // Automatically load wallets from database for this currency unit
@@ -153,6 +161,35 @@ impl MultiMintWallet {
             unit,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
             proxy_config: Some(proxy_url),
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            shared_tor_transport: None,
+        };
+
+        // Automatically load wallets from database for this currency unit
+        wallet.load_wallets().await?;
+
+        Ok(wallet)
+    }
+
+    /// Create a new [MultiMintWallet] with Tor transport for all wallets
+    ///
+    /// When the `tor` feature is enabled (and not on wasm32), this constructor
+    /// creates a single Tor transport (TorAsync) that is cloned into each
+    /// TorHttpClient used by per-mint Wallets. This ensures only one Tor instance
+    /// is bootstrapped and shared across wallets.
+    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+    pub async fn new_with_tor(
+        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        seed: [u8; 64],
+        unit: CurrencyUnit,
+    ) -> Result<Self, Error> {
+        let wallet = Self {
+            localstore,
+            seed,
+            unit,
+            wallets: Arc::new(RwLock::new(BTreeMap::new())),
+            proxy_config: None,
+            shared_tor_transport: Some(TorAsync::default()),
         };
 
         // Automatically load wallets from database for this currency unit
@@ -195,14 +232,58 @@ impl MultiMintWallet {
                 .client(client)
                 .build()?
         } else {
-            // Create wallet with default client
-            Wallet::new(
-                &mint_url.to_string(),
-                self.unit.clone(),
-                self.localstore.clone(),
-                self.seed,
-                target_proof_count,
-            )?
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            if let Some(tor) = &self.shared_tor_transport {
+                // Create wallet with Tor transport client, cloning the shared transport
+                let client = {
+                    let transport = tor.clone();
+                    #[cfg(feature = "auth")]
+                    {
+                        crate::wallet::TorHttpClient::with_transport(
+                            mint_url.clone(),
+                            transport,
+                            None,
+                        )
+                    }
+                    #[cfg(not(feature = "auth"))]
+                    {
+                        crate::wallet::TorHttpClient::with_transport(
+                            mint_url.clone(),
+                            transport,
+                        )
+                    }
+                };
+
+                WalletBuilder::new()
+                    .mint_url(mint_url.clone())
+                    .unit(self.unit.clone())
+                    .localstore(self.localstore.clone())
+                    .seed(self.seed)
+                    .target_proof_count(target_proof_count.unwrap_or(3))
+                    .client(client)
+                    .build()?
+            } else {
+                // Create wallet with default client
+                Wallet::new(
+                    &mint_url.to_string(),
+                    self.unit.clone(),
+                    self.localstore.clone(),
+                    self.seed,
+                    target_proof_count,
+                )?
+            }
+
+            #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
+            {
+                // Create wallet with default client
+                Wallet::new(
+                    &mint_url.to_string(),
+                    self.unit.clone(),
+                    self.localstore.clone(),
+                    self.seed,
+                    target_proof_count,
+                )?
+            }
         };
 
         wallet.fetch_mint_info().await?;
