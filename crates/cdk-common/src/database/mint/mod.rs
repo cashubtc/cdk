@@ -4,10 +4,9 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use cashu::quote_id::QuoteId;
-use cashu::{Amount, MintInfo};
+use cashu::Amount;
 
 use super::Error;
-use crate::common::QuoteTTL;
 use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
 use crate::nuts::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
@@ -396,7 +395,6 @@ pub trait KVStoreTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
 }
 
 /// Base database writer
-#[async_trait]
 pub trait Transaction<'a, Error>:
     DbTransactionFinalizer<Err = Error>
     + QuotesTransaction<'a, Err = Error>
@@ -404,11 +402,6 @@ pub trait Transaction<'a, Error>:
     + ProofsTransaction<'a, Err = Error>
     + KVStoreTransaction<'a, Error>
 {
-    /// Set [`QuoteTTL`]
-    async fn set_quote_ttl(&mut self, quote_ttl: QuoteTTL) -> Result<(), Error>;
-
-    /// Set [`MintInfo`]
-    async fn set_mint_info(&mut self, mint_info: MintInfo) -> Result<(), Error>;
 }
 
 /// Key-Value Store Database trait

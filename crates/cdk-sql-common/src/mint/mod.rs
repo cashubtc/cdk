@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::common::QuoteTTL;
 use cdk_common::database::mint::validate_kvstore_params;
 use cdk_common::database::{
     self, ConversionError, Error, MintDatabase, MintDbWriterFinalizer, MintKeyDatabaseTransaction,
@@ -33,7 +32,7 @@ use cdk_common::state::check_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
     Amount, BlindSignature, BlindSignatureDleq, BlindedMessage, CurrencyUnit, Id, MeltQuoteState,
-    MintInfo, PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
+    PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
 };
 use lightning_invoice::Bolt11Invoice;
 use migrations::MIGRATIONS;
@@ -100,26 +99,6 @@ where
             ))
         })
         .collect::<Result<HashMap<_, _>, _>>()
-}
-
-#[inline(always)]
-async fn set_to_config<C, V>(conn: &C, id: &str, value: &V) -> Result<(), Error>
-where
-    C: DatabaseExecutor + Send + Sync,
-    V: ?Sized + serde::Serialize,
-{
-    query(
-        r#"
-        INSERT INTO config (id, value) VALUES (:id, :value)
-            ON CONFLICT(id) DO UPDATE SET value = excluded.value
-            "#,
-    )?
-    .bind("id", id.to_owned())
-    .bind("value", serde_json::to_string(&value)?)
-    .execute(conn)
-    .await?;
-
-    Ok(())
 }
 
 impl<RM> SQLMintDatabase<RM>
@@ -292,18 +271,8 @@ where
 }
 
 #[async_trait]
-impl<RM> database::MintTransaction<'_, Error> for SQLTransaction<RM>
-where
-    RM: DatabasePool + 'static,
-{
-    async fn set_mint_info(&mut self, mint_info: MintInfo) -> Result<(), Error> {
-        Ok(set_to_config(&self.inner, "mint_info", &mint_info).await?)
-    }
-
-    async fn set_quote_ttl(&mut self, quote_ttl: QuoteTTL) -> Result<(), Error> {
-        Ok(set_to_config(&self.inner, "quote_ttl", &quote_ttl).await?)
-    }
-}
+impl<RM> database::MintTransaction<'_, Error> for SQLTransaction<RM> where RM: DatabasePool + 'static
+{}
 
 #[async_trait]
 impl<RM> MintDbWriterFinalizer for SQLTransaction<RM>

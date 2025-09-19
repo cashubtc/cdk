@@ -8,6 +8,10 @@ use cdk_common::MintInfo;
 
 use super::MintSqliteDatabase;
 
+const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
+const CDK_MINT_CONFIG_SECONDARY_NAMESPACE: &str = "config";
+const CDK_MINT_CONFIG_KV_KEY: &str = "mint_info";
+
 /// Creates a new in-memory [`MintSqliteDatabase`] instance
 pub async fn empty() -> Result<MintSqliteDatabase, database::Error> {
     #[cfg(not(feature = "sqlcipher"))]
@@ -54,7 +58,14 @@ pub async fn new_with_state(
 
     tx.add_proofs(pending_proofs, None).await?;
     tx.add_proofs(spent_proofs, None).await?;
-    tx.set_mint_info(mint_info).await?;
+    let mint_info_bytes = serde_json::to_vec(&mint_info)?;
+    tx.kv_write(
+        CDK_MINT_PRIMARY_NAMESPACE,
+        CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+        CDK_MINT_CONFIG_KV_KEY,
+        &mint_info_bytes,
+    )
+    .await?;
     tx.commit().await?;
 
     Ok(db)
