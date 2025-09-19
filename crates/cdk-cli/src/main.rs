@@ -272,8 +272,7 @@ async fn main() -> Result<()> {
             sub_commands::pay_request::pay_request(&multi_mint_wallet, sub_command_args).await
         }
         Commands::CreateRequest(sub_command_args) => {
-            sub_commands::create_request::create_request(&multi_mint_wallet, sub_command_args)
-                .await
+            sub_commands::create_request::create_request(&multi_mint_wallet, sub_command_args).await
         }
         Commands::MintBlindAuth(sub_command_args) => {
             sub_commands::mint_blind_auth::mint_blind_auth(
