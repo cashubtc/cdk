@@ -225,72 +225,72 @@ async fn main() -> Result<()> {
 
     match &args.command {
         Commands::DecodeToken(sub_command_args) => {
-            sub_commands::decode_token::decode_token(&sub_command_args)
+            sub_commands::decode_token::decode_token(sub_command_args)
         }
         Commands::Balance => sub_commands::balance::balance(&multi_mint_wallet).await,
         Commands::Melt(sub_command_args) => {
-            sub_commands::melt::pay(&multi_mint_wallet, &sub_command_args).await
+            sub_commands::melt::pay(&multi_mint_wallet, sub_command_args).await
         }
         Commands::Receive(sub_command_args) => {
-            sub_commands::receive::receive(&multi_mint_wallet, &sub_command_args, &work_dir).await
+            sub_commands::receive::receive(&multi_mint_wallet, sub_command_args, &work_dir).await
         }
         Commands::Send(sub_command_args) => {
-            sub_commands::send::send(&multi_mint_wallet, &sub_command_args).await
+            sub_commands::send::send(&multi_mint_wallet, sub_command_args).await
         }
         Commands::Transfer(sub_command_args) => {
-            sub_commands::transfer::transfer(&multi_mint_wallet, &sub_command_args).await
+            sub_commands::transfer::transfer(&multi_mint_wallet, sub_command_args).await
         }
         Commands::CheckPending => {
             sub_commands::check_pending::check_pending(&multi_mint_wallet).await
         }
         Commands::MintInfo(sub_command_args) => {
-            sub_commands::mint_info::mint_info(args.proxy, &sub_command_args).await
+            sub_commands::mint_info::mint_info(args.proxy, sub_command_args).await
         }
         Commands::Mint(sub_command_args) => {
-            sub_commands::mint::mint(&multi_mint_wallet, &sub_command_args).await
+            sub_commands::mint::mint(&multi_mint_wallet, sub_command_args).await
         }
         Commands::MintPending => {
             sub_commands::pending_mints::mint_pending(&multi_mint_wallet).await
         }
         Commands::Burn(sub_command_args) => {
-            sub_commands::burn::burn(&multi_mint_wallet, &sub_command_args).await
+            sub_commands::burn::burn(&multi_mint_wallet, sub_command_args).await
         }
         Commands::Restore(sub_command_args) => {
-            sub_commands::restore::restore(&multi_mint_wallet, &sub_command_args).await
+            sub_commands::restore::restore(&multi_mint_wallet, sub_command_args).await
         }
         Commands::UpdateMintUrl(sub_command_args) => {
-            sub_commands::update_mint_url::update_mint_url(&multi_mint_wallet, &sub_command_args)
+            sub_commands::update_mint_url::update_mint_url(&multi_mint_wallet, sub_command_args)
                 .await
         }
         Commands::ListMintProofs => {
             sub_commands::list_mint_proofs::proofs(&multi_mint_wallet).await
         }
         Commands::DecodeRequest(sub_command_args) => {
-            sub_commands::decode_request::decode_payment_request(&sub_command_args)
+            sub_commands::decode_request::decode_payment_request(sub_command_args)
         }
         Commands::PayRequest(sub_command_args) => {
-            sub_commands::pay_request::pay_request(&multi_mint_wallet, &sub_command_args).await
+            sub_commands::pay_request::pay_request(&multi_mint_wallet, sub_command_args).await
         }
         Commands::CreateRequest(sub_command_args) => {
-            sub_commands::create_request::create_request(&multi_mint_wallet, &sub_command_args)
+            sub_commands::create_request::create_request(&multi_mint_wallet, sub_command_args)
                 .await
         }
         Commands::MintBlindAuth(sub_command_args) => {
             sub_commands::mint_blind_auth::mint_blind_auth(
                 &multi_mint_wallet,
-                &sub_command_args,
+                sub_command_args,
                 &work_dir,
             )
             .await
         }
         Commands::CatLogin(sub_command_args) => {
-            sub_commands::cat_login::cat_login(&multi_mint_wallet, &sub_command_args, &work_dir)
+            sub_commands::cat_login::cat_login(&multi_mint_wallet, sub_command_args, &work_dir)
                 .await
         }
         Commands::CatDeviceLogin(sub_command_args) => {
             sub_commands::cat_device_login::cat_device_login(
                 &multi_mint_wallet,
-                &sub_command_args,
+                sub_command_args,
                 &work_dir,
             )
             .await
