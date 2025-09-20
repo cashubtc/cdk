@@ -801,17 +801,17 @@ impl MultiMintWallet {
     /// # async fn example(wallet: MultiMintWallet) -> Result<(), Box<dyn std::error::Error>> {
     /// // Receive from a trusted mint
     /// let token = "cashuAey...";
-    /// let amount = wallet.receive(token, MultiMintReceiveOptions::default()).await?;
+    /// let amount = wallet
+    ///     .receive(token, MultiMintReceiveOptions::default())
+    ///     .await?;
     ///
     /// // Receive from untrusted mint and add it to the wallet
-    /// let options = MultiMintReceiveOptions::default()
-    ///     .allow_untrusted(true);
+    /// let options = MultiMintReceiveOptions::default().allow_untrusted(true);
     /// let amount = wallet.receive(token, options).await?;
     ///
     /// // Receive from untrusted mint, transfer to trusted mint, then remove untrusted mint
     /// let trusted_mint: MintUrl = "https://trusted.mint".parse()?;
-    /// let options = MultiMintReceiveOptions::default()
-    ///     .transfer_to_mint(Some(trusted_mint));
+    /// let options = MultiMintReceiveOptions::default().transfer_to_mint(Some(trusted_mint));
     /// let amount = wallet.receive(token, options).await?;
     /// # Ok(())
     /// # }
