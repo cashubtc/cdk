@@ -82,6 +82,31 @@ impl MintBuilder {
         self
     }
 
+    /// Initialize builder's MintInfo from the database if present.
+    /// If not present or parsing fails, keeps the current MintInfo.
+    pub async fn init_from_db_if_present(&mut self) -> Result<(), cdk_database::Error> {
+        // Attempt to read existing mint_info from the KV store
+        let bytes_opt = self
+            .localstore
+            .kv_read(
+                super::CDK_MINT_PRIMARY_NAMESPACE,
+                super::CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                super::CDK_MINT_CONFIG_KV_KEY,
+            )
+            .await?;
+
+        if let Some(bytes) = bytes_opt {
+            if let Ok(info) = serde_json::from_slice::<MintInfo>(&bytes) {
+                self.mint_info = info;
+            } else {
+                // If parsing fails, leave the current builder state untouched
+                tracing::warn!("Failed to parse existing mint_info from DB; using builder state");
+            }
+        }
+
+        Ok(())
+    }
+
     /// Set blind auth settings
     #[cfg(feature = "auth")]
     pub fn with_blind_auth(
@@ -126,6 +151,14 @@ impl MintBuilder {
     pub fn with_motd(mut self, motd: String) -> Self {
         self.mint_info.motd = Some(motd);
         self
+    }
+
+    /// Get a clone of the current MintInfo configured on the builder
+    /// This allows using config-derived settings to initialize persistent state
+    /// before any attempt to read from the database, which avoids first-run
+    /// failures when the DB is empty.
+    pub fn current_mint_info(&self) -> MintInfo {
+        self.mint_info.clone()
     }
 
     /// Set terms of service URL

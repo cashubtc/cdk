@@ -4,6 +4,7 @@ use bitcoin::hashes::{sha256, Hash};
 use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
+use cdk_common::common::QuoteTTL;
 use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +69,12 @@ pub struct Info {
     ///
     /// This requires `mintd` was built with the `swagger` feature flag.
     pub enable_swagger_ui: Option<bool>,
+
+    /// Optional persisted quote TTL values (seconds) to initialize the database with
+    /// when RPC is disabled or on first-run when RPC is enabled.
+    /// If not provided, defaults are used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote_ttl: Option<QuoteTTL>,
 }
 
 impl Default for Info {
@@ -84,6 +91,7 @@ impl Default for Info {
             http_cache: cache::Config::default(),
             enable_swagger_ui: None,
             logging: LoggingConfig::default(),
+            quote_ttl: None,
         }
     }
 }

@@ -181,6 +181,8 @@ pub fn create_fake_wallet_settings(
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
             url: format!("http://127.0.0.1:{port}"),
+            quote_ttl: None,
+
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
             seed: None,
@@ -233,6 +235,8 @@ pub fn create_cln_settings(
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
             url: format!("http://127.0.0.1:{port}"),
+            quote_ttl: None,
+
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
             seed: None,
@@ -278,6 +282,7 @@ pub fn create_lnd_settings(
 ) -> cdk_mintd::config::Settings {
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
+            quote_ttl: None,
             url: format!("http://127.0.0.1:{port}"),
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,

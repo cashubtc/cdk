@@ -266,6 +266,7 @@ fn create_ldk_settings(
 ) -> cdk_mintd::config::Settings {
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
+            quote_ttl: None,
             url: format!("http://127.0.0.1:{port}"),
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,

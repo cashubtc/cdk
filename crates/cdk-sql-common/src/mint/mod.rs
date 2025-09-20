@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::common::QuoteTTL;
 use cdk_common::database::mint::validate_kvstore_params;
 use cdk_common::database::{
     self, ConversionError, Error, MintDatabase, MintDbWriterFinalizer, MintKeyDatabaseTransaction,
@@ -33,7 +32,7 @@ use cdk_common::state::check_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
     Amount, BlindSignature, BlindSignatureDleq, BlindedMessage, CurrencyUnit, Id, MeltQuoteState,
-    MintInfo, PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
+    PaymentMethod, Proof, Proofs, PublicKey, SecretKey, State,
 };
 use lightning_invoice::Bolt11Invoice;
 use migrations::MIGRATIONS;
@@ -102,26 +101,6 @@ where
         .collect::<Result<HashMap<_, _>, _>>()
 }
 
-#[inline(always)]
-async fn set_to_config<C, V>(conn: &C, id: &str, value: &V) -> Result<(), Error>
-where
-    C: DatabaseExecutor + Send + Sync,
-    V: ?Sized + serde::Serialize,
-{
-    query(
-        r#"
-        INSERT INTO config (id, value) VALUES (:id, :value)
-            ON CONFLICT(id) DO UPDATE SET value = excluded.value
-            "#,
-    )?
-    .bind("id", id.to_owned())
-    .bind("value", serde_json::to_string(&value)?)
-    .execute(conn)
-    .await?;
-
-    Ok(())
-}
-
 impl<RM> SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
@@ -144,21 +123,6 @@ where
         migrate(&tx, RM::Connection::name(), MIGRATIONS).await?;
         tx.commit().await?;
         Ok(())
-    }
-
-    #[inline(always)]
-    async fn fetch_from_config<R>(&self, id: &str) -> Result<R, Error>
-    where
-        R: serde::de::DeserializeOwned,
-    {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let value = column_as_string!(query(r#"SELECT value FROM config WHERE id = :id LIMIT 1"#)?
-            .bind("id", id.to_owned())
-            .pluck(&*conn)
-            .await?
-            .ok_or(Error::UnknownQuoteTTL)?);
-
-        Ok(serde_json::from_str(&value)?)
     }
 }
 
@@ -307,18 +271,8 @@ where
 }
 
 #[async_trait]
-impl<RM> database::MintTransaction<'_, Error> for SQLTransaction<RM>
-where
-    RM: DatabasePool + 'static,
-{
-    async fn set_mint_info(&mut self, mint_info: MintInfo) -> Result<(), Error> {
-        Ok(set_to_config(&self.inner, "mint_info", &mint_info).await?)
-    }
-
-    async fn set_quote_ttl(&mut self, quote_ttl: QuoteTTL) -> Result<(), Error> {
-        Ok(set_to_config(&self.inner, "quote_ttl", &quote_ttl).await?)
-    }
-}
+impl<RM> database::MintTransaction<'_, Error> for SQLTransaction<RM> where RM: DatabasePool + 'static
+{}
 
 #[async_trait]
 impl<RM> MintDbWriterFinalizer for SQLTransaction<RM>
@@ -2047,56 +2001,6 @@ where
         };
 
         Ok(Box::new(tx))
-    }
-
-    async fn get_mint_info(&self) -> Result<MintInfo, Error> {
-        #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("get_mint_info");
-
-        #[cfg(feature = "prometheus")]
-        let start_time = std::time::Instant::now();
-
-        let result = self.fetch_from_config("mint_info").await;
-
-        #[cfg(feature = "prometheus")]
-        {
-            let success = result.is_ok();
-
-            METRICS.record_mint_operation("get_mint_info", success);
-            METRICS.record_mint_operation_histogram(
-                "get_mint_info",
-                success,
-                start_time.elapsed().as_secs_f64(),
-            );
-            METRICS.dec_in_flight_requests("get_mint_info");
-        }
-
-        Ok(result?)
-    }
-
-    async fn get_quote_ttl(&self) -> Result<QuoteTTL, Error> {
-        #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("get_quote_ttl");
-
-        #[cfg(feature = "prometheus")]
-        let start_time = std::time::Instant::now();
-
-        let result = self.fetch_from_config("quote_ttl").await;
-
-        #[cfg(feature = "prometheus")]
-        {
-            let success = result.is_ok();
-
-            METRICS.record_mint_operation("get_quote_ttl", success);
-            METRICS.record_mint_operation_histogram(
-                "get_quote_ttl",
-                success,
-                start_time.elapsed().as_secs_f64(),
-            );
-            METRICS.dec_in_flight_requests("get_quote_ttl");
-        }
-
-        Ok(result?)
     }
 }
 
