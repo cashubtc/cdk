@@ -6,6 +6,7 @@ pub static MIGRATIONS: &[(&str, &str, &str)] = &[
     ("postgres", "20250901090000_add_kv_store.sql", include_str!(r#"./migrations/postgres/20250901090000_add_kv_store.sql"#)),
     ("postgres", "20250902140000_add_melt_request_and_blinded_messages.sql", include_str!(r#"./migrations/postgres/20250902140000_add_melt_request_and_blinded_messages.sql"#)),
     ("postgres", "20250903200000_add_signatory_amounts.sql", include_str!(r#"./migrations/postgres/20250903200000_add_signatory_amounts.sql"#)),
+    ("postgres", "20250916221000_drop_config_table.sql", include_str!(r#"./migrations/postgres/20250916221000_drop_config_table.sql"#)),
     ("sqlite", "1_fix_sqlx_migration.sql", include_str!(r#"./migrations/sqlite/1_fix_sqlx_migration.sql"#)),
     ("sqlite", "20240612124932_init.sql", include_str!(r#"./migrations/sqlite/20240612124932_init.sql"#)),
     ("sqlite", "20240618195700_quote_state.sql", include_str!(r#"./migrations/sqlite/20240618195700_quote_state.sql"#)),
@@ -33,4 +34,5 @@ pub static MIGRATIONS: &[(&str, &str, &str)] = &[
     ("sqlite", "20250901090000_add_kv_store.sql", include_str!(r#"./migrations/sqlite/20250901090000_add_kv_store.sql"#)),
     ("sqlite", "20250902140000_add_melt_request_and_blinded_messages.sql", include_str!(r#"./migrations/sqlite/20250902140000_add_melt_request_and_blinded_messages.sql"#)),
     ("sqlite", "20250903200000_add_signatory_amounts.sql", include_str!(r#"./migrations/sqlite/20250903200000_add_signatory_amounts.sql"#)),
+    ("sqlite", "20250916221000_drop_config_table.sql", include_str!(r#"./migrations/sqlite/20250916221000_drop_config_table.sql"#)),
 ];

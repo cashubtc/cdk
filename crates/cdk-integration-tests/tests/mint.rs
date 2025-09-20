@@ -15,7 +15,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bip39::Mnemonic;
-use cdk::cdk_database::MintDatabase;
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::types::{FeeReserve, QuoteTTL};
@@ -64,12 +63,9 @@ async fn test_correct_keyset() {
         .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
         .await
         .unwrap();
-    let mut tx = localstore.begin_transaction().await.unwrap();
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
-    tx.set_quote_ttl(quote_ttl).await.unwrap();
-
-    tx.commit().await.unwrap();
+    mint.set_quote_ttl(quote_ttl).await.unwrap();
 
     let active = mint.get_active_keysets();
 

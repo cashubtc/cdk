@@ -7,6 +7,12 @@ mnemonic = ""
 # input_fee_ppk = 0
 # enable_swagger_ui = false
 
+[info.quote_ttl]
+# Prefer explicit fields over inline tables for readability and ease of overrides
+mint_ttl = 600
+melt_ttl = 120
+
+
 [info.logging]
 # Where to output logs: "stdout", "file", or "both" (default: "both")
 # Note: "stdout" actually outputs to stderr (standard error stream)

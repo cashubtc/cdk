@@ -168,7 +168,7 @@ impl Mint {
         &self,
         mint_quote_request: &MintQuoteRequest,
     ) -> Result<(), Error> {
-        let mint_info = self.localstore.get_mint_info().await?;
+        let mint_info = self.mint_info().await?;
 
         let unit = mint_quote_request.unit();
         let amount = mint_quote_request.amount();
@@ -246,7 +246,7 @@ impl Mint {
 
             let payment_options = match mint_quote_request {
                 MintQuoteRequest::Bolt11(bolt11_request) => {
-                    let mint_ttl = self.localstore.get_quote_ttl().await?.mint_ttl;
+                    let mint_ttl = self.quote_ttl().await?.mint_ttl;
 
                     let quote_expiry = unix_time() + mint_ttl;
 
