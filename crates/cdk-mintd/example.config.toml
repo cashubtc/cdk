@@ -68,6 +68,19 @@ max_connections = 20
 # Connection timeout in seconds (optional, defaults to 10)
 connection_timeout_seconds = 10
 
+# Auth database configuration (optional, only used when auth is enabled)
+[auth_database.postgres]
+# PostgreSQL connection URL for authentication database
+# Can also be set via CDK_MINTD_AUTH_POSTGRES_URL environment variable
+# Environment variables take precedence over config file settings
+url = "postgresql://user:password@localhost:5432/cdk_mint_auth"
+# TLS mode: "disable", "prefer", "require" (optional, defaults to "disable")
+tls_mode = "disable"
+# Maximum number of connections in the pool (optional, defaults to 20)
+max_connections = 20
+# Connection timeout in seconds (optional, defaults to 10)
+connection_timeout_seconds = 10
+
 [ln]
 # Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits', 'ldknode'
 ln_backend = "fakewallet"

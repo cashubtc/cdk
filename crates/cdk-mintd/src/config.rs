@@ -359,6 +359,30 @@ pub struct Database {
     pub postgres: Option<PostgresConfig>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuthDatabase {
+    pub postgres: Option<PostgresAuthConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostgresAuthConfig {
+    pub url: String,
+    pub tls_mode: Option<String>,
+    pub max_connections: Option<usize>,
+    pub connection_timeout_seconds: Option<u64>,
+}
+
+impl Default for PostgresAuthConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            tls_mode: Some("disable".to_string()),
+            max_connections: Some(20),
+            connection_timeout_seconds: Some(10),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostgresConfig {
     pub url: String,
@@ -449,6 +473,8 @@ pub struct Settings {
     pub fake_wallet: Option<FakeWallet>,
     pub grpc_processor: Option<GrpcProcessor>,
     pub database: Database,
+    #[cfg(feature = "auth")]
+    pub auth_database: Option<AuthDatabase>,
     #[cfg(feature = "management-rpc")]
     pub mint_management_rpc: Option<MintManagementRpc>,
     pub auth: Option<Auth>,

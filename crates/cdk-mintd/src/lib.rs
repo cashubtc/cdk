@@ -43,7 +43,7 @@ use cdk_common::database::DynMintDatabase;
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
 use cdk_common::payment::MintPayment;
-#[cfg(feature = "auth")]
+#[cfg(all(feature = "auth", feature = "postgres"))]
 use cdk_postgres::MintPgAuthDatabase;
 #[cfg(feature = "postgres")]
 use cdk_postgres::MintPgDatabase;
@@ -663,16 +663,43 @@ async fn setup_authentication(
             DatabaseEngine::Postgres => {
                 #[cfg(feature = "postgres")]
                 {
-                    // Get the PostgreSQL configuration, ensuring it exists
-                    let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
-                        anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
-                    })?;
+                    // Check for dedicated auth database configuration first
+                    let auth_url = if let Some(auth_db_config) = settings.auth_database.as_ref() {
+                        if let Some(auth_pg_config) = auth_db_config.postgres.as_ref() {
+                            if !auth_pg_config.url.is_empty() {
+                                auth_pg_config.url.clone()
+                            } else {
+                                // Fallback to main database URL if auth URL is empty
+                                let main_pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
+                                    anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
+                                })?;
+                                if main_pg_config.url.is_empty() {
+                                    bail!("PostgreSQL URL is required for auth database. Set it in config file [auth_database.postgres] section or via CDK_MINTD_AUTH_POSTGRES_URL environment variable, or configure the main database URL");
+                                }
+                                main_pg_config.url.clone()
+                            }
+                        } else {
+                            // Fallback to main database URL if no auth postgres config
+                            let main_pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
+                                anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
+                            })?;
+                            if main_pg_config.url.is_empty() {
+                                bail!("PostgreSQL URL is required for auth database. Set it in config file [auth_database.postgres] section or via CDK_MINTD_AUTH_POSTGRES_URL environment variable, or configure the main database URL");
+                            }
+                            main_pg_config.url.clone()
+                        }
+                    } else {
+                        // Fallback to main database URL if no auth database config
+                        let main_pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
+                            anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
+                        })?;
+                        if main_pg_config.url.is_empty() {
+                            bail!("PostgreSQL URL is required for auth database. Set it in config file [auth_database.postgres] section or via CDK_MINTD_AUTH_POSTGRES_URL environment variable, or configure the main database URL");
+                        }
+                        main_pg_config.url.clone()
+                    };
 
-                    if pg_config.url.is_empty() {
-                        bail!("PostgreSQL URL is required for auth database. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
-                    }
-
-                    Arc::new(MintPgAuthDatabase::new(pg_config.url.as_str()).await?)
+                    Arc::new(MintPgAuthDatabase::new(auth_url.as_str()).await?)
                 }
                 #[cfg(not(feature = "postgres"))]
                 {

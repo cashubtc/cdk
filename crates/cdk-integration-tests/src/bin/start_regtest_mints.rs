@@ -294,6 +294,7 @@ fn create_ldk_settings(
         fake_wallet: None,
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
+        auth_database: None,
         mint_management_rpc: None,
         prometheus: None,
         auth: None,
