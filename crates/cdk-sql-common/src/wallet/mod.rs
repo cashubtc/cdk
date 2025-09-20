@@ -28,7 +28,9 @@ use crate::{
 };
 
 #[rustfmt::skip]
-mod migrations;
+mod migrations {
+    include!(concat!(env!("OUT_DIR"), "/migrations_wallet.rs"));
+}
 
 /// Wallet SQLite Database
 #[derive(Debug, Clone)]
