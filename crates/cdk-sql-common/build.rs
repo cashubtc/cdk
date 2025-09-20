@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::env;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -7,11 +8,22 @@ fn main() {
     // Step 1: Find `migrations/` folder recursively
     let root = Path::new("src");
 
+    // Get the OUT_DIR from Cargo - this is writable
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
+
     for migration_path in find_migrations_dirs(root) {
-        // Step 3: Output file path (e.g., `src/db/migrations.rs`)
+        // Step 3: Output file path to OUT_DIR instead of source directory
         let parent = migration_path.parent().unwrap();
-        let skip_path = parent.to_str().unwrap_or_default().len();
-        let dest_path = parent.join("migrations.rs");
+
+        // Create a unique filename based on the migration path to avoid conflicts
+        let migration_name = parent
+            .strip_prefix("src")
+            .unwrap_or(parent)
+            .to_str()
+            .unwrap_or("default")
+            .replace("/", "_")
+            .replace("\\", "_");
+        let dest_path = out_dir.join(format!("migrations_{}.rs", migration_name));
         let mut out_file = File::create(&dest_path).expect("Failed to create migrations.rs");
 
         let skip_name = migration_path.to_str().unwrap_or_default().len();
@@ -89,10 +101,22 @@ fn main() {
             };
 
             let rel_name = &path.file_name().unwrap().to_str().unwrap();
-            let rel_path = &path.to_str().unwrap().replace("\\", "/")[skip_path..]; // for Windows
+
+            // Copy migration file to OUT_DIR
+            let relative_path = path.strip_prefix(root).unwrap();
+            let dest_migration_file = out_dir.join(relative_path);
+            if let Some(parent) = dest_migration_file.parent() {
+                fs::create_dir_all(parent)
+                    .expect("Failed to create migration directory in OUT_DIR");
+            }
+            fs::copy(path, &dest_migration_file).expect("Failed to copy migration file to OUT_DIR");
+
+            // Use path relative to OUT_DIR for include_str
+            let relative_to_out_dir = relative_path.to_str().unwrap().replace("\\", "/");
             writeln!(
                 out_file,
-                "    (\"{prefix}\", \"{rel_name}\", include_str!(r#\".{rel_path}\"#)),"
+                "    (\"{prefix}\", \"{rel_name}\", include_str!(r#\"{}\"#)),",
+                relative_to_out_dir
             )
             .unwrap();
             println!("cargo:rerun-if-changed={}", path.display());
