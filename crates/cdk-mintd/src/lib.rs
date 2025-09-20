@@ -663,43 +663,20 @@ async fn setup_authentication(
             DatabaseEngine::Postgres => {
                 #[cfg(feature = "postgres")]
                 {
-                    // Check for dedicated auth database configuration first
-                    let auth_url = if let Some(auth_db_config) = settings.auth_database.as_ref() {
-                        if let Some(auth_pg_config) = auth_db_config.postgres.as_ref() {
-                            if !auth_pg_config.url.is_empty() {
-                                auth_pg_config.url.clone()
-                            } else {
-                                // Fallback to main database URL if auth URL is empty
-                                let main_pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
-                                    anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
-                                })?;
-                                if main_pg_config.url.is_empty() {
-                                    bail!("PostgreSQL URL is required for auth database. Set it in config file [auth_database.postgres] section or via CDK_MINTD_AUTH_POSTGRES_URL environment variable, or configure the main database URL");
-                                }
-                                main_pg_config.url.clone()
-                            }
-                        } else {
-                            // Fallback to main database URL if no auth postgres config
-                            let main_pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
-                                anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
-                            })?;
-                            if main_pg_config.url.is_empty() {
-                                bail!("PostgreSQL URL is required for auth database. Set it in config file [auth_database.postgres] section or via CDK_MINTD_AUTH_POSTGRES_URL environment variable, or configure the main database URL");
-                            }
-                            main_pg_config.url.clone()
-                        }
-                    } else {
-                        // Fallback to main database URL if no auth database config
-                        let main_pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
-                            anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
-                        })?;
-                        if main_pg_config.url.is_empty() {
-                            bail!("PostgreSQL URL is required for auth database. Set it in config file [auth_database.postgres] section or via CDK_MINTD_AUTH_POSTGRES_URL environment variable, or configure the main database URL");
-                        }
-                        main_pg_config.url.clone()
-                    };
+                    // Require dedicated auth database configuration - no fallback to main database
+                    let auth_db_config = settings.auth_database.as_ref().ok_or_else(|| {
+                        anyhow!("Auth database configuration is required when using PostgreSQL with authentication. Set [auth_database] section in config file or CDK_MINTD_AUTH_POSTGRES_URL environment variable")
+                    })?;
 
-                    Arc::new(MintPgAuthDatabase::new(auth_url.as_str()).await?)
+                    let auth_pg_config = auth_db_config.postgres.as_ref().ok_or_else(|| {
+                        anyhow!("PostgreSQL auth database configuration is required when using PostgreSQL with authentication. Set [auth_database.postgres] section in config file or CDK_MINTD_AUTH_POSTGRES_URL environment variable")
+                    })?;
+
+                    if auth_pg_config.url.is_empty() {
+                        bail!("Auth database PostgreSQL URL is required and cannot be empty. Set it in config file [auth_database.postgres] section or via CDK_MINTD_AUTH_POSTGRES_URL environment variable");
+                    }
+
+                    Arc::new(MintPgAuthDatabase::new(auth_pg_config.url.as_str()).await?)
                 }
                 #[cfg(not(feature = "postgres"))]
                 {
@@ -1178,4 +1155,28 @@ pub async fn run_mintd_with_shutdown(
     tracing::debug!("Flushing remaining trace data");
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_postgres_auth_url_validation() {
+        // Test that the auth database config requires explicit configuration
+        
+        // Test empty URL
+        let auth_config = config::PostgresAuthConfig {
+            url: "".to_string(),
+            ..Default::default()
+        };
+        assert!(auth_config.url.is_empty());
+        
+        // Test non-empty URL
+        let auth_config = config::PostgresAuthConfig {
+            url: "postgresql://user:password@localhost:5432/auth_db".to_string(),
+            ..Default::default()
+        };
+        assert!(!auth_config.url.is_empty());
+    }
 }
