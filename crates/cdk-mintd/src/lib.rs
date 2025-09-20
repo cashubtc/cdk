@@ -1164,14 +1164,14 @@ mod tests {
     #[test]
     fn test_postgres_auth_url_validation() {
         // Test that the auth database config requires explicit configuration
-        
+
         // Test empty URL
         let auth_config = config::PostgresAuthConfig {
             url: "".to_string(),
             ..Default::default()
         };
         assert!(auth_config.url.is_empty());
-        
+
         // Test non-empty URL
         let auth_config = config::PostgresAuthConfig {
             url: "postgresql://user:password@localhost:5432/auth_db".to_string(),
