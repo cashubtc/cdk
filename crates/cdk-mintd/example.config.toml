@@ -33,13 +33,10 @@ enabled = false
 #port = 9090
 # 
 [info.http_cache]
-# memory or redis
+# backend type: memory (default)
 backend = "memory"
 ttl = 60
 tti = 60
-# `key_prefix` and `connection_string` required for redis
-# key_prefix = "mintd"
-# connection_string = "redis://localhost"
 
 # NOTE: If [mint_management_rpc] is enabled these values will only be used on first start up.
 # Further changes must be made through the rpc.
