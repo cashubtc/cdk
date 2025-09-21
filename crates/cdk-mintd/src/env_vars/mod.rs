@@ -75,6 +75,21 @@ impl Settings {
             );
         }
 
+        // Parse auth database configuration from environment variables (when auth is enabled)
+        #[cfg(feature = "auth")]
+        {
+            self.auth_database = Some(crate::config::AuthDatabase {
+                postgres: Some(
+                    self.auth_database
+                        .clone()
+                        .unwrap_or_default()
+                        .postgres
+                        .unwrap_or_default()
+                        .from_env(),
+                ),
+            });
+        }
+
         self.info = self.info.clone().from_env();
         self.mint_info = self.mint_info.clone().from_env();
         self.ln = self.ln.clone().from_env();
