@@ -242,7 +242,13 @@ impl MultiMintWallet {
             if mint_has_proofs_for_unit {
                 // Add mint to the MultiMintWallet if not already present
                 if !self.has_mint(&mint_url).await {
-                    self.add_mint(mint_url, None).await?;
+                    if let Err(err) = self.add_mint(mint_url.clone(), None).await {
+                        tracing::error!(
+                            "Could not add {} to wallet {}.",
+                            mint_url,
+                            err.to_string()
+                        );
+                    }
                 }
             }
         }
