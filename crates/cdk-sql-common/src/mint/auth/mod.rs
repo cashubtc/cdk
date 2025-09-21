@@ -198,9 +198,11 @@ where
         for (endpoint, auth) in protected_endpoints.iter() {
             if let Err(err) = query(
                 r#"
-                 INSERT OR REPLACE INTO protected_endpoints
+                 INSERT INTO protected_endpoints
                  (endpoint, auth)
-                 VALUES (:endpoint, :auth);
+                 VALUES (:endpoint, :auth)
+                 ON CONFLICT (endpoint) DO UPDATE SET
+                 auth = EXCLUDED.auth;
                  "#,
             )?
             .bind("endpoint", serde_json::to_string(endpoint)?)

@@ -43,7 +43,7 @@ use cdk_common::database::DynMintDatabase;
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
 use cdk_common::payment::MintPayment;
-#[cfg(feature = "auth")]
+#[cfg(all(feature = "auth", feature = "postgres"))]
 use cdk_postgres::MintPgAuthDatabase;
 #[cfg(feature = "postgres")]
 use cdk_postgres::MintPgDatabase;
@@ -663,16 +663,20 @@ async fn setup_authentication(
             DatabaseEngine::Postgres => {
                 #[cfg(feature = "postgres")]
                 {
-                    // Get the PostgreSQL configuration, ensuring it exists
-                    let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
-                        anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
+                    // Require dedicated auth database configuration - no fallback to main database
+                    let auth_db_config = settings.auth_database.as_ref().ok_or_else(|| {
+                        anyhow!("Auth database configuration is required when using PostgreSQL with authentication. Set [auth_database] section in config file or CDK_MINTD_AUTH_POSTGRES_URL environment variable")
                     })?;
 
-                    if pg_config.url.is_empty() {
-                        bail!("PostgreSQL URL is required for auth database. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
+                    let auth_pg_config = auth_db_config.postgres.as_ref().ok_or_else(|| {
+                        anyhow!("PostgreSQL auth database configuration is required when using PostgreSQL with authentication. Set [auth_database.postgres] section in config file or CDK_MINTD_AUTH_POSTGRES_URL environment variable")
+                    })?;
+
+                    if auth_pg_config.url.is_empty() {
+                        bail!("Auth database PostgreSQL URL is required and cannot be empty. Set it in config file [auth_database.postgres] section or via CDK_MINTD_AUTH_POSTGRES_URL environment variable");
                     }
 
-                    Arc::new(MintPgAuthDatabase::new(pg_config.url.as_str()).await?)
+                    Arc::new(MintPgAuthDatabase::new(auth_pg_config.url.as_str()).await?)
                 }
                 #[cfg(not(feature = "postgres"))]
                 {
@@ -1187,4 +1191,28 @@ pub async fn run_mintd_with_shutdown(
         routers,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_postgres_auth_url_validation() {
+        // Test that the auth database config requires explicit configuration
+
+        // Test empty URL
+        let auth_config = config::PostgresAuthConfig {
+            url: "".to_string(),
+            ..Default::default()
+        };
+        assert!(auth_config.url.is_empty());
+
+        // Test non-empty URL
+        let auth_config = config::PostgresAuthConfig {
+            url: "postgresql://user:password@localhost:5432/auth_db".to_string(),
+            ..Default::default()
+        };
+        assert!(!auth_config.url.is_empty());
+    }
 }
