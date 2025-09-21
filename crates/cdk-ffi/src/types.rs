@@ -1467,9 +1467,173 @@ impl From<SupportedSettings> for cdk::nuts::nut06::SupportedSettings {
     }
 }
 
-/// FFI-compatible Nuts settings (simplified - only includes basic boolean flags)
+// -----------------------------
+// NUT-04/05 FFI Types
+// -----------------------------
+
+/// FFI-compatible MintMethodSettings (NUT-04)
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct MintMethodSettings {
+    pub method: PaymentMethod,
+    pub unit: CurrencyUnit,
+    pub min_amount: Option<Amount>,
+    pub max_amount: Option<Amount>,
+    /// For bolt11, whether mint supports setting invoice description
+    pub description: Option<bool>,
+}
+
+impl From<cdk::nuts::nut04::MintMethodSettings> for MintMethodSettings {
+    fn from(s: cdk::nuts::nut04::MintMethodSettings) -> Self {
+        let description = match s.options {
+            Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 { description }) => Some(description),
+            _ => None,
+        };
+        Self {
+            method: s.method.into(),
+            unit: s.unit.into(),
+            min_amount: s.min_amount.map(Into::into),
+            max_amount: s.max_amount.map(Into::into),
+            description,
+        }
+    }
+}
+
+impl TryFrom<MintMethodSettings> for cdk::nuts::nut04::MintMethodSettings {
+    type Error = FfiError;
+
+    fn try_from(s: MintMethodSettings) -> Result<Self, Self::Error> {
+        let options = match (s.method.clone(), s.description) {
+            (PaymentMethod::Bolt11, Some(description)) => {
+                Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 { description })
+            }
+            _ => None,
+        };
+        Ok(Self {
+            method: s.method.into(),
+            unit: s.unit.into(),
+            min_amount: s.min_amount.map(Into::into),
+            max_amount: s.max_amount.map(Into::into),
+            options,
+        })
+    }
+}
+
+/// FFI-compatible Nut04 Settings
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct Nut04Settings {
+    pub methods: Vec<MintMethodSettings>,
+    pub disabled: bool,
+}
+
+impl From<cdk::nuts::nut04::Settings> for Nut04Settings {
+    fn from(s: cdk::nuts::nut04::Settings) -> Self {
+        Self {
+            methods: s.methods.into_iter().map(Into::into).collect(),
+            disabled: s.disabled,
+        }
+    }
+}
+
+impl TryFrom<Nut04Settings> for cdk::nuts::nut04::Settings {
+    type Error = FfiError;
+
+    fn try_from(s: Nut04Settings) -> Result<Self, Self::Error> {
+        Ok(Self {
+            methods: s
+                .methods
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+            disabled: s.disabled,
+        })
+    }
+}
+
+/// FFI-compatible MeltMethodSettings (NUT-05)
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct MeltMethodSettings {
+    pub method: PaymentMethod,
+    pub unit: CurrencyUnit,
+    pub min_amount: Option<Amount>,
+    pub max_amount: Option<Amount>,
+    /// For bolt11, whether mint supports amountless invoices
+    pub amountless: Option<bool>,
+}
+
+impl From<cdk::nuts::nut05::MeltMethodSettings> for MeltMethodSettings {
+    fn from(s: cdk::nuts::nut05::MeltMethodSettings) -> Self {
+        let amountless = match s.options {
+            Some(cdk::nuts::nut05::MeltMethodOptions::Bolt11 { amountless }) => Some(amountless),
+            _ => None,
+        };
+        Self {
+            method: s.method.into(),
+            unit: s.unit.into(),
+            min_amount: s.min_amount.map(Into::into),
+            max_amount: s.max_amount.map(Into::into),
+            amountless,
+        }
+    }
+}
+
+impl TryFrom<MeltMethodSettings> for cdk::nuts::nut05::MeltMethodSettings {
+    type Error = FfiError;
+
+    fn try_from(s: MeltMethodSettings) -> Result<Self, Self::Error> {
+        let options = match (s.method.clone(), s.amountless) {
+            (PaymentMethod::Bolt11, Some(amountless)) => {
+                Some(cdk::nuts::nut05::MeltMethodOptions::Bolt11 { amountless })
+            }
+            _ => None,
+        };
+        Ok(Self {
+            method: s.method.into(),
+            unit: s.unit.into(),
+            min_amount: s.min_amount.map(Into::into),
+            max_amount: s.max_amount.map(Into::into),
+            options,
+        })
+    }
+}
+
+/// FFI-compatible Nut05 Settings
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct Nut05Settings {
+    pub methods: Vec<MeltMethodSettings>,
+    pub disabled: bool,
+}
+
+impl From<cdk::nuts::nut05::Settings> for Nut05Settings {
+    fn from(s: cdk::nuts::nut05::Settings) -> Self {
+        Self {
+            methods: s.methods.into_iter().map(Into::into).collect(),
+            disabled: s.disabled,
+        }
+    }
+}
+
+impl TryFrom<Nut05Settings> for cdk::nuts::nut05::Settings {
+    type Error = FfiError;
+
+    fn try_from(s: Nut05Settings) -> Result<Self, Self::Error> {
+        Ok(Self {
+            methods: s
+                .methods
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+            disabled: s.disabled,
+        })
+    }
+}
+
+/// FFI-compatible Nuts settings (extended to include NUT-04 and NUT-05 settings)
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Nuts {
+    /// NUT04 Settings
+    pub nut04: Nut04Settings,
+    /// NUT05 Settings
+    pub nut05: Nut05Settings,
     /// NUT07 Settings - Token state check
     pub nut07_supported: bool,
     /// NUT08 Settings - Lightning fee return
@@ -1495,6 +1659,8 @@ pub struct Nuts {
 impl From<cdk::nuts::Nuts> for Nuts {
     fn from(nuts: cdk::nuts::Nuts) -> Self {
         Self {
+            nut04: nuts.nut04.clone().into(),
+            nut05: nuts.nut05.clone().into(),
             nut07_supported: nuts.nut07.supported,
             nut08_supported: nuts.nut08.supported,
             nut09_supported: nuts.nut09.supported,
@@ -1514,6 +1680,48 @@ impl From<cdk::nuts::Nuts> for Nuts {
                 .map(|u| u.clone().into())
                 .collect(),
         }
+    }
+}
+
+impl TryFrom<Nuts> for cdk::nuts::Nuts {
+    type Error = FfiError;
+
+    fn try_from(n: Nuts) -> Result<Self, Self::Error> {
+        Ok(Self {
+            nut04: n.nut04.try_into()?,
+            nut05: n.nut05.try_into()?,
+            nut07: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut07_supported,
+            },
+            nut08: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut08_supported,
+            },
+            nut09: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut09_supported,
+            },
+            nut10: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut10_supported,
+            },
+            nut11: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut11_supported,
+            },
+            nut12: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut12_supported,
+            },
+            nut14: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut14_supported,
+            },
+            nut15: Default::default(),
+            nut17: Default::default(),
+            nut19: Default::default(),
+            nut20: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut20_supported,
+            },
+            #[cfg(feature = "auth")]
+            nut21: None,
+            #[cfg(feature = "auth")]
+            nut22: None,
+        })
     }
 }
 
@@ -1588,6 +1796,8 @@ impl From<cdk::nuts::MintInfo> for MintInfo {
 
 impl From<MintInfo> for cdk::nuts::MintInfo {
     fn from(info: MintInfo) -> Self {
+        // Convert FFI Nuts back to cdk::nuts::Nuts (best-effort)
+        let nuts_cdk: cdk::nuts::Nuts = info.nuts.clone().try_into().unwrap_or_default();
         Self {
             name: info.name,
             pubkey: info.pubkey.and_then(|p| p.parse().ok()),
@@ -1597,7 +1807,7 @@ impl From<MintInfo> for cdk::nuts::MintInfo {
             contact: info
                 .contact
                 .map(|contacts| contacts.into_iter().map(Into::into).collect()),
-            nuts: cdk::nuts::Nuts::default(), // Simplified conversion
+            nuts: nuts_cdk.into(),
             icon_url: info.icon_url,
             urls: info.urls,
             motd: info.motd,
