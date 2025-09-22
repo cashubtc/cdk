@@ -10,15 +10,10 @@ rust-version.workspace = true
 crate-type = ["cdylib", "staticlib", "rlib"]
 name = "cdk_ffi"
 
-[features]
-default = ["auth", "bip353"]
-auth = ["cdk/auth"]
-bip353 = ["cdk/bip353"]
-
 [dependencies]
 async-trait = { workspace = true }
 bip39 = { workspace = true }
-cdk = { workspace = true, default-features = false, features = ["wallet"] }
+cdk = { workspace = true, default-features = false, features = ["wallet", "auth", "bip353"] }
 cdk-sqlite = { workspace = true }
 ctor = "0.2"
 futures = { workspace = true }
