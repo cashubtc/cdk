@@ -20,7 +20,7 @@ use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
 #[cfg(feature = "auth")]
 use nut21::ProtectedEndpoint;
-use pubsub_manager::PubSubManager;
+use subscription::PubSubManager;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::instrument;
@@ -41,8 +41,8 @@ mod keysets;
 mod ln;
 mod melt;
 mod proof_writer;
-mod pubsub_manager;
 mod start_up_check;
+mod subscription;
 mod swap;
 mod verification;
 

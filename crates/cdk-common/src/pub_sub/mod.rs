@@ -12,13 +12,13 @@
 //! Events are also generic that should implement the `Indexable` trait.
 
 mod error;
-pub mod index;
+pub mod event;
 mod pubsub;
 pub mod remote_consumer;
 mod subscriber;
 
 pub use self::error::Error;
-pub use self::index::Indexable;
+pub use self::event::Event;
 pub use self::pubsub::{Pubsub, Topic};
 pub use self::subscriber::SubscriptionRequest;
 
@@ -32,7 +32,7 @@ mod test {
 
     use super::pubsub::Topic;
     use super::subscriber::SubscriptionRequest;
-    use super::{Error, Indexable, Pubsub};
+    use super::{Error, Event, Pubsub};
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct Message {
@@ -46,10 +46,10 @@ mod test {
         Bar(u64),
     }
 
-    impl Indexable for Message {
-        type Index = IndexTest;
+    impl Event for Message {
+        type Topic = IndexTest;
 
-        fn to_indexes(&self) -> Vec<Self::Index> {
+        fn get_topics(&self) -> Vec<Self::Topic> {
             vec![IndexTest::Foo(self.foo), IndexTest::Bar(self.bar)]
         }
     }
@@ -67,7 +67,7 @@ mod test {
 
         async fn fetch_events(
             &self,
-            indexes: Vec<<Self::Event as Indexable>::Index>,
+            indexes: Vec<<Self::Event as Event>::Topic>,
             sub_name: Self::SubscriptionName,
             reply_to: mpsc::Sender<(Self::SubscriptionName, Self::Event)>,
         ) {
@@ -83,7 +83,7 @@ mod test {
         /// Store events or replace them
         async fn store_events(&self, event: Self::Event) {
             let mut storage = self.storage.write().unwrap();
-            for index in event.to_indexes() {
+            for index in event.get_topics() {
                 storage.insert(index, event.clone());
             }
         }
@@ -96,11 +96,11 @@ mod test {
     }
 
     impl SubscriptionRequest for SubscriptionReq {
-        type Index = IndexTest;
+        type Topic = IndexTest;
 
         type SubscriptionName = String;
 
-        fn try_get_indexes(&self) -> Result<Vec<Self::Index>, Error> {
+        fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error> {
             Ok(vec![match self {
                 SubscriptionReq::Bar(n) => IndexTest::Bar(*n),
                 SubscriptionReq::Foo(n) => IndexTest::Foo(*n),

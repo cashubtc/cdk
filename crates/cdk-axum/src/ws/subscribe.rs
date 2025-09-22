@@ -1,4 +1,4 @@
-use cdk::subscription::{IndexableParams, Params};
+use cdk::subscription::Params;
 use cdk::ws::{WsResponseResult, WsSubscribeResponse};
 
 use super::{WsContext, WsError};
@@ -15,8 +15,6 @@ pub(crate) async fn handle(
         return Err(WsError::InvalidParams);
     }
 
-    let params: IndexableParams = params.into();
-
     let mut subscription = context
         .state
         .mint
@@ -30,7 +28,8 @@ pub(crate) async fn handle(
         sub_id.clone(),
         tokio::spawn(async move {
             while let Some(response) = subscription.recv().await {
-                let _ = publisher.try_send((sub_id_for_sender.clone(), response.into()));
+                let _ =
+                    publisher.try_send((sub_id_for_sender.clone(), response.into_inner().into()));
             }
         }),
     );

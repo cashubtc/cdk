@@ -11,7 +11,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tokio::sync::mpsc;
 
-use super::index::Indexable;
+use super::event::Event;
 use super::subscriber::{ActiveSubscription, SubscriptionRequest};
 use super::Error;
 
@@ -41,12 +41,12 @@ pub trait Topic: Send + Sync {
         + Serialize;
 
     /// An Event should be Indexable
-    type Event: Indexable + Debug + Send + Sync + DeserializeOwned + Serialize;
+    type Event: Event + Debug + Send + Sync + DeserializeOwned + Serialize;
 
     /// Called when a new subscription is created. The function is responsible to not yield the same
     async fn fetch_events(
         &self,
-        indexes: Vec<<Self::Event as Indexable>::Index>,
+        indexes: Vec<<Self::Event as Event>::Topic>,
         sub_name: Self::SubscriptionName,
         reply_to: mpsc::Sender<(Self::SubscriptionName, Self::Event)>,
     );
@@ -63,7 +63,7 @@ pub type IndexTree<P> = Arc<
     RwLock<
         BTreeMap<
             // Index with a subscription unique ID
-            (<<P as Topic>::Event as Indexable>::Index, usize),
+            (<<P as Topic>::Event as Event>::Topic, usize),
             (
                 <P as Topic>::SubscriptionName, // Subscription ID, as given by the client, more like a name
                 mpsc::Sender<(<P as Topic>::SubscriptionName, <P as Topic>::Event)>, // Sender
@@ -111,7 +111,7 @@ where
     ) -> Result<(), Error> {
         let index_storage = listeners_index.read().map_err(|_| Error::Poison)?;
         let mut sent = HashSet::new();
-        for index in event.to_indexes() {
+        for index in event.get_topics() {
             for ((subscription_index, unique_id), (subscription_id, sender)) in
                 index_storage.range((index.clone(), 0)..)
             {
@@ -170,7 +170,7 @@ where
     ) -> Result<ActiveSubscription<P>, Error>
     where
         I: SubscriptionRequest<
-            Index = <P::Event as Indexable>::Index,
+            Topic = <P::Event as Event>::Topic,
             SubscriptionName = P::SubscriptionName,
         >,
     {
@@ -183,7 +183,7 @@ where
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let subscription_name = request.subscription_name();
-        let subscribed_to = request.try_get_indexes()?;
+        let subscribed_to = request.try_get_topics()?;
 
         for index in subscribed_to.iter() {
             index_storage.insert(
@@ -216,7 +216,7 @@ where
     pub fn subscribe<I>(&self, request: I) -> Result<ActiveSubscription<P>, Error>
     where
         I: SubscriptionRequest<
-            Index = <P::Event as Indexable>::Index,
+            Topic = <P::Event as Event>::Topic,
             SubscriptionName = P::SubscriptionName,
         >,
     {

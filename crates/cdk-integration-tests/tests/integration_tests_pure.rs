@@ -24,7 +24,7 @@ use cashu::{
 };
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::subscription::{IndexableParams, Params};
+use cdk::subscription::Params;
 use cdk::wallet::types::{TransactionDirection, TransactionId};
 use cdk::wallet::{ReceiveOptions, SendMemo, SendOptions};
 use cdk::Amount;
@@ -485,14 +485,11 @@ pub async fn test_p2pk_swap() {
 
     let mut listener = mint_bob
         .pubsub_manager()
-        .subscribe::<IndexableParams>(
-            Params {
-                kind: cdk::nuts::nut17::Kind::ProofState,
-                filters: public_keys_to_listen.clone(),
-                id: "test".into(),
-            }
-            .into(),
-        )
+        .subscribe(Params {
+            kind: cdk::nuts::nut17::Kind::ProofState,
+            filters: public_keys_to_listen.clone(),
+            id: "test".into(),
+        })
         .expect("valid subscription");
 
     match mint_bob.process_swap_request(swap_request).await {
@@ -520,7 +517,7 @@ pub async fn test_p2pk_swap() {
 
     let mut msgs = HashMap::new();
     while let Some(msg) = listener.try_recv() {
-        match msg.inner() {
+        match msg.into_inner() {
             NotificationPayload::ProofState(ProofState { y, state, .. }) => {
                 msgs.entry(y.to_string())
                     .or_insert_with(Vec::new)

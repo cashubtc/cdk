@@ -9,7 +9,19 @@ pub enum Error {
     #[error("Already subscribed")]
     AlreadySubscribed,
 
+    /// No subscription found
+    #[error("Subscription not found")]
+    NoSubscription,
+
     /// Parsing error
     #[error("Parsing Error {0}")]
     ParsingError(String),
+
+    /// Internal error
+    #[error("Internal")]
+    Internal(Box<dyn std::error::Error + Send + Sync>),
+
+    /// Not supported
+    #[error("Not supported")]
+    NotSupported,
 }

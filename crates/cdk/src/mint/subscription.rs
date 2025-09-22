@@ -6,83 +6,17 @@ use std::sync::Arc;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::MintQuote;
 use cdk_common::nut17::NotificationId;
-use cdk_common::pub_sub::{Indexable, Pubsub, Topic};
+use cdk_common::pub_sub::{Event, Pubsub, Topic};
 use cdk_common::subscription::SubId;
 use cdk_common::{
     Amount, BlindSignature, MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response,
-    MintQuoteBolt12Response, MintQuoteState, NotificationPayload, PaymentMethod, ProofState,
-    PublicKey, QuoteId,
+    MintQuoteBolt12Response, MintQuoteState, PaymentMethod, ProofState, PublicKey, QuoteId,
 };
-use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-/// Simple wrapper over NotificationPayload<QuoteId> which is a foreign type
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MintEvent(NotificationPayload<QuoteId>);
+use crate::event::MintEvent;
 
-#[allow(clippy::from_over_into)]
-impl Into<NotificationPayload<QuoteId>> for MintEvent {
-    fn into(self) -> NotificationPayload<QuoteId> {
-        self.0
-    }
-}
-
-impl MintEvent {
-    /// Get inner
-    pub fn inner(self) -> NotificationPayload<QuoteId> {
-        self.0
-    }
-}
-
-impl From<NotificationPayload<QuoteId>> for MintEvent {
-    fn from(value: NotificationPayload<QuoteId>) -> Self {
-        Self(value)
-    }
-}
-
-impl From<ProofState> for MintEvent {
-    fn from(value: ProofState) -> Self {
-        Self(NotificationPayload::ProofState(value))
-    }
-}
-
-impl From<MintQuoteBolt11Response<QuoteId>> for MintEvent {
-    fn from(value: MintQuoteBolt11Response<QuoteId>) -> Self {
-        Self(NotificationPayload::MintQuoteBolt11Response(value))
-    }
-}
-
-impl From<MeltQuoteBolt11Response<QuoteId>> for MintEvent {
-    fn from(value: MeltQuoteBolt11Response<QuoteId>) -> Self {
-        Self(NotificationPayload::MeltQuoteBolt11Response(value))
-    }
-}
-
-impl From<MintQuoteBolt12Response<QuoteId>> for MintEvent {
-    fn from(value: MintQuoteBolt12Response<QuoteId>) -> Self {
-        Self(NotificationPayload::MintQuoteBolt12Response(value))
-    }
-}
-
-impl Indexable for MintEvent {
-    type Index = NotificationId;
-
-    fn to_indexes(&self) -> Vec<Self::Index> {
-        vec![match &self.0 {
-            NotificationPayload::MeltQuoteBolt11Response(r) => {
-                NotificationId::MeltQuoteBolt11(r.quote.to_owned())
-            }
-            NotificationPayload::MintQuoteBolt11Response(r) => {
-                NotificationId::MintQuoteBolt11(r.quote.to_owned())
-            }
-            NotificationPayload::MintQuoteBolt12Response(r) => {
-                NotificationId::MintQuoteBolt12(r.quote.to_owned())
-            }
-            NotificationPayload::ProofState(p) => NotificationId::ProofState(p.y.to_owned()),
-        }]
-    }
-}
-
+// Mint subtopics
 pub struct MintSubTopics {
     db: DynMintDatabase,
 }
@@ -90,8 +24,8 @@ pub struct MintSubTopics {
 impl MintSubTopics {
     async fn get_events_from_db_legacy(
         &self,
-        request: &[NotificationId],
-    ) -> Result<Vec<MintEvent>, String> {
+        request: &[NotificationId<QuoteId>],
+    ) -> Result<Vec<MintEvent<QuoteId>>, String> {
         let mut to_return = vec![];
         let mut public_keys: Vec<PublicKey> = Vec::new();
         let mut melt_queries = Vec::new();
@@ -181,11 +115,11 @@ impl MintSubTopics {
 impl Topic for MintSubTopics {
     type SubscriptionName = SubId;
 
-    type Event = MintEvent;
+    type Event = MintEvent<QuoteId>;
 
     async fn fetch_events(
         &self,
-        indexes: Vec<<Self::Event as Indexable>::Index>,
+        indexes: Vec<<Self::Event as Event>::Topic>,
         sub_name: Self::SubscriptionName,
         reply_to: mpsc::Sender<(Self::SubscriptionName, Self::Event)>,
     ) {

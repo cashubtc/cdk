@@ -2409,6 +2409,21 @@ pub struct SubscribeParams {
     pub id: Option<String>,
 }
 
+impl From<SubscribeParams> for cdk::nuts::nut17::Params<String> {
+    fn from(params: SubscribeParams) -> Self {
+        let sub_id = params.id.unwrap_or_else(|| {
+            // Generate a random ID
+            uuid::Uuid::new_v4().to_string()
+        });
+
+        cdk::nuts::nut17::Params {
+            kind: params.kind.into(),
+            filters: params.filters,
+            id: sub_id,
+        }
+    }
+}
+
 impl From<SubscribeParams> for cdk::nuts::nut17::Params<SubId> {
     fn from(params: SubscribeParams) -> Self {
         let sub_id = params
@@ -2479,21 +2494,16 @@ impl ActiveSubscription {
         guard
             .recv()
             .await
+            .map(|event| event.into_inner().into())
             .ok_or(FfiError::Generic {
                 msg: "Subscription closed".to_string(),
             })
-            .map(Into::into)
     }
 
     /// Try to receive a notification without blocking
     pub async fn try_recv(&self) -> Result<Option<NotificationPayload>, FfiError> {
         let mut guard = self.inner.lock().await;
-        guard
-            .try_recv()
-            .map(|opt| opt.map(Into::into))
-            .map_err(|e| FfiError::Generic {
-                msg: format!("Failed to receive notification: {}", e),
-            })
+        Ok(guard.try_recv().map(|event| event.into_inner().into()))
     }
 }
 

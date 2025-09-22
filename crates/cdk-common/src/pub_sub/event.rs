@@ -1,4 +1,6 @@
-//! WS Index
+//! Pubsub Event definition
+//!
+//! The Pubsub Event defines the Topic struct and how an event can be converted to Topics.
 
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -7,12 +9,12 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 /// Indexable trait
-pub trait Indexable: Clone {
+pub trait Event: Clone {
     /// Generic Index
     ///
     /// It should be serializable/deserializable to be stored in the database layer and it should
     /// also be sorted in a BTree for in-memory matching
-    type Index: Debug
+    type Topic: Debug
         + Clone
         + Eq
         + PartialEq
@@ -25,5 +27,5 @@ pub trait Indexable: Clone {
         + Serialize;
 
     /// To indexes
-    fn to_indexes(&self) -> Vec<Self::Index>;
+    fn get_topics(&self) -> Vec<Self::Topic>;
 }

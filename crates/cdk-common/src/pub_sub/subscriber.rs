@@ -6,18 +6,18 @@ use tokio::sync::mpsc;
 
 use super::pubsub::{IndexTree, Topic};
 use super::Error;
-use crate::pub_sub::index::Indexable;
+use crate::pub_sub::event::Event;
 
 /// Subscription request
 pub trait SubscriptionRequest: Clone {
     /// Indexes
-    type Index;
+    type Topic;
 
     /// Subscription name
     type SubscriptionName;
 
     /// Try to get indexes from the request
-    fn try_get_indexes(&self) -> Result<Vec<Self::Index>, Error>;
+    fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error>;
 
     /// Get the subscription name
     fn subscription_name(&self) -> Self::SubscriptionName;
@@ -32,7 +32,7 @@ where
     name: P::SubscriptionName,
     active_subscribers: Arc<AtomicUsize>,
     indexes: IndexTree<P>,
-    subscribed_to: Vec<<P::Event as Indexable>::Index>,
+    subscribed_to: Vec<<P::Event as Event>::Topic>,
     receiver: Option<mpsc::Receiver<(P::SubscriptionName, P::Event)>>,
 }
 
@@ -46,7 +46,7 @@ where
         name: P::SubscriptionName,
         active_subscribers: Arc<AtomicUsize>,
         indexes: IndexTree<P>,
-        subscribed_to: Vec<<P::Event as Indexable>::Index>,
+        subscribed_to: Vec<<P::Event as Event>::Topic>,
         receiver: Option<mpsc::Receiver<(P::SubscriptionName, P::Event)>>,
     ) -> Self {
         Self {

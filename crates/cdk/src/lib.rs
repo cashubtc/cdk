@@ -41,6 +41,7 @@ pub use cdk_common::{
 #[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
 pub use oidc_client::OidcClient;
 
+mod event;
 pub mod fees;
 
 #[doc(hidden)]

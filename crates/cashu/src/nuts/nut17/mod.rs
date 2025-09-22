@@ -6,7 +6,7 @@ use super::PublicKey;
 use crate::nuts::{
     CurrencyUnit, MeltQuoteBolt11Response, MintQuoteBolt11Response, PaymentMethod, ProofState,
 };
-use crate::quote_id::{QuoteId, QuoteIdError};
+use crate::quote_id::QuoteIdError;
 use crate::MintQuoteBolt12Response;
 
 pub mod ws;
@@ -107,7 +107,10 @@ pub enum WsCommand {
     ProofState,
 }
 
-impl<T> From<MintQuoteBolt12Response<T>> for NotificationPayload<T> {
+impl<T> From<MintQuoteBolt12Response<T>> for NotificationPayload<T>
+where
+    T: Clone,
+{
     fn from(mint_quote: MintQuoteBolt12Response<T>) -> NotificationPayload<T> {
         NotificationPayload::MintQuoteBolt12Response(mint_quote)
     }
@@ -117,7 +120,10 @@ impl<T> From<MintQuoteBolt12Response<T>> for NotificationPayload<T> {
 #[serde(bound = "T: Serialize + DeserializeOwned")]
 #[serde(untagged)]
 /// Subscription response
-pub enum NotificationPayload<T> {
+pub enum NotificationPayload<T>
+where
+    T: Clone,
+{
     /// Proof State
     ProofState(ProofState),
     /// Melt Quote Bolt11 Response
@@ -129,18 +135,22 @@ pub enum NotificationPayload<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Hash, Serialize)]
+#[serde(bound = "T: Serialize + DeserializeOwned")]
 /// A parsed notification
-pub enum NotificationId {
+pub enum NotificationId<T>
+where
+    T: Clone,
+{
     /// ProofState id is a Pubkey
     ProofState(PublicKey),
     /// MeltQuote id is an QuoteId
-    MeltQuoteBolt11(QuoteId),
+    MeltQuoteBolt11(T),
     /// MintQuote id is an QuoteId
-    MintQuoteBolt11(QuoteId),
+    MintQuoteBolt11(T),
     /// MintQuote id is an QuoteId
-    MintQuoteBolt12(QuoteId),
+    MintQuoteBolt12(T),
     /// MintQuote id is an QuoteId
-    MeltQuoteBolt12(QuoteId),
+    MeltQuoteBolt12(T),
 }
 
 /// Kind
