@@ -1627,6 +1627,147 @@ impl TryFrom<Nut05Settings> for cdk::nuts::nut05::Settings {
     }
 }
 
+/// FFI-compatible ProtectedEndpoint (for auth nuts)
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct ProtectedEndpoint {
+    /// HTTP method (GET, POST, etc.)
+    pub method: String,
+    /// Endpoint path
+    pub path: String,
+}
+
+/// FFI-compatible ClearAuthSettings (NUT-21)
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct ClearAuthSettings {
+    /// OpenID Connect discovery URL
+    pub openid_discovery: String,
+    /// OAuth 2.0 client ID
+    pub client_id: String,
+    /// Protected endpoints requiring clear authentication
+    pub protected_endpoints: Vec<ProtectedEndpoint>,
+}
+
+/// FFI-compatible BlindAuthSettings (NUT-22)
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct BlindAuthSettings {
+    /// Maximum number of blind auth tokens that can be minted per request
+    pub bat_max_mint: u64,
+    /// Protected endpoints requiring blind authentication
+    pub protected_endpoints: Vec<ProtectedEndpoint>,
+}
+
+impl From<cdk::nuts::ClearAuthSettings> for ClearAuthSettings {
+    fn from(settings: cdk::nuts::ClearAuthSettings) -> Self {
+        Self {
+            openid_discovery: settings.openid_discovery,
+            client_id: settings.client_id,
+            protected_endpoints: settings
+                .protected_endpoints
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<ClearAuthSettings> for cdk::nuts::ClearAuthSettings {
+    type Error = FfiError;
+
+    fn try_from(settings: ClearAuthSettings) -> Result<Self, Self::Error> {
+        Ok(Self {
+            openid_discovery: settings.openid_discovery,
+            client_id: settings.client_id,
+            protected_endpoints: settings
+                .protected_endpoints
+                .into_iter()
+                .map(|e| e.try_into())
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+impl From<cdk::nuts::BlindAuthSettings> for BlindAuthSettings {
+    fn from(settings: cdk::nuts::BlindAuthSettings) -> Self {
+        Self {
+            bat_max_mint: settings.bat_max_mint,
+            protected_endpoints: settings
+                .protected_endpoints
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<BlindAuthSettings> for cdk::nuts::BlindAuthSettings {
+    type Error = FfiError;
+
+    fn try_from(settings: BlindAuthSettings) -> Result<Self, Self::Error> {
+        Ok(Self {
+            bat_max_mint: settings.bat_max_mint,
+            protected_endpoints: settings
+                .protected_endpoints
+                .into_iter()
+                .map(|e| e.try_into())
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+impl From<cdk::nuts::ProtectedEndpoint> for ProtectedEndpoint {
+    fn from(endpoint: cdk::nuts::ProtectedEndpoint) -> Self {
+        Self {
+            method: match endpoint.method {
+                cdk::nuts::Method::Get => "GET".to_string(),
+                cdk::nuts::Method::Post => "POST".to_string(),
+            },
+            path: endpoint.path.to_string(),
+        }
+    }
+}
+
+impl TryFrom<ProtectedEndpoint> for cdk::nuts::ProtectedEndpoint {
+    type Error = FfiError;
+
+    fn try_from(endpoint: ProtectedEndpoint) -> Result<Self, Self::Error> {
+        let method = match endpoint.method.as_str() {
+            "GET" => cdk::nuts::Method::Get,
+            "POST" => cdk::nuts::Method::Post,
+            _ => {
+                return Err(FfiError::Generic {
+                    msg: format!(
+                        "Invalid HTTP method: {}. Only GET and POST are supported",
+                        endpoint.method
+                    ),
+                })
+            }
+        };
+
+        // Convert path string to RoutePath by matching against known paths
+        let route_path = match endpoint.path.as_str() {
+            "/v1/mint/quote/bolt11" => cdk::nuts::RoutePath::MintQuoteBolt11,
+            "/v1/mint/bolt11" => cdk::nuts::RoutePath::MintBolt11,
+            "/v1/melt/quote/bolt11" => cdk::nuts::RoutePath::MeltQuoteBolt11,
+            "/v1/melt/bolt11" => cdk::nuts::RoutePath::MeltBolt11,
+            "/v1/swap" => cdk::nuts::RoutePath::Swap,
+            "/v1/checkstate" => cdk::nuts::RoutePath::Checkstate,
+            "/v1/restore" => cdk::nuts::RoutePath::Restore,
+            "/v1/auth/blind/mint" => cdk::nuts::RoutePath::MintBlindAuth,
+            "/v1/mint/quote/bolt12" => cdk::nuts::RoutePath::MintQuoteBolt12,
+            "/v1/mint/bolt12" => cdk::nuts::RoutePath::MintBolt12,
+            "/v1/melt/quote/bolt12" => cdk::nuts::RoutePath::MeltQuoteBolt12,
+            "/v1/melt/bolt12" => cdk::nuts::RoutePath::MeltBolt12,
+            _ => {
+                return Err(FfiError::Generic {
+                    msg: format!("Unknown route path: {}", endpoint.path),
+                })
+            }
+        };
+
+        Ok(cdk::nuts::ProtectedEndpoint::new(method, route_path))
+    }
+}
+
 /// FFI-compatible Nuts settings (extended to include NUT-04 and NUT-05 settings)
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Nuts {
@@ -1650,6 +1791,10 @@ pub struct Nuts {
     pub nut14_supported: bool,
     /// NUT20 Settings - Web sockets
     pub nut20_supported: bool,
+    /// NUT21 Settings - Clear authentication
+    pub nut21: Option<ClearAuthSettings>,
+    /// NUT22 Settings - Blind authentication
+    pub nut22: Option<BlindAuthSettings>,
     /// Supported currency units for minting
     pub mint_units: Vec<CurrencyUnit>,
     /// Supported currency units for melting
@@ -1658,6 +1803,17 @@ pub struct Nuts {
 
 impl From<cdk::nuts::Nuts> for Nuts {
     fn from(nuts: cdk::nuts::Nuts) -> Self {
+        let mint_units = nuts
+            .supported_mint_units()
+            .into_iter()
+            .map(|u| u.clone().into())
+            .collect();
+        let melt_units = nuts
+            .supported_melt_units()
+            .into_iter()
+            .map(|u| u.clone().into())
+            .collect();
+
         Self {
             nut04: nuts.nut04.clone().into(),
             nut05: nuts.nut05.clone().into(),
@@ -1669,16 +1825,10 @@ impl From<cdk::nuts::Nuts> for Nuts {
             nut12_supported: nuts.nut12.supported,
             nut14_supported: nuts.nut14.supported,
             nut20_supported: nuts.nut20.supported,
-            mint_units: nuts
-                .supported_mint_units()
-                .into_iter()
-                .map(|u| u.clone().into())
-                .collect(),
-            melt_units: nuts
-                .supported_melt_units()
-                .into_iter()
-                .map(|u| u.clone().into())
-                .collect(),
+            nut21: nuts.nut21.map(Into::into),
+            nut22: nuts.nut22.map(Into::into),
+            mint_units,
+            melt_units,
         }
     }
 }
@@ -1717,10 +1867,8 @@ impl TryFrom<Nuts> for cdk::nuts::Nuts {
             nut20: cdk::nuts::nut06::SupportedSettings {
                 supported: n.nut20_supported,
             },
-            #[cfg(feature = "auth")]
-            nut21: None,
-            #[cfg(feature = "auth")]
-            nut22: None,
+            nut21: n.nut21.map(|s| s.try_into()).transpose()?,
+            nut22: n.nut22.map(|s| s.try_into()).transpose()?,
         })
     }
 }
@@ -1807,7 +1955,7 @@ impl From<MintInfo> for cdk::nuts::MintInfo {
             contact: info
                 .contact
                 .map(|contacts| contacts.into_iter().map(Into::into).collect()),
-            nuts: nuts_cdk.into(),
+            nuts: nuts_cdk,
             icon_url: info.icon_url,
             urls: info.urls,
             motd: info.motd,
