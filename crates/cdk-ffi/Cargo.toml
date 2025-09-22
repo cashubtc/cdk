@@ -12,15 +12,13 @@ name = "cdk_ffi"
 
 [features]
 default = ["auth", "bip353"]
-auth = ["cdk/auth", "cdk-common/auth", "cashu/auth"]
+auth = ["cdk/auth"]
 bip353 = ["cdk/bip353"]
 
 [dependencies]
 async-trait = { workspace = true }
 bip39 = { workspace = true }
-cashu = { workspace = true }
 cdk = { workspace = true, default-features = false, features = ["wallet"] }
-cdk-common = { workspace = true }
 cdk-sqlite = { workspace = true }
 ctor = "0.2"
 futures = { workspace = true }
