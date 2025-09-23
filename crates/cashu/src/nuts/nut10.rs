@@ -30,7 +30,7 @@ pub enum Kind {
     HTLC,
 }
 
-/// Secert Date
+/// Secret Date
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SecretData {
     /// Unique random string
