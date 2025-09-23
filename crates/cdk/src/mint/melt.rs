@@ -856,7 +856,7 @@ impl Mint {
     }
 
     /// Process melt request marking proofs as spent
-    /// The melt request must be verifyed using [`Self::verify_melt_request`]
+    /// The melt request must be verified using [`Self::verify_melt_request`]
     /// before calling [`Self::process_melt_request`]
     #[instrument(skip_all)]
     pub async fn process_melt_request(
