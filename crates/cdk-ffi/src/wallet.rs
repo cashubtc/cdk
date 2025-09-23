@@ -404,7 +404,7 @@ impl Wallet {
 }
 
 /// BIP353 methods for Wallet
-#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[uniffi::export(async_runtime = "tokio")]
 impl Wallet {
     /// Get a quote for a BIP353 melt
@@ -426,7 +426,6 @@ impl Wallet {
 }
 
 /// Auth methods for Wallet
-#[cfg(feature = "auth")]
 #[uniffi::export(async_runtime = "tokio")]
 impl Wallet {
     /// Set Clear Auth Token (CAT) for authentication

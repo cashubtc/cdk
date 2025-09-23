@@ -120,9 +120,6 @@ jobs:
             
             # FFI bindings
             -p cdk-ffi,
-            -p cdk-ffi --no-default-features,
-            -p cdk-ffi --no-default-features --features auth,
-            -p cdk-ffi --no-default-features --features bip353,
             
             # Binaries
             --bin cdk-cli,

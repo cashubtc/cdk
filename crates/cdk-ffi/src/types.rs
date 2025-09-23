@@ -1998,7 +1998,6 @@ impl TryFrom<TransactionId> for cdk::wallet::types::TransactionId {
 }
 
 /// FFI-compatible AuthProof
-#[cfg(feature = "auth")]
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct AuthProof {
     /// Keyset ID
@@ -2011,7 +2010,6 @@ pub struct AuthProof {
     pub y: String,
 }
 
-#[cfg(feature = "auth")]
 impl From<cdk::nuts::AuthProof> for AuthProof {
     fn from(auth_proof: cdk::nuts::AuthProof) -> Self {
         Self {
@@ -2026,7 +2024,6 @@ impl From<cdk::nuts::AuthProof> for AuthProof {
     }
 }
 
-#[cfg(feature = "auth")]
 impl TryFrom<AuthProof> for cdk::nuts::AuthProof {
     type Error = FfiError;
 
@@ -2047,7 +2044,6 @@ impl TryFrom<AuthProof> for cdk::nuts::AuthProof {
     }
 }
 
-#[cfg(feature = "auth")]
 impl AuthProof {
     /// Convert AuthProof to JSON string
     pub fn to_json(&self) -> Result<String, FfiError> {
@@ -2056,14 +2052,12 @@ impl AuthProof {
 }
 
 /// Decode AuthProof from JSON string
-#[cfg(feature = "auth")]
 #[uniffi::export]
 pub fn decode_auth_proof(json: String) -> Result<AuthProof, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode AuthProof to JSON string
-#[cfg(feature = "auth")]
 #[uniffi::export]
 pub fn encode_auth_proof(proof: AuthProof) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&proof)?)
