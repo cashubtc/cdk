@@ -37,9 +37,12 @@ services:
       - cdk
 
   mintd-ldk-node:
-    build:
-      context: .
-      dockerfile: Dockerfile.ldk-node
+    # Use the ldk-node tagged image from the same repository
+    image: cashubtc/mintd:ldk-node-amd64
+    # Alternatively, build locally:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.ldk-node
     container_name: mint-ldk-node
     ports:
       - "8085:8085"

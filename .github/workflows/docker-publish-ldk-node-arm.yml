@@ -12,7 +12,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: cashubtc/mintd-ldk-node
+  IMAGE_NAME: cashubtc/mintd
 
 jobs:
   build-and-push:
@@ -40,13 +40,13 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest-arm64,enable=${{ github.event_name == 'release' }}
-            type=semver,pattern={{version}}-arm64
-            type=semver,pattern={{major}}.{{minor}}-arm64
-            type=ref,event=branch,suffix=-arm64
-            type=ref,event=pr,suffix=-arm64
-            type=sha,suffix=-arm64
-            ${{ github.event.inputs.tag != '' && format('{0}-arm64', github.event.inputs.tag) || '' }}
+            type=raw,value=ldk-node-arm64,enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{version}}-ldk-node-arm64
+            type=semver,pattern={{major}}.{{minor}}-ldk-node-arm64
+            type=ref,event=branch,suffix=-ldk-node-arm64
+            type=ref,event=pr,suffix=-ldk-node-arm64
+            type=sha,suffix=-ldk-node-arm64
+            ${{ github.event.inputs.tag != '' && format('{0}-ldk-node-arm64', github.event.inputs.tag) || '' }}
 
       # Build and push ARM64 image with architecture suffix
       - name: Build and push Docker image
