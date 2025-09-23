@@ -322,6 +322,7 @@ release m="":
 
   args=(
     "-p cashu"
+    "-p cdk-prometheus"
     "-p cdk-common"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
@@ -329,6 +330,7 @@ release m="":
     "-p cdk-redb"
     "-p cdk-signatory"
     "-p cdk"
+    "-p cdk-ffi"
     "-p cdk-axum"
     "-p cdk-mint-rpc"
     "-p cdk-cln"
