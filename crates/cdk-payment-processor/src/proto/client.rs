@@ -62,10 +62,7 @@ impl PaymentProcessorClient {
                         .ca_certificate(server_root_ca_cert)
                         .identity(client_identity)
                 }
-                false => {
-                    ClientTlsConfig::new()
-                        .ca_certificate(server_root_ca_cert)
-                }
+                false => ClientTlsConfig::new().ca_certificate(server_root_ca_cert),
             };
             Channel::from_shared(addr)?
                 .tls_config(tls)?
