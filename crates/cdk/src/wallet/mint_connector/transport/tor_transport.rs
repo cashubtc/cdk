@@ -35,17 +35,22 @@ impl std::fmt::Debug for TorAsync {
 
 impl Default for TorAsync {
     fn default() -> Self {
-        // Default builds a TorAsync with the default pool size by blocking on bootstrap.
-        // If a Tokio runtime is present, use its handle; otherwise, create a temporary runtime.
+        // Prefer running on an existing Tokio runtime if present.
         let fut = Self::with_pool_size(DEFAULT_TOR_POOL_SIZE);
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => handle
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle
                 .block_on(fut)
-                .unwrap_or_else(|e| panic!("TorAsync::default() bootstrap failed: {e}")),
-            Err(_) => tokio::runtime::Runtime::new()
-                .expect("failed to create temporary Tokio runtime for TorAsync::default()")
-                .block_on(fut)
-                .unwrap_or_else(|e| panic!("TorAsync::default() bootstrap failed: {e}")),
+                .unwrap_or_else(|e| panic!("TorAsync::default() bootstrap failed: {e}"))
+        } else {
+            // Fall back to creating a runtime on a fresh OS thread to avoid nested-runtime panics.
+            std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .expect("failed to create temporary Tokio runtime for TorAsync::default()")
+                    .block_on(fut)
+                    .unwrap_or_else(|e| panic!("TorAsync::default() bootstrap failed: {e}"))
+            })
+            .join()
+            .expect("failed to join TorAsync::default() initialization thread")
         }
     }
 }
