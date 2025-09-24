@@ -35,14 +35,9 @@ impl std::fmt::Debug for TorAsync {
 
 impl Default for TorAsync {
     fn default() -> Self {
-        // Prefer running on an existing Tokio runtime if present.
+        // Build on a separate OS thread to avoid nested-runtime panics.
         let fut = Self::with_pool_size(DEFAULT_TOR_POOL_SIZE);
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle
-                .block_on(fut)
-                .unwrap_or_else(|e| panic!("TorAsync::default() bootstrap failed: {e}"))
-        } else {
-            // Fall back to creating a runtime on a fresh OS thread to avoid nested-runtime panics.
+        let init = || {
             std::thread::spawn(move || {
                 tokio::runtime::Runtime::new()
                     .expect("failed to create temporary Tokio runtime for TorAsync::default()")
@@ -51,6 +46,11 @@ impl Default for TorAsync {
             })
             .join()
             .expect("failed to join TorAsync::default() initialization thread")
+        };
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(_) => tokio::task::block_in_place(init),
+            Err(_) => init(),
         }
     }
 }
