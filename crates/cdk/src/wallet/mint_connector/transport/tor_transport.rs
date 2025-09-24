@@ -18,7 +18,7 @@ use super::super::Error;
 use crate::wallet::mint_connector::transport::{ErrorResponse, Transport};
 
 /// Fixed-size pool size
-const DEFAULT_TOR_POOL_SIZE: usize = 10;
+pub const DEFAULT_TOR_POOL_SIZE: usize = 10;
 
 /// Shared inner state for TorAsync
 struct Inner {
