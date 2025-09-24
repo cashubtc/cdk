@@ -352,7 +352,14 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
     assert_eq!(state.amount_paid, (pay_amount_msats / 1_000).into());
     assert_eq!(state.amount_issued, Amount::ZERO);
 
-    let pre_mint = PreMintSecrets::random(active_keyset_id, 500.into(), &SplitTarget::None)?;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+
+    let pre_mint = PreMintSecrets::random(
+        active_keyset_id,
+        500.into(),
+        &SplitTarget::None,
+        &fee_and_amounts,
+    )?;
 
     let quote_info = wallet
         .localstore

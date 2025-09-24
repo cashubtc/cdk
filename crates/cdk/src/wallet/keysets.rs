@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use cdk_common::amount::{FeeAndAmounts, KeysetFeeAndAmounts};
 use cdk_common::nut02::{KeySetInfos, KeySetInfosMethods};
 use tracing::instrument;
 
@@ -139,12 +140,12 @@ impl Wallet {
         }
     }
 
-    /// Get keyset fees for mint from local database only - offline operation
+    /// Get keyset fees and amounts for mint from local database only - offline operation
     ///
     /// Returns a HashMap of keyset IDs to their input fee rates (per-proof-per-thousand)
     /// from cached keysets in the local database. This is an offline operation that does
     /// not contact the mint. If no keysets are found locally, returns an error.
-    pub async fn get_keyset_fees(&self) -> Result<HashMap<Id, u64>, Error> {
+    pub async fn get_keyset_fees_and_amounts(&self) -> Result<KeysetFeeAndAmounts, Error> {
         let keysets = self
             .localstore
             .get_mint_keysets(self.mint_url.clone())
@@ -153,19 +154,33 @@ impl Wallet {
 
         let mut fees = HashMap::new();
         for keyset in keysets {
-            fees.insert(keyset.id, keyset.input_fee_ppk);
+            fees.insert(
+                keyset.id,
+                (
+                    keyset.input_fee_ppk,
+                    self.load_keyset_keys(keyset.id)
+                        .await?
+                        .iter()
+                        .map(|(amount, _)| amount.to_u64())
+                        .collect::<Vec<_>>(),
+                )
+                    .into(),
+            );
         }
 
         Ok(fees)
     }
 
-    /// Get keyset fees for mint by keyset id from local database only - offline operation
+    /// Get keyset fees and amounts for mint by keyset id from local database only - offline operation
     ///
     /// Returns the input fee rate (per-proof-per-thousand) for a specific keyset ID from
     /// cached keysets in the local database. This is an offline operation that does not
     /// contact the mint. If the keyset is not found locally, returns an error.
-    pub async fn get_keyset_fees_by_id(&self, keyset_id: Id) -> Result<u64, Error> {
-        self.get_keyset_fees()
+    pub async fn get_keyset_fees_and_amounts_by_id(
+        &self,
+        keyset_id: Id,
+    ) -> Result<FeeAndAmounts, Error> {
+        self.get_keyset_fees_and_amounts()
             .await?
             .get(&keyset_id)
             .cloned()
