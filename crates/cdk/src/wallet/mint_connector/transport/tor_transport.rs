@@ -1,8 +1,5 @@
 ///! Tor transport implementation (non-wasm32 only)
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 
 use arti_client::{TorClient, TorClientConfig};
 use arti_hyper::ArtiHttpConnector;
@@ -26,8 +23,6 @@ const DEFAULT_TOR_POOL_SIZE: usize = 10;
 pub struct TorAsync {
     /// Pool of isolated clients created from a single bootstrapped base client
     pool: Arc<Vec<TorClient<tor_rtcompat::PreferredRuntime>>>,
-    /// Round-robin cursor across the pool
-    idx: Arc<AtomicUsize>,
 }
 
 impl std::fmt::Debug for TorAsync {
@@ -62,24 +57,43 @@ impl TorAsync {
         }
         Ok(Self {
             pool: Arc::new(clients),
-            idx: Arc::new(AtomicUsize::new(0)),
         })
     }
 
+    /// Choose client index deterministically per endpoint path + query and payload
     #[inline]
-    fn next_index(&self) -> usize {
-        self.idx.fetch_add(1, Ordering::Relaxed) % self.pool.len()
+    fn index_for_request(&self, url: &Url, body: Option<&[u8]>) -> usize {
+        // Use a tiny, dependency-free, stable hash (FNV-1a 64-bit)
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
+        fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
+            for &b in bytes {
+                h ^= b as u64;
+                h = h.wrapping_mul(FNV_PRIME);
+            }
+            h
+        }
+
+        let mut h = FNV_OFFSET;
+        h = fnv1a(h, url.path().as_bytes());
+        if let Some(q) = url.query() {
+            h = fnv1a(h, b"?");
+            h = fnv1a(h, q.as_bytes());
+        }
+        if let Some(b) = body {
+            h = fnv1a(h, b);
+        }
+        (h as usize) % self.pool.len()
     }
 
-    async fn request<B, R>(
+    async fn request<R>(
         &self,
         method: http::Method,
         url: Url,
         auth: Option<AuthToken>,
-        body: Option<B>,
+        mut body: Option<Vec<u8>>,
     ) -> Result<R, Error>
     where
-        B: Into<Vec<u8>>,
         R: DeserializeOwned,
     {
         let tls = tls_api_native_tls::TlsConnector::builder()
@@ -87,8 +101,9 @@ impl TorAsync {
             .build()
             .map_err(|e| Error::Custom(format!("{e:?}")))?;
 
-        // Select an isolated client from the pool
-        let client_for_request = self.pool[self.next_index()].clone();
+        // Deterministically select an isolated client for request affinity
+        let idx = self.index_for_request(&url, body.as_deref());
+        let client_for_request = self.pool[idx].clone();
 
         let connector = ArtiHttpConnector::new(client_for_request, tls);
         let client: Client<_> = Client::builder().build(connector);
@@ -101,10 +116,10 @@ impl TorAsync {
         let mut builder = Request::builder().method(method).uri(uri);
         builder = builder.header(header::ACCEPT, "application/json");
 
-        let mut req = if let Some(b) = body {
+        let mut req = if let Some(b) = body.take() {
             builder
                 .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(b.into()))
+                .body(Body::from(b))
                 .map_err(|e| Error::Custom(e.to_string()))?
         } else {
             builder
@@ -166,8 +181,7 @@ impl Transport for TorAsync {
     where
         R: serde::de::DeserializeOwned,
     {
-        self.request::<Vec<u8>, R>(Method::GET, url, auth, None)
-            .await
+        self.request::<R>(Method::GET, url, auth, None).await
     }
 
     async fn http_post<P, R>(
@@ -181,8 +195,7 @@ impl Transport for TorAsync {
         R: serde::de::DeserializeOwned,
     {
         let body = serde_json::to_vec(payload).map_err(|e| Error::Custom(e.to_string()))?;
-        self.request::<Vec<u8>, R>(Method::POST, url, auth_token, Some(body))
-            .await
+        self.request::<R>(Method::POST, url, auth_token, Some(body)).await
     }
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -242,7 +255,7 @@ impl Transport for TorAsync {
         }
 
         let resp: DnsResp = self
-            .request::<Vec<u8>, DnsResp>(Method::GET, url, None, None::<Vec<u8>>)
+            .request::<DnsResp>(Method::GET, url, None, None::<Vec<u8>>)
             .await?;
 
         let answers = resp.Answer.unwrap_or_default();
