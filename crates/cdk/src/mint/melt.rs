@@ -972,6 +972,9 @@ impl Mint {
                 change = Some(change_sigs);
 
                 proof_writer.commit();
+
+                tx.delete_melt_request(&quote.id).await?;
+
                 tx.commit().await?;
             } else {
                 tracing::info!(
@@ -981,11 +984,13 @@ impl Mint {
                     total_spent
                 );
                 proof_writer.commit();
+                tx.delete_melt_request(&quote.id).await?;
                 tx.commit().await?;
             }
         } else {
             tracing::debug!("No change required for melt {}", quote.id);
             proof_writer.commit();
+            tx.delete_melt_request(&quote.id).await?;
             tx.commit().await?;
         }
 
