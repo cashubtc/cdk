@@ -47,32 +47,23 @@ impl PaymentProcessorClient {
 
             // Check for client.pem
             let client_pem_path = tls_dir.join("client.pem");
-            if !client_pem_path.exists() {
-                let err_msg = format!(
-                    "Client certificate file not found: {}",
-                    client_pem_path.display()
-                );
-                tracing::error!("{}", err_msg);
-                return Err(anyhow!(err_msg));
-            }
 
             // Check for client.key
             let client_key_path = tls_dir.join("client.key");
-            if !client_key_path.exists() {
-                let err_msg = format!("Client key file not found: {}", client_key_path.display());
-                tracing::error!("{}", err_msg);
-                return Err(anyhow!(err_msg));
-            }
-
+            // check for ca cert
             let server_root_ca_cert = std::fs::read_to_string(&ca_pem_path)?;
             let server_root_ca_cert = Certificate::from_pem(server_root_ca_cert);
-            let client_cert = std::fs::read_to_string(&client_pem_path)?;
-            let client_key = std::fs::read_to_string(&client_key_path)?;
-            let client_identity = Identity::from_pem(client_cert, client_key);
-            let tls = ClientTlsConfig::new()
-                .ca_certificate(server_root_ca_cert)
-                .identity(client_identity);
-
+            let tls: ClientTlsConfig = match client_pem_path.exists() && client_key_path.exists() {
+                true => {
+                    let client_cert = std::fs::read_to_string(&client_pem_path)?;
+                    let client_key = std::fs::read_to_string(&client_key_path)?;
+                    let client_identity = Identity::from_pem(client_cert, client_key);
+                    ClientTlsConfig::new()
+                        .ca_certificate(server_root_ca_cert)
+                        .identity(client_identity)
+                }
+                false => ClientTlsConfig::new().ca_certificate(server_root_ca_cert),
+            };
             Channel::from_shared(addr)?
                 .tls_config(tls)?
                 .connect()
