@@ -10,19 +10,20 @@ use hyper::http::{Method, Request, Uri};
 use hyper::{Body, Client};
 use serde::de::DeserializeOwned;
 use tls_api::{TlsConnector as _, TlsConnectorBuilder as _};
+use tokio::sync::OnceCell;
 use url::Url;
 
-use tokio::sync::OnceCell;
-
 use super::super::Error;
+use crate::wallet::getrandom;
 use crate::wallet::mint_connector::transport::{ErrorResponse, Transport};
 
 /// Fixed-size pool size
-pub const DEFAULT_TOR_POOL_SIZE: usize = 3;
+pub const DEFAULT_TOR_POOL_SIZE: usize = 5;
 
 /// Tor transport that maintains a pool of isolated TorClient handles
 #[derive(Clone)]
 pub struct TorAsync {
+    salt: [u8; 4],
     size: usize,
     pool: Arc<OnceCell<Vec<TorClient<tor_rtcompat::PreferredRuntime>>>>,
 }
@@ -37,12 +38,21 @@ impl std::fmt::Debug for TorAsync {
     }
 }
 
+// salt generator (sync, tiny, uses OS RNG)
+#[inline]
+fn gen_salt() -> [u8; 4] {
+    let mut s = [0u8; 4];
+    getrandom(&mut s).expect("failed to obtain random bytes for TorAsync salt");
+    s
+}
+
 impl Default for TorAsync {
     fn default() -> Self {
         // Do NOT bootstrap here; keep Default cheap and non-blocking.
         Self {
             size: DEFAULT_TOR_POOL_SIZE,
             pool: Arc::new(OnceCell::new()),
+            salt: gen_salt(),
         }
     }
 }
@@ -59,13 +69,12 @@ impl TorAsync {
         Self {
             size,
             pool: Arc::new(OnceCell::new()),
+            salt: gen_salt(),
         }
     }
 
     /// Ensure the Tor client pool is initialized; build on first use.
-    async fn ensure_pool(
-        &self,
-    ) -> Result<Vec<TorClient<tor_rtcompat::PreferredRuntime>>, Error> {
+    async fn ensure_pool(&self) -> Result<Vec<TorClient<tor_rtcompat::PreferredRuntime>>, Error> {
         let size = self.size;
         let pool_ref = self
             .pool
@@ -77,9 +86,7 @@ impl TorAsync {
                 for _ in 0..size {
                     clients.push(base.isolated_client());
                 }
-                Ok::<Vec<TorClient<tor_rtcompat::PreferredRuntime>>, Error>(
-                    clients,
-                )
+                Ok::<Vec<TorClient<tor_rtcompat::PreferredRuntime>>, Error>(clients)
             })
             .await?;
         Ok(pool_ref.clone())
@@ -107,6 +114,9 @@ impl TorAsync {
         }
 
         let mut h = FNV_OFFSET;
+
+        // Mix in salt first so it affects the entire hash space
+        h = fnv1a(h, &self.salt);
         // Include scheme and authority
         h = fnv1a(h, url.scheme().as_bytes());
         h = fnv1a(h, b"://");
@@ -244,7 +254,8 @@ impl Transport for TorAsync {
         R: serde::de::DeserializeOwned,
     {
         let body = serde_json::to_vec(payload).map_err(|e| Error::Custom(e.to_string()))?;
-        self.request::<R>(Method::POST, url, auth_token, Some(body)).await
+        self.request::<R>(Method::POST, url, auth_token, Some(body))
+            .await
     }
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
