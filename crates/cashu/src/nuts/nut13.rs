@@ -11,7 +11,7 @@ use tracing::instrument;
 use super::nut00::{BlindedMessage, PreMint, PreMintSecrets};
 use super::nut01::SecretKey;
 use super::nut02::Id;
-use crate::amount::SplitTarget;
+use crate::amount::{FeeAndAmounts, SplitTarget};
 use crate::dhke::blind_message;
 use crate::secret::Secret;
 use crate::util::hex;
@@ -127,12 +127,13 @@ impl PreMintSecrets {
         seed: &[u8; 64],
         amount: Amount,
         amount_split_target: &SplitTarget,
+        fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
         let mut pre_mint_secrets = PreMintSecrets::new(keyset_id);
 
         let mut counter = counter;
 
-        for amount in amount.split_targeted(amount_split_target)? {
+        for amount in amount.split_targeted(amount_split_target, fee_and_amounts)? {
             let secret = Secret::from_seed(seed, keyset_id, counter)?;
             let blinding_factor = SecretKey::from_seed(seed, keyset_id, counter)?;
 
@@ -486,10 +487,12 @@ mod tests {
                 .unwrap();
         let amount = Amount::from(1000u64);
         let split_target = SplitTarget::default();
+        let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
 
         // Test PreMintSecrets generation with v2 keyset
         let pre_mint_secrets =
-            PreMintSecrets::from_seed(keyset_id, 0, &seed, amount, &split_target).unwrap();
+            PreMintSecrets::from_seed(keyset_id, 0, &seed, amount, &split_target, &fee_and_amounts)
+                .unwrap();
 
         // Verify all secrets in the pre_mint use the new v2 derivation
         for (i, pre_mint) in pre_mint_secrets.secrets.iter().enumerate() {
