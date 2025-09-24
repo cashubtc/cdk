@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use cdk_common::subscription::Params;
 use cdk_common::ws::{WsMessageOrResponse, WsMethodRequest, WsRequest, WsUnsubscribeRequest};
+#[cfg(feature = "auth")]
 use cdk_common::{Method, RoutePath};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, RwLock};
