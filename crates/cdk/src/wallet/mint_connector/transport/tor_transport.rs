@@ -60,7 +60,10 @@ impl TorAsync {
         for _ in 0..n {
             clients.push(base.isolated_client());
         }
-        Ok(Self { pool: Arc::new(clients), idx: Arc::new(AtomicUsize::new(0)) })
+        Ok(Self {
+            pool: Arc::new(clients),
+            idx: Arc::new(AtomicUsize::new(0)),
+        })
     }
 
     #[inline]
@@ -223,7 +226,11 @@ impl Transport for TorAsync {
                     buf.push(ch);
                 }
             }
-            if !result.is_empty() { result } else { s.trim_matches('"').to_string() }
+            if !result.is_empty() {
+                result
+            } else {
+                s.trim_matches('"').to_string()
+            }
         }
 
         let mut url =
