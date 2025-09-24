@@ -10,6 +10,7 @@ use hyper::http::{Method, Request, Uri};
 use hyper::{Body, Client};
 use serde::de::DeserializeOwned;
 use tls_api::{TlsConnector as _, TlsConnectorBuilder as _};
+use tokio::sync::OnceCell;
 use url::Url;
 
 use super::super::Error;
