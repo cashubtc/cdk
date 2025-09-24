@@ -103,8 +103,7 @@ jobs:
             # HTTP/API layer - consolidated
             -p cdk-axum,
             -p cdk-axum --no-default-features,
-            -p cdk-axum --no-default-features --features redis,
-            -p cdk-axum --no-default-features --features "redis swagger",
+            -p cdk-axum --no-default-features --features swagger,
             
             # Lightning backends
             -p cdk-cln,
@@ -121,16 +120,13 @@ jobs:
             
             # FFI bindings
             -p cdk-ffi,
-            -p cdk-ffi --no-default-features,
-            -p cdk-ffi --no-default-features --features auth,
-            -p cdk-ffi --no-default-features --features bip353,
             
             # Binaries
             --bin cdk-cli,
             --bin cdk-cli --features sqlcipher,
             --bin cdk-cli --features redb,
             --bin cdk-mintd,
-            --bin cdk-mintd --features redis,
+
             --bin cdk-mintd --features sqlcipher,
             --bin cdk-mintd --no-default-features --features lnd --features sqlite,
             --bin cdk-mintd --no-default-features --features cln --features postgres,
@@ -341,7 +337,7 @@ jobs:
             -p cdk --no-default-features --features "wallet auth",
             -p cdk --no-default-features --features "http_subscription",
             -p cdk-axum,
-            -p cdk-axum --no-default-features --features redis,
+
             -p cdk-lnbits,
             -p cdk-fake-wallet,
             -p cdk-cln,
@@ -443,6 +439,16 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache

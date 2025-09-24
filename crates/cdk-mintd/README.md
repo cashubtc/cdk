@@ -151,6 +151,53 @@ After setup and first run, your directory will look like:
 - Log directories and files
 - Lightning backend data directories
 
+## Docker Usage
+
+CDK Mintd provides ready-to-use Docker images with multiple Lightning backend options.
+
+### Quick Start
+
+#### Standard mint with fakewallet backend (testing only):
+```bash
+docker-compose up
+```
+
+#### Mint with LDK Node backend:
+```bash
+# Option 1: Use dedicated ldk-node compose file
+docker-compose -f docker-compose.ldk-node.yaml up
+
+# Option 2: Use main compose file with profile
+docker-compose --profile ldk-node up
+```
+
+### Available Images
+
+- **`cashubtc/mintd:latest`** - Standard mint with default features
+- **`cashubtc/mintd-ldk-node:latest`** - Mint with LDK Node support
+
+### Configuration via Environment Variables
+
+All configuration can be done through environment variables:
+
+```yaml
+environment:
+  - CDK_MINTD_LN_BACKEND=ldk-node
+  - CDK_MINTD_DATABASE=sqlite
+  - CDK_MINTD_LISTEN_HOST=0.0.0.0
+  - CDK_MINTD_LISTEN_PORT=8085
+  - CDK_MINTD_LDK_NODE_NETWORK=testnet
+  - CDK_MINTD_LDK_NODE_ESPLORA_URL=https://blockstream.info/testnet/api
+```
+
+### Monitoring
+
+Both Prometheus metrics and Grafana dashboards are included:
+- Prometheus: http://localhost:9090
+- Grafana: http://localhost:3011 (admin/admin)
+
+For detailed Docker documentation, see [README-ldk-node.md](../../README-ldk-node.md).
+
 ## Testing Your Mint
 
 1. **Verify the mint is running**:

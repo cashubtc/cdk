@@ -4,7 +4,11 @@
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
-## [Unreleased]
+## [0.13.0](https://github.com/cashubtc/cdk/releases/tag/v0.13.0)
+
+### Summary
+
+Version 0.13.0 marks a major milestone for mobile development with the introduction of comprehensive native mobile bindings that enable building Cashu wallets for iOS and Android using Swift and Kotlin. The release introduces cdk-ffi, a new Foreign Function Interface crate that provides UniFFI-based bindings for Swift, Kotlin, and Python, with full wallet functionality including multi-mint support, BOLT12 payments, BIP-353 address resolution, and advanced features like P2PK conditions and authentication. Mobile bindings are distributed through dedicated repositories at https://github.com/cashubtc/cdk-kotlin and https://github.com/cashubtc/cdk-swift that provide native package management for Android/JVM and iOS/macOS platforms respectively. The release also delivers significant infrastructure improvements including an event-driven payment architecture with real-time notifications, enhanced database layer with generic key-value storage, improved HTTP transport with proxy support and BIP-353 DNS resolution, and new operational features like Prometheus metrics collection and dedicated authentication database support.
 
 ### Added
 - cdk-common: New `Event` enum for payment event handling with `PaymentReceived` variant ([thesimplekid]).
@@ -18,6 +22,17 @@
 - cdk-sql-common: Implementation of `MintKVStoreDatabase` trait for SQL-based databases with namespace support ([thesimplekid]).
 - cdk-common: Added `quote_id` field to `Transaction` struct for tracking associated mint or melt quote IDs ([thesimplekid]).
 - cdk-sql-common: Database migration to add `quote_id` column to transactions table for SQLite and PostgreSQL ([thesimplekid]).
+- cdk: Added `amount_mintable()` helper and stricter mint quote validation ([thesimplekid]).
+- cdk-sql-common: Added persistent `melt_request` storage with associated blinded messages; new migrations for SQLite and PostgreSQL ([thesimplekid]).
+- cdk-cln: Persist last `pay_index` in the mint KV store to avoid missed events across restarts ([thesimplekid]).
+- cdk: HTTP subscriptions emit BOLT12 notifications per NUT-17 ([crodas]).
+- cdk: DNS TXT resolution in HttpTransport and MintConnector for BIP‑353 lookups ([crodas]).
+- cdk-ffi: Wallet FFI bindings and async constructors ([davidcaseria]).
+- cdk-prometheus: New metrics crate and optional embedded Prometheus server; integrated metrics across HTTP, database, payments, and mint (feature: `prometheus`) ([asmo]).
+- cdk-mintd: Optional Prometheus metrics server with configurable address/port via config and env vars (feature: `prometheus`) ([thesimplekid]).
+- cdk-ldk-node: Web UI improvements (dynamic status, navigation, mobile support) ([erik]).
+- cdk-postgres: Dedicated auth database support with separate schema and migrations when auth is enabled ([thesimplekid]/[asmo]).
+
 
 ### Changed
 - cdk-common: Refactored `MintPayment` trait method `wait_any_incoming_payment` to `wait_payment_event` with event-driven architecture ([thesimplekid]).
@@ -25,9 +40,33 @@
 - cdk: Updated mint payment handling to process payment events through new `Event` enum pattern ([thesimplekid]).
 - cashu: Updated BOLT12 payment method specification from NUT-24 to NUT-25 ([thesimplekid]).
 - cdk: Updated BOLT12 import references from nut24 to nut25 module ([thesimplekid]).
+- cdk: Do not fallback from WebSocket to HTTP on first error in subscriptions; retry only when appropriate ([crodas]).
+- cdk: Abstracted HTTP Transport; centralized `pay_request` logic into the cdk library ([lollerfirst]).
+- cdk: MultiMintWallet refactor for clearer APIs and behavior when managing multiple mints ([davidcaseria]/[thesimplekid]).
+- cdk: Treat `None` proxy host matcher as "apply to all hosts" for HTTP transport ([lollerfirst]).
+- cdk: QuoteId handling unified as string in APIs and storage ([thesimplekid]).
+- cdk-axum: Close WebSocket connections sooner on shutdown/errors to avoid dangling clients ([crodas]).
+- cdk-sql-common: Consistent ordering for SQL migrations and build uses `OUT_DIR` for embedded migration files ([vnprc]).
+- cdk-signatory: Updated protobuf to latest spec and added signatory-related DB migrations ([crodas]).
+- cdk-redb: Bumped dependency version ([thesimplekid]).
 
-### Fixied
+### Fixed
 - cdk: Wallet melt track and use payment method from quote for BOLT11/BOLT12 routing ([thesimplekid]).
+- cdk: Improve error response details and mapping across HTTP/WS paths ([thesimplekid]).
+- cdk: Fix config being overwritten on startup in certain scenarios ([thesimplekid]).
+- cdk: WASM compatibility fixes for HTTP subscriptions and time handling (use `instant`) ([gudnuf]).
+- cdk-postgres: Fix reconnection in connection pool and migration prefixes.
+- cdk: Check keyset max order when generating/using keysets ([thesimplekid]).
+- cdk: Correct error code returned for duplicate signature conditions ([lollerfirst]).
+- cdk: Ensure all mint quotes are returned in listings ([thesimplekid]).
+- cdk-axum: Improve error response detail structure ([thesimplekid]).
+
+
+## [0.12.1](https://github.com/cashubtc/cdk/releases/tag/v0.12.1)
+
+### Fixed
+- cdk-postgres: TLS support for PostgreSQL connections ([asmogo]).
+- cdk: patch sha-512 derivation -> sha-256 derivation ([lollerfirst]).
 
 ## [0.12.0](https://github.com/cashubtc/cdk/releases/tag/v0.12.0)
 

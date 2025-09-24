@@ -4,6 +4,7 @@ use bitcoin::hashes::{sha256, Hash};
 use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
+use cdk_common::common::QuoteTTL;
 use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +69,12 @@ pub struct Info {
     ///
     /// This requires `mintd` was built with the `swagger` feature flag.
     pub enable_swagger_ui: Option<bool>,
+
+    /// Optional persisted quote TTL values (seconds) to initialize the database with
+    /// when RPC is disabled or on first-run when RPC is enabled.
+    /// If not provided, defaults are used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote_ttl: Option<QuoteTTL>,
 }
 
 impl Default for Info {
@@ -84,6 +91,7 @@ impl Default for Info {
             http_cache: cache::Config::default(),
             enable_swagger_ui: None,
             logging: LoggingConfig::default(),
+            quote_ttl: None,
         }
     }
 }
@@ -359,6 +367,30 @@ pub struct Database {
     pub postgres: Option<PostgresConfig>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuthDatabase {
+    pub postgres: Option<PostgresAuthConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostgresAuthConfig {
+    pub url: String,
+    pub tls_mode: Option<String>,
+    pub max_connections: Option<usize>,
+    pub connection_timeout_seconds: Option<u64>,
+}
+
+impl Default for PostgresAuthConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            tls_mode: Some("disable".to_string()),
+            max_connections: Some(20),
+            connection_timeout_seconds: Some(10),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostgresConfig {
     pub url: String,
@@ -449,6 +481,8 @@ pub struct Settings {
     pub fake_wallet: Option<FakeWallet>,
     pub grpc_processor: Option<GrpcProcessor>,
     pub database: Database,
+    #[cfg(feature = "auth")]
+    pub auth_database: Option<AuthDatabase>,
     #[cfg(feature = "management-rpc")]
     pub mint_management_rpc: Option<MintManagementRpc>,
     pub auth: Option<Auth>,

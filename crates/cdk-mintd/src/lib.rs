@@ -36,14 +36,14 @@ use cdk::nuts::CurrencyUnit;
 #[cfg(feature = "auth")]
 use cdk::nuts::{AuthRequired, Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{ContactInfo, MintVersion, PaymentMethod};
-use cdk::types::QuoteTTL;
 use cdk_axum::cache::HttpCache;
+use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
 // internal crate modules
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
 use cdk_common::payment::MintPayment;
-#[cfg(feature = "auth")]
+#[cfg(all(feature = "auth", feature = "postgres"))]
 use cdk_postgres::MintPgAuthDatabase;
 #[cfg(feature = "postgres")]
 use cdk_postgres::MintPgDatabase;
@@ -663,16 +663,20 @@ async fn setup_authentication(
             DatabaseEngine::Postgres => {
                 #[cfg(feature = "postgres")]
                 {
-                    // Get the PostgreSQL configuration, ensuring it exists
-                    let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
-                        anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
+                    // Require dedicated auth database configuration - no fallback to main database
+                    let auth_db_config = settings.auth_database.as_ref().ok_or_else(|| {
+                        anyhow!("Auth database configuration is required when using PostgreSQL with authentication. Set [auth_database] section in config file or CDK_MINTD_AUTH_POSTGRES_URL environment variable")
                     })?;
 
-                    if pg_config.url.is_empty() {
-                        bail!("PostgreSQL URL is required for auth database. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
+                    let auth_pg_config = auth_db_config.postgres.as_ref().ok_or_else(|| {
+                        anyhow!("PostgreSQL auth database configuration is required when using PostgreSQL with authentication. Set [auth_database.postgres] section in config file or CDK_MINTD_AUTH_POSTGRES_URL environment variable")
+                    })?;
+
+                    if auth_pg_config.url.is_empty() {
+                        bail!("Auth database PostgreSQL URL is required and cannot be empty. Set it in config file [auth_database.postgres] section or via CDK_MINTD_AUTH_POSTGRES_URL environment variable");
                     }
 
-                    Arc::new(MintPgAuthDatabase::new(pg_config.url.as_str()).await?)
+                    Arc::new(MintPgAuthDatabase::new(auth_pg_config.url.as_str()).await?)
                 }
                 #[cfg(not(feature = "postgres"))]
                 {
@@ -890,16 +894,21 @@ async fn start_services_with_shutdown(
         }
     }
 
+    // Determine the desired QuoteTTL from config/env or fall back to defaults
+    let desired_quote_ttl: QuoteTTL = settings.info.quote_ttl.unwrap_or_default();
+
     if rpc_enabled {
         if mint.mint_info().await.is_err() {
             tracing::info!("Mint info not set on mint, setting.");
+            // First boot with RPC enabled: seed from config
             mint.set_mint_info(mint_builder_info).await?;
-            mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
+            mint.set_quote_ttl(desired_quote_ttl).await?;
         } else {
-            if mint.localstore().get_quote_ttl().await.is_err() {
-                mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
+            // If QuoteTTL has never been persisted, seed it now from config
+            if !mint.quote_ttl_is_persisted().await? {
+                mint.set_quote_ttl(desired_quote_ttl).await?;
             }
-            // Add version information
+            // Add/refresh version information without altering stored mint_info fields
             let mint_version = MintVersion::new(
                 "cdk-mintd".to_string(),
                 CARGO_PKG_VERSION.unwrap_or("Unknown").to_string(),
@@ -911,9 +920,18 @@ async fn start_services_with_shutdown(
             tracing::info!("Mint info already set, not using config file settings.");
         }
     } else {
-        tracing::info!("RPC not enabled, using mint info from config.");
+        // RPC disabled: config is source of truth on every boot
+        tracing::info!("RPC not enabled, using mint info and quote TTL from config.");
+        let mut mint_builder_info = mint_builder_info;
+
+        if let Ok(mint_info) = mint.mint_info().await {
+            if mint_builder_info.pubkey.is_none() {
+                mint_builder_info.pubkey = mint_info.pubkey;
+            }
+        }
+
         mint.set_mint_info(mint_builder_info).await?;
-        mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000)).await?;
+        mint.set_quote_ttl(desired_quote_ttl).await?;
     }
 
     let mint_info = mint.mint_info().await?;
@@ -1120,10 +1138,38 @@ pub async fn run_mintd_with_shutdown(
 
     let mint_builder = MintBuilder::new(localstore);
 
+    // If RPC is enabled and DB contains mint_info already, initialize the builder from DB.
+    // This ensures subsequent builder modifications (like version injection) can respect stored values.
+    let maybe_mint_builder = {
+        #[cfg(feature = "management-rpc")]
+        {
+            if let Some(rpc_settings) = settings.mint_management_rpc.clone() {
+                if rpc_settings.enabled {
+                    // Best-effort: pull DB state into builder if present
+                    let mut tmp = mint_builder;
+                    if let Err(e) = tmp.init_from_db_if_present().await {
+                        tracing::warn!("Failed to init builder from DB: {}", e);
+                    }
+                    tmp
+                } else {
+                    mint_builder
+                }
+            } else {
+                mint_builder
+            }
+        }
+        #[cfg(not(feature = "management-rpc"))]
+        {
+            mint_builder
+        }
+    };
+
     let mint_builder =
-        configure_mint_builder(settings, mint_builder, runtime, work_dir, Some(kv)).await?;
+        configure_mint_builder(settings, maybe_mint_builder, runtime, work_dir, Some(kv)).await?;
     #[cfg(feature = "auth")]
     let mint_builder = setup_authentication(settings, work_dir, mint_builder, db_password).await?;
+
+    let config_mint_info = mint_builder.current_mint_info();
 
     let mint = build_mint(settings, keystore, mint_builder).await?;
 
@@ -1136,19 +1182,37 @@ pub async fn run_mintd_with_shutdown(
     // Pending melt quotes where the payment has **failed** inputs are reset to unspent
     mint.check_pending_melt_quotes().await?;
 
-    let result = start_services_with_shutdown(
+    start_services_with_shutdown(
         mint.clone(),
         settings,
         work_dir,
-        mint.mint_info().await?,
+        config_mint_info,
         shutdown_signal,
         routers,
     )
-    .await;
+    .await
+}
 
-    // Ensure any remaining tracing data is flushed
-    // This is particularly important for file-based logging
-    tracing::debug!("Flushing remaining trace data");
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    result
+    #[test]
+    fn test_postgres_auth_url_validation() {
+        // Test that the auth database config requires explicit configuration
+
+        // Test empty URL
+        let auth_config = config::PostgresAuthConfig {
+            url: "".to_string(),
+            ..Default::default()
+        };
+        assert!(auth_config.url.is_empty());
+
+        // Test non-empty URL
+        let auth_config = config::PostgresAuthConfig {
+            url: "postgresql://user:password@localhost:5432/auth_db".to_string(),
+            ..Default::default()
+        };
+        assert!(!auth_config.url.is_empty());
+    }
 }

@@ -7,6 +7,12 @@ mnemonic = ""
 # input_fee_ppk = 0
 # enable_swagger_ui = false
 
+[info.quote_ttl]
+# Prefer explicit fields over inline tables for readability and ease of overrides
+mint_ttl = 600
+melt_ttl = 120
+
+
 [info.logging]
 # Where to output logs: "stdout", "file", or "both" (default: "both")
 # Note: "stdout" actually outputs to stderr (standard error stream)
@@ -27,13 +33,10 @@ enabled = false
 #port = 9090
 # 
 [info.http_cache]
-# memory or redis
+# backend type: memory (default)
 backend = "memory"
 ttl = 60
 tti = 60
-# `key_prefix` and `connection_string` required for redis
-# key_prefix = "mintd"
-# connection_string = "redis://localhost"
 
 # NOTE: If [mint_management_rpc] is enabled these values will only be used on first start up.
 # Further changes must be made through the rpc.
@@ -61,6 +64,19 @@ engine = "sqlite"
 # Can also be set via CDK_MINTD_POSTGRES_URL or CDK_MINTD_DATABASE_URL environment variables
 # Environment variables take precedence over config file settings
 url = "postgresql://user:password@localhost:5432/cdk_mint"
+# TLS mode: "disable", "prefer", "require" (optional, defaults to "disable")
+tls_mode = "disable"
+# Maximum number of connections in the pool (optional, defaults to 20)
+max_connections = 20
+# Connection timeout in seconds (optional, defaults to 10)
+connection_timeout_seconds = 10
+
+# Auth database configuration (optional, only used when auth is enabled)
+[auth_database.postgres]
+# PostgreSQL connection URL for authentication database
+# Can also be set via CDK_MINTD_AUTH_POSTGRES_URL environment variable
+# Environment variables take precedence over config file settings
+url = "postgresql://user:password@localhost:5432/cdk_mint_auth"
 # TLS mode: "disable", "prefer", "require" (optional, defaults to "disable")
 tls_mode = "disable"
 # Maximum number of connections in the pool (optional, defaults to 20)

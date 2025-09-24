@@ -5,8 +5,8 @@ use std::str::FromStr;
 use std::sync::Mutex;
 
 use cdk::nuts::{CurrencyUnit as CdkCurrencyUnit, State as CdkState};
+use cdk::pub_sub::SubId;
 use cdk::Amount as CdkAmount;
-use cdk_common::pub_sub::SubId;
 use serde::{Deserialize, Serialize};
 
 use crate::error::FfiError;
@@ -388,34 +388,32 @@ pub enum SendKind {
     OfflineTolerance { tolerance: Amount },
 }
 
-impl From<SendKind> for cdk_common::wallet::SendKind {
+impl From<SendKind> for cdk::wallet::SendKind {
     fn from(kind: SendKind) -> Self {
         match kind {
-            SendKind::OnlineExact => cdk_common::wallet::SendKind::OnlineExact,
+            SendKind::OnlineExact => cdk::wallet::SendKind::OnlineExact,
             SendKind::OnlineTolerance { tolerance } => {
-                cdk_common::wallet::SendKind::OnlineTolerance(tolerance.into())
+                cdk::wallet::SendKind::OnlineTolerance(tolerance.into())
             }
-            SendKind::OfflineExact => cdk_common::wallet::SendKind::OfflineExact,
+            SendKind::OfflineExact => cdk::wallet::SendKind::OfflineExact,
             SendKind::OfflineTolerance { tolerance } => {
-                cdk_common::wallet::SendKind::OfflineTolerance(tolerance.into())
+                cdk::wallet::SendKind::OfflineTolerance(tolerance.into())
             }
         }
     }
 }
 
-impl From<cdk_common::wallet::SendKind> for SendKind {
-    fn from(kind: cdk_common::wallet::SendKind) -> Self {
+impl From<cdk::wallet::SendKind> for SendKind {
+    fn from(kind: cdk::wallet::SendKind) -> Self {
         match kind {
-            cdk_common::wallet::SendKind::OnlineExact => SendKind::OnlineExact,
-            cdk_common::wallet::SendKind::OnlineTolerance(tolerance) => SendKind::OnlineTolerance {
+            cdk::wallet::SendKind::OnlineExact => SendKind::OnlineExact,
+            cdk::wallet::SendKind::OnlineTolerance(tolerance) => SendKind::OnlineTolerance {
                 tolerance: tolerance.into(),
             },
-            cdk_common::wallet::SendKind::OfflineExact => SendKind::OfflineExact,
-            cdk_common::wallet::SendKind::OfflineTolerance(tolerance) => {
-                SendKind::OfflineTolerance {
-                    tolerance: tolerance.into(),
-                }
-            }
+            cdk::wallet::SendKind::OfflineExact => SendKind::OfflineExact,
+            cdk::wallet::SendKind::OfflineTolerance(tolerance) => SendKind::OfflineTolerance {
+                tolerance: tolerance.into(),
+            },
         }
     }
 }
@@ -1299,8 +1297,8 @@ pub struct Melted {
 
 // MeltQuoteState is just an alias for nut05::QuoteState, so we don't need a separate implementation
 
-impl From<cdk_common::common::Melted> for Melted {
-    fn from(melted: cdk_common::common::Melted) -> Self {
+impl From<cdk::types::Melted> for Melted {
+    fn from(melted: cdk::types::Melted) -> Self {
         Self {
             state: melted.state.into(),
             preimage: melted.preimage,
@@ -1469,9 +1467,314 @@ impl From<SupportedSettings> for cdk::nuts::nut06::SupportedSettings {
     }
 }
 
-/// FFI-compatible Nuts settings (simplified - only includes basic boolean flags)
+// -----------------------------
+// NUT-04/05 FFI Types
+// -----------------------------
+
+/// FFI-compatible MintMethodSettings (NUT-04)
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct MintMethodSettings {
+    pub method: PaymentMethod,
+    pub unit: CurrencyUnit,
+    pub min_amount: Option<Amount>,
+    pub max_amount: Option<Amount>,
+    /// For bolt11, whether mint supports setting invoice description
+    pub description: Option<bool>,
+}
+
+impl From<cdk::nuts::nut04::MintMethodSettings> for MintMethodSettings {
+    fn from(s: cdk::nuts::nut04::MintMethodSettings) -> Self {
+        let description = match s.options {
+            Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 { description }) => Some(description),
+            _ => None,
+        };
+        Self {
+            method: s.method.into(),
+            unit: s.unit.into(),
+            min_amount: s.min_amount.map(Into::into),
+            max_amount: s.max_amount.map(Into::into),
+            description,
+        }
+    }
+}
+
+impl TryFrom<MintMethodSettings> for cdk::nuts::nut04::MintMethodSettings {
+    type Error = FfiError;
+
+    fn try_from(s: MintMethodSettings) -> Result<Self, Self::Error> {
+        let options = match (s.method.clone(), s.description) {
+            (PaymentMethod::Bolt11, Some(description)) => {
+                Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 { description })
+            }
+            _ => None,
+        };
+        Ok(Self {
+            method: s.method.into(),
+            unit: s.unit.into(),
+            min_amount: s.min_amount.map(Into::into),
+            max_amount: s.max_amount.map(Into::into),
+            options,
+        })
+    }
+}
+
+/// FFI-compatible Nut04 Settings
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct Nut04Settings {
+    pub methods: Vec<MintMethodSettings>,
+    pub disabled: bool,
+}
+
+impl From<cdk::nuts::nut04::Settings> for Nut04Settings {
+    fn from(s: cdk::nuts::nut04::Settings) -> Self {
+        Self {
+            methods: s.methods.into_iter().map(Into::into).collect(),
+            disabled: s.disabled,
+        }
+    }
+}
+
+impl TryFrom<Nut04Settings> for cdk::nuts::nut04::Settings {
+    type Error = FfiError;
+
+    fn try_from(s: Nut04Settings) -> Result<Self, Self::Error> {
+        Ok(Self {
+            methods: s
+                .methods
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+            disabled: s.disabled,
+        })
+    }
+}
+
+/// FFI-compatible MeltMethodSettings (NUT-05)
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct MeltMethodSettings {
+    pub method: PaymentMethod,
+    pub unit: CurrencyUnit,
+    pub min_amount: Option<Amount>,
+    pub max_amount: Option<Amount>,
+    /// For bolt11, whether mint supports amountless invoices
+    pub amountless: Option<bool>,
+}
+
+impl From<cdk::nuts::nut05::MeltMethodSettings> for MeltMethodSettings {
+    fn from(s: cdk::nuts::nut05::MeltMethodSettings) -> Self {
+        let amountless = match s.options {
+            Some(cdk::nuts::nut05::MeltMethodOptions::Bolt11 { amountless }) => Some(amountless),
+            _ => None,
+        };
+        Self {
+            method: s.method.into(),
+            unit: s.unit.into(),
+            min_amount: s.min_amount.map(Into::into),
+            max_amount: s.max_amount.map(Into::into),
+            amountless,
+        }
+    }
+}
+
+impl TryFrom<MeltMethodSettings> for cdk::nuts::nut05::MeltMethodSettings {
+    type Error = FfiError;
+
+    fn try_from(s: MeltMethodSettings) -> Result<Self, Self::Error> {
+        let options = match (s.method.clone(), s.amountless) {
+            (PaymentMethod::Bolt11, Some(amountless)) => {
+                Some(cdk::nuts::nut05::MeltMethodOptions::Bolt11 { amountless })
+            }
+            _ => None,
+        };
+        Ok(Self {
+            method: s.method.into(),
+            unit: s.unit.into(),
+            min_amount: s.min_amount.map(Into::into),
+            max_amount: s.max_amount.map(Into::into),
+            options,
+        })
+    }
+}
+
+/// FFI-compatible Nut05 Settings
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct Nut05Settings {
+    pub methods: Vec<MeltMethodSettings>,
+    pub disabled: bool,
+}
+
+impl From<cdk::nuts::nut05::Settings> for Nut05Settings {
+    fn from(s: cdk::nuts::nut05::Settings) -> Self {
+        Self {
+            methods: s.methods.into_iter().map(Into::into).collect(),
+            disabled: s.disabled,
+        }
+    }
+}
+
+impl TryFrom<Nut05Settings> for cdk::nuts::nut05::Settings {
+    type Error = FfiError;
+
+    fn try_from(s: Nut05Settings) -> Result<Self, Self::Error> {
+        Ok(Self {
+            methods: s
+                .methods
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+            disabled: s.disabled,
+        })
+    }
+}
+
+/// FFI-compatible ProtectedEndpoint (for auth nuts)
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct ProtectedEndpoint {
+    /// HTTP method (GET, POST, etc.)
+    pub method: String,
+    /// Endpoint path
+    pub path: String,
+}
+
+/// FFI-compatible ClearAuthSettings (NUT-21)
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct ClearAuthSettings {
+    /// OpenID Connect discovery URL
+    pub openid_discovery: String,
+    /// OAuth 2.0 client ID
+    pub client_id: String,
+    /// Protected endpoints requiring clear authentication
+    pub protected_endpoints: Vec<ProtectedEndpoint>,
+}
+
+/// FFI-compatible BlindAuthSettings (NUT-22)
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct BlindAuthSettings {
+    /// Maximum number of blind auth tokens that can be minted per request
+    pub bat_max_mint: u64,
+    /// Protected endpoints requiring blind authentication
+    pub protected_endpoints: Vec<ProtectedEndpoint>,
+}
+
+impl From<cdk::nuts::ClearAuthSettings> for ClearAuthSettings {
+    fn from(settings: cdk::nuts::ClearAuthSettings) -> Self {
+        Self {
+            openid_discovery: settings.openid_discovery,
+            client_id: settings.client_id,
+            protected_endpoints: settings
+                .protected_endpoints
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<ClearAuthSettings> for cdk::nuts::ClearAuthSettings {
+    type Error = FfiError;
+
+    fn try_from(settings: ClearAuthSettings) -> Result<Self, Self::Error> {
+        Ok(Self {
+            openid_discovery: settings.openid_discovery,
+            client_id: settings.client_id,
+            protected_endpoints: settings
+                .protected_endpoints
+                .into_iter()
+                .map(|e| e.try_into())
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+impl From<cdk::nuts::BlindAuthSettings> for BlindAuthSettings {
+    fn from(settings: cdk::nuts::BlindAuthSettings) -> Self {
+        Self {
+            bat_max_mint: settings.bat_max_mint,
+            protected_endpoints: settings
+                .protected_endpoints
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<BlindAuthSettings> for cdk::nuts::BlindAuthSettings {
+    type Error = FfiError;
+
+    fn try_from(settings: BlindAuthSettings) -> Result<Self, Self::Error> {
+        Ok(Self {
+            bat_max_mint: settings.bat_max_mint,
+            protected_endpoints: settings
+                .protected_endpoints
+                .into_iter()
+                .map(|e| e.try_into())
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+impl From<cdk::nuts::ProtectedEndpoint> for ProtectedEndpoint {
+    fn from(endpoint: cdk::nuts::ProtectedEndpoint) -> Self {
+        Self {
+            method: match endpoint.method {
+                cdk::nuts::Method::Get => "GET".to_string(),
+                cdk::nuts::Method::Post => "POST".to_string(),
+            },
+            path: endpoint.path.to_string(),
+        }
+    }
+}
+
+impl TryFrom<ProtectedEndpoint> for cdk::nuts::ProtectedEndpoint {
+    type Error = FfiError;
+
+    fn try_from(endpoint: ProtectedEndpoint) -> Result<Self, Self::Error> {
+        let method = match endpoint.method.as_str() {
+            "GET" => cdk::nuts::Method::Get,
+            "POST" => cdk::nuts::Method::Post,
+            _ => {
+                return Err(FfiError::Generic {
+                    msg: format!(
+                        "Invalid HTTP method: {}. Only GET and POST are supported",
+                        endpoint.method
+                    ),
+                })
+            }
+        };
+
+        // Convert path string to RoutePath by matching against known paths
+        let route_path = match endpoint.path.as_str() {
+            "/v1/mint/quote/bolt11" => cdk::nuts::RoutePath::MintQuoteBolt11,
+            "/v1/mint/bolt11" => cdk::nuts::RoutePath::MintBolt11,
+            "/v1/melt/quote/bolt11" => cdk::nuts::RoutePath::MeltQuoteBolt11,
+            "/v1/melt/bolt11" => cdk::nuts::RoutePath::MeltBolt11,
+            "/v1/swap" => cdk::nuts::RoutePath::Swap,
+            "/v1/checkstate" => cdk::nuts::RoutePath::Checkstate,
+            "/v1/restore" => cdk::nuts::RoutePath::Restore,
+            "/v1/auth/blind/mint" => cdk::nuts::RoutePath::MintBlindAuth,
+            "/v1/mint/quote/bolt12" => cdk::nuts::RoutePath::MintQuoteBolt12,
+            "/v1/mint/bolt12" => cdk::nuts::RoutePath::MintBolt12,
+            "/v1/melt/quote/bolt12" => cdk::nuts::RoutePath::MeltQuoteBolt12,
+            "/v1/melt/bolt12" => cdk::nuts::RoutePath::MeltBolt12,
+            _ => {
+                return Err(FfiError::Generic {
+                    msg: format!("Unknown route path: {}", endpoint.path),
+                })
+            }
+        };
+
+        Ok(cdk::nuts::ProtectedEndpoint::new(method, route_path))
+    }
+}
+
+/// FFI-compatible Nuts settings (extended to include NUT-04 and NUT-05 settings)
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Nuts {
+    /// NUT04 Settings
+    pub nut04: Nut04Settings,
+    /// NUT05 Settings
+    pub nut05: Nut05Settings,
     /// NUT07 Settings - Token state check
     pub nut07_supported: bool,
     /// NUT08 Settings - Lightning fee return
@@ -1488,6 +1791,10 @@ pub struct Nuts {
     pub nut14_supported: bool,
     /// NUT20 Settings - Web sockets
     pub nut20_supported: bool,
+    /// NUT21 Settings - Clear authentication
+    pub nut21: Option<ClearAuthSettings>,
+    /// NUT22 Settings - Blind authentication
+    pub nut22: Option<BlindAuthSettings>,
     /// Supported currency units for minting
     pub mint_units: Vec<CurrencyUnit>,
     /// Supported currency units for melting
@@ -1496,7 +1803,20 @@ pub struct Nuts {
 
 impl From<cdk::nuts::Nuts> for Nuts {
     fn from(nuts: cdk::nuts::Nuts) -> Self {
+        let mint_units = nuts
+            .supported_mint_units()
+            .into_iter()
+            .map(|u| u.clone().into())
+            .collect();
+        let melt_units = nuts
+            .supported_melt_units()
+            .into_iter()
+            .map(|u| u.clone().into())
+            .collect();
+
         Self {
+            nut04: nuts.nut04.clone().into(),
+            nut05: nuts.nut05.clone().into(),
             nut07_supported: nuts.nut07.supported,
             nut08_supported: nuts.nut08.supported,
             nut09_supported: nuts.nut09.supported,
@@ -1505,17 +1825,51 @@ impl From<cdk::nuts::Nuts> for Nuts {
             nut12_supported: nuts.nut12.supported,
             nut14_supported: nuts.nut14.supported,
             nut20_supported: nuts.nut20.supported,
-            mint_units: nuts
-                .supported_mint_units()
-                .into_iter()
-                .map(|u| u.clone().into())
-                .collect(),
-            melt_units: nuts
-                .supported_melt_units()
-                .into_iter()
-                .map(|u| u.clone().into())
-                .collect(),
+            nut21: nuts.nut21.map(Into::into),
+            nut22: nuts.nut22.map(Into::into),
+            mint_units,
+            melt_units,
         }
+    }
+}
+
+impl TryFrom<Nuts> for cdk::nuts::Nuts {
+    type Error = FfiError;
+
+    fn try_from(n: Nuts) -> Result<Self, Self::Error> {
+        Ok(Self {
+            nut04: n.nut04.try_into()?,
+            nut05: n.nut05.try_into()?,
+            nut07: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut07_supported,
+            },
+            nut08: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut08_supported,
+            },
+            nut09: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut09_supported,
+            },
+            nut10: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut10_supported,
+            },
+            nut11: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut11_supported,
+            },
+            nut12: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut12_supported,
+            },
+            nut14: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut14_supported,
+            },
+            nut15: Default::default(),
+            nut17: Default::default(),
+            nut19: Default::default(),
+            nut20: cdk::nuts::nut06::SupportedSettings {
+                supported: n.nut20_supported,
+            },
+            nut21: n.nut21.map(|s| s.try_into()).transpose()?,
+            nut22: n.nut22.map(|s| s.try_into()).transpose()?,
+        })
     }
 }
 
@@ -1588,8 +1942,10 @@ impl From<cdk::nuts::MintInfo> for MintInfo {
     }
 }
 
-impl From<MintInfo> for cdk_common::nuts::MintInfo {
+impl From<MintInfo> for cdk::nuts::MintInfo {
     fn from(info: MintInfo) -> Self {
+        // Convert FFI Nuts back to cdk::nuts::Nuts (best-effort)
+        let nuts_cdk: cdk::nuts::Nuts = info.nuts.clone().try_into().unwrap_or_default();
         Self {
             name: info.name,
             pubkey: info.pubkey.and_then(|p| p.parse().ok()),
@@ -1599,7 +1955,7 @@ impl From<MintInfo> for cdk_common::nuts::MintInfo {
             contact: info
                 .contact
                 .map(|contacts| contacts.into_iter().map(Into::into).collect()),
-            nuts: cdk_common::nuts::Nuts::default(), // Simplified conversion
+            nuts: nuts_cdk,
             icon_url: info.icon_url,
             urls: info.urls,
             motd: info.motd,
@@ -1856,8 +2212,8 @@ pub struct Transaction {
     pub quote_id: Option<String>,
 }
 
-impl From<cdk_common::wallet::Transaction> for Transaction {
-    fn from(tx: cdk_common::wallet::Transaction) -> Self {
+impl From<cdk::wallet::types::Transaction> for Transaction {
+    fn from(tx: cdk::wallet::types::Transaction) -> Self {
         Self {
             id: tx.id().into(),
             mint_url: tx.mint_url.into(),
@@ -1875,11 +2231,11 @@ impl From<cdk_common::wallet::Transaction> for Transaction {
 }
 
 /// Convert FFI Transaction to CDK Transaction
-impl TryFrom<Transaction> for cdk_common::wallet::Transaction {
+impl TryFrom<Transaction> for cdk::wallet::types::Transaction {
     type Error = FfiError;
 
     fn try_from(tx: Transaction) -> Result<Self, Self::Error> {
-        let cdk_ys: Result<Vec<cdk_common::nuts::PublicKey>, _> =
+        let cdk_ys: Result<Vec<cdk::nuts::PublicKey>, _> =
             tx.ys.into_iter().map(|pk| pk.try_into()).collect();
         let cdk_ys = cdk_ys?;
 
@@ -1926,20 +2282,20 @@ pub enum TransactionDirection {
     Outgoing,
 }
 
-impl From<cdk_common::wallet::TransactionDirection> for TransactionDirection {
-    fn from(direction: cdk_common::wallet::TransactionDirection) -> Self {
+impl From<cdk::wallet::types::TransactionDirection> for TransactionDirection {
+    fn from(direction: cdk::wallet::types::TransactionDirection) -> Self {
         match direction {
-            cdk_common::wallet::TransactionDirection::Incoming => TransactionDirection::Incoming,
-            cdk_common::wallet::TransactionDirection::Outgoing => TransactionDirection::Outgoing,
+            cdk::wallet::types::TransactionDirection::Incoming => TransactionDirection::Incoming,
+            cdk::wallet::types::TransactionDirection::Outgoing => TransactionDirection::Outgoing,
         }
     }
 }
 
-impl From<TransactionDirection> for cdk_common::wallet::TransactionDirection {
+impl From<TransactionDirection> for cdk::wallet::types::TransactionDirection {
     fn from(direction: TransactionDirection) -> Self {
         match direction {
-            TransactionDirection::Incoming => cdk_common::wallet::TransactionDirection::Incoming,
-            TransactionDirection::Outgoing => cdk_common::wallet::TransactionDirection::Outgoing,
+            TransactionDirection::Incoming => cdk::wallet::types::TransactionDirection::Incoming,
+            TransactionDirection::Outgoing => cdk::wallet::types::TransactionDirection::Outgoing,
         }
     }
 }
@@ -1975,32 +2331,31 @@ impl TransactionId {
     /// Create from proofs
     pub fn from_proofs(proofs: &Proofs) -> Result<Self, FfiError> {
         let cdk_proofs: Vec<cdk::nuts::Proof> = proofs.iter().map(|p| p.inner.clone()).collect();
-        let id = cdk_common::wallet::TransactionId::from_proofs(cdk_proofs)?;
+        let id = cdk::wallet::types::TransactionId::from_proofs(cdk_proofs)?;
         Ok(Self {
             hex: id.to_string(),
         })
     }
 }
 
-impl From<cdk_common::wallet::TransactionId> for TransactionId {
-    fn from(id: cdk_common::wallet::TransactionId) -> Self {
+impl From<cdk::wallet::types::TransactionId> for TransactionId {
+    fn from(id: cdk::wallet::types::TransactionId) -> Self {
         Self {
             hex: id.to_string(),
         }
     }
 }
 
-impl TryFrom<TransactionId> for cdk_common::wallet::TransactionId {
+impl TryFrom<TransactionId> for cdk::wallet::types::TransactionId {
     type Error = FfiError;
 
     fn try_from(id: TransactionId) -> Result<Self, Self::Error> {
-        cdk_common::wallet::TransactionId::from_hex(&id.hex)
+        cdk::wallet::types::TransactionId::from_hex(&id.hex)
             .map_err(|e| FfiError::InvalidHex { msg: e.to_string() })
     }
 }
 
 /// FFI-compatible AuthProof
-#[cfg(feature = "auth")]
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct AuthProof {
     /// Keyset ID
@@ -2013,9 +2368,8 @@ pub struct AuthProof {
     pub y: String,
 }
 
-#[cfg(feature = "auth")]
-impl From<cdk_common::AuthProof> for AuthProof {
-    fn from(auth_proof: cdk_common::AuthProof) -> Self {
+impl From<cdk::nuts::AuthProof> for AuthProof {
+    fn from(auth_proof: cdk::nuts::AuthProof) -> Self {
         Self {
             keyset_id: auth_proof.keyset_id.to_string(),
             secret: auth_proof.secret.to_string(),
@@ -2028,28 +2382,26 @@ impl From<cdk_common::AuthProof> for AuthProof {
     }
 }
 
-#[cfg(feature = "auth")]
-impl TryFrom<AuthProof> for cdk_common::AuthProof {
+impl TryFrom<AuthProof> for cdk::nuts::AuthProof {
     type Error = FfiError;
 
     fn try_from(auth_proof: AuthProof) -> Result<Self, Self::Error> {
         use std::str::FromStr;
         Ok(Self {
-            keyset_id: cdk_common::Id::from_str(&auth_proof.keyset_id)
+            keyset_id: cdk::nuts::Id::from_str(&auth_proof.keyset_id)
                 .map_err(|e| FfiError::Serialization { msg: e.to_string() })?,
             secret: {
                 use std::str::FromStr;
-                cdk_common::secret::Secret::from_str(&auth_proof.secret)
+                cdk::secret::Secret::from_str(&auth_proof.secret)
                     .map_err(|e| FfiError::Serialization { msg: e.to_string() })?
             },
-            c: cdk_common::PublicKey::from_str(&auth_proof.c)
+            c: cdk::nuts::PublicKey::from_str(&auth_proof.c)
                 .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?,
             dleq: None, // FFI doesn't expose DLEQ proofs for simplicity
         })
     }
 }
 
-#[cfg(feature = "auth")]
 impl AuthProof {
     /// Convert AuthProof to JSON string
     pub fn to_json(&self) -> Result<String, FfiError> {
@@ -2058,14 +2410,12 @@ impl AuthProof {
 }
 
 /// Decode AuthProof from JSON string
-#[cfg(feature = "auth")]
 #[uniffi::export]
 pub fn decode_auth_proof(json: String) -> Result<AuthProof, FfiError> {
     Ok(serde_json::from_str(&json)?)
 }
 
 /// Encode AuthProof to JSON string
-#[cfg(feature = "auth")]
 #[uniffi::export]
 pub fn encode_auth_proof(proof: AuthProof) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&proof)?)
@@ -2150,7 +2500,7 @@ pub struct SubscribeParams {
     pub id: Option<String>,
 }
 
-impl From<SubscribeParams> for cdk_common::subscription::Params {
+impl From<SubscribeParams> for cdk::nuts::nut17::Params<cdk::pub_sub::SubId> {
     fn from(params: SubscribeParams) -> Self {
         let sub_id = params
             .id
@@ -2329,8 +2679,8 @@ pub struct KeySetInfo {
     pub input_fee_ppk: u64,
 }
 
-impl From<cdk_common::nuts::KeySetInfo> for KeySetInfo {
-    fn from(keyset: cdk_common::nuts::KeySetInfo) -> Self {
+impl From<cdk::nuts::KeySetInfo> for KeySetInfo {
+    fn from(keyset: cdk::nuts::KeySetInfo) -> Self {
         Self {
             id: keyset.id.to_string(),
             unit: keyset.unit.into(),
@@ -2340,17 +2690,11 @@ impl From<cdk_common::nuts::KeySetInfo> for KeySetInfo {
     }
 }
 
-impl From<KeySetInfo> for cdk_common::nuts::KeySetInfo {
+impl From<KeySetInfo> for cdk::nuts::KeySetInfo {
     fn from(keyset: KeySetInfo) -> Self {
         use std::str::FromStr;
         Self {
-            id: cdk_common::nuts::Id::from_str(&keyset.id).unwrap_or_else(|_| {
-                // Create a dummy keyset for empty mint keys
-                use std::collections::BTreeMap;
-                let empty_map = BTreeMap::new();
-                let empty_keys = cdk_common::nut01::MintKeys::new(empty_map);
-                cdk_common::nuts::Id::from(&empty_keys)
-            }),
+            id: cdk::nuts::Id::from_str(&keyset.id).unwrap(),
             unit: keyset.unit.into(),
             active: keyset.active,
             final_expiry: None,
@@ -2386,15 +2730,15 @@ pub struct PublicKey {
     pub hex: String,
 }
 
-impl From<cdk_common::nuts::PublicKey> for PublicKey {
-    fn from(key: cdk_common::nuts::PublicKey) -> Self {
+impl From<cdk::nuts::PublicKey> for PublicKey {
+    fn from(key: cdk::nuts::PublicKey) -> Self {
         Self {
             hex: key.to_string(),
         }
     }
 }
 
-impl TryFrom<PublicKey> for cdk_common::nuts::PublicKey {
+impl TryFrom<PublicKey> for cdk::nuts::PublicKey {
     type Error = FfiError;
 
     fn try_from(key: PublicKey) -> Result<Self, Self::Error> {
@@ -2417,8 +2761,8 @@ pub struct Keys {
     pub keys: HashMap<u64, String>,
 }
 
-impl From<cdk_common::nuts::Keys> for Keys {
-    fn from(keys: cdk_common::nuts::Keys) -> Self {
+impl From<cdk::nuts::Keys> for Keys {
+    fn from(keys: cdk::nuts::Keys) -> Self {
         // Keys doesn't have id and unit - we'll need to get these from context
         // For now, use placeholder values
         Self {
@@ -2433,7 +2777,7 @@ impl From<cdk_common::nuts::Keys> for Keys {
     }
 }
 
-impl TryFrom<Keys> for cdk_common::nuts::Keys {
+impl TryFrom<Keys> for cdk::nuts::Keys {
     type Error = FfiError;
 
     fn try_from(keys: Keys) -> Result<Self, Self::Error> {
@@ -2443,13 +2787,13 @@ impl TryFrom<Keys> for cdk_common::nuts::Keys {
         // Convert the HashMap to BTreeMap with proper types
         let mut keys_map = BTreeMap::new();
         for (amount_u64, pubkey_hex) in keys.keys {
-            let amount = cashu::Amount::from(amount_u64);
-            let pubkey = cashu::PublicKey::from_str(&pubkey_hex)
+            let amount = cdk::Amount::from(amount_u64);
+            let pubkey = cdk::nuts::PublicKey::from_str(&pubkey_hex)
                 .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?;
             keys_map.insert(amount, pubkey);
         }
 
-        Ok(cdk_common::nuts::Keys::new(keys_map))
+        Ok(cdk::nuts::Keys::new(keys_map))
     }
 }
 
@@ -2485,8 +2829,8 @@ pub struct KeySet {
     pub final_expiry: Option<u64>,
 }
 
-impl From<cashu::KeySet> for KeySet {
-    fn from(keyset: cashu::KeySet) -> Self {
+impl From<cdk::nuts::KeySet> for KeySet {
+    fn from(keyset: cdk::nuts::KeySet) -> Self {
         Self {
             id: keyset.id.to_string(),
             unit: keyset.unit.into(),
@@ -2501,7 +2845,7 @@ impl From<cashu::KeySet> for KeySet {
     }
 }
 
-impl TryFrom<KeySet> for cashu::KeySet {
+impl TryFrom<KeySet> for cdk::nuts::KeySet {
     type Error = FfiError;
 
     fn try_from(keyset: KeySet) -> Result<Self, Self::Error> {
@@ -2509,23 +2853,23 @@ impl TryFrom<KeySet> for cashu::KeySet {
         use std::str::FromStr;
 
         // Convert id
-        let id = cashu::Id::from_str(&keyset.id)
+        let id = cdk::nuts::Id::from_str(&keyset.id)
             .map_err(|e| FfiError::Serialization { msg: e.to_string() })?;
 
         // Convert unit
-        let unit: cashu::CurrencyUnit = keyset.unit.into();
+        let unit: cdk::nuts::CurrencyUnit = keyset.unit.into();
 
         // Convert keys
         let mut keys_map = BTreeMap::new();
         for (amount_u64, pubkey_hex) in keyset.keys {
-            let amount = cashu::Amount::from(amount_u64);
-            let pubkey = cashu::PublicKey::from_str(&pubkey_hex)
+            let amount = cdk::Amount::from(amount_u64);
+            let pubkey = cdk::nuts::PublicKey::from_str(&pubkey_hex)
                 .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?;
             keys_map.insert(amount, pubkey);
         }
-        let keys = cashu::Keys::new(keys_map);
+        let keys = cdk::nuts::Keys::new(keys_map);
 
-        Ok(cashu::KeySet {
+        Ok(cdk::nuts::KeySet {
             id,
             unit,
             keys,
@@ -2570,8 +2914,8 @@ pub struct ProofInfo {
     pub unit: CurrencyUnit,
 }
 
-impl From<cdk_common::common::ProofInfo> for ProofInfo {
-    fn from(info: cdk_common::common::ProofInfo) -> Self {
+impl From<cdk::types::ProofInfo> for ProofInfo {
+    fn from(info: cdk::types::ProofInfo) -> Self {
         Self {
             proof: std::sync::Arc::new(info.proof.into()),
             y: info.y.into(),
@@ -2586,15 +2930,15 @@ impl From<cdk_common::common::ProofInfo> for ProofInfo {
 /// Decode ProofInfo from JSON string
 #[uniffi::export]
 pub fn decode_proof_info(json: String) -> Result<ProofInfo, FfiError> {
-    let info: cdk_common::common::ProofInfo = serde_json::from_str(&json)?;
+    let info: cdk::types::ProofInfo = serde_json::from_str(&json)?;
     Ok(info.into())
 }
 
 /// Encode ProofInfo to JSON string
 #[uniffi::export]
 pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
-    // Convert to cdk_common::common::ProofInfo for serialization
-    let cdk_info = cdk_common::common::ProofInfo {
+    // Convert to cdk::types::ProofInfo for serialization
+    let cdk_info = cdk::types::ProofInfo {
         proof: info.proof.inner.clone(),
         y: info.y.try_into()?,
         mint_url: info.mint_url.try_into()?,
@@ -2614,23 +2958,17 @@ pub struct Id {
     pub hex: String,
 }
 
-impl From<cdk_common::nuts::Id> for Id {
-    fn from(id: cdk_common::nuts::Id) -> Self {
+impl From<cdk::nuts::Id> for Id {
+    fn from(id: cdk::nuts::Id) -> Self {
         Self {
             hex: id.to_string(),
         }
     }
 }
 
-impl From<Id> for cdk_common::nuts::Id {
+impl From<Id> for cdk::nuts::Id {
     fn from(id: Id) -> Self {
         use std::str::FromStr;
-        Self::from_str(&id.hex).unwrap_or_else(|_| {
-            // Create a dummy keyset for empty mint keys
-            use std::collections::BTreeMap;
-            let empty_map = BTreeMap::new();
-            let empty_keys = cdk_common::nut01::MintKeys::new(empty_map);
-            cdk_common::nuts::Id::from(&empty_keys)
-        })
+        Self::from_str(&id.hex).unwrap()
     }
 }

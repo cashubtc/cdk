@@ -11,7 +11,7 @@ use bip39::Mnemonic;
 use cashu::quote_id::QuoteId;
 use cashu::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::{self, MintDatabase, WalletDatabase};
+use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
@@ -271,16 +271,13 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         .with_description("pure test mint".to_string())
         .with_urls(vec!["https://aaa".to_string()]);
 
-    let tx_localstore = localstore.clone();
-    let mut tx = tx_localstore.begin_transaction().await?;
-
     let quote_ttl = QuoteTTL::new(10000, 10000);
-    tx.set_quote_ttl(quote_ttl).await?;
-    tx.commit().await?;
 
     let mint = mint_builder
         .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
         .await?;
+
+    mint.set_quote_ttl(quote_ttl).await?;
 
     mint.start().await?;
 

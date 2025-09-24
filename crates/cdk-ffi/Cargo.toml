@@ -5,22 +5,17 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+description = "FFI bindings for cdk wallet"
+homepage = "https://github.com/cashubtc/cdk"
 
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
 name = "cdk_ffi"
 
-[features]
-default = ["auth", "bip353"]
-auth = ["cdk/auth", "cdk-common/auth", "cashu/auth"]
-bip353 = ["cdk/bip353"]
-
 [dependencies]
 async-trait = { workspace = true }
 bip39 = { workspace = true }
-cashu = { workspace = true }
-cdk = { workspace = true, default-features = false, features = ["wallet"] }
-cdk-common = { workspace = true }
+cdk = { workspace = true, default-features = false, features = ["wallet", "auth", "bip353"] }
 cdk-sqlite = { workspace = true }
 ctor = "0.2"
 futures = { workspace = true }

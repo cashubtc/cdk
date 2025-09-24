@@ -348,7 +348,7 @@ impl Wallet {
         &self,
         params: SubscribeParams,
     ) -> Result<std::sync::Arc<ActiveSubscription>, FfiError> {
-        let cdk_params: cdk_common::subscription::Params = params.clone().into();
+        let cdk_params: cdk::nuts::nut17::Params<cdk::pub_sub::SubId> = params.clone().into();
         let sub_id = cdk_params.id.to_string();
         let active_sub = self.inner.subscribe(cdk_params).await;
         Ok(std::sync::Arc::new(ActiveSubscription::new(
@@ -404,7 +404,7 @@ impl Wallet {
 }
 
 /// BIP353 methods for Wallet
-#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[uniffi::export(async_runtime = "tokio")]
 impl Wallet {
     /// Get a quote for a BIP353 melt
@@ -426,7 +426,6 @@ impl Wallet {
 }
 
 /// Auth methods for Wallet
-#[cfg(feature = "auth")]
 #[uniffi::export(async_runtime = "tokio")]
 impl Wallet {
     /// Set Clear Auth Token (CAT) for authentication

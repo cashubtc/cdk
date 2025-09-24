@@ -43,7 +43,7 @@ impl Mint {
         request: String,
         options: Option<MeltOptions>,
     ) -> Result<(), Error> {
-        let mint_info = self.localstore.get_mint_info().await?;
+        let mint_info = self.mint_info().await?;
         let nut05 = mint_info.nuts.nut05;
 
         ensure_cdk!(!nut05.disabled, Error::MeltingDisabled);
@@ -196,7 +196,7 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
-        let melt_ttl = self.localstore.get_quote_ttl().await?.melt_ttl;
+        let melt_ttl = self.quote_ttl().await?.melt_ttl;
 
         let quote = MeltQuote::new(
             MeltPaymentRequest::Bolt11 {
@@ -856,7 +856,7 @@ impl Mint {
     }
 
     /// Process melt request marking proofs as spent
-    /// The melt request must be verifyed using [`Self::verify_melt_request`]
+    /// The melt request must be verified using [`Self::verify_melt_request`]
     /// before calling [`Self::process_melt_request`]
     #[instrument(skip_all)]
     pub async fn process_melt_request(

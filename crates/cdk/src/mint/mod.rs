@@ -50,6 +50,11 @@ pub use builder::{MintBuilder, MintMeltLimits};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use verification::Verification;
 
+const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
+const CDK_MINT_CONFIG_SECONDARY_NAMESPACE: &str = "config";
+const CDK_MINT_CONFIG_KV_KEY: &str = "mint_info";
+const CDK_MINT_QUOTE_TTL_KV_KEY: &str = "quote_ttl";
+
 /// Cashu Mint
 #[derive(Clone)]
 pub struct Mint {
@@ -150,26 +155,60 @@ impl Mint {
                 .count()
         );
 
-        let mint_info = if mint_info.pubkey.is_none() {
-            let mut info = mint_info;
-            info.pubkey = Some(keysets.pubkey);
-            info
-        } else {
-            mint_info
-        };
+        // Persist missing pubkey early to avoid losing it on next boot and ensure stable identity across restarts
+        let mut computed_info = mint_info;
+        if computed_info.pubkey.is_none() {
+            computed_info.pubkey = Some(keysets.pubkey);
+        }
 
-        let mint_store = localstore.clone();
-        let mut tx = mint_store.begin_transaction().await?;
-        tx.set_mint_info(mint_info.clone()).await?;
-        tx.set_quote_ttl(QuoteTTL::default()).await?;
-        tx.commit().await?;
+        match localstore
+            .kv_read(
+                CDK_MINT_PRIMARY_NAMESPACE,
+                CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                CDK_MINT_CONFIG_KV_KEY,
+            )
+            .await?
+        {
+            Some(bytes) => {
+                let mut stored: MintInfo = serde_json::from_slice(&bytes)?;
+                let mut mutated = false;
+                if stored.pubkey.is_none() && computed_info.pubkey.is_some() {
+                    stored.pubkey = computed_info.pubkey;
+                    mutated = true;
+                }
+                if mutated {
+                    let updated = serde_json::to_vec(&stored)?;
+                    let mut tx = localstore.begin_transaction().await?;
+                    tx.kv_write(
+                        CDK_MINT_PRIMARY_NAMESPACE,
+                        CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                        CDK_MINT_CONFIG_KV_KEY,
+                        &updated,
+                    )
+                    .await?;
+                    tx.commit().await?;
+                }
+            }
+            None => {
+                let bytes = serde_json::to_vec(&computed_info)?;
+                let mut tx = localstore.begin_transaction().await?;
+                tx.kv_write(
+                    CDK_MINT_PRIMARY_NAMESPACE,
+                    CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                    CDK_MINT_CONFIG_KV_KEY,
+                    &bytes,
+                )
+                .await?;
+                tx.commit().await?;
+            }
+        }
 
         Ok(Self {
             signatory,
             pubsub_manager: Arc::new(localstore.clone().into()),
             localstore,
             #[cfg(feature = "auth")]
-            oidc_client: mint_info.nuts.nut21.as_ref().map(|nut21| {
+            oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
                 OidcClient::new(
                     nut21.openid_discovery.clone(),
                     Some(nut21.client_id.clone()),
@@ -373,7 +412,17 @@ impl Mint {
     /// Get mint info
     #[instrument(skip_all)]
     pub async fn mint_info(&self) -> Result<MintInfo, Error> {
-        let mint_info = self.localstore.get_mint_info().await?;
+        let mint_info = self
+            .localstore
+            .kv_read(
+                CDK_MINT_PRIMARY_NAMESPACE,
+                CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                CDK_MINT_CONFIG_KV_KEY,
+            )
+            .await?
+            .ok_or(Error::CouldNotGetMintInfo)?;
+
+        let mint_info: MintInfo = serde_json::from_slice(&mint_info)?;
 
         #[cfg(feature = "auth")]
         let mint_info = if let Some(auth_db) = self.auth_localstore.as_ref() {
@@ -415,27 +464,78 @@ impl Mint {
     /// Set mint info
     #[instrument(skip_all)]
     pub async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error> {
+        tracing::info!("Updating mint info");
+        let mint_info_bytes = serde_json::to_vec(&mint_info)?;
         let mut tx = self.localstore.begin_transaction().await?;
-        tx.set_mint_info(mint_info).await?;
-        Ok(tx.commit().await?)
+        tx.kv_write(
+            CDK_MINT_PRIMARY_NAMESPACE,
+            CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+            CDK_MINT_CONFIG_KV_KEY,
+            &mint_info_bytes,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Get quote ttl
     #[instrument(skip_all)]
     pub async fn quote_ttl(&self) -> Result<QuoteTTL, Error> {
-        Ok(self.localstore.get_quote_ttl().await?)
+        let quote_ttl_bytes = self
+            .localstore
+            .kv_read(
+                CDK_MINT_PRIMARY_NAMESPACE,
+                CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                CDK_MINT_QUOTE_TTL_KV_KEY,
+            )
+            .await?;
+
+        match quote_ttl_bytes {
+            Some(bytes) => {
+                let quote_ttl: QuoteTTL = serde_json::from_slice(&bytes)?;
+                Ok(quote_ttl)
+            }
+            None => {
+                // Return default if not found
+                Ok(QuoteTTL::default())
+            }
+        }
     }
 
     /// Set quote ttl
     #[instrument(skip_all)]
     pub async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Error> {
+        let quote_ttl_bytes = serde_json::to_vec(&quote_ttl)?;
         let mut tx = self.localstore.begin_transaction().await?;
-        tx.set_quote_ttl(quote_ttl).await?;
-        Ok(tx.commit().await?)
+        tx.kv_write(
+            CDK_MINT_PRIMARY_NAMESPACE,
+            CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+            CDK_MINT_QUOTE_TTL_KV_KEY,
+            &quote_ttl_bytes,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// For each backend starts a task that waits for any invoice to be paid
     /// Once invoice is paid mint quote status is updated
+    /// Returns true if a QuoteTTL is persisted in the database. This is used to avoid overwriting
+    /// explicit configuration with defaults when the TTL has already been set by an operator.
+    #[instrument(skip_all)]
+    pub async fn quote_ttl_is_persisted(&self) -> Result<bool, Error> {
+        let quote_ttl_bytes = self
+            .localstore
+            .kv_read(
+                CDK_MINT_PRIMARY_NAMESPACE,
+                CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                CDK_MINT_QUOTE_TTL_KV_KEY,
+            )
+            .await?;
+
+        Ok(quote_ttl_bytes.is_some())
+    }
+
     #[instrument(skip_all)]
     async fn wait_for_paid_invoices(
         payment_processors: &HashMap<PaymentProcessorKey, DynMintPayment>,
@@ -625,13 +725,6 @@ impl Mint {
                 if payment_amount_quote_unit == Amount::ZERO {
                     tracing::error!("Zero amount payments should not be recorded.");
                     return Err(Error::AmountUndefined);
-                }
-
-                if mint_quote.payment_method == PaymentMethod::Bolt11
-                    && mint_quote.amount != Some(payment_amount_quote_unit)
-                {
-                    tracing::error!("Bolt11 incoming payment should equal mint quote.");
-                    return Err(Error::IncorrectQuoteAmount);
                 }
 
                 tracing::debug!(
