@@ -35,7 +35,18 @@ impl std::fmt::Debug for TorAsync {
 
 impl Default for TorAsync {
     fn default() -> Self {
-        panic!("TorAsync::default() is not supported. Use TorAsync::new() or TorAsync::with_pool_size().await");
+        // Default builds a TorAsync with the default pool size by blocking on bootstrap.
+        // If a Tokio runtime is present, use its handle; otherwise, create a temporary runtime.
+        let fut = Self::with_pool_size(DEFAULT_TOR_POOL_SIZE);
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle
+                .block_on(fut)
+                .unwrap_or_else(|e| panic!("TorAsync::default() bootstrap failed: {e}")),
+            Err(_) => tokio::runtime::Runtime::new()
+                .expect("failed to create temporary Tokio runtime for TorAsync::default()")
+                .block_on(fut)
+                .unwrap_or_else(|e| panic!("TorAsync::default() bootstrap failed: {e}")),
+        }
     }
 }
 
