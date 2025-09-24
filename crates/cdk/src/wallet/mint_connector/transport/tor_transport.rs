@@ -18,27 +18,20 @@ use super::super::Error;
 use crate::wallet::mint_connector::transport::{ErrorResponse, Transport};
 
 /// Fixed-size pool size
-pub const DEFAULT_TOR_POOL_SIZE: usize = 10;
-
-/// Shared inner state for TorAsync
-struct Inner {
-    /// Desired pool size (>=1). The actual pool is built lazily on first use.
-    size: usize,
-    /// Lazily initialized pool of isolated clients
-    pool: OnceCell<Arc<Vec<TorClient<tor_rtcompat::PreferredRuntime>>>>,
-}
+pub const DEFAULT_TOR_POOL_SIZE: usize = 3;
 
 /// Tor transport that maintains a pool of isolated TorClient handles
 #[derive(Clone)]
 pub struct TorAsync {
-    inner: Arc<Inner>,
+    size: usize,
+    pool: Arc<OnceCell<Vec<TorClient<tor_rtcompat::PreferredRuntime>>>>,
 }
 
 impl std::fmt::Debug for TorAsync {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let pool_len = self.inner.pool.get().map(|p| p.len());
+        let pool_len = self.pool.get().map(|p| p.len());
         f.debug_struct("TorAsync")
-            .field("configured_pool_size", &self.inner.size)
+            .field("configured_pool_size", &self.size)
             .field("initialized_pool_size", &pool_len)
             .finish()
     }
@@ -48,38 +41,33 @@ impl Default for TorAsync {
     fn default() -> Self {
         // Do NOT bootstrap here; keep Default cheap and non-blocking.
         Self {
-            inner: Arc::new(Inner {
-                size: DEFAULT_TOR_POOL_SIZE,
-                pool: OnceCell::new(),
-            }),
+            size: DEFAULT_TOR_POOL_SIZE,
+            pool: Arc::new(OnceCell::new()),
         }
     }
 }
 
 impl TorAsync {
     /// Create a TorAsync with default pool size (lazy bootstrapping)
-    pub async fn new() -> Result<Self, Error> {
-        Ok(Self::default())
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Create a TorAsync with the given pool size (lazy bootstrapping)
-    pub async fn with_pool_size(size: usize) -> Result<Self, Error> {
+    pub fn with_pool_size(size: usize) -> Self {
         let size = size.max(1);
-        Ok(Self {
-            inner: Arc::new(Inner {
-                size,
-                pool: OnceCell::new(),
-            }),
-        })
+        Self {
+            size,
+            pool: Arc::new(OnceCell::new()),
+        }
     }
 
     /// Ensure the Tor client pool is initialized; build on first use.
     async fn ensure_pool(
         &self,
-    ) -> Result<Arc<Vec<TorClient<tor_rtcompat::PreferredRuntime>>>, Error> {
-        let size = self.inner.size;
+    ) -> Result<Vec<TorClient<tor_rtcompat::PreferredRuntime>>, Error> {
+        let size = self.size;
         let pool_ref = self
-            .inner
             .pool
             .get_or_try_init(|| async move {
                 let base = TorClient::create_bootstrapped(TorClientConfig::default())
@@ -89,8 +77,8 @@ impl TorAsync {
                 for _ in 0..size {
                     clients.push(base.isolated_client());
                 }
-                Ok::<Arc<Vec<TorClient<tor_rtcompat::PreferredRuntime>>>, Error>(
-                    Arc::new(clients),
+                Ok::<Vec<TorClient<tor_rtcompat::PreferredRuntime>>, Error>(
+                    clients,
                 )
             })
             .await?;

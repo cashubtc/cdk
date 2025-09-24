@@ -190,8 +190,6 @@ impl MultiMintWallet {
             proxy_config: None,
             shared_tor_transport: Some(
                 TorAsync::new()
-                    .await
-                    .map_err(|e| Error::Custom(e.to_string()))?,
             ),
         };
 
