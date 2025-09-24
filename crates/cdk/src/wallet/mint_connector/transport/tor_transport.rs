@@ -12,74 +12,102 @@ use serde::de::DeserializeOwned;
 use tls_api::{TlsConnector as _, TlsConnectorBuilder as _};
 use url::Url;
 
+use tokio::sync::OnceCell;
+
 use super::super::Error;
 use crate::wallet::mint_connector::transport::{ErrorResponse, Transport};
 
 /// Fixed-size pool size
 const DEFAULT_TOR_POOL_SIZE: usize = 10;
 
+/// Shared inner state for TorAsync
+struct Inner {
+    /// Desired pool size (>=1). The actual pool is built lazily on first use.
+    size: usize,
+    /// Lazily initialized pool of isolated clients
+    pool: OnceCell<Arc<Vec<TorClient<tor_rtcompat::PreferredRuntime>>>>,
+}
+
 /// Tor transport that maintains a pool of isolated TorClient handles
 #[derive(Clone)]
 pub struct TorAsync {
-    /// Pool of isolated clients created from a single bootstrapped base client
-    pool: Arc<Vec<TorClient<tor_rtcompat::PreferredRuntime>>>,
+    inner: Arc<Inner>,
 }
 
 impl std::fmt::Debug for TorAsync {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pool_len = self.inner.pool.get().map(|p| p.len());
         f.debug_struct("TorAsync")
-            .field("pool_size", &self.pool.len())
+            .field("configured_pool_size", &self.inner.size)
+            .field("initialized_pool_size", &pool_len)
             .finish()
     }
 }
 
 impl Default for TorAsync {
     fn default() -> Self {
-        // Build on a separate OS thread to avoid nested-runtime panics.
-        let fut = Self::with_pool_size(DEFAULT_TOR_POOL_SIZE);
-        let init = || {
-            std::thread::spawn(move || {
-                tokio::runtime::Runtime::new()
-                    .expect("failed to create temporary Tokio runtime for TorAsync::default()")
-                    .block_on(fut)
-                    .unwrap_or_else(|e| panic!("TorAsync::default() bootstrap failed: {e}"))
-            })
-            .join()
-            .expect("failed to join TorAsync::default() initialization thread")
-        };
-
-        match tokio::runtime::Handle::try_current() {
-            Ok(_) => tokio::task::block_in_place(init),
-            Err(_) => init(),
+        // Do NOT bootstrap here; keep Default cheap and non-blocking.
+        Self {
+            inner: Arc::new(Inner {
+                size: DEFAULT_TOR_POOL_SIZE,
+                pool: OnceCell::new(),
+            }),
         }
     }
 }
 
 impl TorAsync {
-    /// Create a TorAsync with default pool size
+    /// Create a TorAsync with default pool size (lazy bootstrapping)
     pub async fn new() -> Result<Self, Error> {
-        Self::with_pool_size(DEFAULT_TOR_POOL_SIZE).await
+        Ok(Self::default())
     }
 
-    /// Create a TorAsync with the given pool size. Bootstraps arti and builds isolated clients.
+    /// Create a TorAsync with the given pool size (lazy bootstrapping)
     pub async fn with_pool_size(size: usize) -> Result<Self, Error> {
-        let n = size.max(1);
-        let base = TorClient::create_bootstrapped(TorClientConfig::default())
-            .await
-            .map_err(|e| Error::Custom(e.to_string()))?;
-        let mut clients = Vec::with_capacity(n);
-        for _ in 0..n {
-            clients.push(base.isolated_client());
-        }
+        let size = size.max(1);
         Ok(Self {
-            pool: Arc::new(clients),
+            inner: Arc::new(Inner {
+                size,
+                pool: OnceCell::new(),
+            }),
         })
     }
 
-    /// Choose client index deterministically per endpoint path + query and payload
+    /// Ensure the Tor client pool is initialized; build on first use.
+    async fn ensure_pool(
+        &self,
+    ) -> Result<Arc<Vec<TorClient<tor_rtcompat::PreferredRuntime>>>, Error> {
+        let size = self.inner.size;
+        let pool_ref = self
+            .inner
+            .pool
+            .get_or_try_init(|| async move {
+                let base = TorClient::create_bootstrapped(TorClientConfig::default())
+                    .await
+                    .map_err(|e| Error::Custom(e.to_string()))?;
+                let mut clients = Vec::with_capacity(size);
+                for _ in 0..size {
+                    clients.push(base.isolated_client());
+                }
+                Ok::<Arc<Vec<TorClient<tor_rtcompat::PreferredRuntime>>>, Error>(
+                    Arc::new(clients),
+                )
+            })
+            .await?;
+        Ok(pool_ref.clone())
+    }
+
+    /// Choose client index deterministically based on authority (scheme, host, port),
+    /// HTTP method, path+query, and optionally a body fingerprint.
     #[inline]
-    fn index_for_request(&self, url: &Url, body: Option<&[u8]>) -> usize {
-        // Use a tiny, dependency-free, stable hash (FNV-1a 64-bit)
+    fn index_for_request(
+        &self,
+        method: &http::Method,
+        url: &Url,
+        body: Option<&[u8]>,
+        pool_len: usize,
+    ) -> usize {
+        // Tiny, dependency-free, stable hash (FNV-1a 64-bit)
         const FNV_OFFSET: u64 = 0xcbf29ce484222325;
         const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
         fn fnv1a(mut h: u64, bytes: &[u8]) -> u64 {
@@ -91,15 +119,31 @@ impl TorAsync {
         }
 
         let mut h = FNV_OFFSET;
+        // Include scheme and authority
+        h = fnv1a(h, url.scheme().as_bytes());
+        h = fnv1a(h, b"://");
+        if let Some(host) = url.host_str() {
+            h = fnv1a(h, host.as_bytes());
+        }
+        if let Some(port) = url.port() {
+            h = fnv1a(h, b":");
+            let p = port.to_string();
+            h = fnv1a(h, p.as_bytes());
+        }
+        // Include HTTP method
+        h = fnv1a(h, method.as_str().as_bytes());
+        h = fnv1a(h, b" ");
+        // Include path and query
         h = fnv1a(h, url.path().as_bytes());
         if let Some(q) = url.query() {
             h = fnv1a(h, b"?");
             h = fnv1a(h, q.as_bytes());
         }
+        // Optionally include body (full). Could be trimmed in the future if needed.
         if let Some(b) = body {
             h = fnv1a(h, b);
         }
-        (h as usize) % self.pool.len()
+        (h as usize) % pool_len.max(1)
     }
 
     async fn request<R>(
@@ -117,9 +161,10 @@ impl TorAsync {
             .build()
             .map_err(|e| Error::Custom(format!("{e:?}")))?;
 
-        // Deterministically select an isolated client for request affinity
-        let idx = self.index_for_request(&url, body.as_deref());
-        let client_for_request = self.pool[idx].clone();
+        // Lazily initialize the pool and deterministically select a client
+        let pool = self.ensure_pool().await?;
+        let idx = self.index_for_request(&method, &url, body.as_deref(), pool.len());
+        let client_for_request = pool[idx].clone();
 
         let connector = ArtiHttpConnector::new(client_for_request, tls);
         let client: Client<_> = Client::builder().build(connector);
