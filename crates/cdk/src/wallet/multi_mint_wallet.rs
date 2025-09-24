@@ -188,7 +188,7 @@ impl MultiMintWallet {
             unit,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
             proxy_config: None,
-            shared_tor_transport: Some(TorAsync::default()),
+            shared_tor_transport: Some(TorAsync::new().await.map_err(|e| Error::Custom(e.to_string()))?),
         };
 
         // Automatically load wallets from database for this currency unit
