@@ -643,9 +643,10 @@ impl MintPayment for CdkLdkNode {
     }
 
     /// Pay request
-    #[instrument(skip(self, options))]
+    #[instrument(skip(self, quote_id, options))]
     async fn make_payment(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {

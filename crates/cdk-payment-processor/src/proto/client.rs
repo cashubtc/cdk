@@ -207,6 +207,7 @@ impl MintPayment for PaymentProcessorClient {
 
     async fn make_payment(
         &self,
+        quote_id: &QuoteId,
         _unit: &cdk_common::CurrencyUnit,
         options: cdk_common::payment::OutgoingPaymentOptions,
     ) -> Result<CdkMakePaymentResponse, Self::Err> {
@@ -244,6 +245,7 @@ impl MintPayment for PaymentProcessorClient {
                 payment_options: Some(payment_options),
                 partial_amount: None,
                 max_fee_amount: None,
+                quote_id: quote_id.to_string(),
             }))
             .await
             .map_err(|err| {

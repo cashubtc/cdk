@@ -703,7 +703,7 @@ impl Mint {
                 tx.commit().await?;
 
                 let pre = match ln
-                    .make_payment(&quote.unit, quote.clone().try_into()?)
+                    .make_payment(&quote.id, &quote.unit, quote.clone().try_into()?)
                     .await
                 {
                     Ok(pay)

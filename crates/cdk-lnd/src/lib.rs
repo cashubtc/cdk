@@ -388,6 +388,7 @@ impl MintPayment for Lnd {
     #[instrument(skip_all)]
     async fn make_payment(
         &self,
+        quote_id: &QuoteId,
         _unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {

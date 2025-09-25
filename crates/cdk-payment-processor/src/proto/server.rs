@@ -318,9 +318,12 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
             }
         };
 
+        let quote_id = QuoteId::from_str(&request.quote_id)
+            .map_err(|_| Status::invalid_argument("Invalid quote id"))?;
+
         let pay_response = self
             .inner
-            .make_payment(&unit, payment_options)
+            .make_payment(&quote_id, &unit, payment_options)
             .await
             .map_err(|err| {
                 tracing::error!("Could not make payment: {}", err);

@@ -302,6 +302,7 @@ pub trait MintPayment {
     /// Pay request
     async fn make_payment(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err>;
@@ -558,13 +559,14 @@ where
 
     async fn make_payment(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         let start = std::time::Instant::now();
         METRICS.inc_in_flight_requests("make_payment");
 
-        let result = self.inner.make_payment(unit, options).await;
+        let result = self.inner.make_payment(quote_id, unit, options).await;
 
         let duration = start.elapsed().as_secs_f64();
         let success = result.is_ok();

@@ -298,7 +298,7 @@ impl MintPayment for Cln {
     #[instrument(skip_all)]
     async fn get_payment_quote(
         &self,
-        _quote_id: &QuoteId,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
@@ -339,7 +339,7 @@ impl MintPayment for Cln {
                 let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
                 Ok(PaymentQuoteResponse {
-                    request_lookup_id: Some(PaymentIdentifier),
+                    request_lookup_id: Some(PaymentIdentifier::QuoteId(quote_id.to_owned())),
                     amount,
                     fee: fee.into(),
                     state: MeltQuoteState::Unpaid,
@@ -371,7 +371,7 @@ impl MintPayment for Cln {
                 let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
                 Ok(PaymentQuoteResponse {
-                    request_lookup_id: None,
+                    request_lookup_id: Some(PaymentIdentifier::QuoteId(quote_id.to_owned())),
                     amount,
                     fee: fee.into(),
                     state: MeltQuoteState::Unpaid,
