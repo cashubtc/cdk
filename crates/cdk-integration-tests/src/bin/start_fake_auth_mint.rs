@@ -85,6 +85,7 @@ async fn start_fake_auth_mint(
         swap: AuthType::Blind,
         restore: AuthType::Blind,
         check_proof_state: AuthType::Blind,
+        websocket_auth: AuthType::Blind,
     });
 
     // Set description for the mint

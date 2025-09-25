@@ -457,6 +457,9 @@ pub struct Auth {
     pub restore: AuthType,
     #[serde(default)]
     pub check_proof_state: AuthType,
+    /// Enable WebSocket authentication support
+    #[serde(default = "default_blind")]
+    pub websocket_auth: AuthType,
 }
 
 fn default_blind() -> AuthType {
