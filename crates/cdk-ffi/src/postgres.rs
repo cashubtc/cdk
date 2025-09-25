@@ -1,15 +1,16 @@
-use crate::{
-    CurrencyUnit, FfiError, Id, KeySet, KeySetInfo, Keys, MeltQuote, MintInfo, MintQuote, MintUrl,
-    ProofInfo, ProofState, PublicKey, SpendingConditions, Transaction, TransactionDirection,
-    TransactionId, WalletDatabase,
-};
-#[cfg(feature = "postgres")]
-use cdk_postgres::WalletPgDatabase as CdkWalletPgDatabase;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 // Bring the CDK wallet database trait into scope so trait methods resolve on the inner DB
 use cdk::cdk_database::WalletDatabase as CdkWalletDatabase;
+#[cfg(feature = "postgres")]
+use cdk_postgres::WalletPgDatabase as CdkWalletPgDatabase;
+
+use crate::{
+    CurrencyUnit, FfiError, Id, KeySet, KeySetInfo, Keys, MeltQuote, MintInfo, MintQuote, MintUrl,
+    ProofInfo, ProofState, PublicKey, SpendingConditions, Transaction, TransactionDirection,
+    TransactionId, WalletDatabase,
+};
 
 #[derive(uniffi::Object)]
 pub struct WalletPostgresDatabase {

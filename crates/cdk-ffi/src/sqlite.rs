@@ -1,11 +1,13 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use cdk_sqlite::wallet::WalletSqliteDatabase as CdkWalletSqliteDatabase;
+
 use crate::{
     CurrencyUnit, FfiError, Id, KeySet, KeySetInfo, Keys, MeltQuote, MintInfo, MintQuote, MintUrl,
     ProofInfo, ProofState, PublicKey, SpendingConditions, Transaction, TransactionDirection,
     TransactionId, WalletDatabase,
 };
-use cdk_sqlite::wallet::WalletSqliteDatabase as CdkWalletSqliteDatabase;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 /// FFI-compatible WalletSqliteDatabase implementation that implements the WalletDatabase trait
 #[derive(uniffi::Object)]
