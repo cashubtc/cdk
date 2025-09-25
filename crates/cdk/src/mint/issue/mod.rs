@@ -1,7 +1,7 @@
 use cdk_common::mint::MintQuote;
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
-    IncomingPaymentOptions, WaitPaymentResponse,
+    IncomingPaymentOptions, PaymentIdentifier, WaitPaymentResponse,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
@@ -281,16 +281,24 @@ impl Mint {
                 }
             };
 
+            // Generate quote ID first so it can be passed to the payment processor
+            let quote_id = QuoteId::new_uuid();
+
             let create_invoice_response = ln
-                .create_incoming_payment_request(&unit, payment_options)
+                .create_incoming_payment_request(&quote_id, &unit, payment_options)
                 .await
                 .map_err(|err| {
                     tracing::error!("Could not create invoice: {}", err);
                     Error::InvalidPaymentRequest
                 })?;
 
+            debug_assert!(matches!(
+                create_invoice_response.request_lookup_id,
+                PaymentIdentifier::QuoteId(_)
+            ));
+
             let quote = MintQuote::new(
-                None,
+                Some(quote_id),
                 create_invoice_response.request.to_string(),
                 unit.clone(),
                 amount,

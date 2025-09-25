@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::hashes::sha256::Hash;
+use bitcoin::hashes::Hash as OtherHash;
 use cdk_common::amount::{to_unit, Amount};
 use cdk_common::common::FeeReserve;
 use cdk_common::database::mint::DynMintKVStore;
@@ -24,7 +25,7 @@ use cdk_common::payment::{
     OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk_common::util::{hex, unix_time};
-use cdk_common::Bolt11Invoice;
+use cdk_common::{Bolt11Invoice, QuoteId};
 use cln_rpc::model::requests::{
     DecodeRequest, FetchinvoiceRequest, InvoiceRequest, ListinvoicesRequest, ListpaysRequest,
     OfferRequest, PayRequest, WaitanyinvoiceRequest,
@@ -37,17 +38,47 @@ use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny, Sha256};
 use cln_rpc::ClnRpc;
 use error::Error;
 use futures::{Stream, StreamExt};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use uuid::Uuid;
 
-pub mod error;
+use crate::database::IncomingPaymentIdentifier;
+use crate::logging_helpers::{PaymentContext, PaymentType};
 
-// KV Store constants for CLN
-const CLN_KV_PRIMARY_NAMESPACE: &str = "cdk_cln_lightning_backend";
-const CLN_KV_SECONDARY_NAMESPACE: &str = "payment_indices";
-const LAST_PAY_INDEX_KV_KEY: &str = "last_pay_index";
+mod database;
+pub mod error;
+mod logging_helpers;
+
+/// Payment status response from CLN
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PaymentStatus {
+    /// Payment status
+    pub status: MeltQuoteState,
+    /// Paymant hash
+    pub payment_hash: [u8; 32],
+    /// Payment proof (preimage as hex string)
+    pub payment_proof: Option<String>,
+    /// Total amount spent
+    pub total_spent: Amount,
+}
+
+impl PaymentStatus {
+    fn unpaid(&self) -> Result<(), payment::Error> {
+        match self.status {
+            MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => Ok(()),
+            MeltQuoteState::Paid => {
+                tracing::debug!("Melt attempted on invoice already paid");
+                Err(payment::Error::InvoiceAlreadyPaid)
+            }
+            MeltQuoteState::Pending => {
+                tracing::debug!("Melt attempted on invoice already pending");
+                Err(payment::Error::InvoicePaymentPending)
+            }
+        }
+    }
+}
 
 /// CLN mint backend
 #[derive(Clone)]
@@ -56,8 +87,10 @@ pub struct Cln {
     fee_reserve: FeeReserve,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
-    kv_store: DynMintKVStore,
+    database: database::Database,
 }
+
+// enum PaymentId {}
 
 impl Cln {
     /// Create new [`Cln`]
@@ -66,12 +99,13 @@ impl Cln {
         fee_reserve: FeeReserve,
         kv_store: DynMintKVStore,
     ) -> Result<Self, Error> {
+        let database = database::Database::new(kv_store);
         Ok(Self {
             rpc_socket,
             fee_reserve,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
-            kv_store,
+            database,
         })
     }
 }
@@ -100,52 +134,35 @@ impl MintPayment for Cln {
         self.wait_invoice_cancel_token.cancel()
     }
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(component = "cln", operation = "wait_payment_event"))]
     async fn wait_payment_event(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
-        tracing::info!(
-            "CLN: Starting wait_any_incoming_payment with socket: {:?}",
-            self.rpc_socket
-        );
-
         let last_pay_index = self.get_last_pay_index().await?.inspect(|&idx| {
-            tracing::info!("CLN: Found last payment index: {}", idx);
+            tracing::debug!(last_pay_index = idx, "Retrieved last payment index");
         });
 
-        tracing::debug!("CLN: Connecting to CLN node...");
-        let cln_client = match cln_rpc::ClnRpc::new(&self.rpc_socket).await {
-            Ok(client) => {
-                tracing::debug!("CLN: Successfully connected to CLN node");
-                client
-            }
-            Err(err) => {
-                tracing::error!("CLN: Failed to connect to CLN node: {}", err);
-                return Err(Error::from(err).into());
-            }
-        };
-
-        tracing::debug!("CLN: Creating stream processing pipeline");
-        let kv_store = self.kv_store.clone();
+        let cln_client = self.cln_client().await?;
+        let database = self.database.clone();
         let stream = futures::stream::unfold(
             (
                 cln_client,
                 last_pay_index,
                 self.wait_invoice_cancel_token.clone(),
                 Arc::clone(&self.wait_invoice_is_active),
-                kv_store,
+                database,
             ),
-            |(mut cln_client, mut last_pay_idx, cancel_token, is_active, kv_store)| async move {
+            |(mut cln_client, mut last_pay_idx, cancel_token, is_active, database)| async move {
                 // Set the stream as active
                 is_active.store(true, Ordering::SeqCst);
-                tracing::debug!("CLN: Stream is now active, waiting for invoice events with lastpay_index: {:?}", last_pay_idx);
+                tracing::debug!(last_pay_index = ?last_pay_idx, "Stream is now active, waiting for invoice events");
 
                 loop {
                     tokio::select! {
                         _ = cancel_token.cancelled() => {
                             // Set the stream as inactive
                             is_active.store(false, Ordering::SeqCst);
-                            tracing::info!("CLN: Invoice stream cancelled");
+                            tracing::info!("Invoice stream cancelled");
                             // End the stream
                             return None;
                         }
@@ -153,23 +170,20 @@ impl MintPayment for Cln {
                             timeout: None,
                             lastpay_index: last_pay_idx,
                         })) => {
-                            tracing::debug!("CLN: Received response from WaitAnyInvoice call");
                             match result {
                                 Ok(invoice) => {
-                                    tracing::debug!("CLN: Successfully received invoice data");
                                         // Try to convert the invoice to WaitanyinvoiceResponse
                             let wait_any_response_result: Result<WaitanyinvoiceResponse, _> =
                                 invoice.try_into();
 
                             let wait_any_response = match wait_any_response_result {
                                 Ok(response) => {
-                                    tracing::debug!("CLN: Parsed WaitAnyInvoice response successfully");
                                     response
                                 }
                                 Err(e) => {
                                     tracing::warn!(
-                                        "CLN: Failed to parse WaitAnyInvoice response: {:?}",
-                                        e
+                                        error = ?e,
+                                        "Failed to parse WaitAnyInvoice response"
                                     );
                                     // Continue to the next iteration without panicking
                                     continue;
@@ -180,47 +194,32 @@ impl MintPayment for Cln {
                             // We only want to yield invoices that have been paid
                             match wait_any_response.status {
                                 WaitanyinvoiceStatus::PAID => {
-                                    tracing::info!("CLN: Invoice with payment index {} is PAID", 
-                                                 wait_any_response.pay_index.unwrap_or_default());
+                                    tracing::info!(pay_index = ?wait_any_response.pay_index, "Invoice is PAID");
                                 }
                                 WaitanyinvoiceStatus::EXPIRED => {
-                                    tracing::debug!("CLN: Invoice with payment index {} is EXPIRED, skipping", 
-                                                  wait_any_response.pay_index.unwrap_or_default());
+                                    tracing::debug!(pay_index = ?wait_any_response.pay_index, "Invoice is EXPIRED, skipping");
                                     continue;
                                 }
                             }
 
                             last_pay_idx = wait_any_response.pay_index;
-                            tracing::debug!("CLN: Updated last_pay_idx to {:?}", last_pay_idx);
-
 
                             // Store the updated pay index in KV store for persistence
                             if let Some(pay_index) = last_pay_idx {
-                                let index_str = pay_index.to_string();
-                                if let Ok(mut tx) = kv_store.begin_transaction().await {
-                                    if let Err(e) = tx.kv_write(CLN_KV_PRIMARY_NAMESPACE, CLN_KV_SECONDARY_NAMESPACE, LAST_PAY_INDEX_KV_KEY, index_str.as_bytes()).await {
-                                        tracing::warn!("CLN: Failed to write last pay index {} to KV store: {}", pay_index, e);
-                                    } else if let Err(e) = tx.commit().await {
-                                        tracing::warn!("CLN: Failed to commit last pay index {} to KV store: {}", pay_index, e);
-                                    } else {
-                                        tracing::debug!("CLN: Stored last pay index {} in KV store", pay_index);
-                                    }
-                                } else {
-                                    tracing::warn!("CLN: Failed to begin KV transaction for storing pay index {}", pay_index);
+                                if let Err(e) = database.store_last_pay_index(pay_index).await {
+                                    tracing::warn!(pay_index = pay_index, error = %e, "Failed to store last pay index to KV store");
                                 }
                             }
 
                             let payment_hash = wait_any_response.payment_hash;
-                            tracing::debug!("CLN: Payment hash: {}", payment_hash);
 
                             let amount_msats = match wait_any_response.amount_received_msat {
                                 Some(amt) => {
-                                    tracing::info!("CLN: Received payment of {} msats for {}", 
-                                                 amt.msat(), payment_hash);
+                                    tracing::info!(amount_msat = amt.msat(), payment_hash = %payment_hash, "Received payment");
                                     amt
                                 }
                                 None => {
-                                    tracing::error!("CLN: No amount in paid invoice, this should not happen");
+                                    tracing::error!("No amount in paid invoice, this should not happen");
                                     continue;
                                 }
                             };
@@ -232,7 +231,7 @@ impl MintPayment for Cln {
                                 // Since this is not returned in the wait any response,
                                 // we need to do a second query for it.
                                 Some(bolt12) => {
-                                    tracing::info!("CLN: Processing BOLT12 payment, bolt12 value: {}", bolt12);
+                                    tracing::info!(bolt12 = %bolt12, "Processing BOLT12 payment");
                                     match fetch_invoice_by_payment_hash(
                                         &mut cln_client,
                                         payment_hash,
@@ -241,29 +240,57 @@ impl MintPayment for Cln {
                                     {
                                         Ok(Some(invoice)) => {
                                             if let Some(local_offer_id) = invoice.local_offer_id {
-                                                tracing::info!("CLN: Received bolt12 payment of {} msats for offer {}", 
-                                                             amount_msats.msat(), local_offer_id);
-                                                PaymentIdentifier::OfferId(local_offer_id.to_string())
+                                                tracing::info!(amount_msat = amount_msats.msat(), offer_id = %local_offer_id, "Received bolt12 payment");
+                                                // Look up quote ID by offer ID
+                                                match database.get_quote_id_by_incoming_bolt12_offer(&local_offer_id.to_string()).await {
+                                                    Ok(Some(quote_id)) => {
+                                                        tracing::info!(quote_id = %quote_id, offer_id = %local_offer_id, "Found quote_id for offer_id");
+                                                        PaymentIdentifier::QuoteId(quote_id)
+                                                    }
+                                                    Ok(None) => {
+                                                        tracing::warn!(offer_id = %local_offer_id, "No quote_id found for offer_id, falling back to offer_id");
+                                                        PaymentIdentifier::OfferId(local_offer_id.to_string())
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::error!(offer_id = %local_offer_id, error = %e, "Database error looking up quote_id for offer_id, falling back to offer_id");
+                                                        PaymentIdentifier::OfferId(local_offer_id.to_string())
+                                                    }
+                                                }
                                             } else {
-                                                tracing::warn!("CLN: BOLT12 invoice has no local_offer_id, skipping");
+                                                tracing::warn!("BOLT12 invoice has no local_offer_id, skipping");
                                                 continue;
                                             }
                                         }
                                         Ok(None) => {
-                                            tracing::warn!("CLN: Failed to find invoice by payment hash, skipping");
+                                            tracing::warn!("Failed to find invoice by payment hash, skipping");
                                             continue;
                                         }
                                         Err(e) => {
                                             tracing::warn!(
-                                                "CLN: Error fetching invoice by payment hash: {e}"
+                                                error = %e,
+                                                "Error fetching invoice by payment hash"
                                             );
                                             continue;
                                         }
                                     }
                                 }
                                 None => {
-                                 tracing::info!("CLN: Processing BOLT11 payment with hash {}", payment_hash);
-                                 PaymentIdentifier::PaymentHash(*payment_hash.as_ref())
+                                    tracing::info!(payment_hash = %payment_hash, "Processing BOLT11 payment");
+                                    // Look up quote ID by payment hash
+                                    match database.get_quote_id_by_incoming_bolt11_hash(payment_hash.as_ref()).await {
+                                        Ok(Some(quote_id)) => {
+                                            tracing::info!(quote_id = %quote_id, payment_hash = %payment_hash, "Found quote_id for payment_hash");
+                                            PaymentIdentifier::QuoteId(quote_id)
+                                        }
+                                        Ok(None) => {
+                                            tracing::warn!(payment_hash = %payment_hash, "No quote_id found for payment_hash, falling back to payment_hash");
+                                            PaymentIdentifier::PaymentHash(*payment_hash.as_ref())
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(payment_hash = %payment_hash, error = %e, "Database error looking up quote_id for payment_hash, falling back to payment_hash");
+                                            PaymentIdentifier::PaymentHash(*payment_hash.as_ref())
+                                        }
+                                    }
                                 },
                             };
 
@@ -273,13 +300,12 @@ impl MintPayment for Cln {
                                 unit: CurrencyUnit::Msat,
                                 payment_id: payment_hash.to_string()
                             };
-                            tracing::info!("CLN: Created WaitPaymentResponse with amount {} msats", amount_msats.msat());
                             let event = Event::PaymentReceived(response);
 
-                            break Some((event, (cln_client, last_pay_idx, cancel_token, is_active, kv_store)));
+                            break Some((event, (cln_client, last_pay_idx, cancel_token, is_active, database)));
                                 }
                                 Err(e) => {
-                                    tracing::warn!("CLN: Error fetching invoice: {e}");
+                                    tracing::warn!(error = %e, "Error fetching invoice");
                                     tokio::time::sleep(Duration::from_secs(1)).await;
                                     continue;
                                 }
@@ -291,13 +317,13 @@ impl MintPayment for Cln {
         )
         .boxed();
 
-        tracing::info!("CLN: Successfully initialized invoice stream");
         Ok(stream)
     }
 
     #[instrument(skip_all)]
     async fn get_payment_quote(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
@@ -331,18 +357,12 @@ impl MintPayment for Cln {
                 // Convert to target unit
                 let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
 
-                // Calculate fee
-                let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
-                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-                let fee = max(relative_fee_reserve, absolute_fee_reserve);
+                let fee = self.calculate_fee(amount);
 
                 Ok(PaymentQuoteResponse {
-                    request_lookup_id: Some(PaymentIdentifier::PaymentHash(
-                        *bolt11_options.bolt11.payment_hash().as_ref(),
-                    )),
+                    request_lookup_id: Some(PaymentIdentifier::QuoteId(quote_id.to_owned())),
                     amount,
-                    fee: fee.into(),
+                    fee,
                     state: MeltQuoteState::Unpaid,
                     unit: unit.clone(),
                 })
@@ -365,16 +385,12 @@ impl MintPayment for Cln {
                 // Convert to target unit
                 let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
 
-                // Calculate fee
-                let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
-                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-                let fee = max(relative_fee_reserve, absolute_fee_reserve);
+                let fee = self.calculate_fee(amount);
 
                 Ok(PaymentQuoteResponse {
-                    request_lookup_id: None,
+                    request_lookup_id: Some(PaymentIdentifier::QuoteId(quote_id.to_owned())),
                     amount,
-                    fee: fee.into(),
+                    fee,
                     state: MeltQuoteState::Unpaid,
                     unit: unit.clone(),
                 })
@@ -382,9 +398,10 @@ impl MintPayment for Cln {
         }
     }
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(component = "cln", quote_id = %quote_id, operation = "make_payment"))]
     async fn make_payment(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
@@ -393,43 +410,77 @@ impl MintPayment for Cln {
         let mut amount_msat: Option<u64> = None;
 
         let mut cln_client = self.cln_client().await?;
+        self.check_outgoing_unpaided(quote_id).await?;
 
-        let invoice = match &options {
+        let (invoice, hash, payment_ctx) = match &options {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
-                let payment_identifier =
-                    PaymentIdentifier::PaymentHash(*bolt11_options.bolt11.payment_hash().as_ref());
+                let payment_hash = bolt11_options.bolt11.payment_hash();
+                let payment_hash_hex = hex::encode(payment_hash.to_byte_array());
+                let ctx =
+                    PaymentContext::new(quote_id, PaymentType::Bolt11).with_hash(&payment_hash_hex);
 
-                self.check_outgoing_unpaided(&payment_identifier).await?;
+                ctx.log_start("Processing BOLT11 payment");
+
+                // Check if invoice already paid
+                self.check_outgoing_payment_by_hash(&payment_hash.to_byte_array())
+                    .await?
+                    .unpaid()?;
 
                 if let Some(melt_options) = bolt11_options.melt_options {
                     match melt_options {
-                        MeltOptions::Mpp { mpp } => partial_amount = Some(mpp.amount.into()),
+                        MeltOptions::Mpp { mpp } => {
+                            partial_amount = Some(mpp.amount.into());
+                            ctx.log_info(&format!(
+                                "Payment is partial amount (MPP): {} msat",
+                                mpp.amount
+                            ));
+                        }
                         MeltOptions::Amountless { amountless } => {
                             amount_msat = Some(amountless.amount_msat.into());
+                            ctx.log_info(&format!(
+                                "Payment is amountless with specified amount: {} msat",
+                                amountless.amount_msat
+                            ));
                         }
                     }
+                } else {
+                    ctx.log_info(&format!(
+                        "Payment using full invoice amount: {:?} msat",
+                        bolt11_options.bolt11.amount_milli_satoshis()
+                    ));
                 }
 
                 max_fee_msat = bolt11_options.max_fee_amount.map(|a| a.into());
+                if let Some(max_fee) = max_fee_msat {
+                    ctx.log_info(&format!("Maximum fee limit set: {} msat", max_fee));
+                }
 
-                bolt11_options.bolt11.to_string()
+                (
+                    bolt11_options.bolt11.to_string(),
+                    payment_hash.to_byte_array(),
+                    ctx,
+                )
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
+                let ctx = PaymentContext::new(quote_id, PaymentType::Bolt12);
+                ctx.log_start("Processing BOLT12 payment");
+
                 let offer = &bolt12_options.offer;
-
                 let amount_msat: u64 = if let Some(amount) = bolt12_options.melt_options {
-                    amount.amount_msat().into()
+                    let amt = amount.amount_msat().into();
+                    ctx.log_info(&format!("Using specified amount: {} msat", amt));
+                    amt
                 } else {
-                    // Fall back to offer amount
                     let decode_response = self.decode_string(offer.to_string()).await?;
-
-                    decode_response
+                    let amt = decode_response
                         .offer_amount_msat
                         .ok_or(Error::UnknownInvoiceAmount)?
-                        .msat()
+                        .msat();
+                    ctx.log_info(&format!("Using offer amount: {} msat", amt));
+                    amt
                 };
 
-                // Fetch invoice from offer
+                ctx.log_debug("Fetching invoice from offer");
 
                 let cln_response = cln_client
                     .call_typed(&FetchinvoiceRequest {
@@ -446,30 +497,47 @@ impl MintPayment for Cln {
                     })
                     .await
                     .map_err(|err| {
-                        tracing::error!("Could not fetch invoice for offer: {:?}", err);
+                        ctx.log_error("Could not fetch invoice for offer", &err);
                         Error::ClnRpc(err)
                     })?;
 
+                ctx.log_info("Successfully fetched invoice from offer");
+
                 let decode_response = self.decode_string(cln_response.invoice.clone()).await?;
+                let payment_hash: [u8; 32] = hex::decode(
+                    decode_response
+                        .invoice_payment_hash
+                        .ok_or(Error::UnknownInvoice)?,
+                )
+                .map_err(|e| Error::Bolt12(e.to_string()))?
+                .try_into()
+                .map_err(|_| Error::InvalidHash)?;
 
-                let payment_identifier = PaymentIdentifier::Bolt12PaymentHash(
-                    hex::decode(
-                        decode_response
-                            .invoice_payment_hash
-                            .ok_or(Error::UnknownInvoice)?,
-                    )
-                    .map_err(|e| Error::Bolt12(e.to_string()))?
-                    .try_into()
-                    .map_err(|_| Error::InvalidHash)?,
-                );
-
-                self.check_outgoing_unpaided(&payment_identifier).await?;
+                let payment_hash_hex = hex::encode(payment_hash);
+                let ctx_with_hash = ctx.with_hash(&payment_hash_hex);
 
                 max_fee_msat = bolt12_options.max_fee_amount.map(|a| a.into());
+                if let Some(max_fee) = max_fee_msat {
+                    ctx_with_hash.log_info(&format!("Maximum fee limit set: {} msat", max_fee));
+                }
 
-                cln_response.invoice
+                (cln_response.invoice, payment_hash, ctx_with_hash)
             }
         };
+
+        // Store pending payment status
+        let payment_status = PaymentStatus {
+            status: MeltQuoteState::Pending,
+            payment_hash: hash,
+            payment_proof: None,
+            total_spent: Amount::ZERO,
+        };
+        self.database
+            .store_outgoing_payment(quote_id, payment_status)
+            .await?;
+
+        // Execute payment
+        payment_ctx.log_info("Executing payment");
 
         let cln_response = cln_client
             .call_typed(&PayRequest {
@@ -497,32 +565,37 @@ impl MintPayment for Cln {
                     PayStatus::FAILED => MeltQuoteState::Failed,
                 };
 
-                let payment_identifier = match options {
-                    OutgoingPaymentOptions::Bolt11(_) => {
-                        PaymentIdentifier::PaymentHash(*pay_response.payment_hash.as_ref())
-                    }
-                    OutgoingPaymentOptions::Bolt12(_) => {
-                        PaymentIdentifier::Bolt12PaymentHash(*pay_response.payment_hash.as_ref())
-                    }
-                };
+                let total_spent_msat = pay_response.amount_sent_msat.msat();
 
                 MakePaymentResponse {
                     payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
-                    payment_lookup_id: payment_identifier,
+                    payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     status,
-                    total_spent: to_unit(
-                        pay_response.amount_sent_msat.msat(),
-                        &CurrencyUnit::Msat,
-                        unit,
-                    )?,
+                    total_spent: to_unit(total_spent_msat, &CurrencyUnit::Msat, unit)?,
                     unit: unit.clone(),
                 }
             }
             Err(err) => {
-                tracing::error!("Could not pay invoice: {}", err);
+                payment_ctx.log_error("Payment failed", &err);
                 return Err(Error::ClnRpc(err).into());
             }
         };
+
+        // Store final payment status
+        let payment_status = PaymentStatus {
+            status: response.status,
+            payment_hash: hash,
+            payment_proof: response.payment_proof.clone(),
+            total_spent: response.total_spent,
+        };
+        self.database
+            .store_outgoing_payment(quote_id, payment_status)
+            .await?;
+
+        payment_ctx.log_success(
+            "Payment process completed",
+            Some(response.total_spent.into()),
+        );
 
         Ok(response)
     }
@@ -530,6 +603,7 @@ impl MintPayment for Cln {
     #[instrument(skip_all)]
     async fn create_incoming_payment_request(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
@@ -567,8 +641,13 @@ impl MintPayment for Cln {
                 let expiry = request.expires_at().map(|t| t.as_secs());
                 let payment_hash = request.payment_hash();
 
+                // Store BOLT11 request mapping: payment_hash -> quote_id
+                self.database
+                    .store_incoming_bolt11_payment(payment_hash.as_ref(), quote_id)
+                    .await?;
+
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: PaymentIdentifier::PaymentHash(*payment_hash.as_ref()),
+                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: request.to_string(),
                     expiry,
                 })
@@ -615,10 +694,13 @@ impl MintPayment for Cln {
                     .await
                     .map_err(Error::from)?;
 
+                // Store BOLT12 request mapping: local_offer_id -> quote_id
+                self.database
+                    .store_incoming_bolt12_payment(&offer_response.offer_id.to_string(), quote_id)
+                    .await?;
+
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: PaymentIdentifier::OfferId(
-                        offer_response.offer_id.to_string(),
-                    ),
+                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: offer_response.bolt12,
                     expiry: unix_expiry,
                 })
@@ -634,54 +716,38 @@ impl MintPayment for Cln {
         let mut cln_client = self.cln_client().await?;
 
         let listinvoices_response = match payment_identifier {
-            PaymentIdentifier::Label(label) => {
-                // Query by label
-                cln_client
-                    .call_typed(&ListinvoicesRequest {
-                        payment_hash: None,
-                        label: Some(label.to_string()),
-                        invstring: None,
-                        offer_id: None,
-                        index: None,
-                        limit: None,
-                        start: None,
-                    })
-                    .await
-                    .map_err(Error::from)?
-            }
-            PaymentIdentifier::OfferId(offer_id) => {
-                // Query by offer_id
-                cln_client
-                    .call_typed(&ListinvoicesRequest {
-                        payment_hash: None,
-                        label: None,
-                        invstring: None,
-                        offer_id: Some(offer_id.to_string()),
-                        index: None,
-                        limit: None,
-                        start: None,
-                    })
-                    .await
-                    .map_err(Error::from)?
-            }
-            PaymentIdentifier::PaymentHash(payment_hash) => {
-                // Query by payment_hash
-                cln_client
-                    .call_typed(&ListinvoicesRequest {
-                        payment_hash: Some(hex::encode(payment_hash)),
-                        label: None,
-                        invstring: None,
-                        offer_id: None,
-                        index: None,
-                        limit: None,
-                        start: None,
-                    })
-                    .await
-                    .map_err(Error::from)?
+            PaymentIdentifier::QuoteId(quote_id) => {
+                if let Some(lookup) = self
+                    .database
+                    .get_incoming_payment_identifier_by_quote_id(quote_id)
+                    .await?
+                {
+                    match lookup {
+                        IncomingPaymentIdentifier::Bolt11PaymentHash(payment_hash) => {
+                            let payment_hash_identifier =
+                                PaymentIdentifier::PaymentHash(payment_hash);
+                            self.query_invoices_by_identifier(
+                                &mut cln_client,
+                                &payment_hash_identifier,
+                            )
+                            .await?
+                        }
+                        IncomingPaymentIdentifier::Bolt12OfferId(offer_id) => {
+                            let offer_id_identifier = PaymentIdentifier::OfferId(offer_id);
+                            self.query_invoices_by_identifier(&mut cln_client, &offer_id_identifier)
+                                .await?
+                        }
+                    }
+                } else {
+                    tracing::error!("Unsupported payment id for CLN");
+                    return Err(payment::Error::UnknownPaymentState);
+                }
             }
             _ => {
-                tracing::error!("Unsupported payment id for CLN");
-                return Err(payment::Error::UnknownPaymentState);
+                // For other identifiers, use the helper method directly
+                self.query_invoices_by_identifier(&mut cln_client, payment_identifier)
+                    .await
+                    .map_err(|e| payment::Error::Custom(e.to_string()))?
             }
         };
 
@@ -709,50 +775,70 @@ impl MintPayment for Cln {
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let mut cln_client = self.cln_client().await?;
-
-        let payment_hash = match payment_identifier {
-            PaymentIdentifier::PaymentHash(hash) => hash,
-            PaymentIdentifier::Bolt12PaymentHash(hash) => hash,
+        match payment_identifier {
+            PaymentIdentifier::PaymentHash(hash) => {
+                match self.check_outgoing_payment_by_hash(hash).await {
+                    Ok(response) => Ok(MakePaymentResponse {
+                        payment_lookup_id: payment_identifier.clone(),
+                        payment_proof: response.payment_proof,
+                        status: response.status,
+                        total_spent: response.total_spent,
+                        unit: CurrencyUnit::Msat,
+                    }),
+                    Err(e) => Err(e),
+                }
+            }
+            PaymentIdentifier::Bolt12PaymentHash(hash) => {
+                match self.check_outgoing_payment_by_hash(hash).await {
+                    Ok(response) => Ok(MakePaymentResponse {
+                        payment_lookup_id: payment_identifier.clone(),
+                        payment_proof: response.payment_proof,
+                        status: response.status,
+                        total_spent: response.total_spent,
+                        unit: CurrencyUnit::Msat,
+                    }),
+                    Err(e) => Err(e),
+                }
+            }
+            PaymentIdentifier::QuoteId(quote_id) => {
+                // Look up payment status from database using quote_id
+                match self.database.load_outgoing_payment_status(quote_id).await {
+                    Ok(Some(payment_status)) => {
+                        // We have stored payment status, check for any updates from CLN
+                        match self
+                            .check_outgoing_payment_by_hash(&payment_status.payment_hash)
+                            .await
+                        {
+                            Ok(current_status) => Ok(MakePaymentResponse {
+                                payment_lookup_id: payment_identifier.clone(),
+                                payment_proof: current_status.payment_proof,
+                                status: current_status.status,
+                                total_spent: current_status.total_spent,
+                                unit: CurrencyUnit::Msat,
+                            }),
+                            Err(e) => Err(e),
+                        }
+                    }
+                    Ok(None) => {
+                        // No payment status found for this quote_id, means payment hasn't been attempted yet
+                        Ok(MakePaymentResponse {
+                            payment_lookup_id: payment_identifier.clone(),
+                            payment_proof: None,
+                            status: MeltQuoteState::Unpaid,
+                            total_spent: Amount::ZERO,
+                            unit: CurrencyUnit::Msat,
+                        })
+                    }
+                    Err(e) => {
+                        tracing::error!("Database error when checking quote payment: {}", e);
+                        Err(payment::Error::Custom(e.to_string()))
+                    }
+                }
+            }
             _ => {
                 tracing::error!("Unsupported identifier to check outgoing payment for cln.");
-                return Err(payment::Error::UnknownPaymentState);
+                Err(payment::Error::UnknownPaymentState)
             }
-        };
-
-        let listpays_response = cln_client
-            .call_typed(&ListpaysRequest {
-                payment_hash: Some(*Sha256::from_bytes_ref(payment_hash)),
-                bolt11: None,
-                status: None,
-                start: None,
-                index: None,
-                limit: None,
-            })
-            .await
-            .map_err(Error::from)?;
-
-        match listpays_response.pays.first() {
-            Some(pays_response) => {
-                let status = cln_pays_status_to_mint_state(pays_response.status);
-
-                Ok(MakePaymentResponse {
-                    payment_lookup_id: payment_identifier.clone(),
-                    payment_proof: pays_response.preimage.map(|p| hex::encode(p.to_vec())),
-                    status,
-                    total_spent: pays_response
-                        .amount_sent_msat
-                        .map_or(Amount::ZERO, |a| a.msat().into()),
-                    unit: CurrencyUnit::Msat,
-                })
-            }
-            None => Ok(MakePaymentResponse {
-                payment_lookup_id: payment_identifier.clone(),
-                payment_proof: None,
-                status: MeltQuoteState::Unknown,
-                total_spent: Amount::ZERO,
-                unit: CurrencyUnit::Msat,
-            }),
         }
     }
 }
@@ -762,29 +848,64 @@ impl Cln {
         Ok(cln_rpc::ClnRpc::new(&self.rpc_socket).await?)
     }
 
+    /// Calculate fee based on amount and fee reserve settings
+    fn calculate_fee(&self, amount: Amount) -> Amount {
+        let relative_fee_reserve =
+            (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+        let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
+        max(relative_fee_reserve, absolute_fee_reserve).into()
+    }
+
+    /// Helper to query invoices by different identifiers
+    async fn query_invoices_by_identifier(
+        &self,
+        cln_client: &mut ClnRpc,
+        identifier: &PaymentIdentifier,
+    ) -> Result<cln_rpc::model::responses::ListinvoicesResponse, Error> {
+        let request = match identifier {
+            PaymentIdentifier::Label(label) => ListinvoicesRequest {
+                payment_hash: None,
+                label: Some(label.to_string()),
+                invstring: None,
+                offer_id: None,
+                index: None,
+                limit: None,
+                start: None,
+            },
+            PaymentIdentifier::OfferId(offer_id) => ListinvoicesRequest {
+                payment_hash: None,
+                label: None,
+                invstring: None,
+                offer_id: Some(offer_id.to_string()),
+                index: None,
+                limit: None,
+                start: None,
+            },
+            PaymentIdentifier::PaymentHash(payment_hash) => ListinvoicesRequest {
+                payment_hash: Some(hex::encode(payment_hash)),
+                label: None,
+                invstring: None,
+                offer_id: None,
+                index: None,
+                limit: None,
+                start: None,
+            },
+            _ => return Err(Error::WrongClnResponse),
+        };
+
+        cln_client.call_typed(&request).await.map_err(Error::from)
+    }
+
     /// Get last pay index for cln
+    #[instrument(skip(self), fields(component = "cln"))]
     async fn get_last_pay_index(&self) -> Result<Option<u64>, Error> {
-        // First try to read from KV store
-        if let Some(stored_index) = self
-            .kv_store
-            .kv_read(
-                CLN_KV_PRIMARY_NAMESPACE,
-                CLN_KV_SECONDARY_NAMESPACE,
-                LAST_PAY_INDEX_KV_KEY,
-            )
-            .await
-            .map_err(|e| Error::Database(e.to_string()))?
-        {
-            if let Ok(index_str) = std::str::from_utf8(&stored_index) {
-                if let Ok(index) = index_str.parse::<u64>() {
-                    tracing::debug!("CLN: Retrieved last pay index {} from KV store", index);
-                    return Ok(Some(index));
-                }
-            }
+        if let Some(index) = self.database.load_last_pay_index().await? {
+            tracing::debug!(pay_index = index, "Retrieved last pay index from KV store");
+            return Ok(Some(index));
         }
 
         // Fall back to querying CLN directly
-        tracing::debug!("CLN: No stored last pay index found in KV store, querying CLN directly");
+        tracing::debug!("No stored last pay index found in KV store, querying CLN directly");
         let mut cln_client = self.cln_client().await?;
         let listinvoices_response = cln_client
             .call_typed(&ListinvoicesRequest {
@@ -806,7 +927,7 @@ impl Cln {
     }
 
     /// Decode string
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(component = "cln"))]
     async fn decode_string(&self, string: String) -> Result<DecodeResponse, Error> {
         let mut cln_client = self.cln_client().await?;
 
@@ -821,13 +942,10 @@ impl Cln {
 
     /// Checks that outgoing payment is not already paid
     #[instrument(skip(self))]
-    async fn check_outgoing_unpaided(
-        &self,
-        payment_identifier: &PaymentIdentifier,
-    ) -> Result<(), payment::Error> {
-        let pay_state = self.check_outgoing_payment(payment_identifier).await?;
+    async fn check_outgoing_unpaided(&self, quote_id: &QuoteId) -> Result<(), payment::Error> {
+        let pay_state = self.get_quote_payment_status(quote_id).await?;
 
-        match pay_state.status {
+        match pay_state {
             MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => Ok(()),
             MeltQuoteState::Paid => {
                 tracing::debug!("Melt attempted on invoice already paid");
@@ -836,6 +954,108 @@ impl Cln {
             MeltQuoteState::Pending => {
                 tracing::debug!("Melt attempted on invoice already pending");
                 Err(payment::Error::InvoicePaymentPending)
+            }
+        }
+    }
+
+    /// Check outgoing payment status by payment hash
+    #[instrument(skip(self), fields(component = "cln", payment_hash = %hex::encode(payment_hash)))]
+    async fn check_outgoing_payment_by_hash(
+        &self,
+        payment_hash: &[u8; 32],
+    ) -> Result<PaymentStatus, payment::Error> {
+        let mut cln_client = self.cln_client().await.map_err(|e| {
+            tracing::error!(error = %e, "Failed to create CLN client");
+            payment::Error::Custom(e.to_string())
+        })?;
+
+        let listpays_response = cln_client
+            .call_typed(&ListpaysRequest {
+                payment_hash: Some(*Sha256::from_bytes_ref(payment_hash)),
+                bolt11: None,
+                status: None,
+                start: None,
+                index: None,
+                limit: None,
+            })
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "ListpaysRequest failed");
+                Error::from(e)
+            })?;
+
+        match listpays_response.pays.first() {
+            Some(pays_response) => {
+                let status = cln_pays_status_to_mint_state(pays_response.status);
+                let payment_proof = pays_response.preimage.map(|p| hex::encode(p.to_vec()));
+                let total_spent = pays_response
+                    .amount_sent_msat
+                    .map_or(Amount::ZERO, |a| a.msat().into());
+
+                tracing::info!(
+                    cln_status = ?pays_response.status,
+                    mapped_status = ?status,
+                    total_spent_msat = ?pays_response.amount_sent_msat,
+                    total_spent = %total_spent,
+                    has_preimage = pays_response.preimage.is_some(),
+                    "Found payment with status"
+                );
+
+                Ok(PaymentStatus {
+                    status,
+                    payment_proof,
+                    total_spent,
+                    payment_hash: *payment_hash,
+                })
+            }
+            None => {
+                tracing::info!("No payment found, returning Unknown status");
+
+                Ok(PaymentStatus {
+                    status: MeltQuoteState::Unknown,
+                    payment_proof: None,
+                    total_spent: Amount::ZERO,
+                    payment_hash: *payment_hash,
+                })
+            }
+        }
+    }
+
+    /// Get quote payment status by checking database first, then CLN if payment hash exists
+    #[instrument(skip(self), fields(component = "cln", quote_id = %quote_id))]
+    async fn get_quote_payment_status(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<MeltQuoteState, payment::Error> {
+        match self.database.load_outgoing_payment_status(quote_id).await {
+            Ok(Some(payment_status)) => {
+                // Payment status exists in database, check for updates with CLN
+                match self
+                    .check_outgoing_payment_by_hash(&payment_status.payment_hash)
+                    .await
+                {
+                    Ok(response) => {
+                        tracing::debug!(
+                            status = ?response.status,
+                            total_spent = %response.total_spent,
+                            has_proof = response.payment_proof.is_some(),
+                            "Retrieved payment status"
+                        );
+                        Ok(response.status)
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to check payment status");
+                        Err(e)
+                    }
+                }
+            }
+            Ok(None) => {
+                tracing::debug!("No payment hash found, quote is unpaid");
+                Ok(MeltQuoteState::Unpaid)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Database error while checking payment hash");
+                Err(payment::Error::Custom(e.to_string()))
             }
         }
     }
@@ -849,17 +1069,13 @@ fn cln_pays_status_to_mint_state(status: ListpaysPaysStatus) -> MeltQuoteState {
     }
 }
 
+#[instrument(skip(cln_client), fields(component = "cln", payment_hash = %payment_hash))]
 async fn fetch_invoice_by_payment_hash(
     cln_client: &mut cln_rpc::ClnRpc,
     payment_hash: &Hash,
 ) -> Result<Option<ListinvoicesInvoices>, Error> {
-    tracing::debug!("Fetching invoice by payment hash: {}", payment_hash);
-
-    let payment_hash_str = payment_hash.to_string();
-    tracing::debug!("Payment hash string: {}", payment_hash_str);
-
     let request = ListinvoicesRequest {
-        payment_hash: Some(payment_hash_str),
+        payment_hash: Some(payment_hash.to_string()),
         index: None,
         invstring: None,
         label: None,
@@ -867,41 +1083,28 @@ async fn fetch_invoice_by_payment_hash(
         offer_id: None,
         start: None,
     };
-    tracing::debug!("Created ListinvoicesRequest");
 
     match cln_client.call_typed(&request).await {
         Ok(invoice_response) => {
             let invoice_count = invoice_response.invoices.len();
-            tracing::debug!(
-                "Received {} invoices for payment hash {}",
-                invoice_count,
-                payment_hash
-            );
 
             if invoice_count > 0 {
                 let first_invoice = invoice_response.invoices.first().cloned();
                 if let Some(invoice) = &first_invoice {
-                    tracing::debug!("Found invoice with payment hash {}", payment_hash);
                     tracing::debug!(
-                        "Invoice details - local_offer_id: {:?}, status: {:?}",
-                        invoice.local_offer_id,
-                        invoice.status
+                        local_offer_id = ?invoice.local_offer_id,
+                        status = ?invoice.status,
+                        "Found invoice"
                     );
-                } else {
-                    tracing::warn!("No invoice found with payment hash {}", payment_hash);
                 }
                 Ok(first_invoice)
             } else {
-                tracing::warn!("No invoices returned for payment hash {}", payment_hash);
+                tracing::warn!("No invoices found");
                 Ok(None)
             }
         }
         Err(e) => {
-            tracing::error!(
-                "Error fetching invoice by payment hash {}: {}",
-                payment_hash,
-                e
-            );
+            tracing::error!(error = %e, "Error fetching invoice");
             Err(Error::from(e))
         }
     }

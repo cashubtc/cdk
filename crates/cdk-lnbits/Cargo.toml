@@ -21,5 +21,6 @@ tokio-util.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 lnbits-rs = "0.8.0"
+serde.workspace = true
 serde_json.workspace = true
 rustls.workspace = true

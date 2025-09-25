@@ -41,6 +41,10 @@ impl From<CdkPaymentIdentifier> for PaymentIdentifier {
                 r#type: PaymentIdentifierType::PaymentId.into(),
                 value: Some(payment_identifier::Value::Hash(hex::encode(hash))),
             },
+            CdkPaymentIdentifier::QuoteId(id) => Self {
+                r#type: PaymentIdentifierType::QuoteId.into(),
+                value: Some(payment_identifier::Value::Id(id.to_string())),
+            },
         }
     }
 }

@@ -22,8 +22,6 @@ impl Mint {
             return Ok(());
         }
 
-        let mut tx = self.localstore.begin_transaction().await?;
-
         for pending_quote in pending_quotes {
             tracing::debug!("Checking status for melt quote {}.", pending_quote.id);
 
@@ -56,6 +54,7 @@ impl Mint {
                     MeltQuoteState::Unknown => MeltQuoteState::Unpaid,
                 };
 
+                let mut tx = self.localstore.begin_transaction().await?;
                 if let Err(err) = tx
                     .update_melt_quote_state(
                         &pending_quote.id,
@@ -72,10 +71,9 @@ impl Mint {
                         err
                     );
                 };
+                tx.commit().await?;
             }
         }
-
-        tx.commit().await?;
 
         Ok(())
     }

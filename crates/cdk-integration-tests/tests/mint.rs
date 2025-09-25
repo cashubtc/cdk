@@ -11,7 +11,7 @@
 //! - Fee calculation and enforcement
 //! - Proof validation and state management
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
@@ -33,15 +33,16 @@ async fn test_correct_keyset() {
 
     let database = memory::empty().await.expect("valid db instance");
 
+    let localstore = Arc::new(database);
+
     let fake_wallet = FakeWallet::new(
         fee_reserve,
-        HashMap::default(),
         HashSet::default(),
         0,
         CurrencyUnit::Sat,
+        localstore.clone(),
     );
 
-    let localstore = Arc::new(database);
     let mut mint_builder = MintBuilder::new(localstore.clone());
 
     mint_builder = mint_builder

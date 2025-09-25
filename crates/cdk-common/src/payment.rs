@@ -2,8 +2,10 @@
 
 use std::convert::Infallible;
 use std::pin::Pin;
+use std::str::FromStr;
 
 use async_trait::async_trait;
+use cashu::quote_id::QuoteId;
 use cashu::util::hex;
 use cashu::{Bolt11Invoice, MeltOptions};
 #[cfg(feature = "prometheus")]
@@ -97,6 +99,8 @@ pub enum PaymentIdentifier {
     PaymentId([u8; 32]),
     /// Custom Payment ID
     CustomId(String),
+    /// Quote id
+    QuoteId(QuoteId),
 }
 
 impl PaymentIdentifier {
@@ -121,6 +125,9 @@ impl PaymentIdentifier {
                     .try_into()
                     .map_err(|_| Error::InvalidHash)?,
             )),
+            "quote_id" => Ok(Self::QuoteId(
+                QuoteId::from_str(identifier).map_err(|_| Error::InvalidHash)?,
+            )),
             _ => Err(Error::UnsupportedPaymentOption),
         }
     }
@@ -133,6 +140,7 @@ impl PaymentIdentifier {
             Self::PaymentHash(_) => "payment_hash".to_string(),
             Self::Bolt12PaymentHash(_) => "bolt12_payment_hash".to_string(),
             Self::PaymentId(_) => "payment_id".to_string(),
+            Self::QuoteId(_) => "quote_id".to_string(),
             Self::CustomId(_) => "custom".to_string(),
         }
     }
@@ -147,6 +155,7 @@ impl std::fmt::Display for PaymentIdentifier {
             Self::Bolt12PaymentHash(h) => write!(f, "{}", hex::encode(h)),
             Self::PaymentId(h) => write!(f, "{}", hex::encode(h)),
             Self::CustomId(c) => write!(f, "{c}"),
+            Self::QuoteId(id) => write!(f, "{id}"),
         }
     }
 }
@@ -276,6 +285,7 @@ pub trait MintPayment {
     /// Create a new invoice
     async fn create_incoming_payment_request(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err>;
@@ -284,6 +294,7 @@ pub trait MintPayment {
     /// Used to get fee and amount required for a payment request
     async fn get_payment_quote(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err>;
@@ -291,6 +302,7 @@ pub trait MintPayment {
     /// Pay request
     async fn make_payment(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err>;
@@ -481,6 +493,7 @@ where
 
     async fn create_incoming_payment_request(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
@@ -489,7 +502,7 @@ where
 
         let result = self
             .inner
-            .create_incoming_payment_request(unit, options)
+            .create_incoming_payment_request(quote_id, unit, options)
             .await;
 
         let duration = start.elapsed().as_secs_f64();
@@ -505,13 +518,14 @@ where
 
     async fn get_payment_quote(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         let start = std::time::Instant::now();
         METRICS.inc_in_flight_requests("get_payment_quote");
 
-        let result = self.inner.get_payment_quote(unit, options).await;
+        let result = self.inner.get_payment_quote(quote_id, unit, options).await;
 
         let duration = start.elapsed().as_secs_f64();
         let success = result.is_ok();
@@ -546,13 +560,14 @@ where
 
     async fn make_payment(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         let start = std::time::Instant::now();
         METRICS.inc_in_flight_requests("make_payment");
 
-        let result = self.inner.make_payment(unit, options).await;
+        let result = self.inner.make_payment(quote_id, unit, options).await;
 
         let duration = start.elapsed().as_secs_f64();
         let success = result.is_ok();

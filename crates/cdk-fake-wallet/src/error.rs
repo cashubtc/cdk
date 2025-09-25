@@ -11,9 +11,18 @@ pub enum Error {
     /// Unknown invoice
     #[error("Unknown invoice")]
     UnknownInvoice,
-    /// Unknown invoice
+    /// No channel receiver
     #[error("No channel receiver")]
     NoReceiver,
+    /// Invoice already paid
+    #[error("Invoice already paid")]
+    AlreadyPaid,
+    /// Serde Error
+    #[error(transparent)]
+    Serde(#[from] serde_json::Error),
+    /// Database Error
+    #[error("Database error: {0}")]
+    Database(String),
 }
 
 impl From<Error> for cdk_common::payment::Error {

@@ -12,9 +12,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk_common::amount::to_unit;
 use cdk_common::common::FeeReserve;
+use cdk_common::database::mint::DynMintKVStore;
 use cdk_common::payment::{self, *};
 use cdk_common::util::{hex, unix_time};
-use cdk_common::{Amount, CurrencyUnit, MeltOptions, MeltQuoteState};
+use cdk_common::{Amount, CurrencyUnit, MeltOptions, MeltQuoteState, QuoteId};
 use futures::{Stream, StreamExt};
 use ldk_node::bitcoin::hashes::Hash;
 use ldk_node::bitcoin::Network;
@@ -31,6 +32,7 @@ use tracing::instrument;
 
 use crate::error::Error;
 
+mod database;
 mod error;
 mod web;
 
@@ -49,6 +51,7 @@ pub struct CdkLdkNode {
     events_cancel_token: CancellationToken,
     runtime: Option<Arc<Runtime>>,
     web_addr: Option<SocketAddr>,
+    database: database::Database,
 }
 
 /// Configuration for connecting to Bitcoin RPC
@@ -109,12 +112,14 @@ impl CdkLdkNode {
     /// * `fee_reserve` - Fee reserve configuration for payments
     /// * `listening_address` - Socket addresses for peer connections
     /// * `runtime` - Optional Tokio runtime to use for starting the node
+    /// * `kv_store` - Key-value store for database operations
     ///
     /// # Returns
     /// A new `CdkLdkNode` instance ready to be started
     ///
     /// # Errors
     /// Returns an error if the LDK node builder fails to create the node
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         network: Network,
         chain_source: ChainSource,
@@ -123,6 +128,7 @@ impl CdkLdkNode {
         fee_reserve: FeeReserve,
         listening_address: Vec<SocketAddress>,
         runtime: Option<Arc<Runtime>>,
+        kv_store: DynMintKVStore,
     ) -> Result<Self, Error> {
         let mut builder = Builder::new();
         builder.set_network(network);
@@ -172,6 +178,8 @@ impl CdkLdkNode {
             network
         );
 
+        let database = database::Database::new(kv_store);
+
         Ok(Self {
             inner: node.into(),
             fee_reserve,
@@ -182,6 +190,7 @@ impl CdkLdkNode {
             events_cancel_token: CancellationToken::new(),
             runtime,
             web_addr: None,
+            database,
         })
     }
 
@@ -295,6 +304,7 @@ impl CdkLdkNode {
     async fn handle_payment_received(
         node: &Arc<Node>,
         sender: &tokio::sync::broadcast::Sender<WaitPaymentResponse>,
+        database: &database::Database,
         payment_id: Option<PaymentId>,
         payment_hash: PaymentHash,
         amount_msat: u64,
@@ -334,22 +344,83 @@ impl CdkLdkNode {
             }
         };
 
-        let (payment_identifier, payment_id) = match payment_details.kind {
+        let payment_identifier = match payment_details.kind {
             PaymentKind::Bolt11 { hash, .. } => {
-                (PaymentIdentifier::PaymentHash(hash.0), hash.to_string())
+                // Look up quote ID by payment hash
+                match database.get_quote_id_by_incoming_bolt11_hash(&hash).await {
+                    Ok(Some(quote_id)) => {
+                        tracing::info!(
+                            "LDK: Found quote_id {} for payment_hash {}",
+                            quote_id,
+                            hash
+                        );
+                        PaymentIdentifier::QuoteId(quote_id)
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            "LDK: No quote_id found for payment_hash {}, using hash as identifier",
+                            hash
+                        );
+                        PaymentIdentifier::PaymentHash(hash.0)
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "LDK: Database error looking up quote_id for payment_hash {}: {}",
+                            hash,
+                            e
+                        );
+                        PaymentIdentifier::PaymentHash(hash.0)
+                    }
+                }
             }
-            PaymentKind::Bolt12Offer { hash, offer_id, .. } => match hash {
-                Some(h) => (
-                    PaymentIdentifier::OfferId(offer_id.to_string()),
-                    h.to_string(),
-                ),
+            PaymentKind::Bolt12Offer { offer_id, .. } => {
+                // Look up quote ID by offer ID
+                match database
+                    .get_quote_id_by_incoming_bolt12_offer(&offer_id)
+                    .await
+                {
+                    Ok(Some(quote_id)) => {
+                        tracing::info!(
+                            "LDK: Found quote_id {} for offer_id {}",
+                            quote_id,
+                            offer_id
+                        );
+                        PaymentIdentifier::QuoteId(quote_id)
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            "LDK: No quote_id found for offer_id {}, using offer_id as identifier",
+                            offer_id
+                        );
+                        PaymentIdentifier::OfferId(offer_id.to_string())
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "LDK: Database error looking up quote_id for offer_id {}: {}",
+                            offer_id,
+                            e
+                        );
+                        PaymentIdentifier::OfferId(offer_id.to_string())
+                    }
+                }
+            }
+            k => {
+                tracing::warn!("Received payment of kind {:?} which is not supported", k);
+                return;
+            }
+        };
+
+        let payment_id_str = match payment_details.kind {
+            PaymentKind::Bolt11 { hash, .. } => hash.to_string(),
+            PaymentKind::Bolt12Offer { hash, .. } => match hash {
+                Some(h) => h.to_string(),
                 None => {
                     tracing::error!("Bolt12 payment missing hash");
                     return;
                 }
             },
-            k => {
-                tracing::warn!("Received payment of kind {:?} which is not supported", k);
+            _ => {
+                tracing::error!("Unsupported payment kind");
                 return;
             }
         };
@@ -358,7 +429,7 @@ impl CdkLdkNode {
             payment_identifier,
             payment_amount: amount_msat.into(),
             unit: CurrencyUnit::Msat,
-            payment_id,
+            payment_id: payment_id_str,
         };
 
         match sender.send(wait_payment_response) {
@@ -375,6 +446,7 @@ impl CdkLdkNode {
         let node = self.inner.clone();
         let sender = self.sender.clone();
         let cancel_token = self.events_cancel_token.clone();
+        let database = self.database.clone();
 
         tracing::info!("Starting event handler task");
 
@@ -397,6 +469,7 @@ impl CdkLdkNode {
                                 Self::handle_payment_received(
                                     &node,
                                     &sender,
+                                    &database,
                                     payment_id,
                                     payment_hash,
                                     amount_msat
@@ -425,6 +498,73 @@ impl CdkLdkNode {
     /// Get Node used
     pub fn node(&self) -> Arc<Node> {
         Arc::clone(&self.inner)
+    }
+
+    /// Check payment status by payment hash
+    async fn check_payment_by_hash(
+        &self,
+        payment_hash: &PaymentHash,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, payment::Error> {
+        // Find payment by hash - LDK doesn't have a direct way to query by payment hash
+        // so we need to filter through all payments
+        let payments = self.inner.list_payments_with_filter(|p| {
+            matches!(&p.kind, PaymentKind::Bolt11 { hash, .. } | PaymentKind::Bolt12Offer { hash: Some(hash), .. } if hash == payment_hash)
+        });
+
+        let mut results = Vec::new();
+        for payment_details in payments {
+            if payment_details.direction == PaymentDirection::Inbound
+                && payment_details.status == PaymentStatus::Succeeded
+            {
+                if let Some(amount_msat) = payment_details.amount_msat {
+                    let payment_id_str = hex::encode(payment_details.id.0);
+
+                    let response = WaitPaymentResponse {
+                        payment_identifier: payment_identifier.clone(),
+                        payment_amount: amount_msat.into(),
+                        unit: CurrencyUnit::Msat,
+                        payment_id: payment_id_str,
+                    };
+                    results.push(response);
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    /// Check payment status by payment ID
+    async fn check_payment_by_id(
+        &self,
+        payment_id: &PaymentId,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, payment::Error> {
+        let payment_details = self
+            .inner
+            .payment(payment_id)
+            .ok_or(Error::PaymentNotFound)?;
+
+        if payment_details.direction == PaymentDirection::Outbound {
+            return Err(Error::InvalidPaymentDirection.into());
+        }
+
+        let amount = if payment_details.status == PaymentStatus::Succeeded {
+            payment_details
+                .amount_msat
+                .ok_or(Error::CouldNotGetPaymentAmount)?
+        } else {
+            return Ok(vec![]);
+        };
+
+        let payment_id_str = hex::encode(payment_id.0);
+        let response = WaitPaymentResponse {
+            payment_identifier: payment_identifier.clone(),
+            payment_amount: amount.into(),
+            unit: CurrencyUnit::Msat,
+            payment_id: payment_id_str,
+        };
+
+        Ok(vec![response])
     }
 }
 
@@ -482,6 +622,7 @@ impl MintPayment for CdkLdkNode {
     #[instrument(skip(self))]
     async fn create_incoming_payment_request(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
@@ -504,15 +645,15 @@ impl MintPayment for CdkLdkNode {
                     .receive(amount_msat.into(), &description, time as u32)
                     .map_err(Error::LdkNode)?;
 
-                let payment_hash = payment.payment_hash().to_string();
-                let payment_identifier = PaymentIdentifier::PaymentHash(
-                    hex::decode(&payment_hash)?
-                        .try_into()
-                        .map_err(|_| Error::InvalidPaymentHashLength)?,
-                );
+                // Store BOLT11 request mapping: payment_hash -> quote_id
+                let payment_hash = PaymentHash(payment.payment_hash().to_byte_array());
+                self.database
+                    .store_incoming_bolt11_payment(&payment_hash, quote_id)
+                    .await
+                    .map_err(|e| payment::Error::Custom(e.to_string()))?;
 
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: payment_identifier,
+                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: payment.to_string(),
                     expiry: Some(unix_time() + time),
                 })
@@ -546,10 +687,14 @@ impl MintPayment for CdkLdkNode {
                         .receive_variable_amount(&description.unwrap_or("".to_string()), time)
                         .map_err(Error::LdkNode)?,
                 };
-                let payment_identifier = PaymentIdentifier::OfferId(offer.id().to_string());
+
+                self.database
+                    .store_incoming_bolt12_payment(&offer.id(), quote_id)
+                    .await
+                    .map_err(|e| payment::Error::Custom(e.to_string()))?;
 
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: payment_identifier,
+                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: offer.to_string(),
                     expiry: time.map(|a| a as u64),
                 })
@@ -562,6 +707,7 @@ impl MintPayment for CdkLdkNode {
     #[instrument(skip_all)]
     async fn get_payment_quote(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
@@ -589,13 +735,10 @@ impl MintPayment for CdkLdkNode {
                     false => absolute_fee_reserve,
                 };
 
-                let payment_hash = bolt11.payment_hash().to_string();
-                let payment_hash_bytes = hex::decode(&payment_hash)?
-                    .try_into()
-                    .map_err(|_| Error::InvalidPaymentHashLength)?;
+                // We don't need the payment hash bytes here since we're using quote_id as lookup
 
                 Ok(PaymentQuoteResponse {
-                    request_lookup_id: Some(PaymentIdentifier::PaymentHash(payment_hash_bytes)),
+                    request_lookup_id: Some(PaymentIdentifier::QuoteId(quote_id.clone())),
                     amount,
                     fee: fee.into(),
                     state: MeltQuoteState::Unpaid,
@@ -631,7 +774,7 @@ impl MintPayment for CdkLdkNode {
                 };
 
                 Ok(PaymentQuoteResponse {
-                    request_lookup_id: None,
+                    request_lookup_id: Some(PaymentIdentifier::QuoteId(quote_id.clone())),
                     amount,
                     fee: fee.into(),
                     state: MeltQuoteState::Unpaid,
@@ -642,9 +785,10 @@ impl MintPayment for CdkLdkNode {
     }
 
     /// Pay request
-    #[instrument(skip(self, options))]
+    #[instrument(skip(self, quote_id, options))]
     async fn make_payment(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
@@ -671,6 +815,30 @@ impl MintPayment for CdkLdkNode {
                     }
                 };
 
+                // Check if the payment is already in progress or completed
+                if let Ok(Some(payment_status)) =
+                    self.database.load_outgoing_payment_status(quote_id).await
+                {
+                    payment_status.unpaid()?;
+                }
+
+                if let Some(payment_details) = self
+                    .inner
+                    .list_payments_with_filter(
+                        |p| matches!(&p.kind, PaymentKind::Bolt11 { hash, .. } if hash.0 == bolt11.payment_hash().to_byte_array()),
+                    )
+                    .first() {
+                if payment_details.direction != PaymentDirection::Outbound {
+                    return Err(Error::InvalidPaymentDirection.into());
+                }
+
+                match payment_details.status {
+                    PaymentStatus::Pending => return Err(payment::Error::InvoicePaymentPending),
+                    PaymentStatus::Succeeded => return Err(payment::Error::InvoiceAlreadyPaid),
+                    PaymentStatus::Failed => ()
+                }
+                }
+
                 let payment_id = match bolt11_options.melt_options {
                     Some(MeltOptions::Amountless { amountless }) => self
                         .inner
@@ -690,6 +858,20 @@ impl MintPayment for CdkLdkNode {
                         })?,
                     _ => return Err(payment::Error::UnsupportedPaymentOption),
                 };
+
+                // Store initial payment status as pending
+                let initial_payment_status = database::PaymentStatus {
+                    status: MeltQuoteState::Pending,
+                    payment_hash: bolt11.payment_hash().to_byte_array(),
+                    payment_id: payment_id.0,
+                    payment_proof: None,
+                    total_spent: Amount::ZERO,
+                };
+
+                self.database
+                    .store_outgoing_payment(quote_id, initial_payment_status)
+                    .await
+                    .map_err(|e| payment::Error::Custom(e.to_string()))?;
 
                 // Check payment status for up to 10 seconds
                 let start = std::time::Instant::now();
@@ -735,10 +917,22 @@ impl MintPayment for CdkLdkNode {
 
                 let total_spent = to_unit(total_spent, &CurrencyUnit::Msat, unit)?;
 
+                // Store final payment status
+                let final_payment_status = database::PaymentStatus {
+                    status,
+                    payment_hash: bolt11.payment_hash().to_byte_array(),
+                    payment_id: payment_id.0,
+                    payment_proof: payment_proof.clone(),
+                    total_spent,
+                };
+
+                self.database
+                    .store_outgoing_payment(quote_id, final_payment_status)
+                    .await
+                    .map_err(|e| payment::Error::Custom(e.to_string()))?;
+
                 Ok(MakePaymentResponse {
-                    payment_lookup_id: PaymentIdentifier::PaymentHash(
-                        bolt11.payment_hash().to_byte_array(),
-                    ),
+                    payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     payment_proof,
                     status,
                     total_spent,
@@ -810,7 +1004,7 @@ impl MintPayment for CdkLdkNode {
                 let total_spent = to_unit(total_spent, &CurrencyUnit::Msat, unit)?;
 
                 Ok(MakePaymentResponse {
-                    payment_lookup_id: PaymentIdentifier::PaymentId(payment_id.0),
+                    payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     payment_proof,
                     status,
                     total_spent,
@@ -882,43 +1076,49 @@ impl MintPayment for CdkLdkNode {
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
-        let payment_id_str = match payment_identifier {
-            PaymentIdentifier::PaymentHash(hash) => hex::encode(hash),
-            PaymentIdentifier::CustomId(id) => id.clone(),
-            _ => return Err(Error::UnsupportedPaymentIdentifierType.into()),
-        };
-
-        let payment_id = PaymentId(
-            hex::decode(&payment_id_str)?
-                .try_into()
-                .map_err(|_| Error::InvalidPaymentIdLength)?,
-        );
-
-        let payment_details = self
-            .inner
-            .payment(&payment_id)
-            .ok_or(Error::PaymentNotFound)?;
-
-        if payment_details.direction == PaymentDirection::Outbound {
-            return Err(Error::InvalidPaymentDirection.into());
+        match payment_identifier {
+            PaymentIdentifier::QuoteId(quote_id) => {
+                // Look up payment identifier by quote ID from database
+                match self
+                    .database
+                    .get_incoming_payment_identifier_by_quote_id(quote_id)
+                    .await
+                    .map_err(|e| payment::Error::Custom(e.to_string()))?
+                {
+                    Some(database::IncomingPaymentIdentifier::Bolt11PaymentHash(payment_hash)) => {
+                        // Find payment by hash
+                        let payment_hash_ldk = PaymentHash(payment_hash);
+                        self.check_payment_by_hash(&payment_hash_ldk, payment_identifier)
+                            .await
+                    }
+                    Some(database::IncomingPaymentIdentifier::Bolt12OfferId(_offer_id)) => {
+                        // Find payment by offer ID - this would need LDK-specific implementation
+                        // For now, return empty since we don't have a direct way to query by offer_id
+                        tracing::warn!("BOLT12 payment status check by offer_id not yet fully implemented for LDK");
+                        Ok(vec![])
+                    }
+                    None => {
+                        tracing::warn!("No payment identifier found for quote_id {}", quote_id);
+                        Ok(vec![])
+                    }
+                }
+            }
+            PaymentIdentifier::PaymentHash(hash) => {
+                let payment_hash = PaymentHash(*hash);
+                self.check_payment_by_hash(&payment_hash, payment_identifier)
+                    .await
+            }
+            PaymentIdentifier::CustomId(id) => {
+                let payment_id = PaymentId(
+                    hex::decode(id)?
+                        .try_into()
+                        .map_err(|_| Error::InvalidPaymentIdLength)?,
+                );
+                self.check_payment_by_id(&payment_id, payment_identifier)
+                    .await
+            }
+            _ => Err(Error::UnsupportedPaymentIdentifierType.into()),
         }
-
-        let amount = if payment_details.status == PaymentStatus::Succeeded {
-            payment_details
-                .amount_msat
-                .ok_or(Error::CouldNotGetPaymentAmount)?
-        } else {
-            return Ok(vec![]);
-        };
-
-        let response = WaitPaymentResponse {
-            payment_identifier: payment_identifier.clone(),
-            payment_amount: amount.into(),
-            unit: CurrencyUnit::Msat,
-            payment_id: payment_id_str,
-        };
-
-        Ok(vec![response])
     }
 
     /// Check the status of an outgoing payment
@@ -926,62 +1126,181 @@ impl MintPayment for CdkLdkNode {
         &self,
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let payment_details = match request_lookup_id {
-            PaymentIdentifier::PaymentHash(id_hash) => self
-                .inner
-                .list_payments_with_filter(
-                    |p| matches!(&p.kind, PaymentKind::Bolt11 { hash, .. } if &hash.0 == id_hash),
-                )
-                .first()
-                .cloned(),
-            PaymentIdentifier::PaymentId(id) => self.inner.payment(&PaymentId(
-                hex::decode(id)?
-                    .try_into()
-                    .map_err(|_| payment::Error::Custom("Invalid hex".to_string()))?,
-            )),
-            _ => {
-                return Ok(MakePaymentResponse {
-                    payment_lookup_id: request_lookup_id.clone(),
-                    status: MeltQuoteState::Unknown,
-                    payment_proof: None,
-                    total_spent: Amount::ZERO,
-                    unit: CurrencyUnit::Msat,
-                });
+        match request_lookup_id {
+            PaymentIdentifier::QuoteId(quote_id) => {
+                // Look up payment status from database using quote_id
+                match self
+                    .database
+                    .load_outgoing_payment_status(quote_id)
+                    .await
+                    .map_err(|e| payment::Error::Custom(e.to_string()))?
+                {
+                    Some(payment_status) => {
+                        // We have stored payment status, check for any updates from LDK
+                        let payment_id = PaymentId(payment_status.payment_id);
+                        match self.inner.payment(&payment_id) {
+                            Some(current_details) => {
+                                let status = match current_details.status {
+                                    PaymentStatus::Pending => MeltQuoteState::Pending,
+                                    PaymentStatus::Succeeded => MeltQuoteState::Paid,
+                                    PaymentStatus::Failed => MeltQuoteState::Failed,
+                                };
+
+                                let payment_proof = match current_details.kind {
+                                    PaymentKind::Bolt11 {
+                                        hash: _,
+                                        preimage,
+                                        secret: _,
+                                    } => preimage.map(|p| p.to_string()),
+                                    PaymentKind::Bolt12Offer {
+                                        hash: _,
+                                        preimage,
+                                        secret: _,
+                                        offer_id: _,
+                                        payer_note: _,
+                                        quantity: _,
+                                    } => preimage.map(|p| p.to_string()),
+                                    _ => None,
+                                };
+
+                                let total_spent = current_details
+                                    .amount_msat
+                                    .map(|a| a.into())
+                                    .unwrap_or(Amount::ZERO);
+
+                                Ok(MakePaymentResponse {
+                                    payment_lookup_id: request_lookup_id.clone(),
+                                    payment_proof,
+                                    status,
+                                    total_spent,
+                                    unit: CurrencyUnit::Msat,
+                                })
+                            }
+                            None => {
+                                // Payment not found in LDK, use stored status
+                                Ok(MakePaymentResponse {
+                                    payment_lookup_id: request_lookup_id.clone(),
+                                    payment_proof: payment_status.payment_proof,
+                                    status: payment_status.status,
+                                    total_spent: payment_status.total_spent,
+                                    unit: CurrencyUnit::Msat,
+                                })
+                            }
+                        }
+                    }
+                    None => {
+                        // No payment status found for this quote_id, means payment hasn't been attempted yet
+                        Ok(MakePaymentResponse {
+                            payment_lookup_id: request_lookup_id.clone(),
+                            payment_proof: None,
+                            status: MeltQuoteState::Unpaid,
+                            total_spent: Amount::ZERO,
+                            unit: CurrencyUnit::Msat,
+                        })
+                    }
+                }
             }
+            PaymentIdentifier::PaymentHash(id_hash) => {
+                let payment_details = self
+                    .inner
+                    .list_payments_with_filter(
+                        |p| matches!(&p.kind, PaymentKind::Bolt11 { hash, .. } if &hash.0 == id_hash),
+                    )
+                    .first()
+                    .cloned()
+                    .ok_or(Error::PaymentNotFound)?;
+
+                if payment_details.direction != PaymentDirection::Outbound {
+                    return Err(Error::InvalidPaymentDirection.into());
+                }
+
+                let status = match payment_details.status {
+                    PaymentStatus::Pending => MeltQuoteState::Pending,
+                    PaymentStatus::Succeeded => MeltQuoteState::Paid,
+                    PaymentStatus::Failed => MeltQuoteState::Failed,
+                };
+
+                let payment_proof = match payment_details.kind {
+                    PaymentKind::Bolt11 {
+                        hash: _,
+                        preimage,
+                        secret: _,
+                    } => preimage.map(|p| p.to_string()),
+                    _ => return Err(Error::UnexpectedPaymentKind.into()),
+                };
+
+                let total_spent = payment_details
+                    .amount_msat
+                    .ok_or(Error::CouldNotGetAmountSpent)?;
+
+                Ok(MakePaymentResponse {
+                    payment_lookup_id: request_lookup_id.clone(),
+                    payment_proof,
+                    status,
+                    total_spent: total_spent.into(),
+                    unit: CurrencyUnit::Msat,
+                })
+            }
+            PaymentIdentifier::PaymentId(id) => {
+                let payment_id = PaymentId(
+                    hex::decode(id)?
+                        .try_into()
+                        .map_err(|_| payment::Error::Custom("Invalid hex".to_string()))?,
+                );
+
+                let payment_details = self
+                    .inner
+                    .payment(&payment_id)
+                    .ok_or(Error::PaymentNotFound)?;
+
+                // This check seems reversed in the original code, so I'm fixing it here
+                if payment_details.direction != PaymentDirection::Outbound {
+                    return Err(Error::InvalidPaymentDirection.into());
+                }
+
+                let status = match payment_details.status {
+                    PaymentStatus::Pending => MeltQuoteState::Pending,
+                    PaymentStatus::Succeeded => MeltQuoteState::Paid,
+                    PaymentStatus::Failed => MeltQuoteState::Failed,
+                };
+
+                let payment_proof = match payment_details.kind {
+                    PaymentKind::Bolt11 {
+                        hash: _,
+                        preimage,
+                        secret: _,
+                    } => preimage.map(|p| p.to_string()),
+                    PaymentKind::Bolt12Offer {
+                        hash: _,
+                        preimage,
+                        secret: _,
+                        offer_id: _,
+                        payer_note: _,
+                        quantity: _,
+                    } => preimage.map(|p| p.to_string()),
+                    _ => return Err(Error::UnexpectedPaymentKind.into()),
+                };
+
+                let total_spent = payment_details
+                    .amount_msat
+                    .ok_or(Error::CouldNotGetAmountSpent)?;
+
+                Ok(MakePaymentResponse {
+                    payment_lookup_id: request_lookup_id.clone(),
+                    payment_proof,
+                    status,
+                    total_spent: total_spent.into(),
+                    unit: CurrencyUnit::Msat,
+                })
+            }
+            _ => Ok(MakePaymentResponse {
+                payment_lookup_id: request_lookup_id.clone(),
+                status: MeltQuoteState::Unknown,
+                payment_proof: None,
+                total_spent: Amount::ZERO,
+                unit: CurrencyUnit::Msat,
+            }),
         }
-        .ok_or(Error::PaymentNotFound)?;
-
-        // This check seems reversed in the original code, so I'm fixing it here
-        if payment_details.direction != PaymentDirection::Outbound {
-            return Err(Error::InvalidPaymentDirection.into());
-        }
-
-        let status = match payment_details.status {
-            PaymentStatus::Pending => MeltQuoteState::Pending,
-            PaymentStatus::Succeeded => MeltQuoteState::Paid,
-            PaymentStatus::Failed => MeltQuoteState::Failed,
-        };
-
-        let payment_proof = match payment_details.kind {
-            PaymentKind::Bolt11 {
-                hash: _,
-                preimage,
-                secret: _,
-            } => preimage.map(|p| p.to_string()),
-            _ => return Err(Error::UnexpectedPaymentKind.into()),
-        };
-
-        let total_spent = payment_details
-            .amount_msat
-            .ok_or(Error::CouldNotGetAmountSpent)?;
-
-        Ok(MakePaymentResponse {
-            payment_lookup_id: request_lookup_id.clone(),
-            payment_proof,
-            status,
-            total_spent: total_spent.into(),
-            unit: CurrencyUnit::Msat,
-        })
     }
 }
 

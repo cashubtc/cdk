@@ -113,20 +113,20 @@ async fn main() -> anyhow::Result<()> {
                 }
                 #[cfg(feature = "fake")]
                 "FAKEWALLET" => {
-                    use std::collections::HashMap;
                     use std::sync::Arc;
 
                     let fee_reserve = FeeReserve {
                         min_fee_reserve: 1.into(),
                         percent_fee_reserve: 0.0,
                     };
+                    let kv_store = Arc::new(MintSqliteDatabase::new(":memory:").await?);
 
                     let fake_wallet = FakeWallet::new(
                         fee_reserve,
-                        HashMap::default(),
                         HashSet::default(),
                         2,
                         cashu::CurrencyUnit::Sat,
+                        kv_store,
                     );
 
                     Arc::new(fake_wallet)

@@ -29,6 +29,9 @@ pub enum Error {
     /// UTF-8 Error
     #[error(transparent)]
     Utf8(#[from] std::string::FromUtf8Error),
+    /// Serde Error
+    #[error(transparent)]
+    Serde(#[from] serde_json::Error),
     /// Bolt12 Error
     #[error("Bolt12 error: {0}")]
     Bolt12(String),

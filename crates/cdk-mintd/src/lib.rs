@@ -445,7 +445,7 @@ async fn configure_lightning_backend(
         LnBackend::LNbits => {
             let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
             let lnbits = lnbits_settings
-                .setup(settings, CurrencyUnit::Sat, None, work_dir, None)
+                .setup(settings, CurrencyUnit::Sat, None, work_dir, _kv_store)
                 .await?;
             #[cfg(feature = "prometheus")]
             let lnbits = MetricsMintPayment::new(lnbits);
@@ -536,7 +536,13 @@ async fn configure_lightning_backend(
             tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
 
             let ldk_node = ldk_node_settings
-                .setup(settings, CurrencyUnit::Sat, _runtime, work_dir, None)
+                .setup(
+                    settings,
+                    CurrencyUnit::Sat,
+                    _runtime,
+                    work_dir,
+                    _kv_store.clone(),
+                )
                 .await?;
 
             mint_builder = configure_backend_for_unit(

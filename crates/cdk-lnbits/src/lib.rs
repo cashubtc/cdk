@@ -11,8 +11,10 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+use bitcoin::hashes::Hash;
 use cdk_common::amount::{to_unit, Amount};
 use cdk_common::common::FeeReserve;
+use cdk_common::database::mint::DynMintKVStore;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
@@ -20,7 +22,7 @@ use cdk_common::payment::{
     PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk_common::util::{hex, unix_time};
-use cdk_common::Bolt11Invoice;
+use cdk_common::{Bolt11Invoice, QuoteId};
 use error::Error;
 use futures::Stream;
 use lnbits_rs::api::invoice::CreateInvoiceRequest;
@@ -28,6 +30,7 @@ use lnbits_rs::LNBitsClient;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+mod database;
 pub mod error;
 
 /// LNbits
@@ -35,6 +38,7 @@ pub mod error;
 pub struct LNbits {
     lnbits_api: LNBitsClient,
     fee_reserve: FeeReserve,
+    database: database::Database,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
     settings: Bolt11Settings,
@@ -48,12 +52,15 @@ impl LNbits {
         invoice_api_key: String,
         api_url: String,
         fee_reserve: FeeReserve,
+        kv_store: DynMintKVStore,
     ) -> Result<Self, Error> {
         let lnbits_api = LNBitsClient::new("", &admin_api_key, &invoice_api_key, &api_url, None)?;
+        let database = database::Database::new(kv_store);
 
         Ok(Self {
             lnbits_api,
             fee_reserve,
+            database,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             settings: Bolt11Settings {
@@ -85,6 +92,7 @@ impl LNbits {
         msg_option: Option<String>,
         api: &LNBitsClient,
         _is_active: &Arc<AtomicBool>,
+        database: &database::Database,
     ) -> Option<WaitPaymentResponse> {
         let msg = msg_option?;
 
@@ -101,16 +109,19 @@ impl LNbits {
             return None;
         }
 
-        Self::create_payment_response(&msg, &payment).unwrap_or_else(|e| {
-            tracing::error!("Failed to create payment response: {}", e);
-            None
-        })
+        Self::create_payment_response(&msg, &payment, database)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!("Failed to create payment response: {}", e);
+                None
+            })
     }
 
     /// Create a payment response from payment info
-    fn create_payment_response(
+    async fn create_payment_response(
         msg: &str,
         payment: &lnbits_rs::api::payment::Payment,
+        database: &database::Database,
     ) -> Result<Option<WaitPaymentResponse>, Error> {
         let amount = payment.details.amount;
 
@@ -120,8 +131,19 @@ impl LNbits {
 
         let hash = Self::decode_payment_hash(msg)?;
 
+        // Try to get the quote ID from the database, fallback to payment hash if not found
+        let payment_identifier = match database.get_quote_id_by_incoming_bolt11_hash(&hash).await {
+            Ok(Some(quote_id)) => PaymentIdentifier::QuoteId(quote_id),
+            _ => {
+                tracing::debug!(
+                    "LNbits: No quote found for incoming payment falling back to payment hash"
+                );
+                PaymentIdentifier::PaymentHash(hash)
+            }
+        };
+
         Ok(Some(WaitPaymentResponse {
-            payment_identifier: PaymentIdentifier::PaymentHash(hash),
+            payment_identifier,
             payment_amount: Amount::from(amount.unsigned_abs()),
             unit: CurrencyUnit::Msat,
             payment_id: msg.to_string(),
@@ -161,10 +183,11 @@ impl MintPayment for LNbits {
         let api = self.lnbits_api.clone();
         let cancel_token = self.wait_invoice_cancel_token.clone();
         let is_active = Arc::clone(&self.wait_invoice_is_active);
+        let database = self.database.clone();
 
         Ok(Box::pin(futures::stream::unfold(
-            (api, cancel_token, is_active),
-            |(api, cancel_token, is_active)| async move {
+            (api, cancel_token, is_active, database),
+            |(api, cancel_token, is_active, database)| async move {
                 is_active.store(true, Ordering::SeqCst);
 
                 let receiver = api.receiver();
@@ -177,9 +200,9 @@ impl MintPayment for LNbits {
                         None
                     }
                     msg_option = receiver.recv() => {
-                        Self::process_message(msg_option, &api, &is_active)
+                        Self::process_message(msg_option, &api, &is_active, &database)
                             .await
-                            .map(|response| (Event::PaymentReceived(response), (api, cancel_token, is_active)))
+                            .map(|response| (Event::PaymentReceived(response), (api, cancel_token, is_active, database)))
                     }
                 }
             },
@@ -188,6 +211,7 @@ impl MintPayment for LNbits {
 
     async fn get_payment_quote(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
@@ -215,9 +239,7 @@ impl MintPayment for LNbits {
                 let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
                 Ok(PaymentQuoteResponse {
-                    request_lookup_id: Some(PaymentIdentifier::PaymentHash(
-                        *bolt11_options.bolt11.payment_hash().as_ref(),
-                    )),
+                    request_lookup_id: Some(PaymentIdentifier::QuoteId(quote_id.clone())),
                     amount: to_unit(amount_msat, &CurrencyUnit::Msat, unit)?,
                     fee: fee.into(),
                     state: MeltQuoteState::Unpaid,
@@ -232,11 +254,14 @@ impl MintPayment for LNbits {
 
     async fn make_payment(
         &self,
+        quote_id: &QuoteId,
         _unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         match options {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
+                let payment_hash = bolt11_options.bolt11.payment_hash().as_byte_array();
+
                 let pay_response = self
                     .lnbits_api
                     .pay_invoice(&bolt11_options.bolt11.to_string(), None)
@@ -272,14 +297,26 @@ impl MintPayment for LNbits {
                     .unsigned_abs(),
                 );
 
+                // Create and store the comprehensive payment status
+                let payment_status = database::PaymentStatus {
+                    status,
+                    payment_hash: *payment_hash,
+                    payment_proof: invoice_info.preimage.clone(),
+                    total_spent,
+                };
+
+                // Store the comprehensive payment status
+                self.database
+                    .store_outgoing_payment(quote_id, payment_status)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!("Could not store payment status: {}", e);
+                        Self::Err::Anyhow(anyhow!("Could not store payment status"))
+                    })?;
+
                 Ok(MakePaymentResponse {
-                    payment_lookup_id: PaymentIdentifier::PaymentHash(
-                        hex::decode(pay_response.payment_hash)
-                            .map_err(|_| Error::InvalidPaymentHash)?
-                            .try_into()
-                            .map_err(|_| Error::InvalidPaymentHash)?,
-                    ),
-                    payment_proof: Some(invoice_info.details.payment_hash),
+                    payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
+                    payment_proof: invoice_info.preimage,
                     status,
                     total_spent,
                     unit: CurrencyUnit::Msat,
@@ -293,6 +330,7 @@ impl MintPayment for LNbits {
 
     async fn create_incoming_payment_request(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
@@ -325,13 +363,24 @@ impl MintPayment for LNbits {
                     })?;
 
                 let request: Bolt11Invoice = create_invoice_response.bolt11().parse()?;
+                let payment_hash = request.payment_hash();
+
+                // Store the mapping between payment hash and quote ID
+                self.database
+                    .store_incoming_bolt11_payment(&payment_hash.to_byte_array(), quote_id)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!("Could not store payment hash to quote ID mapping: {}", e);
+                        Self::Err::Anyhow(anyhow!(
+                            "Could not store payment hash to quote ID mapping"
+                        ))
+                    })?;
 
                 let expiry = request.expires_at().map(|t| t.as_secs());
 
+                // For LNbits, we return the quote ID directly for consistency
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: PaymentIdentifier::PaymentHash(
-                        *request.payment_hash().as_ref(),
-                    ),
+                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: request.to_string(),
                     expiry,
                 })
@@ -346,9 +395,30 @@ impl MintPayment for LNbits {
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+        let (lookup_string, effective_payment_identifier) = match payment_identifier {
+            PaymentIdentifier::QuoteId(quote_id) => {
+                // For quote ID, we need to get the payment hash from the database
+                match self
+                    .database
+                    .get_incoming_payment_identifier_by_quote_id(quote_id)
+                    .await
+                {
+                    Ok(Some(database::IncomingPaymentIdentifier::Bolt11PaymentHash(hash))) => {
+                        (hex::encode(hash), payment_identifier.clone())
+                    }
+                    _ => {
+                        return Err(Self::Err::Anyhow(anyhow!(
+                            "Could not find payment hash for quote ID"
+                        )));
+                    }
+                }
+            }
+            _ => (payment_identifier.to_string(), payment_identifier.clone()),
+        };
+
         let payment = self
             .lnbits_api
-            .get_payment_info(&payment_identifier.to_string())
+            .get_payment_info(&lookup_string)
             .await
             .map_err(|err| {
                 tracing::error!("Could not check invoice status");
@@ -364,7 +434,7 @@ impl MintPayment for LNbits {
 
         match payment.paid {
             true => Ok(vec![WaitPaymentResponse {
-                payment_identifier: payment_identifier.clone(),
+                payment_identifier: effective_payment_identifier,
                 payment_amount: Amount::from(amount.unsigned_abs()),
                 unit: CurrencyUnit::Msat,
                 payment_id: payment.details.payment_hash,
@@ -377,6 +447,29 @@ impl MintPayment for LNbits {
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err> {
+        match payment_identifier {
+            PaymentIdentifier::QuoteId(quote_id) => {
+                // First try to get the payment status from our database
+                if let Ok(Some(payment_status)) =
+                    self.database.load_outgoing_payment_status(quote_id).await
+                {
+                    return Ok(MakePaymentResponse {
+                        payment_lookup_id: payment_identifier.clone(),
+                        payment_proof: payment_status.payment_proof,
+                        status: payment_status.status,
+                        total_spent: payment_status.total_spent,
+                        unit: CurrencyUnit::Msat,
+                    });
+                }
+
+                // Fall back to LNbits API if not found in database
+                tracing::debug!("Payment status not found in database, querying LNbits API");
+            }
+            _ => {
+                // For non-quote-id identifiers, go directly to LNbits API
+            }
+        }
+
         let payment = self
             .lnbits_api
             .get_payment_info(&payment_identifier.to_string())
