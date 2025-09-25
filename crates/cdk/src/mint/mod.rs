@@ -887,9 +887,9 @@ impl Mint {
             .get_mint_quote_by_request(&melt_quote.request.to_string())
             .await
         {
-            Ok(Some(mint_quote)) => mint_quote,
-            // Not an internal melt -> mint
-            Ok(None) => return Ok(None),
+            Ok(Some(mint_quote)) if mint_quote.unit == melt_quote.unit => mint_quote,
+            // Not an internal melt -> mint or unit mismatch
+            Ok(_) => return Ok(None),
             Err(err) => {
                 tracing::debug!("Error attempting to get mint quote: {}", err);
                 return Err(Error::Internal);
