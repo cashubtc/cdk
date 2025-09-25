@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
+use crate::secret::Secret;
 use std::str::FromStr;
 
 use bitcoin::base64::engine::{general_purpose, GeneralPurpose};
@@ -627,6 +628,8 @@ mod tests {
     use crate::mint_url::MintUrl;
     use crate::secret::Secret;
     use crate::util::hex;
+    use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+    use bitcoin::hashes::{sha256::Hash as Sha256Hash, Hash};
 
     #[test]
     fn test_token_padding() {
@@ -911,5 +914,135 @@ mod tests {
 
         let proofs1 = token1.unwrap().proofs(&keysets_info);
         assert!(proofs1.is_err());
+    }
+}
+#[cfg(test)]
+mod token_spending_tests {
+    use super::*;
+    use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
+    use crate::secret::Secret;
+    use bitcoin::hashes::{sha256::Hash as Sha256Hash, Hash};
+
+    #[test]
+    fn test_token_spending_condition_helpers_p2pk_htlc_v4() {
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+
+        // P2PK: base pubkey plus an extra pubkey via tags, refund key, and locktime
+        let sk1 = crate::nuts::SecretKey::generate();
+        let pk1 = sk1.public_key();
+        let sk2 = crate::nuts::SecretKey::generate();
+        let pk2 = sk2.public_key();
+        let refund_sk = crate::nuts::SecretKey::generate();
+        let refund_pk = refund_sk.public_key();
+
+        let cond_p2pk = Conditions {
+            locktime: Some(1_700_000_000),
+            pubkeys: Some(vec![pk2]),
+            refund_keys: Some(vec![refund_pk]),
+            num_sigs: Some(1),
+            sig_flag: SigFlag::SigInputs,
+            num_sigs_refund: None,
+        };
+
+        let nut10_p2pk = crate::nuts::Nut10Secret::new(crate::nuts::Kind::P2PK, pk1.to_string(), Some(cond_p2pk.clone()));
+        let secret_p2pk: Secret = nut10_p2pk.try_into().unwrap();
+
+        // HTLC: use a known preimage hash and its own locktime
+        let preimage = b"cdk-test-preimage";
+        let htlc_hash = Sha256Hash::hash(preimage);
+        let cond_htlc = Conditions {
+            locktime: Some(1_800_000_000),
+            ..Default::default()
+        };
+        let nut10_htlc = crate::nuts::Nut10Secret::new(crate::nuts::Kind::HTLC, htlc_hash.to_string(), Some(cond_htlc.clone()));
+        let secret_htlc: Secret = nut10_htlc.try_into().unwrap();
+
+        // Build two proofs (one P2PK, one HTLC)
+        let proof_p2pk = Proof::new(Amount::from(1), keyset_id, secret_p2pk.clone(), pk1);
+        let proof_htlc = Proof::new(Amount::from(2), keyset_id, secret_htlc.clone(), pk2);
+        let token = Token::new(mint_url, vec![proof_p2pk, proof_htlc].into_iter().collect(), None, CurrencyUnit::Sat);
+
+        // token_secrets should see both
+        assert_eq!(token.token_secrets().len(), 2);
+
+        // spending_conditions should contain both kinds with their conditions
+        let sc = token.spending_conditions().unwrap();
+        assert!(sc.contains(&SpendingConditions::P2PKConditions { data: pk1, conditions: Some(cond_p2pk.clone()) }));
+        assert!(sc.contains(&SpendingConditions::HTLCConditions { data: htlc_hash, conditions: Some(cond_htlc.clone()) }));
+
+        // p2pk_pubkeys should include base pk1 and extra pk2 from tags (deduped)
+        let pks = token.p2pk_pubkeys().unwrap();
+        assert!(pks.contains(&pk1));
+        assert!(pks.contains(&pk2));
+        assert_eq!(pks.len(), 2);
+
+        // p2pk_refund_pubkeys should include refund_pk only
+        let refund = token.p2pk_refund_pubkeys().unwrap();
+        assert!(refund.contains(&refund_pk));
+        assert_eq!(refund.len(), 1);
+
+        // htlc_hashes should include exactly our hash
+        let hashes = token.htlc_hashes().unwrap();
+        assert!(hashes.contains(&htlc_hash));
+        assert_eq!(hashes.len(), 1);
+
+        // locktimes should include both unique locktimes
+        let lts = token.locktimes().unwrap();
+        assert!(lts.contains(&1_700_000_000));
+        assert!(lts.contains(&1_800_000_000));
+        assert_eq!(lts.len(), 2);
+    }
+
+    #[test]
+    fn test_token_spending_condition_helpers_dedup_and_v3() {
+        let mint_url = MintUrl::from_str("https://example.org").unwrap();
+        let id = Id::from_str("00ad268c4d1f5826").unwrap();
+
+        // Same P2PK conditions duplicated across two proofs
+        let sk = crate::nuts::SecretKey::generate();
+        let pk = sk.public_key();
+
+        let cond = Conditions {
+            locktime: Some(1_650_000_000),
+            pubkeys: Some(vec![pk]), // include itself to test dedup inside pubkeys()
+            refund_keys: Some(vec![pk]), // deliberate duplicate
+            num_sigs: Some(1),
+            sig_flag: SigFlag::SigInputs,
+            num_sigs_refund: None,
+        };
+
+        let nut10 = crate::nuts::Nut10Secret::new(crate::nuts::Kind::P2PK, pk.to_string(), Some(cond.clone()));
+        let secret: Secret = nut10.try_into().unwrap();
+
+        let p1 = Proof::new(Amount::from(1), id, secret.clone(), pk);
+        let p2 = Proof::new(Amount::from(2), id, secret.clone(), pk);
+
+        // Build a V3 token explicitly and wrap into Token::TokenV3
+        let token_v3 = TokenV3::new(mint_url, vec![p1, p2].into_iter().collect(), None, Some(CurrencyUnit::Sat)).unwrap();
+        let token = Token::TokenV3(token_v3);
+
+        // Helpers should dedup
+        let sc = token.spending_conditions().unwrap();
+        assert_eq!(sc.len(), 1); // identical conditions across proofs
+
+        let pks = token.p2pk_pubkeys().unwrap();
+        assert!(pks.contains(&pk));
+        assert_eq!(pks.len(), 1); // duplicates removed
+
+        let refunds = token.p2pk_refund_pubkeys().unwrap();
+        assert!(refunds.contains(&pk));
+        assert_eq!(refunds.len(), 1);
+
+        let lts = token.locktimes().unwrap();
+        assert!(lts.contains(&1_650_000_000));
+        assert_eq!(lts.len(), 1);
+
+        // No HTLC here
+        let hashes = token.htlc_hashes().unwrap();
+        assert!(hashes.is_empty());
+
+        // token_secrets length equals number of proofs even if conditions identical
+        assert_eq!(token.token_secrets().len(), 2);
     }
 }
