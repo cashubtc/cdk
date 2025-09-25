@@ -4,7 +4,6 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
-use crate::secret::Secret;
 use std::str::FromStr;
 
 use bitcoin::base64::engine::{general_purpose, GeneralPurpose};
@@ -622,14 +621,15 @@ mod tests {
     use std::str::FromStr;
 
     use bip39::rand::{self, RngCore};
+    use bitcoin::hashes::sha256::Hash as Sha256Hash;
+    use bitcoin::hashes::Hash;
 
     use super::*;
     use crate::dhke::hash_to_curve;
     use crate::mint_url::MintUrl;
+    use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
     use crate::secret::Secret;
     use crate::util::hex;
-    use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
-    use bitcoin::hashes::{sha256::Hash as Sha256Hash, Hash};
 
     #[test]
     fn test_token_padding() {
@@ -918,10 +918,12 @@ mod tests {
 }
 #[cfg(test)]
 mod token_spending_tests {
+    use bitcoin::hashes::sha256::Hash as Sha256Hash;
+    use bitcoin::hashes::Hash;
+
     use super::*;
     use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
     use crate::secret::Secret;
-    use bitcoin::hashes::{sha256::Hash as Sha256Hash, Hash};
 
     #[test]
     fn test_token_spending_condition_helpers_p2pk_htlc_v4() {
@@ -945,7 +947,11 @@ mod token_spending_tests {
             num_sigs_refund: None,
         };
 
-        let nut10_p2pk = crate::nuts::Nut10Secret::new(crate::nuts::Kind::P2PK, pk1.to_string(), Some(cond_p2pk.clone()));
+        let nut10_p2pk = crate::nuts::Nut10Secret::new(
+            crate::nuts::Kind::P2PK,
+            pk1.to_string(),
+            Some(cond_p2pk.clone()),
+        );
         let secret_p2pk: Secret = nut10_p2pk.try_into().unwrap();
 
         // HTLC: use a known preimage hash and its own locktime
@@ -955,21 +961,36 @@ mod token_spending_tests {
             locktime: Some(1_800_000_000),
             ..Default::default()
         };
-        let nut10_htlc = crate::nuts::Nut10Secret::new(crate::nuts::Kind::HTLC, htlc_hash.to_string(), Some(cond_htlc.clone()));
+        let nut10_htlc = crate::nuts::Nut10Secret::new(
+            crate::nuts::Kind::HTLC,
+            htlc_hash.to_string(),
+            Some(cond_htlc.clone()),
+        );
         let secret_htlc: Secret = nut10_htlc.try_into().unwrap();
 
         // Build two proofs (one P2PK, one HTLC)
         let proof_p2pk = Proof::new(Amount::from(1), keyset_id, secret_p2pk.clone(), pk1);
         let proof_htlc = Proof::new(Amount::from(2), keyset_id, secret_htlc.clone(), pk2);
-        let token = Token::new(mint_url, vec![proof_p2pk, proof_htlc].into_iter().collect(), None, CurrencyUnit::Sat);
+        let token = Token::new(
+            mint_url,
+            vec![proof_p2pk, proof_htlc].into_iter().collect(),
+            None,
+            CurrencyUnit::Sat,
+        );
 
         // token_secrets should see both
         assert_eq!(token.token_secrets().len(), 2);
 
         // spending_conditions should contain both kinds with their conditions
         let sc = token.spending_conditions().unwrap();
-        assert!(sc.contains(&SpendingConditions::P2PKConditions { data: pk1, conditions: Some(cond_p2pk.clone()) }));
-        assert!(sc.contains(&SpendingConditions::HTLCConditions { data: htlc_hash, conditions: Some(cond_htlc.clone()) }));
+        assert!(sc.contains(&SpendingConditions::P2PKConditions {
+            data: pk1,
+            conditions: Some(cond_p2pk.clone())
+        }));
+        assert!(sc.contains(&SpendingConditions::HTLCConditions {
+            data: htlc_hash,
+            conditions: Some(cond_htlc.clone())
+        }));
 
         // p2pk_pubkeys should include base pk1 and extra pk2 from tags (deduped)
         let pks = token.p2pk_pubkeys().unwrap();
@@ -1012,14 +1033,24 @@ mod token_spending_tests {
             num_sigs_refund: None,
         };
 
-        let nut10 = crate::nuts::Nut10Secret::new(crate::nuts::Kind::P2PK, pk.to_string(), Some(cond.clone()));
+        let nut10 = crate::nuts::Nut10Secret::new(
+            crate::nuts::Kind::P2PK,
+            pk.to_string(),
+            Some(cond.clone()),
+        );
         let secret: Secret = nut10.try_into().unwrap();
 
         let p1 = Proof::new(Amount::from(1), id, secret.clone(), pk);
         let p2 = Proof::new(Amount::from(2), id, secret.clone(), pk);
 
         // Build a V3 token explicitly and wrap into Token::TokenV3
-        let token_v3 = TokenV3::new(mint_url, vec![p1, p2].into_iter().collect(), None, Some(CurrencyUnit::Sat)).unwrap();
+        let token_v3 = TokenV3::new(
+            mint_url,
+            vec![p1, p2].into_iter().collect(),
+            None,
+            Some(CurrencyUnit::Sat),
+        )
+        .unwrap();
         let token = Token::TokenV3(token_v3);
 
         // Helpers should dedup
