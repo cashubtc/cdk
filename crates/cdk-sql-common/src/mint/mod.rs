@@ -553,33 +553,7 @@ where
         inputs_fee: Amount,
         blinded_messages: &[BlindedMessage],
     ) -> Result<(), Self::Err> {
-        // Check if any blinded message already exists in blind_signature table
-        let blinded_secrets: Vec<Vec<u8>> = blinded_messages
-            .iter()
-            .map(|message| message.blinded_secret.to_bytes().to_vec())
-            .collect();
-
-        let existing_signature = if !blinded_secrets.is_empty() {
-            query(
-                r#"
-                SELECT blinded_message
-                FROM blind_signature
-                WHERE blinded_message IN (:blinded_secrets)
-                LIMIT 1
-            "#,
-            )?
-            .bind_vec("blinded_secrets", blinded_secrets)
-            .fetch_one(&self.inner)
-            .await?
-        } else {
-            None
-        };
-
-        if existing_signature.is_some() {
-            return Err(database::Error::Duplicate); // Already signed
-        }
-
-        // Proceed with inserting melt_request
+        // Insert melt_request first
         query(
             r#"
             INSERT INTO melt_request
@@ -597,8 +571,9 @@ where
         let current_time = unix_time();
 
         // Insert blinded_messages directly into blind_signature with c = NULL
+        // Let the database constraint handle duplicate detection
         for message in blinded_messages {
-            query(
+            match query(
                 r#"
                 INSERT INTO blind_signature
                 (blinded_message, amount, keyset_id, c, quote_id, created_time)
@@ -615,7 +590,18 @@ where
             .bind("quote_id", quote_id.to_string())
             .bind("created_time", current_time as i64)
             .execute(&self.inner)
-            .await?;
+            .await
+            {
+                Ok(_) => continue,
+                Err(database::Error::Duplicate) => {
+                    // Primary key constraint violation - blinded message already exists
+                    // This could be either:
+                    // 1. Already signed (c IS NOT NULL) - definitely an error
+                    // 2. Already pending (c IS NULL) - also an error
+                    return Err(database::Error::Duplicate);
+                }
+                Err(err) => return Err(err),
+            }
         }
 
         Ok(())
