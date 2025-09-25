@@ -2,23 +2,21 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/00.md>
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
 
 use bitcoin::base64::engine::{general_purpose, GeneralPurpose};
 use bitcoin::base64::{alphabet, Engine as _};
+use bitcoin::hashes::sha256;
 use serde::{Deserialize, Serialize};
 
 use super::{Error, Proof, ProofV3, ProofV4, Proofs};
 use crate::mint_url::MintUrl;
 use crate::nut02::ShortKeysetId;
-use crate::nuts::{CurrencyUnit, Id};
-use crate::{ensure_cdk, Amount, KeySetInfo};
 use crate::nuts::nut11::SpendingConditions;
-use crate::nuts::{Kind, PublicKey};
-use std::collections::{HashSet, BTreeSet};
-use bitcoin::hashes::sha256;
+use crate::nuts::{CurrencyUnit, Id, Kind, PublicKey};
+use crate::{ensure_cdk, Amount, KeySetInfo};
 
 /// Token Enum
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,7 +130,7 @@ impl Token {
             Self::TokenV4(token) => token.to_raw_bytes(),
         }
     }
-    
+
     /// Return all proof secrets in this token without keyset-id mapping, across V3/V4
     /// This is intended for spending-condition inspection where only the secret matters.
     pub fn token_secrets(&self) -> Vec<&crate::secret::Secret> {
@@ -216,7 +214,6 @@ impl Token {
         }
         Ok(set)
     }
-
 }
 
 impl FromStr for Token {
