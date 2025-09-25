@@ -1042,4 +1042,28 @@ mod tests {
             assert_eq!(method, deserialized);
         }
     }
+
+    #[test]
+    fn test_witness_serialization() {
+        let htlc_witness = HTLCWitness {
+            preimage: "preimage".to_string(),
+            signatures: Some(vec!["sig1".to_string()]),
+        };
+        let witness = Witness::HTLCWitness(htlc_witness);
+
+        let serialized = serde_json::to_string(&witness).unwrap();
+        let deserialized: Witness = serde_json::from_str(&serialized).unwrap();
+
+        assert!(matches!(deserialized, Witness::HTLCWitness(_)));
+
+        let p2pk_witness = P2PKWitness {
+            signatures: vec!["sig1".to_string(), "sig2".to_string()],
+        };
+        let witness = Witness::P2PKWitness(p2pk_witness);
+
+        let serialized = serde_json::to_string(&witness).unwrap();
+        let deserialized: Witness = serde_json::from_str(&serialized).unwrap();
+
+        assert!(matches!(deserialized, Witness::P2PKWitness(_)));
+    }
 }
