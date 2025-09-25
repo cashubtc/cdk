@@ -219,10 +219,23 @@ pub(crate) async fn get_check_mint_bolt11_quote(
 
 #[instrument(skip_all)]
 pub(crate) async fn ws_handler(
+    #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     ws: WebSocketUpgrade,
-) -> impl IntoResponse {
-    ws.on_upgrade(|ws| main_websocket(ws, state))
+) -> Result<impl IntoResponse, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Get, RoutePath::Ws),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
+    Ok(ws.on_upgrade(|ws| main_websocket(ws, state)))
 }
 
 /// Mint tokens by paying a BOLT11 Lightning invoice.

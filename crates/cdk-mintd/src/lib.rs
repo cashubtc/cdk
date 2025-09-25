@@ -792,6 +792,12 @@ async fn setup_authentication(
             add_endpoint(state_protected_endpoint, &auth_settings.check_proof_state);
         }
 
+        // Ws endpoint
+        {
+            let ws_protected_endpoint = ProtectedEndpoint::new(Method::Get, RoutePath::Ws);
+            add_endpoint(ws_protected_endpoint, &auth_settings.websocket_auth);
+        }
+
         mint_builder = mint_builder.with_auth(
             auth_localstore.clone(),
             auth_settings.openid_discovery,
