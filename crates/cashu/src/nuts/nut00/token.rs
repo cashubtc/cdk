@@ -15,6 +15,10 @@ use crate::mint_url::MintUrl;
 use crate::nut02::ShortKeysetId;
 use crate::nuts::{CurrencyUnit, Id};
 use crate::{ensure_cdk, Amount, KeySetInfo};
+use crate::nuts::nut11::SpendingConditions;
+use crate::nuts::{Kind, PublicKey};
+use std::collections::{HashSet, BTreeSet};
+use bitcoin::hashes::sha256;
 
 /// Token Enum
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +132,91 @@ impl Token {
             Self::TokenV4(token) => token.to_raw_bytes(),
         }
     }
+    
+    /// Return all proof secrets in this token without keyset-id mapping, across V3/V4
+    /// This is intended for spending-condition inspection where only the secret matters.
+    pub fn token_secrets(&self) -> Vec<&crate::secret::Secret> {
+        match self {
+            Token::TokenV3(t) => t
+                .token
+                .iter()
+                .flat_map(|kt| kt.proofs.iter().map(|p| &p.secret))
+                .collect(),
+            Token::TokenV4(t) => t
+                .token
+                .iter()
+                .flat_map(|kt| kt.proofs.iter().map(|p| &p.secret))
+                .collect(),
+        }
+    }
+
+    /// Extract unique spending conditions across all proofs for downstream policy/UI
+    pub fn spending_conditions(&self) -> Result<HashSet<SpendingConditions>, Error> {
+        let mut set = HashSet::new();
+        for secret in self.token_secrets().into_iter() {
+            if let Ok(cond) = SpendingConditions::try_from(secret) {
+                set.insert(cond);
+            }
+        }
+        Ok(set)
+    }
+
+    /// Collect pubkeys for P2PK-locked ecash to enable signer discovery and UX
+    pub fn p2pk_pubkeys(&self) -> Result<HashSet<PublicKey>, Error> {
+        let mut keys: HashSet<PublicKey> = HashSet::new();
+        for secret in self.token_secrets().into_iter() {
+            if let Ok(cond) = SpendingConditions::try_from(secret) {
+                if cond.kind() == Kind::P2PK {
+                    if let Some(ps) = cond.pubkeys() {
+                        keys.extend(ps);
+                    }
+                }
+            }
+        }
+        Ok(keys)
+    }
+
+    /// Collect refund pubkeys from P2PK conditions for recovery/expiry flows
+    pub fn p2pk_refund_pubkeys(&self) -> Result<HashSet<PublicKey>, Error> {
+        let mut keys: HashSet<PublicKey> = HashSet::new();
+        for secret in self.token_secrets().into_iter() {
+            if let Ok(cond) = SpendingConditions::try_from(secret) {
+                if cond.kind() == Kind::P2PK {
+                    if let Some(ps) = cond.refund_keys() {
+                        keys.extend(ps);
+                    }
+                }
+            }
+        }
+        Ok(keys)
+    }
+
+    /// Collect HTLC hashes to support preimage tracking and monitoring
+    pub fn htlc_hashes(&self) -> Result<HashSet<sha256::Hash>, Error> {
+        let mut hashes: HashSet<sha256::Hash> = HashSet::new();
+        for secret in self.token_secrets().into_iter() {
+            if let Ok(cond) = SpendingConditions::try_from(secret) {
+                if let SpendingConditions::HTLCConditions { data, .. } = cond {
+                    hashes.insert(data);
+                }
+            }
+        }
+        Ok(hashes)
+    }
+
+    /// Collect unique locktimes from spending conditions for scheduling and warnings
+    pub fn locktimes(&self) -> Result<BTreeSet<u64>, Error> {
+        let mut set: BTreeSet<u64> = BTreeSet::new();
+        for secret in self.token_secrets().into_iter() {
+            if let Ok(cond) = SpendingConditions::try_from(secret) {
+                if let Some(lt) = cond.locktime() {
+                    set.insert(lt);
+                }
+            }
+        }
+        Ok(set)
+    }
+
 }
 
 impl FromStr for Token {
