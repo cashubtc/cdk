@@ -8,3 +8,6 @@ cdylib_name = "cdk_ffi"
 [bindings.swift]
 module_name = "CashuDevKit"
 cdylib_name = "cdk_ffi"
+
+[bindings.go]
+go_mod = "github.com/cashubtc/cdk-go"
