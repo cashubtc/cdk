@@ -193,10 +193,10 @@ impl Token {
     pub fn htlc_hashes(&self) -> Result<HashSet<sha256::Hash>, Error> {
         let mut hashes: HashSet<sha256::Hash> = HashSet::new();
         for secret in self.token_secrets().into_iter() {
-            if let Ok(cond) = SpendingConditions::try_from(secret) {
-                if let SpendingConditions::HTLCConditions { data, .. } = cond {
-                    hashes.insert(data);
-                }
+            if let Ok(SpendingConditions::HTLCConditions { data, .. }) =
+                SpendingConditions::try_from(secret)
+            {
+                hashes.insert(data);
             }
         }
         Ok(hashes)
