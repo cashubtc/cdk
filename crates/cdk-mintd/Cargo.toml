@@ -60,6 +60,7 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 futures.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 bip39.workspace = true
 tower-http = { workspace = true, features = ["compression-full", "decompression-full"] }
 tower.workspace = true

@@ -483,7 +483,11 @@ pub struct Settings {
     #[cfg(feature = "fakewallet")]
     #[serde(rename = "fake_wallet", alias = "fakewallet")]
     pub fake_wallet: Option<FakeWallet>,
-    #[serde(rename = "grpc_processor", alias = "grpcprocessor", alias = "grpc-processor")]
+    #[serde(
+        rename = "grpc_processor",
+        alias = "grpcprocessor",
+        alias = "grpc-processor"
+    )]
     pub grpc_processor: Option<GrpcProcessor>,
     pub database: Database,
     #[cfg(feature = "auth")]
@@ -576,9 +580,15 @@ impl Settings {
         // Debug: ensure config file exists and log path
         let cfg_path = std::path::Path::new(&config);
         if !cfg_path.exists() {
-            eprintln!("[mintd] Config file not found at path: {}", cfg_path.display());
+            eprintln!(
+                "[mintd] Config file not found at path: {}",
+                cfg_path.display()
+            );
         } else {
-            eprintln!("[mintd] Loading config file at path: {}", cfg_path.display());
+            eprintln!(
+                "[mintd] Loading config file at path: {}",
+                cfg_path.display()
+            );
         }
 
         let builder = Config::builder();
@@ -589,8 +599,6 @@ impl Settings {
             .add_source(config::File::from(std::path::Path::new(&config)))
             .build()?;
         let settings: Settings = config.try_deserialize()?;
-        let settings_json = serde_json::to_string_pretty(&settings).expect("Failed to serialize settings");
-        std::fs::write("/tmp/mintd_settings.json", settings_json).expect("Failed to write settings to file");
 
         match settings.backend.name {
             BackendType::None => panic!("Ln backend must be set"),
