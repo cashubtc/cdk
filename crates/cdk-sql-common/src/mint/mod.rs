@@ -1653,9 +1653,9 @@ where
                     query(
                         r#"
                         INSERT INTO blind_signature
-                        (blinded_message, amount, keyset_id, c, quote_id, dleq_e, dleq_s, created_time)
+                        (blinded_message, amount, keyset_id, c, quote_id, dleq_e, dleq_s, created_time, signed_time)
                         VALUES
-                        (:blinded_message, :amount, :keyset_id, :c, :quote_id, :dleq_e, :dleq_s, :created_time)
+                        (:blinded_message, :amount, :keyset_id, :c, :quote_id, :dleq_e, :dleq_s, :created_time, :signed_time)
                         "#,
                     )?
                     .bind("blinded_message", message.to_bytes().to_vec())
