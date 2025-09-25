@@ -7,8 +7,8 @@
 pub mod database;
 pub mod error;
 pub mod multi_mint_wallet;
-mod postgres;
-mod sqlite;
+pub mod postgres;
+pub mod sqlite;
 pub mod types;
 pub mod wallet;
 
