@@ -281,12 +281,12 @@ impl PartialOrd for BlindSignature {
 #[serde(untagged)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum Witness {
-    /// P2PK Witness
-    #[serde(with = "serde_p2pk_witness")]
-    P2PKWitness(P2PKWitness),
     /// HTLC Witness
     #[serde(with = "serde_htlc_witness")]
     HTLCWitness(HTLCWitness),
+    /// P2PK Witness
+    #[serde(with = "serde_p2pk_witness")]
+    P2PKWitness(P2PKWitness),
 }
 
 impl From<P2PKWitness> for Witness {
