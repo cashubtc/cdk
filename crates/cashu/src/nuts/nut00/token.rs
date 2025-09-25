@@ -915,16 +915,6 @@ mod tests {
         let proofs1 = token1.unwrap().proofs(&keysets_info);
         assert!(proofs1.is_err());
     }
-}
-#[cfg(test)]
-mod token_spending_tests {
-    use bitcoin::hashes::sha256::Hash as Sha256Hash;
-    use bitcoin::hashes::Hash;
-
-    use super::*;
-    use crate::nuts::nut11::{Conditions, SigFlag, SpendingConditions};
-    use crate::secret::Secret;
-
     #[test]
     fn test_token_spending_condition_helpers_p2pk_htlc_v4() {
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
