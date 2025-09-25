@@ -142,19 +142,6 @@ impl Mint {
             ..
         } = melt_request;
 
-        let amount_msats = melt_request.amount_msat()?;
-
-        let amount_quote_unit = to_unit(amount_msats, &CurrencyUnit::Msat, unit)?;
-
-        self.check_melt_request_acceptable(
-            amount_quote_unit,
-            unit.clone(),
-            PaymentMethod::Bolt11,
-            request.to_string(),
-            *options,
-        )
-        .await?;
-
         let ln = self
             .payment_processors
             .get(&PaymentProcessorKey::new(
@@ -196,6 +183,20 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
+        if &payment_quote.unit != unit {
+            return Err(Error::UnitMismatch);
+        }
+
+        // Validate using processor quote amount for currency conversion
+        self.check_melt_request_acceptable(
+            payment_quote.amount,
+            unit.clone(),
+            PaymentMethod::Bolt11,
+            request.to_string(),
+            *options,
+        )
+        .await?;
+
         let melt_ttl = self.quote_ttl().await?.melt_ttl;
 
         let quote = MeltQuote::new(
@@ -215,7 +216,7 @@ impl Mint {
             "New {} melt quote {} for {} {} with request id {:?}",
             quote.payment_method,
             quote.id,
-            amount_quote_unit,
+            payment_quote.amount,
             unit,
             payment_quote.request_lookup_id
         );
@@ -250,15 +251,6 @@ impl Mint {
             },
             None => amount_for_offer(&offer, unit).map_err(|_| Error::UnsupportedUnit)?,
         };
-
-        self.check_melt_request_acceptable(
-            amount,
-            unit.clone(),
-            PaymentMethod::Bolt12,
-            request.clone(),
-            *options,
-        )
-        .await?;
 
         let ln = self
             .payment_processors
@@ -296,6 +288,20 @@ impl Mint {
 
                 Error::UnsupportedUnit
             })?;
+
+        if &payment_quote.unit != unit {
+            return Err(Error::UnitMismatch);
+        }
+
+        // Validate using processor quote amount for currency conversion
+        self.check_melt_request_acceptable(
+            payment_quote.amount,
+            unit.clone(),
+            PaymentMethod::Bolt12,
+            request.clone(),
+            *options,
+        )
+        .await?;
 
         let payment_request = MeltPaymentRequest::Bolt12 {
             offer: Box::new(offer),
@@ -506,8 +512,6 @@ impl Mint {
             unit: input_unit,
         } = input_verification;
 
-        ensure_cdk!(input_unit.is_some(), Error::UnsupportedUnit);
-
         let mut proof_writer =
             ProofWriter::new(self.localstore.clone(), self.pubsub_manager.clone());
 
@@ -523,6 +527,10 @@ impl Mint {
         let (state, quote) = tx
             .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending, None)
             .await?;
+
+        if input_unit != Some(quote.unit.clone()) {
+            return Err(Error::UnitMismatch);
+        }
 
         match state {
             MeltQuoteState::Unpaid | MeltQuoteState::Failed => Ok(()),
