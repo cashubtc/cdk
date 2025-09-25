@@ -148,7 +148,7 @@ impl Token {
         }
     }
 
-    /// Extract unique spending conditions across all proofs for downstream policy/UI
+    /// Extract unique spending conditions across all proofs
     pub fn spending_conditions(&self) -> Result<HashSet<SpendingConditions>, Error> {
         let mut set = HashSet::new();
         for secret in self.token_secrets().into_iter() {
@@ -159,7 +159,7 @@ impl Token {
         Ok(set)
     }
 
-    /// Collect pubkeys for P2PK-locked ecash to enable signer discovery and UX
+    /// Collect pubkeys for P2PK-locked ecash
     pub fn p2pk_pubkeys(&self) -> Result<HashSet<PublicKey>, Error> {
         let mut keys: HashSet<PublicKey> = HashSet::new();
         for secret in self.token_secrets().into_iter() {
@@ -174,7 +174,7 @@ impl Token {
         Ok(keys)
     }
 
-    /// Collect refund pubkeys from P2PK conditions for recovery/expiry flows
+    /// Collect refund pubkeys from P2PK conditions
     pub fn p2pk_refund_pubkeys(&self) -> Result<HashSet<PublicKey>, Error> {
         let mut keys: HashSet<PublicKey> = HashSet::new();
         for secret in self.token_secrets().into_iter() {
@@ -189,7 +189,7 @@ impl Token {
         Ok(keys)
     }
 
-    /// Collect HTLC hashes to support preimage tracking and monitoring
+    /// Collect HTLC hashes
     pub fn htlc_hashes(&self) -> Result<HashSet<sha256::Hash>, Error> {
         let mut hashes: HashSet<sha256::Hash> = HashSet::new();
         for secret in self.token_secrets().into_iter() {
@@ -202,7 +202,7 @@ impl Token {
         Ok(hashes)
     }
 
-    /// Collect unique locktimes from spending conditions for scheduling and warnings
+    /// Collect unique locktimes from spending conditions
     pub fn locktimes(&self) -> Result<BTreeSet<u64>, Error> {
         let mut set: BTreeSet<u64> = BTreeSet::new();
         for secret in self.token_secrets().into_iter() {
