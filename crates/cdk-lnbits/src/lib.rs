@@ -20,7 +20,7 @@ use cdk_common::payment::{
     PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk_common::util::{hex, unix_time};
-use cdk_common::Bolt11Invoice;
+use cdk_common::{Bolt11Invoice, QuoteId};
 use error::Error;
 use futures::Stream;
 use lnbits_rs::api::invoice::CreateInvoiceRequest;
@@ -188,6 +188,7 @@ impl MintPayment for LNbits {
 
     async fn get_payment_quote(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {

@@ -10,7 +10,6 @@ use cashu::{
 use lightning::offers::offer::Offer;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
-use uuid::Uuid;
 
 use crate::nuts::{MeltQuoteState, MintQuoteState};
 use crate::payment::PaymentIdentifier;
@@ -276,6 +275,7 @@ impl MeltQuote {
     /// Create new [`MeltQuote`]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        quote_id: Option<QuoteId>,
         request: MeltPaymentRequest,
         unit: CurrencyUnit,
         amount: Amount,
@@ -285,10 +285,10 @@ impl MeltQuote {
         options: Option<MeltOptions>,
         payment_method: PaymentMethod,
     ) -> Self {
-        let id = Uuid::new_v4();
+        let id = quote_id.unwrap_or(QuoteId::new_uuid());
 
         Self {
-            id: QuoteId::UUID(id),
+            id,
             amount,
             unit,
             request,

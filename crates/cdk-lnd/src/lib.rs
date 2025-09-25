@@ -26,7 +26,7 @@ use cdk_common::payment::{
     PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk_common::util::hex;
-use cdk_common::Bolt11Invoice;
+use cdk_common::{Bolt11Invoice, QuoteId};
 use error::Error;
 use futures::{Stream, StreamExt};
 use lnrpc::fee_limit::Limit;
@@ -345,6 +345,7 @@ impl MintPayment for Lnd {
     #[instrument(skip_all)]
     async fn get_payment_quote(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {

@@ -24,7 +24,7 @@ use cdk_common::payment::{
     OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk_common::util::{hex, unix_time};
-use cdk_common::Bolt11Invoice;
+use cdk_common::{Bolt11Invoice, QuoteId};
 use cln_rpc::model::requests::{
     DecodeRequest, FetchinvoiceRequest, InvoiceRequest, ListinvoicesRequest, ListpaysRequest,
     OfferRequest, PayRequest, WaitanyinvoiceRequest,
@@ -298,6 +298,7 @@ impl MintPayment for Cln {
     #[instrument(skip_all)]
     async fn get_payment_quote(
         &self,
+        _quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
@@ -338,9 +339,7 @@ impl MintPayment for Cln {
                 let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
                 Ok(PaymentQuoteResponse {
-                    request_lookup_id: Some(PaymentIdentifier::PaymentHash(
-                        *bolt11_options.bolt11.payment_hash().as_ref(),
-                    )),
+                    request_lookup_id: Some(PaymentIdentifier),
                     amount,
                     fee: fee.into(),
                     state: MeltQuoteState::Unpaid,
@@ -385,6 +384,7 @@ impl MintPayment for Cln {
     #[instrument(skip_all)]
     async fn make_payment(
         &self,
+        _quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {

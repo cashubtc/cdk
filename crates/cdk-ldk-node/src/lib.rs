@@ -14,7 +14,7 @@ use cdk_common::amount::to_unit;
 use cdk_common::common::FeeReserve;
 use cdk_common::payment::{self, *};
 use cdk_common::util::{hex, unix_time};
-use cdk_common::{Amount, CurrencyUnit, MeltOptions, MeltQuoteState};
+use cdk_common::{Amount, CurrencyUnit, MeltOptions, MeltQuoteState, QuoteId};
 use futures::{Stream, StreamExt};
 use ldk_node::bitcoin::hashes::Hash;
 use ldk_node::bitcoin::Network;
@@ -562,6 +562,7 @@ impl MintPayment for CdkLdkNode {
     #[instrument(skip_all)]
     async fn get_payment_quote(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {

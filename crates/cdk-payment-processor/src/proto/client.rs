@@ -9,6 +9,7 @@ use cdk_common::payment::{
     MakePaymentResponse as CdkMakePaymentResponse, MintPayment,
     PaymentQuoteResponse as CdkPaymentQuoteResponse, WaitPaymentResponse,
 };
+use cdk_common::QuoteId;
 use futures::{Stream, StreamExt};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -160,6 +161,7 @@ impl MintPayment for PaymentProcessorClient {
 
     async fn get_payment_quote(
         &self,
+        quote_id: &QuoteId,
         unit: &cdk_common::CurrencyUnit,
         options: cdk_common::payment::OutgoingPaymentOptions,
     ) -> Result<CdkPaymentQuoteResponse, Self::Err> {
@@ -190,6 +192,7 @@ impl MintPayment for PaymentProcessorClient {
                 unit: unit.to_string(),
                 options: proto_options.map(Into::into),
                 request_type: request_type.into(),
+                quote_id: quote_id.to_string(),
             }))
             .await
             .map_err(|err| {

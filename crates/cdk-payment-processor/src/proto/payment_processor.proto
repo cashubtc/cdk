@@ -47,6 +47,7 @@ enum PaymentIdentifierType {
   BOLT12_PAYMENT_HASH = 3;
   CUSTOM_ID = 4;
   PAYMENT_ID = 5;
+  QUOTE_ID = 6;
 }
 
 message PaymentIdentifier {
@@ -95,6 +96,7 @@ message PaymentQuoteRequest {
   string unit = 2;
   optional MeltOptions options = 3;
   OutgoingPaymentRequestType request_type = 4;
+  string quote_id = 5;
 }
 
 enum QuoteState {

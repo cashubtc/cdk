@@ -34,6 +34,11 @@ pub enum QuoteId {
 
 impl QuoteId {
     /// Create a new UUID-based MintQuoteId
+    pub fn new() -> Self {
+        Self::UUID(Uuid::new_v4())
+    }
+
+    /// Create a new UUID-based MintQuoteId
     pub fn new_uuid() -> Self {
         Self::UUID(Uuid::new_v4())
     }
