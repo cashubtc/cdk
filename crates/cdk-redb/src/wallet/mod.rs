@@ -721,6 +721,18 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(proofs)
     }
 
+    async fn get_balance(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        state: Option<Vec<State>>,
+    ) -> Result<u64, database::Error> {
+        // For redb, we still need to fetch all proofs and sum them
+        // since redb doesn't have SQL aggregation
+        let proofs = self.get_proofs(mint_url, unit, state, None).await?;
+        Ok(proofs.iter().map(|p| u64::from(p.proof.amount)).sum())
+    }
+
     async fn update_proofs_state(
         &self,
         ys: Vec<PublicKey>,

@@ -108,6 +108,14 @@ pub trait WalletDatabase: Send + Sync {
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, FfiError>;
 
+    /// Get balance efficiently using SQL aggregation
+    async fn get_balance(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        state: Option<Vec<ProofState>>,
+    ) -> Result<u64, FfiError>;
+
     /// Update proofs state in storage
     async fn update_proofs_state(
         &self,
@@ -463,6 +471,22 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .collect();
 
         cdk_result
+    }
+
+    async fn get_balance(
+        &self,
+        mint_url: Option<cdk::mint_url::MintUrl>,
+        unit: Option<cdk::nuts::CurrencyUnit>,
+        state: Option<Vec<cdk::nuts::State>>,
+    ) -> Result<u64, Self::Err> {
+        let ffi_mint_url = mint_url.map(Into::into);
+        let ffi_unit = unit.map(Into::into);
+        let ffi_state = state.map(|s| s.into_iter().map(Into::into).collect());
+
+        self.ffi_db
+            .get_balance(ffi_mint_url, ffi_unit, ffi_state)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
     async fn update_proofs_state(
@@ -868,6 +892,22 @@ impl WalletDatabase for WalletSqliteDatabase {
             .map_err(|e| FfiError::Database { msg: e.to_string() })?;
 
         Ok(result.into_iter().map(Into::into).collect())
+    }
+
+    async fn get_balance(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        state: Option<Vec<ProofState>>,
+    ) -> Result<u64, FfiError> {
+        let cdk_mint_url = mint_url.map(|u| u.try_into()).transpose()?;
+        let cdk_unit = unit.map(Into::into);
+        let cdk_state = state.map(|s| s.into_iter().map(Into::into).collect());
+
+        self.inner
+            .get_balance(cdk_mint_url, cdk_unit, cdk_state)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
 
     async fn update_proofs_state(
