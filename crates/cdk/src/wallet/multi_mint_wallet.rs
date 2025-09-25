@@ -205,9 +205,6 @@ impl MultiMintWallet {
             )?
         };
 
-        wallet.fetch_mint_info().await?;
-        wallet.refresh_keysets().await?;
-
         let mut wallets = self.wallets.write().await;
         wallets.insert(mint_url, wallet);
 
@@ -242,13 +239,7 @@ impl MultiMintWallet {
             if mint_has_proofs_for_unit {
                 // Add mint to the MultiMintWallet if not already present
                 if !self.has_mint(&mint_url).await {
-                    if let Err(err) = self.add_mint(mint_url.clone(), None).await {
-                        tracing::error!(
-                            "Could not add {} to wallet {}.",
-                            mint_url,
-                            err.to_string()
-                        );
-                    }
+                    self.add_mint(mint_url.clone(), None).await?
                 }
             }
         }
