@@ -1705,6 +1705,11 @@ where
                         }
                         _ => {
                             // Blind message already has c: Error
+                            tracing::error!(
+                                "Attempting to add signature to message already signed {}",
+                                message
+                            );
+
                             return Err(database::Error::Duplicate);
                         }
                     }
@@ -1729,14 +1734,14 @@ where
                 blinded_message
             FROM
                 blind_signature
-            WHERE blinded_message IN (:y) AND c IS NOT NULL
+            WHERE blinded_message IN (:b) AND c IS NOT NULL
             "#,
         )?
         .bind_vec(
-            "y",
+            "b",
             blinded_messages
                 .iter()
-                .map(|y| y.to_bytes().to_vec())
+                .map(|b| b.to_bytes().to_vec())
                 .collect(),
         )
         .fetch_all(&self.inner)
@@ -1782,11 +1787,11 @@ where
                 blinded_message
             FROM
                 blind_signature
-            WHERE blinded_message IN (:blinded_message)
+            WHERE blinded_message IN (:b) AND c IS NOT NULL
             "#,
         )?
         .bind_vec(
-            "blinded_message",
+            "b",
             blinded_messages
                 .iter()
                 .map(|b_| b_.to_bytes().to_vec())
@@ -1828,7 +1833,7 @@ where
             FROM
                 blind_signature
             WHERE
-                keyset_id=:keyset_id
+                keyset_id=:keyset_id AND c IS NOT NULL
             "#,
         )?
         .bind("keyset_id", keyset_id.to_string())
@@ -1856,7 +1861,7 @@ where
             FROM
                 blind_signature
             WHERE
-                quote_id=:quote_id
+                quote_id=:quote_id AND c IS NOT NULL
             "#,
         )?
         .bind("quote_id", quote_id.to_string())
