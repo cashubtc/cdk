@@ -55,7 +55,7 @@ pub use mint_info::*;
 #[cfg(feature = "prometheus")]
 pub use prometheus::*;
 
-use crate::config::{DatabaseEngine, LnBackend, Settings};
+use crate::config::{BackendType, DatabaseEngine, Settings};
 
 impl Settings {
     pub fn from_env(&mut self) -> Result<Self> {
@@ -92,7 +92,7 @@ impl Settings {
 
         self.info = self.info.clone().from_env();
         self.mint_info = self.mint_info.clone().from_env();
-        self.ln = self.ln.clone().from_env();
+        self.backend = self.backend.clone().from_env();
 
         #[cfg(feature = "auth")]
         {
@@ -122,33 +122,33 @@ impl Settings {
             self.prometheus = Some(self.prometheus.clone().unwrap_or_default().from_env());
         }
 
-        match self.ln.ln_backend {
+        match self.backend.name {
             #[cfg(feature = "cln")]
-            LnBackend::Cln => {
+            BackendType::Cln => {
                 self.cln = Some(self.cln.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "lnbits")]
-            LnBackend::LNbits => {
+            BackendType::LNbits => {
                 self.lnbits = Some(self.lnbits.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "fakewallet")]
-            LnBackend::FakeWallet => {
+            BackendType::FakeWallet => {
                 self.fake_wallet = Some(self.fake_wallet.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "lnd")]
-            LnBackend::Lnd => {
+            BackendType::Lnd => {
                 self.lnd = Some(self.lnd.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "ldk-node")]
-            LnBackend::LdkNode => {
+            BackendType::LdkNode => {
                 self.ldk_node = Some(self.ldk_node.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "grpc-processor")]
-            LnBackend::GrpcProcessor => {
+            BackendType::GrpcProcessor => {
                 self.grpc_processor =
                     Some(self.grpc_processor.clone().unwrap_or_default().from_env());
             }
-            LnBackend::None => bail!("Ln backend must be set"),
+            BackendType::None => bail!("Ln backend must be set"),
             #[allow(unreachable_patterns)]
             _ => bail!("Selected Ln backend is not enabled in this build"),
         }
