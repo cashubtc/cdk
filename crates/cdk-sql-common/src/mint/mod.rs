@@ -1618,20 +1618,36 @@ where
             ));
         }
 
-        for (message, signature) in blinded_messages.iter().zip(blind_signatures) {
-            // Check if the blinded message already exists
-            let existing_row = query(
-                r#"
-                SELECT c, dleq_e, dleq_s
-                FROM blind_signature
-                WHERE blinded_message = :blinded_message
-                "#,
-            )?
-            .bind("blinded_message", message.to_bytes().to_vec())
-            .fetch_one(&self.inner)
-            .await?;
+        // Select all existing rows for the given blinded messages at once
+        let mut existing_rows = query(
+            r#"
+            SELECT blinded_message, c, dleq_e, dleq_s
+            FROM blind_signature
+            WHERE blinded_message IN (:blinded_messages)
+            FOR UPDATE
+            "#,
+        )?
+        .bind_vec(
+            "blinded_messages",
+            blinded_messages
+                .iter()
+                .map(|message| message.to_bytes().to_vec())
+                .collect(),
+        )
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(|mut row| {
+            Ok((
+                column_as_string!(&row.remove(0), PublicKey::from_hex, PublicKey::from_slice),
+                (row[0].clone(), row[1].clone(), row[2].clone()),
+            ))
+        })
+        .collect::<Result<HashMap<_, _>, Error>>()?;
 
-            match existing_row {
+        // Iterate over the provided blinded messages and signatures
+        for (message, signature) in blinded_messages.iter().zip(blind_signatures) {
+            match existing_rows.remove(message) {
                 None => {
                     // Unknown blind message: Insert new row with all columns
                     query(
@@ -1660,10 +1676,8 @@ where
                     .execute(&self.inner)
                     .await?;
                 }
-                Some(row) => {
+                Some((c, _dleq_e, _dleq_s)) => {
                     // Blind message exists: check if c is NULL
-                    let c = &row[0];
-
                     match c {
                         Column::Null => {
                             // Blind message with no c: Update with missing columns c, dleq_e, dleq_s
@@ -1701,6 +1715,19 @@ where
                     }
                 }
             }
+        }
+
+        debug_assert!(
+            existing_rows.is_empty(),
+            "Unexpected existing rows remain: {:?}",
+            existing_rows.keys().collect::<Vec<_>>()
+        );
+
+        if !existing_rows.is_empty() {
+            tracing::error!("Did not check all existing rows");
+            return Err(Error::Internal(
+                "Did not check all existing rows".to_string(),
+            ));
         }
 
         Ok(())
