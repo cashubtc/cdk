@@ -235,7 +235,11 @@ macro_rules! mint_db_test {
             reject_over_issue_same_tx,
             reject_over_issue_different_tx,
             reject_over_issue_with_payment,
-            reject_over_issue_with_payment_different_tx
+            reject_over_issue_with_payment_different_tx,
+            add_melt_request_unique_blinded_messages,
+            reject_melt_duplicate_blinded_signature,
+            reject_duplicate_blinded_message_db_constraint,
+            cleanup_melt_request_after_processing
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

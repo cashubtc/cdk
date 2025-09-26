@@ -132,13 +132,25 @@ pub trait QuotesTransaction<'a> {
     /// Mint Quotes Database Error
     type Err: Into<Error> + From<Error>;
 
-    /// Add melt_request with quote_id, inputs_amount, and blinded_messages
-    async fn add_melt_request_and_blinded_messages(
+    /// Add melt_request with quote_id, inputs_amount, and inputs_fee
+    async fn add_melt_request(
         &mut self,
         quote_id: &QuoteId,
         inputs_amount: Amount,
         inputs_fee: Amount,
+    ) -> Result<(), Self::Err>;
+
+    /// Add blinded_messages for a quote_id
+    async fn add_blinded_messages(
+        &mut self,
+        quote_id: Option<&QuoteId>,
         blinded_messages: &[BlindedMessage],
+    ) -> Result<(), Self::Err>;
+
+    /// Delete blinded_messages by their blinded secrets
+    async fn delete_blinded_messages(
+        &mut self,
+        blinded_secrets: &[PublicKey],
     ) -> Result<(), Self::Err>;
 
     /// Get melt_request and associated blinded_messages by quote_id
