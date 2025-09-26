@@ -21,6 +21,10 @@ pub enum Error {
     #[error("Internal")]
     Internal(Box<dyn std::error::Error + Send + Sync>),
 
+    /// Internal error
+    #[error("Internal error {0}")]
+    InternalStr(String),
+
     /// Not supported
     #[error("Not supported")]
     NotSupported,

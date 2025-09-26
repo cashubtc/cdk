@@ -8,11 +8,17 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use tokio::time::sleep;
+use tokio::time::{sleep, Instant};
 
 use super::pubsub::Topic;
 use super::subscriber::{ActiveSubscription, SubscriptionRequest};
 use super::{Error, Event, Pubsub};
+
+const LONG_CONNECTION_BACKOFF: Duration = Duration::from_millis(2_000);
+
+const LONG_CONNECTION_MAX_BACKOFF: Duration = Duration::from_millis(30_000);
+
+const POLL_SLEEP: Duration = Duration::from_millis(2_000);
 
 struct UniqueSubscription<T>
 where
@@ -27,9 +33,6 @@ type UniqueSubscriptions<T> =
 
 type ActiveSubscriptions<T> =
     RwLock<HashMap<<T as Topic>::SubscriptionName, Vec<<<T as Topic>::Event as Event>::Topic>>>;
-
-const LONG_CONNECTION_SLEEP_MS: u64 = 10;
-const POLL_SLEEP_MS: u64 = 2000;
 
 /// Subscription consumer
 pub struct Consumer<T>
@@ -145,6 +148,9 @@ where
         let mut long_connection_supported = true;
         let mut poll_supported = true;
 
+        let mut backoff = LONG_CONNECTION_BACKOFF;
+        let mut retry_at = None;
+
         loop {
             if (!long_connection_supported && !poll_supported)
                 || !instance
@@ -154,7 +160,10 @@ where
                 break;
             }
 
-            if long_connection_supported && !instance.prefer_http {
+            if long_connection_supported
+                && !instance.prefer_http
+                && (retry_at.is_none() || retry_at.clone().unwrap() < Instant::now())
+            {
                 let (sender, receiver) = mpsc::channel(10_000);
 
                 {
@@ -167,22 +176,30 @@ where
                         .remote_subscriptions
                         .read()
                         .expect("xxx")
-                        .keys()
-                        .map(|x| x.clone())
+                        .iter()
+                        .map(|(key, name)| (name.name.clone(), key.clone()))
                         .collect::<Vec<_>>()
                 };
 
                 if let Err(err) = instance
                     .transport
-                    .long_connection(receiver, current_subscriptions)
+                    .long_connection(
+                        receiver,
+                        current_subscriptions,
+                        instance.inner_pubsub.clone(),
+                    )
                     .await
                 {
+                    retry_at = Some(Instant::now() + backoff);
+                    backoff = (backoff + LONG_CONNECTION_BACKOFF).min(LONG_CONNECTION_MAX_BACKOFF);
+
                     if matches!(err, Error::NotSupported) {
                         long_connection_supported = false;
                     }
                     tracing::error!("Long connection failed with error {:?}", err);
+                } else {
+                    backoff = LONG_CONNECTION_BACKOFF;
                 }
-                sleep(Duration::from_millis(LONG_CONNECTION_SLEEP_MS)).await;
             }
 
             if poll_supported {
@@ -191,8 +208,8 @@ where
                         .remote_subscriptions
                         .read()
                         .expect("xxx")
-                        .keys()
-                        .map(|x| x.clone())
+                        .iter()
+                        .map(|(key, name)| (name.name.clone(), key.clone()))
                         .collect::<Vec<_>>()
                 };
 
@@ -207,7 +224,7 @@ where
                     tracing::error!("Polling failed with error {:?}", err);
                 }
 
-                sleep(Duration::from_millis(POLL_SLEEP_MS)).await;
+                sleep(POLL_SLEEP).await;
             }
         }
     }
@@ -307,7 +324,7 @@ where
                     .map_err(|_| Error::Poison)?
                     .try_send(MessageToTransportLoop::Subscribe((
                         subscription_name.clone(),
-                        indexes.clone(),
+                        index.clone(),
                     )));
             }
         }
@@ -334,13 +351,19 @@ where
     }
 }
 
+/// Subscribe Message
+pub type SubscribeMesssage<T> = (
+    <T as Topic>::SubscriptionName,
+    <<T as Topic>::Event as Event>::Topic,
+);
+
 ///Internal message to transport loop
 pub enum MessageToTransportLoop<T>
 where
     T: Topic + 'static,
 {
     /// Add a subscription
-    Subscribe((T::SubscriptionName, Vec<<T::Event as Event>::Topic>)),
+    Subscribe(SubscribeMesssage<T>),
     /// Desuscribe
     Unsubscribe(T::SubscriptionName),
     /// Exit the loop
@@ -360,7 +383,8 @@ pub trait Transport: Send + Sync {
     async fn long_connection(
         &self,
         subscribe_changes: mpsc::Receiver<MessageToTransportLoop<Self::Topic>>,
-        topics: Vec<<<Self::Topic as Topic>::Event as Event>::Topic>,
+        topics: Vec<SubscribeMesssage<Self::Topic>>,
+        reply_to: Arc<Pubsub<Self::Topic>>,
     ) -> Result<(), Error>
     where
         Self: Sized;
@@ -368,7 +392,7 @@ pub trait Transport: Send + Sync {
     /// Poll on demand
     async fn poll(
         &self,
-        topics: Vec<<<Self::Topic as Topic>::Event as Event>::Topic>,
+        topics: Vec<SubscribeMesssage<Self::Topic>>,
         reply_to: Arc<Pubsub<Self::Topic>>,
     ) -> Result<(), Error>;
 }
