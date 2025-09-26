@@ -170,8 +170,7 @@ pub trait QuotesTransaction<'a> {
         quote_id: &QuoteId,
         amount_issued: Amount,
     ) -> Result<Amount, Self::Err>;
-    /// Remove [`MintMintQuote`]
-    async fn remove_mint_quote(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err>;
+
     /// Get [`mint::MeltQuote`] and lock it for update in this transaction
     async fn get_melt_quote(
         &mut self,
@@ -196,8 +195,7 @@ pub trait QuotesTransaction<'a> {
         new_state: MeltQuoteState,
         payment_proof: Option<String>,
     ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err>;
-    /// Remove [`mint::MeltQuote`]
-    async fn remove_melt_quote(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err>;
+
     /// Get all [`MintMintQuote`]s and lock it for update in this transaction
     async fn get_mint_quote_by_request(
         &mut self,

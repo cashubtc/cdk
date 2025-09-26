@@ -878,14 +878,6 @@ VALUES (:quote_id, :amount, :timestamp);
         Ok(())
     }
 
-    async fn remove_mint_quote(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err> {
-        query(r#"DELETE FROM mint_quote WHERE id=:id"#)?
-            .bind("id", quote_id.to_string())
-            .execute(&self.inner)
-            .await?;
-        Ok(())
-    }
-
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
         // Now insert the new quote
         query(
@@ -1018,20 +1010,6 @@ VALUES (:quote_id, :amount, :timestamp);
         }
 
         Ok((old_state, quote))
-    }
-
-    async fn remove_melt_quote(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err> {
-        query(
-            r#"
-            DELETE FROM melt_quote
-            WHERE id=:id
-            "#,
-        )?
-        .bind("id", quote_id.to_string())
-        .execute(&self.inner)
-        .await?;
-
-        Ok(())
     }
 
     async fn get_mint_quote(&mut self, quote_id: &QuoteId) -> Result<Option<MintQuote>, Self::Err> {
