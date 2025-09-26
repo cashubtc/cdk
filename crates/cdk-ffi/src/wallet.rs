@@ -7,6 +7,7 @@ use bip39::Mnemonic;
 use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
 
 use crate::error::FfiError;
+use crate::token::Token;
 use crate::types::*;
 
 /// FFI-compatible Wallet

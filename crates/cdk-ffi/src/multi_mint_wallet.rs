@@ -12,6 +12,7 @@ use cdk::wallet::multi_mint_wallet::{
 };
 
 use crate::error::FfiError;
+use crate::token::Token;
 use crate::types::*;
 
 /// FFI-compatible MultiMintWallet
