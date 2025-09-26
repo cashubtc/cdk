@@ -636,7 +636,7 @@ impl Mint {
         .await?;
 
         tx.add_blinded_messages(
-            Some(&melt_request.quote_id()),
+            Some(melt_request.quote_id()),
             melt_request.outputs().as_ref().unwrap_or(&Vec::new()),
         )
         .await?;
