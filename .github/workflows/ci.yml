@@ -103,7 +103,8 @@ jobs:
             # HTTP/API layer - consolidated
             -p cdk-axum,
             -p cdk-axum --no-default-features,
-            -p cdk-axum --no-default-features --features swagger,
+            -p cdk-axum --no-default-features --features redis,
+            -p cdk-axum --no-default-features --features "redis swagger",
             
             # Lightning backends
             -p cdk-cln,
@@ -126,7 +127,7 @@ jobs:
             --bin cdk-cli --features sqlcipher,
             --bin cdk-cli --features redb,
             --bin cdk-mintd,
-
+            --bin cdk-mintd --features redis,
             --bin cdk-mintd --features sqlcipher,
             --bin cdk-mintd --no-default-features --features lnd --features sqlite,
             --bin cdk-mintd --no-default-features --features cln --features postgres,
@@ -337,7 +338,7 @@ jobs:
             -p cdk --no-default-features --features "wallet auth",
             -p cdk --no-default-features --features "http_subscription",
             -p cdk-axum,
-
+            -p cdk-axum --no-default-features --features redis,
             -p cdk-lnbits,
             -p cdk-fake-wallet,
             -p cdk-cln,

@@ -7,7 +7,7 @@
 //! idempotent operations.
 //!
 //! This mod also provides common backend implementations as well, such as In
-//! Memory (default).
+//! Memory (default) and Redis.
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
@@ -89,6 +89,23 @@ impl From<config::Config> for HttpCache {
                 Duration::from_secs(config.tti.unwrap_or(DEFAULT_TTI_SECS)),
                 None,
             ),
+            #[cfg(feature = "redis")]
+            config::Backend::Redis(redis_config) => {
+                let client = redis::Client::open(redis_config.connection_string)
+                    .expect("Failed to create Redis client");
+                let storage = HttpCacheRedis::new(client).set_prefix(
+                    redis_config
+                        .key_prefix
+                        .unwrap_or_default()
+                        .as_bytes()
+                        .to_vec(),
+                );
+                Self::new(
+                    Duration::from_secs(config.ttl.unwrap_or(DEFAULT_TTL_SECS)),
+                    Duration::from_secs(config.tti.unwrap_or(DEFAULT_TTI_SECS)),
+                    Some(Box::new(storage)),
+                )
+            }
         }
     }
 }

@@ -26,6 +26,7 @@ grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
 sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 # MSRV is not committed to with swagger enabled
 swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
+redis = ["cdk-axum/redis"]
 auth = ["cdk/auth", "cdk-axum/auth", "cdk-sqlite?/auth", "cdk-postgres?/auth"]
 prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
 

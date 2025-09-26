@@ -58,6 +58,9 @@ services:
       # - CDK_MINTD_DATABASE_URL=postgresql://cdk_user:cdk_password@postgres:5432/cdk_mint
       # Cache configuration
       - CDK_MINTD_CACHE_BACKEND=memory
+      # For Redis cache (requires redis service, enable with: docker-compose --profile redis up):
+      # - CDK_MINTD_CACHE_REDIS_URL=redis://redis:6379
+      # - CDK_MINTD_CACHE_REDIS_KEY_PREFIX=cdk-mintd
       - CDK_MINTD_PROMETHEUS_ENABLED=true
       - CDK_MINTD_PROMETHEUS_ADDRESS=0.0.0.0
       - CDK_MINTD_PROMETHEUS_PORT=9000
@@ -131,13 +134,34 @@ services:
   #     timeout: 5s
   #     retries: 5
 
-
+  # Redis cache service (optional)
+  # Enable with: docker-compose --profile redis up
+#   redis:
+#     image: redis:7-alpine
+#     container_name: mint_redis
+#     restart: unless-stopped
+#     profiles:
+#       - redis
+#     ports:
+#       - "6379:6379"
+#     volumes:
+#       - redis_data:/data
+#     command: redis-server --save 60 1 --loglevel warning
+#     healthcheck:
+#       test: ["CMD", "redis-cli", "ping"]
+#       interval: 10s
+#       timeout: 3s
+#       retries: 5
 
 volumes:
   postgres_data:
     driver: local
   ldk_node_data:
     driver: local
+# redis_data:
+#   driver: local
+
+
 
 networks:
   cdk:
