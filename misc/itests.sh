@@ -176,7 +176,7 @@ while true; do
     fi
 done
 
-# Run cargo test
+Run cargo test
 echo "Running regtest test with CLN mint and CLN client"
 export CDK_TEST_LIGHTNING_CLIENT="lnd"
 cargo test -p cdk-integration-tests --test regtest

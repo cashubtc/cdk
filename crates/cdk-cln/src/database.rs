@@ -1,8 +1,8 @@
 use cdk_common::database::mint::DynMintKVStore;
-use cdk_common::util::hex;
 use cdk_common::QuoteId;
 
 use crate::error::Error;
+use crate::PaymentStatus;
 
 const PRIMARY_NAMESPACE: &str = "cdk_cln_lightning_backend";
 const SECONDARY_NAMESPACE: &str = "payment_indices";
@@ -55,10 +55,10 @@ impl Database {
             .map_err(|e| Error::Database(e.to_string()))
     }
 
-    pub async fn store_quote_payment_hash(
+    pub async fn store_quote_payment(
         &self,
         quote_id: &QuoteId,
-        payment_hash: &[u8],
+        payment_status: PaymentStatus,
     ) -> Result<(), Error> {
         let mut tx = self
             .kv_store
@@ -71,7 +71,7 @@ impl Database {
             PRIMARY_NAMESPACE,
             OUTGOING_PAYMENTS_NAMESPACE,
             quote_id.to_string().as_str(),
-            payment_hash,
+            serde_json::to_vec(&payment_status)?.as_slice(),
         )
         .await
         .map_err(|e| Error::Database(e.to_string()))?;
@@ -81,11 +81,11 @@ impl Database {
             .map_err(|e| Error::Database(e.to_string()))
     }
 
-    pub async fn load_payment_hash_by_quote_id(
+    pub async fn load_payment_status_by_quote_id(
         &self,
         quote_id: &QuoteId,
-    ) -> Result<Option<Vec<u8>>, Error> {
-        if let Some(payment_hash) = self
+    ) -> Result<Option<PaymentStatus>, Error> {
+        if let Some(payment_status_bytes) = self
             .kv_store
             .kv_read(
                 PRIMARY_NAMESPACE,
@@ -95,7 +95,8 @@ impl Database {
             .await
             .map_err(|e| Error::Database(e.to_string()))?
         {
-            return Ok(Some(payment_hash.to_vec()));
+            let payment_status: PaymentStatus = serde_json::from_slice(&payment_status_bytes)?;
+            return Ok(Some(payment_status));
         }
         Ok(None)
     }

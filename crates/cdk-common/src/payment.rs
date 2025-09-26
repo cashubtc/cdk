@@ -5,7 +5,6 @@ use std::pin::Pin;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-#[cfg(feature = "prometheus")]
 use cashu::quote_id::QuoteId;
 use cashu::util::hex;
 use cashu::{Bolt11Invoice, MeltOptions};
