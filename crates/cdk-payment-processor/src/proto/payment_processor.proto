@@ -68,6 +68,7 @@ message IncomingPaymentOptions {
 message CreatePaymentRequest {
   string unit = 1;
   IncomingPaymentOptions options = 2;
+  string quote_id = 3;
 }
 
 message CreatePaymentResponse {

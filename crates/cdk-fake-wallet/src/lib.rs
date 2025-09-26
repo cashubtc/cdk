@@ -484,6 +484,7 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn create_incoming_payment_request(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
@@ -595,8 +596,9 @@ impl MintPayment for FakeWallet {
                 .await;
         }
 
+        // For fake wallet, we return the quote ID directly for consistency
         Ok(CreateIncomingPaymentResponse {
-            request_lookup_id: payment_hash,
+            request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
             request,
             expiry,
         })

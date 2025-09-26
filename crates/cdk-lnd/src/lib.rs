@@ -345,7 +345,7 @@ impl MintPayment for Lnd {
     #[instrument(skip_all)]
     async fn get_payment_quote(
         &self,
-        quote_id: &QuoteId,
+        _quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
@@ -587,6 +587,7 @@ impl MintPayment for Lnd {
     #[instrument(skip(self, options))]
     async fn create_incoming_payment_request(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
@@ -615,11 +616,11 @@ impl MintPayment for Lnd {
 
                 let bolt11 = Bolt11Invoice::from_str(&invoice.payment_request)?;
 
-                let payment_identifier =
-                    PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref());
-
+                // For LND, we return the quote ID directly for consistency
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: payment_identifier,
+                    request_lookup_id: PaymentIdentifier::PaymentHash(
+                        bolt11.payment_hash().to_byte_array(),
+                    ),
                     request: bolt11.to_string(),
                     expiry: unix_expiry,
                 })

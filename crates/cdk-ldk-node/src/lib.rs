@@ -482,6 +482,7 @@ impl MintPayment for CdkLdkNode {
     #[instrument(skip(self))]
     async fn create_incoming_payment_request(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
@@ -504,15 +505,9 @@ impl MintPayment for CdkLdkNode {
                     .receive(amount_msat.into(), &description, time as u32)
                     .map_err(Error::LdkNode)?;
 
-                let payment_hash = payment.payment_hash().to_string();
-                let payment_identifier = PaymentIdentifier::PaymentHash(
-                    hex::decode(&payment_hash)?
-                        .try_into()
-                        .map_err(|_| Error::InvalidPaymentHashLength)?,
-                );
-
+                // For LDK, we return the quote ID directly for consistency
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: payment_identifier,
+                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: payment.to_string(),
                     expiry: Some(unix_time() + time),
                 })
@@ -546,10 +541,9 @@ impl MintPayment for CdkLdkNode {
                         .receive_variable_amount(&description.unwrap_or("".to_string()), time)
                         .map_err(Error::LdkNode)?,
                 };
-                let payment_identifier = PaymentIdentifier::OfferId(offer.id().to_string());
-
+                // For LDK, we return the quote ID directly for consistency
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: payment_identifier,
+                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: offer.to_string(),
                     expiry: time.map(|a| a as u64),
                 })

@@ -301,6 +301,7 @@ impl MintPayment for LNbits {
 
     async fn create_incoming_payment_request(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
@@ -340,10 +341,9 @@ impl MintPayment for LNbits {
 
                 let expiry = request.expires_at().map(|t| t.as_secs());
 
+                // For LNbits, we return the quote ID directly for consistency
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: PaymentIdentifier::PaymentHash(
-                        *request.payment_hash().as_ref(),
-                    ),
+                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: request.to_string(),
                     expiry,
                 })

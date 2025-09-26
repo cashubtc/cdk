@@ -115,6 +115,7 @@ impl MintPayment for PaymentProcessorClient {
     /// Create a new invoice
     async fn create_incoming_payment_request(
         &self,
+        quote_id: &QuoteId,
         unit: &cdk_common::CurrencyUnit,
         options: CdkIncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
@@ -145,6 +146,7 @@ impl MintPayment for PaymentProcessorClient {
             .create_payment(Request::new(CreatePaymentRequest {
                 unit: unit.to_string(),
                 options: Some(proto_options),
+                quote_id: quote_id.to_string(),
             }))
             .await
             .map_err(|err| {

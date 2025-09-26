@@ -667,6 +667,7 @@ impl Mint {
             Some(amount_spent) => (tx, None, amount_spent, quote),
 
             None => {
+                tracing::debug!("Attempting to pay external melt");
                 // If the quote unit is SAT or MSAT we can check that the expected fees are
                 // provided. We also check if the quote is less then the invoice
                 // amount in the case that it is a mmp However, if the quote is not
