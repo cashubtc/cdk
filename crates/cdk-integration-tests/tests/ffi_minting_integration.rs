@@ -17,7 +17,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use bip39::Mnemonic;
-use cdk_ffi::database::WalletSqliteDatabase;
+use cdk_ffi::sqlite::WalletSqliteDatabase;
 use cdk_ffi::types::{Amount, CurrencyUnit, QuoteState, SplitTarget};
 use cdk_ffi::wallet::Wallet as FfiWallet;
 use cdk_ffi::WalletConfig;
