@@ -149,6 +149,12 @@ pub trait QuotesTransaction<'a> {
         blinded_messages: &[BlindedMessage],
     ) -> Result<(), Self::Err>;
 
+    /// Delete blinded_messages by their blinded secrets
+    async fn delete_blinded_messages(
+        &mut self,
+        blinded_secrets: &[PublicKey],
+    ) -> Result<(), Self::Err>;
+
     /// Get melt_request and associated blinded_messages by quote_id
     async fn get_melt_request_and_blinded_messages(
         &mut self,

@@ -614,6 +614,35 @@ where
         Ok(())
     }
 
+    async fn delete_blinded_messages(
+        &mut self,
+        blinded_secrets: &[PublicKey],
+    ) -> Result<(), Self::Err> {
+        if blinded_secrets.is_empty() {
+            return Ok(());
+        }
+
+        // Delete blinded messages from blind_signature table where c IS NULL
+        // (only delete unsigned blinded messages)
+        query(
+            r#"
+            DELETE FROM blind_signature
+            WHERE blinded_message IN (:blinded_secrets) AND c IS NULL
+            "#,
+        )?
+        .bind_vec(
+            "blinded_secrets",
+            blinded_secrets
+                .iter()
+                .map(|secret| secret.to_bytes().to_vec())
+                .collect(),
+        )
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
     async fn get_melt_request_and_blinded_messages(
         &mut self,
         quote_id: &QuoteId,
