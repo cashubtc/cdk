@@ -110,7 +110,11 @@ impl Token {
         let set = self
             .inner
             .p2pk_pubkeys()
-            .map(|keys| keys.into_iter().map(|k| k.to_string()).collect::<BTreeSet<_>>())
+            .map(|keys| {
+                keys.into_iter()
+                    .map(|k| k.to_string())
+                    .collect::<BTreeSet<_>>()
+            })
             .unwrap_or_default();
         set.into_iter().collect()
     }
@@ -120,7 +124,11 @@ impl Token {
         let set = self
             .inner
             .p2pk_refund_pubkeys()
-            .map(|keys| keys.into_iter().map(|k| k.to_string()).collect::<BTreeSet<_>>())
+            .map(|keys| {
+                keys.into_iter()
+                    .map(|k| k.to_string())
+                    .collect::<BTreeSet<_>>()
+            })
             .unwrap_or_default();
         set.into_iter().collect()
     }
@@ -130,7 +138,12 @@ impl Token {
         let set = self
             .inner
             .htlc_hashes()
-            .map(|hashes| hashes.into_iter().map(|h| h.to_string()).collect::<BTreeSet<_>>())
+            .map(|hashes| {
+                hashes
+                    .into_iter()
+                    .map(|h| h.to_string())
+                    .collect::<BTreeSet<_>>()
+            })
             .unwrap_or_default();
         set.into_iter().collect()
     }
