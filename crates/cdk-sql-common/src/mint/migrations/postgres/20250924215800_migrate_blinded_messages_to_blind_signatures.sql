@@ -16,7 +16,7 @@ WHERE NOT EXISTS (
     WHERE blind_signature.blinded_message = blinded_messages.blinded_message
 );
 
--- Create index on quote_id if it doesn't exist
+-- Create index on quote_id if it does not exist
 CREATE INDEX IF NOT EXISTS blind_signature_quote_id_index ON blind_signature(quote_id);
 
 -- Drop the blinded_messages table as data has been migrated
