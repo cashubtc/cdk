@@ -578,7 +578,7 @@ impl Settings {
             None => default_config_file_name.to_string_lossy().to_string(),
         };
 
-        let backend = Config::builder();
+        let builder = Config::builder();
         let config: Config = builder
             // use defaults
             .add_source(Config::try_from(default)?)
