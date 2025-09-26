@@ -1,5 +1,6 @@
 //! FFI token bindings
 
+use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use crate::error::FfiError;
@@ -106,7 +107,6 @@ impl Token {
 
     /// Return all P2PK pubkeys referenced by this token's spending conditions
     pub fn p2pk_pubkeys(&self) -> Vec<String> {
-        use std::collections::BTreeSet;
         let set = self
             .inner
             .p2pk_pubkeys()
@@ -117,7 +117,6 @@ impl Token {
 
     /// Return all refund pubkeys from P2PK spending conditions
     pub fn p2pk_refund_pubkeys(&self) -> Vec<String> {
-        use std::collections::BTreeSet;
         let set = self
             .inner
             .p2pk_refund_pubkeys()
@@ -128,7 +127,6 @@ impl Token {
 
     /// Return all HTLC hashes from spending conditions
     pub fn htlc_hashes(&self) -> Vec<String> {
-        use std::collections::BTreeSet;
         let set = self
             .inner
             .htlc_hashes()
