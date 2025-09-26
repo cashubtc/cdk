@@ -5,7 +5,7 @@ use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
 use cdk_common::common::QuoteTTL;
-use config::{Config, ConfigError, File};
+use config::{Config, ConfigError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -577,21 +577,8 @@ impl Settings {
             Some(value) => value.into().to_string_lossy().to_string(),
             None => default_config_file_name.to_string_lossy().to_string(),
         };
-        // Debug: ensure config file exists and log path
-        let cfg_path = std::path::Path::new(&config);
-        if !cfg_path.exists() {
-            eprintln!(
-                "[mintd] Config file not found at path: {}",
-                cfg_path.display()
-            );
-        } else {
-            eprintln!(
-                "[mintd] Loading config file at path: {}",
-                cfg_path.display()
-            );
-        }
 
-        let builder = Config::builder();
+        let backend = Config::builder();
         let config: Config = builder
             // use defaults
             .add_source(Config::try_from(default)?)
