@@ -376,39 +376,6 @@ impl Mint {
         result
     }
 
-    /// Removes a mint quote from the database
-    ///
-    /// # Arguments
-    /// * `quote_id` - The UUID of the quote to remove
-    ///
-    /// # Returns
-    /// * `Ok(())` if removal was successful
-    /// * `Error` if the quote doesn't exist or removal fails
-    #[instrument(skip_all)]
-    pub async fn remove_mint_quote(&self, quote_id: &QuoteId) -> Result<(), Error> {
-        #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("remove_mint_quote");
-
-        let result = async {
-            let mut tx = self.localstore.begin_transaction().await?;
-            tx.remove_mint_quote(quote_id).await?;
-            tx.commit().await?;
-            Ok(())
-        }
-        .await;
-
-        #[cfg(feature = "prometheus")]
-        {
-            METRICS.dec_in_flight_requests("remove_mint_quote");
-            METRICS.record_mint_operation("remove_mint_quote", result.is_ok());
-            if result.is_err() {
-                METRICS.record_error();
-            }
-        }
-
-        result
-    }
-
     /// Marks a mint quote as paid based on the payment request ID
     ///
     /// Looks up the mint quote by the payment request ID and marks it as paid
