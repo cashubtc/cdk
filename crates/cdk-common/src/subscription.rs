@@ -45,9 +45,9 @@ impl SubscriptionRequest for Params {
     }
 }
 
-/// Subscriptions paramters for the wallet
+/// Subscriptions parameters for the wallet
 ///
-/// This is because the Wallet can subscribe to non CDK quotes, where IDs are not constrainted to
+/// This is because the Wallet can subscribe to non CDK quotes, where IDs are not constraint to
 /// QuoteId
 pub type WalletParams = nut17::Params<String>;
 

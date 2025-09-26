@@ -124,22 +124,22 @@ impl From<WalletSubscription> for WalletParams {
             WalletSubscription::ProofState(filters) => WalletParams {
                 filters,
                 kind: Kind::ProofState,
-                id: id.into(),
+                id,
             },
             WalletSubscription::Bolt11MintQuoteState(filters) => WalletParams {
                 filters,
                 kind: Kind::Bolt11MintQuote,
-                id: id.into(),
+                id,
             },
             WalletSubscription::Bolt11MeltQuoteState(filters) => WalletParams {
                 filters,
                 kind: Kind::Bolt11MeltQuote,
-                id: id.into(),
+                id,
             },
             WalletSubscription::Bolt12MintQuoteState(filters) => WalletParams {
                 filters,
                 kind: Kind::Bolt12MintQuote,
-                id: id.into(),
+                id,
             },
         }
     }

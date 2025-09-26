@@ -15,11 +15,13 @@ use cdk_common::nut17::ws::{
 };
 use cdk_common::nut17::{Kind, NotificationId};
 use cdk_common::pub_sub::remote_consumer::{
-    Consumer, MessageToTransportLoop, RemoteActiveConsumer, SubscribeMesssage, Transport,
+    Consumer, MessageToTransportLoop, RemoteActiveConsumer, SubscribeMessage, Transport,
 };
 use cdk_common::pub_sub::{Error as PubsubError, Event, Pubsub, Topic};
 use cdk_common::subscription::WalletParams;
-use cdk_common::{CheckStateRequest, Method, RoutePath};
+use cdk_common::CheckStateRequest;
+#[cfg(feature = "auth")]
+use cdk_common::{Method, RoutePath};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
@@ -205,7 +207,7 @@ impl Transport for SubscriptionClient {
     async fn long_connection(
         &self,
         mut subscribe_changes: mpsc::Receiver<MessageToTransportLoop<Self::Topic>>,
-        topics: Vec<SubscribeMesssage<Self::Topic>>,
+        topics: Vec<SubscribeMessage<Self::Topic>>,
         reply_to: Arc<Pubsub<Self::Topic>>,
     ) -> Result<(), PubsubError>
     where
@@ -222,6 +224,14 @@ impl Transport for SubscriptionClient {
             url.set_scheme("ws").expect("Could not set scheme");
         }
 
+        #[cfg(not(feature = "auth"))]
+        let request = url.to_string().into_client_request().map_err(|err| {
+            tracing::error!("Failed to create client request: {:?}", err);
+            // Fallback to HTTP client if we can't create the WebSocket request
+            cdk_common::pub_sub::Error::NotSupported
+        })?;
+
+        #[cfg(feature = "auth")]
         let mut request = url.to_string().into_client_request().map_err(|err| {
             tracing::error!("Failed to create client request: {:?}", err);
             // Fallback to HTTP client if we can't create the WebSocket request
@@ -347,7 +357,7 @@ impl Transport for SubscriptionClient {
     /// Poll on demand
     async fn poll(
         &self,
-        topics: Vec<SubscribeMesssage<Self::Topic>>,
+        topics: Vec<SubscribeMessage<Self::Topic>>,
         reply_to: Arc<Pubsub<Self::Topic>>,
     ) -> Result<(), PubsubError> {
         let proofs = topics
@@ -425,7 +435,7 @@ impl Transport for SubscriptionClient {
                     };
 
                     reply_to.publish(MintEvent::new(
-                        NotificationPayload::MeltQuoteBolt11Response(response.into()),
+                        NotificationPayload::MeltQuoteBolt11Response(response),
                     ));
                 }
                 _ => {}

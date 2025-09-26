@@ -162,7 +162,7 @@ where
 
             if long_connection_supported
                 && !instance.prefer_http
-                && (retry_at.is_none() || retry_at.clone().unwrap() < Instant::now())
+                && (retry_at.is_none() || retry_at.unwrap() < Instant::now())
             {
                 let (sender, receiver) = mpsc::channel(10_000);
 
@@ -306,8 +306,8 @@ where
         }
 
         for index in indexes.iter() {
-            if let Some(subscription) = remote_subscriptions.get_mut(&index) {
-                subscription.total_subscribers = subscription.total_subscribers + 1;
+            if let Some(subscription) = remote_subscriptions.get_mut(index) {
+                subscription.total_subscribers += 1;
             } else {
                 remote_subscriptions.insert(
                     index.clone(),
@@ -352,7 +352,7 @@ where
 }
 
 /// Subscribe Message
-pub type SubscribeMesssage<T> = (
+pub type SubscribeMessage<T> = (
     <T as Topic>::SubscriptionName,
     <<T as Topic>::Event as Event>::Topic,
 );
@@ -363,7 +363,7 @@ where
     T: Topic + 'static,
 {
     /// Add a subscription
-    Subscribe(SubscribeMesssage<T>),
+    Subscribe(SubscribeMessage<T>),
     /// Desuscribe
     Unsubscribe(T::SubscriptionName),
     /// Exit the loop
@@ -383,7 +383,7 @@ pub trait Transport: Send + Sync {
     async fn long_connection(
         &self,
         subscribe_changes: mpsc::Receiver<MessageToTransportLoop<Self::Topic>>,
-        topics: Vec<SubscribeMesssage<Self::Topic>>,
+        topics: Vec<SubscribeMessage<Self::Topic>>,
         reply_to: Arc<Pubsub<Self::Topic>>,
     ) -> Result<(), Error>
     where
@@ -392,7 +392,7 @@ pub trait Transport: Send + Sync {
     /// Poll on demand
     async fn poll(
         &self,
-        topics: Vec<SubscribeMesssage<Self::Topic>>,
+        topics: Vec<SubscribeMessage<Self::Topic>>,
         reply_to: Arc<Pubsub<Self::Topic>>,
     ) -> Result<(), Error>;
 }
