@@ -628,10 +628,15 @@ impl Mint {
 
         let inputs_fee = self.get_proofs_fee(melt_request.inputs()).await?;
 
-        tx.add_melt_request_and_blinded_messages(
+        tx.add_melt_request(
             melt_request.quote_id(),
             melt_request.inputs_amount()?,
             inputs_fee,
+        )
+        .await?;
+
+        tx.add_blinded_messages(
+            Some(&melt_request.quote_id()),
             melt_request.outputs().as_ref().unwrap_or(&Vec::new()),
         )
         .await?;

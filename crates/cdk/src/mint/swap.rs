@@ -21,11 +21,39 @@ impl Mint {
         swap_request.input_amount()?;
         swap_request.output_amount()?;
 
+        // We add blinded messages to db before attempting to sign
+        // this ensures that they are unique and have not been used before
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.add_blinded_messages(None, swap_request.outputs())
+            .await
+            .map_err(|err| {
+                #[cfg(feature = "prometheus")]
+                {
+                    METRICS.dec_in_flight_requests("process_swap_request");
+                    METRICS.record_mint_operation("process_swap_request", false);
+                    METRICS.record_error();
+                }
+
+                if matches!(err, cdk_common::database::Error::Duplicate) {
+                    Error::DuplicateOutputs
+                } else {
+                    err.into()
+                }
+            })?;
+        tx.commit().await?;
+
         let promises = self.blind_sign(swap_request.outputs().to_owned()).await?;
         let input_verification =
             self.verify_inputs(swap_request.inputs())
                 .await
                 .map_err(|err| {
+                    #[cfg(feature = "prometheus")]
+                    {
+                        METRICS.dec_in_flight_requests("process_swap_request");
+                        METRICS.record_mint_operation("process_swap_request", false);
+                        METRICS.record_error();
+                    }
+
                     tracing::debug!("Input verification failed: {:?}", err);
                     err
                 })?;

@@ -546,14 +546,13 @@ where
 {
     type Err = Error;
 
-    async fn add_melt_request_and_blinded_messages(
+    async fn add_melt_request(
         &mut self,
         quote_id: &QuoteId,
         inputs_amount: Amount,
         inputs_fee: Amount,
-        blinded_messages: &[BlindedMessage],
     ) -> Result<(), Self::Err> {
-        // Insert melt_request first
+        // Insert melt_request
         query(
             r#"
             INSERT INTO melt_request
@@ -568,6 +567,14 @@ where
         .execute(&self.inner)
         .await?;
 
+        Ok(())
+    }
+
+    async fn add_blinded_messages(
+        &mut self,
+        quote_id: Option<&QuoteId>,
+        blinded_messages: &[BlindedMessage],
+    ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
         // Insert blinded_messages directly into blind_signature with c = NULL
@@ -587,7 +594,7 @@ where
             )
             .bind("amount", message.amount.to_i64())
             .bind("keyset_id", message.keyset_id.to_string())
-            .bind("quote_id", quote_id.to_string())
+            .bind("quote_id", quote_id.map(|q| q.to_string()))
             .bind("created_time", current_time as i64)
             .execute(&self.inner)
             .await
