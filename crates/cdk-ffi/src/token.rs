@@ -95,4 +95,53 @@ impl Token {
     pub fn decode(encoded_token: String) -> Result<Token, FfiError> {
         encoded_token.parse()
     }
+
+    /// Return unique spending conditions across all proofs in this token
+    pub fn spending_conditions(&self) -> Vec<crate::types::SpendingConditions> {
+        self.inner
+            .spending_conditions()
+            .map(|set| set.into_iter().map(Into::into).collect())
+            .unwrap_or_default()
+    }
+
+    /// Return all P2PK pubkeys referenced by this token's spending conditions
+    pub fn p2pk_pubkeys(&self) -> Vec<String> {
+        use std::collections::BTreeSet;
+        let set = self
+            .inner
+            .p2pk_pubkeys()
+            .map(|keys| keys.into_iter().map(|k| k.to_string()).collect::<BTreeSet<_>>())
+            .unwrap_or_default();
+        set.into_iter().collect()
+    }
+
+    /// Return all refund pubkeys from P2PK spending conditions
+    pub fn p2pk_refund_pubkeys(&self) -> Vec<String> {
+        use std::collections::BTreeSet;
+        let set = self
+            .inner
+            .p2pk_refund_pubkeys()
+            .map(|keys| keys.into_iter().map(|k| k.to_string()).collect::<BTreeSet<_>>())
+            .unwrap_or_default();
+        set.into_iter().collect()
+    }
+
+    /// Return all HTLC hashes from spending conditions
+    pub fn htlc_hashes(&self) -> Vec<String> {
+        use std::collections::BTreeSet;
+        let set = self
+            .inner
+            .htlc_hashes()
+            .map(|hashes| hashes.into_iter().map(|h| h.to_string()).collect::<BTreeSet<_>>())
+            .unwrap_or_default();
+        set.into_iter().collect()
+    }
+
+    /// Return all locktimes from spending conditions (sorted ascending)
+    pub fn locktimes(&self) -> Vec<u64> {
+        self.inner
+            .locktimes()
+            .map(|s| s.into_iter().collect())
+            .unwrap_or_default()
+    }
 }
