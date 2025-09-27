@@ -1,7 +1,6 @@
 //! Logging helpers to reduce code duplication in CLN backend
 
 use cdk_common::QuoteId;
-use tracing::{debug, error, info, warn};
 
 /// Context for payment-related logging
 #[derive(Debug)]
@@ -34,7 +33,7 @@ impl PaymentContext {
 
     /// Log payment start with context
     pub fn log_start(&self, message: &str) {
-        info!(
+        tracing::info!(
             quote_id = %self.quote_id,
             payment_type = ?self.payment_type,
             payment_hash = ?self.payment_hash,
@@ -44,7 +43,7 @@ impl PaymentContext {
 
     /// Log payment info with context
     pub fn log_info(&self, message: &str) {
-        info!(
+        tracing::info!(
             quote_id = %self.quote_id,
             payment_type = ?self.payment_type,
             payment_hash = ?self.payment_hash,
@@ -54,7 +53,7 @@ impl PaymentContext {
 
     /// Log payment success with context
     pub fn log_success(&self, message: &str, total_spent: Option<u64>) {
-        info!(
+        tracing::info!(
             quote_id = %self.quote_id,
             payment_type = ?self.payment_type,
             payment_hash = ?self.payment_hash,
@@ -65,7 +64,7 @@ impl PaymentContext {
 
     /// Log payment error with context
     pub fn log_error(&self, message: &str, error: &dyn std::fmt::Display) {
-        error!(
+        tracing::error!(
             quote_id = %self.quote_id,
             payment_type = ?self.payment_type,
             payment_hash = ?self.payment_hash,
@@ -76,17 +75,7 @@ impl PaymentContext {
 
     /// Log payment debug with context
     pub fn log_debug(&self, message: &str) {
-        debug!(
-            quote_id = %self.quote_id,
-            payment_type = ?self.payment_type,
-            payment_hash = ?self.payment_hash,
-            "{message}"
-        );
-    }
-
-    /// Log payment warning with context
-    pub fn log_warn(&self, message: &str) {
-        warn!(
+        tracing::debug!(
             quote_id = %self.quote_id,
             payment_type = ?self.payment_type,
             payment_hash = ?self.payment_hash,

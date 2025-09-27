@@ -791,12 +791,80 @@ impl MintPayment for Lnd {
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err> {
+        match payment_identifier {
+            PaymentIdentifier::PaymentHash(hash) => {
+                // For payment hash, check status via LND
+                match self.check_outgoing_payment_by_hash(hash).await {
+                    Ok(response) => Ok(MakePaymentResponse {
+                        payment_lookup_id: payment_identifier.clone(),
+                        payment_proof: response.payment_proof,
+                        status: response.status,
+                        total_spent: response.total_spent,
+                        unit: CurrencyUnit::Sat, // LND always returns amounts in sats
+                    }),
+                    Err(e) => Err(e),
+                }
+            }
+            PaymentIdentifier::QuoteId(quote_id) => {
+                // For quote ID, check database first, then verify with LND if needed
+                match self
+                    .database
+                    .load_payment_status_by_quote_id(quote_id)
+                    .await
+                {
+                    Ok(Some(payment_status)) => {
+                        // We have stored payment status, check for any updates from LND
+                        match self
+                            .check_outgoing_payment_by_hash(&payment_status.payment_hash)
+                            .await
+                        {
+                            Ok(response) => Ok(MakePaymentResponse {
+                                payment_lookup_id: payment_identifier.clone(),
+                                payment_proof: response.payment_proof,
+                                status: response.status,
+                                total_spent: response.total_spent,
+                                unit: CurrencyUnit::Sat, // LND always returns amounts in sats
+                            }),
+                            Err(e) => Err(e),
+                        }
+                    }
+                    Ok(None) => {
+                        // No payment status found for this quote_id, means payment hasn't been attempted yet
+                        Ok(MakePaymentResponse {
+                            payment_lookup_id: payment_identifier.clone(),
+                            payment_proof: None,
+                            status: MeltQuoteState::Unpaid,
+                            total_spent: Amount::ZERO,
+                            unit: self.settings.unit.clone(),
+                        })
+                    }
+                    Err(e) => {
+                        tracing::error!("Database error when checking quote payment: {}", e);
+                        Err(payment::Error::Custom(e.to_string()))
+                    }
+                }
+            }
+            _ => {
+                tracing::error!("Unsupported payment identifier type for LND backend");
+                Err(payment::Error::UnknownPaymentState)
+            }
+        }
+    }
+}
+
+impl Lnd {
+    /// Check outgoing payment status by payment hash via LND
+    #[instrument(skip(self), fields(component = "lnd", payment_hash = %hex::encode(payment_hash)))]
+    async fn check_outgoing_payment_by_hash(
+        &self,
+        payment_hash: &[u8; 32],
+    ) -> Result<LndPaymentStatus, payment::Error> {
         let mut lnd_client = self.lnd_client.clone();
 
-        let payment_hash = &payment_identifier.to_string();
+        let payment_hash_hex = hex::encode(payment_hash);
 
         let track_request = routerrpc::TrackPaymentRequest {
-            payment_hash: hex::decode(payment_hash).map_err(|_| Error::InvalidHash)?,
+            payment_hash: payment_hash.to_vec(),
             no_inflight_updates: true,
         };
 
@@ -807,14 +875,23 @@ impl MintPayment for Lnd {
             Err(err) => {
                 let err_code = err.code();
                 if err_code == tonic::Code::NotFound {
-                    return Ok(MakePaymentResponse {
-                        payment_lookup_id: payment_identifier.clone(),
-                        payment_proof: None,
+                    tracing::debug!(
+                        payment_hash = payment_hash_hex,
+                        "Payment not found in LND, returning Unknown status"
+                    );
+                    return Ok(LndPaymentStatus {
                         status: MeltQuoteState::Unknown,
+                        payment_hash: *payment_hash,
+                        payment_proof: None,
                         total_spent: Amount::ZERO,
-                        unit: self.settings.unit.clone(),
                     });
                 } else {
+                    tracing::error!(
+                        payment_hash = payment_hash_hex,
+                        error_code = ?err_code,
+                        error = %err,
+                        "LND error while tracking payment"
+                    );
                     return Err(payment::Error::UnknownPaymentState);
                 }
             }
@@ -826,49 +903,71 @@ impl MintPayment for Lnd {
                     let status = update.status();
 
                     let response = match status {
-                        lnrpc::payment::PaymentStatus::Unknown => MakePaymentResponse {
-                            payment_lookup_id: payment_identifier.clone(),
-                            payment_proof: Some(update.payment_preimage),
+                        lnrpc::payment::PaymentStatus::Unknown => LndPaymentStatus {
                             status: MeltQuoteState::Unknown,
+                            payment_hash: *payment_hash,
+                            payment_proof: Some(update.payment_preimage),
                             total_spent: Amount::ZERO,
-                            unit: self.settings.unit.clone(),
                         },
                         lnrpc::payment::PaymentStatus::InFlight
                         | lnrpc::payment::PaymentStatus::Initiated => {
+                            tracing::debug!(
+                                payment_hash = payment_hash_hex,
+                                status = ?status,
+                                "Payment is in flight, continuing to wait for final status"
+                            );
                             // Continue waiting for the next update
                             continue;
                         }
-                        lnrpc::payment::PaymentStatus::Succeeded => MakePaymentResponse {
-                            payment_lookup_id: payment_identifier.clone(),
-                            payment_proof: Some(update.payment_preimage),
-                            status: MeltQuoteState::Paid,
-                            total_spent: Amount::from(
-                                (update
-                                    .value_sat
-                                    .checked_add(update.fee_sat)
-                                    .ok_or(Error::AmountOverflow)?)
-                                    as u64,
-                            ),
-                            unit: CurrencyUnit::Sat,
-                        },
-                        lnrpc::payment::PaymentStatus::Failed => MakePaymentResponse {
-                            payment_lookup_id: payment_identifier.clone(),
-                            payment_proof: Some(update.payment_preimage),
-                            status: MeltQuoteState::Failed,
-                            total_spent: Amount::ZERO,
-                            unit: self.settings.unit.clone(),
-                        },
+                        lnrpc::payment::PaymentStatus::Succeeded => {
+                            tracing::info!(
+                                payment_hash = payment_hash_hex,
+                                value_sat = update.value_sat,
+                                fee_sat = update.fee_sat,
+                                "Payment succeeded"
+                            );
+                            LndPaymentStatus {
+                                status: MeltQuoteState::Paid,
+                                payment_hash: *payment_hash,
+                                payment_proof: Some(update.payment_preimage),
+                                total_spent: Amount::from(
+                                    (update
+                                        .value_sat
+                                        .checked_add(update.fee_sat)
+                                        .ok_or(Error::AmountOverflow)?)
+                                        as u64,
+                                ),
+                            }
+                        }
+                        lnrpc::payment::PaymentStatus::Failed => {
+                            tracing::info!(payment_hash = payment_hash_hex, "Payment failed");
+                            LndPaymentStatus {
+                                status: MeltQuoteState::Failed,
+                                payment_hash: *payment_hash,
+                                payment_proof: Some(update.payment_preimage),
+                                total_spent: Amount::ZERO,
+                            }
+                        }
                     };
 
                     return Ok(response);
                 }
-                Err(_) => {
+                Err(err) => {
+                    tracing::error!(
+                        payment_hash = payment_hash_hex,
+                        error = %err,
+                        "Error while processing payment stream update"
+                    );
                     // Handle the case where the update itself is an error (e.g., stream failure)
                     return Err(Error::UnknownPaymentStatus.into());
                 }
             }
         }
 
+        tracing::warn!(
+            payment_hash = payment_hash_hex,
+            "Payment stream exhausted without final status"
+        );
         // If the stream is exhausted without a final status
         Err(Error::UnknownPaymentStatus.into())
     }

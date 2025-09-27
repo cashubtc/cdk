@@ -239,7 +239,7 @@ impl MintPayment for LNbits {
 
     async fn make_payment(
         &self,
-        quote_id: &QuoteId,
+        _quote_id: &QuoteId,
         _unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
