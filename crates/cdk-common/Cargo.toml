@@ -40,9 +40,12 @@ anyhow.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
 web-time.workspace = true
+tokio.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"], optional = true }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]
 rand.workspace = true
