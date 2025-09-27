@@ -280,8 +280,8 @@ fn create_ldk_settings(
             logging: LoggingConfig::default(),
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
-        ln: cdk_mintd::config::Ln {
-            ln_backend: cdk_mintd::config::LnBackend::LdkNode,
+        backend: cdk_mintd::config::Backend {
+            name: cdk_mintd::config::BackendType::LdkNode,
             invoice_description: None,
             min_mint: 1.into(),
             max_mint: 500_000.into(),

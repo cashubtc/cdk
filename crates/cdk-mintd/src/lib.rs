@@ -54,7 +54,7 @@ use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
 #[cfg(feature = "auth")]
 use config::AuthType;
-use config::{DatabaseEngine, LnBackend};
+use config::{BackendType, DatabaseEngine};
 use env_vars::ENV_WORK_DIR;
 use setup::LnBackendSetup;
 use tower::ServiceBuilder;
@@ -411,17 +411,17 @@ async fn configure_lightning_backend(
     _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
-        mint_min: settings.ln.min_mint,
-        mint_max: settings.ln.max_mint,
-        melt_min: settings.ln.min_melt,
-        melt_max: settings.ln.max_melt,
+        mint_min: settings.backend.min_mint,
+        mint_max: settings.backend.max_mint,
+        melt_min: settings.backend.min_melt,
+        melt_max: settings.backend.max_melt,
     };
 
-    tracing::debug!("Ln backend: {:?}", settings.ln.ln_backend);
+    tracing::debug!("Ln backend: {:?}", settings.backend.name);
 
-    match settings.ln.ln_backend {
+    match settings.backend.name {
         #[cfg(feature = "cln")]
-        LnBackend::Cln => {
+        BackendType::Cln => {
             let cln_settings = settings
                 .cln
                 .clone()
@@ -442,7 +442,7 @@ async fn configure_lightning_backend(
             .await?;
         }
         #[cfg(feature = "lnbits")]
-        LnBackend::LNbits => {
+        BackendType::LNbits => {
             let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
             let lnbits = lnbits_settings
                 .setup(settings, CurrencyUnit::Sat, None, work_dir, None)
@@ -460,7 +460,7 @@ async fn configure_lightning_backend(
             .await?;
         }
         #[cfg(feature = "lnd")]
-        LnBackend::Lnd => {
+        BackendType::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
             let lnd = lnd_settings
                 .setup(settings, CurrencyUnit::Msat, None, work_dir, _kv_store)
@@ -478,7 +478,7 @@ async fn configure_lightning_backend(
             .await?;
         }
         #[cfg(feature = "fakewallet")]
-        LnBackend::FakeWallet => {
+        BackendType::FakeWallet => {
             let fake_wallet = settings.clone().fake_wallet.expect("Fake wallet defined");
             tracing::info!("Using fake wallet: {:?}", fake_wallet);
 
@@ -500,11 +500,11 @@ async fn configure_lightning_backend(
             }
         }
         #[cfg(feature = "grpc-processor")]
-        LnBackend::GrpcProcessor => {
+        BackendType::GrpcProcessor => {
             let grpc_processor = settings
                 .clone()
                 .grpc_processor
-                .expect("grpc processor config defined");
+                .expect("GRPC payment processor defined");
 
             tracing::info!(
                 "Attempting to start with gRPC payment processor at {}:{}.",
@@ -531,7 +531,7 @@ async fn configure_lightning_backend(
             }
         }
         #[cfg(feature = "ldk-node")]
-        LnBackend::LdkNode => {
+        BackendType::LdkNode => {
             let ldk_node_settings = settings.clone().ldk_node.expect("Checked at config load");
             tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
 
@@ -548,10 +548,10 @@ async fn configure_lightning_backend(
             )
             .await?;
         }
-        LnBackend::None => {
+        BackendType::None => {
             tracing::error!(
                 "Payment backend was not set or feature disabled. {:?}",
-                settings.ln.ln_backend
+                settings.backend.name
             );
             bail!("Lightning backend must be configured");
         }
