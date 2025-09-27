@@ -302,10 +302,6 @@ impl MintPayment for LNbits {
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        if unit != &CurrencyUnit::Sat {
-            return Err(Self::Err::Anyhow(anyhow!("Unsupported unit")));
-        }
-
         match options {
             IncomingPaymentOptions::Bolt11(bolt11_options) => {
                 let description = bolt11_options.description.unwrap_or_default();
