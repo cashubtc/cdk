@@ -202,7 +202,7 @@ impl LnBackendSetup for config::LdkNode {
         _unit: CurrencyUnit,
         runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
-        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_ldk_node::CdkLdkNode> {
         use std::net::SocketAddr;
 
@@ -303,6 +303,7 @@ impl LnBackendSetup for config::LdkNode {
             fee_reserve,
             listen_address,
             runtime,
+            kv_store.expect("Database"),
         )?;
 
         // Configure webserver address if specified

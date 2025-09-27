@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk_common::payment::{IncomingPaymentOptions, MintPayment};
-use cdk_common::CurrencyUnit;
+use cdk_common::{CurrencyUnit, QuoteId};
 use futures::{Stream, StreamExt};
 use lightning::offers::offer::Offer;
 use serde_json::Value;
@@ -182,7 +182,11 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
         &self,
         request: Request<CreatePaymentRequest>,
     ) -> Result<Response<CreatePaymentResponse>, Status> {
-        let CreatePaymentRequest { unit, options } = request.into_inner();
+        let CreatePaymentRequest {
+            unit,
+            options,
+            quote_id,
+        } = request.into_inner();
 
         let unit = CurrencyUnit::from_str(&unit)
             .map_err(|_| Status::invalid_argument("Invalid currency unit"))?;
@@ -209,9 +213,12 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
             ),
         };
 
+        let quote_id = QuoteId::from_str(&quote_id)
+            .map_err(|_| Status::invalid_argument("Invalid quote id"))?;
+
         let invoice_response = self
             .inner
-            .create_incoming_payment_request(&unit, proto_options)
+            .create_incoming_payment_request(&quote_id, &unit, proto_options)
             .await
             .map_err(|_| Status::internal("Could not create invoice"))?;
 
@@ -256,9 +263,12 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
             }
         };
 
+        let quote_id = QuoteId::from_str(&request.quote_id)
+            .map_err(|_| Status::invalid_argument("Invalid quote id"))?;
+
         let payment_quote = self
             .inner
-            .get_payment_quote(&unit, options)
+            .get_payment_quote(&quote_id, &unit, options)
             .await
             .map_err(|err| {
                 tracing::error!("Could not get payment quote: {}", err);
@@ -315,9 +325,12 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
             }
         };
 
+        let quote_id = QuoteId::from_str(&request.quote_id)
+            .map_err(|_| Status::invalid_argument("Invalid quote id"))?;
+
         let pay_response = self
             .inner
-            .make_payment(&unit, payment_options)
+            .make_payment(&quote_id, &unit, payment_options)
             .await
             .map_err(|err| {
                 tracing::error!("Could not make payment: {}", err);

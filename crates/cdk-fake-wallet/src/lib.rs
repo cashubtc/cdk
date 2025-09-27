@@ -25,13 +25,13 @@ use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk_common::amount::{to_unit, Amount};
 use cdk_common::common::FeeReserve;
-use cdk_common::ensure_cdk;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
     MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
     PaymentQuoteResponse, WaitPaymentResponse,
 };
+use cdk_common::{ensure_cdk, QuoteId};
 use error::Error;
 use futures::stream::StreamExt;
 use futures::Stream;
@@ -459,6 +459,7 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn get_payment_quote(
         &self,
+        _quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
@@ -539,6 +540,7 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn make_payment(
         &self,
+        _quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
@@ -636,6 +638,7 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn create_incoming_payment_request(
         &self,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
@@ -754,8 +757,9 @@ impl MintPayment for FakeWallet {
                 .await;
         }
 
+        // For fake wallet, we return the quote ID directly for consistency
         Ok(CreateIncomingPaymentResponse {
-            request_lookup_id: payment_hash,
+            request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
             request,
             expiry,
         })

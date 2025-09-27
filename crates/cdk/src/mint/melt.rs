@@ -161,8 +161,11 @@ impl Mint {
             melt_options: melt_request.options,
         };
 
+        let quote_id = QuoteId::new();
+
         let payment_quote = ln
             .get_payment_quote(
+                &quote_id,
                 &melt_request.unit,
                 OutgoingPaymentOptions::Bolt11(Box::new(bolt11)),
             )
@@ -200,6 +203,7 @@ impl Mint {
         let melt_ttl = self.quote_ttl().await?.melt_ttl;
 
         let quote = MeltQuote::new(
+            Some(quote_id),
             MeltPaymentRequest::Bolt11 {
                 bolt11: request.clone(),
             },
@@ -273,8 +277,11 @@ impl Mint {
             melt_options: *options,
         };
 
+        let quote_id = QuoteId::new();
+
         let payment_quote = ln
             .get_payment_quote(
+                &quote_id,
                 &melt_request.unit,
                 OutgoingPaymentOptions::Bolt12(Box::new(outgoing_payment_options)),
             )
@@ -308,6 +315,7 @@ impl Mint {
         };
 
         let quote = MeltQuote::new(
+            Some(quote_id),
             payment_request,
             unit.clone(),
             payment_quote.amount,
@@ -667,6 +675,7 @@ impl Mint {
             Some(amount_spent) => (tx, None, amount_spent, quote),
 
             None => {
+                tracing::debug!("Attempting to pay external melt");
                 // If the quote unit is SAT or MSAT we can check that the expected fees are
                 // provided. We also check if the quote is less then the invoice
                 // amount in the case that it is a mmp However, if the quote is not
@@ -703,7 +712,7 @@ impl Mint {
                 tx.commit().await?;
 
                 let pre = match ln
-                    .make_payment(&quote.unit, quote.clone().try_into()?)
+                    .make_payment(&quote.id, &quote.unit, quote.clone().try_into()?)
                     .await
                 {
                     Ok(pay)

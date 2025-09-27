@@ -32,10 +32,32 @@ pub enum QuoteId {
     UUID(Uuid),
 }
 
+impl Default for QuoteId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QuoteId {
+    /// Create a new UUID-based MintQuoteId
+    pub fn new() -> Self {
+        Self::UUID(Uuid::new_v4())
+    }
+
     /// Create a new UUID-based MintQuoteId
     pub fn new_uuid() -> Self {
         Self::UUID(Uuid::new_v4())
+    }
+
+    /// Convert QuoteId to bytes (UTF-8 encoded string representation)
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.to_string().into_bytes()
+    }
+
+    /// Create QuoteId from bytes (UTF-8 encoded string representation)
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, QuoteIdError> {
+        let s = std::str::from_utf8(bytes).map_err(|_| QuoteIdError::InvalidQuoteId)?;
+        Self::from_str(s)
     }
 }
 
@@ -96,5 +118,40 @@ impl<'de> Deserialize<'de> for QuoteId {
             Uuid::nil(),
             s
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_quote_id_to_from_bytes() {
+        // Test with UUID
+        let uuid_quote_id = QuoteId::new();
+        let bytes = uuid_quote_id.to_bytes();
+        let recovered = QuoteId::from_bytes(&bytes).unwrap();
+        assert_eq!(uuid_quote_id, recovered);
+
+        // Test with base64
+        let base64_quote_id = QuoteId::BASE64("dGVzdA==".to_string());
+        let bytes = base64_quote_id.to_bytes();
+        let recovered = QuoteId::from_bytes(&bytes).unwrap();
+        assert_eq!(base64_quote_id, recovered);
+    }
+
+    #[test]
+    fn test_quote_id_from_bytes_invalid() {
+        // This string is neither a valid UUID nor valid base64
+        let invalid_bytes = b"invalid@string!";
+        let result = QuoteId::from_bytes(invalid_bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_quote_id_from_bytes_invalid_utf8() {
+        let invalid_utf8_bytes = &[0xFF, 0xFE, 0xFD];
+        let result = QuoteId::from_bytes(invalid_utf8_bytes);
+        assert!(result.is_err());
     }
 }
