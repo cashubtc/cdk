@@ -248,12 +248,12 @@ impl MintPayment for Cln {
                                                         PaymentIdentifier::QuoteId(quote_id)
                                                     }
                                                     Ok(None) => {
-                                                        tracing::warn!(offer_id = %local_offer_id, "No quote_id found for offer_id, skipping");
-                                                        continue;
+                                                        tracing::warn!(offer_id = %local_offer_id, "No quote_id found for offer_id, falling back to offer_id");
+                                                        PaymentIdentifier::OfferId(local_offer_id.to_string())
                                                     }
                                                     Err(e) => {
-                                                        tracing::error!(offer_id = %local_offer_id, error = %e, "Database error looking up quote_id for offer_id");
-                                                        continue;
+                                                        tracing::error!(offer_id = %local_offer_id, error = %e, "Database error looking up quote_id for offer_id, falling back to offer_id");
+                                                        PaymentIdentifier::OfferId(local_offer_id.to_string())
                                                     }
                                                 }
                                             } else {
@@ -283,12 +283,12 @@ impl MintPayment for Cln {
                                             PaymentIdentifier::QuoteId(quote_id)
                                         }
                                         Ok(None) => {
-                                            tracing::warn!(payment_hash = %payment_hash, "No quote_id found for payment_hash, skipping");
-                                            continue;
+                                            tracing::warn!(payment_hash = %payment_hash, "No quote_id found for payment_hash, falling back to payment_hash");
+                                            PaymentIdentifier::PaymentHash(*payment_hash.as_ref())
                                         }
                                         Err(e) => {
-                                            tracing::error!(payment_hash = %payment_hash, error = %e, "Database error looking up quote_id for payment_hash");
-                                            continue;
+                                            tracing::error!(payment_hash = %payment_hash, error = %e, "Database error looking up quote_id for payment_hash, falling back to payment_hash");
+                                            PaymentIdentifier::PaymentHash(*payment_hash.as_ref())
                                         }
                                     }
                                 },
