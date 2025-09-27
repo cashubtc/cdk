@@ -119,11 +119,11 @@ impl Topic for MintSubTopics {
 
     async fn fetch_events(
         &self,
-        indexes: Vec<<Self::Event as Event>::Topic>,
+        topics: Vec<<Self::Event as Event>::Topic>,
         sub_name: Self::SubscriptionName,
         reply_to: mpsc::Sender<(Self::SubscriptionName, Self::Event)>,
     ) {
-        for event in self.get_events_from_db_legacy(&indexes).await.unwrap() {
+        for event in self.get_events_from_db_legacy(&topics).await.unwrap() {
             let _ = reply_to.try_send((sub_name.clone(), event));
         }
     }

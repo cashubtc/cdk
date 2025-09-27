@@ -7,7 +7,7 @@
 //! agnostic Publish-subscribe manager.
 //!
 //! The manager has a method for subscribers to subscribe to events with a
-//! generic type that must be converted to a vector of indexes.
+//! generic type that must be converted to a vector of topics.
 //!
 //! Events are also generic that should implement the `Indexable` trait.
 
@@ -67,13 +67,13 @@ mod test {
 
         async fn fetch_events(
             &self,
-            indexes: Vec<<Self::Event as Event>::Topic>,
+            topics: Vec<<Self::Event as Event>::Topic>,
             sub_name: Self::SubscriptionName,
             reply_to: mpsc::Sender<(Self::SubscriptionName, Self::Event)>,
         ) {
             let storage = self.storage.read().unwrap();
 
-            for index in indexes {
+            for index in topics {
                 if let Some(value) = storage.get(&index) {
                     let _ = reply_to.try_send((sub_name.clone(), value.clone()));
                 }

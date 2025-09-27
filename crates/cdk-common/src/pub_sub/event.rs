@@ -26,6 +26,6 @@ pub trait Event: Clone {
         + DeserializeOwned
         + Serialize;
 
-    /// To indexes
+    /// To topics
     fn get_topics(&self) -> Vec<Self::Topic>;
 }

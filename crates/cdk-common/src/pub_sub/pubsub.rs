@@ -18,9 +18,9 @@ use super::Error;
 /// Event producer definition
 ///
 /// This trait defines events to be broadcasted. Events and subscription requests are converted into
-/// a vector of indexes.
+/// a vector of topics.
 ///
-/// Matching events with subscriptions, through the indexes are broadcasted in real time.
+/// Matching events with subscriptions, through the topics are broadcasted in real time.
 ///
 /// When a new subscription request is created, a deferred call to `fetch_events` is executed to
 /// fetch from a persistent medium the current events to broadcast.
@@ -46,7 +46,7 @@ pub trait Topic: Send + Sync {
     /// Called when a new subscription is created. The function is responsible to not yield the same
     async fn fetch_events(
         &self,
-        indexes: Vec<<Self::Event as Event>::Topic>,
+        topics: Vec<<Self::Event as Event>::Topic>,
         sub_name: Self::SubscriptionName,
         reply_to: mpsc::Sender<(Self::SubscriptionName, Self::Event)>,
     );
@@ -59,7 +59,7 @@ pub trait Topic: Send + Sync {
 pub const DEFAULT_CHANNEL_SIZE: usize = 1_000;
 
 /// Internal Index Tree
-pub type IndexTree<P> = Arc<
+pub type TopicTree<P> = Arc<
     RwLock<
         BTreeMap<
             // Index with a subscription unique ID
@@ -78,7 +78,7 @@ where
     P: Topic + 'static,
 {
     inner: Arc<P>,
-    listeners_index: IndexTree<P>,
+    listeners_topics: TopicTree<P>,
     unique_subscription_counter: AtomicUsize,
     active_subscribers: Arc<AtomicUsize>,
 }
@@ -91,13 +91,13 @@ where
     pub fn new(inner: P) -> Self {
         Self {
             inner: Arc::new(inner),
-            listeners_index: Default::default(),
+            listeners_topics: Default::default(),
             unique_subscription_counter: 0.into(),
             active_subscribers: Arc::new(0.into()),
         }
     }
 
-    /// Total number of active subscribers, it is not the number of active indexes being subscribed
+    /// Total number of active subscribers, it is not the number of active topics being subscribed
     pub fn active_subscribers(&self) -> usize {
         self.active_subscribers
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -106,7 +106,7 @@ where
     /// Publish an event to all listenrs
     fn publish_internal(
         event: P::Event,
-        listeners_index: &IndexTree<P>,
+        listeners_index: &TopicTree<P>,
         inner: Arc<P>,
     ) -> Result<(), Error> {
         let index_storage = listeners_index.read().map_err(|_| Error::Poison)?;
@@ -140,11 +140,11 @@ where
     where
         E: Into<P::Event>,
     {
-        let indexes = self.listeners_index.clone();
+        let topics = self.listeners_topics.clone();
         let inner = self.inner.clone();
         let event = event.into();
 
-        tokio::spawn(async move { Self::publish_internal(event, &indexes, inner) });
+        tokio::spawn(async move { Self::publish_internal(event, &topics, inner) });
     }
 
     /// Broadcast an event to all listeners right away, blocking the current thread
@@ -157,7 +157,7 @@ where
         E: Into<P::Event>,
     {
         let event = event.into();
-        Self::publish_internal(event, &self.listeners_index, self.inner.clone())
+        Self::publish_internal(event, &self.listeners_topics, self.inner.clone())
     }
 
     /// Subscribe proving custom sender/receiver mpsc
@@ -174,7 +174,7 @@ where
             SubscriptionName = P::SubscriptionName,
         >,
     {
-        let mut index_storage = self.listeners_index.write().map_err(|_| Error::Poison)?;
+        let mut index_storage = self.listeners_topics.write().map_err(|_| Error::Poison)?;
         let subscription_internal_id = self
             .unique_subscription_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -206,7 +206,7 @@ where
             subscription_internal_id,
             subscription_name,
             self.active_subscribers.clone(),
-            self.listeners_index.clone(),
+            self.listeners_topics.clone(),
             subscribed_to,
             receiver,
         ))

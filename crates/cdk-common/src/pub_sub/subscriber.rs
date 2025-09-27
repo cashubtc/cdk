@@ -4,19 +4,19 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use super::pubsub::{IndexTree, Topic};
+use super::pubsub::{Topic, TopicTree};
 use super::Error;
 use crate::pub_sub::event::Event;
 
 /// Subscription request
 pub trait SubscriptionRequest: Clone {
-    /// Indexes
+    /// Topics
     type Topic;
 
     /// Subscription name
     type SubscriptionName;
 
-    /// Try to get indexes from the request
+    /// Try to get topics from the request
     fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error>;
 
     /// Get the subscription name
@@ -31,7 +31,7 @@ where
     id: usize,
     name: P::SubscriptionName,
     active_subscribers: Arc<AtomicUsize>,
-    indexes: IndexTree<P>,
+    topics: TopicTree<P>,
     subscribed_to: Vec<<P::Event as Event>::Topic>,
     receiver: Option<mpsc::Receiver<(P::SubscriptionName, P::Event)>>,
 }
@@ -45,7 +45,7 @@ where
         id: usize,
         name: P::SubscriptionName,
         active_subscribers: Arc<AtomicUsize>,
-        indexes: IndexTree<P>,
+        topics: TopicTree<P>,
         subscribed_to: Vec<<P::Event as Event>::Topic>,
         receiver: Option<mpsc::Receiver<(P::SubscriptionName, P::Event)>>,
     ) -> Self {
@@ -54,7 +54,7 @@ where
             name,
             active_subscribers,
             subscribed_to,
-            indexes,
+            topics,
             receiver,
         }
     }
@@ -85,9 +85,9 @@ where
 {
     fn drop(&mut self) {
         // remove the listener
-        let mut indexes = self.indexes.write().unwrap();
+        let mut topics = self.topics.write().unwrap();
         for index in self.subscribed_to.drain(..) {
-            indexes.remove(&(index, self.id));
+            topics.remove(&(index, self.id));
         }
 
         // decrement the number of active subscribers

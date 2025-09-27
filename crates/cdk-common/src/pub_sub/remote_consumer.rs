@@ -20,6 +20,9 @@ const LONG_CONNECTION_MAX_BACKOFF: Duration = Duration::from_millis(30_000);
 
 const POLL_SLEEP: Duration = Duration::from_millis(2_000);
 
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures;
+
 struct UniqueSubscription<T>
 where
     T: Topic,
@@ -139,7 +142,11 @@ where
             still_running: true.into(),
         });
 
+        #[cfg(not(target_arch = "wasm32"))]
         tokio::spawn(Self::connection_loop(this.clone()));
+
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(Self::connection_loop(this.clone()));
 
         this
     }
@@ -293,7 +300,7 @@ where
         >,
     {
         let subscription_name = request.subscription_name();
-        let indexes = request.try_get_topics()?;
+        let topics = request.try_get_topics()?;
 
         let mut remote_subscriptions = self
             .remote_subscriptions
@@ -305,7 +312,7 @@ where
             return Err(Error::AlreadySubscribed);
         }
 
-        for index in indexes.iter() {
+        for index in topics.iter() {
             if let Some(subscription) = remote_subscriptions.get_mut(index) {
                 subscription.total_subscribers += 1;
             } else {
@@ -329,7 +336,7 @@ where
             }
         }
 
-        subscriptions.insert(subscription_name, indexes);
+        subscriptions.insert(subscription_name, topics);
         drop(subscriptions);
 
         Ok(RemoteActiveConsumer {
@@ -371,7 +378,8 @@ where
 }
 
 /// Subscription transport trait
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait Transport: Send + Sync {
     /// Topic
     type Topic: Topic + Clone + Sync + Send;
