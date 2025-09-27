@@ -119,6 +119,7 @@ impl CdkLdkNode {
     ///
     /// # Errors
     /// Returns an error if the LDK node builder fails to create the node
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         network: Network,
         chain_source: ChainSource,

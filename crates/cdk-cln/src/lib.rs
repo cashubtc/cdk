@@ -362,7 +362,7 @@ impl MintPayment for Cln {
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: Some(PaymentIdentifier::QuoteId(quote_id.to_owned())),
                     amount,
-                    fee: fee.into(),
+                    fee,
                     state: MeltQuoteState::Unpaid,
                     unit: unit.clone(),
                 })
@@ -390,7 +390,7 @@ impl MintPayment for Cln {
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: Some(PaymentIdentifier::QuoteId(quote_id.to_owned())),
                     amount,
-                    fee: fee.into(),
+                    fee,
                     state: MeltQuoteState::Unpaid,
                     unit: unit.clone(),
                 })
@@ -410,7 +410,7 @@ impl MintPayment for Cln {
         let mut amount_msat: Option<u64> = None;
 
         let mut cln_client = self.cln_client().await?;
-        self.check_outgoing_unpaided(&quote_id).await?;
+        self.check_outgoing_unpaided(quote_id).await?;
 
         let (invoice, hash, payment_ctx) = match &options {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {

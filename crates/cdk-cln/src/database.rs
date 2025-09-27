@@ -132,7 +132,7 @@ impl Database {
         tx.kv_write(
             PRIMARY_NAMESPACE,
             INCOMING_BOLT12_PAYMENTS_NAMESPACE,
-            &local_offer_id,
+            local_offer_id,
             &quote_id.to_bytes(),
         )
         .await
@@ -204,7 +204,7 @@ impl Database {
             .kv_read(
                 PRIMARY_NAMESPACE,
                 INCOMING_BOLT12_PAYMENTS_NAMESPACE,
-                &local_offer_id,
+                local_offer_id,
             )
             .await
             .map_err(|e| Error::Database(e.to_string()))?
