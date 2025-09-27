@@ -636,10 +636,15 @@ impl Mint {
 
         let inputs_fee = self.get_proofs_fee(melt_request.inputs()).await?;
 
-        tx.add_melt_request_and_blinded_messages(
+        tx.add_melt_request(
             melt_request.quote_id(),
             melt_request.inputs_amount()?,
             inputs_fee,
+        )
+        .await?;
+
+        tx.add_blinded_messages(
+            Some(melt_request.quote_id()),
             melt_request.outputs().as_ref().unwrap_or(&Vec::new()),
         )
         .await?;
@@ -997,6 +1002,9 @@ impl Mint {
                 change = Some(change_sigs);
 
                 proof_writer.commit();
+
+                tx.delete_melt_request(&quote.id).await?;
+
                 tx.commit().await?;
             } else {
                 tracing::info!(
@@ -1006,11 +1014,13 @@ impl Mint {
                     total_spent
                 );
                 proof_writer.commit();
+                tx.delete_melt_request(&quote.id).await?;
                 tx.commit().await?;
             }
         } else {
             tracing::debug!("No change required for melt {}", quote.id);
             proof_writer.commit();
+            tx.delete_melt_request(&quote.id).await?;
             tx.commit().await?;
         }
 
