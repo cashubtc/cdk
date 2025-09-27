@@ -80,6 +80,10 @@ pub enum Error {
     /// Invalid hex
     #[error("Invalid hex")]
     InvalidHex,
+
+    /// Database error
+    #[error("Database error: {0}")]
+    Database(String),
 }
 
 impl From<Error> for cdk_common::payment::Error {
