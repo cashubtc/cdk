@@ -146,16 +146,7 @@ impl MintPayment for Cln {
         });
 
         tracing::debug!("CLN: Connecting to CLN node...");
-        let cln_client = match cln_rpc::ClnRpc::new(&self.rpc_socket).await {
-            Ok(client) => {
-                tracing::debug!("CLN: Successfully connected to CLN node");
-                client
-            }
-            Err(err) => {
-                tracing::error!("CLN: Failed to connect to CLN node: {}", err);
-                return Err(Error::from(err).into());
-            }
-        };
+        let cln_client = self.cln_client().await?;
 
         tracing::debug!("CLN: Creating stream processing pipeline");
         let database = self.database.clone();
@@ -384,11 +375,7 @@ impl MintPayment for Cln {
                 // Convert to target unit
                 let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
 
-                // Calculate fee
-                let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
-                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-                let fee = max(relative_fee_reserve, absolute_fee_reserve);
+                let fee = self.calculate_fee(amount);
 
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: Some(PaymentIdentifier::QuoteId(quote_id.to_owned())),
@@ -416,11 +403,7 @@ impl MintPayment for Cln {
                 // Convert to target unit
                 let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
 
-                // Calculate fee
-                let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
-                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-                let fee = max(relative_fee_reserve, absolute_fee_reserve);
+                let fee = self.calculate_fee(amount);
 
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: Some(PaymentIdentifier::QuoteId(quote_id.to_owned())),
@@ -840,51 +823,6 @@ impl MintPayment for Cln {
         let mut cln_client = self.cln_client().await?;
 
         let listinvoices_response = match payment_identifier {
-            PaymentIdentifier::Label(label) => {
-                // Query by label
-                cln_client
-                    .call_typed(&ListinvoicesRequest {
-                        payment_hash: None,
-                        label: Some(label.to_string()),
-                        invstring: None,
-                        offer_id: None,
-                        index: None,
-                        limit: None,
-                        start: None,
-                    })
-                    .await
-                    .map_err(Error::from)?
-            }
-            PaymentIdentifier::OfferId(offer_id) => {
-                // Query by offer_id
-                cln_client
-                    .call_typed(&ListinvoicesRequest {
-                        payment_hash: None,
-                        label: None,
-                        invstring: None,
-                        offer_id: Some(offer_id.to_string()),
-                        index: None,
-                        limit: None,
-                        start: None,
-                    })
-                    .await
-                    .map_err(Error::from)?
-            }
-            PaymentIdentifier::PaymentHash(payment_hash) => {
-                // Query by payment_hash
-                cln_client
-                    .call_typed(&ListinvoicesRequest {
-                        payment_hash: Some(hex::encode(payment_hash)),
-                        label: None,
-                        invstring: None,
-                        offer_id: None,
-                        index: None,
-                        limit: None,
-                        start: None,
-                    })
-                    .await
-                    .map_err(Error::from)?
-            }
             PaymentIdentifier::QuoteId(quote_id) => {
                 if let Some(lookup) = self
                     .database
@@ -892,30 +830,20 @@ impl MintPayment for Cln {
                     .await?
                 {
                     match lookup {
-                        IncomingPaymentIdentifier::Bolt11PaymentHash(payment_hash) => cln_client
-                            .call_typed(&ListinvoicesRequest {
-                                payment_hash: Some(hex::encode(payment_hash)),
-                                label: None,
-                                invstring: None,
-                                offer_id: None,
-                                index: None,
-                                limit: None,
-                                start: None,
-                            })
-                            .await
-                            .map_err(Error::from)?,
-                        IncomingPaymentIdentifier::Bolt12OfferId(offer_id) => cln_client
-                            .call_typed(&ListinvoicesRequest {
-                                payment_hash: None,
-                                label: None,
-                                invstring: None,
-                                offer_id: Some(offer_id),
-                                index: None,
-                                limit: None,
-                                start: None,
-                            })
-                            .await
-                            .map_err(Error::from)?,
+                        IncomingPaymentIdentifier::Bolt11PaymentHash(payment_hash) => {
+                            let payment_hash_identifier =
+                                PaymentIdentifier::PaymentHash(payment_hash);
+                            self.query_invoices_by_identifier(
+                                &mut cln_client,
+                                &payment_hash_identifier,
+                            )
+                            .await?
+                        }
+                        IncomingPaymentIdentifier::Bolt12OfferId(offer_id) => {
+                            let offer_id_identifier = PaymentIdentifier::OfferId(offer_id);
+                            self.query_invoices_by_identifier(&mut cln_client, &offer_id_identifier)
+                                .await?
+                        }
                     }
                 } else {
                     tracing::error!("Unsupported payment id for CLN");
@@ -923,8 +851,10 @@ impl MintPayment for Cln {
                 }
             }
             _ => {
-                tracing::error!("Unsupported payment id for CLN");
-                return Err(payment::Error::UnknownPaymentState);
+                // For other identifiers, use the helper method directly
+                self.query_invoices_by_identifier(&mut cln_client, payment_identifier)
+                    .await
+                    .map_err(|e| payment::Error::Custom(e.to_string()))?
             }
         };
 
@@ -1027,6 +957,54 @@ impl MintPayment for Cln {
 impl Cln {
     async fn cln_client(&self) -> Result<ClnRpc, Error> {
         Ok(cln_rpc::ClnRpc::new(&self.rpc_socket).await?)
+    }
+
+    /// Calculate fee based on amount and fee reserve settings
+    fn calculate_fee(&self, amount: Amount) -> Amount {
+        let relative_fee_reserve =
+            (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+        let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
+        max(relative_fee_reserve, absolute_fee_reserve).into()
+    }
+
+    /// Helper to query invoices by different identifiers
+    async fn query_invoices_by_identifier(
+        &self,
+        cln_client: &mut ClnRpc,
+        identifier: &PaymentIdentifier,
+    ) -> Result<cln_rpc::model::responses::ListinvoicesResponse, Error> {
+        let request = match identifier {
+            PaymentIdentifier::Label(label) => ListinvoicesRequest {
+                payment_hash: None,
+                label: Some(label.to_string()),
+                invstring: None,
+                offer_id: None,
+                index: None,
+                limit: None,
+                start: None,
+            },
+            PaymentIdentifier::OfferId(offer_id) => ListinvoicesRequest {
+                payment_hash: None,
+                label: None,
+                invstring: None,
+                offer_id: Some(offer_id.to_string()),
+                index: None,
+                limit: None,
+                start: None,
+            },
+            PaymentIdentifier::PaymentHash(payment_hash) => ListinvoicesRequest {
+                payment_hash: Some(hex::encode(payment_hash)),
+                label: None,
+                invstring: None,
+                offer_id: None,
+                index: None,
+                limit: None,
+                start: None,
+            },
+            _ => return Err(Error::WrongClnResponse),
+        };
+
+        cln_client.call_typed(&request).await.map_err(Error::from)
     }
 
     /// Get last pay index for cln
