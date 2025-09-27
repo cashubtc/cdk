@@ -188,7 +188,7 @@ impl MintPayment for LNbits {
 
     async fn get_payment_quote(
         &self,
-        quote_id: &QuoteId,
+        _quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {

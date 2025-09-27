@@ -440,19 +440,32 @@ impl MintPayment for Cln {
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        tracing::debug!("makk");
         let max_fee_msat: Option<u64>;
         let mut partial_amount: Option<u64> = None;
         let mut amount_msat: Option<u64> = None;
 
+        tracing::info!(
+            quote_id = %quote_id,
+            unit = ?unit,
+            "Starting make_payment for quote"
+        );
+
         let mut cln_client = self.cln_client().await?;
 
         self.check_outgoing_unpaided(&quote_id).await?;
-        println!("checked");
 
         let (invoice, hash) = match &options {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let payment_hash = bolt11_options.bolt11.payment_hash();
+                let invoice_amount = bolt11_options.bolt11.amount_milli_satoshis();
+
+                tracing::info!(
+                    quote_id = %quote_id,
+                    payment_type = "BOLT11",
+                    payment_hash = %hex::encode(payment_hash.to_byte_array()),
+                    invoice_amount_msat = ?invoice_amount,
+                    "Processing BOLT11 payment"
+                );
 
                 // For bolt11 we still check with hash as invoice
                 // the invoice could have been paid with another quote and this should be stopped
@@ -460,18 +473,45 @@ impl MintPayment for Cln {
                     .await?
                     .unpaid()?;
 
-                println!("check has");
-
                 if let Some(melt_options) = bolt11_options.melt_options {
                     match melt_options {
-                        MeltOptions::Mpp { mpp } => partial_amount = Some(mpp.amount.into()),
+                        MeltOptions::Mpp { mpp } => {
+                            partial_amount = Some(mpp.amount.into());
+                            tracing::info!(
+                                quote_id = %quote_id,
+                                payment_type = "BOLT11",
+                                partial_amount_msat = %mpp.amount,
+                                "Payment is partial amount (MPP)"
+                            );
+                        }
                         MeltOptions::Amountless { amountless } => {
                             amount_msat = Some(amountless.amount_msat.into());
+                            tracing::info!(
+                                quote_id = %quote_id,
+                                payment_type = "BOLT11",
+                                amount_msat = %amountless.amount_msat,
+                                "Payment is amountless with specified amount"
+                            );
                         }
                     }
+                } else {
+                    tracing::info!(
+                        quote_id = %quote_id,
+                        payment_type = "BOLT11",
+                        amount_msat = ?invoice_amount,
+                        "Payment using full invoice amount"
+                    );
                 }
 
                 max_fee_msat = bolt11_options.max_fee_amount.map(|a| a.into());
+                if let Some(max_fee) = max_fee_msat {
+                    tracing::info!(
+                        quote_id = %quote_id,
+                        payment_type = "BOLT11",
+                        max_fee_msat = max_fee,
+                        "Maximum fee limit set"
+                    );
+                }
 
                 (
                     bolt11_options.bolt11.to_string(),
@@ -482,18 +522,44 @@ impl MintPayment for Cln {
                 let offer = &bolt12_options.offer;
 
                 let amount_msat: u64 = if let Some(amount) = bolt12_options.melt_options {
-                    amount.amount_msat().into()
+                    let amt = amount.amount_msat().into();
+                    tracing::info!(
+                        quote_id = %quote_id,
+                        payment_type = "BOLT12",
+                        amount_msat = amt,
+                        "Using specified amount for BOLT12 payment"
+                    );
+                    amt
                 } else {
                     // Fall back to offer amount
                     let decode_response = self.decode_string(offer.to_string()).await?;
 
-                    decode_response
+                    let amt = decode_response
                         .offer_amount_msat
                         .ok_or(Error::UnknownInvoiceAmount)?
-                        .msat()
+                        .msat();
+                    tracing::info!(
+                        quote_id = %quote_id,
+                        payment_type = "BOLT12",
+                        amount_msat = amt,
+                        "Using offer amount for BOLT12 payment"
+                    );
+                    amt
                 };
 
+                tracing::info!(
+                    quote_id = %quote_id,
+                    payment_type = "BOLT12",
+                    offer = %offer,
+                    "Processing BOLT12 payment"
+                );
+
                 // Fetch invoice from offer
+                tracing::debug!(
+                    quote_id = %quote_id,
+                    payment_type = "BOLT12",
+                    "Fetching invoice from offer"
+                );
 
                 let cln_response = cln_client
                     .call_typed(&FetchinvoiceRequest {
@@ -510,9 +576,20 @@ impl MintPayment for Cln {
                     })
                     .await
                     .map_err(|err| {
-                        tracing::error!("Could not fetch invoice for offer: {:?}", err);
+                        tracing::error!(
+                            quote_id = %quote_id,
+                            payment_type = "BOLT12",
+                            error = %err,
+                            "Could not fetch invoice for offer"
+                        );
                         Error::ClnRpc(err)
                     })?;
+
+                tracing::info!(
+                    quote_id = %quote_id,
+                    payment_type = "BOLT12",
+                    "Successfully fetched invoice from offer"
+                );
 
                 let decode_response = self.decode_string(cln_response.invoice.clone()).await?;
 
@@ -525,7 +602,22 @@ impl MintPayment for Cln {
                 .try_into()
                 .map_err(|_| Error::InvalidHash)?;
 
+                tracing::info!(
+                    quote_id = %quote_id,
+                    payment_type = "BOLT12",
+                    payment_hash = %hex::encode(payment_hash),
+                    "Generated payment hash for BOLT12 invoice"
+                );
+
                 max_fee_msat = bolt12_options.max_fee_amount.map(|a| a.into());
+                if let Some(max_fee) = max_fee_msat {
+                    tracing::info!(
+                        quote_id = %quote_id,
+                        payment_type = "BOLT12",
+                        max_fee_msat = max_fee,
+                        "Maximum fee limit set"
+                    );
+                }
 
                 (cln_response.invoice, payment_hash)
             }
@@ -538,13 +630,18 @@ impl MintPayment for Cln {
             total_spent: Amount::ZERO,
         };
 
-        println!("{}", quote_id.to_string());
-
         self.database
             .store_quote_payment(quote_id, payment_status)
             .await?;
-        println!("{} pending", quote_id.to_string());
-        println!("{:?} p amount", partial_amount);
+
+        tracing::info!(
+            quote_id = %quote_id,
+            payment_hash = %hex::encode(hash),
+            amount_msat = ?amount_msat,
+            partial_msat = ?partial_amount,
+            max_fee_msat = ?max_fee_msat,
+            "Executing payment via CLN"
+        );
 
         let cln_response = cln_client
             .call_typed(&PayRequest {
@@ -564,8 +661,6 @@ impl MintPayment for Cln {
             })
             .await;
 
-        println!("{:?}", cln_response);
-
         let response = match cln_response {
             Ok(pay_response) => {
                 let status = match pay_response.status {
@@ -574,20 +669,34 @@ impl MintPayment for Cln {
                     PayStatus::FAILED => MeltQuoteState::Failed,
                 };
 
+                let total_spent_msat = pay_response.amount_sent_msat.msat();
+                let has_preimage = !pay_response.payment_preimage.to_vec().is_empty();
+
+                tracing::info!(
+                    quote_id = %quote_id,
+                    payment_hash = %hex::encode(hash),
+                    status = ?status,
+                    cln_status = ?pay_response.status,
+                    total_spent_msat = total_spent_msat,
+                    has_preimage = has_preimage,
+                    "Payment completed via CLN"
+                );
+
                 MakePaymentResponse {
                     payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
                     payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     status,
-                    total_spent: to_unit(
-                        pay_response.amount_sent_msat.msat(),
-                        &CurrencyUnit::Msat,
-                        unit,
-                    )?,
+                    total_spent: to_unit(total_spent_msat, &CurrencyUnit::Msat, unit)?,
                     unit: unit.clone(),
                 }
             }
             Err(err) => {
-                tracing::error!("Could not pay invoice: {}", err);
+                tracing::error!(
+                    quote_id = %quote_id,
+                    payment_hash = %hex::encode(hash),
+                    error = %err,
+                    "Payment failed via CLN"
+                );
                 return Err(Error::ClnRpc(err).into());
             }
         };
@@ -602,6 +711,15 @@ impl MintPayment for Cln {
         self.database
             .store_quote_payment(quote_id, payment_status)
             .await?;
+
+        tracing::info!(
+            quote_id = %quote_id,
+            payment_hash = %hex::encode(hash),
+            final_status = ?response.status,
+            total_spent = %response.total_spent,
+            unit = ?response.unit,
+            "Payment process completed for quote"
+        );
 
         Ok(response)
     }
@@ -958,7 +1076,6 @@ impl Cln {
     #[instrument(skip(self))]
     async fn check_outgoing_unpaided(&self, quote_id: &QuoteId) -> Result<(), payment::Error> {
         let pay_state = self.get_quote_payment_status(quote_id).await?;
-        println!("State: {}", pay_state);
 
         match pay_state {
             MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => Ok(()),

@@ -323,7 +323,7 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn get_payment_quote(
         &self,
-        quote_id: &QuoteId,
+        _quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
@@ -398,7 +398,7 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn make_payment(
         &self,
-        quote_id: &QuoteId,
+        _quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {

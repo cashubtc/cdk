@@ -30,24 +30,49 @@ use cdk_common::{Bolt11Invoice, QuoteId};
 use error::Error;
 use futures::{Stream, StreamExt};
 use lnrpc::fee_limit::Limit;
-use lnrpc::payment::PaymentStatus;
 use lnrpc::{FeeLimit, Hop, MppRecord};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
 mod client;
+/// Database layer for LND backend storage
+mod database;
 pub mod error;
 
 mod proto;
 pub(crate) use proto::{lnrpc, routerrpc};
 
+use crate::database::IncomingPaymentIdentifier;
 use crate::lnrpc::invoice::InvoiceState;
 
-/// LND KV Store constants
-const LND_KV_PRIMARY_NAMESPACE: &str = "cdk_lnd_lightning_backend";
-const LND_KV_SECONDARY_NAMESPACE: &str = "payment_indices";
-const LAST_ADD_INDEX_KV_KEY: &str = "last_add_index";
-const LAST_SETTLE_INDEX_KV_KEY: &str = "last_settle_index";
+/// Payment status response from LND
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LndPaymentStatus {
+    /// Payment status
+    pub status: MeltQuoteState,
+    /// Payment hash
+    pub payment_hash: [u8; 32],
+    /// Payment proof (preimage as hex string)
+    pub payment_proof: Option<String>,
+    /// Total amount spent
+    pub total_spent: Amount,
+}
+
+impl LndPaymentStatus {
+    fn _unpaid(&self) -> Result<(), payment::Error> {
+        match self.status {
+            MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => Ok(()),
+            MeltQuoteState::Paid => {
+                tracing::debug!("Melt attempted on invoice already paid");
+                Err(payment::Error::InvoiceAlreadyPaid)
+            }
+            MeltQuoteState::Pending => {
+                tracing::debug!("Melt attempted on invoice already pending");
+                Err(payment::Error::InvoicePaymentPending)
+            }
+        }
+    }
+}
 
 /// Lnd mint backend
 #[derive(Clone)]
@@ -57,7 +82,7 @@ pub struct Lnd {
     _macaroon_file: PathBuf,
     lnd_client: client::Client,
     fee_reserve: FeeReserve,
-    kv_store: DynMintKVStore,
+    database: database::Database,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
     settings: Bolt11Settings,
@@ -107,13 +132,15 @@ impl Lnd {
             })
             .unwrap();
 
+        let database = database::Database::new(kv_store.clone());
+
         Ok(Self {
             _address: address,
             _cert_file: cert_file,
             _macaroon_file: macaroon_file,
             lnd_client,
             fee_reserve,
-            kv_store,
+            database,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             settings: Bolt11Settings {
@@ -128,51 +155,8 @@ impl Lnd {
 
     /// Get last add and settle indices from KV store
     #[instrument(skip_all)]
-    async fn get_last_indices(&self) -> Result<(Option<u64>, Option<u64>), Error> {
-        let add_index = if let Some(stored_index) = self
-            .kv_store
-            .kv_read(
-                LND_KV_PRIMARY_NAMESPACE,
-                LND_KV_SECONDARY_NAMESPACE,
-                LAST_ADD_INDEX_KV_KEY,
-            )
-            .await
-            .map_err(|e| Error::Database(e.to_string()))?
-        {
-            if let Ok(index_str) = std::str::from_utf8(stored_index.as_slice()) {
-                index_str.parse::<u64>().ok()
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let settle_index = if let Some(stored_index) = self
-            .kv_store
-            .kv_read(
-                LND_KV_PRIMARY_NAMESPACE,
-                LND_KV_SECONDARY_NAMESPACE,
-                LAST_SETTLE_INDEX_KV_KEY,
-            )
-            .await
-            .map_err(|e| Error::Database(e.to_string()))?
-        {
-            if let Ok(index_str) = std::str::from_utf8(stored_index.as_slice()) {
-                index_str.parse::<u64>().ok()
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        tracing::debug!(
-            "LND: Retrieved last indices from KV store - add_index: {:?}, settle_index: {:?}",
-            add_index,
-            settle_index
-        );
-        Ok((add_index, settle_index))
+    async fn get_last_indices(&self) -> Result<database::InvoiceIndices, Error> {
+        self.database.get_last_indices().await
     }
 }
 
@@ -202,12 +186,11 @@ impl MintPayment for Lnd {
         let mut lnd_client = self.lnd_client.clone();
 
         // Get last indices from KV store
-        let (last_add_index, last_settle_index) =
-            self.get_last_indices().await.unwrap_or((None, None));
+        let last_indices = self.get_last_indices().await.unwrap_or_default();
 
         let stream_req = lnrpc::InvoiceSubscription {
-            add_index: last_add_index.unwrap_or(0),
-            settle_index: last_settle_index.unwrap_or(0),
+            add_index: last_indices.add_index_or_default(),
+            settle_index: last_indices.settle_index_or_default(),
         };
 
         tracing::debug!(
@@ -227,22 +210,22 @@ impl MintPayment for Lnd {
             .into_inner();
 
         let cancel_token = self.wait_invoice_cancel_token.clone();
-        let kv_store = self.kv_store.clone();
+        let database = self.database.clone();
 
         let event_stream = futures::stream::unfold(
             (
                 stream,
                 cancel_token,
                 Arc::clone(&self.wait_invoice_is_active),
-                kv_store,
-                last_add_index.unwrap_or(0),
-                last_settle_index.unwrap_or(0),
+                database,
+                last_indices.add_index_or_default(),
+                last_indices.settle_index_or_default(),
             ),
             |(
                 mut stream,
                 cancel_token,
                 is_active,
-                kv_store,
+                database,
                 mut current_add_index,
                 mut current_settle_index,
             )| async move {
@@ -263,32 +246,9 @@ impl MintPayment for Lnd {
                                     current_add_index = current_add_index.max(msg.add_index);
                                     current_settle_index = current_settle_index.max(msg.settle_index);
 
-                                    // Store the updated indices in KV store regardless of settlement status
-                                    let add_index_str = current_add_index.to_string();
-                                    let settle_index_str = current_settle_index.to_string();
-
-                                    if let Ok(mut tx) = kv_store.begin_transaction().await {
-                                        let mut has_error = false;
-
-                                        if let Err(e) = tx.kv_write(LND_KV_PRIMARY_NAMESPACE, LND_KV_SECONDARY_NAMESPACE, LAST_ADD_INDEX_KV_KEY, add_index_str.as_bytes()).await {
-                                            tracing::warn!("LND: Failed to write add_index {} to KV store: {}", current_add_index, e);
-                                            has_error = true;
-                                        }
-
-                                        if let Err(e) = tx.kv_write(LND_KV_PRIMARY_NAMESPACE, LND_KV_SECONDARY_NAMESPACE, LAST_SETTLE_INDEX_KV_KEY, settle_index_str.as_bytes()).await {
-                                            tracing::warn!("LND: Failed to write settle_index {} to KV store: {}", current_settle_index, e);
-                                            has_error = true;
-                                        }
-
-                                        if !has_error {
-                                            if let Err(e) = tx.commit().await {
-                                                tracing::warn!("LND: Failed to commit indices to KV store: {}", e);
-                                            } else {
-                                                tracing::debug!("LND: Stored updated indices - add_index: {}, settle_index: {}", current_add_index, current_settle_index);
-                                            }
-                                        }
-                                    } else {
-                                        tracing::warn!("LND: Failed to begin KV transaction for storing indices");
+                                    // Store the updated indices using database regardless of settlement status
+                                    if let Err(e) = database.store_indices(current_add_index, current_settle_index).await {
+                                        tracing::warn!("LND: Failed to store indices to database: {}", e);
                                     }
 
                                     // Only emit event for settled invoices
@@ -300,14 +260,26 @@ impl MintPayment for Lnd {
 
                                             tracing::info!("LND: Payment for {} with amount {} msat", hash,  msg.amt_paid_msat);
 
+                                            let payment_identifier = match database.get_quote_id_by_payment_hash(&hash_slice).await {
+                                                Ok(Some(quote_id)) => {
+
+                                                PaymentIdentifier::QuoteId(quote_id)
+                                                }
+                                                _=> {
+                                            tracing::debug!("LND: No quote found for incoming payment falling back to payment hash");
+                                                PaymentIdentifier::PaymentHash(hash_slice)
+
+                                                }
+                                            };
+
                                             let wait_response = WaitPaymentResponse {
-                                                payment_identifier: PaymentIdentifier::PaymentHash(hash_slice),
+                                                payment_identifier,
                                                 payment_amount: Amount::from(msg.amt_paid_msat as u64),
                                                 unit: CurrencyUnit::Msat,
                                                 payment_id: hash,
                                             };
                                             let event = Event::PaymentReceived(wait_response);
-                                            return Some((event, (stream, cancel_token, is_active, kv_store, current_add_index, current_settle_index)));
+                                            return Some((event, (stream, cancel_token, is_active, database, current_add_index, current_settle_index)));
                                         } else {
                                             // Invalid hash, skip this message but continue streaming
                                             tracing::error!("LND returned invalid payment hash");
@@ -345,7 +317,7 @@ impl MintPayment for Lnd {
     #[instrument(skip_all)]
     async fn get_payment_quote(
         &self,
-        _quote_id: &QuoteId,
+        quote_id: &QuoteId,
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
@@ -370,9 +342,7 @@ impl MintPayment for Lnd {
                 let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
                 Ok(PaymentQuoteResponse {
-                    request_lookup_id: Some(PaymentIdentifier::PaymentHash(
-                        *bolt11_options.bolt11.payment_hash().as_ref(),
-                    )),
+                    request_lookup_id: Some(PaymentIdentifier::QuoteId(quote_id.clone())),
                     amount,
                     fee: fee.into(),
                     state: MeltQuoteState::Unpaid,
@@ -392,9 +362,28 @@ impl MintPayment for Lnd {
         _unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        match options {
+        tracing::info!(
+            quote_id = %quote_id,
+            unit = ?_unit,
+            "Starting make_payment for quote"
+        );
+
+        let payment_hash: [u8; 32];
+
+        let response = match options {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let bolt11 = bolt11_options.bolt11;
+                let invoice_amount = bolt11.amount_milli_satoshis();
+
+                payment_hash = bolt11.payment_hash().to_byte_array();
+
+                tracing::info!(
+                    quote_id = %quote_id,
+                    payment_type = "BOLT11",
+                    payment_hash = %hex::encode(payment_hash),
+                    invoice_amount_msat = ?invoice_amount,
+                    "Processing BOLT11 payment"
+                );
 
                 let pay_state = self
                     .check_outgoing_payment(&PaymentIdentifier::PaymentHash(
@@ -414,110 +403,156 @@ impl MintPayment for Lnd {
                     }
                 }
 
+                let payment_status = LndPaymentStatus {
+                    status: MeltQuoteState::Pending,
+                    payment_hash,
+                    payment_proof: None,
+                    total_spent: Amount::ZERO,
+                };
+
+                self.database
+                    .store_quote_payment(quote_id, payment_status)
+                    .await?;
+
                 // Detect partial payments
-                match bolt11_options.melt_options {
+                let response = match bolt11_options.melt_options {
                     Some(MeltOptions::Mpp { mpp }) => {
                         let amount_msat: u64 = bolt11
                             .amount_milli_satoshis()
                             .ok_or(Error::UnknownInvoiceAmount)?;
-                        {
-                            let partial_amount_msat = mpp.amount;
-                            let invoice = bolt11;
-                            let max_fee: Option<Amount> = bolt11_options.max_fee_amount;
+                        let partial_amount_msat = mpp.amount;
+                        let invoice = bolt11;
+                        let max_fee: Option<Amount> = bolt11_options.max_fee_amount;
 
-                            // Extract information from invoice
-                            let pub_key = invoice.get_payee_pub_key();
-                            let payer_addr = invoice.payment_secret().0.to_vec();
-                            let payment_hash = invoice.payment_hash();
+                        tracing::info!(
+                            quote_id = %quote_id,
+                            payment_type = "BOLT11",
+                            payment_mode = "MPP",
+                            total_amount_msat = amount_msat,
+                            partial_amount_msat = %partial_amount_msat,
+                            max_fee = ?max_fee,
+                            "Processing Multi-Part Payment (MPP)"
+                        );
 
-                            let mut lnd_client = self.lnd_client.clone();
+                        // Extract information from invoice
+                        let pub_key = invoice.get_payee_pub_key();
+                        let payer_addr = invoice.payment_secret().0.to_vec();
 
-                            for attempt in 0..Self::MAX_ROUTE_RETRIES {
-                                // Create a request for the routes
-                                let route_req = lnrpc::QueryRoutesRequest {
-                                    pub_key: hex::encode(pub_key.serialize()),
-                                    amt_msat: u64::from(partial_amount_msat) as i64,
-                                    fee_limit: max_fee.map(|f| {
-                                        let limit = Limit::Fixed(u64::from(f) as i64);
-                                        FeeLimit { limit: Some(limit) }
-                                    }),
-                                    use_mission_control: true,
+                        let mut lnd_client = self.lnd_client.clone();
+
+                        let mut mpp_response = None;
+
+                        tracing::info!(
+                            quote_id = %quote_id,
+                            payment_hash = %hex::encode(payment_hash),
+                            max_retries = Self::MAX_ROUTE_RETRIES,
+                            "Starting MPP payment attempts"
+                        );
+
+                        for attempt in 0..Self::MAX_ROUTE_RETRIES {
+                            // Create a request for the routes
+                            let route_req = lnrpc::QueryRoutesRequest {
+                                pub_key: hex::encode(pub_key.serialize()),
+                                amt_msat: u64::from(partial_amount_msat) as i64,
+                                fee_limit: max_fee.map(|f| {
+                                    let limit = Limit::Fixed(u64::from(f) as i64);
+                                    FeeLimit { limit: Some(limit) }
+                                }),
+                                use_mission_control: true,
+                                ..Default::default()
+                            };
+
+                            // Query the routes
+                            let mut routes_response = lnd_client
+                                .lightning()
+                                .query_routes(route_req)
+                                .await
+                                .map_err(Error::LndError)?
+                                .into_inner();
+
+                            // update its MPP record,
+                            // attempt it and check the result
+                            let last_hop: &mut Hop = routes_response.routes[0]
+                                .hops
+                                .last_mut()
+                                .ok_or(Error::MissingLastHop)?;
+                            let mpp_record = MppRecord {
+                                payment_addr: payer_addr.clone(),
+                                total_amt_msat: amount_msat as i64,
+                            };
+                            last_hop.mpp_record = Some(mpp_record);
+
+                            let payment_response = lnd_client
+                                .router()
+                                .send_to_route_v2(routerrpc::SendToRouteRequest {
+                                    payment_hash: payment_hash.to_vec(),
+                                    route: Some(routes_response.routes[0].clone()),
                                     ..Default::default()
-                                };
+                                })
+                                .await
+                                .map_err(Error::LndError)?
+                                .into_inner();
 
-                                // Query the routes
-                                let mut routes_response = lnd_client
-                                    .lightning()
-                                    .query_routes(route_req)
-                                    .await
-                                    .map_err(Error::LndError)?
-                                    .into_inner();
-
-                                // update its MPP record,
-                                // attempt it and check the result
-                                let last_hop: &mut Hop = routes_response.routes[0]
-                                    .hops
-                                    .last_mut()
-                                    .ok_or(Error::MissingLastHop)?;
-                                let mpp_record = MppRecord {
-                                    payment_addr: payer_addr.clone(),
-                                    total_amt_msat: amount_msat as i64,
-                                };
-                                last_hop.mpp_record = Some(mpp_record);
-
-                                let payment_response = lnd_client
-                                    .router()
-                                    .send_to_route_v2(routerrpc::SendToRouteRequest {
-                                        payment_hash: payment_hash.to_byte_array().to_vec(),
-                                        route: Some(routes_response.routes[0].clone()),
-                                        ..Default::default()
-                                    })
-                                    .await
-                                    .map_err(Error::LndError)?
-                                    .into_inner();
-
-                                if let Some(failure) = payment_response.failure {
-                                    if failure.code == 15 {
-                                        tracing::debug!(
-                                            "Attempt number {}: route has failed. Re-querying...",
-                                            attempt + 1
-                                        );
-                                        continue;
-                                    }
+                            if let Some(failure) = payment_response.failure {
+                                if failure.code == 15 {
+                                    tracing::debug!(
+                                        "Attempt number {}: route has failed. Re-querying...",
+                                        attempt + 1
+                                    );
+                                    continue;
                                 }
-
-                                // Get status and maybe the preimage
-                                let (status, payment_preimage) = match payment_response.status {
-                                    0 => (MeltQuoteState::Pending, None),
-                                    1 => (
-                                        MeltQuoteState::Paid,
-                                        Some(hex::encode(payment_response.preimage)),
-                                    ),
-                                    2 => (MeltQuoteState::Unpaid, None),
-                                    _ => (MeltQuoteState::Unknown, None),
-                                };
-
-                                // Get the actual amount paid in sats
-                                let mut total_amt: u64 = 0;
-                                if let Some(route) = payment_response.route {
-                                    total_amt = (route.total_amt_msat / 1000) as u64;
-                                }
-
-                                return Ok(MakePaymentResponse {
-                                    payment_lookup_id: PaymentIdentifier::PaymentHash(
-                                        payment_hash.to_byte_array(),
-                                    ),
-                                    payment_proof: payment_preimage,
-                                    status,
-                                    total_spent: total_amt.into(),
-                                    unit: CurrencyUnit::Sat,
-                                });
                             }
 
-                            // "We have exhausted all tactical options" -- STEM, Upgrade (2018)
-                            // The payment was not possible within 50 retries.
-                            tracing::error!("Limit of retries reached, payment couldn't succeed.");
-                            Err(Error::PaymentFailed.into())
+                            // Get status and maybe the preimage
+                            let (status, payment_preimage) = match payment_response.status {
+                                0 => (MeltQuoteState::Pending, None),
+                                1 => (
+                                    MeltQuoteState::Paid,
+                                    Some(hex::encode(payment_response.preimage)),
+                                ),
+                                2 => (MeltQuoteState::Unpaid, None),
+                                _ => (MeltQuoteState::Unknown, None),
+                            };
+
+                            // Get the actual amount paid in sats
+                            let mut total_amt: u64 = 0;
+                            if let Some(route) = payment_response.route {
+                                total_amt = (route.total_amt_msat / 1000) as u64;
+                            }
+
+                            tracing::info!(
+                                quote_id = %quote_id,
+                                payment_type = "BOLT11",
+                                payment_mode = "MPP",
+                                attempt = attempt + 1,
+                                lnd_status = payment_response.status,
+                                status = ?status,
+                                total_amt_sat = total_amt,
+                                has_preimage = payment_preimage.is_some(),
+                                "MPP payment attempt completed"
+                            );
+
+                            mpp_response = Some(MakePaymentResponse {
+                                payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
+                                payment_proof: payment_preimage,
+                                status,
+                                total_spent: total_amt.into(),
+                                unit: CurrencyUnit::Sat,
+                            });
+
+                            break;
+                        }
+
+                        match mpp_response {
+                            Some(res) => res,
+                            None => {
+                                // "We have exhausted all tactical options" -- STEM, Upgrade (2018)
+                                // The payment was not possible within 50 retries.
+                                tracing::error!(
+                                    "Limit of retries reached, payment couldn't succeed."
+                                );
+                                return Err(Error::PaymentFailed.into());
+                            }
                         }
                     }
                     _ => {
@@ -532,6 +567,28 @@ impl MintPayment for Lnd {
                                 .unwrap_or_default(),
                         );
 
+                        let payment_mode = if amount_msat > 0 {
+                            if bolt11_options.melt_options.is_some() {
+                                match bolt11_options.melt_options.unwrap() {
+                                    MeltOptions::Amountless { .. } => "amountless",
+                                    _ => "standard",
+                                }
+                            } else {
+                                "standard"
+                            }
+                        } else {
+                            "full_invoice"
+                        };
+
+                        tracing::info!(
+                            quote_id = %quote_id,
+                            payment_type = "BOLT11",
+                            payment_mode = payment_mode,
+                            amount_msat = amount_msat,
+                            max_fee = ?max_fee,
+                            "Processing standard BOLT11 payment"
+                        );
+
                         let pay_req = lnrpc::SendRequest {
                             payment_request: bolt11.to_string(),
                             fee_limit: max_fee.map(|f| {
@@ -542,12 +599,23 @@ impl MintPayment for Lnd {
                             ..Default::default()
                         };
 
+                        tracing::info!(
+                            quote_id = %quote_id,
+                            payment_hash = %hex::encode(bolt11.payment_hash().to_byte_array()),
+                            "Executing payment via LND"
+                        );
+
                         let payment_response = lnd_client
                             .lightning()
                             .send_payment_sync(tonic::Request::new(pay_req))
                             .await
                             .map_err(|err| {
-                                tracing::warn!("Lightning payment failed: {}", err);
+                                tracing::error!(
+                                    quote_id = %quote_id,
+                                    payment_hash = %hex::encode(bolt11.payment_hash().to_byte_array()),
+                                    error = %err,
+                                    "Lightning payment failed"
+                                );
                                 Error::PaymentFailed
                             })?
                             .into_inner();
@@ -565,23 +633,59 @@ impl MintPayment for Lnd {
                             ),
                         };
 
-                        let payment_identifier =
-                            PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref());
+                        tracing::info!(
+                            quote_id = %quote_id,
+                            payment_type = "BOLT11",
+                            payment_mode = payment_mode,
+                            status = ?status,
+                            total_amount_sat = total_amount,
+                            has_preimage = payment_preimage.is_some(),
+                            "Payment completed via LND"
+                        );
 
-                        Ok(MakePaymentResponse {
-                            payment_lookup_id: payment_identifier,
+                        MakePaymentResponse {
+                            payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                             payment_proof: payment_preimage,
                             status,
                             total_spent: total_amount.into(),
                             unit: CurrencyUnit::Sat,
-                        })
+                        }
                     }
-                }
+                };
+
+                response
             }
             OutgoingPaymentOptions::Bolt12(_) => {
-                Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
+                tracing::error!(
+                    quote_id = %quote_id,
+                    payment_type = "BOLT12",
+                    "BOLT12 payments not supported by LND backend"
+                );
+                return Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")));
             }
-        }
+        };
+
+        let payment_status = LndPaymentStatus {
+            status: response.status,
+            payment_hash,
+            payment_proof: response.payment_proof.clone(),
+            total_spent: response.total_spent,
+        };
+
+        self.database
+            .store_quote_payment(quote_id, payment_status)
+            .await?;
+
+        tracing::info!(
+            quote_id = %quote_id,
+            payment_hash = %hex::encode(payment_hash),
+            final_status = ?response.status,
+            total_spent = %response.total_spent,
+            unit = ?response.unit,
+            "Payment process completed for quote"
+        );
+
+        Ok(response)
     }
 
     #[instrument(skip(self, options))]
@@ -616,11 +720,15 @@ impl MintPayment for Lnd {
 
                 let bolt11 = Bolt11Invoice::from_str(&invoice.payment_request)?;
 
+                let payment_hash = bolt11.payment_hash();
+
+                self.database
+                    .store_bolt11_request(&payment_hash.to_byte_array(), quote_id)
+                    .await?;
+
                 // For LND, we return the quote ID directly for consistency
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: PaymentIdentifier::PaymentHash(
-                        bolt11.payment_hash().to_byte_array(),
-                    ),
+                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: bolt11.to_string(),
                     expiry: unix_expiry,
                 })
@@ -638,8 +746,24 @@ impl MintPayment for Lnd {
     ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
         let mut lnd_client = self.lnd_client.clone();
 
+        let hash = match payment_identifier {
+            PaymentIdentifier::PaymentHash(hash) => *hash,
+            PaymentIdentifier::QuoteId(quote_id) => {
+                let hash = self
+                    .database
+                    .get_incoming_payment_identifier_by_quote_id(quote_id)
+                    .await?
+                    .unwrap();
+
+                match hash {
+                    IncomingPaymentIdentifier::Bolt11PaymentHash(hash) => hash,
+                }
+            }
+            _ => return Err(Error::UnknownPaymentStatus.into()),
+        };
+
         let invoice_request = lnrpc::PaymentHash {
-            r_hash: hex::decode(payment_identifier.to_string()).unwrap(),
+            r_hash: hash.to_vec(),
             ..Default::default()
         };
 
@@ -702,18 +826,19 @@ impl MintPayment for Lnd {
                     let status = update.status();
 
                     let response = match status {
-                        PaymentStatus::Unknown => MakePaymentResponse {
+                        lnrpc::payment::PaymentStatus::Unknown => MakePaymentResponse {
                             payment_lookup_id: payment_identifier.clone(),
                             payment_proof: Some(update.payment_preimage),
                             status: MeltQuoteState::Unknown,
                             total_spent: Amount::ZERO,
                             unit: self.settings.unit.clone(),
                         },
-                        PaymentStatus::InFlight | PaymentStatus::Initiated => {
+                        lnrpc::payment::PaymentStatus::InFlight
+                        | lnrpc::payment::PaymentStatus::Initiated => {
                             // Continue waiting for the next update
                             continue;
                         }
-                        PaymentStatus::Succeeded => MakePaymentResponse {
+                        lnrpc::payment::PaymentStatus::Succeeded => MakePaymentResponse {
                             payment_lookup_id: payment_identifier.clone(),
                             payment_proof: Some(update.payment_preimage),
                             status: MeltQuoteState::Paid,
@@ -726,7 +851,7 @@ impl MintPayment for Lnd {
                             ),
                             unit: CurrencyUnit::Sat,
                         },
-                        PaymentStatus::Failed => MakePaymentResponse {
+                        lnrpc::payment::PaymentStatus::Failed => MakePaymentResponse {
                             payment_lookup_id: payment_identifier.clone(),
                             payment_proof: Some(update.payment_preimage),
                             status: MeltQuoteState::Failed,
