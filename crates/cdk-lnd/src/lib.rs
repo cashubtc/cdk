@@ -753,7 +753,7 @@ impl MintPayment for Lnd {
                     .database
                     .get_incoming_payment_identifier_by_quote_id(quote_id)
                     .await?
-                    .unwrap();
+                    .ok_or(Error::UnknownPaymentStatus)?;
 
                 match hash {
                     IncomingPaymentIdentifier::Bolt11PaymentHash(hash) => hash,
