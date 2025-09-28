@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cdk_common::amount::{to_unit, Amount, MSAT_IN_SAT};
+use cdk_common::amount::{to_unit, Amount};
 use cdk_common::common::FeeReserve;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
@@ -191,10 +191,6 @@ impl MintPayment for LNbits {
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
-        if unit != &CurrencyUnit::Sat {
-            return Err(Self::Err::Anyhow(anyhow!("Unsupported unit")));
-        }
-
         match options {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let amount_msat = match bolt11_options.melt_options {
@@ -211,10 +207,8 @@ impl MintPayment for LNbits {
                         .into(),
                 };
 
-                let amount = amount_msat / MSAT_IN_SAT.into();
-
                 let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+                    (self.fee_reserve.percent_fee_reserve * u64::from(amount_msat) as f32) as u64;
 
                 let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
 
@@ -224,7 +218,7 @@ impl MintPayment for LNbits {
                     request_lookup_id: Some(PaymentIdentifier::PaymentHash(
                         *bolt11_options.bolt11.payment_hash().as_ref(),
                     )),
-                    amount,
+                    amount: to_unit(amount_msat, &CurrencyUnit::Msat, unit)?,
                     fee: fee.into(),
                     state: MeltQuoteState::Unpaid,
                     unit: unit.clone(),
@@ -302,10 +296,6 @@ impl MintPayment for LNbits {
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        if unit != &CurrencyUnit::Sat {
-            return Err(Self::Err::Anyhow(anyhow!("Unsupported unit")));
-        }
-
         match options {
             IncomingPaymentOptions::Bolt11(bolt11_options) => {
                 let description = bolt11_options.description.unwrap_or_default();
