@@ -72,9 +72,8 @@ message CreatePaymentRequest {
 }
 
 message CreatePaymentResponse {
-  PaymentIdentifier request_identifier = 1;
-  string request = 2;
-  optional uint64 expiry = 3;
+  string request = 1;
+  optional uint64 expiry = 2;
 }
 
 message Mpp {

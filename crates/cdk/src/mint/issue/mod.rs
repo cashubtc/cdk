@@ -1,7 +1,7 @@
 use cdk_common::mint::MintQuote;
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
-    IncomingPaymentOptions, PaymentIdentifier, WaitPaymentResponse,
+    IncomingPaymentOptions, WaitPaymentResponse,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
@@ -292,18 +292,12 @@ impl Mint {
                     Error::InvalidPaymentRequest
                 })?;
 
-            debug_assert!(matches!(
-                create_invoice_response.request_lookup_id,
-                PaymentIdentifier::QuoteId(_)
-            ));
-
             let quote = MintQuote::new(
-                Some(quote_id),
+                quote_id,
                 create_invoice_response.request.to_string(),
                 unit.clone(),
                 amount,
                 create_invoice_response.expiry.unwrap_or(0),
-                create_invoice_response.request_lookup_id.clone(),
                 pubkey,
                 Amount::ZERO,
                 Amount::ZERO,
@@ -314,12 +308,11 @@ impl Mint {
             );
 
             tracing::debug!(
-                "New {} mint quote {} for {:?} {} with request id {:?}",
+                "New {} mint quote {} for {:?} {}",
                 payment_method,
                 quote.id,
                 amount,
                 unit,
-                create_invoice_response.request_lookup_id.to_string(),
             );
 
             let mut tx = self.localstore.begin_transaction().await?;

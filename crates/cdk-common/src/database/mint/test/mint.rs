@@ -9,7 +9,6 @@ use crate::database::mint::test::unique_string;
 use crate::database::mint::{Database, Error, KeysDatabase};
 use crate::database::MintSignaturesDatabase;
 use crate::mint::{MeltPaymentRequest, MeltQuote, MintQuote};
-use crate::payment::PaymentIdentifier;
 
 /// Add a mint quote
 pub async fn add_mint_quote<DB>(db: DB)
@@ -17,12 +16,11 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let mint_quote = MintQuote::new(
-        None,
+        QuoteId::new(),
         "".to_owned(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
-        PaymentIdentifier::CustomId(unique_string()),
         None,
         0.into(),
         0.into(),
@@ -43,12 +41,11 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let mint_quote = MintQuote::new(
-        None,
+        QuoteId::new(),
         "".to_owned(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
-        PaymentIdentifier::CustomId(unique_string()),
         None,
         0.into(),
         0.into(),
@@ -72,12 +69,11 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let mint_quote = MintQuote::new(
-        None,
+        QuoteId::new(),
         "".to_owned(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
-        PaymentIdentifier::CustomId(unique_string()),
         None,
         0.into(),
         0.into(),
@@ -131,12 +127,11 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let mint_quote = MintQuote::new(
-        None,
+        QuoteId::new(),
         "".to_owned(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
-        PaymentIdentifier::CustomId(unique_string()),
         None,
         0.into(),
         0.into(),
@@ -195,12 +190,11 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let mint_quote = MintQuote::new(
-        None,
+        QuoteId::new(),
         "".to_owned(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
-        PaymentIdentifier::CustomId(unique_string()),
         None,
         0.into(),
         0.into(),
@@ -242,12 +236,11 @@ where
     let p1 = unique_string();
 
     let mint_quote = MintQuote::new(
-        None,
+        QuoteId::new(),
         "".to_owned(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
-        PaymentIdentifier::CustomId(unique_string()),
         None,
         0.into(),
         0.into(),
@@ -287,12 +280,11 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let mint_quote = MintQuote::new(
-        None,
+        QuoteId::new(),
         "".to_owned(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
-        PaymentIdentifier::CustomId(unique_string()),
         None,
         0.into(),
         0.into(),
@@ -316,12 +308,11 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let mint_quote = MintQuote::new(
-        None,
+        QuoteId::new(),
         "".to_owned(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
-        PaymentIdentifier::CustomId(unique_string()),
         None,
         0.into(),
         0.into(),
@@ -348,12 +339,11 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let mint_quote = MintQuote::new(
-        None,
+        QuoteId::new(),
         "".to_owned(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
-        PaymentIdentifier::CustomId(unique_string()),
         None,
         0.into(),
         0.into(),
@@ -381,12 +371,11 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let mint_quote = MintQuote::new(
-        None,
+        QuoteId::new(),
         "".to_owned(),
         cashu::CurrencyUnit::Sat,
         None,
         0,
-        PaymentIdentifier::CustomId(unique_string()),
         None,
         0.into(),
         0.into(),

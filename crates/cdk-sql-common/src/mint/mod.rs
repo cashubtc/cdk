@@ -2203,14 +2203,12 @@ fn sql_row_to_mint_quote(
     let amount_issued: u64 = column_as_number!(amount_issued);
     let payment_method = column_as_string!(payment_method, PaymentMethod::from_str);
 
-    Ok(MintQuote::new(
-        Some(QuoteId::from_str(&id)?),
+    Ok(MintQuote::new_with_lookup_id(
+        QuoteId::from_str(&id)?,
         request_str,
         column_as_string!(unit, CurrencyUnit::from_str),
         amount.map(Amount::from),
         column_as_number!(expiry),
-        PaymentIdentifier::new(&request_lookup_id_kind, &request_lookup_id)
-            .map_err(|_| ConversionError::MissingParameter("Payment id".to_string()))?,
         pubkey,
         amount_paid.into(),
         amount_issued.into(),
@@ -2218,6 +2216,8 @@ fn sql_row_to_mint_quote(
         column_as_number!(created_time),
         payments,
         issueances,
+        PaymentIdentifier::new(&request_lookup_id_kind, &request_lookup_id)
+            .map_err(|_| ConversionError::MissingParameter("Payment id".to_string()))?,
     ))
 }
 

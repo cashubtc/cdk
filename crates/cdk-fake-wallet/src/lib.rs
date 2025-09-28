@@ -928,11 +928,7 @@ impl MintPayment for FakeWallet {
             }
         }
 
-        Ok(CreateIncomingPaymentResponse {
-            request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
-            request,
-            expiry,
-        })
+        Ok(CreateIncomingPaymentResponse { request, expiry })
     }
 
     #[instrument(skip_all)]

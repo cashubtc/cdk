@@ -653,7 +653,6 @@ impl MintPayment for CdkLdkNode {
                     .map_err(|e| payment::Error::Custom(e.to_string()))?;
 
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: payment.to_string(),
                     expiry: Some(unix_time() + time),
                 })
@@ -694,7 +693,6 @@ impl MintPayment for CdkLdkNode {
                     .map_err(|e| payment::Error::Custom(e.to_string()))?;
 
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: offer.to_string(),
                     expiry: time.map(|a| a as u64),
                 })

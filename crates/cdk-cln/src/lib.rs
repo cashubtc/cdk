@@ -647,7 +647,6 @@ impl MintPayment for Cln {
                     .await?;
 
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: request.to_string(),
                     expiry,
                 })
@@ -700,7 +699,6 @@ impl MintPayment for Cln {
                     .await?;
 
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: offer_response.bolt12,
                     expiry: unix_expiry,
                 })

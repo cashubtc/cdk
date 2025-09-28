@@ -370,8 +370,6 @@ pub struct WaitPaymentResponse {
 /// Create incoming payment response
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateIncomingPaymentResponse {
-    /// Id that is used to look up the payment from the ln backend
-    pub request_lookup_id: PaymentIdentifier,
     /// Payment request
     pub request: String,
     /// Unix Expiry of Invoice

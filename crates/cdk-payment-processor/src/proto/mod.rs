@@ -91,10 +91,10 @@ impl TryFrom<MakePaymentResponse> for CdkMakePaymentResponse {
         let status = value.status().as_str_name().parse()?;
         let payment_proof = value.payment_proof;
         let total_spent = value.total_spent.into();
-        let unit = CurrencyUnit::from_str(&value.unit)?;
         let payment_identifier = value
             .payment_identifier
             .ok_or(crate::error::Error::InvalidPaymentIdentifier)?;
+        let unit = CurrencyUnit::from_str(&value.unit)?;
         Ok(Self {
             payment_lookup_id: payment_identifier.try_into()?,
             payment_proof,
@@ -120,7 +120,6 @@ impl From<CdkMakePaymentResponse> for MakePaymentResponse {
 impl From<CreateIncomingPaymentResponse> for CreatePaymentResponse {
     fn from(value: CreateIncomingPaymentResponse) -> Self {
         Self {
-            request_identifier: Some(value.request_lookup_id.into()),
             request: value.request,
             expiry: value.expiry,
         }
@@ -131,11 +130,7 @@ impl TryFrom<CreatePaymentResponse> for CreateIncomingPaymentResponse {
     type Error = crate::error::Error;
 
     fn try_from(value: CreatePaymentResponse) -> Result<Self, Self::Error> {
-        let request_identifier = value
-            .request_identifier
-            .ok_or(crate::error::Error::InvalidPaymentIdentifier)?;
         Ok(Self {
-            request_lookup_id: request_identifier.try_into()?,
             request: value.request,
             expiry: value.expiry,
         })

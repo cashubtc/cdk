@@ -699,7 +699,6 @@ impl MintPayment for Lnd {
 
                 // For LND, we return the quote ID directly for consistency
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: bolt11.to_string(),
                     expiry: unix_expiry,
                 })

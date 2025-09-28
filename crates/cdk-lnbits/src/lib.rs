@@ -380,7 +380,6 @@ impl MintPayment for LNbits {
 
                 // For LNbits, we return the quote ID directly for consistency
                 Ok(CreateIncomingPaymentResponse {
-                    request_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                     request: request.to_string(),
                     expiry,
                 })
