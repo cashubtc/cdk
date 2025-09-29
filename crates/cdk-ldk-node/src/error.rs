@@ -41,6 +41,10 @@ pub enum Error {
     #[error("Could not send bolt11 without amount")]
     CouldNotSendBolt11WithoutAmount,
 
+    /// Invalid offer ID length
+    #[error("Invalid offer ID length")]
+    InvalidOfferIdLength,
+
     /// Payment not found
     #[error("Payment not found")]
     PaymentNotFound,

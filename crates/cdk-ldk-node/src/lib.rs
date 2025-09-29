@@ -21,6 +21,7 @@ use ldk_node::bitcoin::hashes::Hash;
 use ldk_node::bitcoin::Network;
 use ldk_node::lightning::ln::channelmanager::PaymentId;
 use ldk_node::lightning::ln::msgs::SocketAddress;
+use ldk_node::lightning::offers::offer::OfferId;
 use ldk_node::lightning_invoice::{Bolt11InvoiceDescription, Description};
 use ldk_node::lightning_types::payment::PaymentHash;
 use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus, SendingParameters};
@@ -510,6 +511,39 @@ impl CdkLdkNode {
         // so we need to filter through all payments
         let payments = self.inner.list_payments_with_filter(|p| {
             matches!(&p.kind, PaymentKind::Bolt11 { hash, .. } | PaymentKind::Bolt12Offer { hash: Some(hash), .. } if hash == payment_hash)
+        });
+
+        let mut results = Vec::new();
+        for payment_details in payments {
+            if payment_details.direction == PaymentDirection::Inbound
+                && payment_details.status == PaymentStatus::Succeeded
+            {
+                if let Some(amount_msat) = payment_details.amount_msat {
+                    let payment_id_str = hex::encode(payment_details.id.0);
+
+                    let response = WaitPaymentResponse {
+                        payment_identifier: payment_identifier.clone(),
+                        payment_amount: amount_msat.into(),
+                        unit: CurrencyUnit::Msat,
+                        payment_id: payment_id_str,
+                    };
+                    results.push(response);
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    /// Check payment status by offer ID
+    async fn check_payment_by_offer_id(
+        &self,
+        offer_id: &OfferId,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, payment::Error> {
+        // Find payment by offer ID - LDK doesn't have a direct way to query by offer ID
+        // so we need to filter through all payments
+        let payments = self.inner.list_payments_with_filter(|p| {
+            matches!(&p.kind, PaymentKind::Bolt12Offer { offer_id: oid, .. } if oid == offer_id)
         });
 
         let mut results = Vec::new();
@@ -1087,11 +1121,16 @@ impl MintPayment for CdkLdkNode {
                         self.check_payment_by_hash(&payment_hash_ldk, payment_identifier)
                             .await
                     }
-                    Some(database::IncomingPaymentIdentifier::Bolt12OfferId(_offer_id)) => {
-                        // Find payment by offer ID - this would need LDK-specific implementation
-                        // For now, return empty since we don't have a direct way to query by offer_id
-                        tracing::warn!("BOLT12 payment status check by offer_id not yet fully implemented for LDK");
-                        Ok(vec![])
+                    Some(database::IncomingPaymentIdentifier::Bolt12OfferId(offer_id_str)) => {
+                        // Parse the offer ID string (hex) back to OfferId
+                        let offer_id_bytes = hex::decode(&offer_id_str).map_err(|_| {
+                            payment::Error::Custom("Invalid offer ID hex".to_string())
+                        })?;
+                        let offer_id = OfferId(offer_id_bytes.try_into().map_err(|_| {
+                            payment::Error::Custom("Invalid offer ID length".to_string())
+                        })?);
+                        self.check_payment_by_offer_id(&offer_id, payment_identifier)
+                            .await
                     }
                     None => {
                         tracing::warn!("No payment identifier found for quote_id {}", quote_id);
@@ -1102,6 +1141,17 @@ impl MintPayment for CdkLdkNode {
             PaymentIdentifier::PaymentHash(hash) => {
                 let payment_hash = PaymentHash(*hash);
                 self.check_payment_by_hash(&payment_hash, payment_identifier)
+                    .await
+            }
+            PaymentIdentifier::OfferId(offer_id_str) => {
+                // Parse the offer ID string (hex) to OfferId
+                let offer_id_bytes = hex::decode(offer_id_str)?;
+
+                let offer_id =
+                    OfferId(offer_id_bytes.try_into().map_err(|_| {
+                        payment::Error::Custom("Invalid offer ID length".to_string())
+                    })?);
+                self.check_payment_by_offer_id(&offer_id, payment_identifier)
                     .await
             }
             PaymentIdentifier::CustomId(id) => {
