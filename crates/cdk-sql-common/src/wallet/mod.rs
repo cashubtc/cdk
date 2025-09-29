@@ -897,11 +897,6 @@ ON CONFLICT(id) DO UPDATE SET
             .unwrap_or(0);
 
         let elapsed = start_time.elapsed();
-        tracing::debug!(
-            "Balance query completed in {:.2}ms: {}",
-            elapsed.as_secs_f64() * 1000.0,
-            balance
-        );
         Ok(balance)
     }
 
