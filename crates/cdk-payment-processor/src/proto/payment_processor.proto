@@ -114,7 +114,6 @@ message PaymentQuoteResponse {
   uint64 amount = 2;
   uint64 fee = 3;
   QuoteState state = 4;
-  string unit = 5;
 }
 
 message Bolt11OutgoingPaymentOptions {

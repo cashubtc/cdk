@@ -317,7 +317,6 @@ impl MintPayment for Lnd {
                     amount,
                     fee: fee.into(),
                     state: MeltQuoteState::Unpaid,
-                    unit: unit.clone(),
                 })
             }
             OutgoingPaymentOptions::Bolt12(_) => {

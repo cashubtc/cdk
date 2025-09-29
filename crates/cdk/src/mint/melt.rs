@@ -186,10 +186,6 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
-        if &payment_quote.unit != unit {
-            return Err(Error::UnitMismatch);
-        }
-
         debug_assert!(matches!(
             payment_quote.request_lookup_id,
             Some(PaymentIdentifier::QuoteId(_))
@@ -300,10 +296,6 @@ impl Mint {
 
                 Error::UnsupportedUnit
             })?;
-
-        if &payment_quote.unit != unit {
-            return Err(Error::UnitMismatch);
-        }
 
         // Validate using processor quote amount for currency conversion
         self.check_melt_request_acceptable(

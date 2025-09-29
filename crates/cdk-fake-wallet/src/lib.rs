@@ -697,7 +697,6 @@ impl MintPayment for FakeWallet {
             amount,
             fee: fee.into(),
             state: MeltQuoteState::Unpaid,
-            unit: unit.clone(),
         })
     }
 

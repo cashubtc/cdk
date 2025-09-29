@@ -400,8 +400,6 @@ pub struct PaymentQuoteResponse {
     pub amount: Amount,
     /// Fee required for melt
     pub fee: Amount,
-    /// Currency unit of `amount` and `fee`
-    pub unit: CurrencyUnit,
     /// Status
     pub state: MeltQuoteState,
 }

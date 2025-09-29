@@ -364,7 +364,6 @@ impl MintPayment for Cln {
                     amount,
                     fee,
                     state: MeltQuoteState::Unpaid,
-                    unit: unit.clone(),
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -392,7 +391,6 @@ impl MintPayment for Cln {
                     amount,
                     fee,
                     state: MeltQuoteState::Unpaid,
-                    unit: unit.clone(),
                 })
             }
         }

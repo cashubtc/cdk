@@ -143,7 +143,6 @@ impl From<cdk_common::payment::PaymentQuoteResponse> for PaymentQuoteResponse {
             request_identifier: value.request_lookup_id.map(|i| i.into()),
             amount: value.amount.into(),
             fee: value.fee.into(),
-            unit: value.unit.to_string(),
             state: QuoteState::from(value.state).into(),
         }
     }
@@ -159,7 +158,6 @@ impl From<PaymentQuoteResponse> for cdk_common::payment::PaymentQuoteResponse {
                 .map(|i| i.try_into().expect("valid request identifier")),
             amount: value.amount.into(),
             fee: value.fee.into(),
-            unit: CurrencyUnit::from_str(&value.unit).unwrap_or_default(),
             state: state_val.into(),
         }
     }
