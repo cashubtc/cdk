@@ -46,6 +46,9 @@ pub enum Error {
     /// NUT00 Error
     #[error(transparent)]
     CDKNUT00(#[from] cdk_common::nuts::nut00::Error),
+    /// NUT01 Error
+    #[error(transparent)]
+    CDKNUT01(#[from] cdk_common::nuts::nut01::Error),
     /// NUT02 Error
     #[error(transparent)]
     CDKNUT02(#[from] cdk_common::nuts::nut02::Error),

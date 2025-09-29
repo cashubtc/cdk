@@ -11,7 +11,9 @@ use redb::{
 };
 
 use super::Error;
-use crate::wallet::{KEYSETS_TABLE, KEYSET_COUNTER, KEYSET_U32_MAPPING, MINT_KEYS_TABLE};
+use crate::wallet::{
+    KEYSETS_TABLE, KEYSET_COUNTER, KEYSET_U32_MAPPING, MINT_KEYS_TABLE, P2PK_SIGNING_KEYS_TABLE,
+};
 
 // <Mint_url, Info>
 const MINTS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("mints_table");
@@ -199,4 +201,18 @@ pub(crate) fn migrate_03_to_04(db: Arc<Database>) -> Result<u32, Error> {
     write_txn.commit()?;
 
     Ok(4)
+}
+
+pub(crate) fn migrate_04_to_05(db: Arc<Database>) -> Result<u32, Error> {
+    let write_txn = db.begin_write().map_err(Error::from)?;
+
+    {
+        let _ = write_txn
+            .open_table(P2PK_SIGNING_KEYS_TABLE)
+            .map_err(Error::from)?;
+    }
+
+    write_txn.commit().map_err(Error::from)?;
+
+    Ok(5)
 }

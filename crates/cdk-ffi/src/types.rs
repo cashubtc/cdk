@@ -460,6 +460,33 @@ impl From<cdk::nuts::SecretKey> for SecretKey {
     }
 }
 
+/// Stored P2PK signing key entry (pubkey + secret)
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct P2pkSigningKey {
+    pub pubkey: PublicKey,
+    pub secret_key: SecretKey,
+}
+
+impl From<(cdk_common::nuts::PublicKey, cdk_common::nuts::SecretKey)> for P2pkSigningKey {
+    fn from(value: (cdk_common::nuts::PublicKey, cdk_common::nuts::SecretKey)) -> Self {
+        Self {
+            pubkey: value.0.into(),
+            secret_key: value.1.into(),
+        }
+    }
+}
+
+impl TryFrom<P2pkSigningKey> for (cdk_common::nuts::PublicKey, cdk_common::nuts::SecretKey) {
+    type Error = FfiError;
+
+    fn try_from(value: P2pkSigningKey) -> Result<Self, Self::Error> {
+        let pubkey = value.pubkey.try_into()?;
+        let secret_key = value.secret_key.into();
+
+        Ok((pubkey, secret_key))
+    }
+}
+
 /// FFI-compatible Receive options
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ReceiveOptions {

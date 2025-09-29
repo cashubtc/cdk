@@ -91,6 +91,16 @@ pub trait WalletDatabase: Send + Sync {
     /// Remove Keys from storage
     async fn remove_keys(&self, id: Id) -> Result<(), FfiError>;
 
+    // P2PK signing key storage
+    /// Store a P2PK signing key
+    async fn add_p2pk_key(&self, secret_key: SecretKey) -> Result<(), FfiError>;
+    /// Fetch a P2PK signing key by public key
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<SecretKey>, FfiError>;
+    /// List stored P2PK signing keys
+    async fn list_p2pk_keys(&self) -> Result<Vec<P2pkSigningKey>, FfiError>;
+    /// Remove a stored P2PK signing key by public key
+    async fn remove_p2pk_key(&self, pubkey: PublicKey) -> Result<(), FfiError>;
+
     // Proof Management
     /// Update the proofs in storage by adding new proofs or removing proofs by their Y value
     async fn update_proofs(
@@ -401,6 +411,56 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .remove_keys(ffi_id)
             .await
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn add_p2pk_key(&self, secret_key: cdk_common::nuts::SecretKey) -> Result<(), Self::Err> {
+        let ffi_secret: SecretKey = secret_key.into();
+        self.ffi_db
+            .add_p2pk_key(ffi_secret)
+            .await
+            .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
+    }
+
+    async fn get_p2pk_key(
+        &self,
+        pubkey: cdk_common::nuts::PublicKey,
+    ) -> Result<Option<cdk_common::nuts::SecretKey>, Self::Err> {
+        let ffi_pubkey: PublicKey = pubkey.into();
+        let result = self
+            .ffi_db
+            .get_p2pk_key(ffi_pubkey)
+            .await
+            .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
+
+        Ok(result.map(Into::into))
+    }
+
+    async fn list_p2pk_keys(
+        &self,
+    ) -> Result<Vec<(cdk_common::nuts::PublicKey, cdk_common::nuts::SecretKey)>, Self::Err> {
+        let result = self
+            .ffi_db
+            .list_p2pk_keys()
+            .await
+            .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
+
+        result
+            .into_iter()
+            .map(|entry| {
+                let (pubkey, secret) = entry.try_into().map_err(|e: FfiError| {
+                    cdk_common::database::Error::Database(e.to_string().into())
+                })?;
+                Ok((pubkey, secret))
+            })
+            .collect()
+    }
+
+    async fn remove_p2pk_key(&self, pubkey: cdk_common::nuts::PublicKey) -> Result<(), Self::Err> {
+        let ffi_pubkey: PublicKey = pubkey.into();
+        self.ffi_db
+            .remove_p2pk_key(ffi_pubkey)
+            .await
+            .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
     }
 
     // Proof Management
@@ -803,6 +863,43 @@ impl WalletDatabase for WalletSqliteDatabase {
         let cdk_id = id.into();
         self.inner
             .remove_keys(&cdk_id)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn add_p2pk_key(&self, secret_key: SecretKey) -> Result<(), FfiError> {
+        let cdk_secret: cdk_common::nuts::SecretKey = secret_key.into();
+        self.inner
+            .add_p2pk_key(cdk_secret)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<SecretKey>, FfiError> {
+        let cdk_pubkey = pubkey.try_into()?;
+        let result = self
+            .inner
+            .get_p2pk_key(cdk_pubkey)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+
+        Ok(result.map(Into::into))
+    }
+
+    async fn list_p2pk_keys(&self) -> Result<Vec<P2pkSigningKey>, FfiError> {
+        let result = self
+            .inner
+            .list_p2pk_keys()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+
+        Ok(result.into_iter().map(Into::into).collect())
+    }
+
+    async fn remove_p2pk_key(&self, pubkey: PublicKey) -> Result<(), FfiError> {
+        let cdk_pubkey = pubkey.try_into()?;
+        self.inner
+            .remove_p2pk_key(cdk_pubkey)
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
