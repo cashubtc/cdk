@@ -222,6 +222,9 @@ impl Wallet {
         }
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
+        let fee_and_amounts = self
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await?;
 
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
@@ -229,10 +232,12 @@ impl Wallet {
                 amount_mintable,
                 &amount_split_target,
                 spending_conditions,
+                &fee_and_amounts,
             )?,
             None => {
                 // Calculate how many secrets we'll need
-                let amount_split = amount_mintable.split_targeted(&amount_split_target)?;
+                let amount_split =
+                    amount_mintable.split_targeted(&amount_split_target, &fee_and_amounts)?;
                 let num_secrets = amount_split.len() as u32;
 
                 tracing::debug!(
@@ -255,6 +260,7 @@ impl Wallet {
                     &self.seed,
                     amount_mintable,
                     &amount_split_target,
+                    &fee_and_amounts,
                 )?
             }
         };

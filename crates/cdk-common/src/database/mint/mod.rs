@@ -34,8 +34,7 @@ pub const KVSTORE_NAMESPACE_KEY_MAX_LEN: usize = 120;
 pub fn validate_kvstore_string(s: &str) -> Result<(), Error> {
     if s.len() > KVSTORE_NAMESPACE_KEY_MAX_LEN {
         return Err(Error::KVStoreInvalidKey(format!(
-            "{} exceeds maximum length of key characters",
-            KVSTORE_NAMESPACE_KEY_MAX_LEN
+            "{KVSTORE_NAMESPACE_KEY_MAX_LEN} exceeds maximum length of key characters"
         )));
     }
 
@@ -72,11 +71,10 @@ pub fn validate_kvstore_params(
     }
 
     // Check for potential collisions between keys and namespaces in the same namespace
-    let namespace_key = format!("{}/{}", primary_namespace, secondary_namespace);
+    let namespace_key = format!("{primary_namespace}/{secondary_namespace}");
     if key == primary_namespace || key == secondary_namespace || key == namespace_key {
         return Err(Error::KVStoreInvalidKey(format!(
-            "Key '{}' conflicts with namespace names",
-            key
+            "Key '{key}' conflicts with namespace names"
         )));
     }
 
@@ -134,13 +132,25 @@ pub trait QuotesTransaction<'a> {
     /// Mint Quotes Database Error
     type Err: Into<Error> + From<Error>;
 
-    /// Add melt_request with quote_id, inputs_amount, and blinded_messages
-    async fn add_melt_request_and_blinded_messages(
+    /// Add melt_request with quote_id, inputs_amount, and inputs_fee
+    async fn add_melt_request(
         &mut self,
         quote_id: &QuoteId,
         inputs_amount: Amount,
         inputs_fee: Amount,
+    ) -> Result<(), Self::Err>;
+
+    /// Add blinded_messages for a quote_id
+    async fn add_blinded_messages(
+        &mut self,
+        quote_id: Option<&QuoteId>,
         blinded_messages: &[BlindedMessage],
+    ) -> Result<(), Self::Err>;
+
+    /// Delete blinded_messages by their blinded secrets
+    async fn delete_blinded_messages(
+        &mut self,
+        blinded_secrets: &[PublicKey],
     ) -> Result<(), Self::Err>;
 
     /// Get melt_request and associated blinded_messages by quote_id
@@ -172,8 +182,7 @@ pub trait QuotesTransaction<'a> {
         quote_id: &QuoteId,
         amount_issued: Amount,
     ) -> Result<Amount, Self::Err>;
-    /// Remove [`MintMintQuote`]
-    async fn remove_mint_quote(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err>;
+
     /// Get [`mint::MeltQuote`] and lock it for update in this transaction
     async fn get_melt_quote(
         &mut self,
@@ -198,8 +207,7 @@ pub trait QuotesTransaction<'a> {
         new_state: MeltQuoteState,
         payment_proof: Option<String>,
     ) -> Result<(MeltQuoteState, mint::MeltQuote), Self::Err>;
-    /// Remove [`mint::MeltQuote`]
-    async fn remove_melt_quote(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err>;
+
     /// Get all [`MintMintQuote`]s and lock it for update in this transaction
     async fn get_mint_quote_by_request(
         &mut self,

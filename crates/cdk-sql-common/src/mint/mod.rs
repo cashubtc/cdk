@@ -546,13 +546,13 @@ where
 {
     type Err = Error;
 
-    async fn add_melt_request_and_blinded_messages(
+    async fn add_melt_request(
         &mut self,
         quote_id: &QuoteId,
         inputs_amount: Amount,
         inputs_fee: Amount,
-        blinded_messages: &[BlindedMessage],
     ) -> Result<(), Self::Err> {
+        // Insert melt_request
         query(
             r#"
             INSERT INTO melt_request
@@ -567,25 +567,78 @@ where
         .execute(&self.inner)
         .await?;
 
+        Ok(())
+    }
+
+    async fn add_blinded_messages(
+        &mut self,
+        quote_id: Option<&QuoteId>,
+        blinded_messages: &[BlindedMessage],
+    ) -> Result<(), Self::Err> {
+        let current_time = unix_time();
+
+        // Insert blinded_messages directly into blind_signature with c = NULL
+        // Let the database constraint handle duplicate detection
         for message in blinded_messages {
-            query(
+            match query(
                 r#"
-                INSERT INTO blinded_messages
-                (quote_id, blinded_message, keyset_id, amount)
+                INSERT INTO blind_signature
+                (blinded_message, amount, keyset_id, c, quote_id, created_time)
                 VALUES
-                (:quote_id, :blinded_message, :keyset_id, :amount)
+                (:blinded_message, :amount, :keyset_id, NULL, :quote_id, :created_time)
                 "#,
             )?
-            .bind("quote_id", quote_id.to_string())
             .bind(
                 "blinded_message",
                 message.blinded_secret.to_bytes().to_vec(),
             )
-            .bind("keyset_id", message.keyset_id.to_string())
             .bind("amount", message.amount.to_i64())
+            .bind("keyset_id", message.keyset_id.to_string())
+            .bind("quote_id", quote_id.map(|q| q.to_string()))
+            .bind("created_time", current_time as i64)
             .execute(&self.inner)
-            .await?;
+            .await
+            {
+                Ok(_) => continue,
+                Err(database::Error::Duplicate) => {
+                    // Primary key constraint violation - blinded message already exists
+                    // This could be either:
+                    // 1. Already signed (c IS NOT NULL) - definitely an error
+                    // 2. Already pending (c IS NULL) - also an error
+                    return Err(database::Error::Duplicate);
+                }
+                Err(err) => return Err(err),
+            }
         }
+
+        Ok(())
+    }
+
+    async fn delete_blinded_messages(
+        &mut self,
+        blinded_secrets: &[PublicKey],
+    ) -> Result<(), Self::Err> {
+        if blinded_secrets.is_empty() {
+            return Ok(());
+        }
+
+        // Delete blinded messages from blind_signature table where c IS NULL
+        // (only delete unsigned blinded messages)
+        query(
+            r#"
+            DELETE FROM blind_signature
+            WHERE blinded_message IN (:blinded_secrets) AND c IS NULL
+            "#,
+        )?
+        .bind_vec(
+            "blinded_secrets",
+            blinded_secrets
+                .iter()
+                .map(|secret| secret.to_bytes().to_vec())
+                .collect(),
+        )
+        .execute(&self.inner)
+        .await?;
 
         Ok(())
     }
@@ -610,11 +663,12 @@ where
             let inputs_amount: u64 = column_as_number!(row[0].clone());
             let inputs_fee: u64 = column_as_number!(row[1].clone());
 
+            // Get blinded messages from blind_signature table where c IS NULL
             let blinded_messages_rows = query(
                 r#"
                 SELECT blinded_message, keyset_id, amount
-                FROM blinded_messages
-                WHERE quote_id = :quote_id
+                FROM blind_signature
+                WHERE quote_id = :quote_id AND c IS NULL
                 "#,
             )?
             .bind("quote_id", quote_id.to_string())
@@ -650,10 +704,22 @@ where
     }
 
     async fn delete_melt_request(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err> {
+        // Delete from melt_request table
         query(
             r#"
             DELETE FROM melt_request
             WHERE quote_id = :quote_id
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .execute(&self.inner)
+        .await?;
+
+        // Also delete blinded messages (where c IS NULL) from blind_signature table
+        query(
+            r#"
+            DELETE FROM blind_signature
+            WHERE quote_id = :quote_id AND c IS NULL
             "#,
         )?
         .bind("quote_id", quote_id.to_string())
@@ -878,14 +944,6 @@ VALUES (:quote_id, :amount, :timestamp);
         Ok(())
     }
 
-    async fn remove_mint_quote(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err> {
-        query(r#"DELETE FROM mint_quote WHERE id=:id"#)?
-            .bind("id", quote_id.to_string())
-            .execute(&self.inner)
-            .await?;
-        Ok(())
-    }
-
     async fn add_melt_quote(&mut self, quote: mint::MeltQuote) -> Result<(), Self::Err> {
         // Now insert the new quote
         query(
@@ -1018,20 +1076,6 @@ VALUES (:quote_id, :amount, :timestamp);
         }
 
         Ok((old_state, quote))
-    }
-
-    async fn remove_melt_quote(&mut self, quote_id: &QuoteId) -> Result<(), Self::Err> {
-        query(
-            r#"
-            DELETE FROM melt_quote
-            WHERE id=:id
-            "#,
-        )?
-        .bind("id", quote_id.to_string())
-        .execute(&self.inner)
-        .await?;
-
-        Ok(())
     }
 
     async fn get_mint_quote(&mut self, quote_id: &QuoteId) -> Result<Option<MintQuote>, Self::Err> {
@@ -1582,34 +1626,122 @@ where
     ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
+        if blinded_messages.len() != blind_signatures.len() {
+            return Err(database::Error::Internal(
+                "Mismatched array lengths for blinded messages and blind signatures".to_string(),
+            ));
+        }
+
+        // Select all existing rows for the given blinded messages at once
+        let mut existing_rows = query(
+            r#"
+            SELECT blinded_message, c, dleq_e, dleq_s
+            FROM blind_signature
+            WHERE blinded_message IN (:blinded_messages)
+            FOR UPDATE
+            "#,
+        )?
+        .bind_vec(
+            "blinded_messages",
+            blinded_messages
+                .iter()
+                .map(|message| message.to_bytes().to_vec())
+                .collect(),
+        )
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(|mut row| {
+            Ok((
+                column_as_string!(&row.remove(0), PublicKey::from_hex, PublicKey::from_slice),
+                (row[0].clone(), row[1].clone(), row[2].clone()),
+            ))
+        })
+        .collect::<Result<HashMap<_, _>, Error>>()?;
+
+        // Iterate over the provided blinded messages and signatures
         for (message, signature) in blinded_messages.iter().zip(blind_signatures) {
-            query(
-                r#"
-                    INSERT INTO blind_signature
-                    (blinded_message, amount, keyset_id, c, quote_id, dleq_e, dleq_s, created_time)
-                    VALUES
-                    (:blinded_message, :amount, :keyset_id, :c, :quote_id, :dleq_e, :dleq_s, :created_time)
-                "#,
-            )?
-            .bind("blinded_message", message.to_bytes().to_vec())
-            .bind("amount", u64::from(signature.amount) as i64)
-            .bind("keyset_id", signature.keyset_id.to_string())
-            .bind("c", signature.c.to_bytes().to_vec())
-            .bind("quote_id", quote_id.as_ref().map(|q| match q {
-                QuoteId::BASE64(s) => s.to_string(),
-                QuoteId::UUID(u) => u.hyphenated().to_string(),
-            }))
-            .bind(
-                "dleq_e",
-                signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()),
-            )
-            .bind(
-                "dleq_s",
-                signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()),
-            )
-            .bind("created_time", current_time as i64)
-            .execute(&self.inner)
-            .await?;
+            match existing_rows.remove(message) {
+                None => {
+                    // Unknown blind message: Insert new row with all columns
+                    query(
+                        r#"
+                        INSERT INTO blind_signature
+                        (blinded_message, amount, keyset_id, c, quote_id, dleq_e, dleq_s, created_time, signed_time)
+                        VALUES
+                        (:blinded_message, :amount, :keyset_id, :c, :quote_id, :dleq_e, :dleq_s, :created_time, :signed_time)
+                        "#,
+                    )?
+                    .bind("blinded_message", message.to_bytes().to_vec())
+                    .bind("amount", u64::from(signature.amount) as i64)
+                    .bind("keyset_id", signature.keyset_id.to_string())
+                    .bind("c", signature.c.to_bytes().to_vec())
+                    .bind("quote_id", quote_id.as_ref().map(|q| q.to_string()))
+                    .bind(
+                        "dleq_e",
+                        signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()),
+                    )
+                    .bind(
+                        "dleq_s",
+                        signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()),
+                    )
+                    .bind("created_time", current_time as i64)
+                    .bind("signed_time", current_time as i64)
+                    .execute(&self.inner)
+                    .await?;
+                }
+                Some((c, _dleq_e, _dleq_s)) => {
+                    // Blind message exists: check if c is NULL
+                    match c {
+                        Column::Null => {
+                            // Blind message with no c: Update with missing columns c, dleq_e, dleq_s
+                            query(
+                                r#"
+                                UPDATE blind_signature
+                                SET c = :c, dleq_e = :dleq_e, dleq_s = :dleq_s, signed_time = :signed_time, amount = :amount
+                                WHERE blinded_message = :blinded_message
+                                "#,
+                            )?
+                            .bind("c", signature.c.to_bytes().to_vec())
+                            .bind(
+                                "dleq_e",
+                                signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()),
+                            )
+                            .bind(
+                                "dleq_s",
+                                signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()),
+                            )
+                            .bind("blinded_message", message.to_bytes().to_vec())
+                            .bind("signed_time", current_time as i64)
+                            .bind("amount", u64::from(signature.amount) as i64)
+                            .execute(&self.inner)
+                            .await?;
+                        }
+                        _ => {
+                            // Blind message already has c: Error
+                            tracing::error!(
+                                "Attempting to add signature to message already signed {}",
+                                message
+                            );
+
+                            return Err(database::Error::Duplicate);
+                        }
+                    }
+                }
+            }
+        }
+
+        debug_assert!(
+            existing_rows.is_empty(),
+            "Unexpected existing rows remain: {:?}",
+            existing_rows.keys().collect::<Vec<_>>()
+        );
+
+        if !existing_rows.is_empty() {
+            tracing::error!("Did not check all existing rows");
+            return Err(Error::Internal(
+                "Did not check all existing rows".to_string(),
+            ));
         }
 
         Ok(())
@@ -1629,14 +1761,14 @@ where
                 blinded_message
             FROM
                 blind_signature
-            WHERE blinded_message IN (:y)
+            WHERE blinded_message IN (:b) AND c IS NOT NULL
             "#,
         )?
         .bind_vec(
-            "y",
+            "b",
             blinded_messages
                 .iter()
-                .map(|y| y.to_bytes().to_vec())
+                .map(|b| b.to_bytes().to_vec())
                 .collect(),
         )
         .fetch_all(&self.inner)
@@ -1682,11 +1814,11 @@ where
                 blinded_message
             FROM
                 blind_signature
-            WHERE blinded_message IN (:blinded_message)
+            WHERE blinded_message IN (:b) AND c IS NOT NULL
             "#,
         )?
         .bind_vec(
-            "blinded_message",
+            "b",
             blinded_messages
                 .iter()
                 .map(|b_| b_.to_bytes().to_vec())
@@ -1728,7 +1860,7 @@ where
             FROM
                 blind_signature
             WHERE
-                keyset_id=:keyset_id
+                keyset_id=:keyset_id AND c IS NOT NULL
             "#,
         )?
         .bind("keyset_id", keyset_id.to_string())
@@ -1756,7 +1888,7 @@ where
             FROM
                 blind_signature
             WHERE
-                quote_id=:quote_id
+                quote_id=:quote_id AND c IS NOT NULL
             "#,
         )?
         .bind("quote_id", quote_id.to_string())

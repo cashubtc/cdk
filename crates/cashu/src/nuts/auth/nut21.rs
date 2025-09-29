@@ -161,6 +161,10 @@ pub enum RoutePath {
     /// Bolt12 Quote
     #[serde(rename = "/v1/melt/bolt12")]
     MeltBolt12,
+
+    /// WebSocket
+    #[serde(rename = "/v1/ws")]
+    Ws,
 }
 
 /// Returns [`RoutePath`]s that match regex
