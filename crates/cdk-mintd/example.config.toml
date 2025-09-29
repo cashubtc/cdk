@@ -84,33 +84,28 @@ max_connections = 20
 # Connection timeout in seconds (optional, defaults to 10)
 connection_timeout_seconds = 10
 
-[backend]
-# Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits', 'ldknode'
-name = "fakewallet"
+[payment_backend]
+# Required ln backend `cln`, `lnd`, `fake_wallet`, 'lnbits', 'ldknode'
+kind = "fake_wallet"
 # min_mint=1
 # max_mint=500000
 # min_melt=1
 # max_melt=500000
 
-[cln]
-rpc_path = ""
-fee_percent = 0.04
-reserve_fee_min = 4
-
-# [lnbits]
+# [payment_backend.lnbits]
 # admin_api_key = ""
 # invoice_api_key = ""
 # lnbits_api = ""
 # Note: Only LNBits v1 API is supported (websocket-based)
 
-# [lnd]
+# [payment_backend.lnd]
 # address = "https://domain:port"
 # macaroon_file = ""
 # cert_file = ""
 # fee_percent=0.04
 # reserve_fee_min=4
 
-# [ldk_node]
+# [payment_backend.ldk_node]
 # fee_percent = 0.04
 # reserve_fee_min = 4
 # bitcoin_network = "signet"  # mainnet, testnet, signet, regtest
@@ -151,14 +146,14 @@ reserve_fee_min = 4
 # webserver_host = "127.0.0.1"  # Default: 127.0.0.1
 # webserver_port = 0  # 0 = auto-assign available port
 
-[fake_wallet]
+[payment_backend.fake_wallet]
 supported_units = ["sat"]
 fee_percent = 0.02
 reserve_fee_min = 1
 min_delay_time = 1
 max_delay_time = 3
 
-# [grpc_processor]
+# [payment_backend.grpc_processor]
 # gRPC Payment Processor configuration
 # supported_units = ["sat"]
 # addr = "127.0.0.1"

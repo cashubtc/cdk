@@ -423,6 +423,7 @@ async fn configure_payment_backend(
         #[cfg(feature = "cln")]
         PaymentBackendKind::Cln => {
             let cln_settings = settings
+                .payment_backend
                 .cln
                 .clone()
                 .expect("Config checked at load that cln is some");
@@ -443,7 +444,11 @@ async fn configure_payment_backend(
         }
         #[cfg(feature = "lnbits")]
         PaymentBackendKind::LNbits => {
-            let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
+            let lnbits_settings = settings
+                .payment_backend
+                .clone()
+                .lnbits
+                .expect("Checked on config load");
             let lnbits = lnbits_settings
                 .setup(settings, CurrencyUnit::Sat, None, work_dir, None)
                 .await?;
@@ -461,7 +466,11 @@ async fn configure_payment_backend(
         }
         #[cfg(feature = "lnd")]
         PaymentBackendKind::Lnd => {
-            let lnd_settings = settings.clone().lnd.expect("Checked at config load");
+            let lnd_settings = settings
+                .payment_backend
+                .clone()
+                .lnd
+                .expect("Checked at config load");
             let lnd = lnd_settings
                 .setup(settings, CurrencyUnit::Msat, None, work_dir, _kv_store)
                 .await?;
@@ -479,7 +488,11 @@ async fn configure_payment_backend(
         }
         #[cfg(feature = "fakewallet")]
         PaymentBackendKind::FakeWallet => {
-            let fake_wallet = settings.clone().fake_wallet.expect("Fake wallet defined");
+            let fake_wallet = settings
+                .payment_backend
+                .clone()
+                .fake_wallet
+                .expect("Fake wallet defined");
             tracing::info!("Using fake wallet: {:?}", fake_wallet);
 
             for unit in fake_wallet.clone().supported_units {
@@ -502,6 +515,7 @@ async fn configure_payment_backend(
         #[cfg(feature = "grpc-processor")]
         PaymentBackendKind::GrpcProcessor => {
             let grpc_processor = settings
+                .payment_backend
                 .clone()
                 .grpc_processor
                 .expect("GRPC payment processor defined");
@@ -532,7 +546,11 @@ async fn configure_payment_backend(
         }
         #[cfg(feature = "ldk-node")]
         PaymentBackendKind::LdkNode => {
-            let ldk_node_settings = settings.clone().ldk_node.expect("Checked at config load");
+            let ldk_node_settings = settings
+                .payment_backend
+                .clone()
+                .ldk_node
+                .expect("Checked at config load");
             tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
 
             let ldk_node = ldk_node_settings

@@ -175,6 +175,23 @@ pub struct PaymentBackend {
     pub max_mint: Amount,
     pub min_melt: Amount,
     pub max_melt: Amount,
+    #[cfg(feature = "cln")]
+    pub cln: Option<Cln>,
+    #[cfg(feature = "lnbits")]
+    pub lnbits: Option<LNbits>,
+    #[cfg(feature = "lnd")]
+    pub lnd: Option<Lnd>,
+    #[cfg(feature = "ldk-node")]
+    pub ldk_node: Option<LdkNode>,
+    #[cfg(feature = "fakewallet")]
+    #[serde(rename = "fake_wallet", alias = "fakewallet")]
+    pub fake_wallet: Option<FakeWallet>,
+    #[serde(
+        rename = "grpc_processor",
+        alias = "grpcprocessor",
+        alias = "grpc-processor"
+    )]
+    pub grpc_processor: Option<GrpcProcessor>,
 }
 
 impl Default for PaymentBackend {
@@ -186,6 +203,12 @@ impl Default for PaymentBackend {
             max_mint: 500_000.into(),
             min_melt: 1.into(),
             max_melt: 500_000.into(),
+            cln: None,
+            lnbits: None,
+            lnd: None,
+            ldk_node: None,
+            fake_wallet: None,
+            grpc_processor: None,
         }
     }
 }
@@ -474,23 +497,6 @@ pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
     pub payment_backend: PaymentBackend,
-    #[cfg(feature = "cln")]
-    pub cln: Option<Cln>,
-    #[cfg(feature = "lnbits")]
-    pub lnbits: Option<LNbits>,
-    #[cfg(feature = "lnd")]
-    pub lnd: Option<Lnd>,
-    #[cfg(feature = "ldk-node")]
-    pub ldk_node: Option<LdkNode>,
-    #[cfg(feature = "fakewallet")]
-    #[serde(rename = "fake_wallet", alias = "fakewallet")]
-    pub fake_wallet: Option<FakeWallet>,
-    #[serde(
-        rename = "grpc_processor",
-        alias = "grpcprocessor",
-        alias = "grpc-processor"
-    )]
-    pub grpc_processor: Option<GrpcProcessor>,
     pub database: Database,
     #[cfg(feature = "auth")]
     pub auth_database: Option<AuthDatabase>,
@@ -593,37 +599,37 @@ impl Settings {
             PaymentBackendKind::None => panic!("Ln payment_backend must be set"),
             #[cfg(feature = "cln")]
             PaymentBackendKind::Cln => assert!(
-                settings.cln.is_some(),
+                settings.payment_backend.cln.is_some(),
                 "CLN payment_backend requires a valid config."
             ),
             #[cfg(feature = "lnbits")]
             PaymentBackendKind::LNbits => assert!(
-                settings.lnbits.is_some(),
+                settings.payment_backend.lnbits.is_some(),
                 "LNbits payment_backend requires a valid config"
             ),
             #[cfg(feature = "lnd")]
             PaymentBackendKind::Lnd => {
                 assert!(
-                    settings.lnd.is_some(),
+                    settings.payment_backend.lnd.is_some(),
                     "LND payment_backend requires a valid config."
                 )
             }
             #[cfg(feature = "ldk-node")]
             PaymentBackendKind::LdkNode => {
                 assert!(
-                    settings.ldk_node.is_some(),
+                    settings.payment_backend.ldk_node.is_some(),
                     "LDK Node payment_backend requires a valid config."
                 )
             }
             #[cfg(feature = "fakewallet")]
             PaymentBackendKind::FakeWallet => assert!(
-                settings.fake_wallet.is_some(),
+                settings.payment_backend.fake_wallet.is_some(),
                 "FakeWallet payment_backend requires a valid config."
             ),
             #[cfg(feature = "grpc-processor")]
             PaymentBackendKind::GrpcProcessor => {
                 assert!(
-                    settings.grpc_processor.is_some(),
+                    settings.payment_backend.grpc_processor.is_some(),
                     "GRPC payment_backend requires a valid config."
                 )
             }
