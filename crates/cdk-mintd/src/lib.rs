@@ -54,7 +54,7 @@ use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
 #[cfg(feature = "auth")]
 use config::AuthType;
-use config::{DatabaseEngine, PaymentBackendType};
+use config::{DatabaseEngine, PaymentBackendKind};
 use env_vars::ENV_WORK_DIR;
 use setup::LnBackendSetup;
 use tower::ServiceBuilder;
@@ -421,7 +421,7 @@ async fn configure_payment_backend(
 
     match settings.payment_backend.kind {
         #[cfg(feature = "cln")]
-        PaymentBackendType::Cln => {
+        PaymentBackendKind::Cln => {
             let cln_settings = settings
                 .cln
                 .clone()
@@ -442,7 +442,7 @@ async fn configure_payment_backend(
             .await?;
         }
         #[cfg(feature = "lnbits")]
-        PaymentBackendType::LNbits => {
+        PaymentBackendKind::LNbits => {
             let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
             let lnbits = lnbits_settings
                 .setup(settings, CurrencyUnit::Sat, None, work_dir, None)
@@ -460,7 +460,7 @@ async fn configure_payment_backend(
             .await?;
         }
         #[cfg(feature = "lnd")]
-        PaymentBackendType::Lnd => {
+        PaymentBackendKind::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
             let lnd = lnd_settings
                 .setup(settings, CurrencyUnit::Msat, None, work_dir, _kv_store)
@@ -478,7 +478,7 @@ async fn configure_payment_backend(
             .await?;
         }
         #[cfg(feature = "fakewallet")]
-        PaymentBackendType::FakeWallet => {
+        PaymentBackendKind::FakeWallet => {
             let fake_wallet = settings.clone().fake_wallet.expect("Fake wallet defined");
             tracing::info!("Using fake wallet: {:?}", fake_wallet);
 
@@ -500,7 +500,7 @@ async fn configure_payment_backend(
             }
         }
         #[cfg(feature = "grpc-processor")]
-        PaymentBackendType::GrpcProcessor => {
+        PaymentBackendKind::GrpcProcessor => {
             let grpc_processor = settings
                 .clone()
                 .grpc_processor
@@ -531,7 +531,7 @@ async fn configure_payment_backend(
             }
         }
         #[cfg(feature = "ldk-node")]
-        PaymentBackendType::LdkNode => {
+        PaymentBackendKind::LdkNode => {
             let ldk_node_settings = settings.clone().ldk_node.expect("Checked at config load");
             tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
 
@@ -548,7 +548,7 @@ async fn configure_payment_backend(
             )
             .await?;
         }
-        PaymentBackendType::None => {
+        PaymentBackendKind::None => {
             tracing::error!(
                 "Payment backend was not set or feature disabled. {:?}",
                 settings.payment_backend.kind

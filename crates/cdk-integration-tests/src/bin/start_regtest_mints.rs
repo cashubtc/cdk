@@ -281,7 +281,7 @@ fn create_ldk_settings(
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
         payment_backend: cdk_mintd::config::PaymentBackend {
-            kind: cdk_mintd::config::PaymentBackendType::LdkNode,
+            kind: cdk_mintd::config::PaymentBackendKind::LdkNode,
             invoice_description: None,
             min_mint: 1.into(),
             max_mint: 500_000.into(),

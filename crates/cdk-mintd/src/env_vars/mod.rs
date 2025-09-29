@@ -55,7 +55,7 @@ pub use mint_info::*;
 #[cfg(feature = "prometheus")]
 pub use prometheus::*;
 
-use crate::config::{DatabaseEngine, PaymentBackendType, Settings};
+use crate::config::{DatabaseEngine, PaymentBackendKind, Settings};
 
 impl Settings {
     pub fn from_env(&mut self) -> Result<Self> {
@@ -124,31 +124,31 @@ impl Settings {
 
         match self.payment_backend.kind {
             #[cfg(feature = "cln")]
-            PaymentBackendType::Cln => {
+            PaymentBackendKind::Cln => {
                 self.cln = Some(self.cln.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "lnbits")]
-            PaymentBackendType::LNbits => {
+            PaymentBackendKind::LNbits => {
                 self.lnbits = Some(self.lnbits.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "fakewallet")]
-            PaymentBackendType::FakeWallet => {
+            PaymentBackendKind::FakeWallet => {
                 self.fake_wallet = Some(self.fake_wallet.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "lnd")]
-            PaymentBackendType::Lnd => {
+            PaymentBackendKind::Lnd => {
                 self.lnd = Some(self.lnd.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "ldk-node")]
-            PaymentBackendType::LdkNode => {
+            PaymentBackendKind::LdkNode => {
                 self.ldk_node = Some(self.ldk_node.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "grpc-processor")]
-            PaymentBackendType::GrpcProcessor => {
+            PaymentBackendKind::GrpcProcessor => {
                 self.grpc_processor =
                     Some(self.grpc_processor.clone().unwrap_or_default().from_env());
             }
-            PaymentBackendType::None => bail!("Ln backend must be set"),
+            PaymentBackendKind::None => bail!("Ln backend must be set"),
             #[allow(unreachable_patterns)]
             _ => bail!("Selected Ln backend is not enabled in this build"),
         }
