@@ -169,7 +169,7 @@ impl std::str::FromStr for PaymentBackendType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentBackend {
-    pub name: PaymentBackendType,
+    pub kind: PaymentBackendType,
     pub invoice_description: Option<String>,
     pub min_mint: Amount,
     pub max_mint: Amount,
@@ -180,7 +180,7 @@ pub struct PaymentBackend {
 impl Default for PaymentBackend {
     fn default() -> Self {
         PaymentBackend {
-            name: PaymentBackendType::default(),
+            kind: PaymentBackendType::default(),
             invoice_description: None,
             min_mint: 1.into(),
             max_mint: 500_000.into(),
@@ -589,7 +589,7 @@ impl Settings {
             .build()?;
         let settings: Settings = config.try_deserialize()?;
 
-        match settings.payment_backend.name {
+        match settings.payment_backend.kind {
             PaymentBackendType::None => panic!("Ln payment_backend must be set"),
             #[cfg(feature = "cln")]
             PaymentBackendType::Cln => assert!(

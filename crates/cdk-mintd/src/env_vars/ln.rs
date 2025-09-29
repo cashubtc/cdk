@@ -17,7 +17,7 @@ impl PaymentBackend {
         // LnBackend
         if let Ok(backend_str) = env::var(ENV_LN_BACKEND) {
             if let Ok(backend) = backend_str.parse() {
-                self.name = backend;
+                self.kind = backend;
             } else {
                 tracing::warn!("Unknown payment backend set in env var will attempt to use config file. {backend_str}");
             }

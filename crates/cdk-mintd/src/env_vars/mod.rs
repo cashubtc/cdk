@@ -122,7 +122,7 @@ impl Settings {
             self.prometheus = Some(self.prometheus.clone().unwrap_or_default().from_env());
         }
 
-        match self.payment_backend.name {
+        match self.payment_backend.kind {
             #[cfg(feature = "cln")]
             PaymentBackendType::Cln => {
                 self.cln = Some(self.cln.clone().unwrap_or_default().from_env());

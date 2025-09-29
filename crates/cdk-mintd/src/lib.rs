@@ -417,9 +417,9 @@ async fn configure_payment_backend(
         melt_max: settings.payment_backend.max_melt,
     };
 
-    tracing::debug!("Ln backend: {:?}", settings.payment_backend.name);
+    tracing::debug!("Ln backend: {:?}", settings.payment_backend.kind);
 
-    match settings.payment_backend.name {
+    match settings.payment_backend.kind {
         #[cfg(feature = "cln")]
         PaymentBackendType::Cln => {
             let cln_settings = settings
@@ -551,7 +551,7 @@ async fn configure_payment_backend(
         PaymentBackendType::None => {
             tracing::error!(
                 "Payment backend was not set or feature disabled. {:?}",
-                settings.payment_backend.name
+                settings.payment_backend.kind
             );
             bail!("Lightning backend must be configured");
         }
