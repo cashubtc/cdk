@@ -96,7 +96,7 @@ pub trait Database: Debug {
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, Self::Err>;
-    /// Get balance efficiently using SQL aggregation
+    /// Get balance
     async fn get_balance(
         &self,
         mint_url: Option<MintUrl>,
