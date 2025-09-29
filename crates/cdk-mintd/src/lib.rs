@@ -54,7 +54,7 @@ use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
 #[cfg(feature = "auth")]
 use config::AuthType;
-use config::{BackendType, DatabaseEngine};
+use config::{DatabaseEngine, PaymentBackendType};
 use env_vars::ENV_WORK_DIR;
 use setup::LnBackendSetup;
 use tower::ServiceBuilder;
@@ -344,7 +344,7 @@ async fn configure_mint_builder(
 
     // Configure lightning backend
     let mint_builder =
-        configure_lightning_backend(settings, mint_builder, runtime, work_dir, kv_store).await?;
+        configure_payment_backend(settings, mint_builder, runtime, work_dir, kv_store).await?;
 
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
@@ -403,7 +403,7 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
     builder
 }
 /// Configures Lightning Network backend based on the specified backend type
-async fn configure_lightning_backend(
+async fn configure_payment_backend(
     settings: &config::Settings,
     mut mint_builder: MintBuilder,
     _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
@@ -411,17 +411,17 @@ async fn configure_lightning_backend(
     _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
-        mint_min: settings.backend.min_mint,
-        mint_max: settings.backend.max_mint,
-        melt_min: settings.backend.min_melt,
-        melt_max: settings.backend.max_melt,
+        mint_min: settings.payment_backend.min_mint,
+        mint_max: settings.payment_backend.max_mint,
+        melt_min: settings.payment_backend.min_melt,
+        melt_max: settings.payment_backend.max_melt,
     };
 
-    tracing::debug!("Ln backend: {:?}", settings.backend.name);
+    tracing::debug!("Ln backend: {:?}", settings.payment_backend.name);
 
-    match settings.backend.name {
+    match settings.payment_backend.name {
         #[cfg(feature = "cln")]
-        BackendType::Cln => {
+        PaymentBackendType::Cln => {
             let cln_settings = settings
                 .cln
                 .clone()
@@ -442,7 +442,7 @@ async fn configure_lightning_backend(
             .await?;
         }
         #[cfg(feature = "lnbits")]
-        BackendType::LNbits => {
+        PaymentBackendType::LNbits => {
             let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
             let lnbits = lnbits_settings
                 .setup(settings, CurrencyUnit::Sat, None, work_dir, None)
@@ -460,7 +460,7 @@ async fn configure_lightning_backend(
             .await?;
         }
         #[cfg(feature = "lnd")]
-        BackendType::Lnd => {
+        PaymentBackendType::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
             let lnd = lnd_settings
                 .setup(settings, CurrencyUnit::Msat, None, work_dir, _kv_store)
@@ -478,7 +478,7 @@ async fn configure_lightning_backend(
             .await?;
         }
         #[cfg(feature = "fakewallet")]
-        BackendType::FakeWallet => {
+        PaymentBackendType::FakeWallet => {
             let fake_wallet = settings.clone().fake_wallet.expect("Fake wallet defined");
             tracing::info!("Using fake wallet: {:?}", fake_wallet);
 
@@ -500,7 +500,7 @@ async fn configure_lightning_backend(
             }
         }
         #[cfg(feature = "grpc-processor")]
-        BackendType::GrpcProcessor => {
+        PaymentBackendType::GrpcProcessor => {
             let grpc_processor = settings
                 .clone()
                 .grpc_processor
@@ -531,7 +531,7 @@ async fn configure_lightning_backend(
             }
         }
         #[cfg(feature = "ldk-node")]
-        BackendType::LdkNode => {
+        PaymentBackendType::LdkNode => {
             let ldk_node_settings = settings.clone().ldk_node.expect("Checked at config load");
             tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
 
@@ -548,10 +548,10 @@ async fn configure_lightning_backend(
             )
             .await?;
         }
-        BackendType::None => {
+        PaymentBackendType::None => {
             tracing::error!(
                 "Payment backend was not set or feature disabled. {:?}",
-                settings.backend.name
+                settings.payment_backend.name
             );
             bail!("Lightning backend must be configured");
         }

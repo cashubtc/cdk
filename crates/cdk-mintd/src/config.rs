@@ -123,7 +123,7 @@ impl std::fmt::Debug for Info {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
-pub enum BackendType {
+pub enum PaymentBackendType {
     #[default]
     None,
     #[cfg(feature = "cln")]
@@ -143,31 +143,33 @@ pub enum BackendType {
     GrpcProcessor,
 }
 
-impl std::str::FromStr for BackendType {
+impl std::str::FromStr for PaymentBackendType {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             #[cfg(feature = "cln")]
-            "cln" => Ok(BackendType::Cln),
+            "cln" => Ok(PaymentBackendType::Cln),
             #[cfg(feature = "lnbits")]
-            "lnbits" => Ok(BackendType::LNbits),
+            "lnbits" => Ok(PaymentBackendType::LNbits),
             #[cfg(feature = "fakewallet")]
-            "fakewallet" | "fake_wallet" => Ok(BackendType::FakeWallet),
+            "fakewallet" | "fake_wallet" => Ok(PaymentBackendType::FakeWallet),
             #[cfg(feature = "lnd")]
-            "lnd" => Ok(BackendType::Lnd),
+            "lnd" => Ok(PaymentBackendType::Lnd),
             #[cfg(feature = "ldk-node")]
-            "ldk-node" | "ldknode" | "ldk_node" => Ok(BackendType::LdkNode),
+            "ldk-node" | "ldknode" | "ldk_node" => Ok(PaymentBackendType::LdkNode),
             #[cfg(feature = "grpc-processor")]
-            "grpcprocessor" | "grpc-processor" | "grpc_processor" => Ok(BackendType::GrpcProcessor),
+            "grpcprocessor" | "grpc-processor" | "grpc_processor" => {
+                Ok(PaymentBackendType::GrpcProcessor)
+            }
             _ => Err(format!("Unknown Lightning backend: {s}")),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Backend {
-    pub name: BackendType,
+pub struct PaymentBackend {
+    pub name: PaymentBackendType,
     pub invoice_description: Option<String>,
     pub min_mint: Amount,
     pub max_mint: Amount,
@@ -175,10 +177,10 @@ pub struct Backend {
     pub max_melt: Amount,
 }
 
-impl Default for Backend {
+impl Default for PaymentBackend {
     fn default() -> Self {
-        Backend {
-            name: BackendType::default(),
+        PaymentBackend {
+            name: PaymentBackendType::default(),
             invoice_description: None,
             min_mint: 1.into(),
             max_mint: 500_000.into(),
@@ -471,7 +473,7 @@ fn default_blind() -> AuthType {
 pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
-    pub backend: Backend,
+    pub payment_backend: PaymentBackend,
     #[cfg(feature = "cln")]
     pub cln: Option<Cln>,
     #[cfg(feature = "lnbits")]
@@ -587,42 +589,42 @@ impl Settings {
             .build()?;
         let settings: Settings = config.try_deserialize()?;
 
-        match settings.backend.name {
-            BackendType::None => panic!("Ln backend must be set"),
+        match settings.payment_backend.name {
+            PaymentBackendType::None => panic!("Ln payment_backend must be set"),
             #[cfg(feature = "cln")]
-            BackendType::Cln => assert!(
+            PaymentBackendType::Cln => assert!(
                 settings.cln.is_some(),
-                "CLN backend requires a valid config."
+                "CLN payment_backend requires a valid config."
             ),
             #[cfg(feature = "lnbits")]
-            BackendType::LNbits => assert!(
+            PaymentBackendType::LNbits => assert!(
                 settings.lnbits.is_some(),
-                "LNbits backend requires a valid config"
+                "LNbits payment_backend requires a valid config"
             ),
             #[cfg(feature = "lnd")]
-            BackendType::Lnd => {
+            PaymentBackendType::Lnd => {
                 assert!(
                     settings.lnd.is_some(),
-                    "LND backend requires a valid config."
+                    "LND payment_backend requires a valid config."
                 )
             }
             #[cfg(feature = "ldk-node")]
-            BackendType::LdkNode => {
+            PaymentBackendType::LdkNode => {
                 assert!(
                     settings.ldk_node.is_some(),
-                    "LDK Node backend requires a valid config."
+                    "LDK Node payment_backend requires a valid config."
                 )
             }
             #[cfg(feature = "fakewallet")]
-            BackendType::FakeWallet => assert!(
+            PaymentBackendType::FakeWallet => assert!(
                 settings.fake_wallet.is_some(),
-                "FakeWallet backend requires a valid config."
+                "FakeWallet payment_backend requires a valid config."
             ),
             #[cfg(feature = "grpc-processor")]
-            BackendType::GrpcProcessor => {
+            PaymentBackendType::GrpcProcessor => {
                 assert!(
                     settings.grpc_processor.is_some(),
-                    "GRPC backend requires a valid config."
+                    "GRPC payment_backend requires a valid config."
                 )
             }
         }

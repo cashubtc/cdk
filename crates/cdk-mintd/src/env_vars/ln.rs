@@ -2,7 +2,7 @@
 
 use std::env;
 
-use crate::config::Backend;
+use crate::config::PaymentBackend;
 
 // LN environment variables
 pub const ENV_LN_BACKEND: &str = "CDK_MINTD_LN_BACKEND";
@@ -12,7 +12,7 @@ pub const ENV_LN_MAX_MINT: &str = "CDK_MINTD_LN_MAX_MINT";
 pub const ENV_LN_MIN_MELT: &str = "CDK_MINTD_LN_MIN_MELT";
 pub const ENV_LN_MAX_MELT: &str = "CDK_MINTD_LN_MAX_MELT";
 
-impl Backend {
+impl PaymentBackend {
     pub fn from_env(mut self) -> Self {
         // LnBackend
         if let Ok(backend_str) = env::var(ENV_LN_BACKEND) {

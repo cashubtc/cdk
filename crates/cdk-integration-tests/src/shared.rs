@@ -201,8 +201,8 @@ pub fn create_fake_wallet_settings(
             enable_swagger_ui: None,
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
-        backend: cdk_mintd::config::Backend {
-            name: cdk_mintd::config::BackendType::FakeWallet,
+        payment_backend: cdk_mintd::config::PaymentBackend {
+            name: cdk_mintd::config::PaymentBackendType::FakeWallet,
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),
             max_mint: DEFAULT_MAX_MINT.into(),
@@ -254,8 +254,8 @@ pub fn create_cln_settings(
             enable_swagger_ui: None,
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
-        backend: cdk_mintd::config::Backend {
-            name: cdk_mintd::config::BackendType::Cln,
+        payment_backend: cdk_mintd::config::PaymentBackend {
+            name: cdk_mintd::config::PaymentBackendType::Cln,
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),
             max_mint: DEFAULT_MAX_MINT.into(),
@@ -302,8 +302,8 @@ pub fn create_lnd_settings(
             enable_swagger_ui: None,
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
-        backend: cdk_mintd::config::Backend {
-            name: cdk_mintd::config::BackendType::Lnd,
+        payment_backend: cdk_mintd::config::PaymentBackend {
+            name: cdk_mintd::config::PaymentBackendType::Lnd,
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),
             max_mint: DEFAULT_MAX_MINT.into(),

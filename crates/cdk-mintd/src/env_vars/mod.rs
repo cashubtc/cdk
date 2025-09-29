@@ -55,7 +55,7 @@ pub use mint_info::*;
 #[cfg(feature = "prometheus")]
 pub use prometheus::*;
 
-use crate::config::{BackendType, DatabaseEngine, Settings};
+use crate::config::{DatabaseEngine, PaymentBackendType, Settings};
 
 impl Settings {
     pub fn from_env(&mut self) -> Result<Self> {
@@ -92,7 +92,7 @@ impl Settings {
 
         self.info = self.info.clone().from_env();
         self.mint_info = self.mint_info.clone().from_env();
-        self.backend = self.backend.clone().from_env();
+        self.payment_backend = self.payment_backend.clone().from_env();
 
         #[cfg(feature = "auth")]
         {
@@ -122,33 +122,33 @@ impl Settings {
             self.prometheus = Some(self.prometheus.clone().unwrap_or_default().from_env());
         }
 
-        match self.backend.name {
+        match self.payment_backend.name {
             #[cfg(feature = "cln")]
-            BackendType::Cln => {
+            PaymentBackendType::Cln => {
                 self.cln = Some(self.cln.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "lnbits")]
-            BackendType::LNbits => {
+            PaymentBackendType::LNbits => {
                 self.lnbits = Some(self.lnbits.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "fakewallet")]
-            BackendType::FakeWallet => {
+            PaymentBackendType::FakeWallet => {
                 self.fake_wallet = Some(self.fake_wallet.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "lnd")]
-            BackendType::Lnd => {
+            PaymentBackendType::Lnd => {
                 self.lnd = Some(self.lnd.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "ldk-node")]
-            BackendType::LdkNode => {
+            PaymentBackendType::LdkNode => {
                 self.ldk_node = Some(self.ldk_node.clone().unwrap_or_default().from_env());
             }
             #[cfg(feature = "grpc-processor")]
-            BackendType::GrpcProcessor => {
+            PaymentBackendType::GrpcProcessor => {
                 self.grpc_processor =
                     Some(self.grpc_processor.clone().unwrap_or_default().from_env());
             }
-            BackendType::None => bail!("Ln backend must be set"),
+            PaymentBackendType::None => bail!("Ln backend must be set"),
             #[allow(unreachable_patterns)]
             _ => bail!("Selected Ln backend is not enabled in this build"),
         }
