@@ -177,7 +177,12 @@ pub async fn ws_main(
                 Some(msg) = read.next() => {
                     let msg = match msg {
                         Ok(msg) => msg,
-                        Err(_) => break,
+                        Err(_) => {
+                            if let Err(err) = write.send(Message::Close(None)).await {
+                                tracing::error!("Closing error {err:?}");
+                            }
+                            break
+                        },
                     };
                     let msg = match msg {
                         Message::Text(msg) => msg,
@@ -220,6 +225,10 @@ pub async fn ws_main(
                                         wallet,
                                     )
                                     .await;
+                                }
+
+                                if let Err(err) = write.send(Message::Close(None)).await {
+                                    tracing::error!("Closing error {err:?}");
                                 }
 
                                 break; // break connection to force a reconnection, to attempt to recover form this error
