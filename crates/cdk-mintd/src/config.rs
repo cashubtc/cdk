@@ -203,11 +203,16 @@ impl Default for PaymentBackend {
             max_mint: 500_000.into(),
             min_melt: 1.into(),
             max_melt: 500_000.into(),
+            #[cfg(feature = "cln")]
             cln: None,
-            lnbits: None,
+            #[cfg(feature = "lnd")]
             lnd: None,
-            ldk_node: None,
+            #[cfg(feature = "fakewallet")]
             fake_wallet: None,
+            #[cfg(feature = "lnbits")]
+            lnbits: None,
+            #[cfg(feature = "ldk-node")]
+            ldk_node: None,
             grpc_processor: None,
         }
     }
