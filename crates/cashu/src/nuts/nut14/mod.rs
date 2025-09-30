@@ -55,7 +55,7 @@ pub enum Error {
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct HTLCWitness {
-    /// Primage
+    /// Preimage
     pub preimage: String,
     /// Signatures
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -139,9 +139,15 @@ impl Proof {
     /// Add Preimage
     #[inline]
     pub fn add_preimage(&mut self, preimage: String) {
+        let signatures = self
+            .witness
+            .as_ref()
+            .map(|w| w.signatures())
+            .unwrap_or_default();
+
         self.witness = Some(Witness::HTLCWitness(HTLCWitness {
             preimage,
-            signatures: None,
+            signatures,
         }))
     }
 }
