@@ -840,13 +840,17 @@ ON CONFLICT(id) DO UPDATE SET
         &self,
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
-        state: Option<Vec<State>>,
+        states: Option<Vec<State>>,
     ) -> Result<u64, Self::Err> {
-        let start_time = std::time::Instant::now();
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         let mut query_str = "SELECT COALESCE(SUM(amount), 0) as total FROM proof".to_string();
         let mut where_clauses = Vec::new();
+        let states = states
+            .unwrap_or_default()
+            .into_iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>();
 
         if mint_url.is_some() {
             where_clauses.push("mint_url = :mint_url");
@@ -854,10 +858,8 @@ ON CONFLICT(id) DO UPDATE SET
         if unit.is_some() {
             where_clauses.push("unit = :unit");
         }
-        if let Some(ref states) = state {
-            if !states.is_empty() {
-                where_clauses.push("state IN (:states)");
-            }
+        if !states.is_empty() {
+            where_clauses.push("state IN (:states)");
         }
 
         if !where_clauses.is_empty() {
@@ -873,10 +875,9 @@ ON CONFLICT(id) DO UPDATE SET
         if let Some(ref unit) = unit {
             q = q.bind("unit", unit.to_string());
         }
-        if let Some(ref states) = state {
-            if !states.is_empty() {
-                q = q.bind_vec("states", states.iter().map(|s| s.to_string()).collect());
-            }
+
+        if !states.is_empty() {
+            q = q.bind_vec("states", states);
         }
 
         let balance = q
@@ -896,7 +897,6 @@ ON CONFLICT(id) DO UPDATE SET
             .transpose()?
             .unwrap_or(0);
 
-        let elapsed = start_time.elapsed();
         Ok(balance)
     }
 
