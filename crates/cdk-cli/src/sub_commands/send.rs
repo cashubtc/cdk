@@ -54,9 +54,7 @@ pub struct SendSubCommand {
     /// Maximum amount to transfer from other mints
     #[arg(long)]
     max_transfer_amount: Option<u64>,
-    /// Specific mints allowed for transfers (can be specified multiple times)
-    #[arg(long, action = clap::ArgAction::Append)]
-    allowed_mints: Vec<String>,
+
     /// Specific mints to exclude from transfers (can be specified multiple times)
     #[arg(long, action = clap::ArgAction::Append)]
     excluded_mints: Vec<String>,
@@ -66,6 +64,48 @@ pub async fn send(
     multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &SendSubCommand,
 ) -> Result<()> {
+    // Determine which mint to use for sending BEFORE asking for amount
+    let selected_mint = if let Some(mint_url) = &sub_command_args.mint_url {
+        Some(MintUrl::from_str(mint_url)?)
+    } else {
+        // Display all mints with their balances and let user select
+        let balances_map = multi_mint_wallet.get_balances().await?;
+        if balances_map.is_empty() {
+            return Err(anyhow!("No mints available in the wallet"));
+        }
+
+        let balances_vec: Vec<(MintUrl, Amount)> = balances_map.into_iter().collect();
+
+        println!("\nAvailable mints and balances:");
+        for (index, (mint_url, balance)) in balances_vec.iter().enumerate() {
+            println!(
+                "  {}: {} - {} {}",
+                index,
+                mint_url,
+                balance,
+                multi_mint_wallet.unit()
+            );
+        }
+        println!("  {}: Any mint (auto-select best)", balances_vec.len());
+
+        let selection = loop {
+            let selection: usize =
+                get_number_input("Enter mint number to send from (or select Any)")?;
+
+            if selection == balances_vec.len() {
+                break None; // "Any" option selected
+            }
+
+            if let Some((mint_url, _)) = balances_vec.get(selection) {
+                break Some(mint_url.clone());
+            }
+
+            println!("Invalid selection, please try again.");
+        };
+
+        selection
+    };
+
     let token_amount = Amount::from(get_number_input::<u64>(&format!(
         "Enter value of token in {}",
         multi_mint_wallet.unit()
@@ -214,14 +254,7 @@ pub async fn send(
         ..Default::default()
     };
 
-    // Parse allowed and excluded mints from CLI arguments
-    let allowed_mints: Result<Vec<MintUrl>, _> = sub_command_args
-        .allowed_mints
-        .iter()
-        .map(|url| MintUrl::from_str(url))
-        .collect();
-    let allowed_mints = allowed_mints?;
-
+    // Parse excluded mints from CLI arguments
     let excluded_mints: Result<Vec<MintUrl>, _> = sub_command_args
         .excluded_mints
         .iter()
@@ -229,45 +262,44 @@ pub async fn send(
         .collect();
     let excluded_mints = excluded_mints?;
 
-    // Create MultiMintSendOptions from CLI arguments
-    let multi_mint_options = cdk::wallet::multi_mint_wallet::MultiMintSendOptions {
-        allow_transfer: sub_command_args.allow_transfer,
-        max_transfer_amount: sub_command_args.max_transfer_amount.map(Amount::from),
-        allowed_mints,
-        excluded_mints,
-        send_options: send_options.clone(),
-    };
+    // Prepare and confirm the send based on mint selection
+    let token = if let Some(specific_mint) = selected_mint {
+        // User selected a specific mint
+        let multi_mint_options = cdk::wallet::multi_mint_wallet::MultiMintSendOptions {
+            allow_transfer: sub_command_args.allow_transfer,
+            max_transfer_amount: sub_command_args.max_transfer_amount.map(Amount::from),
+            allowed_mints: vec![specific_mint.clone()], // Use selected mint as the only allowed mint
+            excluded_mints,
+            send_options: send_options.clone(),
+        };
 
-    // Use the new unified interface
-    let token = if let Some(mint_url) = &sub_command_args.mint_url {
-        // User specified a mint, use that specific wallet
-        let mint_url = cdk::mint_url::MintUrl::from_str(mint_url)?;
         let prepared = multi_mint_wallet
-            .prepare_send(mint_url, token_amount, multi_mint_options)
+            .prepare_send(specific_mint, token_amount, multi_mint_options)
             .await?;
 
-        // Confirm the prepared send (single mint)
         let memo = send_options.memo.clone();
         prepared.confirm(memo).await?
     } else {
-        // Let the wallet automatically select the best mint
-        // First, get balances to find a mint with sufficient funds
+        // User selected "Any" - find the first mint with sufficient balance
         let balances = multi_mint_wallet.get_balances().await?;
-
-        // Find a mint with sufficient balance
-        let mint_url = balances
+        let best_mint = balances
             .into_iter()
             .find(|(_, balance)| *balance >= token_amount)
             .map(|(mint_url, _)| mint_url)
-            .ok_or_else(|| {
-                anyhow::anyhow!("No mint has sufficient balance for the requested amount")
-            })?;
+            .ok_or_else(|| anyhow!("No mint has sufficient balance for the requested amount"))?;
+
+        let multi_mint_options = cdk::wallet::multi_mint_wallet::MultiMintSendOptions {
+            allow_transfer: sub_command_args.allow_transfer,
+            max_transfer_amount: sub_command_args.max_transfer_amount.map(Amount::from),
+            allowed_mints: vec![best_mint.clone()], // Use the best mint as the only allowed mint
+            excluded_mints,
+            send_options: send_options.clone(),
+        };
 
         let prepared = multi_mint_wallet
-            .prepare_send(mint_url, token_amount, multi_mint_options)
+            .prepare_send(best_mint, token_amount, multi_mint_options)
             .await?;
 
-        // Confirm the prepared send (multi mint)
         let memo = send_options.memo.clone();
         prepared.confirm(memo).await?
     };
