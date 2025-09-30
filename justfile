@@ -429,7 +429,7 @@ _ffi-lib-ext:
 
 # Build the FFI library
 ffi-build *ARGS="--release":
-  cargo build {{ARGS}} --package cdk-ffi
+  cargo build {{ARGS}} --package cdk-ffi --features postgres
 
 # Generate bindings for a specific language
 ffi-generate LANGUAGE *ARGS="--release": ffi-build
@@ -460,7 +460,7 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
     BUILD_TYPE="release"
   else
     BUILD_TYPE="debug"
-    cargo build --package cdk-ffi
+    cargo build --package cdk-ffi --features postgres
   fi
   
   LIB_EXT=$(just _ffi-lib-ext)
