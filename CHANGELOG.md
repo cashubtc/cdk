@@ -6,6 +6,22 @@
 
 ## [Unreleased]
 
+### Fixed
+- cashu: Fix HTLC witness deserialization by adding prior signatures if they exist ([stefanbitcr]).
+
+## [0.13.1](https://github.com/cashubtc/cdk/releases/tag/v0.13.1)
+
+### Fixed
+- cdk: Only settle same unit quote internally ([gudnuf]).
+- cdk-cli: Show amounts correctly ([thesimplekid]).
+- cdk-lnbits: Fix msats error handling ([thesimplekid]).
+
+### Changed
+- cdk: Simplify mint addition in MultiMintWallet by removing unnecessary mint info fetching and keyset refresh ([thesimplekid]).
+- cdk-ffi: Make UniFFI Records Codable in Swift ([davidcaseria]).
+
+## [0.13.0](https://github.com/cashubtc/cdk/releases/tag/v0.13.0)
+
 ### Summary
 
 Version 0.13.0 marks a major milestone for mobile development with the introduction of comprehensive native mobile bindings that enable building Cashu wallets for iOS and Android using Swift and Kotlin. The release introduces cdk-ffi, a new Foreign Function Interface crate that provides UniFFI-based bindings for Swift, Kotlin, and Python, with full wallet functionality including multi-mint support, BOLT12 payments, BIP-353 address resolution, and advanced features like P2PK conditions and authentication. Mobile bindings are distributed through dedicated repositories at https://github.com/cashubtc/cdk-kotlin and https://github.com/cashubtc/cdk-swift that provide native package management for Android/JVM and iOS/macOS platforms respectively. The release also delivers significant infrastructure improvements including an event-driven payment architecture with real-time notifications, enhanced database layer with generic key-value storage, improved HTTP transport with proxy support and BIP-353 DNS resolution, and new operational features like Prometheus metrics collection and dedicated authentication database support.
@@ -571,3 +587,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [gudnuf]: https://github.com/gudnuf
 [codingpeanut157]: https://github.com/codingpeanut157
 [erik]: https://github.com/swedishfrenchpress
+[stefanbitcr]: https://github.com/stefanbitcr
