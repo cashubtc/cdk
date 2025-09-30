@@ -15,6 +15,7 @@ CDK is a collection of rust crates for [Cashu](https://github.com/cashubtc) wall
 The project is split up into several crates in the `crates/` directory:
 
 * Libraries:
+    * [**cashu**](./crates/cashu/): Core Cashu protocol implementation.
     * [**cdk**](./crates/cdk/): Rust implementation of Cashu protocol.
     * [**cdk-sqlite**](./crates/cdk-sqlite/): SQLite Storage backend.
     * [**cdk-postgres**](./crates/cdk-postgres/): PostgreSQL Storage backend.
@@ -25,6 +26,13 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-lnbits**](./crates/cdk-lnbits/): [LNbits](https://lnbits.com/) Lightning backend for mint. **Note: Only LNBits v1 API is supported.**
     * [**cdk-ldk-node**](./crates/cdk-ldk-node/): LDK Node Lightning backend for mint.
     * [**cdk-fake-wallet**](./crates/cdk-fake-wallet/): Fake Lightning backend for mint. To be used only for testing, quotes are automatically filled.
+    * [**cdk-common**](./crates/cdk-common/): Common utilities and shared code.
+    * [**cdk-sql-common**](./crates/cdk-sql-common/): Common SQL utilities for storage backends.
+    * [**cdk-signatory**](./crates/cdk-signatory/): Signing utilities and cryptographic operations.
+    * [**cdk-payment-processor**](./crates/cdk-payment-processor/): Payment processing functionality.
+    * [**cdk-prometheus**](./crates/cdk-prometheus/): Prometheus metrics integration.
+    * [**cdk-ffi**](./crates/cdk-ffi/): Foreign Function Interface bindings for other languages.
+    * [**cdk-integration-tests**](./crates/cdk-integration-tests/): Integration test suite.
     * [**cdk-mint-rpc**](./crates/cdk-mint-rpc/): Mint management gRPC server and cli.
 * Binaries:
     * [**cdk-cli**](./crates/cdk-cli/): Cashu wallet CLI.
