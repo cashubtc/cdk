@@ -172,14 +172,10 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
     ) -> Result<(), Self::Err> {
         let ffi_mint_url = mint_url.into();
         let ffi_mint_info = mint_info.map(Into::into);
-        println!("adding mint from bridge");
         self.ffi_db
             .add_mint(ffi_mint_url, ffi_mint_info)
             .await
-            .map_err(|e| {
-                println!("{:?}", e.to_string());
-                cdk::cdk_database::Error::Database(e.to_string().into())
-            })
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
     async fn remove_mint(&self, mint_url: cdk::mint_url::MintUrl) -> Result<(), Self::Err> {
