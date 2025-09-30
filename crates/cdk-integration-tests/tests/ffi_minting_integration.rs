@@ -214,7 +214,7 @@ async fn test_ffi_mint_quote_creation() {
         let quote = wallet
             .mint_quote(amount, Some(description.clone()))
             .await
-            .expect(&format!("Failed to create quote for {} sats", amount_value));
+            .unwrap_or_else(|_| panic!("Failed to create quote for {} sats", amount_value));
 
         // Verify quote properties
         assert_eq!(quote.amount, Some(amount));

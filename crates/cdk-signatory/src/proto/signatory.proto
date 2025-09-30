@@ -64,6 +64,7 @@ message KeySet {
   Keys keys = 5;
   optional uint64 final_expiry = 6;
   uint64 version = 7;
+  repeated uint64 amounts = 8;
 }
 
 message Keys {

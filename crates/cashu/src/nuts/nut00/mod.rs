@@ -18,6 +18,8 @@ use super::nut10;
 #[cfg(feature = "wallet")]
 use super::nut11::SpendingConditions;
 #[cfg(feature = "wallet")]
+use crate::amount::FeeAndAmounts;
+#[cfg(feature = "wallet")]
 use crate::amount::SplitTarget;
 #[cfg(feature = "wallet")]
 use crate::dhke::blind_message;
@@ -746,8 +748,9 @@ impl PreMintSecrets {
         keyset_id: Id,
         amount: Amount,
         amount_split_target: &SplitTarget,
+        fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
-        let amount_split = amount.split_targeted(amount_split_target)?;
+        let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
 
         let mut output = Vec::with_capacity(amount_split.len());
 
@@ -830,8 +833,9 @@ impl PreMintSecrets {
         amount: Amount,
         amount_split_target: &SplitTarget,
         conditions: &SpendingConditions,
+        fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
-        let amount_split = amount.split_targeted(amount_split_target)?;
+        let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
 
         let mut output = Vec::with_capacity(amount_split.len());
 

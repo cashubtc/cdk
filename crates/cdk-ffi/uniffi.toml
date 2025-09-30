@@ -8,3 +8,5 @@ cdylib_name = "cdk_ffi"
 [bindings.swift]
 module_name = "CashuDevKit"
 cdylib_name = "cdk_ffi"
+generate_codable_conformance = true
+generate_immutable_records = true

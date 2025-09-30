@@ -17,6 +17,10 @@ pub const ENV_AUTH_CHECK_MELT_QUOTE: &str = "CDK_MINTD_AUTH_CHECK_MELT_QUOTE";
 pub const ENV_AUTH_SWAP: &str = "CDK_MINTD_AUTH_SWAP";
 pub const ENV_AUTH_RESTORE: &str = "CDK_MINTD_AUTH_RESTORE";
 pub const ENV_AUTH_CHECK_PROOF_STATE: &str = "CDK_MINTD_AUTH_CHECK_PROOF_STATE";
+pub const ENV_AUTH_WEBSOCKET: &str = "CDK_MINTD_AUTH_WEBSOCKET";
+pub const ENV_AUTH_WS_MINT_QUOTE: &str = "CDK_MINTD_AUTH_WS_MINT_QUOTE";
+pub const ENV_AUTH_WS_MELT_QUOTE: &str = "CDK_MINTD_AUTH_WS_MELT_QUOTE";
+pub const ENV_AUTH_WS_PROOF_STATE: &str = "CDK_MINTD_AUTH_WS_PROOF_STATE";
 
 impl Auth {
     pub fn from_env(mut self) -> Self {
@@ -91,6 +95,12 @@ impl Auth {
         if let Ok(check_proof_state_str) = env::var(ENV_AUTH_CHECK_PROOF_STATE) {
             if let Ok(auth_type) = check_proof_state_str.parse() {
                 self.check_proof_state = auth_type;
+            }
+        }
+
+        if let Ok(ws_auth_str) = env::var(ENV_AUTH_WEBSOCKET) {
+            if let Ok(auth_type) = ws_auth_str.parse() {
+                self.websocket_auth = auth_type;
             }
         }
 

@@ -142,19 +142,6 @@ impl Mint {
             ..
         } = melt_request;
 
-        let amount_msats = melt_request.amount_msat()?;
-
-        let amount_quote_unit = to_unit(amount_msats, &CurrencyUnit::Msat, unit)?;
-
-        self.check_melt_request_acceptable(
-            amount_quote_unit,
-            unit.clone(),
-            PaymentMethod::Bolt11,
-            request.to_string(),
-            *options,
-        )
-        .await?;
-
         let ln = self
             .payment_processors
             .get(&PaymentProcessorKey::new(
@@ -196,6 +183,20 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
+        if &payment_quote.unit != unit {
+            return Err(Error::UnitMismatch);
+        }
+
+        // Validate using processor quote amount for currency conversion
+        self.check_melt_request_acceptable(
+            payment_quote.amount,
+            unit.clone(),
+            PaymentMethod::Bolt11,
+            request.to_string(),
+            *options,
+        )
+        .await?;
+
         let melt_ttl = self.quote_ttl().await?.melt_ttl;
 
         let quote = MeltQuote::new(
@@ -215,7 +216,7 @@ impl Mint {
             "New {} melt quote {} for {} {} with request id {:?}",
             quote.payment_method,
             quote.id,
-            amount_quote_unit,
+            payment_quote.amount,
             unit,
             payment_quote.request_lookup_id
         );
@@ -250,15 +251,6 @@ impl Mint {
             },
             None => amount_for_offer(&offer, unit).map_err(|_| Error::UnsupportedUnit)?,
         };
-
-        self.check_melt_request_acceptable(
-            amount,
-            unit.clone(),
-            PaymentMethod::Bolt12,
-            request.clone(),
-            *options,
-        )
-        .await?;
 
         let ln = self
             .payment_processors
@@ -296,6 +288,20 @@ impl Mint {
 
                 Error::UnsupportedUnit
             })?;
+
+        if &payment_quote.unit != unit {
+            return Err(Error::UnitMismatch);
+        }
+
+        // Validate using processor quote amount for currency conversion
+        self.check_melt_request_acceptable(
+            payment_quote.amount,
+            unit.clone(),
+            PaymentMethod::Bolt12,
+            request.clone(),
+            *options,
+        )
+        .await?;
 
         let payment_request = MeltPaymentRequest::Bolt12 {
             offer: Box::new(offer),
@@ -506,8 +512,6 @@ impl Mint {
             unit: input_unit,
         } = input_verification;
 
-        ensure_cdk!(input_unit.is_some(), Error::UnsupportedUnit);
-
         let mut proof_writer =
             ProofWriter::new(self.localstore.clone(), self.pubsub_manager.clone());
 
@@ -523,6 +527,10 @@ impl Mint {
         let (state, quote) = tx
             .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending, None)
             .await?;
+
+        if input_unit != Some(quote.unit.clone()) {
+            return Err(Error::UnitMismatch);
+        }
 
         match state {
             MeltQuoteState::Unpaid | MeltQuoteState::Failed => Ok(()),
@@ -628,10 +636,15 @@ impl Mint {
 
         let inputs_fee = self.get_proofs_fee(melt_request.inputs()).await?;
 
-        tx.add_melt_request_and_blinded_messages(
+        tx.add_melt_request(
             melt_request.quote_id(),
             melt_request.inputs_amount()?,
             inputs_fee,
+        )
+        .await?;
+
+        tx.add_blinded_messages(
+            Some(melt_request.quote_id()),
             melt_request.outputs().as_ref().unwrap_or(&Vec::new()),
         )
         .await?;
@@ -930,7 +943,24 @@ impl Mint {
 
                 let change_target = inputs_amount - total_spent - inputs_fee;
 
-                let mut amounts = change_target.split();
+                let fee_and_amounts = self
+                    .keysets
+                    .load()
+                    .iter()
+                    .filter_map(|keyset| {
+                        if keyset.active && Some(keyset.id) == outputs.first().map(|x| x.keyset_id)
+                        {
+                            Some((keyset.input_fee_ppk, keyset.amounts.clone()).into())
+                        } else {
+                            None
+                        }
+                    })
+                    .next()
+                    .unwrap_or_else(|| {
+                        (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into()
+                    });
+
+                let mut amounts = change_target.split(&fee_and_amounts);
 
                 if outputs.len().lt(&amounts.len()) {
                     tracing::debug!(
@@ -972,6 +1002,9 @@ impl Mint {
                 change = Some(change_sigs);
 
                 proof_writer.commit();
+
+                tx.delete_melt_request(&quote.id).await?;
+
                 tx.commit().await?;
             } else {
                 tracing::info!(
@@ -981,11 +1014,13 @@ impl Mint {
                     total_spent
                 );
                 proof_writer.commit();
+                tx.delete_melt_request(&quote.id).await?;
                 tx.commit().await?;
             }
         } else {
             tracing::debug!("No change required for melt {}", quote.id);
             proof_writer.commit();
+            tx.delete_melt_request(&quote.id).await?;
             tx.commit().await?;
         }
 

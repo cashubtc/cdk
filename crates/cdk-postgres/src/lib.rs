@@ -341,10 +341,9 @@ mod test {
 
         let db_url = format!("{db_url} schema={test_id}");
 
-        let db = MintPgDatabase::new(db_url.as_str())
+        MintPgDatabase::new(db_url.as_str())
             .await
-            .expect("database");
-        db
+            .expect("database")
     }
 
     mint_db_test!(provide_db);
