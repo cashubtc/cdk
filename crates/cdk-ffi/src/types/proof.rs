@@ -44,78 +44,84 @@ impl From<ProofState> for CdkState {
 }
 
 /// FFI-compatible Proof
-#[derive(Debug, uniffi::Object)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Proof {
-    pub(crate) inner: cdk::nuts::Proof,
+    /// Proof amount
+    pub amount: Amount,
+    /// Secret (as string)
+    pub secret: String,
+    /// Unblinded signature C (as hex string)
+    pub c: String,
+    /// Keyset ID (as hex string)
+    pub keyset_id: String,
+    /// Optional witness
+    pub witness: Option<Witness>,
+    /// Optional DLEQ proof
+    pub dleq: Option<ProofDleq>,
 }
 
 impl From<cdk::nuts::Proof> for Proof {
     fn from(proof: cdk::nuts::Proof) -> Self {
-        Self { inner: proof }
+        Self {
+            amount: proof.amount.into(),
+            secret: proof.secret.to_string(),
+            c: proof.c.to_string(),
+            keyset_id: proof.keyset_id.to_string(),
+            witness: proof.witness.map(|w| w.into()),
+            dleq: proof.dleq.map(|d| d.into()),
+        }
     }
 }
 
-impl From<Proof> for cdk::nuts::Proof {
-    fn from(proof: Proof) -> Self {
-        proof.inner
-    }
-}
+impl TryFrom<Proof> for cdk::nuts::Proof {
+    type Error = FfiError;
 
-#[uniffi::export]
-impl Proof {
-    /// Get the amount
-    pub fn amount(&self) -> Amount {
-        self.inner.amount.into()
-    }
+    fn try_from(proof: Proof) -> Result<Self, Self::Error> {
+        use std::str::FromStr;
 
-    /// Get the secret as string
-    pub fn secret(&self) -> String {
-        self.inner.secret.to_string()
-    }
-
-    /// Get the unblinded signature (C) as string
-    pub fn c(&self) -> String {
-        self.inner.c.to_string()
-    }
-
-    /// Get the keyset ID as string
-    pub fn keyset_id(&self) -> String {
-        self.inner.keyset_id.to_string()
-    }
-
-    /// Get the witness
-    pub fn witness(&self) -> Option<Witness> {
-        self.inner.witness.as_ref().map(|w| w.clone().into())
-    }
-
-    /// Check if proof is active with given keyset IDs
-    pub fn is_active(&self, active_keyset_ids: Vec<String>) -> bool {
         use cdk::nuts::Id;
-        let ids: Vec<Id> = active_keyset_ids
-            .into_iter()
-            .filter_map(|id| Id::from_str(&id).ok())
-            .collect();
-        self.inner.is_active(&ids)
-    }
 
-    /// Get the Y value (hash_to_curve of secret)
-    pub fn y(&self) -> Result<String, FfiError> {
-        Ok(self.inner.y()?.to_string())
+        Ok(Self {
+            amount: proof.amount.into(),
+            secret: cdk::secret::Secret::from_str(&proof.secret)
+                .map_err(|e| FfiError::Serialization { msg: e.to_string() })?,
+            c: cdk::nuts::PublicKey::from_str(&proof.c)
+                .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?,
+            keyset_id: Id::from_str(&proof.keyset_id)
+                .map_err(|e| FfiError::Serialization { msg: e.to_string() })?,
+            witness: proof.witness.map(|w| w.into()),
+            dleq: proof.dleq.map(|d| d.into()),
+        })
     }
+}
 
-    /// Get the DLEQ proof if present
-    pub fn dleq(&self) -> Option<ProofDleq> {
-        self.inner.dleq.as_ref().map(|d| d.clone().into())
-    }
+/// Get the Y value (hash_to_curve of secret) for a proof
+#[uniffi::export]
+pub fn proof_y(proof: &Proof) -> Result<String, FfiError> {
+    // Convert to CDK proof to calculate Y
+    let cdk_proof: cdk::nuts::Proof = proof.clone().try_into()?;
+    Ok(cdk_proof.y()?.to_string())
+}
 
-    /// Check if proof has DLEQ proof
-    pub fn has_dleq(&self) -> bool {
-        self.inner.dleq.is_some()
+/// Check if proof is active with given keyset IDs
+#[uniffi::export]
+pub fn proof_is_active(proof: &Proof, active_keyset_ids: Vec<String>) -> bool {
+    use cdk::nuts::Id;
+    let ids: Vec<Id> = active_keyset_ids
+        .into_iter()
+        .filter_map(|id| Id::from_str(&id).ok())
+        .collect();
+
+    // A proof is active if its keyset_id is in the active list
+    if let Ok(keyset_id) = Id::from_str(&proof.keyset_id) {
+        ids.contains(&keyset_id)
+    } else {
+        false
     }
 }
 
 /// FFI-compatible Proofs (vector of Proof)
-pub type Proofs = Vec<std::sync::Arc<Proof>>;
+pub type Proofs = Vec<Proof>;
 
 /// FFI-compatible DLEQ proof for proofs
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -175,9 +181,12 @@ impl From<BlindSignatureDleq> for cdk::nuts::BlindSignatureDleq {
     }
 }
 
-/// Helper functions for Proofs
+/// Helper function to calculate total amount of proofs
+#[uniffi::export]
 pub fn proofs_total_amount(proofs: &Proofs) -> Result<Amount, FfiError> {
-    let cdk_proofs: Vec<cdk::nuts::Proof> = proofs.iter().map(|p| p.inner.clone()).collect();
+    let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+        proofs.iter().map(|p| p.clone().try_into()).collect();
+    let cdk_proofs = cdk_proofs?;
     use cdk::nuts::ProofsMethods;
     Ok(cdk_proofs.total_amount()?.into())
 }
@@ -420,7 +429,7 @@ impl TryFrom<SpendingConditions> for cdk::nuts::SpendingConditions {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ProofInfo {
     /// Proof
-    pub proof: std::sync::Arc<Proof>,
+    pub proof: Proof,
     /// Y value (hash_to_curve of secret)
     pub y: super::keys::PublicKey,
     /// Mint URL
@@ -436,7 +445,7 @@ pub struct ProofInfo {
 impl From<cdk::types::ProofInfo> for ProofInfo {
     fn from(info: cdk::types::ProofInfo) -> Self {
         Self {
-            proof: std::sync::Arc::new(info.proof.into()),
+            proof: info.proof.into(),
             y: info.y.into(),
             mint_url: info.mint_url.into(),
             state: info.state.into(),
@@ -458,7 +467,7 @@ pub fn decode_proof_info(json: String) -> Result<ProofInfo, FfiError> {
 pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
     // Convert to cdk::types::ProofInfo for serialization
     let cdk_info = cdk::types::ProofInfo {
-        proof: info.proof.inner.clone(),
+        proof: info.proof.try_into()?,
         y: info.y.try_into()?,
         mint_url: info.mint_url.try_into()?,
         state: info.state.into(),

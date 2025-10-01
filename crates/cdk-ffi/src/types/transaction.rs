@@ -155,7 +155,9 @@ impl TransactionId {
 
     /// Create from proofs
     pub fn from_proofs(proofs: &Proofs) -> Result<Self, FfiError> {
-        let cdk_proofs: Vec<cdk::nuts::Proof> = proofs.iter().map(|p| p.inner.clone()).collect();
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.iter().map(|p| p.clone().try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
         let id = cdk::wallet::types::TransactionId::from_proofs(cdk_proofs)?;
         Ok(Self {
             hex: id.to_string(),

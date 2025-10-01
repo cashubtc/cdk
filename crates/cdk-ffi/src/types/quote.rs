@@ -117,7 +117,7 @@ pub fn encode_mint_quote(quote: MintQuote) -> Result<String, FfiError> {
 }
 
 /// FFI-compatible MintQuoteBolt11Response
-#[derive(Debug, uniffi::Object)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MintQuoteBolt11Response {
     /// Quote ID
     pub quote: String,
@@ -149,46 +149,8 @@ impl From<cdk::nuts::MintQuoteBolt11Response<String>> for MintQuoteBolt11Respons
     }
 }
 
-#[uniffi::export]
-impl MintQuoteBolt11Response {
-    /// Get quote ID
-    pub fn quote(&self) -> String {
-        self.quote.clone()
-    }
-
-    /// Get request string
-    pub fn request(&self) -> String {
-        self.request.clone()
-    }
-
-    /// Get state
-    pub fn state(&self) -> QuoteState {
-        self.state.clone()
-    }
-
-    /// Get expiry
-    pub fn expiry(&self) -> Option<u64> {
-        self.expiry
-    }
-
-    /// Get amount
-    pub fn amount(&self) -> Option<Amount> {
-        self.amount
-    }
-
-    /// Get unit
-    pub fn unit(&self) -> Option<CurrencyUnit> {
-        self.unit.clone()
-    }
-
-    /// Get pubkey
-    pub fn pubkey(&self) -> Option<String> {
-        self.pubkey.clone()
-    }
-}
-
 /// FFI-compatible MeltQuoteBolt11Response
-#[derive(Debug, uniffi::Object)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MeltQuoteBolt11Response {
     /// Quote ID
     pub quote: String,
@@ -220,49 +182,6 @@ impl From<cdk::nuts::MeltQuoteBolt11Response<String>> for MeltQuoteBolt11Respons
             request: response.request,
             unit: response.unit.map(Into::into),
         }
-    }
-}
-
-#[uniffi::export]
-impl MeltQuoteBolt11Response {
-    /// Get quote ID
-    pub fn quote(&self) -> String {
-        self.quote.clone()
-    }
-
-    /// Get amount
-    pub fn amount(&self) -> Amount {
-        self.amount
-    }
-
-    /// Get fee reserve
-    pub fn fee_reserve(&self) -> Amount {
-        self.fee_reserve
-    }
-
-    /// Get state
-    pub fn state(&self) -> QuoteState {
-        self.state.clone()
-    }
-
-    /// Get expiry
-    pub fn expiry(&self) -> u64 {
-        self.expiry
-    }
-
-    /// Get payment preimage
-    pub fn payment_preimage(&self) -> Option<String> {
-        self.payment_preimage.clone()
-    }
-
-    /// Get request
-    pub fn request(&self) -> Option<String> {
-        self.request.clone()
-    }
-
-    /// Get unit
-    pub fn unit(&self) -> Option<CurrencyUnit> {
-        self.unit.clone()
     }
 }
 

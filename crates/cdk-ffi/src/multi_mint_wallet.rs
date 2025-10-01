@@ -168,10 +168,7 @@ impl MultiMintWallet {
         let proofs = self.inner.list_proofs().await?;
         let mut proofs_by_mint = HashMap::new();
         for (mint_url, mint_proofs) in proofs {
-            let ffi_proofs: Vec<Arc<Proof>> = mint_proofs
-                .into_iter()
-                .map(|p| Arc::new(p.into()))
-                .collect();
+            let ffi_proofs: Vec<Proof> = mint_proofs.into_iter().map(|p| p.into()).collect();
             proofs_by_mint.insert(mint_url.to_string(), ffi_proofs);
         }
         Ok(proofs_by_mint)
@@ -241,7 +238,7 @@ impl MultiMintWallet {
             .inner
             .mint(&cdk_mint_url, &quote_id, conditions)
             .await?;
-        Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
     /// Get a melt quote from a specific mint
@@ -299,7 +296,7 @@ impl MultiMintWallet {
 
         let result = self.inner.swap(amount.map(Into::into), conditions).await?;
 
-        Ok(result.map(|proofs| proofs.into_iter().map(|p| Arc::new(p.into())).collect()))
+        Ok(result.map(|proofs| proofs.into_iter().map(|p| p.into()).collect()))
     }
 
     /// List transactions from all mints
@@ -447,4 +444,4 @@ impl From<MultiMintSendOptions> for CdkMultiMintSendOptions {
 pub type BalanceMap = HashMap<String, Amount>;
 
 /// Type alias for proofs by mint URL
-pub type ProofsByMint = HashMap<String, Vec<Arc<Proof>>>;
+pub type ProofsByMint = HashMap<String, Vec<Proof>>;

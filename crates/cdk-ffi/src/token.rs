@@ -75,10 +75,7 @@ impl Token {
         // For now, return empty keysets to get all proofs
         let empty_keysets = vec![];
         let proofs = self.inner.proofs(&empty_keysets)?;
-        Ok(proofs
-            .into_iter()
-            .map(|p| std::sync::Arc::new(p.into()))
-            .collect())
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
     /// Convert token to raw bytes
