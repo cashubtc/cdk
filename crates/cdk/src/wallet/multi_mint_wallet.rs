@@ -811,6 +811,7 @@ impl MultiMintWallet {
     }
 
     /// Wait for a mint quote to be paid and automatically mint the proofs
+    #[cfg(not(target_arch = "wasm32"))]
     #[instrument(skip(self))]
     pub async fn wait_for_mint_quote(
         &self,
