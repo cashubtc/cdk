@@ -677,19 +677,18 @@ impl CdkMint for MintRPCServer {
             _ => {
                 // Create a new quote with the same values
                 let quote = MintQuote::new(
-                    Some(mint_quote.id.clone()),          // id
-                    mint_quote.request.clone(),           // request
-                    mint_quote.unit.clone(),              // unit
-                    mint_quote.amount,                    // amount
-                    mint_quote.expiry,                    // expiry
-                    mint_quote.request_lookup_id.clone(), // request_lookup_id
-                    mint_quote.pubkey,                    // pubkey
-                    mint_quote.amount_issued(),           // amount_issued
-                    mint_quote.amount_paid(),             // amount_paid
-                    mint_quote.payment_method.clone(),    // method
-                    0,                                    // created_at
-                    vec![],                               // blinded_messages
-                    vec![],                               // payment_ids
+                    mint_quote.id.clone(),             // id
+                    mint_quote.request.clone(),        // request
+                    mint_quote.unit.clone(),           // unit
+                    mint_quote.amount,                 // amount
+                    mint_quote.expiry,                 // expiry
+                    mint_quote.pubkey,                 // pubkey
+                    mint_quote.amount_issued(),        // amount_issued
+                    mint_quote.amount_paid(),          // amount_paid
+                    mint_quote.payment_method.clone(), // method
+                    0,                                 // created_at
+                    vec![],                            // blinded_messages
+                    vec![],                            // payment_ids
                 );
 
                 let mint_store = self.mint.localstore();

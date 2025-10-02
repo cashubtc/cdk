@@ -682,7 +682,7 @@ impl Mint {
             .await?;
         } else {
             tracing::warn!(
-                "Could not get request for request lookup id {:?}",
+                "Could not get request for request lookup id {}",
                 wait_payment_response.payment_identifier
             );
         }

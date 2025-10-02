@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -249,10 +249,10 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
 
     let ln_fake_backend = FakeWallet::new(
         fee_reserve.clone(),
-        HashMap::default(),
         HashSet::default(),
         2,
         CurrencyUnit::Sat,
+        localstore.clone(),
     );
 
     mint_builder

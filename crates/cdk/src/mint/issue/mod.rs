@@ -281,8 +281,11 @@ impl Mint {
                 }
             };
 
+            // Generate quote ID first so it can be passed to the payment processor
+            let quote_id = QuoteId::new_uuid();
+
             let create_invoice_response = ln
-                .create_incoming_payment_request(&unit, payment_options)
+                .create_incoming_payment_request(&quote_id, &unit, payment_options)
                 .await
                 .map_err(|err| {
                     tracing::error!("Could not create invoice: {}", err);
@@ -290,12 +293,11 @@ impl Mint {
                 })?;
 
             let quote = MintQuote::new(
-                None,
+                quote_id,
                 create_invoice_response.request.to_string(),
                 unit.clone(),
                 amount,
                 create_invoice_response.expiry.unwrap_or(0),
-                create_invoice_response.request_lookup_id.clone(),
                 pubkey,
                 Amount::ZERO,
                 Amount::ZERO,
@@ -306,12 +308,11 @@ impl Mint {
             );
 
             tracing::debug!(
-                "New {} mint quote {} for {:?} {} with request id {:?}",
+                "New {} mint quote {} for {:?} {}",
                 payment_method,
                 quote.id,
                 amount,
                 unit,
-                create_invoice_response.request_lookup_id.to_string(),
             );
 
             let mut tx = self.localstore.begin_transaction().await?;

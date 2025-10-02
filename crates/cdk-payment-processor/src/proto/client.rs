@@ -9,6 +9,7 @@ use cdk_common::payment::{
     MakePaymentResponse as CdkMakePaymentResponse, MintPayment,
     PaymentQuoteResponse as CdkPaymentQuoteResponse, WaitPaymentResponse,
 };
+use cdk_common::QuoteId;
 use futures::{Stream, StreamExt};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -105,6 +106,7 @@ impl MintPayment for PaymentProcessorClient {
     /// Create a new invoice
     async fn create_incoming_payment_request(
         &self,
+        quote_id: &QuoteId,
         unit: &cdk_common::CurrencyUnit,
         options: CdkIncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
@@ -135,6 +137,7 @@ impl MintPayment for PaymentProcessorClient {
             .create_payment(Request::new(CreatePaymentRequest {
                 unit: unit.to_string(),
                 options: Some(proto_options),
+                quote_id: quote_id.to_string(),
             }))
             .await
             .map_err(|err| {
@@ -151,6 +154,7 @@ impl MintPayment for PaymentProcessorClient {
 
     async fn get_payment_quote(
         &self,
+        quote_id: &QuoteId,
         unit: &cdk_common::CurrencyUnit,
         options: cdk_common::payment::OutgoingPaymentOptions,
     ) -> Result<CdkPaymentQuoteResponse, Self::Err> {
@@ -181,6 +185,7 @@ impl MintPayment for PaymentProcessorClient {
                 unit: unit.to_string(),
                 options: proto_options.map(Into::into),
                 request_type: request_type.into(),
+                quote_id: quote_id.to_string(),
             }))
             .await
             .map_err(|err| {
@@ -195,6 +200,7 @@ impl MintPayment for PaymentProcessorClient {
 
     async fn make_payment(
         &self,
+        quote_id: &QuoteId,
         _unit: &cdk_common::CurrencyUnit,
         options: cdk_common::payment::OutgoingPaymentOptions,
     ) -> Result<CdkMakePaymentResponse, Self::Err> {
@@ -232,6 +238,7 @@ impl MintPayment for PaymentProcessorClient {
                 payment_options: Some(payment_options),
                 partial_amount: None,
                 max_fee_amount: None,
+                quote_id: quote_id.to_string(),
             }))
             .await
             .map_err(|err| {
