@@ -139,7 +139,10 @@ where
         let mut latest = if let Ok(reader) = self.latest.lock() {
             reader
         } else {
-            let _ = self.inner.try_send((name.to_owned(), event));
+            let _ = self
+                .inner
+                .try_send((name.to_owned(), event))
+                .inspect_err(|err| tracing::warn!("Failed to send message to subscriber {err:?}"));
             return;
         };
 
@@ -149,6 +152,9 @@ where
             }
         }
 
-        let _ = self.inner.try_send((name.to_owned(), event));
+        let _ = self
+            .inner
+            .try_send((name.to_owned(), event))
+            .inspect_err(|err| tracing::warn!("Failed to send message to subscriber {err:?}"));
     }
 }

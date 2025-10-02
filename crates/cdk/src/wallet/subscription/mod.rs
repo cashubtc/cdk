@@ -13,8 +13,7 @@ use std::sync::{Arc, RwLock};
 use cdk_common::nut17::ws::{WsMethodRequest, WsRequest, WsUnsubscribeRequest};
 use cdk_common::nut17::{Kind, NotificationId};
 use cdk_common::pub_sub::remote_consumer::{
-    Consumer, InternalRelay, MessageToTransportLoop, RemoteActiveConsumer, SubscribeMessage,
-    Transport,
+    Consumer, InternalRelay, LongPoll, RemoteActiveConsumer, SubscribeMessage, Transport,
 };
 use cdk_common::pub_sub::{Error as PubsubError, Event, Subscriber, Topic};
 use cdk_common::subscription::WalletParams;
@@ -203,7 +202,7 @@ impl Transport for SubscriptionClient {
 
     async fn long_poll(
         &self,
-        _subscribe_changes: mpsc::Receiver<MessageToTransportLoop<Self::Topic>>,
+        _subscribe_changes: mpsc::Receiver<LongPoll<Self::Topic>>,
         _topics: Vec<SubscribeMessage<Self::Topic>>,
         _reply_to: InternalRelay<Self::Topic>,
     ) -> Result<(), PubsubError> {

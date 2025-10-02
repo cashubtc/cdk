@@ -1,7 +1,5 @@
 use cdk_common::nut17::ws::WsMessageOrResponse;
-use cdk_common::pub_sub::remote_consumer::{
-    InternalRelay, MessageToTransportLoop, SubscribeMessage,
-};
+use cdk_common::pub_sub::remote_consumer::{InternalRelay, LongPoll, SubscribeMessage};
 use cdk_common::pub_sub::Error as PubsubError;
 #[cfg(feature = "auth")]
 use cdk_common::{Method, RoutePath};
@@ -16,7 +14,7 @@ use super::{MintSubTopics, SubscriptionClient};
 #[inline(always)]
 pub(crate) async fn long_connection(
     client: &SubscriptionClient,
-    mut subscribe_changes: mpsc::Receiver<MessageToTransportLoop<MintSubTopics>>,
+    mut subscribe_changes: mpsc::Receiver<LongPoll<MintSubTopics>>,
     topics: Vec<SubscribeMessage<MintSubTopics>>,
     reply_to: InternalRelay<MintSubTopics>,
 ) -> Result<(), PubsubError> {
@@ -106,7 +104,7 @@ pub(crate) async fn long_connection(
         tokio::select! {
             Some(msg) = subscribe_changes.recv() => {
                 match msg {
-                    MessageToTransportLoop::Subscribe(msg) => {
+                    LongPoll::Subscribe(msg) => {
                         let (_, req) = if let Some(req) = client.get_sub_request(msg.0, msg.1) {
                             req
                         } else {
@@ -114,7 +112,7 @@ pub(crate) async fn long_connection(
                         };
                         let _ = write.send(Message::Text(req.into())).await;
                     }
-                    MessageToTransportLoop::Unsubscribe(msg) => {
+                    LongPoll::Unsubscribe(msg) => {
                         let req = if let Some(req) = client.get_unsub_request(msg) {
                             req
                         } else {
@@ -122,7 +120,7 @@ pub(crate) async fn long_connection(
                         };
                         let _ = write.send(Message::Text(req.into())).await;
                     }
-                    MessageToTransportLoop::Stop => {
+                    LongPoll::Stop => {
                         if let Err(err) = write.send(Message::Close(None)).await {
                             tracing::error!("Closing error {err:?}");
                         }

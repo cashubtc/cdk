@@ -17,6 +17,8 @@ const LONG_CONNECTION_BACKOFF: Duration = Duration::from_millis(2_000);
 
 const LONG_CONNECTION_MAX_BACKOFF: Duration = Duration::from_millis(30_000);
 
+const INTERNAL_POLL_SIZE: usize = 1_000;
+
 const POLL_SLEEP: Duration = Duration::from_millis(2_000);
 
 #[cfg(target_arch = "wasm32")]
@@ -47,7 +49,7 @@ where
     inner_pubsub: Arc<Pubsub<T::Topic>>,
     remote_subscriptions: UniqueSubscriptions<T::Topic>,
     subscriptions: ActiveSubscriptions<T::Topic>,
-    send_to_transport_loop: RwLock<mpsc::Sender<MessageToTransportLoop<T::Topic>>>,
+    send_to_long_poll: RwLock<Option<mpsc::Sender<LongPoll<T::Topic>>>>,
     still_running: AtomicBool,
     prefer_polling: bool,
     /// Cached events
@@ -188,13 +190,13 @@ where
             inner_pubsub: Arc::new(Pubsub::new(topic)),
             subscriptions: Default::default(),
             remote_subscriptions: Default::default(),
-            send_to_transport_loop: RwLock::new(mpsc::channel(10_000).0),
+            send_to_long_poll: RwLock::new(None),
             cached_events: Default::default(),
             still_running: true.into(),
         });
 
         #[cfg(not(target_arch = "wasm32"))]
-        tokio::spawn(Self::connection_loop(this.clone()));
+        tokio::spawn(Self::long_poll(this.clone()));
 
         #[cfg(target_arch = "wasm32")]
         wasm_bindgen_futures::spawn_local(Self::connection_loop(this.clone()));
@@ -202,7 +204,7 @@ where
         this
     }
 
-    async fn connection_loop(instance: Arc<Self>) {
+    async fn long_poll(instance: Arc<Self>) {
         let mut long_connection_supported = true;
         let mut poll_supported = true;
 
@@ -221,8 +223,9 @@ where
             if instance
                 .remote_subscriptions
                 .read()
-                .expect("xxx")
-                .is_empty()
+                .map(|x| x.len())
+                .unwrap_or_default()
+                == 0
             {
                 sleep(Duration::from_millis(100)).await;
                 continue;
@@ -230,13 +233,21 @@ where
 
             if long_connection_supported
                 && !instance.prefer_polling
-                && (retry_at.is_none() || retry_at.unwrap() < Instant::now())
+                && retry_at
+                    .map(|retry_at| retry_at < Instant::now())
+                    .unwrap_or(true)
             {
-                let (sender, receiver) = mpsc::channel(10_000);
+                let (sender, receiver) = mpsc::channel(INTERNAL_POLL_SIZE);
 
                 {
-                    let mut shared_sender = instance.send_to_transport_loop.write().unwrap();
-                    *shared_sender = sender;
+                    *(instance
+                        .send_to_long_poll
+                        .write()
+                        .unwrap_or_else(|mut err| {
+                            **err.get_mut() = None;
+                            instance.send_to_long_poll.clear_poison();
+                            err.into_inner()
+                        })) = Some(sender);
                 }
 
                 let current_subscriptions = {
@@ -272,6 +283,17 @@ where
                 } else {
                     backoff = LONG_CONNECTION_BACKOFF;
                 }
+
+                // remove sender to long_poll
+                let _ = instance
+                    .send_to_long_poll
+                    .write()
+                    .unwrap_or_else(|mut err| {
+                        **err.get_mut() = None;
+                        instance.send_to_long_poll.clear_poison();
+                        err.into_inner()
+                    })
+                    .take();
             }
 
             if poll_supported {
@@ -348,27 +370,28 @@ where
 
                 cached_events.remove(&topic);
 
-                let _ = self
-                    .send_to_transport_loop
-                    .read()
-                    .map_err(|_| Error::Poison)?
-                    .try_send(MessageToTransportLoop::Unsubscribe(
-                        remote_subscription.name.clone(),
-                    ));
+                self.message_to_long_poll(LongPoll::Unsubscribe(remote_subscription.name.clone()))?;
             } else {
                 remote_subscriptions.insert(topic, remote_subscription);
             }
         }
 
         if remote_subscriptions.is_empty() {
-            let _ = self
-                .send_to_transport_loop
-                .read()
-                .map_err(|_| Error::Poison)?
-                .try_send(MessageToTransportLoop::Stop);
+            self.message_to_long_poll(LongPoll::Stop)?;
         }
 
         Ok(())
+    }
+
+    #[inline(always)]
+    fn message_to_long_poll(&self, message: LongPoll<T::Topic>) -> Result<(), Error> {
+        let to_long_poll = self.send_to_long_poll.read().map_err(|_| Error::Poison)?;
+
+        if let Some(to_long_poll) = to_long_poll.as_ref() {
+            Ok(to_long_poll.try_send(message)?)
+        } else {
+            Ok(())
+        }
     }
 
     /// Creates a subscription
@@ -425,14 +448,7 @@ where
                 );
 
                 // new subscription is created, so the connection worker should be notified
-                let _ = self
-                    .send_to_transport_loop
-                    .read()
-                    .map_err(|_| Error::Poison)?
-                    .try_send(MessageToTransportLoop::Subscribe((
-                        internal_sub_name,
-                        topic.clone(),
-                    )));
+                self.message_to_long_poll(LongPoll::Subscribe((internal_sub_name, topic.clone())))?;
             }
         }
 
@@ -454,8 +470,11 @@ where
     fn drop(&mut self) {
         self.still_running
             .store(false, std::sync::atomic::Ordering::Release);
-        let r = self.send_to_transport_loop.read().unwrap();
-        let _ = r.try_send(MessageToTransportLoop::Stop);
+        if let Ok(Some(to_long_poll)) = self.send_to_long_poll.read().map(|sender| sender.clone()) {
+            let _ = to_long_poll.try_send(LongPoll::Stop).inspect_err(|err| {
+                tracing::error!("Failed to send message LongPoll::Stop due to {err:?}")
+            });
+        }
     }
 }
 
@@ -467,7 +486,7 @@ pub type SubscribeMessage<T> = (
 
 /// Messages sent from the [`Consumer`] to the [`Transport`] background loop.
 #[derive(Debug, Clone)]
-pub enum MessageToTransportLoop<T>
+pub enum LongPoll<T>
 where
     T: Topic + 'static,
 {
@@ -508,7 +527,7 @@ pub trait Transport: Send + Sync {
     /// Open a long connection
     async fn long_poll(
         &self,
-        subscribe_changes: mpsc::Receiver<MessageToTransportLoop<Self::Topic>>,
+        subscribe_changes: mpsc::Receiver<LongPoll<Self::Topic>>,
         topics: Vec<SubscribeMessage<Self::Topic>>,
         reply_to: InternalRelay<Self::Topic>,
     ) -> Result<(), Error>;
@@ -607,7 +626,7 @@ mod tests {
         _topic: CustomTopic,
         name_ctr: AtomicUsize,
         // We forward all transport-loop control messages here so tests can observe them.
-        observe_ctrl_tx: mpsc::Sender<MessageToTransportLoop<CustomTopic>>,
+        observe_ctrl_tx: mpsc::Sender<LongPoll<CustomTopic>>,
         // Whether long-poll / poll are supported.
         support_long: bool,
         support_poll: bool,
@@ -621,11 +640,11 @@ mod tests {
         ) -> (
             Self,
             mpsc::Sender<Message>,
-            mpsc::Receiver<MessageToTransportLoop<CustomTopic>>,
+            mpsc::Receiver<LongPoll<CustomTopic>>,
         ) {
-            let (events_tx, rx) = mpsc::channel::<Message>(1024);
+            let (events_tx, rx) = mpsc::channel::<Message>(INTERNAL_POLL_SIZE);
             let (observe_ctrl_tx, observe_ctrl_rx) =
-                mpsc::channel::<MessageToTransportLoop<CustomTopic>>(1024);
+                mpsc::channel::<LongPoll<CustomTopic>>(INTERNAL_POLL_SIZE);
 
             let t = TestTransport {
                 _topic: CustomTopic,
@@ -650,7 +669,7 @@ mod tests {
 
         async fn long_poll(
             &self,
-            mut subscribe_changes: mpsc::Receiver<MessageToTransportLoop<Self::Topic>>,
+            mut subscribe_changes: mpsc::Receiver<LongPoll<Self::Topic>>,
             topics: Vec<SubscribeMessage<Self::Topic>>,
             reply_to: InternalRelay<Self::Topic>,
         ) -> Result<(), Error> {
@@ -663,9 +682,7 @@ mod tests {
             let observe = self.observe_ctrl_tx.clone();
 
             for topic in topics {
-                observe
-                    .try_send(MessageToTransportLoop::Subscribe(topic))
-                    .unwrap();
+                observe.try_send(LongPoll::Subscribe(topic)).unwrap();
             }
 
             loop {
@@ -673,7 +690,7 @@ mod tests {
                     // Forward any control (Subscribe/Unsubscribe/Stop) messages so the test can assert them.
                     Some(ctrl) = subscribe_changes.recv() => {
                         observe.try_send(ctrl.clone()).unwrap();
-                        if matches!(ctrl, MessageToTransportLoop::Stop) {
+                        if matches!(ctrl, LongPoll::Stop) {
                             break;
                         }
                     }
@@ -724,10 +741,10 @@ mod tests {
     }
 
     async fn expect_ctrl(
-        rx: &mut mpsc::Receiver<MessageToTransportLoop<CustomTopic>>,
+        rx: &mut mpsc::Receiver<LongPoll<CustomTopic>>,
         dur_ms: u64,
-        pred: impl Fn(&MessageToTransportLoop<CustomTopic>) -> bool,
-    ) -> MessageToTransportLoop<CustomTopic> {
+        pred: impl Fn(&LongPoll<CustomTopic>) -> bool,
+    ) -> LongPoll<CustomTopic> {
         timeout(Duration::from_millis(dur_ms), async {
             loop {
                 if let Some(msg) = rx.recv().await {
@@ -757,9 +774,14 @@ mod tests {
             .expect("subscribe ok");
 
         // We should see a Subscribe(name, topic) forwarded to transport
-        let ctrl = expect_ctrl(&mut ctrl_rx, 1000, |m| matches!(m, MessageToTransportLoop::Subscribe((_, idx)) if *idx == IndexTest::Foo(7))).await;
+        let ctrl = expect_ctrl(
+            &mut ctrl_rx,
+            1000,
+            |m| matches!(m, LongPoll::Subscribe((_, idx)) if *idx == IndexTest::Foo(7)),
+        )
+        .await;
         match ctrl {
-            MessageToTransportLoop::Subscribe((name, idx)) => {
+            LongPoll::Subscribe((name, idx)) => {
                 assert_ne!(name, "t".to_owned());
                 assert_eq!(idx, IndexTest::Foo(7));
             }
@@ -776,16 +798,13 @@ mod tests {
         // Dropping the RemoteActiveConsumer should trigger an Unsubscribe(name)
         drop(sub);
         let _ctrl = expect_ctrl(&mut ctrl_rx, 1000, |m| {
-            matches!(m, MessageToTransportLoop::Unsubscribe(_))
+            matches!(m, LongPoll::Unsubscribe(_))
         })
         .await;
 
         // Drop the Consumer -> Stop is sent so the transport loop exits cleanly
         drop(consumer);
-        let _ = expect_ctrl(&mut ctrl_rx, 1000, |m| {
-            matches!(m, MessageToTransportLoop::Stop)
-        })
-        .await;
+        let _ = expect_ctrl(&mut ctrl_rx, 1000, |m| matches!(m, LongPoll::Stop)).await;
     }
 
     #[tokio::test]
@@ -802,9 +821,14 @@ mod tests {
             .expect("subscribe ok");
 
         // We should see a Subscribe(name, topic) forwarded to transport
-        let ctrl = expect_ctrl(&mut ctrl_rx, 1000, |m| matches!(m, MessageToTransportLoop::Subscribe((_, idx)) if *idx == IndexTest::Foo(7))).await;
+        let ctrl = expect_ctrl(
+            &mut ctrl_rx,
+            1000,
+            |m| matches!(m, LongPoll::Subscribe((_, idx)) if *idx == IndexTest::Foo(7)),
+        )
+        .await;
         match ctrl {
-            MessageToTransportLoop::Subscribe((name, idx)) => {
+            LongPoll::Subscribe((name, idx)) => {
                 assert_ne!(name, "t1".to_owned());
                 assert_eq!(idx, IndexTest::Foo(7));
             }
@@ -860,7 +884,7 @@ mod tests {
         drop(sub_3);
 
         let _ctrl = expect_ctrl(&mut ctrl_rx, 1000, |m| {
-            matches!(m, MessageToTransportLoop::Unsubscribe(_))
+            matches!(m, LongPoll::Unsubscribe(_))
         })
         .await;
 
@@ -877,10 +901,7 @@ mod tests {
         drop(sub_4);
 
         // Drop the Consumer -> Stop is sent so the transport loop exits cleanly
-        let _ = expect_ctrl(&mut ctrl_rx, 2000, |m| {
-            matches!(m, MessageToTransportLoop::Stop)
-        })
-        .await;
+        let _ = expect_ctrl(&mut ctrl_rx, 2000, |m| matches!(m, LongPoll::Stop)).await;
     }
 
     #[tokio::test]
@@ -915,7 +936,12 @@ mod tests {
         let mut a = consumer
             .subscribe(SubscriptionReq::Foo("t".to_owned(), 1))
             .expect("subscribe A");
-        let _ = expect_ctrl(&mut ctrl_rx, 1000, |m| matches!(m, MessageToTransportLoop::Subscribe((_, idx)) if  *idx == IndexTest::Foo(1))).await;
+        let _ = expect_ctrl(
+            &mut ctrl_rx,
+            1000,
+            |m| matches!(m, LongPoll::Subscribe((_, idx)) if  *idx == IndexTest::Foo(1)),
+        )
+        .await;
 
         let mut b = consumer
             .subscribe(SubscriptionReq::Foo("b".to_owned(), 1))
@@ -923,7 +949,7 @@ mod tests {
 
         // No second Subscribe should be forwarded for the same topic (coalesced).
         // Give a little time; if one appears, we'll fail explicitly.
-        if let Ok(Some(MessageToTransportLoop::Subscribe((_, idx)))) =
+        if let Ok(Some(LongPoll::Subscribe((_, idx)))) =
             timeout(Duration::from_millis(400), ctrl_rx.recv()).await
         {
             assert_ne!(idx, IndexTest::Foo(1), "should not resubscribe same topic");
@@ -942,7 +968,7 @@ mod tests {
 
         // Drop B: no Unsubscribe should be sent yet (still one local subscriber).
         drop(b);
-        if let Ok(Some(MessageToTransportLoop::Unsubscribe(_))) =
+        if let Ok(Some(LongPoll::Unsubscribe(_))) =
             timeout(Duration::from_millis(400), ctrl_rx.recv()).await
         {
             panic!("Should NOT unsubscribe while another local subscriber exists");
@@ -951,13 +977,10 @@ mod tests {
         // Drop A: now remote unsubscribe should occur.
         drop(a);
         let _ = expect_ctrl(&mut ctrl_rx, 1000, |m| {
-            matches!(m, MessageToTransportLoop::Unsubscribe(_))
+            matches!(m, LongPoll::Unsubscribe(_))
         })
         .await;
 
-        let _ = expect_ctrl(&mut ctrl_rx, 1000, |m| {
-            matches!(m, MessageToTransportLoop::Stop)
-        })
-        .await;
+        let _ = expect_ctrl(&mut ctrl_rx, 1000, |m| matches!(m, LongPoll::Stop)).await;
     }
 }

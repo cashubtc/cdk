@@ -1,5 +1,7 @@
 //! Error types for the pub-sub module.
 
+use tokio::sync::mpsc::error::TrySendError;
+
 #[derive(thiserror::Error, Debug)]
 /// Error
 pub enum Error {
@@ -30,4 +32,21 @@ pub enum Error {
     /// Not supported
     #[error("Not supported")]
     NotSupported,
+
+    /// Channel is full
+    #[error("Channel is full")]
+    ChannelFull,
+
+    /// Channel is closed
+    #[error("Channel is close")]
+    ChannelClosed,
+}
+
+impl<T> From<TrySendError<T>> for Error {
+    fn from(value: TrySendError<T>) -> Self {
+        match value {
+            TrySendError::Closed(_) => Error::ChannelClosed,
+            TrySendError::Full(_) => Error::ChannelFull,
+        }
+    }
 }
