@@ -34,7 +34,9 @@
     , pre-commit-hooks
     , ...
     }@inputs:
-    flake-utils.lib.eachDefaultSystem (
+    {
+      nixosModules.default = import ./crates/cdk-mintd/module.nix;
+    } // flake-utils.lib.eachDefaultSystem (
       system:
       let
         overlays = [ (import rust-overlay) ];
@@ -240,6 +242,10 @@
               ;
             default = stable;
           };
+        packages = {
+          cdk-mintd = pkgs.callPackage ./crates/cdk-mintd/package.nix { };
+          default = self.packages.${system}.cdk-mintd;
+        };
       }
     );
 }
