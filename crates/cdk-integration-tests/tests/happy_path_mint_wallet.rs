@@ -9,6 +9,7 @@
 //! whether to use real Lightning Network payments (regtest mode) or simulated payments.
 
 use core::panic;
+use std::collections::HashMap;
 use std::env;
 use std::fmt::Debug;
 use std::path::PathBuf;
@@ -161,9 +162,23 @@ async fn test_happy_mint_melt_round_trip() {
 
     assert_eq!(response_json, expected_json);
 
-    let melt_response = wallet.melt(&melt.id).await.unwrap();
+    let mut metadata = HashMap::new();
+    metadata.insert("test".to_string(), "value".to_string());
+
+    let melt_response = wallet
+        .melt_with_metadata(&melt.id, metadata.clone())
+        .await
+        .unwrap();
     assert!(melt_response.preimage.is_some());
-    assert!(melt_response.state == MeltQuoteState::Paid);
+    assert_eq!(melt_response.state, MeltQuoteState::Paid);
+
+    let txs = wallet.list_transactions(None).await.unwrap();
+    let tx = txs
+        .into_iter()
+        .find(|tx| tx.quote_id == Some(melt.id.clone()))
+        .unwrap();
+    assert_eq!(tx.amount, melt.amount);
+    assert_eq!(tx.metadata, metadata);
 
     let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
     // first message is the current state
