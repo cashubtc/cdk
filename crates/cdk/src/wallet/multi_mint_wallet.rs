@@ -741,6 +741,32 @@ impl MultiMintWallet {
         wallet.mint_quote(amount, description).await
     }
 
+    /// Check a specific mint quote status
+    #[instrument(skip(self))]
+    pub async fn check_mint_quote(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+    ) -> Result<MintQuote, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        // Check the quote state from the mint
+        wallet.mint_quote_state(quote_id).await?;
+
+        // Get the updated quote from local storage
+        let quote = wallet
+            .localstore
+            .get_mint_quote(quote_id)
+            .await
+            .map_err(Error::Database)?
+            .ok_or(Error::UnknownQuote)?;
+
+        Ok(quote)
+    }
+
     /// Check all mint quotes
     /// If quote is paid, wallet will mint
     #[instrument(skip(self))]
@@ -781,6 +807,37 @@ impl MultiMintWallet {
 
         wallet
             .mint(quote_id, SplitTarget::default(), conditions)
+            .await
+    }
+
+    /// Wait for a mint quote to be paid and automatically mint the proofs
+    #[cfg(not(target_arch = "wasm32"))]
+    #[instrument(skip(self))]
+    pub async fn wait_for_mint_quote(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+        split_target: SplitTarget,
+        conditions: Option<SpendingConditions>,
+        timeout_secs: u64,
+    ) -> Result<Proofs, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        // Get the mint quote from local storage
+        let quote = wallet
+            .localstore
+            .get_mint_quote(quote_id)
+            .await
+            .map_err(Error::Database)?
+            .ok_or(Error::UnknownQuote)?;
+
+        // Wait for the quote to be paid and mint the proofs
+        let timeout_duration = tokio::time::Duration::from_secs(timeout_secs);
+        wallet
+            .wait_and_mint_quote(quote, split_target, conditions, timeout_duration)
             .await
     }
 

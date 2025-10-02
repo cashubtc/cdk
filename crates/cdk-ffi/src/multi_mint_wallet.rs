@@ -227,6 +227,20 @@ impl MultiMintWallet {
         Ok(quote.into())
     }
 
+    /// Check a specific mint quote status
+    pub async fn check_mint_quote(
+        &self,
+        mint_url: MintUrl,
+        quote_id: String,
+    ) -> Result<MintQuote, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let quote = self
+            .inner
+            .check_mint_quote(&cdk_mint_url, &quote_id)
+            .await?;
+        Ok(quote.into())
+    }
+
     /// Mint tokens at a specific mint
     pub async fn mint(
         &self,
@@ -240,6 +254,32 @@ impl MultiMintWallet {
         let proofs = self
             .inner
             .mint(&cdk_mint_url, &quote_id, conditions)
+            .await?;
+        Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
+    }
+
+    /// Wait for a mint quote to be paid and automatically mint the proofs
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn wait_for_mint_quote(
+        &self,
+        mint_url: MintUrl,
+        quote_id: String,
+        split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+        timeout_secs: u64,
+    ) -> Result<Proofs, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
+
+        let proofs = self
+            .inner
+            .wait_for_mint_quote(
+                &cdk_mint_url,
+                &quote_id,
+                split_target.into(),
+                conditions,
+                timeout_secs,
+            )
             .await?;
         Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
     }
