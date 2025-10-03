@@ -13,9 +13,9 @@ use super::pubsub::Topic;
 use super::subscriber::{ActiveSubscription, SubscriptionRequest};
 use super::{Error, Event, Pubsub};
 
-const LONG_CONNECTION_BACKOFF: Duration = Duration::from_millis(2_000);
+const STREAM_CONNECTION_BACKOFF: Duration = Duration::from_millis(2_000);
 
-const LONG_CONNECTION_MAX_BACKOFF: Duration = Duration::from_millis(30_000);
+const STREAM_CONNECTION_MAX_BACKOFF: Duration = Duration::from_millis(30_000);
 
 const INTERNAL_POLL_SIZE: usize = 1_000;
 
@@ -49,7 +49,7 @@ where
     inner_pubsub: Arc<Pubsub<T::Topic>>,
     remote_subscriptions: UniqueSubscriptions<T::Topic>,
     subscriptions: ActiveSubscriptions<T::Topic>,
-    send_to_long_poll: RwLock<Option<mpsc::Sender<LongPoll<T::Topic>>>>,
+    stream_command: RwLock<Option<mpsc::Sender<StreamCommand<T::Topic>>>>,
     still_running: AtomicBool,
     prefer_polling: bool,
     /// Cached events
@@ -144,8 +144,8 @@ where
     }
 }
 
-/// Struct that is passed to the poll or the long_poll to relay messages from the external source
-/// locally
+/// Struct to relay events from Poll and Streams from the external subscription to the local
+/// subscribers
 pub struct InternalRelay<T>
 where
     T: Topic + 'static,
@@ -190,29 +190,29 @@ where
             inner_pubsub: Arc::new(Pubsub::new(topic)),
             subscriptions: Default::default(),
             remote_subscriptions: Default::default(),
-            send_to_long_poll: RwLock::new(None),
+            stream_command: RwLock::new(None),
             cached_events: Default::default(),
             still_running: true.into(),
         });
 
         #[cfg(not(target_arch = "wasm32"))]
-        tokio::spawn(Self::long_poll(this.clone()));
+        tokio::spawn(Self::stream(this.clone()));
 
         #[cfg(target_arch = "wasm32")]
-        wasm_bindgen_futures::spawn_local(Self::connection_loop(this.clone()));
+        wasm_bindgen_futures::spawn_local(Self::stream(this.clone()));
 
         this
     }
 
-    async fn long_poll(instance: Arc<Self>) {
-        let mut long_connection_supported = true;
+    async fn stream(instance: Arc<Self>) {
+        let mut stream_supported = true;
         let mut poll_supported = true;
 
-        let mut backoff = LONG_CONNECTION_BACKOFF;
+        let mut backoff = STREAM_CONNECTION_BACKOFF;
         let mut retry_at = None;
 
         loop {
-            if (!long_connection_supported && !poll_supported)
+            if (!stream_supported && !poll_supported)
                 || !instance
                     .still_running
                     .load(std::sync::atomic::Ordering::Relaxed)
@@ -231,7 +231,7 @@ where
                 continue;
             }
 
-            if long_connection_supported
+            if stream_supported
                 && !instance.prefer_polling
                 && retry_at
                     .map(|retry_at| retry_at < Instant::now())
@@ -240,14 +240,11 @@ where
                 let (sender, receiver) = mpsc::channel(INTERNAL_POLL_SIZE);
 
                 {
-                    *(instance
-                        .send_to_long_poll
-                        .write()
-                        .unwrap_or_else(|mut err| {
-                            **err.get_mut() = None;
-                            instance.send_to_long_poll.clear_poison();
-                            err.into_inner()
-                        })) = Some(sender);
+                    *(instance.stream_command.write().unwrap_or_else(|mut err| {
+                        **err.get_mut() = None;
+                        instance.stream_command.clear_poison();
+                        err.into_inner()
+                    })) = Some(sender);
                 }
 
                 let current_subscriptions = {
@@ -263,7 +260,7 @@ where
 
                 if let Err(err) = instance
                     .transport
-                    .long_poll(
+                    .stream(
                         receiver,
                         current_subscriptions,
                         InternalRelay {
@@ -274,23 +271,24 @@ where
                     .await
                 {
                     retry_at = Some(Instant::now() + backoff);
-                    backoff = (backoff + LONG_CONNECTION_BACKOFF).min(LONG_CONNECTION_MAX_BACKOFF);
+                    backoff =
+                        (backoff + STREAM_CONNECTION_BACKOFF).min(STREAM_CONNECTION_MAX_BACKOFF);
 
                     if matches!(err, Error::NotSupported) {
-                        long_connection_supported = false;
+                        stream_supported = false;
                     }
                     tracing::error!("Long connection failed with error {:?}", err);
                 } else {
-                    backoff = LONG_CONNECTION_BACKOFF;
+                    backoff = STREAM_CONNECTION_BACKOFF;
                 }
 
-                // remove sender to long_poll
+                // remove sender to stream, as there is no stream
                 let _ = instance
-                    .send_to_long_poll
+                    .stream_command
                     .write()
                     .unwrap_or_else(|mut err| {
                         **err.get_mut() = None;
-                        instance.send_to_long_poll.clear_poison();
+                        instance.stream_command.clear_poison();
                         err.into_inner()
                     })
                     .take();
@@ -370,25 +368,27 @@ where
 
                 cached_events.remove(&topic);
 
-                self.message_to_long_poll(LongPoll::Unsubscribe(remote_subscription.name.clone()))?;
+                self.message_to_stream(StreamCommand::Unsubscribe(
+                    remote_subscription.name.clone(),
+                ))?;
             } else {
                 remote_subscriptions.insert(topic, remote_subscription);
             }
         }
 
         if remote_subscriptions.is_empty() {
-            self.message_to_long_poll(LongPoll::Stop)?;
+            self.message_to_stream(StreamCommand::Stop)?;
         }
 
         Ok(())
     }
 
     #[inline(always)]
-    fn message_to_long_poll(&self, message: LongPoll<T::Topic>) -> Result<(), Error> {
-        let to_long_poll = self.send_to_long_poll.read().map_err(|_| Error::Poison)?;
+    fn message_to_stream(&self, message: StreamCommand<T::Topic>) -> Result<(), Error> {
+        let to_stream = self.stream_command.read().map_err(|_| Error::Poison)?;
 
-        if let Some(to_long_poll) = to_long_poll.as_ref() {
-            Ok(to_long_poll.try_send(message)?)
+        if let Some(to_stream) = to_stream.as_ref() {
+            Ok(to_stream.try_send(message)?)
         } else {
             Ok(())
         }
@@ -448,7 +448,10 @@ where
                 );
 
                 // new subscription is created, so the connection worker should be notified
-                self.message_to_long_poll(LongPoll::Subscribe((internal_sub_name, topic.clone())))?;
+                self.message_to_stream(StreamCommand::Subscribe((
+                    internal_sub_name,
+                    topic.clone(),
+                )))?;
             }
         }
 
@@ -470,8 +473,8 @@ where
     fn drop(&mut self) {
         self.still_running
             .store(false, std::sync::atomic::Ordering::Release);
-        if let Ok(Some(to_long_poll)) = self.send_to_long_poll.read().map(|sender| sender.clone()) {
-            let _ = to_long_poll.try_send(LongPoll::Stop).inspect_err(|err| {
+        if let Ok(Some(to_stream)) = self.stream_command.read().map(|sender| sender.clone()) {
+            let _ = to_stream.try_send(StreamCommand::Stop).inspect_err(|err| {
                 tracing::error!("Failed to send message LongPoll::Stop due to {err:?}")
             });
         }
@@ -486,7 +489,7 @@ pub type SubscribeMessage<T> = (
 
 /// Messages sent from the [`Consumer`] to the [`Transport`] background loop.
 #[derive(Debug, Clone)]
-pub enum LongPoll<T>
+pub enum StreamCommand<T>
 where
     T: Topic + 'static,
 {
@@ -502,7 +505,7 @@ where
 ///
 /// Implement this on your HTTP/WebSocket client. The transport is responsible for:
 /// - creating unique subscription names,
-/// - keeping a long connection via `long_poll` **or** performing on-demand `poll`,
+/// - keeping a long connection via `stream` **or** performing on-demand `poll`,
 /// - forwarding remote events to `InternalRelay`.
 ///
 /// ```ignore
@@ -511,7 +514,7 @@ where
 /// impl Transport for WsTransport {
 ///     type Topic = MyTopic;
 ///     fn new_name(&self) -> <Self::Topic as Topic>::SubscriptionName { 0 }
-///     async fn long_poll(/* ... */) -> Result<(), Error> { Ok(()) }
+///     async fn stream(/* ... */) -> Result<(), Error> { Ok(()) }
 ///     async fn poll(/* ... */) -> Result<(), Error> { Ok(()) }
 /// }
 /// ```
@@ -524,15 +527,17 @@ pub trait Transport: Send + Sync {
     /// Create a new subscription name
     fn new_name(&self) -> <Self::Topic as Topic>::SubscriptionName;
 
-    /// Open a long connection
-    async fn long_poll(
+    /// Opens a persistent connection and continuously streams events.
+    /// For protocols that support server push (e.g. WebSocket, SSE).
+    async fn stream(
         &self,
-        subscribe_changes: mpsc::Receiver<LongPoll<Self::Topic>>,
+        subscribe_changes: mpsc::Receiver<StreamCommand<Self::Topic>>,
         topics: Vec<SubscribeMessage<Self::Topic>>,
         reply_to: InternalRelay<Self::Topic>,
     ) -> Result<(), Error>;
 
-    /// Poll on demand
+    /// Performs a one-shot fetch of any currently available events.
+    /// Called repeatedly by the consumer when streaming is not available.
     async fn poll(
         &self,
         topics: Vec<SubscribeMessage<Self::Topic>>,
@@ -626,8 +631,8 @@ mod tests {
         _topic: CustomTopic,
         name_ctr: AtomicUsize,
         // We forward all transport-loop control messages here so tests can observe them.
-        observe_ctrl_tx: mpsc::Sender<LongPoll<CustomTopic>>,
-        // Whether long-poll / poll are supported.
+        observe_ctrl_tx: mpsc::Sender<StreamCommand<CustomTopic>>,
+        // Whether stream / poll are supported.
         support_long: bool,
         support_poll: bool,
         rx: Mutex<mpsc::Receiver<Message>>,
@@ -640,11 +645,11 @@ mod tests {
         ) -> (
             Self,
             mpsc::Sender<Message>,
-            mpsc::Receiver<LongPoll<CustomTopic>>,
+            mpsc::Receiver<StreamCommand<CustomTopic>>,
         ) {
             let (events_tx, rx) = mpsc::channel::<Message>(INTERNAL_POLL_SIZE);
             let (observe_ctrl_tx, observe_ctrl_rx) =
-                mpsc::channel::<LongPoll<CustomTopic>>(INTERNAL_POLL_SIZE);
+                mpsc::channel::<StreamCommand<CustomTopic>>(INTERNAL_POLL_SIZE);
 
             let t = TestTransport {
                 _topic: CustomTopic,
@@ -667,9 +672,9 @@ mod tests {
             format!("sub-{}", self.name_ctr.fetch_add(1, Ordering::Relaxed))
         }
 
-        async fn long_poll(
+        async fn stream(
             &self,
-            mut subscribe_changes: mpsc::Receiver<LongPoll<Self::Topic>>,
+            mut subscribe_changes: mpsc::Receiver<StreamCommand<Self::Topic>>,
             topics: Vec<SubscribeMessage<Self::Topic>>,
             reply_to: InternalRelay<Self::Topic>,
         ) -> Result<(), Error> {
@@ -682,7 +687,7 @@ mod tests {
             let observe = self.observe_ctrl_tx.clone();
 
             for topic in topics {
-                observe.try_send(LongPoll::Subscribe(topic)).unwrap();
+                observe.try_send(StreamCommand::Subscribe(topic)).unwrap();
             }
 
             loop {
@@ -690,7 +695,7 @@ mod tests {
                     // Forward any control (Subscribe/Unsubscribe/Stop) messages so the test can assert them.
                     Some(ctrl) = subscribe_changes.recv() => {
                         observe.try_send(ctrl.clone()).unwrap();
-                        if matches!(ctrl, LongPoll::Stop) {
+                        if matches!(ctrl, StreamCommand::Stop) {
                             break;
                         }
                     }
@@ -741,10 +746,10 @@ mod tests {
     }
 
     async fn expect_ctrl(
-        rx: &mut mpsc::Receiver<LongPoll<CustomTopic>>,
+        rx: &mut mpsc::Receiver<StreamCommand<CustomTopic>>,
         dur_ms: u64,
-        pred: impl Fn(&LongPoll<CustomTopic>) -> bool,
-    ) -> LongPoll<CustomTopic> {
+        pred: impl Fn(&StreamCommand<CustomTopic>) -> bool,
+    ) -> StreamCommand<CustomTopic> {
         timeout(Duration::from_millis(dur_ms), async {
             loop {
                 if let Some(msg) = rx.recv().await {
@@ -761,11 +766,11 @@ mod tests {
     // ===== Tests =====
 
     #[tokio::test]
-    async fn long_poll_delivery_and_unsubscribe_on_drop() {
-        // long-poll supported, poll supported (doesn't matter; prefer long)
+    async fn stream_delivery_and_unsubscribe_on_drop() {
+        // stream supported, poll supported (doesn't matter; prefer long)
         let (transport, events_tx, mut ctrl_rx) = TestTransport::new(true, true);
 
-        // prefer_polling = false so connection loop will try long-poll first.
+        // prefer_polling = false so connection loop will try stream first.
         let consumer = Consumer::new(transport, false, CustomTopic);
 
         // Subscribe to Foo(7)
@@ -777,11 +782,11 @@ mod tests {
         let ctrl = expect_ctrl(
             &mut ctrl_rx,
             1000,
-            |m| matches!(m, LongPoll::Subscribe((_, idx)) if *idx == IndexTest::Foo(7)),
+            |m| matches!(m, StreamCommand::Subscribe((_, idx)) if *idx == IndexTest::Foo(7)),
         )
         .await;
         match ctrl {
-            LongPoll::Subscribe((name, idx)) => {
+            StreamCommand::Subscribe((name, idx)) => {
                 assert_ne!(name, "t".to_owned());
                 assert_eq!(idx, IndexTest::Foo(7));
             }
@@ -798,21 +803,21 @@ mod tests {
         // Dropping the RemoteActiveConsumer should trigger an Unsubscribe(name)
         drop(sub);
         let _ctrl = expect_ctrl(&mut ctrl_rx, 1000, |m| {
-            matches!(m, LongPoll::Unsubscribe(_))
+            matches!(m, StreamCommand::Unsubscribe(_))
         })
         .await;
 
         // Drop the Consumer -> Stop is sent so the transport loop exits cleanly
         drop(consumer);
-        let _ = expect_ctrl(&mut ctrl_rx, 1000, |m| matches!(m, LongPoll::Stop)).await;
+        let _ = expect_ctrl(&mut ctrl_rx, 1000, |m| matches!(m, StreamCommand::Stop)).await;
     }
 
     #[tokio::test]
     async fn test_cache_and_invalation() {
-        // long-poll supported, poll supported (doesn't matter; prefer long)
+        // stream supported, poll supported (doesn't matter; prefer long)
         let (transport, events_tx, mut ctrl_rx) = TestTransport::new(true, true);
 
-        // prefer_polling = false so connection loop will try long-poll first.
+        // prefer_polling = false so connection loop will try stream first.
         let consumer = Consumer::new(transport, false, CustomTopic);
 
         // Subscribe to Foo(7)
@@ -824,11 +829,11 @@ mod tests {
         let ctrl = expect_ctrl(
             &mut ctrl_rx,
             1000,
-            |m| matches!(m, LongPoll::Subscribe((_, idx)) if *idx == IndexTest::Foo(7)),
+            |m| matches!(m, StreamCommand::Subscribe((_, idx)) if *idx == IndexTest::Foo(7)),
         )
         .await;
         match ctrl {
-            LongPoll::Subscribe((name, idx)) => {
+            StreamCommand::Subscribe((name, idx)) => {
                 assert_ne!(name, "t1".to_owned());
                 assert_eq!(idx, IndexTest::Foo(7));
             }
@@ -884,7 +889,7 @@ mod tests {
         drop(sub_3);
 
         let _ctrl = expect_ctrl(&mut ctrl_rx, 1000, |m| {
-            matches!(m, LongPoll::Unsubscribe(_))
+            matches!(m, StreamCommand::Unsubscribe(_))
         })
         .await;
 
@@ -901,15 +906,15 @@ mod tests {
         drop(sub_4);
 
         // Drop the Consumer -> Stop is sent so the transport loop exits cleanly
-        let _ = expect_ctrl(&mut ctrl_rx, 2000, |m| matches!(m, LongPoll::Stop)).await;
+        let _ = expect_ctrl(&mut ctrl_rx, 2000, |m| matches!(m, StreamCommand::Stop)).await;
     }
 
     #[tokio::test]
-    async fn falls_back_to_poll_when_long_poll_not_supported() {
-        // long-poll NOT supported, poll supported
+    async fn falls_back_to_poll_when_stream_not_supported() {
+        // stream NOT supported, poll supported
         let (transport, events_tx, _) = TestTransport::new(false, true);
         // prefer_polling = true nudges the connection loop to poll first, but even if it
-        // tried long-poll, our transport returns NotSupported and the loop will use poll.
+        // tried stream, our transport returns NotSupported and the loop will use poll.
         let consumer = Consumer::new(transport, true, CustomTopic);
 
         // Subscribe to Bar(5)
@@ -939,7 +944,7 @@ mod tests {
         let _ = expect_ctrl(
             &mut ctrl_rx,
             1000,
-            |m| matches!(m, LongPoll::Subscribe((_, idx)) if  *idx == IndexTest::Foo(1)),
+            |m| matches!(m, StreamCommand::Subscribe((_, idx)) if  *idx == IndexTest::Foo(1)),
         )
         .await;
 
@@ -949,7 +954,7 @@ mod tests {
 
         // No second Subscribe should be forwarded for the same topic (coalesced).
         // Give a little time; if one appears, we'll fail explicitly.
-        if let Ok(Some(LongPoll::Subscribe((_, idx)))) =
+        if let Ok(Some(StreamCommand::Subscribe((_, idx)))) =
             timeout(Duration::from_millis(400), ctrl_rx.recv()).await
         {
             assert_ne!(idx, IndexTest::Foo(1), "should not resubscribe same topic");
@@ -968,7 +973,7 @@ mod tests {
 
         // Drop B: no Unsubscribe should be sent yet (still one local subscriber).
         drop(b);
-        if let Ok(Some(LongPoll::Unsubscribe(_))) =
+        if let Ok(Some(StreamCommand::Unsubscribe(_))) =
             timeout(Duration::from_millis(400), ctrl_rx.recv()).await
         {
             panic!("Should NOT unsubscribe while another local subscriber exists");
@@ -977,10 +982,10 @@ mod tests {
         // Drop A: now remote unsubscribe should occur.
         drop(a);
         let _ = expect_ctrl(&mut ctrl_rx, 1000, |m| {
-            matches!(m, LongPoll::Unsubscribe(_))
+            matches!(m, StreamCommand::Unsubscribe(_))
         })
         .await;
 
-        let _ = expect_ctrl(&mut ctrl_rx, 1000, |m| matches!(m, LongPoll::Stop)).await;
+        let _ = expect_ctrl(&mut ctrl_rx, 1000, |m| matches!(m, StreamCommand::Stop)).await;
     }
 }

@@ -13,7 +13,7 @@ use std::sync::{Arc, RwLock};
 use cdk_common::nut17::ws::{WsMethodRequest, WsRequest, WsUnsubscribeRequest};
 use cdk_common::nut17::{Kind, NotificationId};
 use cdk_common::pub_sub::remote_consumer::{
-    Consumer, InternalRelay, LongPoll, RemoteActiveConsumer, SubscribeMessage, Transport,
+    Consumer, InternalRelay, RemoteActiveConsumer, StreamCommand, SubscribeMessage, Transport,
 };
 use cdk_common::pub_sub::{Error as PubsubError, Event, Subscriber, Topic};
 use cdk_common::subscription::WalletParams;
@@ -200,14 +200,14 @@ impl Transport for SubscriptionClient {
         Uuid::new_v4().to_string()
     }
 
-    async fn long_poll(
+    async fn stream(
         &self,
-        _subscribe_changes: mpsc::Receiver<LongPoll<Self::Topic>>,
+        _subscribe_changes: mpsc::Receiver<StreamCommand<Self::Topic>>,
         _topics: Vec<SubscribeMessage<Self::Topic>>,
         _reply_to: InternalRelay<Self::Topic>,
     ) -> Result<(), PubsubError> {
         #[cfg(not(target_arch = "wasm32"))]
-        let r = ws::long_connection(self, _subscribe_changes, _topics, _reply_to).await;
+        let r = ws::stream_client(self, _subscribe_changes, _topics, _reply_to).await;
 
         #[cfg(target_arch = "wasm32")]
         let r = Err(PubsubError::NotSupported);
