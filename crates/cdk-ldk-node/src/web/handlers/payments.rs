@@ -86,7 +86,7 @@ pub async fn payments_page(
         div class="card" {
             div class="payment-list-header" {
                 div {
-                    h2 { "Payment History" }
+                    h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Payment History" }
                     @if total_count > 0 {
                         p style="margin: 0.25rem 0 0 0; color: #666; font-size: 0.9rem;" {
                             "Showing " (start_index + 1) " to " (end_index) " of " (total_count) " payments"

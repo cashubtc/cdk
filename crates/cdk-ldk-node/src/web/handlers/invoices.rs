@@ -173,8 +173,8 @@ pub async fn post_create_bolt11(
                     ]
                 ))
                 div class="card" {
-                    h3 { "Invoice (copy this to share)" }
-                    textarea readonly style="width: 100%; height: 150px; font-family: monospace; font-size: 0.8rem;" {
+                    h3 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Invoice (copy this to share)" }
+                    textarea readonly style="width: 100%; height: 150px; font-family: monospace; font-size: 0.8rem; margin-top: 1.5rem;" {
                         (invoice.to_string())
                     }
                 }
@@ -267,8 +267,8 @@ pub async fn post_create_bolt12(
                     ]
                 ))
                 div class="card" {
-                    h3 { "Offer (copy this to share)" }
-                    textarea readonly style="width: 100%; height: 150px; font-family: monospace; font-size: 0.8rem;" {
+                    h3 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Offer (copy this to share)" }
+                    textarea readonly style="width: 100%; height: 150px; font-family: monospace; font-size: 0.8rem; margin-top: 1.5rem;" {
                         (offer.to_string())
                     }
                 }

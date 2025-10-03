@@ -36,7 +36,7 @@ pub struct ConfirmOnchainForm {
 fn operations_section() -> maud::Markup {
     html! {
         div class="card" style="position: sticky; top: 2rem;" {
-            h2 style="font-size: 0.875rem; font-weight: 400; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Operations" }
+            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Operations" }
             div style="display: flex; flex-direction: column; gap: 1.5rem; margin-top: 1.5rem;" {
                 // Receive Bitcoin Card
                 div class="quick-action-card" {
@@ -67,8 +67,8 @@ pub async fn get_new_address(State(state): State<AppState>) -> Result<Html<Strin
         Ok(address) => {
             html! {
                 div class="card" {
-                    h2 { "Bitcoin Address" }
-                    div class="address-display" {
+                    h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Bitcoin Address" }
+                    div class="address-display" style="margin-top: 1.5rem;" {
                         div class="address-container" {
                             span class="address-text" { (address.to_string()) }
                         }
@@ -118,8 +118,8 @@ pub async fn onchain_page(
             div style="flex: 1; min-width: 0;" {
                 // On-chain Balance as metric cards
                 div class="card" {
-                    h2 { "On-chain Balance" }
-                    div class="metrics-container" {
+                    h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "On-chain Balance" }
+                    div class="metrics-container" style="margin-top: 1.5rem;" {
                         div class="metric-card" {
                             div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
                             div class="metric-label" { "Total Balance" }
@@ -174,8 +174,8 @@ pub async fn onchain_page(
 
                         // On-chain Balance as metric cards
                         div class="card" {
-                            h2 { "On-chain Balance" }
-                            div class="metrics-container" {
+                            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "On-chain Balance" }
+                            div class="metrics-container" style="margin-top: 1.5rem;" {
                                 div class="metric-card" {
                                     div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
                                     div class="metric-label" { "Total Balance" }
@@ -218,8 +218,8 @@ pub async fn onchain_page(
 
                         // On-chain Balance as metric cards
                         div class="card" {
-                            h2 { "On-chain Balance" }
-                            div class="metrics-container" {
+                            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "On-chain Balance" }
+                            div class="metrics-container" style="margin-top: 1.5rem;" {
                                 div class="metric-card" {
                                     div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
                                     div class="metric-label" { "Total Balance" }
@@ -351,8 +351,8 @@ pub async fn onchain_confirm_page(
 
         // Transaction Details Card
         div class="card" {
-            h2 { "Transaction Details" }
-            div class="transaction-details" {
+            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Transaction Details" }
+            div class="transaction-details" style="margin-top: 1.5rem;" {
                 div class="detail-row" {
                     span class="detail-label" { "Recipient Address:" }
                     span class="detail-value" { (form.address.clone()) }

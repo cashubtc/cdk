@@ -9,14 +9,14 @@ use crate::web::templates::{format_sats_as_btc, is_node_running, layout_with_sta
 fn operations_section() -> maud::Markup {
     html! {
         div class="card" style="position: sticky; top: 2rem;" {
-            h2 style="font-size: 0.875rem; font-weight: 400; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Operations" }
+            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Operations" }
             div style="display: flex; flex-direction: column; gap: 1.5rem; margin-top: 1.5rem;" {
-                // Open Channel Card
+                // Make Payment Card
                 div class="quick-action-card" {
-                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Open Channel" }
-                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Create a new Lightning Network channel to connect with another node." }
-                    a href="/channels/open" style="text-decoration: none;" {
-                        button class="button-outline" { "Open Channel" }
+                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Make Lightning Payment" }
+                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send Lightning payments to other users using invoices. BOLT 11 & 12 supported." }
+                    a href="/invoices" style="text-decoration: none;" {
+                        button class="button-outline" { "Make Payment" }
                     }
                 }
 
@@ -29,12 +29,12 @@ fn operations_section() -> maud::Markup {
                     }
                 }
 
-                // Make Payment Card
+                // Open Channel Card
                 div class="quick-action-card" {
-                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Make Lightning Payment" }
-                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send Lightning payments to other users using invoices. BOLT 11 & 12 supported." }
-                    a href="/invoices" style="text-decoration: none;" {
-                        button class="button-outline" { "Make Payment" }
+                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Open Channel" }
+                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Create a new Lightning Network channel to connect with another node." }
+                    a href="/channels/open" style="text-decoration: none;" {
+                        button class="button-outline" { "Open Channel" }
                     }
                 }
             }
@@ -67,8 +67,8 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                 div style="flex: 1; min-width: 0;" {
                     // Balance Information as metric cards
                     div class="card" {
-                        h2 { "Balance Information" }
-                        div class="metrics-container" {
+                        h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Balance Information" }
+                        div class="metrics-container" style="margin-top: 1.5rem;" {
                             div class="metric-card" {
                                 div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats)) }
                                 div class="metric-label" { "Lightning Balance" }
@@ -108,8 +108,8 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                 div style="flex: 1; min-width: 0;" {
                     // Balance Information as metric cards
                     div class="card" {
-                        h2 { "Balance Information" }
-                        div class="metrics-container" {
+                        h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Balance Information" }
+                        div class="metrics-container" style="margin-top: 1.5rem;" {
                             div class="metric-card" {
                                 div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats)) }
                                 div class="metric-label" { "Lightning Balance" }
@@ -130,7 +130,7 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                     }
 
                     // Channel Details header (outside card)
-                    h2 class="section-header" { "Channel Details" }
+                    h2 class="section-header" style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5;" { "Channel Details" }
 
                     // Channels list
                     @for (index, channel) in channels.iter().enumerate() {
@@ -139,7 +139,7 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
 
                 div class="channel-box" {
                     // Channel number as prominent header
-                    div class="channel-alias" { (format!("Channel {}", channel_number)) }
+                    div class="channel-alias" style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5;" { (format!("Channel {}", channel_number)) }
 
                     // Channel details in left-aligned format
                     div class="channel-details" {

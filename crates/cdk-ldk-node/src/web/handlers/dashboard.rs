@@ -140,8 +140,8 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
 
         // Balance Summary as metric cards
         div class="card" {
-            h2 { "Balance Summary" }
-            div class="metrics-container" {
+            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Balance Summary" }
+            div class="metrics-container" style="margin-top: 1.5rem;" {
                 div class="metric-card" {
                     div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats)) }
                     div class="metric-label" { "Lightning Balance" }
@@ -209,8 +209,8 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
             // Right side - Connections metrics
             aside class="node-metrics" {
                 div class="card" {
-                    h3 { "Connections" }
-                    div class="metrics-container" {
+                    h3 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Connections" }
+                    div class="metrics-container" style="margin-top: 1.5rem;" {
                         div class="metric-card" {
                             div class="metric-value" { (format!("{}/{}", num_connected_peers, num_peers)) }
                             div class="metric-label" { "Connected Peers" }
@@ -226,8 +226,8 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
 
         // Lightning Network Activity as metric cards
         div class="card" {
-            h2 { "Lightning Network Activity" }
-            div class="metrics-container" {
+            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Lightning Network Activity" }
+            div class="metrics-container" style="margin-top: 1.5rem;" {
                 div class="metric-card" {
                     div class="metric-value" { (format_sats_as_btc(metrics.lightning_inflow_24h)) }
                     div class="metric-label" { "24h LN Inflow" }
@@ -249,8 +249,8 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
 
         // On-chain Activity as metric cards
         div class="card" {
-            h2 { "On-chain Activity" }
-            div class="metrics-container" {
+            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "On-chain Activity" }
+            div class="metrics-container" style="margin-top: 1.5rem;" {
                 div class="metric-card" {
                     div class="metric-value" { (format_sats_as_btc(metrics.onchain_inflow_24h)) }
                     div class="metric-label" { "24h On-chain Inflow" }
