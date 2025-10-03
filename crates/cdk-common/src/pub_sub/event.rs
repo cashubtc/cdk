@@ -8,9 +8,9 @@ use std::hash::Hash;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-/// Indexable trait
+/// Event trait
 pub trait Event: Clone {
-    /// Generic Index
+    /// Generic Topic
     ///
     /// It should be serializable/deserializable to be stored in the database layer and it should
     /// also be sorted in a BTree for in-memory matching

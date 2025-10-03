@@ -86,9 +86,10 @@ where
 {
     fn drop(&mut self) {
         // remove the listener
-        let mut topics = self.topics.write().unwrap();
-        for index in self.subscribed_to.drain(..) {
-            topics.remove(&(index, self.id));
+        if let Ok(mut topics) = self.topics.write() {
+            for index in self.subscribed_to.drain(..) {
+                topics.remove(&(index, self.id));
+            }
         }
 
         // decrement the number of active subscribers
