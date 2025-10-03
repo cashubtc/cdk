@@ -6,42 +6,6 @@ use maud::html;
 use crate::web::handlers::utils::AppState;
 use crate::web::templates::{format_sats_as_btc, is_node_running, layout_with_status};
 
-fn operations_section() -> maud::Markup {
-    html! {
-        div class="card" style="position: sticky; top: 2rem;" {
-            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Operations" }
-            div style="display: flex; flex-direction: column; gap: 1.5rem; margin-top: 1.5rem;" {
-                // Make Payment Card
-                div class="quick-action-card" {
-                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Make Payment" }
-                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send sats to someone instantly." }
-                    a href="/payments/send" style="text-decoration: none;" {
-                        button class="button-outline" { "Make Payment" }
-                    }
-                }
-
-                // Create Invoice Card
-                div class="quick-action-card" {
-                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Request Payment" }
-                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Create a Lightning invoice to get paid." }
-                    a href="/invoices" style="text-decoration: none;" {
-                        button class="button-outline" { "Request Payment" }
-                    }
-                }
-
-                // Open Channel Card
-                div class="quick-action-card" {
-                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Open Channel" }
-                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Connect to another node to send and receive payments." }
-                    a href="/channels/open" style="text-decoration: none;" {
-                        button class="button-outline" { "Open Channel" }
-                    }
-                }
-            }
-        }
-    }
-}
-
 pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let balances = state.node.inner.list_balances();
     let channels = state.node.inner.list_channels();
@@ -62,75 +26,112 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
         html! {
             h2 style="text-align: center; margin-bottom: 3rem;" { "Lightning" }
 
-            div style="display: flex; gap: 2rem; align-items: flex-start;" {
-                // Main content area
-                div style="flex: 1; min-width: 0;" {
-                    // Balance Information as metric cards
-                    div class="card" {
-                        h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Balance Information" }
-                        div class="metrics-container" style="margin-top: 1.5rem;" {
-                            div class="metric-card" {
-                                div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats)) }
-                                div class="metric-label" { "Lightning Balance" }
-                            }
-                            div class="metric-card" {
-                                div class="metric-value" { (format!("{}", num_active_channels + num_inactive_channels)) }
-                                div class="metric-label" { "Total Channels" }
-                            }
-                            div class="metric-card" {
-                                div class="metric-value" { (format!("{}", num_active_channels)) }
-                                div class="metric-label" { "Active Channels" }
-                            }
-                            div class="metric-card" {
-                                div class="metric-value" { (format!("{}", num_inactive_channels)) }
-                                div class="metric-label" { "Inactive Channels" }
-                            }
+            // Inactive channels warning (only show if > 0)
+            @if num_inactive_channels > 0 {
+                div class="card" style="background-color: #fef3c7; border: 1px solid #f59e0b; margin-bottom: 2rem;" {
+                    h3 style="color: #92400e; margin-bottom: 0.5rem;" { "⚠️ Inactive Channels Detected" }
+                    p style="color: #78350f; margin: 0;" {
+                        "You have " (num_inactive_channels) " inactive channel(s). This may indicate a connectivity issue that requires attention."
+                    }
+                }
+            }
+
+            // Balance Information with action buttons in header
+            div class="card" {
+                div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" {
+                    h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; margin: 0;" { "Balance Information" }
+                    div style="display: flex; gap: 0.5rem;" {
+                        a href="/payments/send" style="text-decoration: none;" {
+                            button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Send" }
+                        }
+                        a href="/invoices" style="text-decoration: none;" {
+                            button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Receive" }
+                        }
+                        a href="/channels/open" style="text-decoration: none;" {
+                            button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Open Channel" }
                         }
                     }
-
-                    div class="card" {
-                        p { "No channels found. Create your first channel to start using Lightning Network." }
+                }
+                div class="metrics-container" style="margin-top: 1.5rem;" {
+                    div class="metric-card" {
+                        div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats)) }
+                        div class="metric-label" { "Lightning Balance" }
+                    }
+                    div class="metric-card" {
+                        div class="metric-value" { (format!("{}", num_active_channels + num_inactive_channels)) }
+                        div class="metric-label" { "Total Channels" }
+                    }
+                    div class="metric-card" {
+                        div class="metric-value" { (format!("{}", num_active_channels)) }
+                        div class="metric-label" { "Active Channels" }
+                    }
+                    @if num_inactive_channels > 0 {
+                        div class="metric-card" {
+                            div class="metric-value" style="color: #f59e0b;" { (format!("{}", num_inactive_channels)) }
+                            div class="metric-label" { "Inactive Channels" }
+                        }
                     }
                 }
+            }
 
-                // Operations section on the right
-                div style="width: 380px; flex-shrink: 0;" {
-                    (operations_section())
-                }
+            div class="card" {
+                p { "No channels found. Create your first channel to start using Lightning Network." }
             }
         }
     } else {
         html! {
             h2 style="text-align: center; margin-bottom: 3rem;" { "Lightning" }
 
-            div style="display: flex; gap: 2rem; align-items: flex-start;" {
-                // Main content area
-                div style="flex: 1; min-width: 0;" {
-                    // Balance Information as metric cards
-                    div class="card" {
-                        h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Balance Information" }
-                        div class="metrics-container" style="margin-top: 1.5rem;" {
-                            div class="metric-card" {
-                                div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats)) }
-                                div class="metric-label" { "Lightning Balance" }
-                            }
-                            div class="metric-card" {
-                                div class="metric-value" { (format!("{}", num_active_channels + num_inactive_channels)) }
-                                div class="metric-label" { "Total Channels" }
-                            }
-                            div class="metric-card" {
-                                div class="metric-value" { (format!("{}", num_active_channels)) }
-                                div class="metric-label" { "Active Channels" }
-                            }
-                            div class="metric-card" {
-                                div class="metric-value" { (format!("{}", num_inactive_channels)) }
-                                div class="metric-label" { "Inactive Channels" }
-                            }
+            // Inactive channels warning (only show if > 0)
+            @if num_inactive_channels > 0 {
+                div class="card" style="background-color: #fef3c7; border: 1px solid #f59e0b; margin-bottom: 2rem;" {
+                    h3 style="color: #92400e; margin-bottom: 0.5rem;" { "⚠️ Inactive Channels Detected" }
+                    p style="color: #78350f; margin: 0;" {
+                        "You have " (num_inactive_channels) " inactive channel(s). This may indicate a connectivity issue that requires attention."
+                    }
+                }
+            }
+
+            // Balance Information with action buttons in header
+            div class="card" {
+                div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" {
+                    h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; margin: 0;" { "Balance Information" }
+                    div style="display: flex; gap: 0.5rem;" {
+                        a href="/payments/send" style="text-decoration: none;" {
+                            button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Send" }
+                        }
+                        a href="/invoices" style="text-decoration: none;" {
+                            button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Receive" }
+                        }
+                        a href="/channels/open" style="text-decoration: none;" {
+                            button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Open Channel" }
                         }
                     }
+                }
+                div class="metrics-container" style="margin-top: 1.5rem;" {
+                    div class="metric-card" {
+                        div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats)) }
+                        div class="metric-label" { "Lightning Balance" }
+                    }
+                    div class="metric-card" {
+                        div class="metric-value" { (format!("{}", num_active_channels + num_inactive_channels)) }
+                        div class="metric-label" { "Total Channels" }
+                    }
+                    div class="metric-card" {
+                        div class="metric-value" { (format!("{}", num_active_channels)) }
+                        div class="metric-label" { "Active Channels" }
+                    }
+                    @if num_inactive_channels > 0 {
+                        div class="metric-card" {
+                            div class="metric-value" style="color: #f59e0b;" { (format!("{}", num_inactive_channels)) }
+                            div class="metric-label" { "Inactive Channels" }
+                        }
+                    }
+                }
+            }
 
-                    // Channel Details header (outside card)
-                    h2 class="section-header" style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5;" { "Channel Details" }
+            // Channel Details header (outside card)
+            h2 class="section-header" style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5;" { "Channel Details" }
 
                     // Channels list
                     @for (index, channel) in channels.iter().enumerate() {
@@ -194,13 +195,6 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                             }
                         }
                     }
-                }
-                    }
-                }
-
-                // Operations section on the right
-                div style="width: 380px; flex-shrink: 0;" {
-                    (operations_section())
                 }
             }
         }
