@@ -1243,28 +1243,35 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .detail-label {
-                        font-weight: 500;
-                        color: hsl(var(--muted-foreground));
-                        font-size: 0.875rem;
+                        font-weight: 400;
+                        color: var(--text-muted);
+                        font-size: 0.75rem;
                         min-width: 120px;
                         flex-shrink: 0;
+                        letter-spacing: 0.05em;
+                        text-transform: uppercase;
                     }
 
                     .detail-value {
-                        color: hsl(var(--foreground));
+                        color: var(--text-tertiary);
                         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
-                        font-size: 0.875rem;
+                        font-size: 0.8125rem;
+                        font-weight: 300;
                         word-break: break-all;
                         flex: 1;
                         min-width: 0;
+                        letter-spacing: -0.02em;
+                        line-height: 1.7;
                     }
 
                     .detail-value-amount {
-                        color: hsl(var(--foreground));
-                        font-size: 0.875rem;
+                        color: var(--text-secondary);
+                        font-size: 0.9375rem;
+                        font-weight: 500;
                         word-break: break-all;
                         flex: 1;
                         min-width: 0;
+                        letter-spacing: 0;
                     }
 
                     .channel-actions {
@@ -1463,18 +1470,23 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .payment-label {
-                        font-weight: 500;
-                        color: hsl(var(--muted-foreground));
-                        font-size: 0.875rem;
+                        font-weight: 400;
+                        color: var(--text-muted);
+                        font-size: 0.75rem;
                         flex-shrink: 0;
+                        letter-spacing: 0.05em;
+                        text-transform: uppercase;
                     }
 
                     .payment-value {
-                        color: hsl(var(--foreground));
+                        color: var(--text-tertiary);
                         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
-                        font-size: 0.875rem;
+                        font-size: 0.8125rem;
+                        font-weight: 300;
                         word-break: break-all;
                         min-width: 0;
+                        letter-spacing: -0.02em;
+                        line-height: 1.7;
                     }
 
                     .payment-list-header {
@@ -2080,27 +2092,33 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .transaction-details .detail-label {
-                        font-weight: 500;
-                        color: hsl(var(--muted-foreground));
-                        font-size: 0.875rem;
+                        font-weight: 400;
+                        color: var(--text-muted);
+                        font-size: 0.75rem;
                         min-width: 180px;
                         flex-shrink: 0;
+                        letter-spacing: 0.05em;
+                        text-transform: uppercase;
                     }
 
                     .transaction-details .detail-value {
-                        color: hsl(var(--foreground));
+                        color: var(--text-tertiary);
                         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
-                        font-size: 0.875rem;
+                        font-size: 0.8125rem;
+                        font-weight: 300;
                         word-break: break-all;
                         flex: 1;
                         min-width: 0;
+                        letter-spacing: -0.02em;
+                        line-height: 1.7;
                     }
 
                     .transaction-details .detail-value-amount {
-                        color: hsl(var(--foreground));
+                        color: var(--text-secondary);
                         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
                         font-size: 1rem;
                         font-weight: 600;
+                        letter-spacing: 0;
                         flex: 1;
                         min-width: 0;
                     }

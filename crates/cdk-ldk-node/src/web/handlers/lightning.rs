@@ -139,7 +139,7 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
 
                 div class="channel-box" {
                     // Channel number as prominent header
-                    div class="channel-alias" style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5;" { (format!("Channel {}", channel_number)) }
+                    div class="channel-alias" style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 1.5rem;" { (format!("Channel {}", channel_number)) }
 
                     // Channel details in left-aligned format
                     div class="channel-details" {
