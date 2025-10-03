@@ -36,7 +36,7 @@ pub struct ConfirmOnchainForm {
 fn operations_section() -> maud::Markup {
     html! {
         div class="card" style="position: sticky; top: 2rem;" {
-            h2 { "Operations" }
+            h2 style="font-size: 0.875rem; font-weight: 400; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Operations" }
             div style="display: flex; flex-direction: column; gap: 1.5rem; margin-top: 1.5rem;" {
                 // Receive Bitcoin Card
                 div class="quick-action-card" {

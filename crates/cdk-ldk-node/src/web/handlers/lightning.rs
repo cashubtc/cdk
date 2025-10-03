@@ -9,7 +9,7 @@ use crate::web::templates::{format_sats_as_btc, is_node_running, layout_with_sta
 fn operations_section() -> maud::Markup {
     html! {
         div class="card" style="position: sticky; top: 2rem;" {
-            h2 { "Operations" }
+            h2 style="font-size: 0.875rem; font-weight: 400; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Operations" }
             div style="display: flex; flex-direction: column; gap: 1.5rem; margin-top: 1.5rem;" {
                 // Open Channel Card
                 div class="quick-action-card" {
