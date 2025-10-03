@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use cdk::mint::QuoteId;
 use cdk::nuts::nut17::NotificationPayload;
-use cdk::pub_sub::SubId;
+use cdk::subscription::SubId;
 use cdk::ws::{
     notification_to_ws_message, NotificationInner, WsErrorBody, WsMessageOrResponse,
     WsMethodRequest, WsRequest,

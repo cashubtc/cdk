@@ -36,7 +36,10 @@ pub struct WsUnsubscribeResponse<I> {
 /// subscription
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound = "T: Serialize + DeserializeOwned, I: Serialize + DeserializeOwned")]
-pub struct NotificationInner<T, I> {
+pub struct NotificationInner<T, I>
+where
+    T: Clone,
+{
     /// The subscription ID
     #[serde(rename = "subId")]
     pub sub_id: I,

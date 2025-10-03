@@ -43,7 +43,7 @@ mod ln;
 mod melt;
 mod proof_writer;
 mod start_up_check;
-pub mod subscription;
+mod subscription;
 mod swap;
 mod verification;
 
@@ -206,7 +206,7 @@ impl Mint {
 
         Ok(Self {
             signatory,
-            pubsub_manager: Arc::new(localstore.clone().into()),
+            pubsub_manager: PubSubManager::new(localstore.clone()),
             localstore,
             #[cfg(feature = "auth")]
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {

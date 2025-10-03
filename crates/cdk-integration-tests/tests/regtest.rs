@@ -165,7 +165,7 @@ async fn test_websocket_connection() {
         .expect("timeout waiting for unpaid notification")
         .expect("No paid notification received");
 
-    match msg {
+    match msg.into_inner() {
         NotificationPayload::MintQuoteBolt11Response(response) => {
             assert_eq!(response.quote.to_string(), mint_quote.id);
             assert_eq!(response.state, MintQuoteState::Unpaid);
@@ -185,7 +185,7 @@ async fn test_websocket_connection() {
         .expect("timeout waiting for paid notification")
         .expect("No paid notification received");
 
-    match msg {
+    match msg.into_inner() {
         NotificationPayload::MintQuoteBolt11Response(response) => {
             assert_eq!(response.quote.to_string(), mint_quote.id);
             assert_eq!(response.state, MintQuoteState::Paid);

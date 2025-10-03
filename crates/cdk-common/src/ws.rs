@@ -10,7 +10,7 @@ use cashu::quote_id::QuoteId;
 #[cfg(feature = "mint")]
 use cashu::NotificationPayload;
 
-use crate::pub_sub::SubId;
+use crate::subscription::SubId;
 
 /// Request to unsubscribe from a websocket subscription
 pub type WsUnsubscribeRequest = nut17::ws::WsUnsubscribeRequest<SubId>;
