@@ -13,26 +13,26 @@ fn operations_section() -> maud::Markup {
             div style="display: flex; flex-direction: column; gap: 1.5rem; margin-top: 1.5rem;" {
                 // Make Payment Card
                 div class="quick-action-card" {
-                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Make Lightning Payment" }
-                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send Lightning payments to other users using invoices. BOLT 11 & 12 supported." }
-                    a href="/invoices" style="text-decoration: none;" {
+                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Make Payment" }
+                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send sats to someone instantly." }
+                    a href="/payments/send" style="text-decoration: none;" {
                         button class="button-outline" { "Make Payment" }
                     }
                 }
 
                 // Create Invoice Card
                 div class="quick-action-card" {
-                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Create Invoice" }
-                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Generate a Lightning invoice to receive payments from other users or services." }
+                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Request Payment" }
+                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Create a Lightning invoice to get paid." }
                     a href="/invoices" style="text-decoration: none;" {
-                        button class="button-outline" { "Create Invoice" }
+                        button class="button-outline" { "Request Payment" }
                     }
                 }
 
                 // Open Channel Card
                 div class="quick-action-card" {
                     h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Open Channel" }
-                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Create a new Lightning Network channel to connect with another node." }
+                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Connect to another node to send and receive payments." }
                     a href="/channels/open" style="text-decoration: none;" {
                         button class="button-outline" { "Open Channel" }
                     }

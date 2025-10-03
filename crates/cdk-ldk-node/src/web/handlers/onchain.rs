@@ -40,19 +40,19 @@ fn operations_section() -> maud::Markup {
             div style="display: flex; flex-direction: column; gap: 1.5rem; margin-top: 1.5rem;" {
                 // Receive Bitcoin Card
                 div class="quick-action-card" {
-                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Receive Bitcoin" }
-                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Generate a new Bitcoin address to receive on-chain payments from other users or services." }
+                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Receive" }
+                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Get a new address to receive bitcoin." }
                     a href="/onchain?action=receive" style="text-decoration: none;" {
-                        button class="button-outline" { "Receive Bitcoin" }
+                        button class="button-outline" { "Receive" }
                     }
                 }
 
                 // Send Bitcoin Card
                 div class="quick-action-card" {
-                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Send Bitcoin" }
-                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send Bitcoin to another address on the blockchain. Standard on-chain transactions." }
+                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Send" }
+                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send bitcoin to another address." }
                     a href="/onchain?action=send" style="text-decoration: none;" {
-                        button class="button-outline" { "Send Bitcoin" }
+                        button class="button-outline" { "Send" }
                     }
                 }
             }

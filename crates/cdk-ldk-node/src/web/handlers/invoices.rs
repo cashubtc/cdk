@@ -81,7 +81,7 @@ pub async fn invoices_page(State(state): State<AppState>) -> Result<Html<String>
 
     let is_running = is_node_running(&state.node.inner);
     Ok(Html(
-        layout_with_status("Create Invoices", content, is_running).into_string(),
+        layout_with_status("s", content, is_running).into_string(),
     ))
 }
 
@@ -126,7 +126,7 @@ pub async fn post_create_bolt11(
                     .status(StatusCode::BAD_REQUEST)
                     .header("content-type", "text/html")
                     .body(Body::from(
-                        layout_with_status("Create Invoice Error", content, true).into_string(),
+                        layout_with_status(" Error", content, true).into_string(),
                     ))
                     .unwrap());
             }
@@ -186,7 +186,7 @@ pub async fn post_create_bolt11(
         Err(e) => {
             tracing::error!("Web interface: Failed to create BOLT11 invoice: {}", e);
             html! {
-                (error_message(&format!("Failed to create invoice: {e}")))
+                (error_message(&format!("Failed to : {e}")))
                 div class="card" {
                     a href="/invoices" { button { "← Try Again" } }
                 }
