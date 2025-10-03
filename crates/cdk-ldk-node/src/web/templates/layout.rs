@@ -39,7 +39,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         --border: 214.3 31.8% 91.4%;
                         --input: 214.3 31.8% 91.4%;
                         --ring: 222.2 84% 4.9%;
-                        --radius: 0.5rem;
+                        --radius: 0;
 
                         /* Typography scale */
                         --fs-title: 1.25rem;
@@ -177,7 +177,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         .quick-action-card {
                             background-color: rgba(255, 255, 255, 0.03) !important;
                             border: none !important;
-                            border-radius: 0.75rem !important;
+                            border-radius: 0 !important;
                             padding: 1.5rem !important;
                         }
 
@@ -219,7 +219,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         flex-shrink: 0;
                         background-color: hsl(var(--muted) / 0.3);
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 0.75rem;
                         display: flex;
                         align-items: center;
@@ -231,7 +231,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     .header-avatar-image {
                         width: 48px;
                         height: 48px;
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         object-fit: cover;
                         display: block;
                     }
@@ -501,6 +501,37 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         animation: fade-in 0.3s ease-out;
                     }
 
+                    /* Corner embellishments for angular design */
+                    .card::before,
+                    .card::after {
+                        content: '';
+                        position: absolute;
+                        width: 16px;
+                        height: 16px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .card::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .card::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    @media (prefers-color-scheme: dark) {
+                        .card::before,
+                        .card::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
+                    }
+
                     /* Modern Navigation Bar Styling */
                     nav {
                         background-color: hsl(var(--card));
@@ -544,7 +575,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         font-weight: 600;
                         color: hsl(var(--muted-foreground));
                         padding: 1rem 1.5rem;
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
                         position: relative;
                         min-height: 3rem;
@@ -575,12 +606,13 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .card {
+                        position: relative;
                         background-color: hsl(var(--card));
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 1.5rem;
                         margin-bottom: 1.5rem;
-                        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+                        box-shadow: none;
                     }
 
                     /* Metric cards styling - matching balance-item style */
@@ -592,13 +624,44 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .metric-card {
+                        position: relative;
                         flex: 1;
                         min-width: 200px;
                         text-align: center;
                         padding: 1rem;
                         background-color: hsl(var(--muted) / 0.3);
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         border: 1px solid hsl(var(--border));
+                    }
+
+                    .metric-card::before,
+                    .metric-card::after {
+                        content: '';
+                        position: absolute;
+                        width: 12px;
+                        height: 12px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .metric-card::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .metric-card::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    @media (prefers-color-scheme: dark) {
+                        .metric-card::before,
+                        .metric-card::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
                     }
 
                     .metric-value {
@@ -651,7 +714,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         flex: 1;
                         background-color: hsl(var(--background));
                         border: 1px solid hsl(var(--input));
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         padding: 0.5rem 0.75rem;
                         font-size: 0.875rem;
                         line-height: 1.25;
@@ -707,7 +770,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     .per-page-selector select {
                         background-color: transparent;
                         border: 1px solid hsl(var(--muted));
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         padding: 0.25rem 0.5rem;
                         font-size: 0.875rem;
                         color: hsl(var(--muted-foreground));
@@ -759,7 +822,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         align-items: center;
                         justify-content: center;
                         white-space: nowrap;
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         font-size: 0.875rem;
                         font-weight: 600;
                         transition: all 150ms ease-in-out;
@@ -820,14 +883,14 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
 
                     .button-sm {
                         height: 2rem;
-                        border-radius: calc(var(--radius) - 4px);
+                        border-radius: 0;
                         padding: 0 0.75rem;
                         font-size: 0.75rem;
                     }
 
                     .button-lg {
                         height: 2.75rem;
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 0 2rem;
                         font-size: 1rem;
                     }
@@ -932,7 +995,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         background-color: hsl(var(--secondary));
                         color: hsl(var(--secondary-foreground));
                         border: 1px solid hsl(var(--border));
-                        border-radius: calc(var(--radius) - 4px);
+                        border-radius: 0;
                         padding: 0.25rem 0.5rem;
                         cursor: pointer;
                         font-size: 0.75rem;
@@ -998,7 +1061,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
 
                     .alert {
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 1rem;
                         margin-bottom: 1rem;
                     }
@@ -1027,7 +1090,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         background-color: hsl(142.1 70.6% 45.3% / 0.1);
                         color: hsl(142.1 76.2% 36.3%);
                         border: 1px solid hsl(142.1 76.2% 36.3%);
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 1rem;
                         margin-bottom: 1rem;
                     }
@@ -1037,7 +1100,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         background-color: hsl(var(--destructive) / 0.1);
                         color: hsl(var(--destructive));
                         border: 1px solid hsl(var(--destructive));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 1rem;
                         margin-bottom: 1rem;
                     }
@@ -1110,11 +1173,42 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .channel-box {
+                        position: relative;
                         background-color: hsl(var(--card));
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 1.5rem;
                         margin-bottom: 1.5rem;
+                    }
+
+                    .channel-box::before,
+                    .channel-box::after {
+                        content: '';
+                        position: absolute;
+                        width: 16px;
+                        height: 16px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .channel-box::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .channel-box::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    @media (prefers-color-scheme: dark) {
+                        .channel-box::before,
+                        .channel-box::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
                     }
 
                     .section-header {
@@ -1212,11 +1306,42 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .balance-item {
+                        position: relative;
                         text-align: center;
                         padding: 1rem;
                         background-color: hsl(var(--muted) / 0.3);
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         border: 1px solid hsl(var(--border));
+                    }
+
+                    .balance-item::before,
+                    .balance-item::after {
+                        content: '';
+                        position: absolute;
+                        width: 12px;
+                        height: 12px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .balance-item::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .balance-item::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    @media (prefers-color-scheme: dark) {
+                        .balance-item::before,
+                        .balance-item::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
                     }
 
                     .balance-amount {
@@ -1230,11 +1355,42 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
 
 
                     .payment-item {
+                        position: relative;
                         background-color: hsl(var(--card));
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 1.5rem;
                         margin-bottom: 1.5rem;
+                    }
+
+                    .payment-item::before,
+                    .payment-item::after {
+                        content: '';
+                        position: absolute;
+                        width: 16px;
+                        height: 16px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .payment-item::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .payment-item::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    @media (prefers-color-scheme: dark) {
+                        .payment-item::before,
+                        .payment-item::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
                     }
 
                     /* Dark mode payment card improvements - match other cards */
@@ -1353,7 +1509,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         padding: 0.5rem 1rem;
                         border: 1px solid hsl(var(--border));
                         background-color: hsl(var(--background));
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         text-decoration: none;
                         color: hsl(var(--muted-foreground));
                         font-size: 0.875rem;
@@ -1500,7 +1656,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         align-items: center;
                         justify-content: center;
                         white-space: nowrap;
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         font-size: 0.875rem;
                         font-weight: 600;
                         transition: all 150ms ease-in-out;
@@ -1613,16 +1769,47 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .node-info-main-container {
+                        position: relative;
                         flex: 1;
                         display: flex;
                         flex-direction: column;
                         gap: 1rem;
                         background-color: hsl(var(--card));
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 1.5rem;
-                        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+                        box-shadow: none;
                         height: 100%;
+                    }
+
+                    .node-info-main-container::before,
+                    .node-info-main-container::after {
+                        content: '';
+                        position: absolute;
+                        width: 16px;
+                        height: 16px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .node-info-main-container::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .node-info-main-container::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    @media (prefers-color-scheme: dark) {
+                        .node-info-main-container::before,
+                        .node-info-main-container::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
                     }
 
                     .node-info-left {
@@ -1636,7 +1823,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         flex-shrink: 0;
                         background-color: hsl(var(--muted) / 0.3);
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 0.75rem;
                         display: flex;
                         align-items: center;
@@ -1648,7 +1835,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     .avatar-image {
                         width: 48px;
                         height: 48px;
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         object-fit: cover;
                         display: block;
                     }
@@ -1679,7 +1866,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     .node-content-box {
                         background-color: hsl(var(--muted) / 0.3);
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         min-height: 200px;
                         padding: 1rem;
                         display: flex;
