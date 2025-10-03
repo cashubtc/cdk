@@ -27,26 +27,30 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
     /// Make the transport to use a given proxy
     fn with_proxy(
         &mut self,
-        proxy: Url,
+        proxy: url::Url,
         host_matcher: Option<&str>,
         accept_invalid_certs: bool,
-    ) -> Result<(), Error>;
+    ) -> Result<(), super::Error>;
 
     /// HTTP Get request
-    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>
+    async fn http_get<R>(
+        &self,
+        url: url::Url,
+        auth: Option<cdk_common::AuthToken>,
+    ) -> Result<R, super::Error>
     where
-        R: DeserializeOwned;
+        R: serde::de::DeserializeOwned;
 
     /// HTTP Post request
     async fn http_post<P, R>(
         &self,
-        url: Url,
-        auth_token: Option<AuthToken>,
+        url: url::Url,
+        auth_token: Option<cdk_common::AuthToken>,
         payload: &P,
-    ) -> Result<R, Error>
+    ) -> Result<R, super::Error>
     where
-        P: Serialize + ?Sized + Send + Sync,
-        R: DeserializeOwned;
+        P: serde::Serialize + ?Sized + Send + Sync,
+        R: serde::de::DeserializeOwned;
 }
 
 /// Async transport for Http
@@ -212,3 +216,6 @@ impl Transport for Async {
         })
     }
 }
+
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+pub mod tor_transport;
