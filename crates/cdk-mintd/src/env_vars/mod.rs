@@ -55,7 +55,7 @@ pub use mint_info::*;
 #[cfg(feature = "prometheus")]
 pub use prometheus::*;
 
-use crate::config::{DatabaseEngine, LnBackend, Settings};
+use crate::config::{DatabaseEngine, PaymentBackendKind, Settings};
 
 impl Settings {
     pub fn from_env(&mut self) -> Result<Self> {
@@ -92,7 +92,7 @@ impl Settings {
 
         self.info = self.info.clone().from_env();
         self.mint_info = self.mint_info.clone().from_env();
-        self.ln = self.ln.clone().from_env();
+        self.payment_backend = self.payment_backend.clone().from_env();
 
         #[cfg(feature = "auth")]
         {
@@ -122,33 +122,68 @@ impl Settings {
             self.prometheus = Some(self.prometheus.clone().unwrap_or_default().from_env());
         }
 
-        match self.ln.ln_backend {
+        match self.payment_backend.kind {
             #[cfg(feature = "cln")]
-            LnBackend::Cln => {
-                self.cln = Some(self.cln.clone().unwrap_or_default().from_env());
+            PaymentBackendKind::Cln => {
+                self.payment_backend.cln = Some(
+                    self.payment_backend
+                        .cln
+                        .clone()
+                        .unwrap_or_default()
+                        .from_env(),
+                );
             }
             #[cfg(feature = "lnbits")]
-            LnBackend::LNbits => {
-                self.lnbits = Some(self.lnbits.clone().unwrap_or_default().from_env());
+            PaymentBackendKind::LNbits => {
+                self.payment_backend.lnbits = Some(
+                    self.payment_backend
+                        .lnbits
+                        .clone()
+                        .unwrap_or_default()
+                        .from_env(),
+                );
             }
             #[cfg(feature = "fakewallet")]
-            LnBackend::FakeWallet => {
-                self.fake_wallet = Some(self.fake_wallet.clone().unwrap_or_default().from_env());
+            PaymentBackendKind::FakeWallet => {
+                self.payment_backend.fake_wallet = Some(
+                    self.payment_backend
+                        .fake_wallet
+                        .clone()
+                        .unwrap_or_default()
+                        .from_env(),
+                );
             }
             #[cfg(feature = "lnd")]
-            LnBackend::Lnd => {
-                self.lnd = Some(self.lnd.clone().unwrap_or_default().from_env());
+            PaymentBackendKind::Lnd => {
+                self.payment_backend.lnd = Some(
+                    self.payment_backend
+                        .lnd
+                        .clone()
+                        .unwrap_or_default()
+                        .from_env(),
+                );
             }
             #[cfg(feature = "ldk-node")]
-            LnBackend::LdkNode => {
-                self.ldk_node = Some(self.ldk_node.clone().unwrap_or_default().from_env());
+            PaymentBackendKind::LdkNode => {
+                self.payment_backend.ldk_node = Some(
+                    self.payment_backend
+                        .ldk_node
+                        .clone()
+                        .unwrap_or_default()
+                        .from_env(),
+                );
             }
             #[cfg(feature = "grpc-processor")]
-            LnBackend::GrpcProcessor => {
-                self.grpc_processor =
-                    Some(self.grpc_processor.clone().unwrap_or_default().from_env());
+            PaymentBackendKind::GrpcProcessor => {
+                self.payment_backend.grpc_processor = Some(
+                    self.payment_backend
+                        .grpc_processor
+                        .clone()
+                        .unwrap_or_default()
+                        .from_env(),
+                );
             }
-            LnBackend::None => bail!("Ln backend must be set"),
+            PaymentBackendKind::None => bail!("Ln backend must be set"),
             #[allow(unreachable_patterns)]
             _ => bail!("Selected Ln backend is not enabled in this build"),
         }
