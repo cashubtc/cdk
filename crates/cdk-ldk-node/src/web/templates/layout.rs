@@ -148,11 +148,12 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         }
 
                         .detail-label {
-                            color: var(--text-muted) !important;
+                            color: hsl(var(--foreground)) !important;
+                            opacity: 0.5 !important;
                         }
 
                         .detail-value, .detail-value-amount {
-                            color: var(--text-secondary) !important;
+                            color: hsl(var(--foreground)) !important;
                         }
 
                         .metric-label, .balance-label {
@@ -454,6 +455,21 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         justify-content: flex-start;
                     }
 
+                    /* Subtle diamond gradient fade on edges */
+                    header::before {
+                        content: '';
+                        position: absolute;
+                        top: 0;
+                        left: 0;
+                        right: 0;
+                        bottom: 0;
+                        background:
+                            linear-gradient(90deg, hsl(var(--background)) 0%, transparent 15%, transparent 85%, hsl(var(--background)) 100%),
+                            linear-gradient(180deg, hsl(var(--background)) 0%, transparent 15%, transparent 85%, hsl(var(--background)) 100%);
+                        pointer-events: none;
+                        z-index: 1;
+                    }
+
                     /* Dark mode header background - subtle grid with darker theme */
                     @media (prefers-color-scheme: dark) {
                         header {
@@ -461,6 +477,12 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                             background-image:
                                 linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
                                 linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+                        }
+
+                        header::before {
+                            background:
+                                linear-gradient(90deg, rgb(18, 19, 21) 0%, transparent 15%, transparent 85%, rgb(18, 19, 21) 100%),
+                                linear-gradient(180deg, rgb(18, 19, 21) 0%, transparent 15%, transparent 85%, rgb(18, 19, 21) 100%);
                         }
                     }
 
@@ -1240,9 +1262,10 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
 
                     .detail-row {
                         display: flex;
-                        align-items: baseline;
-                        margin-bottom: 0.75rem;
-                        gap: 1rem;
+                        align-items: center;
+                        margin-bottom: 1rem;
+                        gap: 1.5rem;
+                        padding: 0.75rem 0;
                     }
 
                     .detail-row:last-child {
@@ -1250,29 +1273,31 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .detail-label {
-                        font-weight: 400;
-                        color: var(--text-muted);
-                        font-size: 0.75rem;
-                        min-width: 120px;
+                        font-weight: 500;
+                        color: hsl(var(--foreground));
+                        opacity: 0.5;
+                        font-size: 0.8125rem;
+                        min-width: 140px;
                         flex-shrink: 0;
-                        letter-spacing: 0.05em;
+                        letter-spacing: 0.025em;
                         text-transform: uppercase;
+                        text-align: right;
                     }
 
                     .detail-value {
-                        color: var(--text-tertiary);
+                        color: hsl(var(--foreground));
                         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
-                        font-size: 0.8125rem;
-                        font-weight: 300;
+                        font-size: 0.875rem;
+                        font-weight: 400;
                         word-break: break-all;
                         flex: 1;
                         min-width: 0;
-                        letter-spacing: -0.02em;
-                        line-height: 1.7;
+                        letter-spacing: -0.01em;
+                        line-height: 1.5;
                     }
 
                     .detail-value-amount {
-                        color: var(--text-secondary);
+                        color: hsl(var(--foreground));
                         font-size: 0.9375rem;
                         font-weight: 500;
                         word-break: break-all;
@@ -1876,8 +1901,11 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .node-address {
-                        font-size: 0.875rem;
-                        color: var(--fg-muted);
+                        font-size: 0.75rem;
+                        color: var(--text-muted);
+                        font-weight: 500;
+                        letter-spacing: 0.05em;
+                        text-transform: uppercase;
                         margin: 0;
                         line-height: var(--lh-normal);
                     }
@@ -2019,12 +2047,12 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         grid-template-columns: 1fr 1fr;
                         gap: 0;
                         margin-top: 1.5rem;
-                        border-top: 1px solid hsl(var(--border));
                     }
 
                     .activity-section {
                         padding: 2rem 1.5rem;
                         border-right: 1px solid hsl(var(--border));
+                        border-top: 1px solid hsl(var(--border));
                     }
 
                     .activity-section:last-child {
@@ -2036,8 +2064,8 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         align-items: center;
                         gap: 0.75rem;
                         margin-bottom: 2rem;
-                        padding-bottom: 1rem;
-                        border-bottom: 1px solid hsl(var(--border));
+                        padding-bottom: 0;
+                        border-bottom: none;
                     }
 
                     .activity-icon-box {
@@ -2074,7 +2102,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
 
                     .activity-metric-card {
                         position: relative;
-                        text-align: center;
+                        text-align: left;
                         padding: 1rem;
                         background-color: hsl(var(--muted) / 0.3);
                         border-radius: 0;

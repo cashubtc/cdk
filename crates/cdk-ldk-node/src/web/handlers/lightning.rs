@@ -139,31 +139,30 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                 @let channel_number = index + 1;
 
                 div class="channel-box" {
-                    // Channel number as prominent header
-                    div class="channel-alias" style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 1.5rem;" { (format!("Channel {}", channel_number)) }
+                    // Channel header with number on left and status badge on right
+                    div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 1.5rem;" {
+                        div class="channel-alias" style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; margin: 0;" { (format!("Channel {}", channel_number)) }
+                        @if channel.is_usable {
+                            span class="status-badge status-active" { "Active" }
+                        } @else {
+                            span class="status-badge status-inactive" { "Inactive" }
+                        }
+                    }
 
-                    // Channel details in left-aligned format
+                    // Channel details - ordered by label length
                     div class="channel-details" {
                         div class="detail-row" {
+                            span class="detail-label" { "Node ID" }
+                            span class="detail-value" { (node_id) }
+                        }
+                        div class="detail-row" {
                             span class="detail-label" { "Channel ID" }
-                            span class="detail-value-amount" { (channel.channel_id.to_string()) }
+                            span class="detail-value" { (channel.channel_id.to_string()) }
                         }
                         @if let Some(short_channel_id) = channel.short_channel_id {
                             div class="detail-row" {
                                 span class="detail-label" { "Short Channel ID" }
-                                span class="detail-value-amount" { (short_channel_id.to_string()) }
-                            }
-                        }
-                        div class="detail-row" {
-                            span class="detail-label" { "Node ID" }
-                            span class="detail-value-amount" { (node_id) }
-                        }
-                        div class="detail-row" {
-                            span class="detail-label" { "Status" }
-                            @if channel.is_usable {
-                                span class="status-badge status-active" { "Active" }
-                            } @else {
-                                span class="status-badge status-inactive" { "Inactive" }
+                                span class="detail-value" { (short_channel_id.to_string()) }
                             }
                         }
                     }

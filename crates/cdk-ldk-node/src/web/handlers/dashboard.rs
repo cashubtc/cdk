@@ -226,7 +226,7 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
 
         // Activity Sections - Side by Side Layout
         div class="card" {
-            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Activity Overview" }
+            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; margin-bottom: 0;" { "Activity Overview" }
 
             div class="activity-grid" {
                 // Lightning Network Activity
