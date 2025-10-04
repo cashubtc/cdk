@@ -245,42 +245,91 @@ pub async fn payments_page(
 pub async fn send_payments_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let content = html! {
         h2 style="text-align: center; margin-bottom: 3rem;" { "Send Payment" }
-        div class="grid" {
-            (form_card(
-                "Pay BOLT11 Invoice",
-                html! {
-                    form method="post" action="/payments/bolt11" {
-                        div class="form-group" {
-                            label for="invoice" { "BOLT11 Invoice" }
-                            textarea id="invoice" name="invoice" required placeholder="lnbc..." style="height: 120px;" {}
-                        }
-                        div class="form-group" {
-                            label for="amount_btc" { "Amount Override (optional)" }
-                            input type="number" id="amount_btc" name="amount_btc" placeholder="Leave empty to use invoice amount" step="1" {}
-                        }
-                        button type="submit" { "Pay BOLT11 Invoice" }
-                    }
-                }
-            ))
 
-            (form_card(
-                "Pay BOLT12 Offer",
-                html! {
-                    form method="post" action="/payments/bolt12" {
-                        div class="form-group" {
-                            label for="offer" { "BOLT12 Offer" }
-                            textarea id="offer" name="offer" required placeholder="lno..." style="height: 120px;" {}
+        div class="card" {
+            // Tab navigation
+            div class="payment-tabs" style="display: flex; gap: 0.5rem; margin-bottom: 1.5rem; border-bottom: 1px solid hsl(var(--border)); padding-bottom: 0;" {
+                button type="button" class="payment-tab active" onclick="switchTab('bolt11')" data-tab="bolt11" {
+                    "BOLT11 Invoice"
+                }
+                button type="button" class="payment-tab" onclick="switchTab('bolt12')" data-tab="bolt12" {
+                    "BOLT12 Offer"
+                }
+            }
+
+            // BOLT11 tab content
+            div id="bolt11-content" class="tab-content active" {
+                form method="post" action="/payments/bolt11" {
+                    div class="form-group" {
+                        label for="invoice" { "BOLT11 Invoice" }
+                        textarea id="invoice" name="invoice" required placeholder="lnbc..." rows="4" {}
+                    }
+                    div class="form-group" {
+                        label for="amount_btc_bolt11" { "Amount Override (optional)" }
+                        input type="number" id="amount_btc_bolt11" name="amount_btc" placeholder="Leave empty to use invoice amount" step="1" {}
+                        p style="font-size: 0.8125rem; color: hsl(var(--muted-foreground)); margin-top: 0.5rem;" {
+                            "Only specify an amount if you want to override the invoice amount"
                         }
-                        div class="form-group" {
-                            label for="amount_btc" { "Amount (required for variable amount offers)" }
-                            input type="number" id="amount_btc" name="amount_btc" placeholder="Required for variable amount offers, ignored for fixed amount offers" step="1" {}
-                        }
-                        button type="submit" { "Pay BOLT12 Offer" }
+                    }
+                    div class="form-actions" {
+                        a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
+                        button type="submit" class="button-primary" { "Pay Invoice" }
                     }
                 }
-            ))
+            }
+
+            // BOLT12 tab content
+            div id="bolt12-content" class="tab-content" {
+                form method="post" action="/payments/bolt12" {
+                    div class="form-group" {
+                        label for="offer" { "BOLT12 Offer" }
+                        textarea id="offer" name="offer" required placeholder="lno..." rows="4" {}
+                    }
+                    div class="form-group" {
+                        label for="amount_btc_bolt12" { "Amount" }
+                        input type="number" id="amount_btc_bolt12" name="amount_btc" placeholder="Amount in satoshis" step="1" {}
+                        p style="font-size: 0.8125rem; color: hsl(var(--muted-foreground)); margin-top: 0.5rem;" {
+                            "Required for variable amount offers, ignored for fixed amount offers"
+                        }
+                    }
+                    div class="form-actions" {
+                        a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
+                        button type="submit" class="button-primary" { "Pay Offer" }
+                    }
+                }
+            }
         }
 
+        // Tab switching script
+        script type="text/javascript" {
+            (maud::PreEscaped(r#"
+            function switchTab(tabName) {
+                console.log('Switching to tab:', tabName);
+
+                // Hide all tab contents
+                const contents = document.querySelectorAll('.tab-content');
+                contents.forEach(content => content.classList.remove('active'));
+
+                // Remove active class from all tabs
+                const tabs = document.querySelectorAll('.payment-tab');
+                tabs.forEach(tab => tab.classList.remove('active'));
+
+                // Show selected tab content
+                const tabContent = document.getElementById(tabName + '-content');
+                if (tabContent) {
+                    tabContent.classList.add('active');
+                    console.log('Activated tab content:', tabName);
+                }
+
+                // Add active class to selected tab
+                const tabButton = document.querySelector('[data-tab="' + tabName + '"]');
+                if (tabButton) {
+                    tabButton.classList.add('active');
+                    console.log('Activated tab button:', tabName);
+                }
+            }
+            "#))
+        }
     };
 
     let is_running = is_node_running(&state.node.inner);

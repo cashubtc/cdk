@@ -2217,6 +2217,83 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         }
                     }
 
+                    /* Payment tabs styling */
+                    .payment-tabs {
+                        display: flex;
+                        gap: 0.5rem;
+                        margin-bottom: 1.5rem;
+                        border-bottom: 1px solid hsl(var(--border));
+                    }
+
+                    .payment-tab {
+                        display: inline-flex;
+                        align-items: center;
+                        justify-content: center;
+                        white-space: nowrap;
+                        padding: 0.75rem 1.5rem;
+                        border: none;
+                        border-bottom: 2px solid transparent;
+                        background-color: transparent;
+                        border-radius: 0;
+                        text-decoration: none;
+                        color: hsl(var(--muted-foreground));
+                        font-size: 0.9375rem;
+                        font-weight: 600;
+                        transition: all 200ms ease;
+                        cursor: pointer;
+                        position: relative;
+                        margin-bottom: -1px;
+                    }
+
+                    .payment-tab:hover {
+                        color: hsl(var(--foreground));
+                        background-color: hsl(var(--muted) / 0.5);
+                    }
+
+                    .payment-tab.active {
+                        color: hsl(var(--foreground));
+                        border-bottom-color: hsl(var(--foreground));
+                        background-color: transparent;
+                    }
+
+                    /* Dark mode tab styling */
+                    @media (prefers-color-scheme: dark) {
+                        .payment-tab {
+                            color: var(--text-muted);
+                        }
+
+                        .payment-tab:hover {
+                            color: var(--text-secondary);
+                            background-color: rgba(255, 255, 255, 0.05);
+                        }
+
+                        .payment-tab.active {
+                            color: var(--text-primary);
+                            border-bottom-color: var(--text-primary);
+                        }
+                    }
+
+                    /* Tab content */
+                    .tab-content {
+                        display: none;
+                        animation: fade-in 0.2s ease-out;
+                    }
+
+                    .tab-content.active {
+                        display: block;
+                    }
+
+                    @keyframes fade-in {
+                        from {
+                            opacity: 0;
+                            transform: translateY(4px);
+                        }
+                        to {
+                            opacity: 1;
+                            transform: translateY(0);
+                        }
+                    }
+
                     @media (max-width: 480px) {
                         .node-name {
                             font-size: 0.8125rem;
