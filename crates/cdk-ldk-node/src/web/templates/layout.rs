@@ -282,9 +282,11 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .node-subtitle {
-                        font-size: 0.875rem;
-                        color: var(--header-subtitle);
+                        font-size: 0.75rem;
+                        color: var(--text-muted);
                         font-weight: 500;
+                        letter-spacing: 0.05em;
+                        text-transform: uppercase;
                     }
 
                     .header-right {
@@ -340,7 +342,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         }
 
                         .node-subtitle {
-                            font-size: 0.8125rem;
+                            font-size: 0.6875rem;
                             text-align: center;
                         }
 
@@ -436,10 +438,12 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     /* Hero section styling */
                     header {
                         position: relative;
-                        background-image: url('/static/images/bg.jpg?v=3');
-                        background-size: cover;
-                        background-position: center;
-                        background-repeat: no-repeat;
+                        background-color: hsl(var(--background));
+                        background-image:
+                            linear-gradient(hsl(var(--border)) 1px, transparent 1px),
+                            linear-gradient(90deg, hsl(var(--border)) 1px, transparent 1px);
+                        background-size: 40px 40px;
+                        background-position: -1px -1px;
                         border-bottom: 1px solid hsl(var(--border));
                         margin-bottom: 2rem;
                         text-align: left;
@@ -450,10 +454,13 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         justify-content: flex-start;
                     }
 
-                    /* Dark mode header background - using different image */
+                    /* Dark mode header background - subtle grid with darker theme */
                     @media (prefers-color-scheme: dark) {
                         header {
-                            background-image: url('/static/images/bg-dark.jpg?v=3');
+                            background-color: rgb(18, 19, 21);
+                            background-image:
+                                linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                                linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
                         }
                     }
 
@@ -2006,6 +2013,167 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         }
                     }
 
+                    /* Activity Grid Layout - Side by Side */
+                    .activity-grid {
+                        display: grid;
+                        grid-template-columns: 1fr 1fr;
+                        gap: 0;
+                        margin-top: 1.5rem;
+                        border-top: 1px solid hsl(var(--border));
+                    }
+
+                    .activity-section {
+                        padding: 2rem 1.5rem;
+                        border-right: 1px solid hsl(var(--border));
+                    }
+
+                    .activity-section:last-child {
+                        border-right: none;
+                    }
+
+                    .activity-header {
+                        display: flex;
+                        align-items: center;
+                        gap: 0.75rem;
+                        margin-bottom: 2rem;
+                        padding-bottom: 1rem;
+                        border-bottom: 1px solid hsl(var(--border));
+                    }
+
+                    .activity-icon-box {
+                        flex-shrink: 0;
+                        background-color: hsl(var(--muted) / 0.3);
+                        border: 1px solid hsl(var(--border));
+                        border-radius: 0;
+                        padding: 0.5rem;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        width: 36px;
+                        height: 36px;
+                    }
+
+                    .activity-icon-box svg {
+                        color: hsl(var(--foreground));
+                    }
+
+                    .activity-title {
+                        font-size: 1rem;
+                        font-weight: 400;
+                        color: hsl(var(--foreground));
+                        margin: 0;
+                        text-transform: none;
+                        letter-spacing: normal;
+                    }
+
+                    .activity-metrics {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 1rem;
+                    }
+
+                    .activity-metric-card {
+                        position: relative;
+                        text-align: center;
+                        padding: 1rem;
+                        background-color: hsl(var(--muted) / 0.3);
+                        border-radius: 0;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .activity-metric-card::before,
+                    .activity-metric-card::after {
+                        content: '';
+                        position: absolute;
+                        width: 12px;
+                        height: 12px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .activity-metric-card::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .activity-metric-card::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    .activity-metric-label {
+                        display: block;
+                        margin-bottom: 0.5rem;
+                        font-size: 0.875rem;
+                        font-weight: 400;
+                        color: hsl(var(--muted-foreground));
+                        text-transform: none;
+                        letter-spacing: normal;
+                    }
+
+                    .activity-metric-value {
+                        display: block;
+                        font-size: 1.5rem;
+                        font-weight: 600;
+                        color: hsl(var(--foreground));
+                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
+                        line-height: 1.2;
+                    }
+
+                    /* Dark mode activity styling */
+                    @media (prefers-color-scheme: dark) {
+                        .activity-icon-box {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+
+                        .activity-icon-box svg {
+                            color: var(--text-primary);
+                        }
+
+                        .activity-title {
+                            color: var(--text-primary);
+                        }
+
+                        .activity-metric-card {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+
+                        .activity-metric-card::before,
+                        .activity-metric-card::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
+
+                        .activity-metric-label {
+                            color: var(--text-muted) !important;
+                        }
+
+                        .activity-metric-value {
+                            color: var(--text-primary) !important;
+                        }
+                    }
+
+                    /* Responsive activity grid */
+                    @media (max-width: 768px) {
+                        .activity-grid {
+                            grid-template-columns: 1fr;
+                        }
+
+                        .activity-section {
+                            border-right: none;
+                            border-bottom: 1px solid hsl(var(--border));
+                            padding: 1.5rem 1rem;
+                        }
+
+                        .activity-section:last-child {
+                            border-bottom: none;
+                        }
+                    }
+
                     /* Responsive typography adjustments */
                     @media (max-width: 640px) {
                         :root {
@@ -2014,6 +2182,10 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
 
                         .node-name {
                             font-size: 0.875rem;
+                        }
+
+                        .activity-metric-value {
+                            font-size: 1.25rem;
                         }
                     }
 

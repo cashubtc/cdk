@@ -224,51 +224,74 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
             }
         }
 
-        // Lightning Network Activity as metric cards
+        // Activity Sections - Side by Side Layout
         div class="card" {
-            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Lightning Network Activity" }
-            div class="metrics-container" style="margin-top: 1.5rem;" {
-                div class="metric-card" {
-                    div class="metric-value" { (format_sats_as_btc(metrics.lightning_inflow_24h)) }
-                    div class="metric-label" { "24h LN Inflow" }
+            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Activity Overview" }
+
+            div class="activity-grid" {
+                // Lightning Network Activity
+                div class="activity-section" {
+                    div class="activity-header" {
+                        div class="activity-icon-box" {
+                            svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" {
+                                path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z" {}
+                            }
+                        }
+                        h3 class="activity-title" { "Lightning Network Activity" }
+                    }
+
+                    div class="activity-metrics" {
+                        div class="activity-metric-card" {
+                            div class="activity-metric-label" { "24h Inflow" }
+                            div class="activity-metric-value" { (format_sats_as_btc(metrics.lightning_inflow_24h)) }
+                        }
+                        div class="activity-metric-card" {
+                            div class="activity-metric-label" { "24h Outflow" }
+                            div class="activity-metric-value" { (format_sats_as_btc(metrics.lightning_outflow_24h)) }
+                        }
+                        div class="activity-metric-card" {
+                            div class="activity-metric-label" { "All-time Inflow" }
+                            div class="activity-metric-value" { (format_sats_as_btc(metrics.lightning_inflow_all_time)) }
+                        }
+                        div class="activity-metric-card" {
+                            div class="activity-metric-label" { "All-time Outflow" }
+                            div class="activity-metric-value" { (format_sats_as_btc(metrics.lightning_outflow_all_time)) }
+                        }
+                    }
                 }
-                div class="metric-card" {
-                    div class="metric-value" { (format_sats_as_btc(metrics.lightning_outflow_24h)) }
-                    div class="metric-label" { "24h LN Outflow" }
-                }
-                div class="metric-card" {
-                    div class="metric-value" { (format_sats_as_btc(metrics.lightning_inflow_all_time)) }
-                    div class="metric-label" { "All-time LN Inflow" }
-                }
-                div class="metric-card" {
-                    div class="metric-value" { (format_sats_as_btc(metrics.lightning_outflow_all_time)) }
-                    div class="metric-label" { "All-time LN Outflow" }
+
+                // On-chain Activity
+                div class="activity-section" {
+                    div class="activity-header" {
+                        div class="activity-icon-box" {
+                            svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" {
+                                path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" {}
+                                path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" {}
+                            }
+                        }
+                        h3 class="activity-title" { "On-chain Activity" }
+                    }
+
+                    div class="activity-metrics" {
+                        div class="activity-metric-card" {
+                            div class="activity-metric-label" { "24h Inflow" }
+                            div class="activity-metric-value" { (format_sats_as_btc(metrics.onchain_inflow_24h)) }
+                        }
+                        div class="activity-metric-card" {
+                            div class="activity-metric-label" { "24h Outflow" }
+                            div class="activity-metric-value" { (format_sats_as_btc(metrics.onchain_outflow_24h)) }
+                        }
+                        div class="activity-metric-card" {
+                            div class="activity-metric-label" { "All-time Inflow" }
+                            div class="activity-metric-value" { (format_sats_as_btc(metrics.onchain_inflow_all_time)) }
+                        }
+                        div class="activity-metric-card" {
+                            div class="activity-metric-label" { "All-time Outflow" }
+                            div class="activity-metric-value" { (format_sats_as_btc(metrics.onchain_outflow_all_time)) }
+                        }
+                    }
                 }
             }
-        }
-
-        // On-chain Activity as metric cards
-        div class="card" {
-            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "On-chain Activity" }
-            div class="metrics-container" style="margin-top: 1.5rem;" {
-                div class="metric-card" {
-                    div class="metric-value" { (format_sats_as_btc(metrics.onchain_inflow_24h)) }
-                    div class="metric-label" { "24h On-chain Inflow" }
-                }
-                div class="metric-card" {
-                    div class="metric-value" { (format_sats_as_btc(metrics.onchain_outflow_24h)) }
-                    div class="metric-label" { "24h On-chain Outflow" }
-                }
-                div class="metric-card" {
-                    div class="metric-value" { (format_sats_as_btc(metrics.onchain_inflow_all_time)) }
-                    div class="metric-label" { "All-time On-chain Inflow" }
-                }
-                div class="metric-card" {
-                    div class="metric-value" { (format_sats_as_btc(metrics.onchain_outflow_all_time)) }
-                    div class="metric-label" { "All-time On-chain Outflow" }
-                }
-            }
-
         }
     };
 
