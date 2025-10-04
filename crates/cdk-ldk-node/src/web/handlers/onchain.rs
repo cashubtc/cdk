@@ -33,33 +33,6 @@ pub struct ConfirmOnchainForm {
     confirmed: Option<String>,
 }
 
-fn operations_section() -> maud::Markup {
-    html! {
-        div class="card" style="position: sticky; top: 2rem;" {
-            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Operations" }
-            div style="display: flex; flex-direction: column; gap: 1.5rem; margin-top: 1.5rem;" {
-                // Receive Bitcoin Card
-                div class="quick-action-card" {
-                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Receive" }
-                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Get a new address to receive bitcoin." }
-                    a href="/onchain?action=receive" style="text-decoration: none;" {
-                        button class="button-outline" { "Receive" }
-                    }
-                }
-
-                // Send Bitcoin Card
-                div class="quick-action-card" {
-                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Send" }
-                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send bitcoin to another address." }
-                    a href="/onchain?action=send" style="text-decoration: none;" {
-                        button class="button-outline" { "Send" }
-                    }
-                }
-            }
-        }
-    }
-}
-
 pub async fn get_new_address(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let address_result = state.node.inner.onchain_payment().new_address();
 
@@ -113,12 +86,75 @@ pub async fn onchain_page(
     let mut content = html! {
         h2 style="text-align: center; margin-bottom: 3rem;" { "On-chain" }
 
-        div style="display: flex; gap: 2rem; align-items: flex-start;" {
-            // Main content area
-            div style="flex: 1; min-width: 0;" {
-                // On-chain Balance as metric cards
+        // On-chain Balance with action buttons in header
+        div class="card" {
+            div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" {
+                h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; margin: 0;" { "On-chain Balance" }
+                div style="display: flex; gap: 0.5rem;" {
+                    a href="/onchain?action=send" style="text-decoration: none;" {
+                        button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Send" }
+                    }
+                    a href="/onchain?action=receive" style="text-decoration: none;" {
+                        button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Receive" }
+                    }
+                }
+            }
+            div class="metrics-container" style="margin-top: 1.5rem;" {
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
+                    div class="metric-label" { "Total Balance" }
+                }
+                div class="metric-card" {
+                    div class="metric-value" { (format_sats_as_btc(balances.spendable_onchain_balance_sats)) }
+                    div class="metric-label" { "Spendable Balance" }
+                }
+            }
+        }
+    };
+
+    match action {
+        "send" => {
+            content = html! {
+                h2 style="text-align: center; margin-bottom: 3rem;" { "On-chain" }
+
+                // Send form above balance
+                (form_card(
+                    "Send On-chain Payment",
+                    html! {
+                        form method="post" action="/onchain/send" {
+                            div class="form-group" {
+                                label for="address" { "Recipient Address" }
+                                input type="text" id="address" name="address" required placeholder="bc1..." {}
+                            }
+                            div class="form-group" {
+                                label for="amount_sat" { "Amount (sats)" }
+                                input type="number" id="amount_sat" name="amount_sat" placeholder="0" {}
+                            }
+                            input type="hidden" id="send_action" name="send_action" value="send" {}
+                            div style="display: flex; justify-content: space-between; gap: 1rem; margin-top: 2rem;" {
+                                a href="/onchain" { button type="button" class="button-secondary" { "Cancel" } }
+                                div style="display: flex; gap: 0.5rem;" {
+                                    button type="submit" onclick="document.getElementById('send_action').value='send'" { "Send Payment" }
+                                    button type="submit" onclick="document.getElementById('send_action').value='send_all'; document.getElementById('amount_sat').value=''" { "Send All" }
+                                }
+                            }
+                        }
+                    }
+                ))
+
+                // On-chain Balance with action buttons in header
                 div class="card" {
-                    h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "On-chain Balance" }
+                    div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" {
+                        h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; margin: 0;" { "On-chain Balance" }
+                        div style="display: flex; gap: 0.5rem;" {
+                            a href="/onchain?action=send" style="text-decoration: none;" {
+                                button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Send" }
+                            }
+                            a href="/onchain?action=receive" style="text-decoration: none;" {
+                                button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Receive" }
+                            }
+                        }
+                    }
                     div class="metrics-container" style="margin-top: 1.5rem;" {
                         div class="metric-card" {
                             div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
@@ -130,111 +166,48 @@ pub async fn onchain_page(
                         }
                     }
                 }
-            }
-
-            // Operations section on the right
-            div style="width: 380px; flex-shrink: 0;" {
-                (operations_section())
-            }
-        }
-    };
-
-    match action {
-        "send" => {
-            content = html! {
-                h2 style="text-align: center; margin-bottom: 3rem;" { "On-chain" }
-
-                div style="display: flex; gap: 2rem; align-items: flex-start;" {
-                    // Main content area
-                    div style="flex: 1; min-width: 0;" {
-                        // Send form above balance
-                        (form_card(
-                            "Send On-chain Payment",
-                            html! {
-                                form method="post" action="/onchain/send" {
-                                    div class="form-group" {
-                                        label for="address" { "Recipient Address" }
-                                        input type="text" id="address" name="address" required placeholder="bc1..." {}
-                                    }
-                                    div class="form-group" {
-                                        label for="amount_sat" { "Amount (sats)" }
-                                        input type="number" id="amount_sat" name="amount_sat" placeholder="0" {}
-                                    }
-                                    input type="hidden" id="send_action" name="send_action" value="send" {}
-                                    div style="display: flex; justify-content: space-between; gap: 1rem; margin-top: 2rem;" {
-                                        a href="/onchain" { button type="button" class="button-secondary" { "Cancel" } }
-                                        div style="display: flex; gap: 0.5rem;" {
-                                            button type="submit" onclick="document.getElementById('send_action').value='send'" { "Send Payment" }
-                                            button type="submit" onclick="document.getElementById('send_action').value='send_all'; document.getElementById('amount_sat').value=''" { "Send All" }
-                                        }
-                                    }
-                                }
-                            }
-                        ))
-
-                        // On-chain Balance as metric cards
-                        div class="card" {
-                            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "On-chain Balance" }
-                            div class="metrics-container" style="margin-top: 1.5rem;" {
-                                div class="metric-card" {
-                                    div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
-                                    div class="metric-label" { "Total Balance" }
-                                }
-                                div class="metric-card" {
-                                    div class="metric-value" { (format_sats_as_btc(balances.spendable_onchain_balance_sats)) }
-                                    div class="metric-label" { "Spendable Balance" }
-                                }
-                            }
-                        }
-                    }
-
-                    // Operations section on the right
-                    div style="width: 380px; flex-shrink: 0;" {
-                        (operations_section())
-                    }
-                }
             };
         }
         "receive" => {
             content = html! {
                 h2 style="text-align: center; margin-bottom: 3rem;" { "On-chain" }
 
-                div style="display: flex; gap: 2rem; align-items: flex-start;" {
-                    // Main content area
-                    div style="flex: 1; min-width: 0;" {
-                        // Generate address form above balance
-                        (form_card(
-                            "Generate New Address",
-                            html! {
-                                form method="post" action="/onchain/new-address" {
-                                    p style="margin-bottom: 2rem;" { "Click the button below to generate a new Bitcoin address for receiving on-chain payments." }
-                                    div style="display: flex; justify-content: space-between; gap: 1rem;" {
-                                        a href="/onchain" { button type="button" class="button-secondary" { "Cancel" } }
-                                        button class="button-primary" type="submit" { "Generate New Address" }
-                                    }
-                                }
-                            }
-                        ))
-
-                        // On-chain Balance as metric cards
-                        div class="card" {
-                            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "On-chain Balance" }
-                            div class="metrics-container" style="margin-top: 1.5rem;" {
-                                div class="metric-card" {
-                                    div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
-                                    div class="metric-label" { "Total Balance" }
-                                }
-                                div class="metric-card" {
-                                    div class="metric-value" { (format_sats_as_btc(balances.spendable_onchain_balance_sats)) }
-                                    div class="metric-label" { "Spendable Balance" }
-                                }
+                // Generate address form above balance
+                (form_card(
+                    "Generate New Address",
+                    html! {
+                        form method="post" action="/onchain/new-address" {
+                            p style="margin-bottom: 2rem;" { "Click the button below to generate a new Bitcoin address for receiving on-chain payments." }
+                            div style="display: flex; justify-content: space-between; gap: 1rem;" {
+                                a href="/onchain" { button type="button" class="button-secondary" { "Cancel" } }
+                                button class="button-primary" type="submit" { "Generate New Address" }
                             }
                         }
                     }
+                ))
 
-                    // Operations section on the right
-                    div style="width: 380px; flex-shrink: 0;" {
-                        (operations_section())
+                // On-chain Balance with action buttons in header
+                div class="card" {
+                    div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" {
+                        h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; margin: 0;" { "On-chain Balance" }
+                        div style="display: flex; gap: 0.5rem;" {
+                            a href="/onchain?action=send" style="text-decoration: none;" {
+                                button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Send" }
+                            }
+                            a href="/onchain?action=receive" style="text-decoration: none;" {
+                                button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Receive" }
+                            }
+                        }
+                    }
+                    div class="metrics-container" style="margin-top: 1.5rem;" {
+                        div class="metric-card" {
+                            div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
+                            div class="metric-label" { "Total Balance" }
+                        }
+                        div class="metric-card" {
+                            div class="metric-value" { (format_sats_as_btc(balances.spendable_onchain_balance_sats)) }
+                            div class="metric-label" { "Spendable Balance" }
+                        }
                     }
                 }
             };
