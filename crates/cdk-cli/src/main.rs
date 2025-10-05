@@ -13,6 +13,8 @@ use cdk::wallet::MultiMintWallet;
 #[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+use clap::ValueEnum;
 use clap::{Parser, Subcommand};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
@@ -27,11 +29,15 @@ const DEFAULT_WORK_DIR: &str = ".cdk-cli";
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 
 /// Simple CLI application to interact with cashu
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum TorToggle {
+    On,
+    Off,
+}
+
 #[derive(Parser)]
-#[command(name = "cdk-cli")]
-#[command(author = "thesimplekid <tsk@thesimplekid.com>")]
-#[command(version = CARGO_PKG_VERSION.unwrap_or("Unknown"))]
-#[command(author, version, about, long_about = None)]
+#[command(name = "cdk-cli", author = "thesimplekid <tsk@thesimplekid.com>", version = CARGO_PKG_VERSION.unwrap_or("Unknown"), about, long_about = None)]
 struct Cli {
     /// Database engine to use (sqlite/redb)
     #[arg(short, long, default_value = "sqlite")]
@@ -52,6 +58,11 @@ struct Cli {
     /// Currency unit to use for the wallet
     #[arg(short, long, default_value = "sat")]
     unit: String,
+    /// Use Tor transport (only when built with --features tor). Defaults to 'on' when feature is enabled.
+    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+    #[arg(long = "tor", value_enum, default_value_t = TorToggle::On)]
+    transport: TorToggle,
+    /// Subcommand to run
     #[command(subcommand)]
     command: Commands,
 }
@@ -120,8 +131,6 @@ async fn main() -> Result<()> {
         }
     };
 
-    fs::create_dir_all(&work_dir)?;
-
     let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
         match args.engine.as_str() {
             "sqlite" => {
@@ -181,7 +190,6 @@ async fn main() -> Result<()> {
     // The constructor will automatically load wallets for this currency unit
     let multi_mint_wallet = match &args.proxy {
         Some(proxy_url) => {
-            // Create MultiMintWallet with proxy configuration
             MultiMintWallet::new_with_proxy(
                 localstore.clone(),
                 seed,
@@ -190,7 +198,29 @@ async fn main() -> Result<()> {
             )
             .await?
         }
-        None => MultiMintWallet::new(localstore.clone(), seed, currency_unit.clone()).await?,
+        None => {
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            {
+                match args.transport {
+                    TorToggle::On => {
+                        MultiMintWallet::new_with_tor(
+                            localstore.clone(),
+                            seed,
+                            currency_unit.clone(),
+                        )
+                        .await?
+                    }
+                    TorToggle::Off => {
+                        MultiMintWallet::new(localstore.clone(), seed, currency_unit.clone())
+                            .await?
+                    }
+                }
+            }
+            #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
+            {
+                MultiMintWallet::new(localstore.clone(), seed, currency_unit.clone()).await?
+            }
+        }
     };
 
     match &args.command {
