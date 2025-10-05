@@ -54,7 +54,7 @@ impl Wallet {
         let invoice = Bolt11Invoice::from_str(&request)?;
 
         let quote_request = MeltQuoteBolt11Request {
-            request: Bolt11Invoice::from_str(&request)?,
+            request: invoice.clone(),
             unit: self.unit.clone(),
             options,
         };
@@ -248,6 +248,8 @@ impl Wallet {
             None => None,
         };
 
+        let payment_preimage = melt_response.payment_preimage.clone();
+
         let melted = Melted::from_proofs(
             melt_response.state,
             melt_response.payment_preimage,
@@ -298,6 +300,8 @@ impl Wallet {
                 memo: None,
                 metadata,
                 quote_id: Some(quote_id.to_string()),
+                payment_request: Some(quote_info.request),
+                payment_proof: payment_preimage,
             })
             .await?;
 
