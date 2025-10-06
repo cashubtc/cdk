@@ -313,6 +313,7 @@ pub struct Nuts {
     /// NUT15 Settings
     #[serde(default)]
     #[serde(rename = "15")]
+    #[serde(skip_serializing_if = "nut15::Settings::is_empty")]
     pub nut15: nut15::Settings,
     /// NUT17 Settings
     #[serde(default)]
@@ -675,5 +676,39 @@ mod tests {
         matches!(t, MintMethodOptions::Bolt11 { description: true });
 
         assert_eq!(info, mint_info);
+    }
+
+    #[test]
+    fn test_nut15_not_serialized_when_empty() {
+        // Test with default (empty) NUT15
+        let mint_info = MintInfo {
+            name: Some("Test Mint".to_string()),
+            nuts: Nuts::default(),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&mint_info).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // NUT15 should not be present in the nuts object when methods is empty
+        assert!(parsed["nuts"]["15"].is_null());
+
+        // Test with non-empty NUT15
+        let mint_info_with_nut15 = MintInfo {
+            name: Some("Test Mint".to_string()),
+            nuts: Nuts::default().nut15(vec![MppMethodSettings {
+                method: crate::PaymentMethod::Bolt11,
+                unit: crate::CurrencyUnit::Sat,
+            }]),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&mint_info_with_nut15).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // NUT15 should be present when methods is not empty
+        assert!(!parsed["nuts"]["15"].is_null());
+        assert!(parsed["nuts"]["15"]["methods"].is_array());
+        assert_eq!(parsed["nuts"]["15"]["methods"].as_array().unwrap().len(), 1);
     }
 }

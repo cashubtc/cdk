@@ -34,6 +34,13 @@ pub struct Settings {
     pub methods: Vec<MppMethodSettings>,
 }
 
+impl Settings {
+    /// Check if methods is empty
+    pub fn is_empty(&self) -> bool {
+        self.methods.is_empty()
+    }
+}
+
 // Custom deserialization to handle both array and object formats
 impl<'de> Deserialize<'de> for Settings {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -88,5 +95,19 @@ mod tests {
 
         let json = serde_json::to_string(&settings).unwrap();
         assert_eq!(json, r#"{"methods":[{"method":"bolt11","unit":"sat"}]}"#);
+    }
+
+    #[test]
+    fn test_nut15_settings_empty() {
+        let settings = Settings { methods: vec![] };
+        assert!(settings.is_empty());
+
+        let settings_with_data = Settings {
+            methods: vec![MppMethodSettings {
+                method: PaymentMethod::Bolt11,
+                unit: CurrencyUnit::Sat,
+            }],
+        };
+        assert!(!settings_with_data.is_empty());
     }
 }
