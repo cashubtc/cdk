@@ -8,10 +8,11 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use cdk_common::nut17::ws::{WsMethodRequest, WsRequest, WsUnsubscribeRequest};
 use cdk_common::nut17::{Kind, NotificationId};
+use cdk_common::parking_lot::RwLock;
 use cdk_common::pub_sub::remote_consumer::{
     Consumer, InternalRelay, RemoteActiveConsumer, StreamCtrl, SubscribeMessage, Transport,
 };
@@ -63,8 +64,9 @@ impl Debug for SubscriptionManager {
             "Subscription Manager connected to {:?}",
             self.all_connections
                 .write()
-                .map(|connections| connections.keys().cloned().collect::<Vec<_>>())
-                .unwrap_or_default()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
         )
     }
 }
@@ -87,7 +89,6 @@ impl SubscriptionManager {
     ) -> Result<RemoteActiveConsumer<SubscriptionClient>, PubsubError> {
         self.all_connections
             .write()
-            .map_err(|_| PubsubError::Poison)?
             .entry(mint_url.clone())
             .or_insert_with(|| {
                 Consumer::new(

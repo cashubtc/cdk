@@ -85,7 +85,7 @@ where
 {
     fn drop(&mut self) {
         // remove the listener
-        let mut topics = self.topics.write().unwrap();
+        let mut topics = self.topics.write();
         for index in self.subscribed_to.drain(..) {
             topics.remove(&(index, self.id));
         }

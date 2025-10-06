@@ -5,10 +5,6 @@ use tokio::sync::mpsc::error::TrySendError;
 #[derive(thiserror::Error, Debug)]
 /// Error
 pub enum Error {
-    /// Poison locked
-    #[error("Poisoned lock")]
-    Poison,
-
     /// Already subscribed
     #[error("Already subscribed")]
     AlreadySubscribed,

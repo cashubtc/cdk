@@ -3,8 +3,9 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
+use parking_lot::RwLock;
 use tokio::sync::mpsc;
 
 use super::subscriber::{ActiveSubscription, SubscriptionRequest};
@@ -61,7 +62,7 @@ where
     /// Publish an event to all listenrs
     #[inline(always)]
     fn publish_internal(event: S::Event, listeners_index: &TopicTree<S>) -> Result<(), Error> {
-        let index_storage = listeners_index.read().map_err(|_| Error::Poison)?;
+        let index_storage = listeners_index.read();
 
         let mut sent = HashSet::new();
         for topic in event.get_topics() {
@@ -131,7 +132,7 @@ where
     {
         let subscription_name = request.subscription_name();
         let sender = Subscriber::new(subscription_name.clone(), sender);
-        let mut index_storage = self.listeners_topics.write().map_err(|_| Error::Poison)?;
+        let mut index_storage = self.listeners_topics.write();
         let subscription_internal_id = self
             .unique_subscription_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
