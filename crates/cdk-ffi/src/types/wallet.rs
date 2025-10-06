@@ -185,8 +185,9 @@ pub fn encode_send_options(options: SendOptions) -> Result<String, FfiError> {
 pub struct ReceiveOptions {
     /// Amount split target
     pub amount_split_target: SplitTarget,
-    /// P2PK signing keys
-    pub p2pk_signing_keys: Vec<SecretKey>,
+    /// P2PK signing keys (wrapped in Arc for UniFFI Object compatibility)
+    #[serde(skip)]
+    pub p2pk_signing_keys: Vec<std::sync::Arc<SecretKey>>,
     /// Preimages for HTLC conditions
     pub preimages: Vec<String>,
     /// Metadata
@@ -208,7 +209,11 @@ impl From<ReceiveOptions> for cdk::wallet::ReceiveOptions {
     fn from(opts: ReceiveOptions) -> Self {
         cdk::wallet::ReceiveOptions {
             amount_split_target: opts.amount_split_target.into(),
-            p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
+            p2pk_signing_keys: opts
+                .p2pk_signing_keys
+                .into_iter()
+                .filter_map(|sk| (*sk).clone().try_into().ok())
+                .collect(),
             preimages: opts.preimages,
             metadata: opts.metadata,
         }
@@ -219,7 +224,11 @@ impl From<cdk::wallet::ReceiveOptions> for ReceiveOptions {
     fn from(opts: cdk::wallet::ReceiveOptions) -> Self {
         Self {
             amount_split_target: opts.amount_split_target.into(),
-            p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
+            p2pk_signing_keys: opts
+                .p2pk_signing_keys
+                .into_iter()
+                .map(|sk| std::sync::Arc::new(sk.into()))
+                .collect(),
             preimages: opts.preimages,
             metadata: opts.metadata,
         }

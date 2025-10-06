@@ -258,58 +258,98 @@ impl From<Id> for cdk::nuts::Id {
 }
 
 /// FFI-compatible SecretKey
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(transparent)]
+///
+/// Wraps the inner cdk::nuts::SecretKey to avoid copying secret data.
+/// The inner type implements Drop with zeroize for secure memory cleanup.
+#[derive(Debug, Clone, uniffi::Object)]
 pub struct SecretKey {
-    /// Hex-encoded secret key
-    pub hex: String,
+    pub(crate) inner: cdk::nuts::SecretKey,
 }
 
+#[uniffi::export]
 impl SecretKey {
     /// Create a new SecretKey from hex string
+    #[uniffi::constructor]
     pub fn from_hex(hex: String) -> Result<Self, FfiError> {
-        Ok(Self { hex })
+        let inner = cdk::nuts::SecretKey::from_hex(&hex).map_err(|e| {
+            FfiError::InvalidCryptographicKey {
+                msg: format!("Invalid secret key hex: {}", e),
+            }
+        })?;
+        Ok(Self { inner })
+    }
+
+    /// Create a new SecretKey from bytes
+    #[uniffi::constructor]
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, FfiError> {
+        if bytes.len() != 32 {
+            return Err(FfiError::InvalidCryptographicKey {
+                msg: format!("Secret key must be exactly 32 bytes, got {}", bytes.len()),
+            });
+        }
+        let inner = cdk::nuts::SecretKey::from_slice(&bytes).map_err(|e| {
+            FfiError::InvalidCryptographicKey {
+                msg: format!("Invalid secret key bytes: {}", e),
+            }
+        })?;
+        Ok(Self { inner })
     }
 
     /// Get the hex representation
     pub fn to_hex(&self) -> String {
-        self.hex.clone()
+        self.inner.to_secret_hex()
+    }
+
+    /// Get the bytes representation
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.inner.to_secret_bytes().to_vec()
     }
 
     /// Get the public key for this secret key
-    pub fn public_key(&self) -> Result<PublicKey, FfiError> {
-        let cdk_secret: cdk::nuts::SecretKey = self.clone().into();
-        Ok(cdk_secret.public_key().into())
+    pub fn public_key(&self) -> PublicKey {
+        self.inner.public_key().into()
     }
 }
 
-/// Generate a new random SecretKey
-#[uniffi::export]
-pub fn generate_secret_key() -> SecretKey {
-    use cdk::nuts::SecretKey as CdkSecretKey;
-    let secret_key = CdkSecretKey::generate();
-    secret_key.into()
-}
+impl TryFrom<SecretKey> for cdk::nuts::SecretKey {
+    type Error = FfiError;
 
-impl From<SecretKey> for cdk::nuts::SecretKey {
-    fn from(key: SecretKey) -> Self {
-        cdk::nuts::SecretKey::from_hex(&key.hex).expect("Invalid secret key hex")
+    fn try_from(key: SecretKey) -> Result<Self, Self::Error> {
+        Ok(key.inner.clone())
     }
 }
 
 impl From<cdk::nuts::SecretKey> for SecretKey {
-    fn from(key: cdk::nuts::SecretKey) -> Self {
-        Self {
-            hex: key.to_secret_hex(),
-        }
+    fn from(inner: cdk::nuts::SecretKey) -> Self {
+        Self { inner }
+    }
+}
+
+impl Drop for SecretKey {
+    fn drop(&mut self) {
+        // The inner cdk::nuts::SecretKey already implements Drop with zeroize
+        // so this will be handled automatically when inner is dropped
     }
 }
 
 /// FFI-compatible P2PK signing key (public key + secret key pair)
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Debug, Clone, uniffi::Object)]
 pub struct P2pkSigningKey {
     pub pubkey: PublicKey,
-    pub secret_key: SecretKey,
+    pub(crate) secret_key: SecretKey,
+}
+
+#[uniffi::export]
+impl P2pkSigningKey {
+    /// Get the public key
+    pub fn pubkey(&self) -> PublicKey {
+        self.pubkey.clone()
+    }
+
+    /// Get the secret key
+    pub fn secret_key(&self) -> SecretKey {
+        self.secret_key.clone()
+    }
 }
 
 impl From<(cdk::nuts::PublicKey, cdk::nuts::SecretKey)> for P2pkSigningKey {
@@ -325,6 +365,6 @@ impl TryFrom<P2pkSigningKey> for (cdk::nuts::PublicKey, cdk::nuts::SecretKey) {
     type Error = FfiError;
 
     fn try_from(value: P2pkSigningKey) -> Result<Self, Self::Error> {
-        Ok((value.pubkey.try_into()?, value.secret_key.into()))
+        Ok((value.pubkey.try_into()?, value.secret_key.try_into()?))
     }
 }

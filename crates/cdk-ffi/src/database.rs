@@ -94,11 +94,11 @@ pub trait WalletDatabase: Send + Sync {
 
     // P2PK signing key storage
     /// Store a P2PK signing key
-    async fn add_p2pk_key(&self, secret_key: SecretKey) -> Result<(), FfiError>;
+    async fn add_p2pk_key(&self, secret_key: Arc<SecretKey>) -> Result<(), FfiError>;
     /// Fetch a P2PK signing key by public key
-    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<SecretKey>, FfiError>;
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<Arc<SecretKey>>, FfiError>;
     /// List stored P2PK signing keys
-    async fn list_p2pk_keys(&self) -> Result<Vec<P2pkSigningKey>, FfiError>;
+    async fn list_p2pk_keys(&self) -> Result<Vec<Arc<P2pkSigningKey>>, FfiError>;
     /// Remove a stored P2PK signing key by public key
     async fn remove_p2pk_key(&self, pubkey: PublicKey) -> Result<(), FfiError>;
 
@@ -422,7 +422,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
     }
 
     async fn add_p2pk_key(&self, secret_key: cdk::nuts::SecretKey) -> Result<(), Self::Err> {
-        let ffi_secret: SecretKey = secret_key.into();
+        let ffi_secret: Arc<SecretKey> = Arc::new(secret_key.into());
         self.ffi_db
             .add_p2pk_key(ffi_secret)
             .await
@@ -440,7 +440,14 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .await
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
 
-        Ok(result.map(Into::into))
+        result
+            .map(|sk| {
+                (*sk)
+                    .clone()
+                    .try_into()
+                    .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+            })
+            .transpose()
     }
 
     async fn list_p2pk_keys(
@@ -455,7 +462,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         result
             .into_iter()
             .map(|entry| {
-                let (pubkey, secret) = entry.try_into().map_err(|e: FfiError| {
+                let (pubkey, secret) = (*entry).clone().try_into().map_err(|e: FfiError| {
                     cdk::cdk_database::Error::Database(e.to_string().into())
                 })?;
                 Ok((pubkey, secret))

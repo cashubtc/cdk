@@ -104,9 +104,7 @@ impl Wallet {
                         if !p2pk_signing_keys.contains_key(&x_only)
                             && !missing_db_keys.contains(&x_only)
                         {
-                            if let Some(stored) =
-                                self.localstore.get_p2pk_key(pubkey.clone()).await?
-                            {
+                            if let Some(stored) = self.localstore.get_p2pk_key(pubkey).await? {
                                 p2pk_signing_keys.insert(x_only, stored);
                             } else {
                                 missing_db_keys.insert(x_only);
