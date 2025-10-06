@@ -350,7 +350,9 @@ impl PreparedSend {
                 timestamp: unix_time(),
                 memo: memo.clone(),
                 metadata: self.options.metadata,
-                quote_id: None, // Send transactions don't have a quote_id
+                quote_id: None,
+                payment_request: None,
+                payment_proof: None,
             })
             .await?;
 

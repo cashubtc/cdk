@@ -167,7 +167,9 @@ impl Wallet {
                 timestamp: unix_time(),
                 memo,
                 metadata: opts.metadata,
-                quote_id: None, // Receive transactions don't have a quote_id
+                quote_id: None,
+                payment_request: None,
+                payment_proof: None,
             })
             .await?;
 

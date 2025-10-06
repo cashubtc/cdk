@@ -232,6 +232,8 @@ impl Wallet {
                 memo: None,
                 metadata: HashMap::new(),
                 quote_id: Some(quote_id.to_string()),
+                payment_request: Some(quote_info.request),
+                payment_proof: None,
             })
             .await?;
 

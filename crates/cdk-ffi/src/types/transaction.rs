@@ -35,6 +35,10 @@ pub struct Transaction {
     pub metadata: HashMap<String, String>,
     /// Quote ID if this is a mint or melt transaction
     pub quote_id: Option<String>,
+    /// Payment request (e.g., BOLT11 invoice, BOLT12 offer)
+    pub payment_request: Option<String>,
+    /// Payment proof (e.g., preimage for Lightning melt transactions)
+    pub payment_proof: Option<String>,
 }
 
 impl From<cdk::wallet::types::Transaction> for Transaction {
@@ -51,6 +55,8 @@ impl From<cdk::wallet::types::Transaction> for Transaction {
             memo: tx.memo,
             metadata: tx.metadata,
             quote_id: tx.quote_id,
+            payment_request: tx.payment_request,
+            payment_proof: tx.payment_proof,
         }
     }
 }
@@ -75,6 +81,8 @@ impl TryFrom<Transaction> for cdk::wallet::types::Transaction {
             memo: tx.memo,
             metadata: tx.metadata,
             quote_id: tx.quote_id,
+            payment_request: tx.payment_request,
+            payment_proof: tx.payment_proof,
         })
     }
 }

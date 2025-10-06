@@ -60,6 +60,7 @@ impl Wallet {
                 let pending_proofs = self.get_pending_proofs().await?;
                 let proofs_total = pending_proofs.total_amount().unwrap_or_default();
                 let change_total = response.change_amount().unwrap_or_default();
+
                 self.localstore
                     .add_transaction(Transaction {
                         mint_url: self.mint_url.clone(),
@@ -75,6 +76,8 @@ impl Wallet {
                         memo: None,
                         metadata: HashMap::new(),
                         quote_id: Some(quote.id.clone()),
+                        payment_request: Some(quote.request.clone()),
+                        payment_proof: response.payment_preimage.clone(),
                     })
                     .await?;
             }
