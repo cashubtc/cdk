@@ -12,7 +12,7 @@ use cdk_common::{
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-/// Simple wrapper over NotificationPayload<QuoteId> which is a foreign type
+/// Simple wrapper over `NotificationPayload<QuoteId>` which is a foreign type
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(bound = "T: Serialize + DeserializeOwned")]
 pub struct MintEvent<T>(NotificationPayload<T>)

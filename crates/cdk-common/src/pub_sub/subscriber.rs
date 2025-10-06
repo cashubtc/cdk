@@ -99,7 +99,7 @@ where
 /// Lightweight sink used by producers to send events to subscribers.
 ///
 /// You usually do not construct a `Subscriber` directly — it is provided to you in
-/// the [`Topic::fetch_events`] callback so you can backfill a new subscription.
+/// the [`Spec::fetch_events`] callback so you can backfill a new subscription.
 #[derive(Debug)]
 pub struct Subscriber<S>
 where
