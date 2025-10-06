@@ -12,7 +12,6 @@ use std::sync::Arc;
 use cdk_common::subscription::Params;
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
-use tracing::error;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures;
 
