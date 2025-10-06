@@ -43,6 +43,7 @@ jobs:
     timeout-minutes: 30
     needs: pre-commit-checks
     strategy:
+      fail-fast: true
       matrix:
         build-args:
           [
@@ -72,6 +73,7 @@ jobs:
     timeout-minutes: 30
     needs: pre-commit-checks
     strategy:
+      fail-fast: true
       matrix:
         build-args:
           [
@@ -165,8 +167,9 @@ jobs:
     name: "Integration regtest tests"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
+    needs: pre-commit-checks
     strategy:
+      fail-fast: true
       matrix:
         build-args:
           [
@@ -205,8 +208,9 @@ jobs:
     name: "Integration fake mint tests"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy]
+    needs: pre-commit-checks
     strategy:
+      fail-fast: true
       matrix:
         build-args:
           [
@@ -246,8 +250,9 @@ jobs:
     name: "Integration fake wallet tests"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy]
+    needs: pre-commit-checks
     strategy:
+      fail-fast: true
       matrix:
         database:
           [
@@ -288,8 +293,9 @@ jobs:
     name: "Payment processor tests"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest, regtest-itest]
+    needs: pre-commit-checks
     strategy:
+      fail-fast: true
       matrix:
         ln:
           [
@@ -325,8 +331,9 @@ jobs:
     name: "MSRV build"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy]
+    needs: pre-commit-checks
     strategy:
+      fail-fast: true
       matrix:
         build-args:
           [
@@ -367,8 +374,9 @@ jobs:
     name: Check WASM
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy]
+    needs: pre-commit-checks
     strategy:
+      fail-fast: true
       matrix:
         rust:
           - stable
@@ -399,8 +407,9 @@ jobs:
     name: Check WASM
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy, msrv-build]
+    needs: pre-commit-checks
     strategy:
+      fail-fast: true
       matrix:
         rust:
           - msrv
@@ -430,8 +439,9 @@ jobs:
     name: "Integration fake mint auth tests"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [pre-commit-checks, clippy, pure-itest, fake-mint-itest]
+    needs: pre-commit-checks
     strategy:
+      fail-fast: true
       matrix:
         database:
           [
