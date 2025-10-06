@@ -413,54 +413,54 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
-    async fn add_p2pk_key(&self, secret_key: cdk_common::nuts::SecretKey) -> Result<(), Self::Err> {
+    async fn add_p2pk_key(&self, secret_key: cdk::nuts::SecretKey) -> Result<(), Self::Err> {
         let ffi_secret: SecretKey = secret_key.into();
         self.ffi_db
             .add_p2pk_key(ffi_secret)
             .await
-            .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
     async fn get_p2pk_key(
         &self,
-        pubkey: cdk_common::nuts::PublicKey,
-    ) -> Result<Option<cdk_common::nuts::SecretKey>, Self::Err> {
+        pubkey: cdk::nuts::PublicKey,
+    ) -> Result<Option<cdk::nuts::SecretKey>, Self::Err> {
         let ffi_pubkey: PublicKey = pubkey.into();
         let result = self
             .ffi_db
             .get_p2pk_key(ffi_pubkey)
             .await
-            .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
 
         Ok(result.map(Into::into))
     }
 
     async fn list_p2pk_keys(
         &self,
-    ) -> Result<Vec<(cdk_common::nuts::PublicKey, cdk_common::nuts::SecretKey)>, Self::Err> {
+    ) -> Result<Vec<(cdk::nuts::PublicKey, cdk::nuts::SecretKey)>, Self::Err> {
         let result = self
             .ffi_db
             .list_p2pk_keys()
             .await
-            .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))?;
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
 
         result
             .into_iter()
             .map(|entry| {
                 let (pubkey, secret) = entry.try_into().map_err(|e: FfiError| {
-                    cdk_common::database::Error::Database(e.to_string().into())
+                    cdk::cdk_database::Error::Database(e.to_string().into())
                 })?;
                 Ok((pubkey, secret))
             })
             .collect()
     }
 
-    async fn remove_p2pk_key(&self, pubkey: cdk_common::nuts::PublicKey) -> Result<(), Self::Err> {
+    async fn remove_p2pk_key(&self, pubkey: cdk::nuts::PublicKey) -> Result<(), Self::Err> {
         let ffi_pubkey: PublicKey = pubkey.into();
         self.ffi_db
             .remove_p2pk_key(ffi_pubkey)
             .await
-            .map_err(|e| cdk_common::database::Error::Database(e.to_string().into()))
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
     // Proof Management
@@ -868,7 +868,7 @@ impl WalletDatabase for WalletSqliteDatabase {
     }
 
     async fn add_p2pk_key(&self, secret_key: SecretKey) -> Result<(), FfiError> {
-        let cdk_secret: cdk_common::nuts::SecretKey = secret_key.into();
+        let cdk_secret: cdk::nuts::SecretKey = secret_key.into();
         self.inner
             .add_p2pk_key(cdk_secret)
             .await

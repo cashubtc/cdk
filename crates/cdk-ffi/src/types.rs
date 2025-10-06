@@ -467,8 +467,8 @@ pub struct P2pkSigningKey {
     pub secret_key: SecretKey,
 }
 
-impl From<(cdk_common::nuts::PublicKey, cdk_common::nuts::SecretKey)> for P2pkSigningKey {
-    fn from(value: (cdk_common::nuts::PublicKey, cdk_common::nuts::SecretKey)) -> Self {
+impl From<(cdk::nuts::PublicKey, cdk::nuts::SecretKey)> for P2pkSigningKey {
+    fn from(value: (cdk::nuts::PublicKey, cdk::nuts::SecretKey)) -> Self {
         Self {
             pubkey: value.0.into(),
             secret_key: value.1.into(),
@@ -476,7 +476,7 @@ impl From<(cdk_common::nuts::PublicKey, cdk_common::nuts::SecretKey)> for P2pkSi
     }
 }
 
-impl TryFrom<P2pkSigningKey> for (cdk_common::nuts::PublicKey, cdk_common::nuts::SecretKey) {
+impl TryFrom<P2pkSigningKey> for (cdk::nuts::PublicKey, cdk::nuts::SecretKey) {
     type Error = FfiError;
 
     fn try_from(value: P2pkSigningKey) -> Result<Self, Self::Error> {
