@@ -17,6 +17,7 @@ async-trait = { workspace = true }
 bip39 = { workspace = true }
 cdk = { workspace = true, default-features = false, features = ["wallet", "auth", "bip353"] }
 cdk-sqlite = { workspace = true }
+cdk-postgres = { workspace = true, optional = true }
 ctor = "0.2"
 futures = { workspace = true }
 once_cell = { workspace = true }
@@ -29,6 +30,11 @@ uniffi = { version = "0.29", features = ["cli", "tokio"] }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
+
+[features]
+default = ["postgres"]
+# Enable Postgres-backed wallet database support in FFI
+postgres = ["cdk-postgres"]
 
 [dev-dependencies]
 

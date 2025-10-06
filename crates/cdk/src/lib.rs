@@ -3,6 +3,10 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
+// Disallow enabling `tor` feature on wasm32 with a clear error.
+#[cfg(all(target_arch = "wasm32", feature = "tor"))]
+compile_error!("The 'tor' feature is not supported on wasm32 targets (browser). Disable the 'tor' feature or use a non-wasm32 target.");
+
 pub mod cdk_database {
     //! CDK Database
     pub use cdk_common::database::Error;
