@@ -1,4 +1,5 @@
-use cashu::{nuts::nut01::SecretKey, PublicKey};
+use cashu::nuts::nut01::SecretKey;
+use cashu::PublicKey;
 use cdk_common::wallet::TransactionId;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
