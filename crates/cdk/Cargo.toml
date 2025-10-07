@@ -147,7 +147,7 @@ rand.workspace = true
 cdk-sqlite.workspace = true
 bip39.workspace = true
 tracing-subscriber.workspace = true
-criterion = "0.6.0"
+criterion.workspace = true
 reqwest = { workspace = true }
 anyhow.workspace = true
 ureq = { version = "3.1.0", features = ["json"] }
