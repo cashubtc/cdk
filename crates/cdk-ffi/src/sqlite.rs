@@ -324,6 +324,22 @@ impl WalletDatabase for WalletSqliteDatabase {
         Ok(result.into_iter().map(Into::into).collect())
     }
 
+    async fn get_balance(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        state: Option<Vec<ProofState>>,
+    ) -> Result<u64, FfiError> {
+        let cdk_mint_url = mint_url.map(|u| u.try_into()).transpose()?;
+        let cdk_unit = unit.map(Into::into);
+        let cdk_state = state.map(|s| s.into_iter().map(Into::into).collect());
+
+        self.inner
+            .get_balance(cdk_mint_url, cdk_unit, cdk_state)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
     async fn update_proofs_state(
         &self,
         ys: Vec<PublicKey>,

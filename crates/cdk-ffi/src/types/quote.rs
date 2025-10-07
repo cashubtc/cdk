@@ -184,7 +184,6 @@ impl From<cdk::nuts::MeltQuoteBolt11Response<String>> for MeltQuoteBolt11Respons
         }
     }
 }
-
 /// FFI-compatible PaymentMethod
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum PaymentMethod {

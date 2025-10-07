@@ -120,6 +120,12 @@ pub fn proof_is_active(proof: &Proof, active_keyset_ids: Vec<String>) -> bool {
     }
 }
 
+/// Check if proof has DLEQ proof
+#[uniffi::export]
+pub fn proof_has_dleq(proof: &Proof) -> bool {
+    proof.dleq.is_some()
+}
+
 /// FFI-compatible Proofs (vector of Proof)
 pub type Proofs = Vec<Proof>;
 
