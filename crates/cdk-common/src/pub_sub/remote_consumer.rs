@@ -106,43 +106,6 @@ where
     }
 }
 
-struct InternalConversion<T>
-where
-    T: Transport + 'static,
-{
-    name: Arc<<T::Spec as Spec>::SubscriptionId>,
-    index: <T::Spec as Spec>::Topic,
-}
-
-impl<T> Clone for InternalConversion<T>
-where
-    T: Transport + 'static,
-{
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            index: self.index.clone(),
-        }
-    }
-}
-
-impl<T> SubscriptionRequest for InternalConversion<T>
-where
-    T: Transport + 'static,
-{
-    type Topic = <T::Spec as Spec>::Topic;
-
-    type SubscriptionId = <T::Spec as Spec>::SubscriptionId;
-
-    fn subscription_name(&self) -> Arc<<T::Spec as Spec>::SubscriptionId> {
-        self.name.clone()
-    }
-
-    fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error> {
-        Ok(vec![self.index.clone()])
-    }
-}
-
 /// Struct to relay events from Poll and Streams from the external subscription to the local
 /// subscribers
 pub struct InternalRelay<S>
