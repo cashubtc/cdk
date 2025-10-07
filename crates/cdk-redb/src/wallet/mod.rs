@@ -58,6 +58,16 @@ impl WalletRedbDatabase {
     /// Create new [`WalletRedbDatabase`]
     pub fn new(path: &Path) -> Result<Self, Error> {
         {
+            // Check if parent directory exists before attempting to create database
+            if let Some(parent) = path.parent() {
+                if !parent.exists() {
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("Parent directory does not exist: {:?}", parent),
+                    )));
+                }
+            }
+
             let db = Arc::new(Database::create(path)?);
 
             let db_version: Option<String>;
@@ -154,6 +164,16 @@ impl WalletRedbDatabase {
                 }
             }
             drop(db);
+        }
+
+        // Check parent directory again for final database creation
+        if let Some(parent) = path.parent() {
+            if !parent.exists() {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Parent directory does not exist: {:?}", parent),
+                )));
+            }
         }
 
         let mut db = Database::create(path)?;

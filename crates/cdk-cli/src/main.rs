@@ -131,6 +131,11 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Create work directory if it doesn't exist
+    if !work_dir.exists() {
+        fs::create_dir_all(&work_dir)?;
+    }
+
     let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
         match args.engine.as_str() {
             "sqlite" => {

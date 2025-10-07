@@ -47,6 +47,15 @@ impl DatabasePool for SqliteConnectionManager {
         _timeout: Duration,
     ) -> Result<Self::Connection, pool::Error<Self::Error>> {
         let conn = if let Some(path) = config.path.as_ref() {
+            // Check if parent directory exists before attempting to open database
+            let path_buf = PathBuf::from(path);
+            if let Some(parent) = path_buf.parent() {
+                if !parent.exists() {
+                    return Err(pool::Error::Resource(rusqlite::Error::InvalidPath(
+                        path_buf.clone(),
+                    )));
+                }
+            }
             Connection::open(path)?
         } else {
             Connection::open_in_memory()?

@@ -43,6 +43,9 @@ pub enum Error {
     /// CDK Error
     #[error(transparent)]
     CDK(#[from] cdk_common::error::Error),
+    /// IO Error
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
     /// NUT00 Error
     #[error(transparent)]
     CDKNUT00(#[from] cdk_common::nuts::nut00::Error),
