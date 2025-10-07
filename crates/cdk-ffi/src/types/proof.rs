@@ -126,6 +126,39 @@ pub fn proof_has_dleq(proof: &Proof) -> bool {
     proof.dleq.is_some()
 }
 
+/// Verify HTLC witness on a proof
+#[uniffi::export]
+pub fn proof_verify_htlc(proof: &Proof) -> Result<(), FfiError> {
+    let cdk_proof: cdk::nuts::Proof = proof.clone().try_into()?;
+    cdk_proof
+        .verify_htlc()
+        .map_err(|e| FfiError::Generic { msg: e.to_string() })
+}
+
+/// Verify DLEQ proof on a proof
+#[uniffi::export]
+pub fn proof_verify_dleq(proof: &Proof, mint_pubkey: super::keys::PublicKey) -> Result<(), FfiError> {
+    let cdk_proof: cdk::nuts::Proof = proof.clone().try_into()?;
+    let cdk_pubkey: cdk::nuts::PublicKey = mint_pubkey.try_into()?;
+    cdk_proof
+        .verify_dleq(cdk_pubkey)
+        .map_err(|e| FfiError::Generic { msg: e.to_string() })
+}
+
+/// Sign a P2PK proof with a secret key, returning a new signed proof
+#[uniffi::export]
+pub fn proof_sign_p2pk(proof: Proof, secret_key_hex: String) -> Result<Proof, FfiError> {
+    let mut cdk_proof: cdk::nuts::Proof = proof.try_into()?;
+    let secret_key = cdk::nuts::SecretKey::from_hex(&secret_key_hex)
+        .map_err(|e| FfiError::InvalidCryptographicKey { msg: e.to_string() })?;
+
+    cdk_proof
+        .sign_p2pk(secret_key)
+        .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+
+    Ok(cdk_proof.into())
+}
+
 /// FFI-compatible Proofs (vector of Proof)
 pub type Proofs = Vec<Proof>;
 

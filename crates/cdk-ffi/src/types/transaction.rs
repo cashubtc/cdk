@@ -106,6 +106,32 @@ pub fn encode_transaction(transaction: Transaction) -> Result<String, FfiError> 
     Ok(serde_json::to_string(&transaction)?)
 }
 
+/// Check if a transaction matches the given filter conditions
+#[uniffi::export]
+pub fn transaction_matches_conditions(
+    transaction: &Transaction,
+    mint_url: Option<MintUrl>,
+    direction: Option<TransactionDirection>,
+    unit: Option<CurrencyUnit>,
+) -> bool {
+    if let Some(mint_url) = mint_url {
+        if transaction.mint_url != mint_url {
+            return false;
+        }
+    }
+    if let Some(direction) = direction {
+        if transaction.direction != direction {
+            return false;
+        }
+    }
+    if let Some(unit) = unit {
+        if transaction.unit != unit {
+            return false;
+        }
+    }
+    true
+}
+
 /// FFI-compatible TransactionDirection
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum TransactionDirection {

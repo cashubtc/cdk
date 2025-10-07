@@ -77,30 +77,34 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
     }
 }
 
-impl MintQuote {
-    /// Get total amount (amount + fees)
-    pub fn total_amount(&self) -> Amount {
-        if let Some(amount) = self.amount {
-            Amount::new(amount.value + self.amount_paid.value - self.amount_issued.value)
-        } else {
-            Amount::zero()
+/// Get total amount for a mint quote (amount paid)
+#[uniffi::export]
+pub fn mint_quote_total_amount(quote: &MintQuote) -> Amount {
+    quote.amount_paid
+}
+
+/// Check if mint quote is expired
+#[uniffi::export]
+pub fn mint_quote_is_expired(quote: &MintQuote, current_time: u64) -> bool {
+    current_time > quote.expiry
+}
+
+/// Get amount that can be minted from a mint quote
+#[uniffi::export]
+pub fn mint_quote_amount_mintable(quote: &MintQuote) -> Amount {
+    if quote.amount_issued.value > quote.amount_paid.value {
+        return Amount::zero();
+    }
+
+    let difference = Amount::new(quote.amount_paid.value - quote.amount_issued.value);
+
+    if difference.value == 0 && quote.state != QuoteState::Issued {
+        if let Some(amount) = quote.amount {
+            return amount;
         }
     }
 
-    /// Check if quote is expired
-    pub fn is_expired(&self, current_time: u64) -> bool {
-        current_time > self.expiry
-    }
-
-    /// Get amount that can be minted
-    pub fn amount_mintable(&self) -> Amount {
-        Amount::new(self.amount_paid.value - self.amount_issued.value)
-    }
-
-    /// Convert MintQuote to JSON string
-    pub fn to_json(&self) -> Result<String, FfiError> {
-        Ok(serde_json::to_string(self)?)
-    }
+    difference
 }
 
 /// Decode MintQuote from JSON string
