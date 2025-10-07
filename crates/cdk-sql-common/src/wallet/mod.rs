@@ -981,7 +981,6 @@ ON CONFLICT(id) DO UPDATE SET
     unit = excluded.unit,
     amount = excluded.amount,
     fee = excluded.fee,
-    ys = excluded.ys,
     timestamp = excluded.timestamp,
     memo = excluded.memo,
     metadata = excluded.metadata,
