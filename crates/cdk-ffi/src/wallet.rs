@@ -395,7 +395,10 @@ impl Wallet {
     ) -> Result<Amount, FfiError> {
         let id = cdk::nuts::Id::from_str(&keyset_id)
             .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
-        let fee = self.inner.get_keyset_count_fee(&id, proof_count as u64).await?;
+        let fee = self
+            .inner
+            .get_keyset_count_fee(&id, proof_count as u64)
+            .await?;
         Ok(fee.into())
     }
 }

@@ -137,7 +137,10 @@ pub fn proof_verify_htlc(proof: &Proof) -> Result<(), FfiError> {
 
 /// Verify DLEQ proof on a proof
 #[uniffi::export]
-pub fn proof_verify_dleq(proof: &Proof, mint_pubkey: super::keys::PublicKey) -> Result<(), FfiError> {
+pub fn proof_verify_dleq(
+    proof: &Proof,
+    mint_pubkey: super::keys::PublicKey,
+) -> Result<(), FfiError> {
     let cdk_proof: cdk::nuts::Proof = proof.clone().try_into()?;
     let cdk_pubkey: cdk::nuts::PublicKey = mint_pubkey.try_into()?;
     cdk_proof
