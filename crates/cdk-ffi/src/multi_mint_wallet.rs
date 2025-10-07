@@ -278,7 +278,7 @@ impl MultiMintWallet {
                 timeout_secs,
             )
             .await?;
-        Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
     /// Get a melt quote from a specific mint
