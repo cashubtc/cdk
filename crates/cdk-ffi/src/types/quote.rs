@@ -79,32 +79,23 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
 
 /// Get total amount for a mint quote (amount paid)
 #[uniffi::export]
-pub fn mint_quote_total_amount(quote: &MintQuote) -> Amount {
-    quote.amount_paid
+pub fn mint_quote_total_amount(quote: &MintQuote) -> Result<Amount, FfiError> {
+    let cdk_quote: cdk::wallet::MintQuote = quote.clone().try_into()?;
+    Ok(cdk_quote.total_amount().into())
 }
 
 /// Check if mint quote is expired
 #[uniffi::export]
-pub fn mint_quote_is_expired(quote: &MintQuote, current_time: u64) -> bool {
-    current_time > quote.expiry
+pub fn mint_quote_is_expired(quote: &MintQuote, current_time: u64) -> Result<bool, FfiError> {
+    let cdk_quote: cdk::wallet::MintQuote = quote.clone().try_into()?;
+    Ok(cdk_quote.is_expired(current_time))
 }
 
 /// Get amount that can be minted from a mint quote
 #[uniffi::export]
-pub fn mint_quote_amount_mintable(quote: &MintQuote) -> Amount {
-    if quote.amount_issued.value > quote.amount_paid.value {
-        return Amount::zero();
-    }
-
-    let difference = Amount::new(quote.amount_paid.value - quote.amount_issued.value);
-
-    if difference.value == 0 && quote.state != QuoteState::Issued {
-        if let Some(amount) = quote.amount {
-            return amount;
-        }
-    }
-
-    difference
+pub fn mint_quote_amount_mintable(quote: &MintQuote) -> Result<Amount, FfiError> {
+    let cdk_quote: cdk::wallet::MintQuote = quote.clone().try_into()?;
+    Ok(cdk_quote.amount_mintable().into())
 }
 
 /// Decode MintQuote from JSON string

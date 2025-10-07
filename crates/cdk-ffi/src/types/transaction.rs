@@ -113,23 +113,12 @@ pub fn transaction_matches_conditions(
     mint_url: Option<MintUrl>,
     direction: Option<TransactionDirection>,
     unit: Option<CurrencyUnit>,
-) -> bool {
-    if let Some(mint_url) = mint_url {
-        if transaction.mint_url != mint_url {
-            return false;
-        }
-    }
-    if let Some(direction) = direction {
-        if transaction.direction != direction {
-            return false;
-        }
-    }
-    if let Some(unit) = unit {
-        if transaction.unit != unit {
-            return false;
-        }
-    }
-    true
+) -> Result<bool, FfiError> {
+    let cdk_transaction: cdk::wallet::types::Transaction = transaction.clone().try_into()?;
+    let cdk_mint_url = mint_url.map(|url| url.try_into()).transpose()?;
+    let cdk_direction = direction.map(Into::into);
+    let cdk_unit = unit.map(Into::into);
+    Ok(cdk_transaction.matches_conditions(&cdk_mint_url, &cdk_direction, &cdk_unit))
 }
 
 /// FFI-compatible TransactionDirection
