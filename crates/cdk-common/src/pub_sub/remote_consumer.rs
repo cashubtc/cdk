@@ -278,7 +278,7 @@ where
             .subscriptions
             .write()
             .remove(&subscription_name)
-            .ok_or(Error::AlreadySubscribed)?;
+            .ok_or(Error::NoSubscription)?;
 
         let mut remote_subscriptions = self.remote_subscriptions.write();
 
@@ -348,7 +348,7 @@ where
         let mut subscriptions = self.subscriptions.write();
 
         if subscriptions.get(&subscription_name).is_some() {
-            return Err(Error::AlreadySubscribed);
+            return Err(Error::NoSubscription);
         }
 
         let mut previous_messages = Vec::new();

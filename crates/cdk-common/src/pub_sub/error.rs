@@ -5,10 +5,6 @@ use tokio::sync::mpsc::error::TrySendError;
 #[derive(thiserror::Error, Debug)]
 /// Error
 pub enum Error {
-    /// Already subscribed
-    #[error("Already subscribed")]
-    AlreadySubscribed,
-
     /// No subscription found
     #[error("Subscription not found")]
     NoSubscription,
