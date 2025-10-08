@@ -448,14 +448,6 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
       ;;
   esac
   
-  # Set emoji and build type
-  case "$LANG" in
-    python) EMOJI="🐍" ;;
-    swift) EMOJI="🍎" ;;
-    kotlin) EMOJI="🎯" ;;
-    dart) EMOJI="🎯" ;;
-  esac
-  
   # Determine build type and library path
   if [[ "{{ARGS}}" == *"--release"* ]] || [[ "{{ARGS}}" == "" ]]; then
     BUILD_TYPE="release"
@@ -463,10 +455,10 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
     BUILD_TYPE="debug"
     cargo build --package cdk-ffi --features postgres
   fi
-  
+
   LIB_EXT=$(just _ffi-lib-ext)
-  
-  echo "$EMOJI Generating $LANG bindings..."
+
+  echo "Generating $LANG bindings..."
   mkdir -p target/bindings/$LANG
   
   cargo run --bin uniffi-bindgen generate \
