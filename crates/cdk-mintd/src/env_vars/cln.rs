@@ -6,10 +6,10 @@ use std::path::PathBuf;
 use crate::config::Cln;
 
 // CLN environment variables
-pub const ENV_CLN_RPC_PATH: &str = "CDK_MINTD_CLN_RPC_PATH";
-pub const ENV_CLN_BOLT12: &str = "CDK_MINTD_CLN_BOLT12";
-pub const ENV_CLN_FEE_PERCENT: &str = "CDK_MINTD_CLN_FEE_PERCENT";
-pub const ENV_CLN_RESERVE_FEE_MIN: &str = "CDK_MINTD_CLN_RESERVE_FEE_MIN";
+pub const ENV_CLN_RPC_PATH: &str = "CDK_MINTD_PAYMENT_BACKEND_CLN_RPC_PATH";
+pub const ENV_CLN_BOLT12: &str = "CDK_MINTD_PAYMENT_BACKEND_CLN_BOLT12";
+pub const ENV_CLN_FEE_PERCENT: &str = "CDK_MINTD_PAYMENT_BACKEND_CLN_FEE_PERCENT";
+pub const ENV_CLN_RESERVE_FEE_MIN: &str = "CDK_MINTD_PAYMENT_BACKEND_CLN_RESERVE_FEE_MIN";
 
 impl Cln {
     pub fn from_env(mut self) -> Self {
