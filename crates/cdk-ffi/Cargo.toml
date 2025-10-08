@@ -22,7 +22,7 @@ ctor = "0.2"
 futures = { workspace = true }
 once_cell = { workspace = true }
 rand = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
@@ -41,4 +41,3 @@ postgres = ["cdk-postgres"]
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
-

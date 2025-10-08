@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use cdk::mint::QuoteId;
 use cdk::nuts::nut17::NotificationPayload;
-use cdk::pub_sub::SubId;
+use cdk::subscription::SubId;
 use cdk::ws::{
     notification_to_ws_message, NotificationInner, WsErrorBody, WsMessageOrResponse,
     WsMethodRequest, WsRequest,
@@ -36,8 +37,8 @@ pub use error::WsError;
 
 pub struct WsContext {
     state: MintState,
-    subscriptions: HashMap<SubId, tokio::task::JoinHandle<()>>,
-    publisher: mpsc::Sender<(SubId, NotificationPayload<QuoteId>)>,
+    subscriptions: HashMap<Arc<SubId>, tokio::task::JoinHandle<()>>,
+    publisher: mpsc::Sender<(Arc<SubId>, NotificationPayload<QuoteId>)>,
 }
 
 /// Main function for websocket connections

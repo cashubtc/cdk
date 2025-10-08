@@ -1,98 +1,115 @@
 //! Subscription types and traits
-#[cfg(feature = "mint")]
+use std::ops::Deref;
 use std::str::FromStr;
+use std::sync::Arc;
 
-use cashu::nut17::{self};
-#[cfg(feature = "mint")]
-use cashu::nut17::{Error, Kind, Notification};
-#[cfg(feature = "mint")]
+use cashu::nut17::{self, Kind, NotificationId};
 use cashu::quote_id::QuoteId;
-#[cfg(feature = "mint")]
-use cashu::{NotificationPayload, PublicKey};
-#[cfg(feature = "mint")]
+use cashu::PublicKey;
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "mint")]
-use crate::pub_sub::index::{Index, Indexable, SubscriptionGlobalId};
-use crate::pub_sub::SubId;
+use crate::pub_sub::{Error, SubscriptionRequest};
 
-/// Subscription parameters.
+/// CDK/Mint Subscription parameters.
 ///
 /// This is a concrete type alias for `nut17::Params<SubId>`.
-pub type Params = nut17::Params<SubId>;
+pub type Params = nut17::Params<Arc<SubId>>;
 
-/// Wrapper around `nut17::Params` to implement `Indexable` for `Notification`.
-#[cfg(feature = "mint")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IndexableParams(Params);
+impl SubscriptionRequest for Params {
+    type Topic = NotificationId<QuoteId>;
 
-#[cfg(feature = "mint")]
-impl From<Params> for IndexableParams {
-    fn from(params: Params) -> Self {
-        Self(params)
+    type SubscriptionId = SubId;
+
+    fn subscription_name(&self) -> Arc<Self::SubscriptionId> {
+        self.id.clone()
     }
-}
 
-#[cfg(feature = "mint")]
-impl TryFrom<IndexableParams> for Vec<Index<Notification>> {
-    type Error = Error;
-    fn try_from(params: IndexableParams) -> Result<Self, Self::Error> {
-        let sub_id: SubscriptionGlobalId = Default::default();
-        let params = params.0;
-        params
-            .filters
-            .into_iter()
-            .map(|filter| {
-                let idx = match params.kind {
-                    Kind::Bolt11MeltQuote => {
-                        Notification::MeltQuoteBolt11(QuoteId::from_str(&filter)?)
-                    }
-                    Kind::Bolt11MintQuote => {
-                        Notification::MintQuoteBolt11(QuoteId::from_str(&filter)?)
-                    }
-                    Kind::ProofState => Notification::ProofState(PublicKey::from_str(&filter)?),
-                    Kind::Bolt12MintQuote => {
-                        Notification::MintQuoteBolt12(QuoteId::from_str(&filter)?)
-                    }
-                };
+    fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error> {
+        self.filters
+            .iter()
+            .map(|filter| match self.kind {
+                Kind::Bolt11MeltQuote => QuoteId::from_str(filter)
+                    .map(NotificationId::MeltQuoteBolt11)
+                    .map_err(|_| Error::ParsingError(filter.to_owned())),
+                Kind::Bolt11MintQuote => QuoteId::from_str(filter)
+                    .map(NotificationId::MintQuoteBolt11)
+                    .map_err(|_| Error::ParsingError(filter.to_owned())),
+                Kind::ProofState => PublicKey::from_str(filter)
+                    .map(NotificationId::ProofState)
+                    .map_err(|_| Error::ParsingError(filter.to_owned())),
 
-                Ok(Index::from((idx, params.id.clone(), sub_id)))
+                Kind::Bolt12MintQuote => QuoteId::from_str(filter)
+                    .map(NotificationId::MintQuoteBolt12)
+                    .map_err(|_| Error::ParsingError(filter.to_owned())),
             })
-            .collect::<Result<_, _>>()
+            .collect::<Result<Vec<_>, _>>()
     }
 }
 
-#[cfg(feature = "mint")]
-impl AsRef<SubId> for IndexableParams {
-    fn as_ref(&self) -> &SubId {
-        &self.0.id
+/// Subscriptions parameters for the wallet
+///
+/// This is because the Wallet can subscribe to non CDK quotes, where IDs are not constraint to
+/// QuoteId
+pub type WalletParams = nut17::Params<Arc<String>>;
+
+impl SubscriptionRequest for WalletParams {
+    type Topic = NotificationId<String>;
+
+    type SubscriptionId = String;
+
+    fn subscription_name(&self) -> Arc<Self::SubscriptionId> {
+        self.id.clone()
+    }
+
+    fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error> {
+        self.filters
+            .iter()
+            .map(|filter| {
+                Ok(match self.kind {
+                    Kind::Bolt11MeltQuote => NotificationId::MeltQuoteBolt11(filter.to_owned()),
+                    Kind::Bolt11MintQuote => NotificationId::MintQuoteBolt11(filter.to_owned()),
+                    Kind::ProofState => PublicKey::from_str(filter)
+                        .map(NotificationId::ProofState)
+                        .map_err(|_| Error::ParsingError(filter.to_owned()))?,
+
+                    Kind::Bolt12MintQuote => NotificationId::MintQuoteBolt12(filter.to_owned()),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
     }
 }
 
-#[cfg(feature = "mint")]
-impl Indexable for NotificationPayload<QuoteId> {
-    type Type = Notification;
+/// Subscription Id wrapper
+///
+/// This is the place to add some sane default (like a max length) to the
+/// subscription ID
+#[derive(Debug, Clone, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+pub struct SubId(String);
 
-    fn to_indexes(&self) -> Vec<Index<Self::Type>> {
-        match self {
-            NotificationPayload::ProofState(proof_state) => {
-                vec![Index::from(Notification::ProofState(proof_state.y))]
-            }
-            NotificationPayload::MeltQuoteBolt11Response(melt_quote) => {
-                vec![Index::from(Notification::MeltQuoteBolt11(
-                    melt_quote.quote.clone(),
-                ))]
-            }
-            NotificationPayload::MintQuoteBolt11Response(mint_quote) => {
-                vec![Index::from(Notification::MintQuoteBolt11(
-                    mint_quote.quote.clone(),
-                ))]
-            }
-            NotificationPayload::MintQuoteBolt12Response(mint_quote) => {
-                vec![Index::from(Notification::MintQuoteBolt12(
-                    mint_quote.quote.clone(),
-                ))]
-            }
-        }
+impl From<&str> for SubId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<String> for SubId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl FromStr for SubId {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_string()))
+    }
+}
+
+impl Deref for SubId {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }

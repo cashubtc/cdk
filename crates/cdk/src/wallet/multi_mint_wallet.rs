@@ -4,6 +4,7 @@
 //! pairs
 
 use std::collections::BTreeMap;
+use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -675,7 +676,7 @@ impl MultiMintWallet {
                     // Check if this is a mint quote response with paid state
                     if let crate::nuts::nut17::NotificationPayload::MintQuoteBolt11Response(
                         quote_response,
-                    ) = notification
+                    ) = notification.deref()
                     {
                         if quote_response.state == QuoteState::Paid {
                             // Quote is paid, now mint the tokens
@@ -1264,7 +1265,7 @@ impl MultiMintWallet {
     /// Melt (pay invoice) with automatic wallet selection (deprecated, use specific mint functions for better control)
     ///
     /// Automatically selects the best wallet to pay from based on:
-    /// - Available balance  
+    /// - Available balance
     /// - Fees
     ///
     /// # Examples

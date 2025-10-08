@@ -1,6 +1,7 @@
 //! Subscription-related FFI types
+use std::sync::Arc;
 
-use cdk::pub_sub::SubId;
+use cdk::event::MintEvent;
 use serde::{Deserialize, Serialize};
 
 use super::proof::ProofStateUpdate;
@@ -53,21 +54,17 @@ pub struct SubscribeParams {
     pub id: Option<String>,
 }
 
-impl From<SubscribeParams> for cdk::nuts::nut17::Params<cdk::pub_sub::SubId> {
+impl From<SubscribeParams> for cdk::nuts::nut17::Params<Arc<String>> {
     fn from(params: SubscribeParams) -> Self {
-        let sub_id = params
-            .id
-            .map(|id| SubId::from(id.as_str()))
-            .unwrap_or_else(|| {
-                // Generate a random ID
-                let uuid = uuid::Uuid::new_v4();
-                SubId::from(uuid.to_string().as_str())
-            });
+        let sub_id = params.id.unwrap_or_else(|| {
+            // Generate a random ID
+            uuid::Uuid::new_v4().to_string()
+        });
 
         cdk::nuts::nut17::Params {
             kind: params.kind.into(),
             filters: params.filters,
-            id: sub_id,
+            id: Arc::new(sub_id),
         }
     }
 }
@@ -132,12 +129,7 @@ impl ActiveSubscription {
     /// Try to receive a notification without blocking
     pub async fn try_recv(&self) -> Result<Option<NotificationPayload>, FfiError> {
         let mut guard = self.inner.lock().await;
-        guard
-            .try_recv()
-            .map(|opt| opt.map(Into::into))
-            .map_err(|e| FfiError::Generic {
-                msg: format!("Failed to receive notification: {}", e),
-            })
+        Ok(guard.try_recv().map(Into::into))
     }
 }
 
@@ -156,9 +148,9 @@ pub enum NotificationPayload {
     },
 }
 
-impl From<cdk::nuts::NotificationPayload<String>> for NotificationPayload {
-    fn from(payload: cdk::nuts::NotificationPayload<String>) -> Self {
-        match payload {
+impl From<MintEvent<String>> for NotificationPayload {
+    fn from(payload: MintEvent<String>) -> Self {
+        match payload.into() {
             cdk::nuts::NotificationPayload::ProofState(states) => NotificationPayload::ProofState {
                 proof_states: vec![states.into()],
             },

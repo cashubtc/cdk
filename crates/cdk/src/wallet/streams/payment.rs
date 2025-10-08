@@ -13,10 +13,11 @@ use futures::{FutureExt, Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 
 use super::RecvFuture;
+use crate::event::MintEvent;
 use crate::wallet::subscription::ActiveSubscription;
 use crate::{Wallet, WalletSubscription};
 
-type SubscribeReceived = (Option<NotificationPayload<String>>, Vec<ActiveSubscription>);
+type SubscribeReceived = (Option<MintEvent<String>>, Vec<ActiveSubscription>);
 type PaymentValue = (String, Option<Amount>);
 
 /// PaymentWaiter
@@ -145,7 +146,7 @@ impl<'a> PaymentStream<'a> {
                         Poll::Ready(None)
                     }
                     Some(info) => {
-                        match info {
+                        match info.into_inner() {
                             NotificationPayload::MintQuoteBolt11Response(info) => {
                                 if info.state == MintQuoteState::Paid {
                                     self.is_finalized = true;
