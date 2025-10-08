@@ -53,7 +53,9 @@ impl Mint {
 
         let current_state = quote.state();
 
-        if current_state == MintQuoteState::Issued || current_state == MintQuoteState::Paid {
+        if quote.payment_method == PaymentMethod::Bolt11
+            && (current_state == MintQuoteState::Issued || current_state == MintQuoteState::Paid)
+        {
             return Ok(());
         }
 
