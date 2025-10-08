@@ -173,7 +173,7 @@ impl Signatory for DbSignatory {
                     return Err(Error::InactiveKeyset);
                 }
 
-                let key_pair = key.keys.get(&amount).ok_or(Error::UnknownKeySet)?;
+                let key_pair = key.keys.get(&amount).ok_or(Error::AmountKey)?;
                 let c = sign_message(&key_pair.secret_key, &blinded_secret)?;
 
                 let blinded_signature = BlindSignature::new(

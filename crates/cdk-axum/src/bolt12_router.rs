@@ -1,15 +1,21 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use axum::extract::{Json, Path, State};
+use axum::http::HeaderMap;
 use axum::response::Response;
 #[cfg(feature = "swagger")]
 use cdk::error::ErrorResponse;
 use cdk::mint::QuoteId;
+use cdk::nuts::nut17::Kind;
 #[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
-    MeltQuoteBolt11Response, MeltQuoteBolt12Request, MeltRequest, MintQuoteBolt12Request,
-    MintQuoteBolt12Response, MintRequest, MintResponse,
+    MeltQuoteBolt11Response, MeltQuoteBolt12Request, MeltQuoteState, MeltRequest,
+    MintQuoteBolt12Request, MintQuoteBolt12Response, MintRequest, MintResponse,
+    NotificationPayload,
 };
+use cdk::subscription::{Params, SubId};
 use paste::paste;
 use tracing::instrument;
 
@@ -18,11 +24,40 @@ use crate::auth::AuthHeader;
 use crate::{into_response, post_cache_wrapper, MintState};
 
 post_cache_wrapper!(post_mint_bolt12, MintRequest<QuoteId>, MintResponse);
-post_cache_wrapper!(
-    post_melt_bolt12,
-    MeltRequest<QuoteId>,
-    MeltQuoteBolt11Response<QuoteId>
-);
+
+/// Cache wrapper for post_melt_bolt12
+pub async fn cache_post_melt_bolt12(
+    #[cfg(feature = "auth")] auth: AuthHeader,
+    headers: HeaderMap,
+    state: State<MintState>,
+    payload: Json<MeltRequest<QuoteId>>,
+) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
+    use std::ops::Deref;
+    let json_extracted_payload = payload.deref();
+    let State(mint_state) = state.clone();
+    let cache_key = match mint_state.cache.calculate_key(&json_extracted_payload) {
+        Some(key) => key,
+        None => {
+            #[cfg(feature = "auth")]
+            return post_melt_bolt12(auth, headers, state, payload).await;
+            #[cfg(not(feature = "auth"))]
+            return post_melt_bolt12(headers, state, payload).await;
+        }
+    };
+    if let Some(cached_response) = mint_state
+        .cache
+        .get::<MeltQuoteBolt11Response<QuoteId>>(&cache_key)
+        .await
+    {
+        return Ok(Json(cached_response));
+    }
+    #[cfg(feature = "auth")]
+    let response = post_melt_bolt12(auth, headers, state, payload).await?;
+    #[cfg(not(feature = "auth"))]
+    let response = post_melt_bolt12(headers, state, payload).await?;
+    mint_state.cache.set(cache_key, &response.deref()).await;
+    Ok(response)
+}
 
 #[cfg_attr(feature = "swagger", utoipa::path(
     get,
@@ -192,6 +227,7 @@ pub async fn post_melt_bolt12_quote(
 /// Requests tokens to be destroyed and sent out via Lightning.
 pub async fn post_melt_bolt12(
     #[cfg(feature = "auth")] auth: AuthHeader,
+    headers: HeaderMap,
     State(state): State<MintState>,
     Json(payload): Json<MeltRequest<QuoteId>>,
 ) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
@@ -207,7 +243,39 @@ pub async fn post_melt_bolt12(
             .map_err(into_response)?;
     }
 
+    let is_async_preferred = headers
+        .get("PREFER")
+        .and_then(|value| value.to_str().ok())
+        .map(|prefer_value| prefer_value.to_lowercase().contains("respond-async"))
+        .unwrap_or(false);
+
     let res = state.mint.melt(&payload).await.map_err(into_response)?;
+
+    if !is_async_preferred && res.state == MeltQuoteState::Pending {
+        let quote_id = payload.quote().to_string();
+        let subscription_params = Params {
+            kind: Kind::Bolt11MeltQuote,
+            filters: vec![quote_id.clone()],
+            id: Arc::new(SubId::from(quote_id)),
+        };
+
+        match state.mint.pubsub_manager().subscribe(subscription_params) {
+            Ok(mut receiver) => {
+                while let Some(event) = receiver.recv().await {
+                    if let NotificationPayload::MeltQuoteBolt11Response(updated_res) =
+                        event.into_inner()
+                    {
+                        if updated_res.state != MeltQuoteState::Pending {
+                            return Ok(Json(updated_res));
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!("Failed to subscribe to melt quote: {}", err);
+            }
+        }
+    }
 
     Ok(Json(res))
 }
