@@ -8,8 +8,8 @@ use cdk_postgres::WalletPgDatabase as CdkWalletPgDatabase;
 
 use crate::{
     CurrencyUnit, FfiError, Id, KeySet, KeySetInfo, Keys, MeltQuote, MintInfo, MintQuote, MintUrl,
-    ProofInfo, ProofState, PublicKey, SpendingConditions, Transaction, TransactionDirection,
-    TransactionId, WalletDatabase,
+    P2pkSigningKey, ProofInfo, ProofState, PublicKey, SecretKey, SpendingConditions, Transaction,
+    TransactionDirection, TransactionId, WalletDatabase,
 };
 
 #[derive(uniffi::Object)]
@@ -222,6 +222,44 @@ impl WalletDatabase for WalletPostgresDatabase {
         let cdk_id = id.into();
         self.inner
             .remove_keys(&cdk_id)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    // P2PK Key Management
+    async fn add_p2pk_key(&self, secret_key: Arc<SecretKey>) -> Result<(), FfiError> {
+        let cdk_secret: cdk::nuts::SecretKey = (*secret_key).clone().try_into()?;
+        self.inner
+            .add_p2pk_key(cdk_secret)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<Arc<SecretKey>>, FfiError> {
+        let cdk_pubkey = pubkey.try_into()?;
+        let result = self
+            .inner
+            .get_p2pk_key(cdk_pubkey)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+
+        Ok(result.map(|sk| Arc::new(sk.into())))
+    }
+
+    async fn list_p2pk_keys(&self) -> Result<Vec<Arc<P2pkSigningKey>>, FfiError> {
+        let result = self
+            .inner
+            .list_p2pk_keys()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+
+        Ok(result.into_iter().map(|k| Arc::new(k.into())).collect())
+    }
+
+    async fn remove_p2pk_key(&self, pubkey: PublicKey) -> Result<(), FfiError> {
+        let cdk_pubkey = pubkey.try_into()?;
+        self.inner
+            .remove_p2pk_key(cdk_pubkey)
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }

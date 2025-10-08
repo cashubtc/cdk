@@ -10,7 +10,7 @@ use super::Error;
 use crate::common::ProofInfo;
 use crate::mint_url::MintUrl;
 use crate::nuts::{
-    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
+    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SecretKey, SpendingConditions, State,
 };
 use crate::wallet::{
     self, MintQuote as WalletMintQuote, Transaction, TransactionDirection, TransactionId,
@@ -125,4 +125,14 @@ pub trait Database: Debug {
     ) -> Result<Vec<Transaction>, Self::Err>;
     /// Remove transaction from storage
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), Self::Err>;
+
+    // --- P2PK signing key storage ---
+    /// Store a P2PK signing key. Implementations must upsert by derived pubkey.
+    async fn add_p2pk_key(&self, secret_key: SecretKey) -> Result<(), Self::Err>;
+    /// Get a stored P2PK secret key by pubkey.
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<SecretKey>, Self::Err>;
+    /// List all stored P2PK signing keys.
+    async fn list_p2pk_keys(&self) -> Result<Vec<(PublicKey, SecretKey)>, Self::Err>;
+    /// Remove a stored P2PK signing key by pubkey.
+    async fn remove_p2pk_key(&self, pubkey: PublicKey) -> Result<(), Self::Err>;
 }

@@ -123,10 +123,12 @@ mod tests {
     #[test]
     fn test_secret_key_from_hex() {
         // Test valid hex string (64 characters)
-        let valid_hex = "a".repeat(64);
-        let secret_key = SecretKey::from_hex(valid_hex.clone());
+        let valid_hex = "0000000000000000000000000000000000000000000000000000000000000001";
+        let secret_key = SecretKey::from_hex(valid_hex.to_string());
         assert!(secret_key.is_ok());
-        assert_eq!(secret_key.unwrap().hex, valid_hex);
+        let sk = secret_key.unwrap();
+        assert_eq!(sk.to_bytes().len(), 32);
+        assert_eq!(sk.to_hex(), valid_hex);
 
         // Test invalid length
         let invalid_length = "a".repeat(32); // 32 chars instead of 64
@@ -140,18 +142,43 @@ mod tests {
     }
 
     #[test]
-    fn test_secret_key_random() {
-        let key1 = SecretKey::random();
-        let key2 = SecretKey::random();
+    fn test_secret_key_from_bytes() {
+        // Test valid bytes (32 bytes)
+        let valid_bytes = vec![1u8; 32];
+        let secret_key = SecretKey::from_bytes(valid_bytes.clone());
+        assert!(secret_key.is_ok());
+        let sk = secret_key.unwrap();
+        assert_eq!(sk.to_bytes().len(), 32);
+        assert_eq!(sk.to_bytes(), valid_bytes);
 
-        // Keys should be different
-        assert_ne!(key1.hex, key2.hex);
+        // Test invalid length
+        let invalid_length = vec![1u8; 16]; // 16 bytes instead of 32
+        let secret_key = SecretKey::from_bytes(invalid_length);
+        assert!(secret_key.is_err());
 
-        // Keys should be valid hex (64 characters)
-        assert_eq!(key1.hex.len(), 64);
-        assert_eq!(key2.hex.len(), 64);
-        assert!(key1.hex.chars().all(|c| c.is_ascii_hexdigit()));
-        assert!(key2.hex.chars().all(|c| c.is_ascii_hexdigit()));
+        // Test empty
+        let empty = vec![];
+        let secret_key = SecretKey::from_bytes(empty);
+        assert!(secret_key.is_err());
+    }
+
+    #[test]
+    fn test_secret_key_conversions() {
+        // Test round-trip conversion
+        let cdk_secret = cdk::nuts::SecretKey::generate();
+        let ffi_secret: SecretKey = cdk_secret.clone().into();
+        let cdk_secret_back: cdk::nuts::SecretKey = ffi_secret.clone().try_into().unwrap();
+
+        // Should be equal
+        assert_eq!(
+            cdk_secret.to_secret_bytes(),
+            cdk_secret_back.to_secret_bytes()
+        );
+
+        // Test bytes match - Vec should be exactly 32 bytes
+        let bytes = ffi_secret.to_bytes();
+        assert_eq!(bytes.len(), 32);
+        assert_eq!(bytes, cdk_secret.to_secret_bytes().to_vec());
     }
 
     #[test]
@@ -204,8 +231,9 @@ mod tests {
     #[test]
     fn test_receive_options_with_all_fields() {
         use std::collections::HashMap;
+        use std::sync::Arc;
 
-        let secret_key = SecretKey::random();
+        let secret_key = cdk::nuts::SecretKey::generate();
         let mut metadata = HashMap::new();
         metadata.insert("key1".to_string(), "value1".to_string());
 
@@ -213,7 +241,7 @@ mod tests {
             amount_split_target: SplitTarget::Values {
                 amounts: vec![Amount::new(100), Amount::new(200)],
             },
-            p2pk_signing_keys: vec![secret_key],
+            p2pk_signing_keys: vec![Arc::new(secret_key.into())],
             preimages: vec!["preimage1".to_string(), "preimage2".to_string()],
             metadata,
         };

@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use super::amount::{Amount, SplitTarget};
+use super::keys::SecretKey;
 use super::proof::{Proofs, SpendingConditions};
 use crate::error::FfiError;
 use crate::token::Token;
@@ -179,66 +180,14 @@ pub fn encode_send_options(options: SendOptions) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&options)?)
 }
 
-/// FFI-compatible SecretKey
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-#[serde(transparent)]
-pub struct SecretKey {
-    /// Hex-encoded secret key (64 characters)
-    pub hex: String,
-}
-
-impl SecretKey {
-    /// Create a new SecretKey from hex string
-    pub fn from_hex(hex: String) -> Result<Self, FfiError> {
-        // Validate hex string length (should be 64 characters for 32 bytes)
-        if hex.len() != 64 {
-            return Err(FfiError::InvalidHex {
-                msg: "Secret key hex must be exactly 64 characters (32 bytes)".to_string(),
-            });
-        }
-
-        // Validate hex format
-        if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(FfiError::InvalidHex {
-                msg: "Secret key hex contains invalid characters".to_string(),
-            });
-        }
-
-        Ok(Self { hex })
-    }
-
-    /// Generate a random secret key
-    pub fn random() -> Self {
-        use cdk::nuts::SecretKey as CdkSecretKey;
-        let secret_key = CdkSecretKey::generate();
-        Self {
-            hex: secret_key.to_secret_hex(),
-        }
-    }
-}
-
-impl From<SecretKey> for cdk::nuts::SecretKey {
-    fn from(key: SecretKey) -> Self {
-        // This will panic if hex is invalid, but we validate in from_hex()
-        cdk::nuts::SecretKey::from_hex(&key.hex).expect("Invalid secret key hex")
-    }
-}
-
-impl From<cdk::nuts::SecretKey> for SecretKey {
-    fn from(key: cdk::nuts::SecretKey) -> Self {
-        Self {
-            hex: key.to_secret_hex(),
-        }
-    }
-}
-
 /// FFI-compatible Receive options
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ReceiveOptions {
     /// Amount split target
     pub amount_split_target: SplitTarget,
-    /// P2PK signing keys
-    pub p2pk_signing_keys: Vec<SecretKey>,
+    /// P2PK signing keys (wrapped in Arc for UniFFI Object compatibility)
+    #[serde(skip)]
+    pub p2pk_signing_keys: Vec<std::sync::Arc<SecretKey>>,
     /// Preimages for HTLC conditions
     pub preimages: Vec<String>,
     /// Metadata
@@ -260,7 +209,11 @@ impl From<ReceiveOptions> for cdk::wallet::ReceiveOptions {
     fn from(opts: ReceiveOptions) -> Self {
         cdk::wallet::ReceiveOptions {
             amount_split_target: opts.amount_split_target.into(),
-            p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
+            p2pk_signing_keys: opts
+                .p2pk_signing_keys
+                .into_iter()
+                .filter_map(|sk| (*sk).clone().try_into().ok())
+                .collect(),
             preimages: opts.preimages,
             metadata: opts.metadata,
         }
@@ -271,7 +224,11 @@ impl From<cdk::wallet::ReceiveOptions> for ReceiveOptions {
     fn from(opts: cdk::wallet::ReceiveOptions) -> Self {
         Self {
             amount_split_target: opts.amount_split_target.into(),
-            p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
+            p2pk_signing_keys: opts
+                .p2pk_signing_keys
+                .into_iter()
+                .map(|sk| std::sync::Arc::new(sk.into()))
+                .collect(),
             preimages: opts.preimages,
             metadata: opts.metadata,
         }

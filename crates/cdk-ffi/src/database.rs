@@ -92,6 +92,16 @@ pub trait WalletDatabase: Send + Sync {
     /// Remove Keys from storage
     async fn remove_keys(&self, id: Id) -> Result<(), FfiError>;
 
+    // P2PK signing key storage
+    /// Store a P2PK signing key
+    async fn add_p2pk_key(&self, secret_key: Arc<SecretKey>) -> Result<(), FfiError>;
+    /// Fetch a P2PK signing key by public key
+    async fn get_p2pk_key(&self, pubkey: PublicKey) -> Result<Option<Arc<SecretKey>>, FfiError>;
+    /// List stored P2PK signing keys
+    async fn list_p2pk_keys(&self) -> Result<Vec<Arc<P2pkSigningKey>>, FfiError>;
+    /// Remove a stored P2PK signing key by public key
+    async fn remove_p2pk_key(&self, pubkey: PublicKey) -> Result<(), FfiError>;
+
     // Proof Management
     /// Update the proofs in storage by adding new proofs or removing proofs by their Y value
     async fn update_proofs(
@@ -407,6 +417,63 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let ffi_id = (*id).into();
         self.ffi_db
             .remove_keys(ffi_id)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn add_p2pk_key(&self, secret_key: cdk::nuts::SecretKey) -> Result<(), Self::Err> {
+        let ffi_secret: Arc<SecretKey> = Arc::new(secret_key.into());
+        self.ffi_db
+            .add_p2pk_key(ffi_secret)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn get_p2pk_key(
+        &self,
+        pubkey: cdk::nuts::PublicKey,
+    ) -> Result<Option<cdk::nuts::SecretKey>, Self::Err> {
+        let ffi_pubkey: PublicKey = pubkey.into();
+        let result = self
+            .ffi_db
+            .get_p2pk_key(ffi_pubkey)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+
+        result
+            .map(|sk| {
+                (*sk)
+                    .clone()
+                    .try_into()
+                    .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+            })
+            .transpose()
+    }
+
+    async fn list_p2pk_keys(
+        &self,
+    ) -> Result<Vec<(cdk::nuts::PublicKey, cdk::nuts::SecretKey)>, Self::Err> {
+        let result = self
+            .ffi_db
+            .list_p2pk_keys()
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+
+        result
+            .into_iter()
+            .map(|entry| {
+                let (pubkey, secret) = (*entry).clone().try_into().map_err(|e: FfiError| {
+                    cdk::cdk_database::Error::Database(e.to_string().into())
+                })?;
+                Ok((pubkey, secret))
+            })
+            .collect()
+    }
+
+    async fn remove_p2pk_key(&self, pubkey: cdk::nuts::PublicKey) -> Result<(), Self::Err> {
+        let ffi_pubkey: PublicKey = pubkey.into();
+        self.ffi_db
+            .remove_p2pk_key(ffi_pubkey)
             .await
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
