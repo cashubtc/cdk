@@ -1,6 +1,5 @@
 use std::str::FromStr;
 
-use anyhow::bail;
 use cdk_common::amount::amount_for_offer;
 use cdk_common::database::mint::MeltRequestInfo;
 use cdk_common::database::{self, MintTransaction};
@@ -8,8 +7,7 @@ use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::{
-    Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, DynMintPayment,
-    OutgoingPaymentOptions, PaymentIdentifier,
+    Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, OutgoingPaymentOptions,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::{MeltOptions, MeltQuoteBolt12Request};
@@ -18,12 +16,20 @@ use cdk_prometheus::METRICS;
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 
+mod change_processor;
+mod external_melt_executor;
+mod internal_melt_executor;
+mod payment_executor;
+
+pub use change_processor::ChangeProcessor;
+use external_melt_executor::ExternalMeltExecutor;
+use internal_melt_executor::InternalMeltExecutor;
+
 use super::{
     CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, Mint,
-    PaymentMethod, PublicKey, State,
+    PaymentMethod, State,
 };
 use crate::amount::to_unit;
-use crate::cdk_payment::MakePaymentResponse;
 use crate::mint::proof_writer::ProofWriter;
 use crate::mint::verification::Verification;
 use crate::mint::SigFlag;
@@ -31,7 +37,7 @@ use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
 use crate::nuts::MeltQuoteState;
 use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
-use crate::{cdk_payment, ensure_cdk, Amount, Error};
+use crate::{ensure_cdk, Amount, Error};
 
 impl Mint {
     #[instrument(skip_all)]
@@ -55,13 +61,9 @@ impl Mint {
         let amount = match options {
             Some(MeltOptions::Mpp { mpp: _ }) => {
                 let nut15 = mint_info.nuts.nut15;
-                // Verify there is no corresponding mint quote.
-                // Otherwise a wallet is trying to pay someone internally, but
-                // with a multi-part quote. And that's just not possible.
                 if (self.localstore.get_mint_quote_by_request(&request).await?).is_some() {
                     return Err(Error::InternalMultiPartMeltQuote);
                 }
-                // Verify MPP is enabled for unit and method
                 if !nut15
                     .methods
                     .into_iter()
@@ -69,8 +71,6 @@ impl Mint {
                 {
                     return Err(Error::MppUnitMethodNotSupported(unit, method));
                 }
-                // Assign `amount`
-                // because should have already been converted to the partial amount
                 amount
             }
             Some(MeltOptions::Amountless { amountless: _ }) => {
@@ -109,9 +109,6 @@ impl Mint {
     }
 
     /// Get melt quote for either BOLT11 or BOLT12
-    ///
-    /// This function accepts a `MeltQuoteRequest` enum and delegates to the
-    /// appropriate handler based on the request type.
     #[instrument(skip_all)]
     pub async fn get_melt_quote(
         &self,
@@ -187,7 +184,6 @@ impl Mint {
             return Err(Error::UnitMismatch);
         }
 
-        // Validate using processor quote amount for currency conversion
         self.check_melt_request_acceptable(
             payment_quote.amount,
             unit.clone(),
@@ -293,7 +289,6 @@ impl Mint {
             return Err(Error::UnitMismatch);
         }
 
-        // Validate using processor quote amount for currency conversion
         self.check_melt_request_acceptable(
             payment_quote.amount,
             unit.clone(),
@@ -523,7 +518,6 @@ impl Mint {
             )
             .await?;
 
-        // Only after proof verification succeeds, proceed with quote state check
         let (state, quote) = tx
             .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending, None)
             .await?;
@@ -546,8 +540,6 @@ impl Mint {
 
         let required_total = quote.amount + quote.fee_reserve + fee;
 
-        // Check that the inputs proofs are greater then total.
-        // Transaction does not need to be balanced as wallet may not want change.
         if input_amount < required_total {
             tracing::info!(
                 "Swap request unbalanced: {}, outputs {}, fee {}",
@@ -583,56 +575,26 @@ impl Mint {
         Ok((proof_writer, quote))
     }
 
-    /// Melt Bolt11
+    /// Prepare melt request - verify inputs and setup transaction
     #[instrument(skip_all)]
-    pub async fn melt(
+    async fn prepare_melt_request(
         &self,
         melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
-        #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("melt_bolt11");
-
-        use std::sync::Arc;
-        async fn check_payment_state(
-            ln: DynMintPayment,
-            lookup_id: &PaymentIdentifier,
-        ) -> anyhow::Result<MakePaymentResponse> {
-            match ln.check_outgoing_payment(lookup_id).await {
-                Ok(response) => Ok(response),
-                Err(check_err) => {
-                    // If we cannot check the status of the payment we keep the proofs stuck as pending.
-                    tracing::error!(
-                        "Could not check the status of payment for {},. Proofs stuck as pending",
-                        lookup_id
-                    );
-                    tracing::error!("Checking payment error: {}", check_err);
-                    bail!("Could not check payment status")
-                }
-            }
-        }
-
+    ) -> Result<
+        (
+            ProofWriter,
+            MeltQuote,
+            Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
+        ),
+        Error,
+    > {
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
         let mut tx = self.localstore.begin_transaction().await?;
 
-        let (proof_writer, quote) = match self
+        let (proof_writer, quote) = self
             .verify_melt_request(&mut tx, verification, melt_request)
-            .await
-        {
-            Ok(result) => result,
-            Err(err) => {
-                tracing::debug!("Error attempting to verify melt quote: {}", err);
-
-                #[cfg(feature = "prometheus")]
-                {
-                    METRICS.dec_in_flight_requests("melt_bolt11");
-                    METRICS.record_mint_operation("melt_bolt11", false);
-                    METRICS.record_error();
-                }
-
-                return Err(err);
-            }
-        };
+            .await?;
 
         let inputs_fee = self.get_proofs_fee(melt_request.inputs()).await?;
 
@@ -649,244 +611,80 @@ impl Mint {
         )
         .await?;
 
-        let settled_internally_amount = match self
-            .handle_internal_melt_mint(&mut tx, &quote, melt_request)
-            .await
-        {
-            Ok(amount) => amount,
-            Err(err) => {
-                tracing::error!("Attempting to settle internally failed: {}", err);
-
-                #[cfg(feature = "prometheus")]
-                {
-                    METRICS.dec_in_flight_requests("melt_bolt11");
-                    METRICS.record_mint_operation("melt_bolt11", false);
-                    METRICS.record_error();
-                }
-
-                return Err(err);
-            }
-        };
-
-        let (tx, preimage, amount_spent_quote_unit, quote) = match settled_internally_amount {
-            Some(amount_spent) => (tx, None, amount_spent, quote),
-
-            None => {
-                // If the quote unit is SAT or MSAT we can check that the expected fees are
-                // provided. We also check if the quote is less then the invoice
-                // amount in the case that it is a mmp However, if the quote is not
-                // of a bitcoin unit we cannot do these checks as the mint
-                // is unaware of a conversion rate. In this case it is assumed that the quote is
-                // correct and the mint should pay the full invoice amount if inputs
-                // > `then quote.amount` are included. This is checked in the
-                // `verify_melt` method.
-                let _partial_amount = match quote.unit {
-                    CurrencyUnit::Sat | CurrencyUnit::Msat => {
-                        match self.check_melt_expected_ln_fees(&quote, melt_request).await {
-                            Ok(amount) => amount,
-                            Err(err) => {
-                                tracing::error!("Fee is not expected: {}", err);
-                                return Err(Error::Internal);
-                            }
-                        }
-                    }
-                    _ => None,
-                };
-
-                let ln = match self.payment_processors.get(&PaymentProcessorKey::new(
-                    quote.unit.clone(),
-                    quote.payment_method.clone(),
-                )) {
-                    Some(ln) => ln,
-                    None => {
-                        tracing::info!("Could not get ln backend for {}, bolt11 ", quote.unit);
-                        return Err(Error::UnsupportedUnit);
-                    }
-                };
-
-                // Commit before talking to the external call
-                tx.commit().await?;
-
-                let pre = match ln
-                    .make_payment(&quote.unit, quote.clone().try_into()?)
-                    .await
-                {
-                    Ok(pay)
-                        if pay.status == MeltQuoteState::Unknown
-                            || pay.status == MeltQuoteState::Failed =>
-                    {
-                        tracing::warn!("Got {} status when paying melt quote {} for {} {}. Checking with backend...", pay.status, quote.id, quote.amount, quote.unit);
-                        let check_response = if let Ok(ok) =
-                            check_payment_state(Arc::clone(ln), &pay.payment_lookup_id).await
-                        {
-                            ok
-                        } else {
-                            return Err(Error::Internal);
-                        };
-
-                        if check_response.status == MeltQuoteState::Paid {
-                            tracing::warn!("Pay invoice returned {} but check returned {}. Proofs stuck as pending", pay.status.to_string(), check_response.status.to_string());
-
-                            proof_writer.commit();
-
-                            return Err(Error::Internal);
-                        }
-
-                        check_response
-                    }
-                    Ok(pay) => pay,
-                    Err(err) => {
-                        // If the error is that the invoice was already paid we do not want to hold
-                        // hold the proofs as pending to we reset them  and return an error.
-                        if matches!(err, cdk_payment::Error::InvoiceAlreadyPaid) {
-                            tracing::debug!("Invoice already paid, resetting melt quote");
-                            return Err(Error::RequestAlreadyPaid);
-                        }
-
-                        tracing::error!("Error returned attempting to pay: {} {}", quote.id, err);
-
-                        let lookup_id = quote.request_lookup_id.as_ref().ok_or_else(|| {
-                            tracing::error!(
-                                "No payment id could not lookup payment for {} after error.",
-                                quote.id
-                            );
-                            Error::Internal
-                        })?;
-
-                        let check_response =
-                            if let Ok(ok) = check_payment_state(Arc::clone(ln), lookup_id).await {
-                                ok
-                            } else {
-                                proof_writer.commit();
-                                return Err(Error::Internal);
-                            };
-                        // If there error is something else we want to check the status of the payment ensure it is not pending or has been made.
-                        if check_response.status == MeltQuoteState::Paid {
-                            tracing::warn!("Pay invoice returned an error but check returned {}. Proofs stuck as pending", check_response.status.to_string());
-                            proof_writer.commit();
-                            return Err(Error::Internal);
-                        }
-                        check_response
-                    }
-                };
-
-                match pre.status {
-                    MeltQuoteState::Paid => (),
-                    MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => {
-                        tracing::info!(
-                            "Lightning payment for quote {} failed.",
-                            melt_request.quote()
-                        );
-                        proof_writer.rollback().await?;
-
-                        #[cfg(feature = "prometheus")]
-                        {
-                            METRICS.dec_in_flight_requests("melt_bolt11");
-                            METRICS.record_mint_operation("melt_bolt11", false);
-                            METRICS.record_error();
-                        }
-
-                        return Err(Error::PaymentFailed);
-                    }
-                    MeltQuoteState::Pending => {
-                        tracing::warn!(
-                            "LN payment pending, proofs are stuck as pending for quote: {}",
-                            melt_request.quote()
-                        );
-                        proof_writer.commit();
-                        #[cfg(feature = "prometheus")]
-                        {
-                            METRICS.dec_in_flight_requests("melt_bolt11");
-                            METRICS.record_mint_operation("melt_bolt11", false);
-                            METRICS.record_error();
-                        }
-
-                        return Err(Error::PendingQuote);
-                    }
-                }
-
-                // Convert from unit of backend to quote unit
-                // Note: this should never fail since these conversions happen earlier and would fail there.
-                // Since it will not fail and even if it does the ln payment has already been paid, proofs should still be burned
-                let amount_spent =
-                    to_unit(pre.total_spent, &pre.unit, &quote.unit).unwrap_or_default();
-
-                let payment_lookup_id = pre.payment_lookup_id;
-                let mut tx = self.localstore.begin_transaction().await?;
-
-                if Some(payment_lookup_id.clone()).as_ref() != quote.request_lookup_id.as_ref() {
-                    tracing::info!(
-                        "Payment lookup id changed post payment from {:?} to {}",
-                        &quote.request_lookup_id,
-                        payment_lookup_id
-                    );
-
-                    let mut melt_quote = quote;
-                    melt_quote.request_lookup_id = Some(payment_lookup_id.clone());
-
-                    if let Err(err) = tx
-                        .update_melt_quote_request_lookup_id(&melt_quote.id, &payment_lookup_id)
-                        .await
-                    {
-                        tracing::warn!("Could not update payment lookup id: {}", err);
-                    }
-
-                    (tx, pre.payment_proof, amount_spent, melt_quote)
-                } else {
-                    (tx, pre.payment_proof, amount_spent, quote)
-                }
-            }
-        };
-
-        // If we made it here the payment has been made.
-        // We process the melt burning the inputs and returning change
-        let res = match self
-            .process_melt_request(tx, proof_writer, quote, preimage, amount_spent_quote_unit)
-            .await
-        {
-            Ok(response) => response,
-            Err(err) => {
-                tracing::error!("Could not process melt request: {}", err);
-
-                #[cfg(feature = "prometheus")]
-                {
-                    METRICS.dec_in_flight_requests("melt_bolt11");
-                    METRICS.record_mint_operation("melt_bolt11", false);
-                    METRICS.record_error();
-                }
-
-                return Err(err);
-            }
-        };
-
-        #[cfg(feature = "prometheus")]
-        {
-            METRICS.dec_in_flight_requests("melt_bolt11");
-            METRICS.record_mint_operation("melt_bolt11", true);
-        }
-
-        Ok(res)
+        Ok((proof_writer, quote, tx))
     }
 
-    /// Process melt request marking proofs as spent
-    /// The melt request must be verified using [`Self::verify_melt_request`]
-    /// before calling [`Self::process_melt_request`]
+    /// Execute internal melt - settle with matching mint quote
+    /// Returns (preimage, amount_spent, quote)
     #[instrument(skip_all)]
-    pub async fn process_melt_request(
+    async fn execute_internal_melt(
         &self,
-        mut tx: Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
+        quote: &MeltQuote,
+        mint_quote_id: &QuoteId,
+    ) -> Result<(Option<String>, Amount, MeltQuote), Error> {
+        let executor = InternalMeltExecutor::new(self);
+        executor.execute(quote, mint_quote_id).await
+    }
+
+    /// Execute external melt - make payment via payment processor
+    /// Returns (preimage, amount_spent, quote)
+    #[instrument(skip_all)]
+    async fn execute_external_melt(
+        &self,
+        quote: &MeltQuote,
+        melt_request: &MeltRequest<QuoteId>,
+    ) -> Result<(Option<String>, Amount, MeltQuote), Error> {
+        let executor = ExternalMeltExecutor::new(self, self.payment_processors.clone());
+        executor.execute(quote, melt_request).await
+    }
+
+    /// Execute melt payment - either internal or external
+    /// Returns (preimage, amount_spent, quote)
+    #[instrument(skip_all)]
+    async fn execute_melt_payment<'a>(
+        &'a self,
+        mut tx: Box<dyn MintTransaction<'a, database::Error> + Send + Sync + 'a>,
+        quote: &MeltQuote,
+        melt_request: &MeltRequest<QuoteId>,
+    ) -> Result<(Option<String>, Amount, MeltQuote), Error> {
+        let internal_executor = InternalMeltExecutor::new(self);
+        let mint_quote_id = internal_executor
+            .is_internal_settlement(&mut tx, quote, melt_request)
+            .await?;
+
+        tx.commit().await?;
+
+        match mint_quote_id {
+            Some(mint_quote_id) => {
+                let (preimage, amount_spent, quote) =
+                    self.execute_internal_melt(quote, &mint_quote_id).await?;
+                Ok((preimage, amount_spent, quote))
+            }
+            None => {
+                let (preimage, amount_spent, quote) =
+                    self.execute_external_melt(quote, melt_request).await?;
+                Ok((preimage, amount_spent, quote))
+            }
+        }
+    }
+
+    /// Finalize melt - burn inputs and return change
+    #[instrument(skip_all)]
+    async fn finalize_melt(
+        &self,
         mut proof_writer: ProofWriter,
         quote: MeltQuote,
         payment_preimage: Option<String>,
         total_spent: Amount,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
-        #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("process_melt_request");
+        let mut tx = self.localstore.begin_transaction().await?;
 
-        // Try to get input_ys from the stored melt request, fall back to original request if not found
         let input_ys: Vec<_> = tx.get_proof_ys_by_quote_id(&quote.id).await?;
 
-        assert!(!input_ys.is_empty());
+        if input_ys.is_empty() {
+            tracing::error!("No input proofs found for quote {}", quote.id);
+            return Err(Error::UnknownQuote);
+        }
 
         tracing::debug!(
             "Updating {} proof states to Spent for quote {}",
@@ -894,21 +692,14 @@ impl Mint {
             quote.id
         );
 
-        let update_proof_states_result = proof_writer
+        proof_writer
             .update_proofs_states(&mut tx, &input_ys, State::Spent)
-            .await;
+            .await?;
 
-        if update_proof_states_result.is_err() {
-            #[cfg(feature = "prometheus")]
-            self.record_melt_quote_failure("process_melt_request");
-            return Err(update_proof_states_result.err().unwrap());
-        }
         tracing::debug!("Successfully updated proof states to Spent");
 
         tx.update_melt_quote_state(&quote.id, MeltQuoteState::Paid, payment_preimage.clone())
             .await?;
-
-        let mut change = None;
 
         let MeltRequestInfo {
             inputs_amount,
@@ -919,110 +710,39 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        // Check if there is change to return
-        if inputs_amount > total_spent {
-            // Check if wallet provided change outputs
-            if !change_outputs.is_empty() {
-                let outputs = change_outputs;
-
-                let blinded_messages: Vec<PublicKey> =
-                    outputs.iter().map(|b| b.blinded_secret).collect();
-
-                if tx
-                    .get_blind_signatures(&blinded_messages)
-                    .await?
-                    .iter()
-                    .flatten()
-                    .next()
-                    .is_some()
-                {
-                    tracing::info!("Output has already been signed");
-
-                    return Err(Error::BlindedMessageAlreadySigned);
-                }
-
-                let change_target = inputs_amount - total_spent - inputs_fee;
-
-                let fee_and_amounts = self
-                    .keysets
-                    .load()
-                    .iter()
-                    .filter_map(|keyset| {
-                        if keyset.active && Some(keyset.id) == outputs.first().map(|x| x.keyset_id)
-                        {
-                            Some((keyset.input_fee_ppk, keyset.amounts.clone()).into())
-                        } else {
-                            None
-                        }
-                    })
-                    .next()
-                    .unwrap_or_else(|| {
-                        (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into()
-                    });
-
-                let mut amounts = change_target.split(&fee_and_amounts);
-
-                if outputs.len().lt(&amounts.len()) {
-                    tracing::debug!(
-                        "Providing change requires {} blinded messages, but only {} provided",
-                        amounts.len(),
-                        outputs.len()
-                    );
-
-                    // In the case that not enough outputs are provided to return all change
-                    // Reverse sort the amounts so that the most amount of change possible is
-                    // returned. The rest is burnt
-                    amounts.sort_by(|a, b| b.cmp(a));
-                }
-
-                let mut blinded_messages = vec![];
-
-                for (amount, mut blinded_message) in amounts.iter().zip(outputs.clone()) {
-                    blinded_message.amount = *amount;
-                    blinded_messages.push(blinded_message);
-                }
-
-                // commit db transaction before calling the signatory
-                tx.commit().await?;
-
-                let change_sigs = self.blind_sign(blinded_messages).await?;
-
-                let mut tx = self.localstore.begin_transaction().await?;
-
-                tx.add_blind_signatures(
-                    &outputs[0..change_sigs.len()]
-                        .iter()
-                        .map(|o| o.blinded_secret)
-                        .collect::<Vec<PublicKey>>(),
-                    &change_sigs,
-                    Some(quote.id.clone()),
+        let change = if inputs_amount > total_spent && !change_outputs.is_empty() {
+            let change_processor = ChangeProcessor::new(self);
+            change_processor
+                .calculate_and_sign_change(
+                    tx,
+                    &quote,
+                    inputs_amount,
+                    inputs_fee,
+                    total_spent,
+                    change_outputs,
                 )
-                .await?;
-
-                change = Some(change_sigs);
-
-                proof_writer.commit();
-
-                tx.delete_melt_request(&quote.id).await?;
-
-                tx.commit().await?;
-            } else {
+                .await?
+        } else {
+            if inputs_amount > total_spent {
                 tracing::info!(
-                    "Inputs for {} {} greater then spent on melt {} but change outputs not provided.",
+                    "Inputs for {} {} greater than spent on melt {} but change outputs not provided.",
                     quote.id,
                     inputs_amount,
                     total_spent
                 );
-                proof_writer.commit();
-                tx.delete_melt_request(&quote.id).await?;
-                tx.commit().await?;
+            } else {
+                tracing::debug!("No change required for melt {}", quote.id);
             }
-        } else {
-            tracing::debug!("No change required for melt {}", quote.id);
-            proof_writer.commit();
-            tx.delete_melt_request(&quote.id).await?;
             tx.commit().await?;
-        }
+            None
+        };
+
+        proof_writer.commit();
+
+        // Clean up melt_request and associated blinded_messages (change was already signed)
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.delete_melt_request(&quote.id).await?;
+        tx.commit().await?;
 
         self.pubsub_manager.melt_quote_status(
             &quote,
@@ -1030,6 +750,7 @@ impl Mint {
             change.clone(),
             MeltQuoteState::Paid,
         );
+
         tracing::debug!(
             "Melt for quote {} completed total spent {}, total inputs: {}, change given: {}",
             quote.id,
@@ -1041,7 +762,8 @@ impl Mint {
                     .expect("Change cannot overflow"))
                 .unwrap_or_default()
         );
-        let response = MeltQuoteBolt11Response {
+
+        Ok(MeltQuoteBolt11Response {
             amount: quote.amount,
             paid: Some(true),
             payment_preimage,
@@ -1052,21 +774,83 @@ impl Mint {
             expiry: quote.expiry,
             request: Some(quote.request.to_string()),
             unit: Some(quote.unit.clone()),
-        };
+        })
+    }
+
+    /// Melt Bolt11
+    #[instrument(skip_all)]
+    pub async fn melt(
+        &self,
+        melt_request: &MeltRequest<QuoteId>,
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("melt_bolt11");
+
+        let result = async {
+            let (proof_writer, quote, tx) = self.prepare_melt_request(melt_request).await?;
+
+            let (preimage, amount_spent, quote) =
+                match self.execute_melt_payment(tx, &quote, melt_request).await {
+                    Ok(result) => result,
+                    Err(err) => {
+                        if matches!(err, Error::PaymentFailed | Error::RequestAlreadyPaid) {
+                            tracing::info!(
+                                "Payment for quote {} failed: {}. Resetting quote state.",
+                                melt_request.quote(),
+                                err
+                            );
+
+                            proof_writer.rollback().await?;
+
+                            let mut tx = self.localstore.begin_transaction().await?;
+
+                            // Reset quote to unpaid state
+                            tx.update_melt_quote_state(
+                                melt_request.quote(),
+                                MeltQuoteState::Unpaid,
+                                None,
+                            )
+                            .await?;
+
+                            // Delete melt_request and associated blinded_messages
+                            tx.delete_melt_request(melt_request.quote_id()).await?;
+
+                            tx.commit().await?;
+
+                            self.pubsub_manager.melt_quote_status(
+                                &quote,
+                                None,
+                                None,
+                                MeltQuoteState::Unpaid,
+                            );
+                        } else if matches!(err, Error::PendingQuote | Error::Internal) {
+                            proof_writer.commit();
+                        }
+
+                        #[cfg(feature = "prometheus")]
+                        {
+                            METRICS.dec_in_flight_requests("melt_bolt11");
+                            METRICS.record_mint_operation("melt_bolt11", false);
+                            METRICS.record_error();
+                        }
+                        return Err(err);
+                    }
+                };
+
+            self.finalize_melt(proof_writer, quote, preimage, amount_spent)
+                .await
+        }
+        .await;
 
         #[cfg(feature = "prometheus")]
         {
-            METRICS.dec_in_flight_requests("process_melt_request");
-            METRICS.record_mint_operation("process_melt_request", true);
+            METRICS.dec_in_flight_requests("melt_bolt11");
+            METRICS.record_mint_operation("melt_bolt11", result.is_ok());
+            if result.is_err() {
+                METRICS.record_error();
+            }
         }
 
-        Ok(response)
-    }
-
-    #[cfg(feature = "prometheus")]
-    fn record_melt_quote_failure(&self, operation: &str) {
-        METRICS.dec_in_flight_requests(operation);
-        METRICS.record_mint_operation(operation, false);
-        METRICS.record_error();
+        result
     }
 }
