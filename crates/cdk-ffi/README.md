@@ -7,6 +7,7 @@ UniFFI bindings for the CDK (Cashu Development Kit), providing foreign function 
 - **🐍 Python** - With REPL integration for development
 - **🍎 Swift** - iOS and macOS development
 - **🎯 Kotlin** - Android and JVM development
+- **🎯 Dart** - Flutter development
 
 ## Development Tasks
 
@@ -24,6 +25,7 @@ just ffi-clean         # Clean build artifacts
 just ffi-generate python
 just ffi-generate swift
 just ffi-generate kotlin
+just ffi-generate dart
 
 # Generate all languages
 just ffi-generate-all
@@ -57,5 +59,6 @@ just ffi-dev-python
 For production use, see language-specific repositories:
 
 - [cdk-swift](https://github.com/cashubtc/cdk-swift) - iOS/macOS packages
-- [cdk-kotlin](https://github.com/cashubtc/cdk-kotlin) - Android/JVM packages  
+- [cdk-kotlin](https://github.com/cashubtc/cdk-kotlin) - Android/JVM packages
 - [cdk-python](https://github.com/cashubtc/cdk-python) - PyPI packages
+- [cdk-dart](https://github.com/cashubtc/cdk-dart) - Flutter/Dart packages (coming soon)
