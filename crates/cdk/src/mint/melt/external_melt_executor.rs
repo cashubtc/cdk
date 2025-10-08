@@ -196,7 +196,7 @@ impl<'a> ExternalMeltExecutor<'a> {
             .ok_or(Error::UnknownQuote)?;
 
         // Calculate and sign change if needed
-        let change = if inputs_amount > amount_spent && !change_outputs.is_empty() {
+        let change = if inputs_amount - inputs_fee > amount_spent && !change_outputs.is_empty() {
             tracing::debug!(
                 "Calculating change for quote {}: inputs {}, spent {}",
                 quote.id,
@@ -211,17 +211,64 @@ impl<'a> ExternalMeltExecutor<'a> {
                 .ok_or(Error::AmountOverflow)?;
 
             if change_amount > Amount::ZERO {
+                let fee_and_amounts = signatory
+                    .keysets()
+                    .await?
+                    .keysets
+                    .iter()
+                    .filter_map(|keyset| {
+                        if keyset.active
+                            && Some(keyset.id) == change_outputs.first().map(|x| x.keyset_id)
+                        {
+                            Some((keyset.input_fee_ppk, keyset.amounts.clone()).into())
+                        } else {
+                            None
+                        }
+                    })
+                    .next()
+                    .unwrap_or_else(|| {
+                        (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into()
+                    });
+
+                let mut change_amounts = change_amount.split(&fee_and_amounts);
+
+                if change_outputs.len() < change_amounts.len() {
+                    tracing::debug!(
+                        "Providing change requires {} blinded messages, but only {} provided",
+                        change_amounts.len(),
+                        change_outputs.len()
+                    );
+
+                    // In the case that not enough outputs are provided to return all change
+                    // Reverse sort the amounts so that the most amount of change possible is
+                    // returned. The rest is burnt
+                    change_amounts.sort_by(|a, b| b.cmp(a));
+                }
+
                 tracing::debug!(
                     "Signing {} change outputs for amount {}",
                     change_outputs.len(),
                     change_amount
                 );
 
-                let blind_signatures = signatory.blind_sign(change_outputs.clone()).await?;
+                let mut blinded_messages = vec![];
+
+                for (amount, mut blinded_message) in
+                    change_amounts.iter().zip(change_outputs.clone())
+                {
+                    blinded_message.amount = *amount;
+                    blinded_messages.push(blinded_message);
+                }
+
+                let blind_signatures = signatory.blind_sign(blinded_messages.clone()).await?;
 
                 // Extract blinded secrets for storage
-                let blinded_secrets: Vec<_> =
-                    change_outputs.iter().map(|bm| bm.blinded_secret).collect();
+                let blinded_secrets: Vec<_> = blinded_messages
+                    .iter()
+                    .map(|bm| bm.blinded_secret)
+                    .collect();
+
+                assert!(blinded_secrets.len() == blind_signatures.len());
 
                 // Store change signatures
                 tx.add_blind_signatures(
