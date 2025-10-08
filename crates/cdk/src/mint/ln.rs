@@ -45,6 +45,20 @@ impl Mint {
 
         let mut tx = self.localstore.begin_transaction().await?;
 
+        if quote.payment_method == PaymentMethod::Bolt11 {
+            // reload the quote, as it state may have changed
+            *quote = tx
+                .get_mint_quote(&quote.id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
+
+            let current_state = quote.state();
+
+            if current_state == MintQuoteState::Issued || current_state == MintQuoteState::Paid {
+                return Ok(());
+            }
+        }
+
         for payment in ln_status {
             if !quote.payment_ids().contains(&&payment.payment_id)
                 && payment.payment_amount > Amount::ZERO
