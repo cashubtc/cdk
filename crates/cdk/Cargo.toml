@@ -57,11 +57,7 @@ url.workspace = true
 utoipa = { workspace = true, optional = true }
 uuid.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
-nostr-sdk = { optional = true, version = "0.43.0", default-features = false, features = [
-    "nip04",
-    "nip44",
-    "nip59"
-]}
+nostr-sdk = { workspace = true, optional = true }
 cdk-prometheus = {workspace = true, optional = true}
 web-time.workspace = true
 zeroize = "1"
