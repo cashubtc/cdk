@@ -63,7 +63,7 @@ pub struct Mint {
     ///
     /// It is implemented in the cdk-signatory crate, and it can be embedded in the mint or it can
     /// be a gRPC client to a remote signatory server.
-    signatory: Arc<dyn Signatory + Send + Sync>,
+    pub(crate) signatory: Arc<dyn Signatory + Send + Sync>,
     /// Mint Storage backend
     localstore: DynMintDatabase,
     /// Auth Storage backend (only available with auth feature)

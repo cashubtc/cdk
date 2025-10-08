@@ -39,6 +39,19 @@ mod payment_executor;
 pub use external_melt_executor::ExternalMeltExecutor;
 pub use internal_melt_executor::InternalMeltExecutor;
 
+/// Result of executing a melt payment
+pub enum MeltExecutionResult<'a> {
+    /// Payment completed successfully - ready to finalize
+    Completed {
+        tx: Box<dyn MintTransaction<'a, database::Error> + Send + Sync + 'a>,
+        preimage: Option<String>,
+        amount_spent: Amount,
+        quote: MeltQuote,
+    },
+    /// Payment is processing asynchronously - return pending response
+    Pending { quote: MeltQuote },
+}
+
 impl Mint {
     #[instrument(skip_all)]
     async fn check_melt_request_acceptable(
@@ -635,52 +648,35 @@ impl Mint {
         executor.execute(tx, quote, amount_spent).await
     }
 
-    /// Execute external melt - make payment via payment processor
-    /// Returns (transaction, preimage, amount_spent, quote)
-    #[instrument(skip_all)]
-    async fn execute_external_melt<'a>(
-        &'a self,
-        tx: Box<dyn MintTransaction<'a, database::Error> + Send + Sync + 'a>,
-        quote: &MeltQuote,
-        melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<
-        (
-            Box<dyn MintTransaction<'a, database::Error> + Send + Sync + 'a>,
-            Option<String>,
-            Amount,
-            MeltQuote,
-        ),
-        Error,
-    > {
-        let executor = ExternalMeltExecutor::new(self, self.payment_processors.clone());
-        executor.execute(tx, quote, melt_request).await
-    }
-
     /// Execute melt payment - either internal or external
-    /// Returns (transaction, preimage, amount_spent, quote)
+    /// Returns MeltExecutionResult
     #[instrument(skip_all)]
     async fn execute_melt_payment<'a>(
         &'a self,
         mut tx: Box<dyn MintTransaction<'a, database::Error> + Send + Sync + 'a>,
         quote: &MeltQuote,
         melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<
-        (
-            Box<dyn MintTransaction<'a, database::Error> + Send + Sync + 'a>,
-            Option<String>,
-            Amount,
-            MeltQuote,
-        ),
-        Error,
-    > {
+    ) -> Result<MeltExecutionResult<'a>, Error> {
         let internal_executor = InternalMeltExecutor::new(self);
         let settled_internally_amount = internal_executor
             .check_internal_settlement(&mut tx, quote, melt_request)
             .await?;
 
         match settled_internally_amount {
-            Some(amount_spent) => self.execute_internal_melt(tx, quote, amount_spent).await,
-            None => self.execute_external_melt(tx, quote, melt_request).await,
+            Some(amount_spent) => {
+                let (tx, preimage, amount_spent, quote) =
+                    self.execute_internal_melt(tx, quote, amount_spent).await?;
+                Ok(MeltExecutionResult::Completed {
+                    tx,
+                    preimage,
+                    amount_spent,
+                    quote,
+                })
+            }
+            None => {
+                let executor = ExternalMeltExecutor::new(self, self.payment_processors.clone());
+                executor.execute(tx, quote, melt_request).await
+            }
         }
     }
 
@@ -800,25 +796,49 @@ impl Mint {
         let result = async {
             let (proof_writer, quote, tx) = self.prepare_melt_request(melt_request).await?;
 
-            let (tx, preimage, amount_spent, quote) =
-                match self.execute_melt_payment(tx, &quote, melt_request).await {
-                    Ok(result) => result,
-                    Err(err) => {
-                        if matches!(err, Error::PaymentFailed) {
-                            tracing::info!(
-                                "Lightning payment for quote {} failed.",
-                                melt_request.quote()
-                            );
-                            proof_writer.rollback().await?;
-                        } else if matches!(err, Error::PendingQuote | Error::Internal) {
-                            proof_writer.commit();
-                        }
-                        return Err(err);
-                    }
-                };
+            match self.execute_melt_payment(tx, &quote, melt_request).await {
+                Ok(MeltExecutionResult::Completed {
+                    tx,
+                    preimage,
+                    amount_spent,
+                    quote,
+                }) => {
+                    self.finalize_melt(tx, proof_writer, quote, preimage, amount_spent)
+                        .await
+                }
+                Ok(MeltExecutionResult::Pending { quote }) => {
+                    tracing::info!(
+                        "External melt for quote {} is processing asynchronously, returning pending response",
+                        quote.id
+                    );
+                    proof_writer.commit();
 
-            self.finalize_melt(tx, proof_writer, quote, preimage, amount_spent)
-                .await
+                    Ok(MeltQuoteBolt11Response {
+                        quote: quote.id,
+                        paid: Some(false),
+                        state: MeltQuoteState::Pending,
+                        expiry: quote.expiry,
+                        amount: quote.amount,
+                        fee_reserve: quote.fee_reserve,
+                        payment_preimage: None,
+                        change: None,
+                        request: Some(quote.request.to_string()),
+                        unit: Some(quote.unit.clone()),
+                    })
+                }
+                Err(err) => {
+                    if matches!(err, Error::PaymentFailed) {
+                        tracing::info!(
+                            "Lightning payment for quote {} failed.",
+                            melt_request.quote()
+                        );
+                        proof_writer.rollback().await?;
+                    } else if matches!(err, Error::Internal) {
+                        proof_writer.commit();
+                    }
+                    Err(err)
+                }
+            }
         }
         .await;
 
