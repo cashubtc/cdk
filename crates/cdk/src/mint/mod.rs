@@ -9,7 +9,7 @@ use cdk_common::amount::to_unit;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::DynMintAuthDatabase;
-use cdk_common::database::{self, DynMintDatabase, MintTransaction};
+use cdk_common::database::{self, DynMintDatabase};
 use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
@@ -28,9 +28,9 @@ use tracing::instrument;
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::nuts::*;
+use crate::Amount;
 #[cfg(feature = "auth")]
 use crate::OidcClient;
-use crate::{cdk_database, Amount};
 
 #[cfg(feature = "auth")]
 pub(crate) mod auth;
@@ -871,78 +871,6 @@ impl Mint {
         }
 
         result
-    }
-
-    /// Verify melt request is valid
-    /// Check to see if there is a corresponding mint quote for a melt.
-    /// In this case the mint can settle the payment internally and no ln payment is
-    /// needed
-    #[instrument(skip_all)]
-    pub async fn handle_internal_melt_mint(
-        &self,
-        tx: &mut Box<dyn MintTransaction<'_, cdk_database::Error> + Send + Sync + '_>,
-        melt_quote: &MeltQuote,
-        melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<Option<Amount>, Error> {
-        let mint_quote = match tx
-            .get_mint_quote_by_request(&melt_quote.request.to_string())
-            .await
-        {
-            Ok(Some(mint_quote)) if mint_quote.unit == melt_quote.unit => mint_quote,
-            // Not an internal melt -> mint or unit mismatch
-            Ok(_) => return Ok(None),
-            Err(err) => {
-                tracing::debug!("Error attempting to get mint quote: {}", err);
-                return Err(Error::Internal);
-            }
-        };
-
-        // Mint quote has already been settled, proofs should not be burned or held.
-        if (mint_quote.state() == MintQuoteState::Issued
-            || mint_quote.state() == MintQuoteState::Paid)
-            && mint_quote.payment_method == PaymentMethod::Bolt11
-        {
-            return Err(Error::RequestAlreadyPaid);
-        }
-
-        let inputs_amount_quote_unit = melt_request.inputs_amount().map_err(|_| {
-            tracing::error!("Proof inputs in melt quote overflowed");
-            Error::AmountOverflow
-        })?;
-
-        if let Some(amount) = mint_quote.amount {
-            if amount > inputs_amount_quote_unit {
-                tracing::debug!(
-                    "Not enough inputs provided: {} needed {}",
-                    inputs_amount_quote_unit,
-                    amount
-                );
-                return Err(Error::InsufficientFunds);
-            }
-        }
-
-        let amount = melt_quote.amount;
-
-        tracing::info!(
-            "Mint quote {} paid {} from internal payment.",
-            mint_quote.id,
-            amount
-        );
-
-        let total_paid = tx
-            .increment_mint_quote_amount_paid(&mint_quote.id, amount, melt_quote.id.to_string())
-            .await?;
-
-        self.pubsub_manager
-            .mint_quote_payment(&mint_quote, total_paid);
-
-        tracing::info!(
-            "Melt quote {} paid Mint quote {}",
-            melt_quote.id,
-            mint_quote.id
-        );
-
-        Ok(Some(amount))
     }
 
     /// Restore

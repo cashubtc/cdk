@@ -15,7 +15,6 @@ use cdk_common::{MeltOptions, MeltQuoteBolt12Request};
 use cdk_prometheus::METRICS;
 pub use change_processor::ChangeProcessor;
 use lightning::offers::offer::Offer;
-pub use payment_executor::PaymentExecutor;
 use tracing::instrument;
 
 use super::{
@@ -33,7 +32,12 @@ use crate::util::unix_time;
 use crate::{ensure_cdk, Amount, Error};
 
 mod change_processor;
+mod external_melt_executor;
+mod internal_melt_executor;
 mod payment_executor;
+
+pub use external_melt_executor::ExternalMeltExecutor;
+pub use internal_melt_executor::InternalMeltExecutor;
 
 impl Mint {
     #[instrument(skip_all)]
@@ -610,6 +614,48 @@ impl Mint {
         Ok((proof_writer, quote, tx))
     }
 
+    /// Execute internal melt - settle with matching mint quote
+    /// Returns (transaction, preimage, amount_spent, quote)
+    #[instrument(skip_all)]
+    async fn execute_internal_melt<'a>(
+        &'a self,
+        tx: Box<dyn MintTransaction<'a, database::Error> + Send + Sync + 'a>,
+        quote: &MeltQuote,
+        amount_spent: Amount,
+    ) -> Result<
+        (
+            Box<dyn MintTransaction<'a, database::Error> + Send + Sync + 'a>,
+            Option<String>,
+            Amount,
+            MeltQuote,
+        ),
+        Error,
+    > {
+        let executor = InternalMeltExecutor::new(self);
+        executor.execute(tx, quote, amount_spent).await
+    }
+
+    /// Execute external melt - make payment via payment processor
+    /// Returns (transaction, preimage, amount_spent, quote)
+    #[instrument(skip_all)]
+    async fn execute_external_melt<'a>(
+        &'a self,
+        tx: Box<dyn MintTransaction<'a, database::Error> + Send + Sync + 'a>,
+        quote: &MeltQuote,
+        melt_request: &MeltRequest<QuoteId>,
+    ) -> Result<
+        (
+            Box<dyn MintTransaction<'a, database::Error> + Send + Sync + 'a>,
+            Option<String>,
+            Amount,
+            MeltQuote,
+        ),
+        Error,
+    > {
+        let executor = ExternalMeltExecutor::new(self, self.payment_processors.clone());
+        executor.execute(tx, quote, melt_request).await
+    }
+
     /// Execute melt payment - either internal or external
     /// Returns (transaction, preimage, amount_spent, quote)
     #[instrument(skip_all)]
@@ -627,62 +673,14 @@ impl Mint {
         ),
         Error,
     > {
-        let settled_internally_amount = self
-            .handle_internal_melt_mint(&mut tx, quote, melt_request)
+        let internal_executor = InternalMeltExecutor::new(self);
+        let settled_internally_amount = internal_executor
+            .check_internal_settlement(&mut tx, quote, melt_request)
             .await?;
 
         match settled_internally_amount {
-            Some(amount_spent) => Ok((tx, None, amount_spent, quote.clone())),
-            None => {
-                let _partial_amount = match quote.unit {
-                    CurrencyUnit::Sat | CurrencyUnit::Msat => {
-                        self.check_melt_expected_ln_fees(quote, melt_request)
-                            .await?
-                    }
-                    _ => None,
-                };
-
-                tx.commit().await?;
-
-                let payment_executor = PaymentExecutor::new(self.payment_processors.clone());
-                let payment_result = payment_executor.execute_payment(quote).await?;
-
-                let amount_spent = to_unit(payment_result.total_spent, &quote.unit, &quote.unit)
-                    .unwrap_or_default();
-
-                let mut tx = self.localstore.begin_transaction().await?;
-
-                let mut updated_quote = quote.clone();
-                if Some(payment_result.payment_lookup_id.clone()).as_ref()
-                    != quote.request_lookup_id.as_ref()
-                {
-                    tracing::info!(
-                        "Payment lookup id changed post payment from {:?} to {}",
-                        &quote.request_lookup_id,
-                        payment_result.payment_lookup_id
-                    );
-
-                    updated_quote.request_lookup_id =
-                        Some(payment_result.payment_lookup_id.clone());
-
-                    if let Err(err) = tx
-                        .update_melt_quote_request_lookup_id(
-                            &quote.id,
-                            &payment_result.payment_lookup_id,
-                        )
-                        .await
-                    {
-                        tracing::warn!("Could not update payment lookup id: {}", err);
-                    }
-                }
-
-                Ok((
-                    tx,
-                    payment_result.payment_proof,
-                    amount_spent,
-                    updated_quote,
-                ))
-            }
+            Some(amount_spent) => self.execute_internal_melt(tx, quote, amount_spent).await,
+            None => self.execute_external_melt(tx, quote, melt_request).await,
         }
     }
 
@@ -828,40 +826,6 @@ impl Mint {
         {
             METRICS.dec_in_flight_requests("melt_bolt11");
             METRICS.record_mint_operation("melt_bolt11", result.is_ok());
-            if result.is_err() {
-                METRICS.record_error();
-            }
-        }
-
-        result
-    }
-
-    /// Process melt request marking proofs as spent
-    /// The melt request must be verified using [`Self::verify_melt_request`]
-    /// before calling [`Self::process_melt_request`]
-    #[instrument(skip_all)]
-    pub async fn process_melt_request(
-        &self,
-        tx: Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
-        proof_writer: ProofWriter,
-        quote: MeltQuote,
-        payment_preimage: Option<String>,
-        total_spent: Amount,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
-        #[cfg(feature = "prometheus")]
-        let result = self
-            .finalize_melt(tx, proof_writer, quote, payment_preimage, total_spent)
-            .await;
-
-        #[cfg(not(feature = "prometheus"))]
-        let result = self
-            .finalize_melt(tx, proof_writer, quote, payment_preimage, total_spent)
-            .await;
-
-        #[cfg(feature = "prometheus")]
-        {
-            METRICS.dec_in_flight_requests("process_melt_request");
-            METRICS.record_mint_operation("process_melt_request", result.is_ok());
             if result.is_err() {
                 METRICS.record_error();
             }
