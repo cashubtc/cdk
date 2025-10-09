@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use cdk_common::amount::to_unit;
 use cdk_common::mint::MeltQuote;
 use cdk_common::payment::DynMintPayment;
 use tracing::instrument;
@@ -57,9 +56,6 @@ impl<'a> ExternalMeltExecutor<'a> {
             payment_result.payment_lookup_id
         );
 
-        let amount_spent =
-            to_unit(payment_result.total_spent, &quote.unit, &quote.unit).unwrap_or_default();
-
         let mut updated_quote = quote.clone();
         if Some(payment_result.payment_lookup_id.clone()).as_ref()
             != quote.request_lookup_id.as_ref()
@@ -92,6 +88,10 @@ impl<'a> ExternalMeltExecutor<'a> {
             tx.commit().await?;
         }
 
-        Ok((payment_result.payment_proof, amount_spent, updated_quote))
+        Ok((
+            payment_result.payment_proof,
+            payment_result.total_spent,
+            updated_quote,
+        ))
     }
 }

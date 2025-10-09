@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::bail;
+use cdk_common::amount::to_unit;
 use cdk_common::mint::MeltQuote;
 use cdk_common::payment::{DynMintPayment, PaymentIdentifier};
 use cdk_common::MeltQuoteState;
@@ -168,9 +169,11 @@ impl PaymentExecutor {
             }
         }
 
+        let total_spent = to_unit(pre.total_spent, &pre.unit, &quote.unit)?;
+
         Ok(PaymentResult {
             payment_proof: pre.payment_proof,
-            total_spent: pre.total_spent,
+            total_spent,
             payment_lookup_id: pre.payment_lookup_id,
         })
     }
