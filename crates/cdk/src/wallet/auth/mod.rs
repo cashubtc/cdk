@@ -65,4 +65,17 @@ impl Wallet {
         }
         Ok(())
     }
+
+    /// Set the auth client (AuthWallet) for this wallet
+    ///
+    /// This allows updating the auth wallet without recreating the wallet.
+    /// Also updates the client's auth wallet to keep them in sync.
+    #[instrument(skip_all)]
+    pub async fn set_auth_client(&self, auth_wallet: Option<AuthWallet>) {
+        let mut auth_wallet_guard = self.auth_wallet.write().await;
+        *auth_wallet_guard = auth_wallet.clone();
+
+        // Also update the client's auth wallet to keep them in sync
+        self.client.set_auth_wallet(auth_wallet).await;
+    }
 }
