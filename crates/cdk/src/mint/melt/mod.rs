@@ -413,87 +413,6 @@ impl Mint {
         Ok(quotes)
     }
 
-    /// Check melt has expected fees
-    #[instrument(skip_all)]
-    pub async fn check_melt_expected_ln_fees(
-        &self,
-        melt_quote: &MeltQuote,
-        melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<Option<Amount>, Error> {
-        let quote_msats = to_unit(melt_quote.amount, &melt_quote.unit, &CurrencyUnit::Msat)
-            .expect("Quote unit is checked above that it can convert to msat");
-
-        let invoice_amount_msats = match &melt_quote.request {
-            MeltPaymentRequest::Bolt11 { bolt11 } => match bolt11.amount_milli_satoshis() {
-                Some(amount) => amount.into(),
-                None => melt_quote
-                    .options
-                    .ok_or(Error::InvoiceAmountUndefined)?
-                    .amount_msat(),
-            },
-            MeltPaymentRequest::Bolt12 { offer } => match offer.amount() {
-                Some(amount) => {
-                    let (amount, currency) = match amount {
-                        lightning::offers::offer::Amount::Bitcoin { amount_msats } => {
-                            (amount_msats, CurrencyUnit::Msat)
-                        }
-                        lightning::offers::offer::Amount::Currency {
-                            iso4217_code,
-                            amount,
-                        } => (
-                            amount,
-                            CurrencyUnit::from_str(&String::from_utf8(iso4217_code.to_vec())?)?,
-                        ),
-                    };
-
-                    to_unit(amount, &currency, &CurrencyUnit::Msat)
-                        .map_err(|_err| Error::UnsupportedUnit)?
-                }
-                None => melt_quote
-                    .options
-                    .ok_or(Error::InvoiceAmountUndefined)?
-                    .amount_msat(),
-            },
-        };
-
-        let partial_amount = match invoice_amount_msats > quote_msats {
-            true => Some(
-                to_unit(quote_msats, &CurrencyUnit::Msat, &melt_quote.unit)
-                    .map_err(|_| Error::UnsupportedUnit)?,
-            ),
-            false => None,
-        };
-
-        let amount_to_pay = match partial_amount {
-            Some(amount_to_pay) => amount_to_pay,
-            None => to_unit(invoice_amount_msats, &CurrencyUnit::Msat, &melt_quote.unit)
-                .map_err(|_| Error::UnsupportedUnit)?,
-        };
-
-        let inputs_amount_quote_unit = melt_request.inputs_amount().map_err(|_| {
-            tracing::error!("Proof inputs in melt quote overflowed");
-            Error::AmountOverflow
-        })?;
-
-        if amount_to_pay + melt_quote.fee_reserve > inputs_amount_quote_unit {
-            tracing::debug!(
-                "Not enough inputs provided: {} {} needed {} {}",
-                inputs_amount_quote_unit,
-                melt_quote.unit,
-                amount_to_pay,
-                melt_quote.unit
-            );
-
-            return Err(Error::TransactionUnbalanced(
-                inputs_amount_quote_unit.into(),
-                amount_to_pay.into(),
-                melt_quote.fee_reserve.into(),
-            ));
-        }
-
-        Ok(partial_amount)
-    }
-
     /// Verify melt request is valid
     #[instrument(skip_all)]
     pub async fn verify_melt_request(
@@ -632,10 +551,9 @@ impl Mint {
     async fn execute_external_melt(
         &self,
         quote: &MeltQuote,
-        melt_request: &MeltRequest<QuoteId>,
     ) -> Result<(Option<String>, Amount, MeltQuote), Error> {
         let executor = ExternalMeltExecutor::new(self, self.payment_processors.clone());
-        executor.execute(quote, melt_request).await
+        executor.execute(quote).await
     }
 
     /// Execute melt payment - either internal or external
@@ -661,8 +579,7 @@ impl Mint {
                 Ok((preimage, amount_spent, quote))
             }
             None => {
-                let (preimage, amount_spent, quote) =
-                    self.execute_external_melt(quote, melt_request).await?;
+                let (preimage, amount_spent, quote) = self.execute_external_melt(quote).await?;
                 Ok((preimage, amount_spent, quote))
             }
         }
@@ -710,6 +627,8 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
+        proof_writer.commit();
+
         let change = if inputs_amount > total_spent && !change_outputs.is_empty() {
             let change_processor = ChangeProcessor::new(self);
             change_processor
@@ -736,8 +655,6 @@ impl Mint {
             tx.commit().await?;
             None
         };
-
-        proof_writer.commit();
 
         // Clean up melt_request and associated blinded_messages (change was already signed)
         let mut tx = self.localstore.begin_transaction().await?;
