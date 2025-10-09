@@ -2,9 +2,7 @@ use std::collections::HashMap;
 
 use cdk_common::amount::to_unit;
 use cdk_common::mint::MeltQuote;
-use cdk_common::nuts::{CurrencyUnit, MeltRequest};
 use cdk_common::payment::DynMintPayment;
-use cdk_common::quote_id::QuoteId;
 use tracing::instrument;
 
 use super::payment_executor::PaymentExecutor;
@@ -34,17 +32,7 @@ impl<'a> ExternalMeltExecutor<'a> {
     pub async fn execute(
         &self,
         quote: &MeltQuote,
-        melt_request: &MeltRequest<QuoteId>,
     ) -> Result<(Option<String>, Amount, MeltQuote), Error> {
-        let _partial_amount = match quote.unit {
-            CurrencyUnit::Sat | CurrencyUnit::Msat => {
-                self.mint
-                    .check_melt_expected_ln_fees(quote, melt_request)
-                    .await?
-            }
-            _ => None,
-        };
-
         let payment_executor = PaymentExecutor::new(self.payment_processors.clone());
         let payment_result = payment_executor.execute_payment(quote).await?;
 
