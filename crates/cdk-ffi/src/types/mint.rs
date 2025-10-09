@@ -440,6 +440,7 @@ impl TryFrom<ProtectedEndpoint> for cdk::nuts::ProtectedEndpoint {
             "/v1/melt/quote/bolt11" => cdk::nuts::RoutePath::MeltQuoteBolt11,
             "/v1/melt/bolt11" => cdk::nuts::RoutePath::MeltBolt11,
             "/v1/swap" => cdk::nuts::RoutePath::Swap,
+            "/v1/ws" => cdk::nuts::RoutePath::Ws,
             "/v1/checkstate" => cdk::nuts::RoutePath::Checkstate,
             "/v1/restore" => cdk::nuts::RoutePath::Restore,
             "/v1/auth/blind/mint" => cdk::nuts::RoutePath::MintBlindAuth,
@@ -672,4 +673,336 @@ pub fn decode_mint_info(json: String) -> Result<MintInfo, FfiError> {
 #[uniffi::export]
 pub fn encode_mint_info(info: MintInfo) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&info)?)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper function to create a sample cdk::nuts::Nuts for testing
+    fn create_sample_cdk_nuts() -> cdk::nuts::Nuts {
+        cdk::nuts::Nuts {
+            nut04: cdk::nuts::nut04::Settings {
+                methods: vec![cdk::nuts::nut04::MintMethodSettings {
+                    method: cdk::nuts::PaymentMethod::Bolt11,
+                    unit: cdk::nuts::CurrencyUnit::Sat,
+                    min_amount: Some(cdk::Amount::from(1)),
+                    max_amount: Some(cdk::Amount::from(100000)),
+                    options: Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 {
+                        description: true,
+                    }),
+                }],
+                disabled: false,
+            },
+            nut05: cdk::nuts::nut05::Settings {
+                methods: vec![cdk::nuts::nut05::MeltMethodSettings {
+                    method: cdk::nuts::PaymentMethod::Bolt11,
+                    unit: cdk::nuts::CurrencyUnit::Sat,
+                    min_amount: Some(cdk::Amount::from(1)),
+                    max_amount: Some(cdk::Amount::from(100000)),
+                    options: Some(cdk::nuts::nut05::MeltMethodOptions::Bolt11 {
+                        amountless: true,
+                    }),
+                }],
+                disabled: false,
+            },
+            nut07: cdk::nuts::nut06::SupportedSettings { supported: true },
+            nut08: cdk::nuts::nut06::SupportedSettings { supported: true },
+            nut09: cdk::nuts::nut06::SupportedSettings { supported: false },
+            nut10: cdk::nuts::nut06::SupportedSettings { supported: true },
+            nut11: cdk::nuts::nut06::SupportedSettings { supported: true },
+            nut12: cdk::nuts::nut06::SupportedSettings { supported: true },
+            nut14: cdk::nuts::nut06::SupportedSettings { supported: false },
+            nut15: Default::default(),
+            nut17: Default::default(),
+            nut19: Default::default(),
+            nut20: cdk::nuts::nut06::SupportedSettings { supported: true },
+            nut21: Some(cdk::nuts::ClearAuthSettings {
+                openid_discovery: "https://example.com/.well-known/openid-configuration"
+                    .to_string(),
+                client_id: "test-client".to_string(),
+                protected_endpoints: vec![cdk::nuts::ProtectedEndpoint::new(
+                    cdk::nuts::Method::Post,
+                    cdk::nuts::RoutePath::Swap,
+                )],
+            }),
+            nut22: Some(cdk::nuts::BlindAuthSettings {
+                bat_max_mint: 100,
+                protected_endpoints: vec![cdk::nuts::ProtectedEndpoint::new(
+                    cdk::nuts::Method::Post,
+                    cdk::nuts::RoutePath::MintBolt11,
+                )],
+            }),
+        }
+    }
+
+    #[test]
+    fn test_nuts_from_cdk_to_ffi() {
+        let cdk_nuts = create_sample_cdk_nuts();
+        let ffi_nuts: Nuts = cdk_nuts.clone().into();
+
+        // Verify NUT04 settings
+        assert_eq!(ffi_nuts.nut04.disabled, false);
+        assert_eq!(ffi_nuts.nut04.methods.len(), 1);
+        assert_eq!(ffi_nuts.nut04.methods[0].description, Some(true));
+
+        // Verify NUT05 settings
+        assert_eq!(ffi_nuts.nut05.disabled, false);
+        assert_eq!(ffi_nuts.nut05.methods.len(), 1);
+        assert_eq!(ffi_nuts.nut05.methods[0].amountless, Some(true));
+
+        // Verify supported flags
+        assert!(ffi_nuts.nut07_supported);
+        assert!(ffi_nuts.nut08_supported);
+        assert!(!ffi_nuts.nut09_supported);
+        assert!(ffi_nuts.nut10_supported);
+        assert!(ffi_nuts.nut11_supported);
+        assert!(ffi_nuts.nut12_supported);
+        assert!(!ffi_nuts.nut14_supported);
+        assert!(ffi_nuts.nut20_supported);
+
+        // Verify auth settings
+        assert!(ffi_nuts.nut21.is_some());
+        let nut21 = ffi_nuts.nut21.as_ref().unwrap();
+        assert_eq!(
+            nut21.openid_discovery,
+            "https://example.com/.well-known/openid-configuration"
+        );
+        assert_eq!(nut21.client_id, "test-client");
+        assert_eq!(nut21.protected_endpoints.len(), 1);
+
+        assert!(ffi_nuts.nut22.is_some());
+        let nut22 = ffi_nuts.nut22.as_ref().unwrap();
+        assert_eq!(nut22.bat_max_mint, 100);
+        assert_eq!(nut22.protected_endpoints.len(), 1);
+
+        // Verify units
+        assert!(!ffi_nuts.mint_units.is_empty());
+        assert!(!ffi_nuts.melt_units.is_empty());
+    }
+
+    #[test]
+    fn test_nuts_round_trip_conversion() {
+        let original_cdk_nuts = create_sample_cdk_nuts();
+
+        // Convert cdk -> ffi -> cdk
+        let ffi_nuts: Nuts = original_cdk_nuts.clone().into();
+        let converted_back: cdk::nuts::Nuts = ffi_nuts.try_into().unwrap();
+
+        // Verify all supported flags match
+        assert_eq!(
+            original_cdk_nuts.nut07.supported,
+            converted_back.nut07.supported
+        );
+        assert_eq!(
+            original_cdk_nuts.nut08.supported,
+            converted_back.nut08.supported
+        );
+        assert_eq!(
+            original_cdk_nuts.nut09.supported,
+            converted_back.nut09.supported
+        );
+        assert_eq!(
+            original_cdk_nuts.nut10.supported,
+            converted_back.nut10.supported
+        );
+        assert_eq!(
+            original_cdk_nuts.nut11.supported,
+            converted_back.nut11.supported
+        );
+        assert_eq!(
+            original_cdk_nuts.nut12.supported,
+            converted_back.nut12.supported
+        );
+        assert_eq!(
+            original_cdk_nuts.nut14.supported,
+            converted_back.nut14.supported
+        );
+        assert_eq!(
+            original_cdk_nuts.nut20.supported,
+            converted_back.nut20.supported
+        );
+
+        // Verify NUT04 settings
+        assert_eq!(
+            original_cdk_nuts.nut04.disabled,
+            converted_back.nut04.disabled
+        );
+        assert_eq!(
+            original_cdk_nuts.nut04.methods.len(),
+            converted_back.nut04.methods.len()
+        );
+
+        // Verify NUT05 settings
+        assert_eq!(
+            original_cdk_nuts.nut05.disabled,
+            converted_back.nut05.disabled
+        );
+        assert_eq!(
+            original_cdk_nuts.nut05.methods.len(),
+            converted_back.nut05.methods.len()
+        );
+
+        // Verify auth settings presence
+        assert_eq!(
+            original_cdk_nuts.nut21.is_some(),
+            converted_back.nut21.is_some()
+        );
+        assert_eq!(
+            original_cdk_nuts.nut22.is_some(),
+            converted_back.nut22.is_some()
+        );
+    }
+
+    #[test]
+    fn test_nuts_without_auth() {
+        let cdk_nuts = cdk::nuts::Nuts {
+            nut04: Default::default(),
+            nut05: Default::default(),
+            nut07: cdk::nuts::nut06::SupportedSettings { supported: true },
+            nut08: cdk::nuts::nut06::SupportedSettings { supported: false },
+            nut09: cdk::nuts::nut06::SupportedSettings { supported: false },
+            nut10: cdk::nuts::nut06::SupportedSettings { supported: false },
+            nut11: cdk::nuts::nut06::SupportedSettings { supported: false },
+            nut12: cdk::nuts::nut06::SupportedSettings { supported: false },
+            nut14: cdk::nuts::nut06::SupportedSettings { supported: false },
+            nut15: Default::default(),
+            nut17: Default::default(),
+            nut19: Default::default(),
+            nut20: cdk::nuts::nut06::SupportedSettings { supported: false },
+            nut21: None,
+            nut22: None,
+        };
+
+        let ffi_nuts: Nuts = cdk_nuts.into();
+
+        assert!(ffi_nuts.nut21.is_none());
+        assert!(ffi_nuts.nut22.is_none());
+        assert!(ffi_nuts.nut07_supported);
+        assert!(!ffi_nuts.nut08_supported);
+    }
+
+    #[test]
+    fn test_ffi_nuts_to_cdk_with_defaults() {
+        let ffi_nuts = Nuts {
+            nut04: Nut04Settings {
+                methods: vec![],
+                disabled: true,
+            },
+            nut05: Nut05Settings {
+                methods: vec![],
+                disabled: true,
+            },
+            nut07_supported: false,
+            nut08_supported: false,
+            nut09_supported: false,
+            nut10_supported: false,
+            nut11_supported: false,
+            nut12_supported: false,
+            nut14_supported: false,
+            nut20_supported: false,
+            nut21: None,
+            nut22: None,
+            mint_units: vec![],
+            melt_units: vec![],
+        };
+
+        let cdk_nuts: Result<cdk::nuts::Nuts, _> = ffi_nuts.try_into();
+        assert!(cdk_nuts.is_ok());
+
+        let cdk_nuts = cdk_nuts.unwrap();
+        assert!(!cdk_nuts.nut07.supported);
+        assert!(!cdk_nuts.nut08.supported);
+        assert!(cdk_nuts.nut21.is_none());
+        assert!(cdk_nuts.nut22.is_none());
+
+        // Verify default values for nuts not included in FFI
+        assert_eq!(cdk_nuts.nut17.supported.len(), 0);
+    }
+
+    #[test]
+    fn test_nuts_serialization() {
+        let cdk_nuts = create_sample_cdk_nuts();
+        let ffi_nuts: Nuts = cdk_nuts.into();
+
+        // Test JSON serialization
+        let json = ffi_nuts.to_json();
+        assert!(json.is_ok());
+
+        let json_str = json.unwrap();
+        assert!(json_str.contains("nut04"));
+        assert!(json_str.contains("nut05"));
+
+        // Test deserialization
+        let decoded: Result<Nuts, _> = serde_json::from_str(&json_str);
+        assert!(decoded.is_ok());
+
+        let decoded_nuts = decoded.unwrap();
+        assert_eq!(decoded_nuts.nut07_supported, ffi_nuts.nut07_supported);
+        assert_eq!(decoded_nuts.nut08_supported, ffi_nuts.nut08_supported);
+    }
+
+    #[test]
+    fn test_nuts_multiple_units() {
+        let mut cdk_nuts = create_sample_cdk_nuts();
+
+        // Add multiple payment methods to test unit collection
+        cdk_nuts.nut04.methods.push(cdk::nuts::nut04::MintMethodSettings {
+            method: cdk::nuts::PaymentMethod::Bolt11,
+            unit: cdk::nuts::CurrencyUnit::Msat,
+            min_amount: Some(cdk::Amount::from(1)),
+            max_amount: Some(cdk::Amount::from(100000)),
+            options: None,
+        });
+
+        cdk_nuts.nut05.methods.push(cdk::nuts::nut05::MeltMethodSettings {
+            method: cdk::nuts::PaymentMethod::Bolt11,
+            unit: cdk::nuts::CurrencyUnit::Usd,
+            min_amount: None,
+            max_amount: None,
+            options: None,
+        });
+
+        let ffi_nuts: Nuts = cdk_nuts.into();
+
+        // Should have collected multiple units
+        assert!(ffi_nuts.mint_units.len() >= 1);
+        assert!(ffi_nuts.melt_units.len() >= 1);
+    }
+
+    #[test]
+    fn test_protected_endpoint_conversion() {
+        let cdk_endpoint =
+            cdk::nuts::ProtectedEndpoint::new(cdk::nuts::Method::Post, cdk::nuts::RoutePath::Swap);
+
+        let ffi_endpoint: ProtectedEndpoint = cdk_endpoint.into();
+
+        assert_eq!(ffi_endpoint.method, "POST");
+        assert_eq!(ffi_endpoint.path, "/v1/swap");
+
+        // Test round-trip
+        let converted_back: Result<cdk::nuts::ProtectedEndpoint, _> = ffi_endpoint.try_into();
+        assert!(converted_back.is_ok());
+    }
+
+    #[test]
+    fn test_invalid_protected_endpoint_method() {
+        let invalid_endpoint = ProtectedEndpoint {
+            method: "INVALID".to_string(),
+            path: "/v1/swap".to_string(),
+        };
+
+        let result: Result<cdk::nuts::ProtectedEndpoint, _> = invalid_endpoint.try_into();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_protected_endpoint_path() {
+        let invalid_endpoint = ProtectedEndpoint {
+            method: "POST".to_string(),
+            path: "/invalid/path".to_string(),
+        };
+
+        let result: Result<cdk::nuts::ProtectedEndpoint, _> = invalid_endpoint.try_into();
+        assert!(result.is_err());
+    }
 }
