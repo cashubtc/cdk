@@ -92,13 +92,6 @@ impl<'a> ExternalMeltExecutor<'a> {
             tx.commit().await?;
         }
 
-        tracing::info!(
-            "External melt execution completed for quote {} - amount_spent: {}, has_preimage: {}",
-            quote.id,
-            amount_spent,
-            payment_result.payment_proof.is_some()
-        );
-
         Ok((payment_result.payment_proof, amount_spent, updated_quote))
     }
 }

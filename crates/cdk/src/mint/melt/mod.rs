@@ -208,12 +208,15 @@ impl Mint {
         );
 
         tracing::debug!(
-            "New {} melt quote {} for {} {} with request id {:?}",
+            "New {} melt quote {} for {} {} with request id {}",
             quote.payment_method,
             quote.id,
             payment_quote.amount,
             unit,
-            payment_quote.request_lookup_id
+            payment_quote
+                .request_lookup_id
+                .map(|a| a.to_string())
+                .unwrap_or_default()
         );
 
         let mut tx = self.localstore.begin_transaction().await?;
@@ -564,11 +567,6 @@ impl Mint {
         quote: &MeltQuote,
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<(Option<String>, Amount, MeltQuote), Error> {
-        tracing::debug!(
-            "Determining payment execution path for melt quote {}",
-            quote.id
-        );
-
         let internal_executor = InternalMeltExecutor::new(self);
         let mint_quote_id = internal_executor
             .is_internal_settlement(&mut tx, quote, melt_request)
@@ -593,12 +591,6 @@ impl Mint {
                 Ok((preimage, amount_spent, quote))
             }
             None => {
-                tracing::info!(
-                    "Executing external melt payment for quote {} ({} {})",
-                    quote.id,
-                    quote.amount,
-                    quote.unit
-                );
                 let (preimage, amount_spent, quote) = self.execute_external_melt(quote).await?;
                 tracing::info!(
                     "External melt completed for quote {} - amount_spent: {}",
@@ -654,8 +646,6 @@ impl Mint {
         let (change_signatures, mut tx) = change_processor
             .calculate_and_sign_change(&quote, total_spent, tx)
             .await?;
-
-        tracing::debug!("Successfully updated proof states to Spent");
 
         tx.update_melt_quote_state(&quote.id, MeltQuoteState::Paid, payment_preimage.clone())
             .await?;

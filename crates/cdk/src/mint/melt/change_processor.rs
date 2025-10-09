@@ -52,6 +52,13 @@ impl<'a> ChangeProcessor<'a> {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
+        tracing::info!(
+            quote_id = %quote.id,
+            total_spent = %total_spent,
+            inputs_amount = %inputs_amount,
+            "Processing melt payment"
+        );
+
         if inputs_amount <= total_spent {
             tracing::debug!("No change required for melt {}", quote.id);
             return Ok((None, tx));
@@ -109,6 +116,15 @@ impl<'a> ChangeProcessor<'a> {
 
         // External call that can block - no transaction held here
         let change_sigs = self.mint.blind_sign(blinded_messages).await?;
+
+        let total_change_issued = amounts.iter().fold(Amount::ZERO, |acc, &amt| acc + amt);
+
+        tracing::info!(
+            quote_id = %quote.id,
+            change_amount = %total_change_issued,
+            num_outputs = change_sigs.len(),
+            "Change issued for melt"
+        );
 
         // Create a new transaction to add the blind signatures
         let mut new_tx = self.mint.localstore.begin_transaction().await?;
