@@ -1,6 +1,6 @@
-use cdk_common::database::MintTransaction;
+use cdk_common::database::mint::MeltRequestInfo;
 use cdk_common::mint::MeltQuote;
-use cdk_common::{Amount, BlindSignature, BlindedMessage, PublicKey};
+use cdk_common::{database, Amount, BlindSignature, PublicKey};
 use tracing::instrument;
 
 use crate::mint::Mint;
@@ -18,29 +18,42 @@ impl<'a> ChangeProcessor<'a> {
     #[instrument(skip_all)]
     pub async fn calculate_and_sign_change(
         &self,
-        mut tx: Box<dyn MintTransaction<'_, cdk_common::database::Error> + Send + Sync + '_>,
         quote: &MeltQuote,
-        inputs_amount: Amount,
-        inputs_fee: Amount,
         total_spent: Amount,
-        outputs: Vec<BlindedMessage>,
-    ) -> Result<Option<Vec<BlindSignature>>, Error> {
+        mut tx: Box<dyn database::MintTransaction<'a, database::Error> + Send + Sync + 'a>,
+    ) -> Result<
+        (
+            Option<Vec<BlindSignature>>,
+            Box<dyn database::MintTransaction<'a, database::Error> + Send + Sync + 'a>,
+        ),
+        Error,
+    > {
+        let MeltRequestInfo {
+            inputs_amount,
+            inputs_fee,
+            change_outputs,
+        } = tx
+            .get_melt_request_and_blinded_messages(&quote.id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
         if inputs_amount <= total_spent {
             tracing::debug!("No change required for melt {}", quote.id);
-            return Ok(None);
+            return Ok((None, tx));
         }
 
-        if outputs.is_empty() {
+        if change_outputs.is_empty() {
             tracing::info!(
                 "Inputs for {} {} greater than spent on melt {} but change outputs not provided.",
                 quote.id,
                 inputs_amount,
                 total_spent
             );
-            return Ok(None);
+            return Ok((None, tx));
         }
 
-        let blinded_messages: Vec<PublicKey> = outputs.iter().map(|b| b.blinded_secret).collect();
+        let blinded_messages: Vec<PublicKey> =
+            change_outputs.iter().map(|b| b.blinded_secret).collect();
 
         if tx
             .get_blind_signatures(&blinded_messages)
@@ -62,7 +75,7 @@ impl<'a> ChangeProcessor<'a> {
             .load()
             .iter()
             .filter_map(|keyset| {
-                if keyset.active && Some(keyset.id) == outputs.first().map(|x| x.keyset_id) {
+                if keyset.active && Some(keyset.id) == change_outputs.first().map(|x| x.keyset_id) {
                     Some((keyset.input_fee_ppk, keyset.amounts.clone()).into())
                 } else {
                     None
@@ -73,11 +86,11 @@ impl<'a> ChangeProcessor<'a> {
 
         let mut amounts = change_target.split(&fee_and_amounts);
 
-        if outputs.len() < amounts.len() {
+        if change_outputs.len() < amounts.len() {
             tracing::debug!(
                 "Providing change requires {} blinded messages, but only {} provided",
                 amounts.len(),
-                outputs.len()
+                change_outputs.len()
             );
 
             amounts.sort_by(|a, b| b.cmp(a));
@@ -85,29 +98,32 @@ impl<'a> ChangeProcessor<'a> {
 
         let mut blinded_messages = vec![];
 
-        for (amount, mut blinded_message) in amounts.iter().zip(outputs.clone()) {
+        for (amount, mut blinded_message) in amounts.iter().zip(change_outputs.clone()) {
             blinded_message.amount = *amount;
             blinded_messages.push(blinded_message);
         }
 
+        // Commit the transaction before the external blind_sign call
+        // We don't want to hold a transaction open during a potentially blocking external call
         tx.commit().await?;
 
+        // External call that can block - no transaction held here
         let change_sigs = self.mint.blind_sign(blinded_messages).await?;
 
-        let mut tx = self.mint.localstore.begin_transaction().await?;
+        // Create a new transaction to add the blind signatures
+        let mut new_tx = self.mint.localstore.begin_transaction().await?;
 
-        tx.add_blind_signatures(
-            &outputs[0..change_sigs.len()]
-                .iter()
-                .map(|o| o.blinded_secret)
-                .collect::<Vec<PublicKey>>(),
-            &change_sigs,
-            Some(quote.id.clone()),
-        )
-        .await?;
+        new_tx
+            .add_blind_signatures(
+                &change_outputs[0..change_sigs.len()]
+                    .iter()
+                    .map(|o| o.blinded_secret)
+                    .collect::<Vec<PublicKey>>(),
+                &change_sigs,
+                Some(quote.id.clone()),
+            )
+            .await?;
 
-        tx.commit().await?;
-
-        Ok(Some(change_sigs))
+        Ok((Some(change_sigs), new_tx))
     }
 }

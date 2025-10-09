@@ -1,7 +1,6 @@
 use std::str::FromStr;
 
 use cdk_common::amount::amount_for_offer;
-use cdk_common::database::mint::MeltRequestInfo;
 use cdk_common::database::{self, MintTransaction};
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
@@ -595,7 +594,6 @@ impl Mint {
         total_spent: Amount,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         let mut tx = self.localstore.begin_transaction().await?;
-
         let input_ys: Vec<_> = tx.get_proof_ys_by_quote_id(&quote.id).await?;
 
         if input_ys.is_empty() {
@@ -608,9 +606,14 @@ impl Mint {
             input_ys.len(),
             quote.id
         );
-
         proof_writer
             .update_proofs_states(&mut tx, &input_ys, State::Spent)
+            .await?;
+        proof_writer.commit();
+
+        let change_processor = ChangeProcessor::new(self);
+        let (change_signatures, mut tx) = change_processor
+            .calculate_and_sign_change(&quote, total_spent, tx)
             .await?;
 
         tracing::debug!("Successfully updated proof states to Spent");
@@ -618,73 +621,22 @@ impl Mint {
         tx.update_melt_quote_state(&quote.id, MeltQuoteState::Paid, payment_preimage.clone())
             .await?;
 
-        let MeltRequestInfo {
-            inputs_amount,
-            inputs_fee,
-            change_outputs,
-        } = tx
-            .get_melt_request_and_blinded_messages(&quote.id)
-            .await?
-            .ok_or(Error::UnknownQuote)?;
-
-        proof_writer.commit();
-
-        let change = if inputs_amount > total_spent && !change_outputs.is_empty() {
-            let change_processor = ChangeProcessor::new(self);
-            change_processor
-                .calculate_and_sign_change(
-                    tx,
-                    &quote,
-                    inputs_amount,
-                    inputs_fee,
-                    total_spent,
-                    change_outputs,
-                )
-                .await?
-        } else {
-            if inputs_amount > total_spent {
-                tracing::info!(
-                    "Inputs for {} {} greater than spent on melt {} but change outputs not provided.",
-                    quote.id,
-                    inputs_amount,
-                    total_spent
-                );
-            } else {
-                tracing::debug!("No change required for melt {}", quote.id);
-            }
-            tx.commit().await?;
-            None
-        };
-
         // Clean up melt_request and associated blinded_messages (change was already signed)
-        let mut tx = self.localstore.begin_transaction().await?;
         tx.delete_melt_request(&quote.id).await?;
         tx.commit().await?;
 
         self.pubsub_manager.melt_quote_status(
             &quote,
             payment_preimage.clone(),
-            change.clone(),
+            change_signatures.clone(),
             MeltQuoteState::Paid,
-        );
-
-        tracing::debug!(
-            "Melt for quote {} completed total spent {}, total inputs: {}, change given: {}",
-            quote.id,
-            total_spent,
-            inputs_amount,
-            change
-                .as_ref()
-                .map(|c| Amount::try_sum(c.iter().map(|a| a.amount))
-                    .expect("Change cannot overflow"))
-                .unwrap_or_default()
         );
 
         Ok(MeltQuoteBolt11Response {
             amount: quote.amount,
             paid: Some(true),
             payment_preimage,
-            change,
+            change: change_signatures,
             quote: quote.id,
             fee_reserve: quote.fee_reserve,
             state: MeltQuoteState::Paid,
