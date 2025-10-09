@@ -53,3 +53,8 @@ wasm-bindgen-futures = "0.4"
 rand.workspace = true
 bip39.workspace = true
 wasm-bindgen-test = "0.3"
+criterion.workspace = true
+
+[[bench]]
+name = "transaction_id_benchmark"
+harness = false

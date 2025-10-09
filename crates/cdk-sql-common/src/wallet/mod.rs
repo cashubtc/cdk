@@ -954,7 +954,6 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mint_url = transaction.mint_url.to_string();
         let direction = transaction.direction.to_string();
         let unit = transaction.unit.to_string();
@@ -965,6 +964,10 @@ ON CONFLICT(id) DO UPDATE SET
             .iter()
             .flat_map(|y| y.to_bytes().to_vec())
             .collect::<Vec<_>>();
+
+        let id = transaction.id();
+
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         query(
             r#"
@@ -978,7 +981,6 @@ ON CONFLICT(id) DO UPDATE SET
     unit = excluded.unit,
     amount = excluded.amount,
     fee = excluded.fee,
-    ys = excluded.ys,
     timestamp = excluded.timestamp,
     memo = excluded.memo,
     metadata = excluded.metadata,
@@ -988,7 +990,7 @@ ON CONFLICT(id) DO UPDATE SET
 ;
         "#,
         )?
-        .bind("id", transaction.id().as_slice().to_vec())
+        .bind("id", id.as_slice().to_vec())
         .bind("mint_url", mint_url)
         .bind("direction", direction)
         .bind("unit", unit)
