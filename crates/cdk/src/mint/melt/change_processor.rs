@@ -6,6 +6,7 @@ use tracing::instrument;
 use crate::mint::Mint;
 use crate::Error;
 
+/// Handles change calculation and signing for melt operations
 pub struct ChangeProcessor<'a> {
     mint: &'a Mint,
 }
@@ -15,6 +16,20 @@ impl<'a> ChangeProcessor<'a> {
         Self { mint }
     }
 
+    /// Calculate and sign change for a melt operation
+    ///
+    /// This function retrieves the melt request info, calculates the change amount,
+    /// splits it into appropriate denominations, and signs the blinded messages.
+    ///
+    /// # Transaction Handling
+    /// - Commits the input transaction before calling blind_sign to avoid holding locks during external calls
+    /// - Returns a new transaction with the blind signatures added
+    /// - If the change process fails, the transaction is not committed, leaving proofs and melt quote in pending state
+    ///
+    /// # Returns
+    /// A tuple of (optional change signatures, new transaction)
+    /// - Returns (None, tx) if no change is needed or no change outputs provided
+    /// - Returns (Some(signatures), new_tx) if change was calculated and signed
     #[instrument(skip_all)]
     pub async fn calculate_and_sign_change(
         &self,

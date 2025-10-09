@@ -11,12 +11,17 @@ use crate::cdk_payment::MakePaymentResponse;
 use crate::types::PaymentProcessorKey;
 use crate::Error;
 
+/// Result of executing a payment through a payment processor
 pub struct PaymentResult {
+    /// Payment preimage if available (proof of payment)
     pub payment_proof: Option<String>,
+    /// Total amount spent including fees
     pub total_spent: cdk_common::Amount,
+    /// Identifier for tracking the payment with the payment processor
     pub payment_lookup_id: PaymentIdentifier,
 }
 
+/// Executes payments through configured payment processors with robust error handling
 pub struct PaymentExecutor {
     payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
 }
@@ -26,6 +31,15 @@ impl PaymentExecutor {
         Self { payment_processors }
     }
 
+    /// Check the current state of a payment with the payment processor
+    ///
+    /// This is used as a fallback when the initial payment attempt returns an
+    /// ambiguous state (Unknown/Failed) or when an error occurs. It queries the
+    /// payment processor directly to get the authoritative payment status.
+    ///
+    /// # Critical Behavior
+    /// If this check fails, proofs remain stuck in pending state as we cannot
+    /// determine the true payment status.
     #[instrument(skip_all)]
     async fn check_payment_state(
         ln: DynMintPayment,
@@ -44,6 +58,22 @@ impl PaymentExecutor {
         }
     }
 
+    /// Execute a payment through the configured payment processor
+    ///
+    /// This function handles payment execution with comprehensive error recovery:
+    /// 1. Attempts to make the payment through the payment processor
+    /// 2. If status is Unknown/Failed, double-checks with the backend
+    /// 3. If an error occurs, checks payment state to determine if it actually succeeded
+    /// 4. Returns appropriate error types for different failure scenarios
+    ///
+    /// # Error Handling Strategy
+    /// - `RequestAlreadyPaid`: Invoice was already paid (caller should reset quote)
+    /// - `PaymentFailed`: Payment definitively failed (caller should reset quote)
+    /// - `PendingQuote`: Payment is still pending (proofs remain in pending state)
+    /// - `Internal`: Inconsistent state detected (proofs stuck as pending)
+    ///
+    /// The robust checking prevents both false failures (payment succeeded but we think
+    /// it failed) and false successes (payment failed but we think it succeeded).
     #[instrument(skip_all)]
     pub async fn execute_payment(&self, quote: &MeltQuote) -> Result<PaymentResult, Error> {
         use crate::cdk_payment;

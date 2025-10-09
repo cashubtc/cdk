@@ -19,6 +19,15 @@ impl<'a> InternalMeltExecutor<'a> {
     }
 
     /// Check if the melt quote can be settled internally against a mint quote
+    ///
+    /// Internal settlement occurs when a melt request matches a mint quote (e.g., Alice
+    /// creates a mint quote with invoice X, Bob melts using the same invoice X). This
+    /// allows settling the payment within the mint without external payment.
+    ///
+    /// # Returns
+    /// - `Ok(Some(mint_quote_id))` if internal settlement is possible
+    /// - `Ok(None)` if no matching mint quote or units don't match
+    /// - `Err` if there's a database error or insufficient funds
     #[instrument(skip_all)]
     pub async fn is_internal_settlement(
         &self,
@@ -59,7 +68,20 @@ impl<'a> InternalMeltExecutor<'a> {
     }
 
     /// Execute internal melt - settle with matching mint quote
-    /// Returns (preimage, amount_spent, quote)
+    ///
+    /// Completes an internal settlement by incrementing the mint quote's paid amount
+    /// and notifying subscribers. This transfers value from the melt quote to the
+    /// mint quote without an external Lightning payment.
+    ///
+    /// # Error Handling
+    /// Returns `RequestAlreadyPaid` if the mint quote has already been settled,
+    /// preventing double-spending.
+    ///
+    /// # Returns
+    /// A tuple of (preimage, amount_spent, quote)
+    /// - preimage is None for internal settlements
+    /// - amount_spent is the melt quote amount
+    /// - quote is the melt quote
     #[instrument(skip_all)]
     pub async fn execute(
         &self,

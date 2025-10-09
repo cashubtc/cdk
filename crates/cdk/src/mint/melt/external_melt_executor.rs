@@ -27,14 +27,35 @@ impl<'a> ExternalMeltExecutor<'a> {
     }
 
     /// Execute external melt - make payment via payment processor
-    /// Returns (preimage, amount_spent, quote)
+    ///
+    /// Makes a payment using the configured payment processor for the quote's unit and method.
+    /// The payment processor handles fee validation internally.
+    ///
+    /// # Returns
+    /// A tuple of (payment preimage, amount spent, updated quote)
     #[instrument(skip_all)]
     pub async fn execute(
         &self,
         quote: &MeltQuote,
     ) -> Result<(Option<String>, Amount, MeltQuote), Error> {
+        tracing::info!(
+            "Starting external melt execution for quote {} ({} {}, method: {})",
+            quote.id,
+            quote.amount,
+            quote.unit,
+            quote.payment_method
+        );
+
         let payment_executor = PaymentExecutor::new(self.payment_processors.clone());
+
         let payment_result = payment_executor.execute_payment(quote).await?;
+
+        tracing::info!(
+            "Payment executed successfully for quote {} - total_spent: {}, payment_lookup_id: {}",
+            quote.id,
+            payment_result.total_spent,
+            payment_result.payment_lookup_id
+        );
 
         let amount_spent =
             to_unit(payment_result.total_spent, &quote.unit, &quote.unit).unwrap_or_default();
@@ -51,16 +72,32 @@ impl<'a> ExternalMeltExecutor<'a> {
 
             updated_quote.request_lookup_id = Some(payment_result.payment_lookup_id.clone());
 
+            tracing::debug!(
+                "Updating payment lookup id in database for quote {}",
+                quote.id
+            );
+
             // Update the payment lookup ID in the database
             let mut tx = self.mint.localstore.begin_transaction().await?;
             if let Err(err) = tx
                 .update_melt_quote_request_lookup_id(&quote.id, &payment_result.payment_lookup_id)
                 .await
             {
-                tracing::warn!("Could not update payment lookup id: {}", err);
+                tracing::warn!(
+                    "Could not update payment lookup id for quote {}: {}",
+                    quote.id,
+                    err
+                );
             }
             tx.commit().await?;
         }
+
+        tracing::info!(
+            "External melt execution completed for quote {} - amount_spent: {}, has_preimage: {}",
+            quote.id,
+            amount_spent,
+            payment_result.payment_proof.is_some()
+        );
 
         Ok((payment_result.payment_proof, amount_spent, updated_quote))
     }

@@ -564,6 +564,11 @@ impl Mint {
         quote: &MeltQuote,
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<(Option<String>, Amount, MeltQuote), Error> {
+        tracing::debug!(
+            "Determining payment execution path for melt quote {}",
+            quote.id
+        );
+
         let internal_executor = InternalMeltExecutor::new(self);
         let mint_quote_id = internal_executor
             .is_internal_settlement(&mut tx, quote, melt_request)
@@ -573,18 +578,52 @@ impl Mint {
 
         match mint_quote_id {
             Some(mint_quote_id) => {
+                tracing::info!(
+                    "Executing internal melt settlement for quote {} with mint quote {}",
+                    quote.id,
+                    mint_quote_id
+                );
                 let (preimage, amount_spent, quote) =
                     self.execute_internal_melt(quote, &mint_quote_id).await?;
+                tracing::info!(
+                    "Internal melt completed for quote {} - amount: {}",
+                    quote.id,
+                    amount_spent
+                );
                 Ok((preimage, amount_spent, quote))
             }
             None => {
+                tracing::info!(
+                    "Executing external melt payment for quote {} ({} {})",
+                    quote.id,
+                    quote.amount,
+                    quote.unit
+                );
                 let (preimage, amount_spent, quote) = self.execute_external_melt(quote).await?;
+                tracing::info!(
+                    "External melt completed for quote {} - amount_spent: {}",
+                    quote.id,
+                    amount_spent
+                );
                 Ok((preimage, amount_spent, quote))
             }
         }
     }
 
-    /// Finalize melt - burn inputs and return change
+    /// Finalize melt - burn inputs, calculate change, and update quote state
+    ///
+    /// This function:
+    /// 1. Updates proof states to Spent
+    /// 2. Delegates change calculation and signing to ChangeProcessor
+    /// 3. Updates quote state to Paid
+    /// 4. Cleans up melt request data
+    ///
+    /// # Transaction Handling
+    /// The ChangeProcessor commits the transaction before signing change and returns a new transaction.
+    /// If the change process fails, proofs and melt quote remain in pending state.
+    ///
+    /// # Returns
+    /// MeltQuoteBolt11Response with payment details and change signatures
     #[instrument(skip_all)]
     async fn finalize_melt(
         &self,
