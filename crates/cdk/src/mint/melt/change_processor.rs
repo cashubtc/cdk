@@ -52,21 +52,6 @@ impl<'a> ChangeProcessor<'a> {
             return Ok((None, tx));
         }
 
-        let blinded_messages: Vec<PublicKey> =
-            change_outputs.iter().map(|b| b.blinded_secret).collect();
-
-        if tx
-            .get_blind_signatures(&blinded_messages)
-            .await?
-            .iter()
-            .flatten()
-            .next()
-            .is_some()
-        {
-            tracing::info!("Output has already been signed");
-            return Err(Error::BlindedMessageAlreadySigned);
-        }
-
         let change_target = inputs_amount - total_spent - inputs_fee;
 
         let fee_and_amounts = self
