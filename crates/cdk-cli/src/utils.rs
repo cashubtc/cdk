@@ -34,7 +34,7 @@ pub async fn get_or_create_wallet(
         Some(wallet) => Ok(wallet.clone()),
         None => {
             tracing::debug!("Wallet does not exist creating..");
-            multi_mint_wallet.add_mint(mint_url.clone(), None).await?;
+            multi_mint_wallet.add_mint(mint_url.clone()).await?;
             Ok(multi_mint_wallet
                 .get_wallet(mint_url)
                 .await
