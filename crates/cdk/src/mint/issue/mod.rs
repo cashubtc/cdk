@@ -306,7 +306,7 @@ impl Mint {
             );
 
             tracing::debug!(
-                "New {} mint quote {} for {:?} {} with request id {:?}",
+                "New {} mint quote {} for {:?} {} with request id {}",
                 payment_method,
                 quote.id,
                 amount,
