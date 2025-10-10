@@ -36,6 +36,7 @@ serde_with.workspace = true
 regex = { workspace = true, optional = true }
 strum = { workspace = true, optional = true }
 strum_macros = { workspace = true, optional = true }
+unicode-normalization = "0.1"
 zeroize = "1"
 web-time.workspace = true
 
