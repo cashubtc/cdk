@@ -699,9 +699,7 @@ mod tests {
                     unit: cdk::nuts::CurrencyUnit::Sat,
                     min_amount: Some(cdk::Amount::from(1)),
                     max_amount: Some(cdk::Amount::from(100000)),
-                    options: Some(cdk::nuts::nut05::MeltMethodOptions::Bolt11 {
-                        amountless: true,
-                    }),
+                    options: Some(cdk::nuts::nut05::MeltMethodOptions::Bolt11 { amountless: true }),
                 }],
                 disabled: false,
             },
@@ -946,21 +944,27 @@ mod tests {
         let mut cdk_nuts = create_sample_cdk_nuts();
 
         // Add multiple payment methods to test unit collection
-        cdk_nuts.nut04.methods.push(cdk::nuts::nut04::MintMethodSettings {
-            method: cdk::nuts::PaymentMethod::Bolt11,
-            unit: cdk::nuts::CurrencyUnit::Msat,
-            min_amount: Some(cdk::Amount::from(1)),
-            max_amount: Some(cdk::Amount::from(100000)),
-            options: None,
-        });
+        cdk_nuts
+            .nut04
+            .methods
+            .push(cdk::nuts::nut04::MintMethodSettings {
+                method: cdk::nuts::PaymentMethod::Bolt11,
+                unit: cdk::nuts::CurrencyUnit::Msat,
+                min_amount: Some(cdk::Amount::from(1)),
+                max_amount: Some(cdk::Amount::from(100000)),
+                options: None,
+            });
 
-        cdk_nuts.nut05.methods.push(cdk::nuts::nut05::MeltMethodSettings {
-            method: cdk::nuts::PaymentMethod::Bolt11,
-            unit: cdk::nuts::CurrencyUnit::Usd,
-            min_amount: None,
-            max_amount: None,
-            options: None,
-        });
+        cdk_nuts
+            .nut05
+            .methods
+            .push(cdk::nuts::nut05::MeltMethodSettings {
+                method: cdk::nuts::PaymentMethod::Bolt11,
+                unit: cdk::nuts::CurrencyUnit::Usd,
+                min_amount: None,
+                max_amount: None,
+                options: None,
+            });
 
         let ffi_nuts: Nuts = cdk_nuts.into();
 
