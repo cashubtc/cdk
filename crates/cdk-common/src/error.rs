@@ -98,6 +98,9 @@ pub enum Error {
     /// Pubkey required
     #[error("Pubkey required")]
     PubkeyRequired,
+    /// Secret key required
+    #[error("Secret key required")]
+    SecretKeyRequired,
     /// Invalid payment method
     #[error("Invalid payment method")]
     InvalidPaymentMethod,

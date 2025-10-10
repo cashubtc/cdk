@@ -729,6 +729,15 @@ async fn setup_authentication(
             add_endpoint(mint_quote_protected_endpoint, &auth_settings.get_mint_quote);
         }
 
+        {
+            let mint_quote_mining_share_endpoint =
+                ProtectedEndpoint::new(cdk::nuts::Method::Post, RoutePath::MintQuoteMiningShare);
+            add_endpoint(
+                mint_quote_mining_share_endpoint,
+                &auth_settings.get_mint_quote,
+            );
+        }
+
         // Check mint quote endpoint
         {
             let check_mint_protected_endpoint =
@@ -739,11 +748,26 @@ async fn setup_authentication(
             );
         }
 
+        {
+            let check_mint_mining_share_endpoint =
+                ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteMiningShare);
+            add_endpoint(
+                check_mint_mining_share_endpoint,
+                &auth_settings.check_mint_quote,
+            );
+        }
+
         // Mint endpoint
         {
             let mint_protected_endpoint =
                 ProtectedEndpoint::new(cdk::nuts::Method::Post, RoutePath::MintBolt11);
             add_endpoint(mint_protected_endpoint, &auth_settings.mint);
+        }
+
+        {
+            let mint_mining_share_endpoint =
+                ProtectedEndpoint::new(cdk::nuts::Method::Post, RoutePath::MintMiningShare);
+            add_endpoint(mint_mining_share_endpoint, &auth_settings.mint);
         }
 
         // Get melt quote endpoint

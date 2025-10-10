@@ -22,8 +22,8 @@ use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
-    SwapRequest, SwapResponse,
+    MintQuoteBolt11Response, MintQuoteMiningShareRequest, MintQuoteMiningShareResponse,
+    MintRequest, MintResponse, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 #[cfg(feature = "auth")]
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
@@ -166,8 +166,10 @@ where
         loop {
             let url = self.mint_url.join_paths(&match path {
                 nut19::Path::MintBolt11 => vec!["v1", "mint", "bolt11"],
+                nut19::Path::MintMiningShare => vec!["v1", "mint", "mining_share"],
                 nut19::Path::MeltBolt11 => vec!["v1", "melt", "bolt11"],
                 nut19::Path::MintBolt12 => vec!["v1", "mint", "bolt12"],
+                nut19::Path::MintQuoteMiningShare => vec!["v1", "mint", "quote", "mining_share"],
 
                 nut19::Path::MeltBolt12 => vec!["v1", "melt", "bolt12"],
                 nut19::Path::Swap => vec!["v1", "swap"],
@@ -258,7 +260,7 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintQuoteBolt11)
+            .get_auth_token(Method::Post, RoutePath::MintQuoteMiningShare)
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -550,6 +552,67 @@ where
             &request,
         )
         .await
+    }
+
+    /// Mint Quote for Mining Share [NUT-XX]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn post_mint_quote_mining_share(
+        &self,
+        request: MintQuoteMiningShareRequest,
+    ) -> Result<MintQuoteMiningShareResponse<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", "mining_share"])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MintQuoteMiningShare)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+
+        self.transport.http_post(url, auth_token, &request).await
+    }
+
+    /// Mint Quote status for Mining Share [NUT-XX]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_mint_quote_status_mining_share(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteMiningShareResponse<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", "mining_share", quote_id])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Get, RoutePath::MintQuoteMiningShare)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+
+        self.transport.http_get(url, auth_token).await
+    }
+
+    /// Mint Tokens for Mining Share [NUT-XX]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn post_mint_mining_share(
+        &self,
+        request: MintRequest<String>,
+    ) -> Result<MintResponse, Error> {
+        let url = self.mint_url.join_paths(&["v1", "mint", "mining_share"])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MintMiningShare)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+
+        self.transport.http_post(url, auth_token, &request).await
     }
 }
 

@@ -9,8 +9,8 @@ use super::Error;
 use crate::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeySet, KeysetResponse, MeltQuoteBolt11Request,
     MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
-    SwapRequest, SwapResponse,
+    MintQuoteBolt11Response, MintQuoteMiningShareRequest, MintQuoteMiningShareResponse,
+    MintRequest, MintResponse, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 #[cfg(feature = "auth")]
 use crate::wallet::AuthWallet;
@@ -113,4 +113,22 @@ pub trait MintConnector: Debug {
         &self,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+
+    /// Mint Quote for Mining Share [NUT-XX]
+    async fn post_mint_quote_mining_share(
+        &self,
+        request: MintQuoteMiningShareRequest,
+    ) -> Result<MintQuoteMiningShareResponse<String>, Error>;
+
+    /// Mint Quote status for Mining Share [NUT-XX]
+    async fn get_mint_quote_status_mining_share(
+        &self,
+        quote_id: &str,
+    ) -> Result<MintQuoteMiningShareResponse<String>, Error>;
+
+    /// Mint Tokens for Mining Share [NUT-XX]
+    async fn post_mint_mining_share(
+        &self,
+        request: MintRequest<String>,
+    ) -> Result<MintResponse, Error>;
 }

@@ -690,6 +690,7 @@ impl CdkMint for MintRPCServer {
                     0,                                    // created_at
                     vec![],                               // blinded_messages
                     vec![],                               // payment_ids
+                    mint_quote.keyset_id,                 // keyset_id
                 );
 
                 let mint_store = self.mint.localstore();

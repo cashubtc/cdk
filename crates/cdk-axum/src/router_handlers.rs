@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use anyhow::Result;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Json, Path, State};
@@ -7,6 +9,7 @@ use cdk::error::{ErrorCode, ErrorResponse};
 use cdk::mint::QuoteId;
 #[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
+use cdk::nuts::nutXX::{MintQuoteMiningShareRequest, MintQuoteMiningShareResponse};
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
@@ -68,6 +71,7 @@ post_cache_wrapper!(
     MeltRequest<QuoteId>,
     MeltQuoteBolt11Response<QuoteId>
 );
+post_cache_wrapper!(post_mint_mining_share, MintRequest<String>, MintResponse);
 
 #[cfg_attr(feature = "swagger", utoipa::path(
     get,
@@ -217,6 +221,106 @@ pub(crate) async fn get_check_mint_bolt11_quote(
     Ok(Json(quote.try_into().map_err(into_response)?))
 }
 
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/mint/quote/mining_share",
+    request_body(
+        content = MintQuoteMiningShareRequest,
+        description = "Request params",
+        content_type = "application/json"
+    ),
+    responses(
+        (status = 200, description = "Successful response", body = MintQuoteMiningShareResponse<String>, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+/// Request a mining-share mint quote.
+#[instrument(skip_all, fields(amount = %payload.amount, unit = %payload.unit))]
+pub(crate) async fn post_mint_mining_share_quote(
+    #[cfg(feature = "auth")] auth: AuthHeader,
+    State(state): State<MintState>,
+    Json(payload): Json<MintQuoteMiningShareRequest>,
+) -> Result<Json<MintQuoteMiningShareResponse<String>>, Response> {
+    #[cfg(feature = "auth")]
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteMiningShare),
+        )
+        .await
+        .map_err(into_response)?;
+
+    let quote = state
+        .mint
+        .create_mint_mining_share_quote(payload)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not create mining share quote: {}", err);
+            into_response(err)
+        })?;
+
+    let mining_quote: MintQuoteMiningShareResponse<String> =
+        quote.try_into().map_err(into_response)?;
+
+    Ok(Json(mining_quote))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    get,
+    context_path = "/v1",
+    path = "/mint/quote/mining_share/{quote_id}",
+    params(("quote_id" = String, description = "The quote ID")),
+    responses(
+        (status = 200, description = "Successful response", body = MintQuoteMiningShareResponse<String>, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+/// Get mining-share quote status by ID.
+#[instrument(skip_all, fields(quote_id = %quote_id))]
+pub(crate) async fn get_check_mint_quote_mining_share(
+    #[cfg(feature = "auth")] auth: AuthHeader,
+    State(state): State<MintState>,
+    Path(quote_id): Path<String>,
+) -> Result<Json<MintQuoteMiningShareResponse<String>>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteMiningShare),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
+    let quote_id = QuoteId::from_str(&quote_id).map_err(|err| {
+        tracing::error!("Invalid mining share quote id: {}", err);
+        (StatusCode::BAD_REQUEST, "Invalid quote ID").into_response()
+    })?;
+
+    let mining_quote = state
+        .mint
+        .get_mint_mining_share_quote(&quote_id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not fetch mining share quote {}: {}", quote_id, err);
+            into_response(err)
+        })?;
+
+    let Some(mining_quote) = mining_quote else {
+        let error = ErrorResponse::new(
+            ErrorCode::Unknown(4040),
+            format!("Mining share quote {quote_id} not found"),
+        );
+        return Err((StatusCode::NOT_FOUND, Json(error)).into_response());
+    };
+
+    Ok(Json(mining_quote.to_string_id()))
+}
+
 #[instrument(skip_all)]
 pub(crate) async fn ws_handler(
     #[cfg(feature = "auth")] auth: AuthHeader,
@@ -277,6 +381,64 @@ pub(crate) async fn post_mint_bolt11(
         .await
         .map_err(|err| {
             tracing::error!("Could not process mint: {}", err);
+            into_response(err)
+        })?;
+
+    Ok(Json(res))
+}
+
+/// Mint tokens from a mining-share quote.
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/mint/mining_share",
+    request_body(content = MintRequest<String>, description = "Request params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = MintResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+#[instrument(skip_all, fields(quote_id = %payload.quote))]
+pub(crate) async fn post_mint_mining_share(
+    #[cfg(feature = "auth")] auth: AuthHeader,
+    State(state): State<MintState>,
+    Json(payload): Json<MintRequest<String>>,
+) -> Result<Json<MintResponse>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MintMiningShare),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
+    let MintRequest {
+        quote,
+        outputs,
+        signature,
+    } = payload;
+
+    let quote = QuoteId::from_str(&quote).map_err(|err| {
+        tracing::error!("Invalid quote id '{}': {}", quote, err);
+        (StatusCode::BAD_REQUEST, "Invalid quote ID").into_response()
+    })?;
+
+    let request = MintRequest {
+        quote,
+        outputs,
+        signature,
+    };
+
+    let res = state
+        .mint
+        .process_mint_request(request)
+        .await
+        .map_err(|err| {
+            tracing::error!("Could not process mining share mint: {}", err);
             into_response(err)
         })?;
 
