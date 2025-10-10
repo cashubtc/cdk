@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use cdk_common::database::DynMintDatabase;
+use cdk_common::mint::Operation;
 use cdk_common::nuts::BlindedMessage;
 use cdk_common::{database, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 use tracing::instrument;
@@ -52,12 +53,30 @@ mod state;
 /// If any step fails after setup_swap, all compensating actions are executed in reverse
 /// order to restore the database to its pre-swap state. This ensures no partial swaps
 /// leave the system in an inconsistent state.
+///
+/// # Compensation Order (LIFO)
+///
+/// Compensations are stored in a VecDeque and executed in LIFO (Last-In-First-Out) order
+/// using `push_front` + iteration. This ensures that actions are undone in the reverse
+/// order they were performed, which is critical for maintaining data consistency.
+///
+/// Example: If we perform actions A → B → C in the forward path, compensations must
+/// execute as C' → B' → A' to properly reverse the operations without violating
+/// any invariants or constraints.
 pub struct SwapSaga<'a> {
     mint: &'a super::Mint,
     db: DynMintDatabase,
     pubsub: Arc<PubSubManager>,
     state: SwapState,
+    /// Compensating actions in LIFO order (most recent first)
     compensations: VecDeque<Box<dyn CompensatingAction>>,
+    /// Blinded messages for outputs (set in setup_swap)
+    blinded_messages: Option<Vec<BlindedMessage>>,
+    /// Y values (public keys) from input proofs (set in setup_swap)
+    ys: Option<Vec<PublicKey>>,
+    /// Blind signatures for outputs (set in sign_outputs)
+    signatures: Option<Vec<cdk_common::nuts::BlindSignature>>,
+    operation: Operation,
 }
 
 impl<'a> SwapSaga<'a> {
@@ -68,6 +87,10 @@ impl<'a> SwapSaga<'a> {
             pubsub,
             state: SwapState::Initial,
             compensations: VecDeque::new(),
+            blinded_messages: None,
+            ys: None,
+            signatures: None,
+            operation: Operation::new_swap(),
         }
     }
 
@@ -159,7 +182,10 @@ impl<'a> SwapSaga<'a> {
             .await?;
 
         // Add input proofs to DB
-        if let Err(err) = tx.add_proofs(input_proofs.clone(), quote_id.clone()).await {
+        if let Err(err) = tx
+            .add_proofs(input_proofs.clone(), quote_id.clone(), &self.operation)
+            .await
+        {
             tx.rollback().await?;
             return Err(match err {
                 database::Error::Duplicate => Error::TokenPending,
@@ -208,7 +234,7 @@ impl<'a> SwapSaga<'a> {
 
         // Add output blinded messages
         if let Err(err) = tx
-            .add_blinded_messages(quote_id.as_ref(), blinded_messages)
+            .add_blinded_messages(quote_id.as_ref(), blinded_messages, &self.operation)
             .await
         {
             tx.rollback().await?;
@@ -225,24 +251,24 @@ impl<'a> SwapSaga<'a> {
 
         tx.commit().await?;
 
-        let blinded_messages = blinded_messages.to_vec();
-
-        // Extract secrets for compensation
-        let secrets: Vec<PublicKey> = blinded_messages
+        // Store data in saga struct (avoid duplication in state enum)
+        let blinded_messages_vec = blinded_messages.to_vec();
+        let blinded_secrets: Vec<PublicKey> = blinded_messages_vec
             .iter()
             .map(|bm| bm.blinded_secret)
             .collect();
 
-        // Register compensation
+        // Register compensation (uses LIFO via push_front)
         self.compensations.push_front(Box::new(RemoveSwapSetup {
-            secrets,
-            ys: ys.clone(),
+            blinded_secrets,
+            input_ys: ys.clone(),
         }));
 
-        self.transition(SwapState::SetupComplete {
-            blinded_messages,
-            ys,
-        })?;
+        // Store data before transitioning state
+        self.blinded_messages = Some(blinded_messages_vec);
+        self.ys = Some(ys);
+
+        self.transition(SwapState::SetupComplete)?;
 
         Ok(())
     }
@@ -254,9 +280,9 @@ impl<'a> SwapSaga<'a> {
     ///
     /// # What This Does
     ///
-    /// 1. Retrieves blinded messages from the current state (must be in SetupComplete state)
+    /// 1. Retrieves blinded messages from the saga struct (must be in SetupComplete state)
     /// 2. Calls the mint's blind signing function to generate signatures
-    /// 3. Transitions to the Signed state with the signatures
+    /// 3. Stores signatures and transitions to the Signed state
     ///
     /// # Failure Handling
     ///
@@ -265,31 +291,30 @@ impl<'a> SwapSaga<'a> {
     ///
     /// # Errors
     ///
-    /// - `Internal`: Called from an invalid state (not SetupComplete)
+    /// - `Internal`: Called from an invalid state (not SetupComplete) or data not available
     /// - Propagates any errors from the blind signing operation
     #[instrument(skip_all)]
     pub async fn sign_outputs(&mut self) -> Result<(), Error> {
         tracing::info!("Signing outputs (no DB)");
 
-        let (blinded_messages, ys) = match &self.state {
-            SwapState::SetupComplete {
-                blinded_messages,
-                ys,
-            } => (blinded_messages.clone(), ys.clone()),
-            _ => {
-                tracing::error!("Cannot sign from current state: {}", self.state.name());
-                self.compensate_all().await?;
-                return Err(Error::Internal);
-            }
-        };
+        // Verify we're in the correct state
+        if self.state != SwapState::SetupComplete {
+            tracing::error!("Cannot sign from current state: {}", self.state.name());
+            self.compensate_all().await?;
+            return Err(Error::Internal);
+        }
+
+        // Retrieve blinded messages from struct
+        let blinded_messages = self.blinded_messages.as_ref().ok_or_else(|| {
+            tracing::error!("Blinded messages not available in SetupComplete state");
+            Error::Internal
+        })?;
 
         match self.mint.blind_sign(blinded_messages.clone()).await {
             Ok(signatures) => {
-                self.transition(SwapState::Signed {
-                    blinded_messages,
-                    signatures,
-                    ys,
-                })?;
+                // Store signatures in struct
+                self.signatures = Some(signatures);
+                self.transition(SwapState::Signed)?;
                 Ok(())
             }
             Err(err) => {
@@ -324,27 +349,49 @@ impl<'a> SwapSaga<'a> {
     ///
     /// # Errors
     ///
-    /// - `Internal`: Called from an invalid state (not Signed)
+    /// - `Internal`: Called from an invalid state (not Signed) or data not available
     /// - `TokenAlreadySpent`: Input proofs were already spent by another operation
     /// - Propagates any database errors
     #[instrument(skip_all)]
     pub async fn finalize(&mut self) -> Result<cdk_common::nuts::SwapResponse, Error> {
         tracing::info!("TX2: Finalizing swap (signatures + mark spent)");
 
-        let (blinded_messages, signatures, ys) = match &self.state {
-            SwapState::Signed {
-                blinded_messages,
-                signatures,
-                ys,
-            } => (blinded_messages.clone(), signatures.clone(), ys.clone()),
-            _ => {
-                tracing::error!("Cannot finalize from current state: {}", self.state.name());
-                self.compensate_all().await?;
-                return Err(Error::Internal);
-            }
-        };
+        // Verify we're in the correct state
+        if self.state != SwapState::Signed {
+            tracing::error!("Cannot finalize from current state: {}", self.state.name());
+            self.compensate_all().await?;
+            return Err(Error::Internal);
+        }
 
-        let secrets: Vec<PublicKey> = blinded_messages
+        // Retrieve and clone data from struct to avoid borrow checker issues
+        let blinded_messages = self
+            .blinded_messages
+            .as_ref()
+            .ok_or_else(|| {
+                tracing::error!("Blinded messages not available in Signed state");
+                Error::Internal
+            })?
+            .clone();
+
+        let signatures = self
+            .signatures
+            .as_ref()
+            .ok_or_else(|| {
+                tracing::error!("Signatures not available in Signed state");
+                Error::Internal
+            })?
+            .clone();
+
+        let ys = self
+            .ys
+            .as_ref()
+            .ok_or_else(|| {
+                tracing::error!("Input Y values not available in Signed state");
+                Error::Internal
+            })?
+            .clone();
+
+        let blinded_secrets: Vec<PublicKey> = blinded_messages
             .iter()
             .map(|bm| bm.blinded_secret)
             .collect();
@@ -352,7 +399,10 @@ impl<'a> SwapSaga<'a> {
         let mut tx = self.db.begin_transaction().await?;
 
         // Add blind signatures to outputs
-        if let Err(err) = tx.add_blind_signatures(&secrets, &signatures, None).await {
+        if let Err(err) = tx
+            .add_blind_signatures(&blinded_secrets, &signatures, None)
+            .await
+        {
             tx.rollback().await?;
             self.compensate_all().await?;
             return Err(err.into());
