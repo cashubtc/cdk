@@ -162,6 +162,93 @@ impl From<cdk::nuts::MintQuoteBolt11Response<String>> for MintQuoteBolt11Respons
     }
 }
 
+/// FFI-compatible MintQuoteMiningShareResponse
+#[derive(Debug, uniffi::Object)]
+pub struct MintQuoteMiningShareResponse {
+    /// Quote ID
+    pub quote: String,
+    /// Request identifier (e.g. header hash)
+    pub request: String,
+    /// Quote state
+    pub state: QuoteState,
+    /// Expiry timestamp (optional)
+    pub expiry: Option<u64>,
+    /// Amount (optional)
+    pub amount: Option<Amount>,
+    /// Unit (optional)
+    pub unit: Option<CurrencyUnit>,
+    /// Pubkey for NUT-20 verification
+    pub pubkey: String,
+    /// Associated keyset identifier
+    pub keyset_id: String,
+    /// Amount already issued against this quote
+    pub amount_issued: Amount,
+}
+
+impl From<cdk::nuts::nutXX::MintQuoteMiningShareResponse<String>> for MintQuoteMiningShareResponse {
+    fn from(response: cdk::nuts::nutXX::MintQuoteMiningShareResponse<String>) -> Self {
+        Self {
+            quote: response.quote,
+            request: response.request,
+            state: response.state.into(),
+            expiry: response.expiry,
+            amount: response.amount.map(Into::into),
+            unit: response.unit.map(Into::into),
+            pubkey: response.pubkey.to_string(),
+            keyset_id: response.keyset_id.to_string(),
+            amount_issued: response.amount_issued.into(),
+        }
+    }
+}
+
+#[uniffi::export]
+impl MintQuoteMiningShareResponse {
+    /// Get quote ID
+    pub fn quote(&self) -> String {
+        self.quote.clone()
+    }
+
+    /// Get request identifier (header hash)
+    pub fn request(&self) -> String {
+        self.request.clone()
+    }
+
+    /// Get quote state
+    pub fn state(&self) -> QuoteState {
+        self.state.clone()
+    }
+
+    /// Get expiry timestamp
+    pub fn expiry(&self) -> Option<u64> {
+        self.expiry
+    }
+
+    /// Get amount (if present)
+    pub fn amount(&self) -> Option<Amount> {
+        self.amount
+    }
+
+    /// Get currency unit (if present)
+    pub fn unit(&self) -> Option<CurrencyUnit> {
+        self.unit.clone()
+    }
+
+    /// Get the associated pubkey
+    pub fn pubkey(&self) -> String {
+        self.pubkey.clone()
+    }
+
+    /// Get the keyset identifier
+    pub fn keyset_id(&self) -> String {
+        self.keyset_id.clone()
+    }
+
+    /// Get the amount that has already been issued
+    pub fn amount_issued(&self) -> Amount {
+        self.amount_issued
+    }
+}
+
 #[uniffi::export]
 impl MintQuoteBolt11Response {
     /// Get quote ID
@@ -440,6 +527,16 @@ impl From<QuoteState> for cdk::nuts::MintQuoteState {
             QuoteState::Paid => cdk::nuts::MintQuoteState::Paid,
             QuoteState::Issued => cdk::nuts::MintQuoteState::Issued,
             QuoteState::Pending => cdk::nuts::MintQuoteState::Paid, // Map pending to paid
+        }
+    }
+}
+
+impl From<cdk::nuts::nutXX::QuoteState> for QuoteState {
+    fn from(state: cdk::nuts::nutXX::QuoteState) -> Self {
+        match state {
+            cdk::nuts::nutXX::QuoteState::Unpaid => QuoteState::Unpaid,
+            cdk::nuts::nutXX::QuoteState::Paid => QuoteState::Paid,
+            cdk::nuts::nutXX::QuoteState::Issued => QuoteState::Issued,
         }
     }
 }

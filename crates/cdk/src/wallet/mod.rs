@@ -102,6 +102,8 @@ pub enum WalletSubscription {
     ProofState(Vec<String>),
     /// Mint quote subscription
     Bolt11MintQuoteState(Vec<String>),
+    /// Mining-share mint quote subscription
+    MiningShareMintQuoteState(Vec<String>),
     /// Melt quote subscription
     Bolt11MeltQuoteState(Vec<String>),
     /// Mint bolt12 quote subscription
@@ -133,6 +135,11 @@ impl From<WalletSubscription> for WalletParams {
             WalletSubscription::Bolt11MintQuoteState(filters) => WalletParams {
                 filters,
                 kind: Kind::Bolt11MintQuote,
+                id,
+            },
+            WalletSubscription::MiningShareMintQuoteState(filters) => WalletParams {
+                filters,
+                kind: Kind::MiningShareMintQuote,
                 id,
             },
             WalletSubscription::Bolt11MeltQuoteState(filters) => WalletParams {

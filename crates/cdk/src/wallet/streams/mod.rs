@@ -60,14 +60,14 @@ impl WaitableEvent {
                 vec![WalletSubscription::Bolt11MeltQuoteState(quotes)]
             }
             WaitableEvent::MintQuote(quotes) => {
-                let (bolt11, bolt12) = quotes.into_iter().fold(
-                    (Vec::new(), Vec::new()),
+                let (bolt11, bolt12, mining_share) = quotes.into_iter().fold(
+                    (Vec::new(), Vec::new(), Vec::new()),
                     |mut acc, (quote_id, payment_method)| {
                         match payment_method {
                             PaymentMethod::Bolt11 => acc.0.push(quote_id),
                             PaymentMethod::Bolt12 => acc.1.push(quote_id),
+                            PaymentMethod::MiningShare => acc.2.push(quote_id),
                             PaymentMethod::Custom(_) => acc.0.push(quote_id),
-                            PaymentMethod::MiningShare => acc.0.push(quote_id),
                         }
                         acc
                     },
@@ -81,6 +81,10 @@ impl WaitableEvent {
 
                 if !bolt12.is_empty() {
                     subscriptions.push(WalletSubscription::Bolt12MintQuoteState(bolt12));
+                }
+
+                if !mining_share.is_empty() {
+                    subscriptions.push(WalletSubscription::MiningShareMintQuoteState(mining_share));
                 }
 
                 subscriptions

@@ -166,8 +166,10 @@ where
         loop {
             let url = self.mint_url.join_paths(&match path {
                 nut19::Path::MintBolt11 => vec!["v1", "mint", "bolt11"],
+                nut19::Path::MintMiningShare => vec!["v1", "mint", "mining_share"],
                 nut19::Path::MeltBolt11 => vec!["v1", "melt", "bolt11"],
                 nut19::Path::MintBolt12 => vec!["v1", "mint", "bolt12"],
+                nut19::Path::MintQuoteMiningShare => vec!["v1", "mint", "quote", "mining_share"],
 
                 nut19::Path::MeltBolt12 => vec!["v1", "melt", "bolt12"],
                 nut19::Path::Swap => vec!["v1", "swap"],
@@ -258,7 +260,7 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintQuoteBolt11)
+            .get_auth_token(Method::Post, RoutePath::MintQuoteMiningShare)
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -564,7 +566,7 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintQuoteBolt11)
+            .get_auth_token(Method::Post, RoutePath::MintQuoteMiningShare)
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -585,7 +587,7 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MintQuoteBolt11)
+            .get_auth_token(Method::Get, RoutePath::MintQuoteMiningShare)
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -604,7 +606,7 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintBolt11)
+            .get_auth_token(Method::Post, RoutePath::MintMiningShare)
             .await?;
 
         #[cfg(not(feature = "auth"))]

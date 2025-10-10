@@ -436,7 +436,9 @@ impl TryFrom<ProtectedEndpoint> for cdk::nuts::ProtectedEndpoint {
         // Convert path string to RoutePath by matching against known paths
         let route_path = match endpoint.path.as_str() {
             "/v1/mint/quote/bolt11" => cdk::nuts::RoutePath::MintQuoteBolt11,
+            "/v1/mint/quote/mining_share" => cdk::nuts::RoutePath::MintQuoteMiningShare,
             "/v1/mint/bolt11" => cdk::nuts::RoutePath::MintBolt11,
+            "/v1/mint/mining_share" => cdk::nuts::RoutePath::MintMiningShare,
             "/v1/melt/quote/bolt11" => cdk::nuts::RoutePath::MeltQuoteBolt11,
             "/v1/melt/bolt11" => cdk::nuts::RoutePath::MeltBolt11,
             "/v1/swap" => cdk::nuts::RoutePath::Swap,

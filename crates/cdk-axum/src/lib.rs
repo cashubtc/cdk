@@ -49,6 +49,7 @@ mod swagger_imports {
         MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintQuoteBolt11Request,
         MintQuoteBolt11Response,
     };
+    pub use cdk::nuts::nutXX::{MintQuoteMiningShareRequest, MintQuoteMiningShareResponse};
     #[cfg(feature = "auth")]
     pub use cdk::nuts::MintAuthRequest;
     pub use cdk::nuts::{nut04, nut05, nut15, MeltQuoteState, MintQuoteState};
@@ -91,7 +92,10 @@ macro_rules! define_api_doc {
                 get_mint_info,
                 post_mint_bolt11_quote,
                 get_check_mint_bolt11_quote,
+                post_mint_mining_share_quote,
+                get_check_mint_quote_mining_share,
                 post_mint_bolt11,
+                post_mint_mining_share,
                 post_melt_bolt11_quote,
                 get_check_melt_bolt11_quote,
                 post_melt_bolt11,
@@ -137,6 +141,8 @@ define_api_doc! {
         MintInfo,
         MintQuoteBolt11Request,
         MintQuoteBolt11Response<String>,
+        MintQuoteMiningShareRequest,
+        MintQuoteMiningShareResponse<String>,
         MintQuoteState,
         MintMethodSettings,
         MintVersion,
@@ -193,6 +199,8 @@ define_api_doc! {
         MintInfo,
         MintQuoteBolt11Request,
         MintQuoteBolt11Response<String>,
+        MintQuoteMiningShareRequest,
+        MintQuoteMiningShareResponse<String>,
         MintQuoteState,
         MintMethodSettings,
         MintVersion,
@@ -296,7 +304,16 @@ pub async fn create_mint_router_with_custom_cache(
             "/mint/quote/bolt11/{quote_id}",
             get(get_check_mint_bolt11_quote),
         )
+        .route(
+            "/mint/quote/mining_share",
+            post(post_mint_mining_share_quote),
+        )
+        .route(
+            "/mint/quote/mining_share/{quote_id}",
+            get(get_check_mint_quote_mining_share),
+        )
         .route("/mint/bolt11", post(cache_post_mint_bolt11))
+        .route("/mint/mining_share", post(cache_post_mint_mining_share))
         .route("/melt/quote/bolt11", post(post_melt_bolt11_quote))
         .route("/ws", get(ws_handler))
         .route(

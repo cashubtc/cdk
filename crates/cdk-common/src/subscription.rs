@@ -25,24 +25,39 @@ impl SubscriptionRequest for Params {
     }
 
     fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error> {
-        self.filters
-            .iter()
-            .map(|filter| match self.kind {
-                Kind::Bolt11MeltQuote => QuoteId::from_str(filter)
-                    .map(NotificationId::MeltQuoteBolt11)
-                    .map_err(|_| Error::ParsingError(filter.to_owned())),
-                Kind::Bolt11MintQuote => QuoteId::from_str(filter)
-                    .map(NotificationId::MintQuoteBolt11)
-                    .map_err(|_| Error::ParsingError(filter.to_owned())),
-                Kind::ProofState => PublicKey::from_str(filter)
-                    .map(NotificationId::ProofState)
-                    .map_err(|_| Error::ParsingError(filter.to_owned())),
+        let mut topics = Vec::new();
 
-                Kind::Bolt12MintQuote => QuoteId::from_str(filter)
-                    .map(NotificationId::MintQuoteBolt12)
-                    .map_err(|_| Error::ParsingError(filter.to_owned())),
-            })
-            .collect::<Result<Vec<_>, _>>()
+        for filter in &self.filters {
+            match self.kind {
+                Kind::Bolt11MeltQuote => {
+                    let id = QuoteId::from_str(filter)
+                        .map_err(|_| Error::ParsingError(filter.to_owned()))?;
+                    topics.push(NotificationId::MeltQuoteBolt11(id));
+                }
+                Kind::Bolt11MintQuote => {
+                    let id = QuoteId::from_str(filter)
+                        .map_err(|_| Error::ParsingError(filter.to_owned()))?;
+                    topics.push(NotificationId::MintQuoteBolt11(id));
+                }
+                Kind::ProofState => {
+                    let pk = PublicKey::from_str(filter)
+                        .map_err(|_| Error::ParsingError(filter.to_owned()))?;
+                    topics.push(NotificationId::ProofState(pk));
+                }
+                Kind::Bolt12MintQuote => {
+                    let id = QuoteId::from_str(filter)
+                        .map_err(|_| Error::ParsingError(filter.to_owned()))?;
+                    topics.push(NotificationId::MintQuoteBolt12(id));
+                }
+                Kind::MiningShareMintQuote => {
+                    let id = QuoteId::from_str(filter)
+                        .map_err(|_| Error::ParsingError(filter.to_owned()))?;
+                    topics.push(NotificationId::MintQuoteMiningShare(id));
+                }
+            }
+        }
+
+        Ok(topics)
     }
 }
 
@@ -62,20 +77,31 @@ impl SubscriptionRequest for WalletParams {
     }
 
     fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error> {
-        self.filters
-            .iter()
-            .map(|filter| {
-                Ok(match self.kind {
-                    Kind::Bolt11MeltQuote => NotificationId::MeltQuoteBolt11(filter.to_owned()),
-                    Kind::Bolt11MintQuote => NotificationId::MintQuoteBolt11(filter.to_owned()),
-                    Kind::ProofState => PublicKey::from_str(filter)
-                        .map(NotificationId::ProofState)
-                        .map_err(|_| Error::ParsingError(filter.to_owned()))?,
+        let mut topics = Vec::new();
 
-                    Kind::Bolt12MintQuote => NotificationId::MintQuoteBolt12(filter.to_owned()),
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()
+        for filter in &self.filters {
+            match self.kind {
+                Kind::Bolt11MeltQuote => {
+                    topics.push(NotificationId::MeltQuoteBolt11(filter.to_owned()));
+                }
+                Kind::Bolt11MintQuote => {
+                    topics.push(NotificationId::MintQuoteBolt11(filter.to_owned()));
+                }
+                Kind::ProofState => {
+                    let pk = PublicKey::from_str(filter)
+                        .map_err(|_| Error::ParsingError(filter.to_owned()))?;
+                    topics.push(NotificationId::ProofState(pk));
+                }
+                Kind::Bolt12MintQuote => {
+                    topics.push(NotificationId::MintQuoteBolt12(filter.to_owned()));
+                }
+                Kind::MiningShareMintQuote => {
+                    topics.push(NotificationId::MintQuoteMiningShare(filter.to_owned()));
+                }
+            }
+        }
+
+        Ok(topics)
     }
 }
 

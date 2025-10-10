@@ -5,7 +5,9 @@ use cdk::event::MintEvent;
 use serde::{Deserialize, Serialize};
 
 use super::proof::ProofStateUpdate;
-use super::quote::{MeltQuoteBolt11Response, MintQuoteBolt11Response};
+use super::quote::{
+    MeltQuoteBolt11Response, MintQuoteBolt11Response, MintQuoteMiningShareResponse,
+};
 use crate::error::FfiError;
 
 /// FFI-compatible SubscriptionKind
@@ -17,6 +19,8 @@ pub enum SubscriptionKind {
     Bolt11MintQuote,
     /// Bolt 12 Mint Quote
     Bolt12MintQuote,
+    /// Mining Share Mint Quote
+    MiningShareMintQuote,
     /// Proof State
     ProofState,
 }
@@ -27,6 +31,7 @@ impl From<SubscriptionKind> for cdk::nuts::nut17::Kind {
             SubscriptionKind::Bolt11MeltQuote => cdk::nuts::nut17::Kind::Bolt11MeltQuote,
             SubscriptionKind::Bolt11MintQuote => cdk::nuts::nut17::Kind::Bolt11MintQuote,
             SubscriptionKind::Bolt12MintQuote => cdk::nuts::nut17::Kind::Bolt12MintQuote,
+            SubscriptionKind::MiningShareMintQuote => cdk::nuts::nut17::Kind::MiningShareMintQuote,
             SubscriptionKind::ProofState => cdk::nuts::nut17::Kind::ProofState,
         }
     }
@@ -38,6 +43,7 @@ impl From<cdk::nuts::nut17::Kind> for SubscriptionKind {
             cdk::nuts::nut17::Kind::Bolt11MeltQuote => SubscriptionKind::Bolt11MeltQuote,
             cdk::nuts::nut17::Kind::Bolt11MintQuote => SubscriptionKind::Bolt11MintQuote,
             cdk::nuts::nut17::Kind::Bolt12MintQuote => SubscriptionKind::Bolt12MintQuote,
+            cdk::nuts::nut17::Kind::MiningShareMintQuote => SubscriptionKind::MiningShareMintQuote,
             cdk::nuts::nut17::Kind::ProofState => SubscriptionKind::ProofState,
         }
     }
@@ -142,6 +148,10 @@ pub enum NotificationPayload {
     MintQuoteUpdate {
         quote: std::sync::Arc<MintQuoteBolt11Response>,
     },
+    /// Mining-share mint quote update
+    MintQuoteMiningShareUpdate {
+        quote: std::sync::Arc<MintQuoteMiningShareResponse>,
+    },
     /// Melt quote update
     MeltQuoteUpdate {
         quote: std::sync::Arc<MeltQuoteBolt11Response>,
@@ -156,6 +166,11 @@ impl From<MintEvent<String>> for NotificationPayload {
             },
             cdk::nuts::NotificationPayload::MintQuoteBolt11Response(quote_resp) => {
                 NotificationPayload::MintQuoteUpdate {
+                    quote: std::sync::Arc::new(quote_resp.into()),
+                }
+            }
+            cdk::nuts::NotificationPayload::MintQuoteMiningShareResponse(quote_resp) => {
+                NotificationPayload::MintQuoteMiningShareUpdate {
                     quote: std::sync::Arc::new(quote_resp.into()),
                 }
             }

@@ -684,6 +684,24 @@ impl Mint {
         Ok(quote)
     }
 
+    /// Retrieves a mining-share mint quote if it exists.
+    pub async fn get_mint_mining_share_quote(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<MintQuoteMiningShareResponse<QuoteId>>, Error> {
+        let maybe_quote = self.localstore.get_mint_quote(quote_id).await?;
+
+        let Some(quote) = maybe_quote else {
+            return Ok(None);
+        };
+
+        if quote.payment_method != PaymentMethod::MiningShare {
+            return Ok(None);
+        }
+
+        MintQuoteMiningShareResponse::try_from(quote).map(Some)
+    }
+
     /// Processes a mint request to issue new tokens
     ///
     /// This function:
