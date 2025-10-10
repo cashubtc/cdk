@@ -216,6 +216,17 @@ pub enum CurrencyUnit {
     Custom(String),
 }
 
+impl CurrencyUnit {
+    fn normalize_custom_unit(value: &str) -> String {
+        value.trim().to_uppercase()
+    }
+
+    /// Construct a custom unit, normalizing to uppercase and trimming whitespace.
+    pub fn custom<S: AsRef<str>>(value: S) -> Self {
+        Self::Custom(Self::normalize_custom_unit(value.as_ref()))
+    }
+}
+
 #[cfg(feature = "mint")]
 impl CurrencyUnit {
     /// Deterministic derivation index for each currency unit
@@ -276,14 +287,15 @@ impl CurrencyUnit {
 impl FromStr for CurrencyUnit {
     type Err = Error;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let upper_value = value.to_uppercase();
+        let trimmed = value.trim();
+        let upper_value = trimmed.to_uppercase();
         match upper_value.as_str() {
             "SAT" => Ok(Self::Sat),
             "MSAT" => Ok(Self::Msat),
             "USD" => Ok(Self::Usd),
             "EUR" => Ok(Self::Eur),
             "AUTH" => Ok(Self::Auth),
-            _ => Ok(Self::Custom(value.to_string())),
+            _ => Ok(Self::custom(trimmed)),
         }
     }
 }
@@ -383,7 +395,7 @@ mod tests {
 
     #[test]
     fn custom_unit_ser_der() {
-        let unit = CurrencyUnit::Custom(String::from("test"));
+        let unit = CurrencyUnit::custom("test");
         let serialized = serde_json::to_string(&unit).unwrap();
         let deserialized: CurrencyUnit = serde_json::from_str(&serialized).unwrap();
         assert_eq!(unit, deserialized)
@@ -392,22 +404,22 @@ mod tests {
     #[test]
     fn currency_unit_unicode_equivalents_match() {
         // "é" as composed vs decomposed; both should normalize and hash to same index
-        let composed = CurrencyUnit::Custom("café".into());
-        let decomposed = CurrencyUnit::Custom("cafe\u{0301}".into());
+        let composed = CurrencyUnit::custom("café");
+        let decomposed = CurrencyUnit::custom("cafe\u{0301}");
         assert_eq!(composed.derivation_index(), decomposed.derivation_index());
     }
 
     #[test]
     fn currency_unit_case_and_whitespace_ignored() {
-        let a = CurrencyUnit::Custom("  UsD  ".into());
-        let b = CurrencyUnit::Custom("usd".into());
+        let a = CurrencyUnit::from_str("  UsD  ").unwrap();
+        let b = CurrencyUnit::from_str("usd").unwrap();
         assert_eq!(a.derivation_index(), b.derivation_index());
     }
 
     #[cfg(all(test, feature = "mint"))]
     #[test]
     fn currency_unit_custom_unit_derivation_index() {
-        let unit = CurrencyUnit::Custom("nuts".into());
+        let unit = CurrencyUnit::custom("nuts");
 
         let idx = unit
             .derivation_index()
@@ -419,7 +431,7 @@ mod tests {
     #[cfg(all(test, feature = "mint"))]
     #[test]
     fn currency_unit_derivation_index_within_hardened_range() {
-        let idx = CurrencyUnit::Custom("hash".into())
+        let idx = CurrencyUnit::custom("hash")
             .derivation_index()
             .expect("custom units should always produce an index");
 
