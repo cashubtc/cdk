@@ -34,7 +34,6 @@ use crate::{cdk_database, Amount};
 
 #[cfg(feature = "auth")]
 pub(crate) mod auth;
-mod blinded_message_writer;
 mod builder;
 mod check_spendable;
 mod issue;

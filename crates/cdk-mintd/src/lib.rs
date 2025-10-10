@@ -1188,6 +1188,10 @@ pub async fn run_mintd_with_shutdown(
     // Pending melt quotes where the payment has **failed** inputs are reset to unspent
     mint.check_pending_melt_quotes().await?;
 
+    // Recover from bad swap operations
+    // This cleans up pending swap proofs that are left in an inconsistent state
+    mint.recover_from_bad_swaps().await?;
+
     start_services_with_shutdown(
         mint.clone(),
         settings,

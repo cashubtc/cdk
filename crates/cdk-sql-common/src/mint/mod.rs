@@ -23,6 +23,7 @@ use cdk_common::database::{
 };
 use cdk_common::mint::{
     self, IncomingPayment, Issuance, MeltPaymentRequest, MeltQuote, MintKeySetInfo, MintQuote,
+    Operation,
 };
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::payment::PaymentIdentifier;
@@ -138,6 +139,7 @@ where
         &mut self,
         proofs: Proofs,
         quote_id: Option<QuoteId>,
+        operation: &Operation,
     ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
@@ -165,9 +167,9 @@ where
             query(
                 r#"
                   INSERT INTO proof
-                  (y, amount, keyset_id, secret, c, witness, state, quote_id, created_time)
+                  (y, amount, keyset_id, secret, c, witness, state, quote_id, created_time, operation_kind, operation_id)
                   VALUES
-                  (:y, :amount, :keyset_id, :secret, :c, :witness, :state, :quote_id, :created_time)
+                  (:y, :amount, :keyset_id, :secret, :c, :witness, :state, :quote_id, :created_time, :operation_kind, :operation_id)
                   "#,
             )?
             .bind("y", proof.y()?.to_bytes().to_vec())
@@ -182,6 +184,8 @@ where
             .bind("state", "UNSPENT".to_string())
             .bind("quote_id", quote_id.clone().map(|q| q.to_string()))
             .bind("created_time", current_time as i64)
+            .bind("operation_kind", operation.kind())
+            .bind("operation_id", operation.id().to_string())
             .execute(&self.inner)
             .await?;
         }
@@ -268,6 +272,51 @@ where
         .map(sql_row_to_proof)
         .collect::<Result<Vec<Proof>, _>>()?
         .ys()?)
+    }
+
+    async fn get_proofs_by_state_and_operation_kind(
+        &self,
+        state: State,
+        operation_kind: &str,
+    ) -> Result<HashMap<uuid::Uuid, Proofs>, Self::Err> {
+        let rows = query(
+            r#"
+            SELECT
+                amount,
+                keyset_id,
+                secret,
+                c,
+                witness,
+                operation_id
+            FROM
+                proof
+            WHERE
+                state = :state AND operation_kind = :operation_kind
+            "#,
+        )?
+        .bind("state", state.to_string())
+        .bind("operation_kind", operation_kind.to_string())
+        .fetch_all(&self.inner)
+        .await?;
+
+        let mut proofs_by_operation: HashMap<uuid::Uuid, Vec<Proof>> = HashMap::new();
+
+        for row in rows {
+            let mut row_data = row;
+            let operation_id_col = row_data.pop().ok_or(Error::InvalidDbResponse)?;
+            let operation_id_str = column_as_string!(&operation_id_col);
+            let operation_id = uuid::Uuid::parse_str(&operation_id_str)
+                .map_err(|e| Error::Internal(format!("Invalid operation_id UUID: {}", e)))?;
+
+            let proof = sql_row_to_proof(row_data)?;
+
+            proofs_by_operation
+                .entry(operation_id)
+                .or_default()
+                .push(proof);
+        }
+
+        Ok(proofs_by_operation)
     }
 }
 
@@ -574,6 +623,7 @@ where
         &mut self,
         quote_id: Option<&QuoteId>,
         blinded_messages: &[BlindedMessage],
+        operation: &Operation,
     ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
@@ -583,9 +633,9 @@ where
             match query(
                 r#"
                 INSERT INTO blind_signature
-                (blinded_message, amount, keyset_id, c, quote_id, created_time)
+                (blinded_message, amount, keyset_id, c, quote_id, created_time, operation_kind, operation_id)
                 VALUES
-                (:blinded_message, :amount, :keyset_id, NULL, :quote_id, :created_time)
+                (:blinded_message, :amount, :keyset_id, NULL, :quote_id, :created_time, :operation_kind, :operation_id)
                 "#,
             )?
             .bind(
@@ -596,6 +646,8 @@ where
             .bind("keyset_id", message.keyset_id.to_string())
             .bind("quote_id", quote_id.map(|q| q.to_string()))
             .bind("created_time", current_time as i64)
+            .bind("operation_kind", operation.kind())
+            .bind("operation_id", operation.id().to_string())
             .execute(&self.inner)
             .await
             {
@@ -1791,6 +1843,52 @@ where
             .iter()
             .map(|y| blinded_signatures.remove(y))
             .collect())
+    }
+
+    async fn get_blind_signatures_by_operation(
+        &self,
+        operation: &Operation,
+    ) -> Result<Vec<BlindSignature>, Self::Err> {
+        Ok(query(
+            r#"
+            SELECT
+                keyset_id,
+                amount,
+                c,
+                dleq_e,
+                dleq_s
+            FROM
+                blind_signature
+            WHERE
+                operation_id=:operation_id AND operation_kind=:operation_kind
+                AND c IS NOT NULL
+            "#,
+        )?
+        .bind("operation_id", operation.id().to_string())
+        .bind("operation_kind", operation.kind())
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(sql_row_to_blind_signature)
+        .collect::<Result<Vec<BlindSignature>, _>>()?)
+    }
+
+    async fn delete_blind_signatures_by_operation(
+        &mut self,
+        operation: &Operation,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            DELETE FROM blind_signature
+            WHERE operation_id = :operation_id AND operation_kind = :operation_kind
+            "#,
+        )?
+        .bind("operation_id", operation.id().to_string())
+        .bind("operation_kind", operation.kind())
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
     }
 }
 
