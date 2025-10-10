@@ -6,6 +6,15 @@ use tracing::instrument;
 use crate::mint::Mint;
 use crate::Error;
 
+/// Type alias for the result of change calculation and signing
+type ChangeResult<'a> = Result<
+    (
+        Option<Vec<BlindSignature>>,
+        Box<dyn database::MintTransaction<'a, database::Error> + Send + Sync + 'a>,
+    ),
+    Error,
+>;
+
 /// Handles change calculation and signing for melt operations
 pub struct ChangeProcessor<'a> {
     mint: &'a Mint,
@@ -36,13 +45,7 @@ impl<'a> ChangeProcessor<'a> {
         quote: &MeltQuote,
         total_spent: Amount,
         mut tx: Box<dyn database::MintTransaction<'a, database::Error> + Send + Sync + 'a>,
-    ) -> Result<
-        (
-            Option<Vec<BlindSignature>>,
-            Box<dyn database::MintTransaction<'a, database::Error> + Send + Sync + 'a>,
-        ),
-        Error,
-    > {
+    ) -> ChangeResult<'a> {
         let MeltRequestInfo {
             inputs_amount,
             inputs_fee,

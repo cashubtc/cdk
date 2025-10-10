@@ -38,6 +38,16 @@ use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
 use crate::{ensure_cdk, Amount, Error};
 
+/// Type alias for the result of preparing a melt request
+type PrepareMeltResult<'a> = Result<
+    (
+        ProofWriter,
+        MeltQuote,
+        Box<dyn MintTransaction<'a, database::Error> + Send + Sync + 'a>,
+    ),
+    Error,
+>;
+
 impl Mint {
     #[instrument(skip_all)]
     async fn check_melt_request_acceptable(
@@ -501,14 +511,7 @@ impl Mint {
     async fn prepare_melt_request(
         &self,
         melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<
-        (
-            ProofWriter,
-            MeltQuote,
-            Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
-        ),
-        Error,
-    > {
+    ) -> PrepareMeltResult<'_> {
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
         let mut tx = self.localstore.begin_transaction().await?;
