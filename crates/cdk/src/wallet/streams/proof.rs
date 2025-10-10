@@ -123,6 +123,24 @@ impl Stream for MultipleMintQuoteProofStream<'_> {
                                 )
                                 .await
                                 .map(|proofs| (mint_quote, proofs)),
+                            PaymentMethod::MiningShare => {
+                                let paid_amount = amount.ok_or(Error::AmountUndefined)?;
+                                let keyset_id = mint_quote.keyset_id.ok_or(Error::UnknownKeySet)?;
+                                let secret_key = mint_quote
+                                    .secret_key
+                                    .clone()
+                                    .ok_or(Error::SecretKeyRequired)?;
+
+                                wallet
+                                    .mint_mining_share(
+                                        &mint_quote.id,
+                                        paid_amount,
+                                        keyset_id,
+                                        secret_key,
+                                    )
+                                    .await
+                                    .map(|proofs| (mint_quote, proofs))
+                            }
                             _ => Err(Error::UnsupportedPaymentMethod),
                         }
                     });

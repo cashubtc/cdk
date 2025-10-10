@@ -269,6 +269,23 @@ impl Transport for SubscriptionClient {
                         NotificationPayload::MintQuoteBolt11Response(response.clone()),
                     ));
                 }
+                NotificationId::MintQuoteMiningShare(id) => {
+                    let response = match self
+                        .http_client
+                        .get_mint_quote_status_mining_share(&id)
+                        .await
+                    {
+                        Ok(success) => success,
+                        Err(err) => {
+                            tracing::error!("Error with MintMiningShare {} with {:?}", id, err);
+                            continue;
+                        }
+                    };
+
+                    reply_to.send(MintEvent::new(
+                        NotificationPayload::MintQuoteMiningShareResponse(response),
+                    ));
+                }
                 NotificationId::MeltQuoteBolt11(id) => {
                     let response = match self.http_client.get_melt_quote_status(&id).await {
                         Ok(success) => success,
