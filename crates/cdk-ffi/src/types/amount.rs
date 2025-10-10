@@ -123,7 +123,7 @@ impl From<CurrencyUnit> for CdkCurrencyUnit {
             CurrencyUnit::Usd => CdkCurrencyUnit::Usd,
             CurrencyUnit::Eur => CdkCurrencyUnit::Eur,
             CurrencyUnit::Auth => CdkCurrencyUnit::Auth,
-            CurrencyUnit::Custom { unit } => CdkCurrencyUnit::Custom(unit),
+            CurrencyUnit::Custom { unit } => CdkCurrencyUnit::custom(unit),
         }
     }
 }

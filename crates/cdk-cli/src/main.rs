@@ -188,8 +188,8 @@ async fn main() -> Result<()> {
     let seed = mnemonic.to_seed_normalized("");
 
     // Parse currency unit from args
-    let currency_unit = CurrencyUnit::from_str(&args.unit)
-        .unwrap_or_else(|_| CurrencyUnit::Custom(args.unit.clone()));
+    let currency_unit =
+        CurrencyUnit::from_str(&args.unit).unwrap_or_else(|_| CurrencyUnit::custom(&args.unit));
 
     // Create MultiMintWallet with specified currency unit
     // The constructor will automatically load wallets for this currency unit

@@ -299,7 +299,7 @@ impl TryInto<cdk_common::CurrencyUnit> for CurrencyUnit {
                 }
             },
             Some(currency_unit::CurrencyUnit::CustomUnit(name)) => {
-                Ok(cdk_common::CurrencyUnit::Custom(name))
+                Ok(cdk_common::CurrencyUnit::custom(name))
             }
             None => Err(Status::invalid_argument("Currency unit not set")),
         }
