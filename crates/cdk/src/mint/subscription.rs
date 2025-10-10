@@ -10,7 +10,8 @@ use cdk_common::pub_sub::{Pubsub, Spec, Subscriber};
 use cdk_common::subscription::SubId;
 use cdk_common::{
     Amount, BlindSignature, MeltQuoteBolt11Response, MeltQuoteState, MintQuoteBolt11Response,
-    MintQuoteBolt12Response, MintQuoteState, PaymentMethod, ProofState, PublicKey, QuoteId,
+    MintQuoteBolt12Response, MintQuoteMiningShareResponse, MintQuoteState, PaymentMethod,
+    ProofState, PublicKey, QuoteId,
 };
 
 use crate::event::MintEvent;
@@ -88,7 +89,12 @@ impl MintPubSubSpec {
                                         }
                                         Err(_) => None,
                                     },
-                                    PaymentMethod::MiningShare => None,
+                                    PaymentMethod::MiningShare => {
+                                        match MintQuoteMiningShareResponse::try_from(x) {
+                                            Ok(response) => Some(response.into()),
+                                            Err(_) => None,
+                                        }
+                                    }
                                     PaymentMethod::Custom(_) => None,
                                 })
                             })
@@ -168,6 +174,13 @@ impl PubSubManager {
                     total_issued,
                 );
             }
+            PaymentMethod::MiningShare => {
+                if let Ok(mut event) = MintQuoteMiningShareResponse::try_from(mint_quote.clone()) {
+                    event.state = MintQuoteState::Issued.into();
+                    event.amount_issued = total_issued;
+                    self.publish(event);
+                }
+            }
             _ => {
                 // We don't send ws updates for unknown methods
             }
@@ -186,6 +199,13 @@ impl PubSubManager {
                     total_paid,
                     mint_quote.amount_issued(),
                 );
+            }
+            PaymentMethod::MiningShare => {
+                if let Ok(mut event) = MintQuoteMiningShareResponse::try_from(mint_quote.clone()) {
+                    event.state = MintQuoteState::Paid.into();
+                    event.amount_issued = mint_quote.amount_issued();
+                    self.publish(event);
+                }
             }
             _ => {
                 // We don't send ws updates for unknown methods

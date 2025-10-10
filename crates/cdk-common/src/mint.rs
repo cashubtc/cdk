@@ -1,6 +1,7 @@
 //! Mint types
 
 use bitcoin::bip32::DerivationPath;
+use cashu::nuts::nutXX::MintQuoteMiningShareResponse;
 use cashu::quote_id::QuoteId;
 use cashu::util::unix_time;
 use cashu::{
@@ -400,6 +401,90 @@ impl TryFrom<MintQuote> for MintQuoteBolt12Response<String> {
         let quote: MintQuoteBolt12Response<QuoteId> = quote.try_into()?;
 
         Ok(quote.into())
+    }
+}
+
+impl TryFrom<crate::mint::MintQuote> for MintQuoteMiningShareResponse<QuoteId> {
+    type Error = crate::Error;
+
+    fn try_from(mint_quote: crate::mint::MintQuote) -> Result<Self, Self::Error> {
+        let state = mint_quote.state().into();
+        let crate::mint::MintQuote {
+            id,
+            request,
+            amount,
+            unit,
+            expiry,
+            amount_issued,
+            pubkey,
+            keyset_id,
+            ..
+        } = mint_quote;
+
+        let pubkey = pubkey.ok_or(crate::Error::InvalidPaymentRequest)?;
+        let keyset_id = keyset_id.ok_or(crate::Error::InvalidPaymentRequest)?;
+
+        Ok(MintQuoteMiningShareResponse {
+            quote: id,
+            request,
+            amount,
+            unit: Some(unit),
+            state,
+            expiry: Some(expiry),
+            pubkey,
+            keyset_id,
+            amount_issued,
+        })
+    }
+}
+
+impl TryFrom<MintQuote> for MintQuoteMiningShareResponse<String> {
+    type Error = crate::Error;
+
+    fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
+        let quote: MintQuoteMiningShareResponse<QuoteId> = quote.try_into()?;
+
+        Ok(quote.into())
+    }
+}
+
+#[cfg(feature = "mint")]
+impl TryFrom<crate::mint::MintQuote> for MintQuoteMiningShareResponse<Uuid> {
+    type Error = crate::Error;
+
+    fn try_from(mint_quote: crate::mint::MintQuote) -> Result<Self, Self::Error> {
+        let state = mint_quote.state().into();
+        let crate::mint::MintQuote {
+            id,
+            request,
+            amount,
+            unit,
+            expiry,
+            amount_issued,
+            pubkey,
+            keyset_id,
+            ..
+        } = mint_quote;
+
+        let pubkey = pubkey.ok_or(crate::Error::InvalidPaymentRequest)?;
+        let keyset_id = keyset_id.ok_or(crate::Error::InvalidPaymentRequest)?;
+
+        let quote_id = match id {
+            QuoteId::UUID(uuid) => uuid,
+            _ => return Err(crate::Error::InvalidPaymentMethod),
+        };
+
+        Ok(MintQuoteMiningShareResponse {
+            quote: quote_id,
+            request,
+            amount,
+            unit: Some(unit),
+            state,
+            expiry: Some(expiry),
+            pubkey,
+            keyset_id,
+            amount_issued,
+        })
     }
 }
 
