@@ -254,16 +254,21 @@ impl CurrencyUnit {
         // take 4 bytes in a fixed endianness to get a u32
         let x = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) as u64;
 
-        // map x into the inclusive interval [RESERVED, u32::MAX].
-        // compute the size of that interval:
-        //   size = (u32::MAX - RESERVED + 1)
-        // use u64 math to avoid overflow.
-        let interval_size = (u32::MAX as u64) - (reserved as u64) + 1;
+        // Hardened derivation indices are limited to [0, 2^31 - 1]; we already reserve the
+        // low band, so map into [RESERVED, HARDENED_MAX].
+        const HARDENED_MAX: u32 = (1 << 31) - 1;
+        debug_assert!(
+            reserved < HARDENED_MAX,
+            "reserved band leaves no room for custom units"
+        );
+
+        // compute the size of that interval using u64 math to avoid overflow
+        let interval_size = (HARDENED_MAX as u64) - (reserved as u64) + 1;
 
         // Fold x uniformly into [0, interval_size - 1].
         let r = (x % interval_size) as u32;
 
-        // shift into [RESERVED, u32::MAX], guaranteeing no overlap with reserved band [0, RESERVED-1].
+        // shift into [RESERVED, HARDENED_MAX], guaranteeing no overlap with reserved band [0, RESERVED-1].
         Some(reserved + r)
     }
 }
@@ -408,6 +413,17 @@ mod tests {
             .derivation_index()
             .expect("custom units should always produce an index");
 
-        assert_eq!(idx, 2425615040);
+        assert_eq!(idx, 278_131_397);
+    }
+
+    #[cfg(all(test, feature = "mint"))]
+    #[test]
+    fn currency_unit_derivation_index_within_hardened_range() {
+        let idx = CurrencyUnit::Custom("hash".into())
+            .derivation_index()
+            .expect("custom units should always produce an index");
+
+        let hardened_max = (1 << 31) - 1;
+        assert!(idx >= 5 && idx <= hardened_max);
     }
 }
