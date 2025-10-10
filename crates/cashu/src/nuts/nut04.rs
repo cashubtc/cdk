@@ -11,7 +11,8 @@ use serde::ser::{SerializeStruct, Serializer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
+use super::nut00::{BlindSignature, BlindedMessage, PaymentMethod};
+use super::nut01::CurrencyUnit;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
 #[cfg(feature = "mint")]
