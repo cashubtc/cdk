@@ -252,15 +252,15 @@ impl CurrencyUnit {
 
     /// Generate deterministic derivation index for custom currency units
     fn custom_derivation_index(s: &str, reserved: u32) -> Option<u32> {
-        // 1) NFC normalization: composes equivalent Unicode sequences (e.g., "e" + U+0301) into a single
-        //    canonical code point (e.g., "é") so visually/equivalently identical strings hash the same
-        // 2) lowercase: avoids case-induced divergence ("USD" vs "usd")
-        // 3) trim: removes accidental leading/trailing whitespace (" usd " vs "usd")
-        let norm = s.nfc().collect::<String>().to_lowercase();
-        let norm = norm.trim();
+        // Canonicalize before hashing to ensure identical representations converge:
+        // 1) trim ASCII whitespace so " usd " == "usd"
+        // 2) NFC normalization so composed/decomposed Unicode forms align
+        // 3) uppercase to guarantee case-insensitive matching while preserving spec intent
+        let trimmed = s.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n'));
+        let canonical = trimmed.nfc().collect::<String>().to_uppercase();
 
         // use SHA-256 so that the same normalized string always yields the same digest
-        let digest = Sha256::hash(norm.as_bytes());
+        let digest = Sha256::hash(canonical.as_bytes());
 
         // take 4 bytes in a fixed endianness to get a u32
         let x = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) as u64;
@@ -425,7 +425,7 @@ mod tests {
             .derivation_index()
             .expect("custom units should always produce an index");
 
-        assert_eq!(idx, 278_131_397);
+        assert_eq!(idx, 1_502_388_632);
     }
 
     #[cfg(all(test, feature = "mint"))]
@@ -437,5 +437,32 @@ mod tests {
 
         let hardened_max = (1 << 31) - 1;
         assert!(idx >= 5 && idx <= hardened_max);
+    }
+
+    #[cfg(all(test, feature = "mint"))]
+    #[test]
+    fn currency_unit_derivation_matches_nut_xx_vectors() {
+        let vectors = [
+            ("sat", 0),
+            ("msat", 1),
+            ("auth", 4),
+            ("usd", 2),
+            ("eur", 3),
+            ("nuts", 1_502_388_632),
+            ("  NUTS  ", 1_502_388_632),
+            ("eurc", 1_321_886_555),
+            ("cafe\u{0301}", 642_348_970),
+            ("CAFÉ", 642_348_970),
+            ("gbp", 1_076_107_758),
+            ("JPY", 1_137_986_283),
+        ];
+
+        for (input, expected) in vectors {
+            let unit = CurrencyUnit::from_str(input).unwrap();
+            let idx = unit
+                .derivation_index()
+                .expect("reserved and custom units should yield indices");
+            assert_eq!(idx, expected, "input {input}");
+        }
     }
 }
