@@ -131,6 +131,7 @@ impl TryFrom<MintQuote> for MintQuoteResponse {
                 let bolt12_response = MintQuoteBolt12Response::try_from(quote)?;
                 Ok(MintQuoteResponse::Bolt12(bolt12_response))
             }
+            PaymentMethod::MiningShare => Err(Error::InvalidPaymentMethod),
             PaymentMethod::Custom(_) => Err(Error::InvalidPaymentMethod),
         }
     }
@@ -328,6 +329,9 @@ impl Mint {
                     let res: MintQuoteBolt12Response<QuoteId> = quote.clone().try_into()?;
                     self.pubsub_manager
                         .publish(NotificationPayload::MintQuoteBolt12Response(res));
+                }
+                PaymentMethod::MiningShare => {
+                    // Mining-share notifications will be emitted in a later stage.
                 }
                 PaymentMethod::Custom(_) => {}
             }

@@ -273,6 +273,8 @@ pub enum PaymentMethod {
     Bolt11,
     /// Bolt12 payment type
     Bolt12,
+    /// Mining share payment type
+    MiningShare,
     /// Custom payment type
     Custom { method: String },
 }
@@ -282,6 +284,7 @@ impl From<cdk::nuts::PaymentMethod> for PaymentMethod {
         match method {
             cdk::nuts::PaymentMethod::Bolt11 => Self::Bolt11,
             cdk::nuts::PaymentMethod::Bolt12 => Self::Bolt12,
+            cdk::nuts::PaymentMethod::MiningShare => Self::MiningShare,
             cdk::nuts::PaymentMethod::Custom(s) => Self::Custom { method: s },
         }
     }
@@ -292,6 +295,7 @@ impl From<PaymentMethod> for cdk::nuts::PaymentMethod {
         match method {
             PaymentMethod::Bolt11 => Self::Bolt11,
             PaymentMethod::Bolt12 => Self::Bolt12,
+            PaymentMethod::MiningShare => Self::MiningShare,
             PaymentMethod::Custom { method } => Self::Custom(method),
         }
     }

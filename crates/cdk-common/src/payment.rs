@@ -95,6 +95,8 @@ pub enum PaymentIdentifier {
     Bolt12PaymentHash([u8; 32]),
     /// Payment id
     PaymentId([u8; 32]),
+    /// Mining share hash identifier
+    MiningShareHash(String),
     /// Custom Payment ID
     CustomId(String),
 }
@@ -115,6 +117,7 @@ impl PaymentIdentifier {
                     .try_into()
                     .map_err(|_| Error::InvalidHash)?,
             )),
+            "mining_share_hash" => Ok(Self::MiningShareHash(identifier.to_string())),
             "custom" => Ok(Self::CustomId(identifier.to_string())),
             "payment_id" => Ok(Self::PaymentId(
                 hex::decode(identifier)?
@@ -133,6 +136,7 @@ impl PaymentIdentifier {
             Self::PaymentHash(_) => "payment_hash".to_string(),
             Self::Bolt12PaymentHash(_) => "bolt12_payment_hash".to_string(),
             Self::PaymentId(_) => "payment_id".to_string(),
+            Self::MiningShareHash(_) => "mining_share_hash".to_string(),
             Self::CustomId(_) => "custom".to_string(),
         }
     }
@@ -146,6 +150,7 @@ impl std::fmt::Display for PaymentIdentifier {
             Self::PaymentHash(h) => write!(f, "{}", hex::encode(h)),
             Self::Bolt12PaymentHash(h) => write!(f, "{}", hex::encode(h)),
             Self::PaymentId(h) => write!(f, "{}", hex::encode(h)),
+            Self::MiningShareHash(h) => write!(f, "{h}"),
             Self::CustomId(c) => write!(f, "{c}"),
         }
     }

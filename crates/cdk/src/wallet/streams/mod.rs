@@ -67,6 +67,7 @@ impl WaitableEvent {
                             PaymentMethod::Bolt11 => acc.0.push(quote_id),
                             PaymentMethod::Bolt12 => acc.1.push(quote_id),
                             PaymentMethod::Custom(_) => acc.0.push(quote_id),
+                            PaymentMethod::MiningShare => acc.0.push(quote_id),
                         }
                         acc
                     },

@@ -41,6 +41,11 @@ impl From<CdkPaymentIdentifier> for PaymentIdentifier {
                 r#type: PaymentIdentifierType::PaymentId.into(),
                 value: Some(payment_identifier::Value::Hash(hex::encode(hash))),
             },
+            CdkPaymentIdentifier::MiningShareHash(hash) => Self {
+                // Mining share identifiers are string-based; surface them as custom IDs for now.
+                r#type: PaymentIdentifierType::CustomId.into(),
+                value: Some(payment_identifier::Value::Id(hash)),
+            },
         }
     }
 }

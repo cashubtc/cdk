@@ -160,6 +160,7 @@ impl SubscriptionClient {
             }
             NotificationId::MintQuoteBolt11(q) => (Kind::Bolt11MintQuote, q),
             NotificationId::MintQuoteBolt12(q) => (Kind::Bolt12MintQuote, q),
+            NotificationId::MintQuoteMiningShare(q) => (Kind::Bolt11MintQuote, q),
         };
 
         let request: WsRequest<_> = (

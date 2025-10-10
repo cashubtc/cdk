@@ -200,6 +200,9 @@ impl Wallet {
         let melt_response = match quote_info.payment_method {
             cdk_common::PaymentMethod::Bolt11 => self.client.post_melt(request).await,
             cdk_common::PaymentMethod::Bolt12 => self.client.post_melt_bolt12(request).await,
+            cdk_common::PaymentMethod::MiningShare => {
+                return Err(Error::UnsupportedPaymentMethod);
+            }
             cdk_common::PaymentMethod::Custom(_) => {
                 return Err(Error::UnsupportedPaymentMethod);
             }

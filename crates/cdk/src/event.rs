@@ -6,8 +6,8 @@ use std::ops::Deref;
 use cdk_common::nut17::NotificationId;
 use cdk_common::pub_sub::Event;
 use cdk_common::{
-    MeltQuoteBolt11Response, MintQuoteBolt11Response, MintQuoteBolt12Response, NotificationPayload,
-    ProofState,
+    MeltQuoteBolt11Response, MintQuoteBolt11Response, MintQuoteBolt12Response,
+    MintQuoteMiningShareResponse, NotificationPayload, ProofState,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,15 @@ where
     }
 }
 
+impl<T> From<MintQuoteMiningShareResponse<T>> for MintEvent<T>
+where
+    T: Clone + Eq + PartialEq,
+{
+    fn from(value: MintQuoteMiningShareResponse<T>) -> Self {
+        Self(NotificationPayload::MintQuoteMiningShareResponse(value))
+    }
+}
+
 impl<T> Event for MintEvent<T>
 where
     T: Clone + Serialize + DeserializeOwned + Debug + Ord + Hash + Send + Sync + Eq + PartialEq,
@@ -120,6 +129,9 @@ where
             }
             NotificationPayload::MintQuoteBolt12Response(r) => {
                 NotificationId::MintQuoteBolt12(r.quote.to_owned())
+            }
+            NotificationPayload::MintQuoteMiningShareResponse(r) => {
+                NotificationId::MintQuoteMiningShare(r.quote.to_owned())
             }
             NotificationPayload::ProofState(p) => NotificationId::ProofState(p.y.to_owned()),
         }]

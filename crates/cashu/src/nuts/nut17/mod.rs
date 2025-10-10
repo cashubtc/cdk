@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::PublicKey;
 use crate::nuts::{
-    CurrencyUnit, MeltQuoteBolt11Response, MintQuoteBolt11Response, PaymentMethod, ProofState,
+    CurrencyUnit, MeltQuoteBolt11Response, MintQuoteBolt11Response, MintQuoteMiningShareResponse,
+    PaymentMethod, ProofState,
 };
 use crate::quote_id::QuoteIdError;
 use crate::MintQuoteBolt12Response;
@@ -116,6 +117,15 @@ where
     }
 }
 
+impl<T> From<MintQuoteMiningShareResponse<T>> for NotificationPayload<T>
+where
+    T: Clone,
+{
+    fn from(mint_quote: MintQuoteMiningShareResponse<T>) -> NotificationPayload<T> {
+        NotificationPayload::MintQuoteMiningShareResponse(mint_quote)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "T: Serialize + DeserializeOwned")]
 #[serde(untagged)]
@@ -132,6 +142,8 @@ where
     MintQuoteBolt11Response(MintQuoteBolt11Response<T>),
     /// Mint Quote Bolt12 Response
     MintQuoteBolt12Response(MintQuoteBolt12Response<T>),
+    /// Mint Quote Mining Share Response
+    MintQuoteMiningShareResponse(MintQuoteMiningShareResponse<T>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Hash, Serialize)]
@@ -151,6 +163,8 @@ where
     MintQuoteBolt12(T),
     /// MintQuote id is an QuoteId
     MeltQuoteBolt12(T),
+    /// MintQuote id is an QuoteId for mining share notifications
+    MintQuoteMiningShare(T),
 }
 
 /// Kind

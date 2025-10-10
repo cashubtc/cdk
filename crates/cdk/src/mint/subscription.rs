@@ -46,6 +46,9 @@ impl MintPubSubSpec {
                 NotificationId::MeltQuoteBolt12(uuid) => {
                     melt_queries.push(self.db.get_melt_quote(uuid))
                 }
+                NotificationId::MintQuoteMiningShare(uuid) => {
+                    mint_queries.push(self.db.get_mint_quote(uuid))
+                }
             }
         }
 
@@ -85,6 +88,7 @@ impl MintPubSubSpec {
                                         }
                                         Err(_) => None,
                                     },
+                                    PaymentMethod::MiningShare => None,
                                     PaymentMethod::Custom(_) => None,
                                 })
                             })
