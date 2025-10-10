@@ -10,7 +10,6 @@ use cashu::{
 use lightning::offers::offer::Offer;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
-use uuid::Uuid;
 
 use crate::nuts::{MeltQuoteState, MintQuoteState};
 use crate::payment::PaymentIdentifier;
@@ -57,12 +56,11 @@ impl MintQuote {
     /// Create new [`MintQuote`]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        id: Option<QuoteId>,
+        id: QuoteId,
         request: String,
         unit: CurrencyUnit,
         amount: Option<Amount>,
         expiry: u64,
-        request_lookup_id: PaymentIdentifier,
         pubkey: Option<PublicKey>,
         amount_paid: Amount,
         amount_issued: Amount,
@@ -71,10 +69,42 @@ impl MintQuote {
         payments: Vec<IncomingPayment>,
         issuance: Vec<Issuance>,
     ) -> Self {
-        let id = id.unwrap_or_else(QuoteId::new_uuid);
-
         Self {
-            id,
+            id: id.clone(),
+            amount,
+            unit,
+            request,
+            expiry,
+            request_lookup_id: PaymentIdentifier::QuoteId(id),
+            pubkey,
+            created_time,
+            amount_paid,
+            amount_issued,
+            payment_method,
+            payments,
+            issuance,
+        }
+    }
+
+    /// Create new [`MintQuote`]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_lookup_id(
+        id: QuoteId,
+        request: String,
+        unit: CurrencyUnit,
+        amount: Option<Amount>,
+        expiry: u64,
+        pubkey: Option<PublicKey>,
+        amount_paid: Amount,
+        amount_issued: Amount,
+        payment_method: PaymentMethod,
+        created_time: u64,
+        payments: Vec<IncomingPayment>,
+        issuance: Vec<Issuance>,
+        request_lookup_id: PaymentIdentifier,
+    ) -> Self {
+        Self {
+            id: id.clone(),
             amount,
             unit,
             request,
@@ -276,6 +306,7 @@ impl MeltQuote {
     /// Create new [`MeltQuote`]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        quote_id: Option<QuoteId>,
         request: MeltPaymentRequest,
         unit: CurrencyUnit,
         amount: Amount,
@@ -285,10 +316,10 @@ impl MeltQuote {
         options: Option<MeltOptions>,
         payment_method: PaymentMethod,
     ) -> Self {
-        let id = Uuid::new_v4();
+        let id = quote_id.unwrap_or(QuoteId::new_uuid());
 
         Self {
-            id: QuoteId::UUID(id),
+            id,
             amount,
             unit,
             request,

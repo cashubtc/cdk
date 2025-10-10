@@ -41,6 +41,10 @@ pub enum Error {
     #[error("Could not send bolt11 without amount")]
     CouldNotSendBolt11WithoutAmount,
 
+    /// Invalid offer ID length
+    #[error("Invalid offer ID length")]
+    InvalidOfferIdLength,
+
     /// Payment not found
     #[error("Payment not found")]
     PaymentNotFound,
@@ -80,6 +84,10 @@ pub enum Error {
     /// Invalid hex
     #[error("Invalid hex")]
     InvalidHex,
+
+    /// Database error
+    #[error("Database error: {0}")]
+    Database(String),
 }
 
 impl From<Error> for cdk_common::payment::Error {

@@ -24,6 +24,7 @@ use cdk_integration_tests::init_regtest::start_regtest_end;
 use cdk_integration_tests::shared;
 use cdk_ldk_node::CdkLdkNode;
 use cdk_mintd::config::LoggingConfig;
+use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use tokio::runtime::Runtime;
@@ -336,6 +337,7 @@ fn main() -> Result<()> {
 
         let shutdown_clone_one = Arc::clone(&shutdown_clone);
 
+        let db = MintSqliteDatabase::new(temp_dir.join("test.sqlite")).await?;
         let ldk_work_dir = temp_dir.join("ldk_mint");
         let cdk_ldk = CdkLdkNode::new(
             bitcoin::Network::Regtest,
@@ -356,6 +358,7 @@ fn main() -> Result<()> {
                 port: 8092,
             }],
             Some(Arc::clone(&rt_clone)),
+            Arc::new(db),
         )?;
 
         let inner_node = cdk_ldk.node();

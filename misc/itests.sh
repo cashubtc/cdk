@@ -176,9 +176,10 @@ while true; do
     fi
 done
 
+export CDK_TEST_LIGHTNING_CLIENT="lnd"
+
 # Run cargo test
 echo "Running regtest test with CLN mint and CLN client"
-export CDK_TEST_LIGHTNING_CLIENT="lnd"
 cargo test -p cdk-integration-tests --test regtest
 if [ $? -ne 0 ]; then
     echo "regtest test with cln mint failed, exiting"
