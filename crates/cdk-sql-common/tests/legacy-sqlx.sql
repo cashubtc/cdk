@@ -45,7 +45,7 @@ CREATE TABLE mint_quote (
     unit TEXT NOT NULL,
     request TEXT NOT NULL,
     expiry INTEGER NOT NULL
-, state TEXT CHECK ( state IN ('UNPAID', 'PENDING', 'PAID', 'ISSUED' ) ) NOT NULL DEFAULT 'UNPAID', request_lookup_id TEXT, pubkey TEXT, created_time INTEGER NOT NULL DEFAULT 0, paid_time INTEGER, issued_time INTEGER);
+, state TEXT CHECK ( state IN ('UNPAID', 'PENDING', 'PAID', 'ISSUED' ) ) NOT NULL DEFAULT 'UNPAID', request_lookup_id TEXT, pubkey TEXT, created_time INTEGER NOT NULL DEFAULT 0, paid_time INTEGER, issued_time INTEGER, keyset_id TEXT);
 CREATE TABLE melt_quote (
     id TEXT PRIMARY KEY,
     unit TEXT NOT NULL,

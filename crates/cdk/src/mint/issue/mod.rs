@@ -304,6 +304,7 @@ impl Mint {
                 unix_time(),
                 vec![],
                 vec![],
+                None,
             );
 
             tracing::debug!(

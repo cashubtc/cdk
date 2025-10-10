@@ -10,7 +10,7 @@ use cashu::{nut00, PaymentMethod, Proofs, PublicKey};
 use serde::{Deserialize, Serialize};
 
 use crate::mint_url::MintUrl;
-use crate::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
+use crate::nuts::{CurrencyUnit, Id, MeltQuoteState, MintQuoteState, SecretKey};
 use crate::{Amount, Error};
 
 /// Wallet Key
@@ -63,6 +63,9 @@ pub struct MintQuote {
     /// Amount paid to the mint for the quote
     #[serde(default)]
     pub amount_paid: Amount,
+    /// Keyset ID associated with the quote
+    #[serde(default)]
+    pub keyset_id: Option<Id>,
 }
 
 /// Melt Quote Info
@@ -101,6 +104,7 @@ impl MintQuote {
         request: String,
         expiry: u64,
         secret_key: Option<SecretKey>,
+        keyset_id: Option<Id>,
     ) -> Self {
         Self {
             id,
@@ -114,6 +118,7 @@ impl MintQuote {
             secret_key,
             amount_issued: Amount::ZERO,
             amount_paid: Amount::ZERO,
+            keyset_id,
         }
     }
 
