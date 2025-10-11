@@ -312,7 +312,7 @@ where
 
             proofs_by_operation
                 .entry(operation_id)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(proof);
         }
 

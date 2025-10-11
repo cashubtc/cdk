@@ -5,10 +5,11 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::Operation;
 use cdk_common::nuts::BlindedMessage;
 use cdk_common::{database, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
+use tokio::sync::Mutex;
 use tracing::instrument;
 
 use self::compensation::{CompensatingAction, RemoveSwapSetup};
-use self::state::SwapState;
+use self::state::{Initial, SetupComplete, Signed};
 use crate::mint::subscription::PubSubManager;
 
 mod compensation;
@@ -63,77 +64,45 @@ mod state;
 /// Example: If we perform actions A → B → C in the forward path, compensations must
 /// execute as C' → B' → A' to properly reverse the operations without violating
 /// any invariants or constraints.
-pub struct SwapSaga<'a> {
+///
+/// # Typestate Pattern
+///
+/// This saga uses the **typestate pattern** to enforce state transitions at compile-time.
+/// Each state (Initial, SetupComplete, Signed) is a distinct type, and operations are
+/// only available on the appropriate type:
+///
+/// ```text
+/// SwapSaga<Initial>
+///   └─> setup_swap() -> SwapSaga<SetupComplete>
+///         └─> sign_outputs() -> SwapSaga<Signed>
+///               └─> finalize() -> SwapResponse
+/// ```
+///
+/// **Benefits:**
+/// - Invalid state transitions (e.g., `finalize()` before `sign_outputs()`) won't compile
+/// - State-specific data (e.g., signatures) only exists in the appropriate state type
+/// - No runtime state checks or `Option<T>` unwrapping needed
+/// - IDE autocomplete only shows valid operations for each state
+pub struct SwapSaga<'a, S> {
     mint: &'a super::Mint,
     db: DynMintDatabase,
     pubsub: Arc<PubSubManager>,
-    state: SwapState,
     /// Compensating actions in LIFO order (most recent first)
-    compensations: VecDeque<Box<dyn CompensatingAction>>,
-    /// Blinded messages for outputs (set in setup_swap)
-    blinded_messages: Option<Vec<BlindedMessage>>,
-    /// Y values (public keys) from input proofs (set in setup_swap)
-    ys: Option<Vec<PublicKey>>,
-    /// Blind signatures for outputs (set in sign_outputs)
-    signatures: Option<Vec<cdk_common::nuts::BlindSignature>>,
+    compensations: Arc<Mutex<VecDeque<Box<dyn CompensatingAction>>>>,
     operation: Operation,
+    state_data: S,
 }
 
-impl<'a> SwapSaga<'a> {
+impl<'a> SwapSaga<'a, Initial> {
     pub fn new(mint: &'a super::Mint, db: DynMintDatabase, pubsub: Arc<PubSubManager>) -> Self {
         Self {
             mint,
             db,
             pubsub,
-            state: SwapState::Initial,
-            compensations: VecDeque::new(),
-            blinded_messages: None,
-            ys: None,
-            signatures: None,
+            compensations: Arc::new(Mutex::new(VecDeque::new())),
             operation: Operation::new_swap(),
+            state_data: Initial,
         }
-    }
-
-    #[instrument(skip_all)]
-    fn transition(&mut self, new_state: SwapState) -> Result<(), Error> {
-        if !self.state.can_transition_to(&new_state) {
-            tracing::error!(
-                "Invalid state transition: {} -> {}",
-                self.state.name(),
-                new_state.name()
-            );
-            return Err(Error::Internal);
-        }
-
-        tracing::debug!(
-            "State transition: {} -> {}",
-            self.state.name(),
-            new_state.name()
-        );
-        self.state = new_state;
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn compensate_all(&mut self) -> Result<(), Error> {
-        if self.compensations.is_empty() {
-            return Ok(());
-        }
-
-        tracing::warn!("Running {} compensating actions", self.compensations.len());
-
-        while let Some(compensation) = self.compensations.pop_front() {
-            tracing::debug!("Running compensation: {}", compensation.name());
-            if let Err(e) = compensation.execute(&self.db).await {
-                tracing::error!(
-                    "Compensation {} failed: {}. Continuing...",
-                    compensation.name(),
-                    e
-                );
-            }
-        }
-
-        Ok(())
     }
 
     /// Sets up the swap by atomically verifying balance and reserving inputs/outputs.
@@ -161,12 +130,12 @@ impl<'a> SwapSaga<'a> {
     /// - `DuplicateOutputs`: Output blinded messages already exist
     #[instrument(skip_all)]
     pub async fn setup_swap(
-        &mut self,
+        self,
         input_proofs: &Proofs,
         blinded_messages: &[BlindedMessage],
         quote_id: Option<QuoteId>,
         input_verification: crate::mint::Verification,
-    ) -> Result<(), Error> {
+    ) -> Result<SwapSaga<'a, SetupComplete>, Error> {
         tracing::info!("TX1: Setting up swap (verify + inputs + outputs)");
 
         let mut tx = self.db.begin_transaction().await?;
@@ -259,20 +228,31 @@ impl<'a> SwapSaga<'a> {
             .collect();
 
         // Register compensation (uses LIFO via push_front)
-        self.compensations.push_front(Box::new(RemoveSwapSetup {
-            blinded_secrets,
-            input_ys: ys.clone(),
-        }));
+        let compensations = Arc::clone(&self.compensations);
+        compensations
+            .lock()
+            .await
+            .push_front(Box::new(RemoveSwapSetup {
+                blinded_secrets,
+                input_ys: ys.clone(),
+            }));
 
-        // Store data before transitioning state
-        self.blinded_messages = Some(blinded_messages_vec);
-        self.ys = Some(ys);
-
-        self.transition(SwapState::SetupComplete)?;
-
-        Ok(())
+        // Transition to SetupComplete state
+        Ok(SwapSaga {
+            mint: self.mint,
+            db: self.db,
+            pubsub: self.pubsub,
+            compensations: self.compensations,
+            operation: self.operation,
+            state_data: SetupComplete {
+                blinded_messages: blinded_messages_vec,
+                ys,
+            },
+        })
     }
+}
 
+impl<'a> SwapSaga<'a, SetupComplete> {
     /// Performs blind signing of output blinded messages.
     ///
     /// This is a non-transactional cryptographic operation that happens after `setup_swap`
@@ -280,7 +260,7 @@ impl<'a> SwapSaga<'a> {
     ///
     /// # What This Does
     ///
-    /// 1. Retrieves blinded messages from the saga struct (must be in SetupComplete state)
+    /// 1. Retrieves blinded messages from the state data
     /// 2. Calls the mint's blind signing function to generate signatures
     /// 3. Stores signatures and transitions to the Signed state
     ///
@@ -291,31 +271,30 @@ impl<'a> SwapSaga<'a> {
     ///
     /// # Errors
     ///
-    /// - `Internal`: Called from an invalid state (not SetupComplete) or data not available
     /// - Propagates any errors from the blind signing operation
     #[instrument(skip_all)]
-    pub async fn sign_outputs(&mut self) -> Result<(), Error> {
+    pub async fn sign_outputs(self) -> Result<SwapSaga<'a, Signed>, Error> {
         tracing::info!("Signing outputs (no DB)");
 
-        // Verify we're in the correct state
-        if self.state != SwapState::SetupComplete {
-            tracing::error!("Cannot sign from current state: {}", self.state.name());
-            self.compensate_all().await?;
-            return Err(Error::Internal);
-        }
-
-        // Retrieve blinded messages from struct
-        let blinded_messages = self.blinded_messages.as_ref().ok_or_else(|| {
-            tracing::error!("Blinded messages not available in SetupComplete state");
-            Error::Internal
-        })?;
-
-        match self.mint.blind_sign(blinded_messages.clone()).await {
+        match self
+            .mint
+            .blind_sign(self.state_data.blinded_messages.clone())
+            .await
+        {
             Ok(signatures) => {
-                // Store signatures in struct
-                self.signatures = Some(signatures);
-                self.transition(SwapState::Signed)?;
-                Ok(())
+                // Transition to Signed state
+                Ok(SwapSaga {
+                    mint: self.mint,
+                    db: self.db,
+                    pubsub: self.pubsub,
+                    compensations: self.compensations,
+                    operation: self.operation,
+                    state_data: Signed {
+                        blinded_messages: self.state_data.blinded_messages,
+                        ys: self.state_data.ys,
+                        signatures,
+                    },
+                })
             }
             Err(err) => {
                 self.compensate_all().await?;
@@ -323,7 +302,9 @@ impl<'a> SwapSaga<'a> {
             }
         }
     }
+}
 
+impl SwapSaga<'_, Signed> {
     /// Finalizes the swap by committing signatures and marking inputs as spent.
     ///
     /// This is the second and final transaction (TX2) in the saga and completes the swap.
@@ -349,49 +330,15 @@ impl<'a> SwapSaga<'a> {
     ///
     /// # Errors
     ///
-    /// - `Internal`: Called from an invalid state (not Signed) or data not available
     /// - `TokenAlreadySpent`: Input proofs were already spent by another operation
     /// - Propagates any database errors
     #[instrument(skip_all)]
-    pub async fn finalize(&mut self) -> Result<cdk_common::nuts::SwapResponse, Error> {
+    pub async fn finalize(self) -> Result<cdk_common::nuts::SwapResponse, Error> {
         tracing::info!("TX2: Finalizing swap (signatures + mark spent)");
 
-        // Verify we're in the correct state
-        if self.state != SwapState::Signed {
-            tracing::error!("Cannot finalize from current state: {}", self.state.name());
-            self.compensate_all().await?;
-            return Err(Error::Internal);
-        }
-
-        // Retrieve and clone data from struct to avoid borrow checker issues
-        let blinded_messages = self
+        let blinded_secrets: Vec<PublicKey> = self
+            .state_data
             .blinded_messages
-            .as_ref()
-            .ok_or_else(|| {
-                tracing::error!("Blinded messages not available in Signed state");
-                Error::Internal
-            })?
-            .clone();
-
-        let signatures = self
-            .signatures
-            .as_ref()
-            .ok_or_else(|| {
-                tracing::error!("Signatures not available in Signed state");
-                Error::Internal
-            })?
-            .clone();
-
-        let ys = self
-            .ys
-            .as_ref()
-            .ok_or_else(|| {
-                tracing::error!("Input Y values not available in Signed state");
-                Error::Internal
-            })?
-            .clone();
-
-        let blinded_secrets: Vec<PublicKey> = blinded_messages
             .iter()
             .map(|bm| bm.blinded_secret)
             .collect();
@@ -400,7 +347,7 @@ impl<'a> SwapSaga<'a> {
 
         // Add blind signatures to outputs
         if let Err(err) = tx
-            .add_blind_signatures(&blinded_secrets, &signatures, None)
+            .add_blind_signatures(&blinded_secrets, &self.state_data.signatures, None)
             .await
         {
             tx.rollback().await?;
@@ -409,7 +356,10 @@ impl<'a> SwapSaga<'a> {
         }
 
         // Mark input proofs as spent
-        match tx.update_proofs_states(&ys, State::Spent).await {
+        match tx
+            .update_proofs_states(&self.state_data.ys, State::Spent)
+            .await
+        {
             Ok(_) => {}
             Err(database::Error::AttemptUpdateSpentProof)
             | Err(database::Error::AttemptRemoveSpentProof) => {
@@ -425,17 +375,47 @@ impl<'a> SwapSaga<'a> {
         }
 
         // Publish proof state changes
-        for pk in &ys {
+        for pk in &self.state_data.ys {
             self.pubsub.proof_state((*pk, State::Spent));
         }
 
         tx.commit().await?;
 
         // Clear compensations - swap is complete
-        self.compensations.clear();
+        self.compensations.lock().await.clear();
 
-        self.transition(SwapState::Completed)?;
+        Ok(cdk_common::nuts::SwapResponse::new(
+            self.state_data.signatures,
+        ))
+    }
+}
 
-        Ok(cdk_common::nuts::SwapResponse::new(signatures))
+impl<S> SwapSaga<'_, S> {
+    /// Execute all compensating actions and consume the saga.
+    ///
+    /// This method takes ownership of self to ensure the saga cannot be used
+    /// after compensation has been triggered.
+    #[instrument(skip_all)]
+    async fn compensate_all(self) -> Result<(), Error> {
+        let mut compensations = self.compensations.lock().await;
+
+        if compensations.is_empty() {
+            return Ok(());
+        }
+
+        tracing::warn!("Running {} compensating actions", compensations.len());
+
+        while let Some(compensation) = compensations.pop_front() {
+            tracing::debug!("Running compensation: {}", compensation.name());
+            if let Err(e) = compensation.execute(&self.db).await {
+                tracing::error!(
+                    "Compensation {} failed: {}. Continuing...",
+                    compensation.name(),
+                    e
+                );
+            }
+        }
+
+        Ok(())
     }
 }

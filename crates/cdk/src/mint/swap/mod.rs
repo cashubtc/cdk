@@ -41,12 +41,11 @@ impl Mint {
             return Err(err);
         }
 
-        // Start the swap saga
-        let mut saga = SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone());
+        // Step 1: Initialize the swap saga
+        let init_saga = SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone());
 
-        // TX1: Setup swap (verify balance + add inputs as pending + add output blinded messages)
-        // The balance verification is now part of the same transaction
-        if let Err(err) = saga
+        // Step 2: TX1 - Setup swap (verify balance + add inputs as pending + add output blinded messages)
+        let setup_saga = init_saga
             .setup_swap(
                 swap_request.inputs(),
                 swap_request.outputs(),
@@ -54,28 +53,22 @@ impl Mint {
                 input_verification,
             )
             .await
-        {
-            #[cfg(feature = "prometheus")]
-            self.record_swap_failure("process_swap_request");
-            return Err(err);
-        }
-
-        // Blind sign outputs (no DB transaction)
-        if let Err(err) = saga.sign_outputs().await {
-            #[cfg(feature = "prometheus")]
-            self.record_swap_failure("process_swap_request");
-            return Err(err);
-        }
-
-        // TX2: Finalize swap (add signatures + mark inputs spent)
-        let response = match saga.finalize().await {
-            Ok(response) => response,
-            Err(err) => {
+            .inspect_err(|_| {
                 #[cfg(feature = "prometheus")]
                 self.record_swap_failure("process_swap_request");
-                return Err(err);
-            }
-        };
+            })?;
+
+        // Step 3: Blind sign outputs (no DB transaction)
+        let signed_saga = setup_saga.sign_outputs().await.inspect_err(|_| {
+            #[cfg(feature = "prometheus")]
+            self.record_swap_failure("process_swap_request");
+        })?;
+
+        // Step 4: TX2 - Finalize swap (add signatures + mark inputs spent)
+        let response = signed_saga.finalize().await.inspect_err(|_| {
+            #[cfg(feature = "prometheus")]
+            self.record_swap_failure("process_swap_request");
+        })?;
 
         #[cfg(feature = "prometheus")]
         {

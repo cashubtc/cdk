@@ -65,9 +65,7 @@ impl Operation {
             "mint" => Ok(Self::Mint(uuid)),
             "melt" => Ok(Self::Melt(uuid)),
             "swap" => Ok(Self::Swap(uuid)),
-            _ => Err(Error::Custom(
-                format!("Invalid operation kind: {}", kind).into(),
-            )),
+            _ => Err(Error::Custom(format!("Invalid operation kind: {}", kind))),
         }
     }
 }
