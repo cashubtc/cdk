@@ -35,11 +35,7 @@ impl Mint {
                 })?;
 
         // Verify signature flag (no DB needed)
-        if let Err(err) = self.validate_sig_flag(&swap_request).await {
-            #[cfg(feature = "prometheus")]
-            self.record_swap_failure("process_swap_request");
-            return Err(err);
-        }
+        self.validate_sig_flag(&swap_request).await?;
 
         // Step 1: Initialize the swap saga
         let init_saga = SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone());
@@ -52,23 +48,13 @@ impl Mint {
                 None,
                 input_verification,
             )
-            .await
-            .inspect_err(|_| {
-                #[cfg(feature = "prometheus")]
-                self.record_swap_failure("process_swap_request");
-            })?;
+            .await?;
 
         // Step 3: Blind sign outputs (no DB transaction)
-        let signed_saga = setup_saga.sign_outputs().await.inspect_err(|_| {
-            #[cfg(feature = "prometheus")]
-            self.record_swap_failure("process_swap_request");
-        })?;
+        let signed_saga = setup_saga.sign_outputs().await?;
 
         // Step 4: TX2 - Finalize swap (add signatures + mark inputs spent)
-        let response = signed_saga.finalize().await.inspect_err(|_| {
-            #[cfg(feature = "prometheus")]
-            self.record_swap_failure("process_swap_request");
-        })?;
+        let response = signed_saga.finalize().await?;
 
         #[cfg(feature = "prometheus")]
         {
