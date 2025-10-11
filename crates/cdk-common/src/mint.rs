@@ -14,7 +14,61 @@ use uuid::Uuid;
 
 use crate::nuts::{MeltQuoteState, MintQuoteState};
 use crate::payment::PaymentIdentifier;
-use crate::{Amount, CurrencyUnit, Id, KeySetInfo, PublicKey};
+use crate::{Amount, CurrencyUnit, Error, Id, KeySetInfo, PublicKey};
+
+/// Operation
+pub enum Operation {
+    /// Mint
+    Mint(Uuid),
+    /// Melt
+    Melt(Uuid),
+    /// Swap
+    Swap(Uuid),
+}
+
+impl Operation {
+    /// Mint
+    pub fn new_mint() -> Self {
+        Self::Mint(Uuid::new_v4())
+    }
+    /// Melt
+    pub fn new_melt() -> Self {
+        Self::Melt(Uuid::new_v4())
+    }
+    /// Swap
+    pub fn new_swap() -> Self {
+        Self::Swap(Uuid::new_v4())
+    }
+
+    /// Operation id
+    pub fn id(&self) -> &Uuid {
+        match self {
+            Operation::Mint(id) => id,
+            Operation::Melt(id) => id,
+            Operation::Swap(id) => id,
+        }
+    }
+
+    /// Operation kind
+    pub fn kind(&self) -> &str {
+        match self {
+            Operation::Mint(_) => "mint",
+            Operation::Melt(_) => "melt",
+            Operation::Swap(_) => "swap",
+        }
+    }
+
+    /// From kind and i
+    pub fn from_kind_and_id(kind: &str, id: &str) -> Result<Self, Error> {
+        let uuid = Uuid::parse_str(id)?;
+        match kind {
+            "mint" => Ok(Self::Mint(uuid)),
+            "melt" => Ok(Self::Melt(uuid)),
+            "swap" => Ok(Self::Swap(uuid)),
+            _ => Err(Error::Custom(format!("Invalid operation kind: {}", kind))),
+        }
+    }
+}
 
 /// Mint Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
