@@ -17,11 +17,11 @@ async-trait = { workspace = true }
 bip39 = { workspace = true }
 cdk = { workspace = true, default-features = false, features = ["wallet", "auth", "bip353"] }
 cdk-sqlite = { workspace = true }
-ctor = "0.2"
+cdk-postgres = { workspace = true, optional = true }
 futures = { workspace = true }
 once_cell = { workspace = true }
 rand = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread"] }
@@ -30,9 +30,13 @@ url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 
+[features]
+default = ["postgres"]
+# Enable Postgres-backed wallet database support in FFI
+postgres = ["cdk-postgres"]
+
 [dev-dependencies]
 
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
-

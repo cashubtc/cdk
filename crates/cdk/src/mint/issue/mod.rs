@@ -322,12 +322,12 @@ impl Mint {
                 PaymentMethod::Bolt11 => {
                     let res: MintQuoteBolt11Response<QuoteId> = quote.clone().into();
                     self.pubsub_manager
-                        .broadcast(NotificationPayload::MintQuoteBolt11Response(res));
+                        .publish(NotificationPayload::MintQuoteBolt11Response(res));
                 }
                 PaymentMethod::Bolt12 => {
                     let res: MintQuoteBolt12Response<QuoteId> = quote.clone().try_into()?;
                     self.pubsub_manager
-                        .broadcast(NotificationPayload::MintQuoteBolt12Response(res));
+                        .publish(NotificationPayload::MintQuoteBolt12Response(res));
                 }
                 PaymentMethod::Custom(_) => {}
             }
@@ -368,39 +368,6 @@ impl Mint {
         {
             METRICS.dec_in_flight_requests("mint_quotes");
             METRICS.record_mint_operation("mint_quotes", result.is_ok());
-            if result.is_err() {
-                METRICS.record_error();
-            }
-        }
-
-        result
-    }
-
-    /// Removes a mint quote from the database
-    ///
-    /// # Arguments
-    /// * `quote_id` - The UUID of the quote to remove
-    ///
-    /// # Returns
-    /// * `Ok(())` if removal was successful
-    /// * `Error` if the quote doesn't exist or removal fails
-    #[instrument(skip_all)]
-    pub async fn remove_mint_quote(&self, quote_id: &QuoteId) -> Result<(), Error> {
-        #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("remove_mint_quote");
-
-        let result = async {
-            let mut tx = self.localstore.begin_transaction().await?;
-            tx.remove_mint_quote(quote_id).await?;
-            tx.commit().await?;
-            Ok(())
-        }
-        .await;
-
-        #[cfg(feature = "prometheus")]
-        {
-            METRICS.dec_in_flight_requests("remove_mint_quote");
-            METRICS.record_mint_operation("remove_mint_quote", result.is_ok());
             if result.is_err() {
                 METRICS.record_error();
             }

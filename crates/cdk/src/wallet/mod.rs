@@ -4,8 +4,9 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
-use cdk_common::subscription::Params;
+use cdk_common::subscription::WalletParams;
 use getrandom::getrandom;
 use subscription::{ActiveSubscription, SubscriptionManager};
 #[cfg(feature = "auth")]
@@ -32,6 +33,8 @@ use crate::OidcClient;
 
 #[cfg(feature = "auth")]
 mod auth;
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+pub use mint_connector::TorHttpClient;
 mod balance;
 mod builder;
 mod issue;
@@ -105,40 +108,42 @@ pub enum WalletSubscription {
     Bolt12MintQuoteState(Vec<String>),
 }
 
-impl From<WalletSubscription> for Params {
+impl From<WalletSubscription> for WalletParams {
     fn from(val: WalletSubscription) -> Self {
         let mut buffer = vec![0u8; 10];
 
         getrandom(&mut buffer).expect("Failed to generate random bytes");
 
-        let id = buffer
-            .iter()
-            .map(|&byte| {
-                let index = byte as usize % ALPHANUMERIC.len(); // 62 alphanumeric characters (A-Z, a-z, 0-9)
-                ALPHANUMERIC[index] as char
-            })
-            .collect::<String>();
+        let id = Arc::new(
+            buffer
+                .iter()
+                .map(|&byte| {
+                    let index = byte as usize % ALPHANUMERIC.len(); // 62 alphanumeric characters (A-Z, a-z, 0-9)
+                    ALPHANUMERIC[index] as char
+                })
+                .collect::<String>(),
+        );
 
         match val {
-            WalletSubscription::ProofState(filters) => Params {
+            WalletSubscription::ProofState(filters) => WalletParams {
                 filters,
                 kind: Kind::ProofState,
-                id: id.into(),
+                id,
             },
-            WalletSubscription::Bolt11MintQuoteState(filters) => Params {
+            WalletSubscription::Bolt11MintQuoteState(filters) => WalletParams {
                 filters,
                 kind: Kind::Bolt11MintQuote,
-                id: id.into(),
+                id,
             },
-            WalletSubscription::Bolt11MeltQuoteState(filters) => Params {
+            WalletSubscription::Bolt11MeltQuoteState(filters) => WalletParams {
                 filters,
                 kind: Kind::Bolt11MeltQuote,
-                id: id.into(),
+                id,
             },
-            WalletSubscription::Bolt12MintQuoteState(filters) => Params {
+            WalletSubscription::Bolt12MintQuoteState(filters) => WalletParams {
                 filters,
                 kind: Kind::Bolt12MintQuote,
-                id: id.into(),
+                id,
             },
         }
     }
@@ -190,10 +195,10 @@ impl Wallet {
     }
 
     /// Subscribe to events
-    pub async fn subscribe<T: Into<Params>>(&self, query: T) -> ActiveSubscription {
+    pub async fn subscribe<T: Into<WalletParams>>(&self, query: T) -> ActiveSubscription {
         self.subscription
-            .subscribe(self.mint_url.clone(), query.into(), Arc::new(self.clone()))
-            .await
+            .subscribe(self.mint_url.clone(), query.into())
+            .expect("FIXME")
     }
 
     /// Fee required for proof set
@@ -326,34 +331,36 @@ impl Wallet {
 
     /// Get amounts needed to refill proof state
     #[instrument(skip(self))]
-    pub async fn amounts_needed_for_state_target(&self) -> Result<Vec<Amount>, Error> {
+    pub async fn amounts_needed_for_state_target(
+        &self,
+        fee_and_amounts: &FeeAndAmounts,
+    ) -> Result<Vec<Amount>, Error> {
         let unspent_proofs = self.get_unspent_proofs().await?;
 
-        let amounts_count: HashMap<usize, usize> =
+        let amounts_count: HashMap<u64, u64> =
             unspent_proofs
                 .iter()
                 .fold(HashMap::new(), |mut acc, proof| {
                     let amount = proof.amount;
-                    let counter = acc.entry(u64::from(amount) as usize).or_insert(0);
+                    let counter = acc.entry(u64::from(amount)).or_insert(0);
                     *counter += 1;
                     acc
                 });
 
-        let all_possible_amounts: Vec<usize> = (0..32).map(|i| 2usize.pow(i as u32)).collect();
+        let needed_amounts =
+            fee_and_amounts
+                .amounts()
+                .iter()
+                .fold(Vec::new(), |mut acc, amount| {
+                    let count_needed = (self.target_proof_count as u64)
+                        .saturating_sub(*amounts_count.get(amount).unwrap_or(&0));
 
-        let needed_amounts = all_possible_amounts
-            .iter()
-            .fold(Vec::new(), |mut acc, amount| {
-                let count_needed: usize = self
-                    .target_proof_count
-                    .saturating_sub(*amounts_count.get(amount).unwrap_or(&0));
+                    for _i in 0..count_needed {
+                        acc.push(Amount::from(*amount));
+                    }
 
-                for _i in 0..count_needed {
-                    acc.push(Amount::from(*amount as u64));
-                }
-
-                acc
-            });
+                    acc
+                });
         Ok(needed_amounts)
     }
 
@@ -362,8 +369,11 @@ impl Wallet {
     async fn determine_split_target_values(
         &self,
         change_amount: Amount,
+        fee_and_amounts: &FeeAndAmounts,
     ) -> Result<SplitTarget, Error> {
-        let mut amounts_needed_refill = self.amounts_needed_for_state_target().await?;
+        let mut amounts_needed_refill = self
+            .amounts_needed_for_state_target(fee_and_amounts)
+            .await?;
 
         amounts_needed_refill.sort();
 

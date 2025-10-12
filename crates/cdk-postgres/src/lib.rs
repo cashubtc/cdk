@@ -319,8 +319,14 @@ pub type MintPgDatabase = SQLMintDatabase<PgConnectionPool>;
 #[cfg(feature = "auth")]
 pub type MintPgAuthDatabase = SQLMintAuthDatabase<PgConnectionPool>;
 
-/// Mint DB implementation with PostgresSQL
+/// Wallet DB implementation with PostgreSQL
 pub type WalletPgDatabase = SQLWalletDatabase<PgConnectionPool>;
+
+/// Convenience free functions (cannot add inherent impls for a foreign type).
+/// These mirror the Mint patterns and call through to the generic constructors.
+pub async fn new_wallet_pg_database(conn_str: &str) -> Result<WalletPgDatabase, Error> {
+    <SQLWalletDatabase<PgConnectionPool>>::new(conn_str).await
+}
 
 #[cfg(test)]
 mod test {
@@ -335,10 +341,9 @@ mod test {
 
         let db_url = format!("{db_url} schema={test_id}");
 
-        let db = MintPgDatabase::new(db_url.as_str())
+        MintPgDatabase::new(db_url.as_str())
             .await
-            .expect("database");
-        db
+            .expect("database")
     }
 
     mint_db_test!(provide_db);

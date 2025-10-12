@@ -17,7 +17,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use bip39::Mnemonic;
-use cdk_ffi::database::WalletSqliteDatabase;
+use cdk_ffi::sqlite::WalletSqliteDatabase;
 use cdk_ffi::types::{Amount, CurrencyUnit, QuoteState, SplitTarget};
 use cdk_ffi::wallet::Wallet as FfiWallet;
 use cdk_ffi::WalletConfig;
@@ -214,7 +214,7 @@ async fn test_ffi_mint_quote_creation() {
         let quote = wallet
             .mint_quote(amount, Some(description.clone()))
             .await
-            .expect(&format!("Failed to create quote for {} sats", amount_value));
+            .unwrap_or_else(|_| panic!("Failed to create quote for {} sats", amount_value));
 
         // Verify quote properties
         assert_eq!(quote.amount, Some(amount));

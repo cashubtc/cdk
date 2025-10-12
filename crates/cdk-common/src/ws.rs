@@ -2,6 +2,8 @@
 //!
 //! This module extends the `cashu` crate with types and functions for the CDK, using the correct
 //! expected ID types.
+use std::sync::Arc;
+
 #[cfg(feature = "mint")]
 use cashu::nut17::ws::JSON_RPC_VERSION;
 use cashu::nut17::{self};
@@ -10,7 +12,7 @@ use cashu::quote_id::QuoteId;
 #[cfg(feature = "mint")]
 use cashu::NotificationPayload;
 
-use crate::pub_sub::SubId;
+type SubId = Arc<crate::subscription::SubId>;
 
 /// Request to unsubscribe from a websocket subscription
 pub type WsUnsubscribeRequest = nut17::ws::WsUnsubscribeRequest<SubId>;

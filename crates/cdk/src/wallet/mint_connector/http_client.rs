@@ -47,6 +47,31 @@ impl<T> HttpClient<T>
 where
     T: Transport + Send + Sync + 'static,
 {
+    /// Create new [`HttpClient`] with a provided transport implementation.
+    #[cfg(feature = "auth")]
+    pub fn with_transport(
+        mint_url: MintUrl,
+        transport: T,
+        auth_wallet: Option<AuthWallet>,
+    ) -> Self {
+        Self {
+            transport: transport.into(),
+            mint_url,
+            auth_wallet: Arc::new(RwLock::new(auth_wallet)),
+            cache_support: Default::default(),
+        }
+    }
+
+    /// Create new [`HttpClient`] with a provided transport implementation.
+    #[cfg(not(feature = "auth"))]
+    pub fn with_transport(mint_url: MintUrl, transport: T) -> Self {
+        Self {
+            transport: transport.into(),
+            mint_url,
+            cache_support: Default::default(),
+        }
+    }
+
     /// Create new [`HttpClient`]
     #[cfg(feature = "auth")]
     pub fn new(mint_url: MintUrl, auth_wallet: Option<AuthWallet>) -> Self {
@@ -71,7 +96,7 @@ where
     /// Get auth token for a protected endpoint
     #[cfg(feature = "auth")]
     #[instrument(skip(self))]
-    async fn get_auth_token(
+    pub async fn get_auth_token(
         &self,
         method: Method,
         path: RoutePath,
@@ -137,22 +162,20 @@ where
             .map(Duration::from_secs)
             .unwrap_or_default();
 
+        let transport = self.transport.clone();
         loop {
             let url = self.mint_url.join_paths(&match path {
                 nut19::Path::MintBolt11 => vec!["v1", "mint", "bolt11"],
                 nut19::Path::MeltBolt11 => vec!["v1", "melt", "bolt11"],
                 nut19::Path::MintBolt12 => vec!["v1", "mint", "bolt12"],
+
                 nut19::Path::MeltBolt12 => vec!["v1", "melt", "bolt12"],
                 nut19::Path::Swap => vec!["v1", "swap"],
             })?;
 
             let result = match method {
-                nut19::Method::Get => self.transport.http_get(url, auth_token.clone()).await,
-                nut19::Method::Post => {
-                    self.transport
-                        .http_post(url, auth_token.clone(), payload)
-                        .await
-                }
+                nut19::Method::Get => transport.http_get(url, auth_token.clone()).await,
+                nut19::Method::Post => transport.http_post(url, auth_token.clone(), payload).await,
             };
 
             if result.is_ok() {
@@ -197,12 +220,9 @@ where
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
         let url = self.mint_url.join_paths(&["v1", "keys"])?;
+        let transport = self.transport.clone();
 
-        Ok(self
-            .transport
-            .http_get::<KeysResponse>(url, None)
-            .await?
-            .keysets)
+        Ok(transport.http_get::<KeysResponse>(url, None).await?.keysets)
     }
 
     /// Get Keyset Keys [NUT-01]
@@ -212,7 +232,8 @@ where
             .mint_url
             .join_paths(&["v1", "keys", &keyset_id.to_string()])?;
 
-        let keys_response = self.transport.http_get::<KeysResponse>(url, None).await?;
+        let transport = self.transport.clone();
+        let keys_response = transport.http_get::<KeysResponse>(url, None).await?;
 
         Ok(keys_response.keysets.first().unwrap().clone())
     }
@@ -221,7 +242,8 @@ where
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "keysets"])?;
-        self.transport.http_get(url, None).await
+        let transport = self.transport.clone();
+        transport.http_get(url, None).await
     }
 
     /// Mint Quote [NUT-04]
@@ -368,7 +390,8 @@ where
     /// Helper to get mint info
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
         let url = self.mint_url.join_paths(&["v1", "info"])?;
-        let info: MintInfo = self.transport.http_get(url, None).await?;
+        let transport = self.transport.clone();
+        let info: MintInfo = transport.http_get(url, None).await?;
 
         if let Ok(mut cache_support) = self.cache_support.write() {
             *cache_support = (

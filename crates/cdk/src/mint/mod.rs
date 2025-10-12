@@ -34,6 +34,7 @@ use crate::{cdk_database, Amount};
 
 #[cfg(feature = "auth")]
 pub(crate) mod auth;
+mod blinded_message_writer;
 mod builder;
 mod check_spendable;
 mod issue;
@@ -42,7 +43,7 @@ mod ln;
 mod melt;
 mod proof_writer;
 mod start_up_check;
-pub mod subscription;
+mod subscription;
 mod swap;
 mod verification;
 
@@ -205,7 +206,7 @@ impl Mint {
 
         Ok(Self {
             signatory,
-            pubsub_manager: Arc::new(localstore.clone().into()),
+            pubsub_manager: PubSubManager::new(localstore.clone()),
             localstore,
             #[cfg(feature = "auth")]
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
@@ -887,9 +888,9 @@ impl Mint {
             .get_mint_quote_by_request(&melt_quote.request.to_string())
             .await
         {
-            Ok(Some(mint_quote)) => mint_quote,
-            // Not an internal melt -> mint
-            Ok(None) => return Ok(None),
+            Ok(Some(mint_quote)) if mint_quote.unit == melt_quote.unit => mint_quote,
+            // Not an internal melt -> mint or unit mismatch
+            Ok(_) => return Ok(None),
             Err(err) => {
                 tracing::debug!("Error attempting to get mint quote: {}", err);
                 return Err(Error::Internal);

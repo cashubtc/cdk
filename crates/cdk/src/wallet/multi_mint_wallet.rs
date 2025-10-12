@@ -4,6 +4,7 @@
 //! pairs
 
 use std::collections::BTreeMap;
+use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -25,6 +26,8 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut23::QuoteState;
 use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SpendingConditions, Token};
 use crate::types::Melted;
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+use crate::wallet::mint_connector::transport::tor_transport::TorAsync;
 use crate::wallet::types::MintQuote;
 use crate::{Amount, Wallet};
 
@@ -114,6 +117,9 @@ pub struct MultiMintWallet {
     wallets: Arc<RwLock<BTreeMap<MintUrl, Wallet>>>,
     /// Proxy configuration for HTTP clients (optional)
     proxy_config: Option<url::Url>,
+    /// Shared Tor transport to be cloned into each TorHttpClient (if enabled)
+    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+    shared_tor_transport: Option<TorAsync>,
 }
 
 impl MultiMintWallet {
@@ -129,6 +135,8 @@ impl MultiMintWallet {
             unit,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
             proxy_config: None,
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            shared_tor_transport: None,
         };
 
         // Automatically load wallets from database for this currency unit
@@ -153,6 +161,35 @@ impl MultiMintWallet {
             unit,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
             proxy_config: Some(proxy_url),
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            shared_tor_transport: None,
+        };
+
+        // Automatically load wallets from database for this currency unit
+        wallet.load_wallets().await?;
+
+        Ok(wallet)
+    }
+
+    /// Create a new [MultiMintWallet] with Tor transport for all wallets
+    ///
+    /// When the `tor` feature is enabled (and not on wasm32), this constructor
+    /// creates a single Tor transport (TorAsync) that is cloned into each
+    /// TorHttpClient used by per-mint Wallets. This ensures only one Tor instance
+    /// is bootstrapped and shared across wallets.
+    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+    pub async fn new_with_tor(
+        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        seed: [u8; 64],
+        unit: CurrencyUnit,
+    ) -> Result<Self, Error> {
+        let wallet = Self {
+            localstore,
+            seed,
+            unit,
+            wallets: Arc::new(RwLock::new(BTreeMap::new())),
+            proxy_config: None,
+            shared_tor_transport: Some(TorAsync::new()),
         };
 
         // Automatically load wallets from database for this currency unit
@@ -195,18 +232,56 @@ impl MultiMintWallet {
                 .client(client)
                 .build()?
         } else {
-            // Create wallet with default client
-            Wallet::new(
-                &mint_url.to_string(),
-                self.unit.clone(),
-                self.localstore.clone(),
-                self.seed,
-                target_proof_count,
-            )?
-        };
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            if let Some(tor) = &self.shared_tor_transport {
+                // Create wallet with Tor transport client, cloning the shared transport
+                let client = {
+                    let transport = tor.clone();
+                    #[cfg(feature = "auth")]
+                    {
+                        crate::wallet::TorHttpClient::with_transport(
+                            mint_url.clone(),
+                            transport,
+                            None,
+                        )
+                    }
+                    #[cfg(not(feature = "auth"))]
+                    {
+                        crate::wallet::TorHttpClient::with_transport(mint_url.clone(), transport)
+                    }
+                };
 
-        wallet.fetch_mint_info().await?;
-        wallet.refresh_keysets().await?;
+                WalletBuilder::new()
+                    .mint_url(mint_url.clone())
+                    .unit(self.unit.clone())
+                    .localstore(self.localstore.clone())
+                    .seed(self.seed)
+                    .target_proof_count(target_proof_count.unwrap_or(3))
+                    .client(client)
+                    .build()?
+            } else {
+                // Create wallet with default client
+                Wallet::new(
+                    &mint_url.to_string(),
+                    self.unit.clone(),
+                    self.localstore.clone(),
+                    self.seed,
+                    target_proof_count,
+                )?
+            }
+
+            #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
+            {
+                // Create wallet with default client
+                Wallet::new(
+                    &mint_url.to_string(),
+                    self.unit.clone(),
+                    self.localstore.clone(),
+                    self.seed,
+                    target_proof_count,
+                )?
+            }
+        };
 
         let mut wallets = self.wallets.write().await;
         wallets.insert(mint_url, wallet);
@@ -242,13 +317,7 @@ impl MultiMintWallet {
             if mint_has_proofs_for_unit {
                 // Add mint to the MultiMintWallet if not already present
                 if !self.has_mint(&mint_url).await {
-                    if let Err(err) = self.add_mint(mint_url.clone(), None).await {
-                        tracing::error!(
-                            "Could not add {} to wallet {}.",
-                            mint_url,
-                            err.to_string()
-                        );
-                    }
+                    self.add_mint(mint_url.clone(), None).await?
                 }
             }
         }
@@ -607,7 +676,7 @@ impl MultiMintWallet {
                     // Check if this is a mint quote response with paid state
                     if let crate::nuts::nut17::NotificationPayload::MintQuoteBolt11Response(
                         quote_response,
-                    ) = notification
+                    ) = notification.deref()
                     {
                         if quote_response.state == QuoteState::Paid {
                             // Quote is paid, now mint the tokens
@@ -750,6 +819,32 @@ impl MultiMintWallet {
         wallet.mint_quote(amount, description).await
     }
 
+    /// Check a specific mint quote status
+    #[instrument(skip(self))]
+    pub async fn check_mint_quote(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+    ) -> Result<MintQuote, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        // Check the quote state from the mint
+        wallet.mint_quote_state(quote_id).await?;
+
+        // Get the updated quote from local storage
+        let quote = wallet
+            .localstore
+            .get_mint_quote(quote_id)
+            .await
+            .map_err(Error::Database)?
+            .ok_or(Error::UnknownQuote)?;
+
+        Ok(quote)
+    }
+
     /// Check all mint quotes
     /// If quote is paid, wallet will mint
     #[instrument(skip(self))]
@@ -790,6 +885,37 @@ impl MultiMintWallet {
 
         wallet
             .mint(quote_id, SplitTarget::default(), conditions)
+            .await
+    }
+
+    /// Wait for a mint quote to be paid and automatically mint the proofs
+    #[cfg(not(target_arch = "wasm32"))]
+    #[instrument(skip(self))]
+    pub async fn wait_for_mint_quote(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+        split_target: SplitTarget,
+        conditions: Option<SpendingConditions>,
+        timeout_secs: u64,
+    ) -> Result<Proofs, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        // Get the mint quote from local storage
+        let quote = wallet
+            .localstore
+            .get_mint_quote(quote_id)
+            .await
+            .map_err(Error::Database)?
+            .ok_or(Error::UnknownQuote)?;
+
+        // Wait for the quote to be paid and mint the proofs
+        let timeout_duration = tokio::time::Duration::from_secs(timeout_secs);
+        wallet
+            .wait_and_mint_quote(quote, split_target, conditions, timeout_duration)
             .await
     }
 
@@ -1139,7 +1265,7 @@ impl MultiMintWallet {
     /// Melt (pay invoice) with automatic wallet selection (deprecated, use specific mint functions for better control)
     ///
     /// Automatically selects the best wallet to pay from based on:
-    /// - Available balance  
+    /// - Available balance
     /// - Fees
     ///
     /// # Examples

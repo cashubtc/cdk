@@ -40,10 +40,21 @@ anyhow.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
 web-time.workspace = true
+tokio.workspace = true
+parking_lot = "0.12.5"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"], optional = true }
+getrandom = { version = "0.2", features = ["js"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]
 rand.workspace = true
 bip39.workspace = true
+wasm-bindgen-test = "0.3"
+criterion.workspace = true
+
+[[bench]]
+name = "transaction_id_benchmark"
+harness = false

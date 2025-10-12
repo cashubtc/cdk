@@ -204,6 +204,10 @@ pub struct Transaction {
     pub metadata: HashMap<String, String>,
     /// Quote ID if this is a mint or melt transaction
     pub quote_id: Option<String>,
+    /// Payment request (e.g., BOLT11 invoice, BOLT12 offer)
+    pub payment_request: Option<String>,
+    /// Payment proof (e.g., preimage for Lightning melt transactions)
+    pub payment_proof: Option<String>,
 }
 
 impl Transaction {
@@ -246,7 +250,10 @@ impl PartialOrd for Transaction {
 
 impl Ord for Transaction {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.timestamp.cmp(&other.timestamp).reverse()
+        self.timestamp
+            .cmp(&other.timestamp)
+            .reverse()
+            .then_with(|| self.id().cmp(&other.id()))
     }
 }
 
