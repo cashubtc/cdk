@@ -156,6 +156,10 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                             color: hsl(var(--foreground)) !important;
                         }
 
+                        .info-value {
+                            color: var(--text-primary) !important;
+                        }
+
                         .metric-label, .balance-label {
                             color: var(--text-muted) !important;
                         }
@@ -764,6 +768,10 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                             background-color: hsl(0 0% 10%);
                             border-color: hsl(var(--ring));
                         }
+
+                        textarea {
+                            color: var(--text-primary) !important;
+                        }
                     }
 
                     input:focus, textarea:focus, select:focus {
@@ -1039,6 +1047,186 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     .copy-button:hover {
                         background-color: hsl(var(--secondary) / 0.8);
                         border-color: hsl(var(--border));
+                    }
+
+                    /* Invoice details section */
+                    .invoice-details-section {
+                        margin-bottom: 1.5rem;
+                        padding-bottom: 1.5rem;
+                        border-bottom: 1px solid hsl(var(--border));
+                    }
+
+                    /* Invoice amount section - prominent display */
+                    .invoice-amount-section {
+                        text-align: center;
+                        margin-bottom: 2rem;
+                        padding: 1.5rem;
+                        background-color: hsl(var(--muted) / 0.3);
+                        border: 1px solid hsl(var(--border));
+                        position: relative;
+                    }
+
+                    .invoice-amount-section::before,
+                    .invoice-amount-section::after {
+                        content: '';
+                        position: absolute;
+                        width: 16px;
+                        height: 16px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .invoice-amount-section::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .invoice-amount-section::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    .invoice-amount-label {
+                        font-size: 0.875rem;
+                        font-weight: 500;
+                        color: hsl(var(--muted-foreground));
+                        margin-bottom: 0.5rem;
+                        text-transform: uppercase;
+                        letter-spacing: 0.05em;
+                    }
+
+                    .invoice-amount-value {
+                        font-size: 2rem;
+                        font-weight: 700;
+                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
+                        color: hsl(var(--foreground));
+                        line-height: 1.2;
+                    }
+
+                    /* Invoice display section */
+                    .invoice-display-section {
+                        margin-top: 1rem;
+                    }
+
+                    .invoice-label {
+                        font-size: 0.875rem;
+                        font-weight: 600;
+                        color: hsl(var(--foreground));
+                        text-transform: uppercase;
+                        letter-spacing: 0.05em;
+                        margin-bottom: 0.75rem;
+                    }
+
+                    .invoice-display-container {
+                        background-color: hsl(var(--muted) / 0.3);
+                        border: 1px solid hsl(var(--border));
+                        border-radius: 0;
+                        padding: 1rem;
+                        position: relative;
+                    }
+
+                    .invoice-display-container::before,
+                    .invoice-display-container::after {
+                        content: '';
+                        position: absolute;
+                        width: 12px;
+                        height: 12px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .invoice-display-container::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .invoice-display-container::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    .invoice-textarea {
+                        width: 100%;
+                        background-color: transparent !important;
+                        border: none !important;
+                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace !important;
+                        font-size: 0.875rem !important;
+                        color: var(--fg-primary) !important;
+                        padding: 0 !important;
+                        margin: 0 !important;
+                        outline: none !important;
+                        word-break: break-all;
+                        overflow-wrap: break-word;
+                        hyphens: auto;
+                        line-height: 1.5;
+                        text-align: left;
+                        resize: none;
+                        min-height: 100px;
+                        height: auto;
+                        overflow: visible;
+                    }
+
+                    .invoice-textarea:focus {
+                        box-shadow: none !important;
+                        border: none !important;
+                    }
+
+                    /* Dark mode invoice display styling */
+                    @media (prefers-color-scheme: dark) {
+                        .invoice-amount-section {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+
+                        .invoice-amount-section::before,
+                        .invoice-amount-section::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
+
+                        .invoice-amount-label {
+                            color: var(--text-muted) !important;
+                        }
+
+                        .invoice-amount-value {
+                            color: var(--text-primary) !important;
+                        }
+
+                        .invoice-label {
+                            color: var(--text-primary) !important;
+                        }
+
+                        .invoice-display-container {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+
+                        .invoice-display-container::before,
+                        .invoice-display-container::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
+
+                        .invoice-textarea {
+                            color: var(--text-primary) !important;
+                        }
+                    }
+
+                    /* Responsive invoice display */
+                    @media (max-width: 640px) {
+                        .invoice-amount-value {
+                            font-size: 1.5rem;
+                        }
+
+                        .invoice-textarea {
+                            font-size: 0.75rem !important;
+                            line-height: 1.4;
+                            min-height: 80px;
+                        }
                     }
 
                     .balance-item,
@@ -2536,6 +2724,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                 main class="container" {
                     (content)
                 }
+
 
 
             }

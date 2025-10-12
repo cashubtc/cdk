@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::web::handlers::utils::{deserialize_optional_u64, get_paginated_payments_streaming};
 use crate::web::handlers::AppState;
 use crate::web::templates::{
-    error_message, form_card, format_msats_as_btc, format_sats_as_btc, info_card, is_node_running,
+    error_message, format_msats_as_btc, format_sats_as_btc, info_card, is_node_running,
     layout_with_status, payment_list_item, success_message,
 };
 
@@ -116,14 +116,6 @@ pub async fn payments_page(
                         PaymentDirection::Outbound => "Outbound",
                     };
 
-                    @let status_str = match payment.status {
-                        PaymentStatus::Pending => "Pending",
-                        PaymentStatus::Succeeded => "Succeeded",
-                        PaymentStatus::Failed => "Failed",
-                    };
-
-                    @let amount_str = payment.amount_msat.map(format_msats_as_btc).unwrap_or_else(|| "Unknown".to_string());
-
                     @let (payment_hash, description, payment_type, preimage) = match &payment.kind {
                         PaymentKind::Bolt11 { hash, preimage, .. } => {
                             (Some(hash.to_string()), None::<String>, "BOLT11", preimage.map(|p| p.to_string()))
@@ -146,6 +138,27 @@ pub async fn payments_page(
                             (Some(hash.to_string()), None::<String>, "BOLT11 JIT", None)
                         },
                     };
+
+                    @let status_str = {
+                        // Helper function to determine invoice status
+                        fn get_invoice_status(status: PaymentStatus, direction: PaymentDirection, payment_type: &str) -> &'static str {
+                            match status {
+                                PaymentStatus::Succeeded => "Succeeded",
+                                PaymentStatus::Failed => "Failed",
+                                PaymentStatus::Pending => {
+                                    // For inbound BOLT11 payments, show "Unpaid" instead of "Pending"
+                                    if direction == PaymentDirection::Inbound && payment_type == "BOLT11" {
+                                        "Unpaid"
+                                    } else {
+                                        "Pending"
+                                    }
+                                }
+                            }
+                        }
+                        get_invoice_status(payment.status, payment.direction, payment_type)
+                    };
+
+                    @let amount_str = payment.amount_msat.map(format_msats_as_btc).unwrap_or_else(|| "Unknown".to_string());
 
                     (payment_list_item(
                         &payment.id.to_string(),
