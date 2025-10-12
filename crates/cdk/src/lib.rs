@@ -3,6 +3,10 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
+// Disallow enabling `tor` feature on wasm32 with a clear error.
+#[cfg(all(target_arch = "wasm32", feature = "tor"))]
+compile_error!("The 'tor' feature is not supported on wasm32 targets (browser). Disable the 'tor' feature or use a non-wasm32 target.");
+
 pub mod cdk_database {
     //! CDK Database
     pub use cdk_common::database::Error;
@@ -28,11 +32,9 @@ mod bip353;
 #[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
 mod oidc_client;
 
-#[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
-pub use oidc_client::OidcClient;
-
-pub mod pub_sub;
-
+#[cfg(feature = "mint")]
+#[doc(hidden)]
+pub use cdk_common::payment as cdk_payment;
 /// Re-export amount type
 #[doc(hidden)]
 pub use cdk_common::{
@@ -40,10 +42,11 @@ pub use cdk_common::{
     error::{self, Error},
     lightning_invoice, mint_url, nuts, secret, util, ws, Amount, Bolt11Invoice,
 };
-#[cfg(feature = "mint")]
-#[doc(hidden)]
-pub use cdk_common::{payment as cdk_payment, subscription};
+#[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
+pub use oidc_client::OidcClient;
 
+#[cfg(any(feature = "wallet", feature = "mint"))]
+pub mod event;
 pub mod fees;
 
 #[doc(hidden)]
@@ -65,6 +68,8 @@ pub use self::wallet::HttpClient;
 #[doc(hidden)]
 pub type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
+/// Re-export subscription
+pub use cdk_common::subscription;
 /// Re-export futures::Stream
 #[cfg(any(feature = "wallet", feature = "mint"))]
 pub use futures::{Stream, StreamExt};

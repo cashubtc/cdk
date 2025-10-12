@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
-use cdk_common::subscription::Params;
+use cdk_common::subscription::WalletParams;
 use getrandom::getrandom;
 use subscription::{ActiveSubscription, SubscriptionManager};
 #[cfg(feature = "auth")]
@@ -33,6 +33,8 @@ use crate::OidcClient;
 
 #[cfg(feature = "auth")]
 mod auth;
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+pub use mint_connector::TorHttpClient;
 mod balance;
 mod builder;
 mod issue;
@@ -106,40 +108,42 @@ pub enum WalletSubscription {
     Bolt12MintQuoteState(Vec<String>),
 }
 
-impl From<WalletSubscription> for Params {
+impl From<WalletSubscription> for WalletParams {
     fn from(val: WalletSubscription) -> Self {
         let mut buffer = vec![0u8; 10];
 
         getrandom(&mut buffer).expect("Failed to generate random bytes");
 
-        let id = buffer
-            .iter()
-            .map(|&byte| {
-                let index = byte as usize % ALPHANUMERIC.len(); // 62 alphanumeric characters (A-Z, a-z, 0-9)
-                ALPHANUMERIC[index] as char
-            })
-            .collect::<String>();
+        let id = Arc::new(
+            buffer
+                .iter()
+                .map(|&byte| {
+                    let index = byte as usize % ALPHANUMERIC.len(); // 62 alphanumeric characters (A-Z, a-z, 0-9)
+                    ALPHANUMERIC[index] as char
+                })
+                .collect::<String>(),
+        );
 
         match val {
-            WalletSubscription::ProofState(filters) => Params {
+            WalletSubscription::ProofState(filters) => WalletParams {
                 filters,
                 kind: Kind::ProofState,
-                id: id.into(),
+                id,
             },
-            WalletSubscription::Bolt11MintQuoteState(filters) => Params {
+            WalletSubscription::Bolt11MintQuoteState(filters) => WalletParams {
                 filters,
                 kind: Kind::Bolt11MintQuote,
-                id: id.into(),
+                id,
             },
-            WalletSubscription::Bolt11MeltQuoteState(filters) => Params {
+            WalletSubscription::Bolt11MeltQuoteState(filters) => WalletParams {
                 filters,
                 kind: Kind::Bolt11MeltQuote,
-                id: id.into(),
+                id,
             },
-            WalletSubscription::Bolt12MintQuoteState(filters) => Params {
+            WalletSubscription::Bolt12MintQuoteState(filters) => WalletParams {
                 filters,
                 kind: Kind::Bolt12MintQuote,
-                id: id.into(),
+                id,
             },
         }
     }
@@ -191,10 +195,10 @@ impl Wallet {
     }
 
     /// Subscribe to events
-    pub async fn subscribe<T: Into<Params>>(&self, query: T) -> ActiveSubscription {
+    pub async fn subscribe<T: Into<WalletParams>>(&self, query: T) -> ActiveSubscription {
         self.subscription
-            .subscribe(self.mint_url.clone(), query.into(), Arc::new(self.clone()))
-            .await
+            .subscribe(self.mint_url.clone(), query.into())
+            .expect("FIXME")
     }
 
     /// Fee required for proof set

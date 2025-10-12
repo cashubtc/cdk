@@ -33,3 +33,5 @@ pub use cashu::nuts::{self, *};
 pub use cashu::quote_id::{self, *};
 pub use cashu::{dhke, ensure_cdk, mint_url, secret, util, SECP256K1};
 pub use error::Error;
+/// Re-export parking_lot for reuse
+pub use parking_lot;

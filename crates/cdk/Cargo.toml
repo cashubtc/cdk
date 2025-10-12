@@ -21,6 +21,17 @@ bip353 = ["dep:hickory-resolver"]
 swagger = ["mint", "dep:utoipa", "cdk-common/swagger"]
 bench = []
 http_subscription = []
+tor = [
+    "wallet",
+    "dep:arti-client",
+    "dep:arti-hyper",
+    "dep:hyper",
+    "dep:http",
+    "dep:rustls",
+    "dep:tor-rtcompat",
+    "dep:tls-api",
+    "dep:tls-api-native-tls",
+]
 prometheus = ["dep:cdk-prometheus"]
 
 [dependencies]
@@ -40,16 +51,13 @@ serde_json.workspace = true
 serde_with.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+
 futures = { workspace = true, optional = true, features = ["alloc"] }
 url.workspace = true
 utoipa = { workspace = true, optional = true }
 uuid.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
-nostr-sdk = { optional = true, version = "0.43.0", default-features = false, features = [
-    "nip04",
-    "nip44",
-    "nip59"
-]}
+nostr-sdk = { workspace = true, optional = true }
 cdk-prometheus = {workspace = true, optional = true}
 web-time.workspace = true
 zeroize = "1"
@@ -70,16 +78,24 @@ tokio-tungstenite = { workspace = true, features = [
     "rustls-tls-native-roots",
     "connect"
 ] }
+# Tor dependencies (optional; enabled by feature "tor")
+hyper = { version = "0.14", optional = true, features = ["client", "http1", "http2"] }
+http = { version = "0.2", optional = true }
+arti-client = { version = "0.19.0", optional = true, default-features = false, features = ["tokio", "rustls"] }
+arti-hyper = { version = "0.19.0", optional = true }
 rustls = { workspace = true, optional = true }
+tor-rtcompat = { version = "0.19.0", optional = true, features = ["tokio", "rustls"] }
+tls-api = { version = "0.9", optional = true }
+tls-api-native-tls = { version = "0.9", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 cdk-signatory = { workspace = true, default-features = false }
 getrandom = { version = "0.2", features = ["js"] }
 ring = { version = "0.17.14", features = ["wasm32_unknown_unknown_js"] }
+rustls = { workspace = true, optional = true }
+
 uuid = { workspace = true, features = ["js"] }
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
 gloo-timers = { version = "0.3", features = ["futures"] }
 
 [[example]]
@@ -127,7 +143,7 @@ rand.workspace = true
 cdk-sqlite.workspace = true
 bip39.workspace = true
 tracing-subscriber.workspace = true
-criterion = "0.6.0"
+criterion.workspace = true
 reqwest = { workspace = true }
 anyhow.workspace = true
 ureq = { version = "3.1.0", features = ["json"] }
