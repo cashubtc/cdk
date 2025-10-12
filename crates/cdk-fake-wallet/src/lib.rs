@@ -802,7 +802,7 @@ impl MintPayment for FakeWallet {
             payment_proof: Some("".to_string()),
             payment_lookup_id: request_lookup_id.clone(),
             status,
-            total_spent: total_spent,
+            total_spent,
             unit: CurrencyUnit::Msat,
         })
     }
