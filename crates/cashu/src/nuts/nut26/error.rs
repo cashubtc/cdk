@@ -14,7 +14,7 @@ pub enum Error {
     /// Invalid public key
     InvalidPubkey,
     /// Unknown NUT-10 kind
-    UnknownKind(u16),
+    UnknownKind(u8),
     /// Tag too long (>255 bytes)
     TagTooLong,
     /// Bech32 encoding error
