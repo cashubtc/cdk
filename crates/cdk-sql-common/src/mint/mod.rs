@@ -28,7 +28,7 @@ use cdk_common::nut00::ProofsMethods;
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::quote_id::QuoteId;
 use cdk_common::secret::Secret;
-use cdk_common::state::check_state_transition;
+use cdk_common::state::{check_melt_quote_state_transition, check_state_transition};
 use cdk_common::util::unix_time;
 use cdk_common::{
     Amount, BlindSignature, BlindSignatureDleq, BlindedMessage, CurrencyUnit, Id, MeltQuoteState,
@@ -1042,6 +1042,8 @@ VALUES (:quote_id, :amount, :timestamp);
         .map(sql_row_to_melt_quote)
         .transpose()?
         .ok_or(Error::QuoteNotFound)?;
+
+        check_melt_quote_state_transition(quote.state, state)?;
 
         let rec = if state == MeltQuoteState::Paid {
             let current_time = unix_time();
