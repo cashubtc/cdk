@@ -14,4 +14,7 @@ pub enum Error {
     /// Base64 error
     #[error(transparent)]
     Base64Error(#[from] bitcoin::base64::DecodeError),
+    /// NUT-26 bech32m encoding error
+    #[error(transparent)]
+    Nut26Error(#[from] crate::nuts::nut26::Error),
 }
