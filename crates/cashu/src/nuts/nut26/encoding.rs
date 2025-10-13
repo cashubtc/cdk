@@ -577,18 +577,18 @@ impl PaymentRequest {
     fn decode_nut10(bytes: &[u8]) -> Result<Nut10SecretRequest, Error> {
         let mut reader = TlvReader::new(bytes);
 
-        let mut kind: Option<u16> = None;
+        let mut kind: Option<u8> = None;
         let mut data: Option<Vec<u8>> = None;
         let mut tags: Vec<(String, Vec<String>)> = Vec::new();
 
         while let Some((tag, value)) = reader.read_tlv().map_err(|_| Error::InvalidPrefix)? {
             match tag {
                 0x01 => {
-                    // kind: u16
-                    if value.len() != 2 {
+                    // kind: u8
+                    if value.len() != 1 {
                         return Err(Error::InvalidPrefix);
                     }
-                    kind = Some(u16::from_be_bytes([value[0], value[1]]));
+                    kind = Some(value[0]);
                 }
                 0x02 => {
                     // data: bytes
@@ -608,7 +608,7 @@ impl PaymentRequest {
         let kind_val = kind.ok_or(Error::InvalidPrefix)?;
         let data_val = data.unwrap_or_default();
 
-        // Convert kind u16 to Kind enum
+        // Convert kind u8 to Kind enum
         let data_str = String::from_utf8(data_val).map_err(|_| Error::InvalidUtf8)?;
 
         // Map kind value to Kind enum, error on unknown kinds
@@ -641,12 +641,12 @@ impl PaymentRequest {
     fn encode_nut10(nut10: &Nut10SecretRequest) -> Result<Vec<u8>, Error> {
         let mut writer = TlvWriter::new();
 
-        // 0x01 kind: u16
+        // 0x01 kind: u8
         let kind_val = match nut10.kind {
-            Kind::P2PK => 0u16,
-            Kind::HTLC => 1u16,
+            Kind::P2PK => 0u8,
+            Kind::HTLC => 1u8,
         };
-        writer.write_tlv(0x01, &kind_val.to_be_bytes());
+        writer.write_tlv(0x01, &[kind_val]);
 
         // 0x02 data: bytes
         writer.write_tlv(0x02, nut10.data.as_bytes());
@@ -1512,7 +1512,7 @@ mod tests {
             }
         }"#;
 
-        let expected_encoded = "CREQB1QYQQSCEEV56R2EPJVYPQQZQQQQQQQQQQQ86QXQQPQQZSQXRGW368QUE69UHK66TWWSHX27RPD4CXCEFWVDHK6ZQQTGQSQQSQQQPQQS3SXF3NXC34VF3RYDM9XVMRZDP4XA3NJVNY8YEKGDECV3JRWVMYXDJR2VEHXVERZVFSVGEXXEN98P3R2VRXVF3NQCTZVVMRZDT9893NXVE3QVQQ6PM5D9KK2MM4WSZRXD3SXQQ5SCYD";
+        let expected_encoded = "CREQB1QYQQSCEEV56R2EPJVYPQQZQQQQQQQQQQQ86QXQQPQQZSQXRGW368QUE69UHK66TWWSHX27RPD4CXCEFWVDHK6ZQQTYQSQQGQQGQYYVPJVVEKYDTZVGERWEFNXCCNGDFHVVUNYEPEXDJRWWRYVSMNXEPNVS6NXDENXGCNZVRZXF3KVEFCVG6NQENZVVCXZCNRXCCN2EFEVVENXVGRQQXSWARFD4JK7AT5QSENVVPS2N5FAS";
 
         // Parse the JSON into a PaymentRequest
         let payment_request: PaymentRequest = serde_json::from_str(json).unwrap();
