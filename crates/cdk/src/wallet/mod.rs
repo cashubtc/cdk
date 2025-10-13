@@ -673,6 +673,20 @@ impl Wallet {
 
         Ok(())
     }
+
+    /// Set the client (MintConnector) for this wallet
+    ///
+    /// This allows updating the connector without recreating the wallet.
+    pub fn set_client(&mut self, client: Arc<dyn MintConnector + Send + Sync>) {
+        self.client = client;
+    }
+
+    /// Set the target proof count for this wallet
+    ///
+    /// This controls how many proofs of each denomination the wallet tries to maintain.
+    pub fn set_target_proof_count(&mut self, count: usize) {
+        self.target_proof_count = count;
+    }
 }
 
 impl Drop for Wallet {

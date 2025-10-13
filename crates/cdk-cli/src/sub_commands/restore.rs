@@ -18,7 +18,7 @@ pub async fn restore(
     let wallet = match multi_mint_wallet.get_wallet(&mint_url).await {
         Some(wallet) => wallet.clone(),
         None => {
-            multi_mint_wallet.add_mint(mint_url.clone(), None).await?;
+            multi_mint_wallet.add_mint(mint_url.clone()).await?;
             multi_mint_wallet
                 .get_wallet(&mint_url)
                 .await
