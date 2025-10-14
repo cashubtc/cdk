@@ -434,7 +434,7 @@ impl MultiMintWallet {
             .inner
             .mint_blind_auth(&cdk_mint_url, amount.into())
             .await?;
-        Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
     /// Get unspent auth proofs for a specific mint
