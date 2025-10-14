@@ -212,7 +212,10 @@ pub async fn post_create_bolt11(
                 ("Payment Hash", invoice.payment_hash().to_string()),
                 ("Amount", format_sats_as_btc(form.amount_btc)),
                 ("Description", description_display),
-                ("Expires At", format!("{}", current_time + expiry_seconds as u64)),
+                (
+                    "Expires At",
+                    format!("{}", current_time + expiry_seconds as u64),
+                ),
             ];
 
             html! {
@@ -296,7 +299,10 @@ pub async fn post_create_bolt12(
                 ("Offer ID", offer.id().to_string()),
                 ("Amount", amount_display.clone()),
                 ("Description", description_display),
-                ("Expires At", format!("{}", current_time + expiry_seconds as u64)),
+                (
+                    "Expires At",
+                    format!("{}", current_time + expiry_seconds as u64),
+                ),
             ];
 
             html! {

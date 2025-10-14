@@ -39,7 +39,12 @@ pub fn error_message(message: &str) -> Markup {
     }
 }
 
-pub fn invoice_display_card(invoice_text: &str, amount: &str, details: Vec<(&str, String)>, back_url: &str) -> Markup {
+pub fn invoice_display_card(
+    invoice_text: &str,
+    amount: &str,
+    details: Vec<(&str, String)>,
+    back_url: &str,
+) -> Markup {
     html! {
         div class="card" {
             div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 1.5rem;" {
