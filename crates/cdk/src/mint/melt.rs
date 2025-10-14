@@ -24,7 +24,7 @@ use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
 use crate::{ensure_cdk, Amount, Error};
 
-mod melt_saga;
+pub(crate) mod melt_saga;
 pub(super) mod shared;
 
 use melt_saga::MeltSaga;
@@ -414,7 +414,7 @@ impl Mint {
         Ok(quotes)
     }
 
-    /// Melt
+    /// Melt (synchronous - blocks until payment completes)
     ///
     /// Uses MeltSaga typestate pattern for atomic transaction handling with automatic rollback on failure.
     #[instrument(skip_all)]
@@ -425,7 +425,7 @@ impl Mint {
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
         let init_saga = MeltSaga::new(
-            self,
+            std::sync::Arc::new(self.clone()),
             self.localstore.clone(),
             std::sync::Arc::clone(&self.pubsub_manager),
         );
@@ -442,5 +442,80 @@ impl Mint {
 
         // Step 4: Finalize (TX2 - marks spent, issues change)
         payment_saga.finalize().await
+    }
+
+    /// Melt (asynchronous - returns immediately with PENDING state)
+    ///
+    /// This method implements the async melt flow from NUT-05:
+    /// 1. Verifies inputs and reserves them (TX1)
+    /// 2. Attempts internal settlement
+    /// 3. Returns immediately with quote state = PENDING
+    /// 4. Spawns background task to complete payment and finalization
+    ///
+    /// The wallet can poll the quote status to check for completion.
+    /// The existing startup check handles recovery if the mint restarts during processing.
+    ///
+    /// # Async Flow
+    ///
+    /// - Setup and internal settlement happen before returning (fast operations)
+    /// - External payment and finalization happen in background task
+    /// - Even internal settlements go async for consistent behavior
+    /// - No expiry extension - startup check handles expired pending quotes
+    ///
+    /// # Background Task
+    ///
+    /// The background task continues the saga:
+    /// - Calls make_payment() with the settlement decision
+    /// - Calls finalize() to complete the melt
+    /// - Updates quote state to PAID or triggers compensation on failure
+    /// - Cleans itself up from the task tracking map
+    ///
+    /// # Errors
+    ///
+    /// Returns errors only for immediate failures (invalid inputs, etc).
+    /// Payment failures happen in background and update the quote state.
+    #[instrument(skip_all)]
+    pub async fn melt_async(
+        &self,
+        melt_request: &MeltRequest<QuoteId>,
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        let verification = self.verify_inputs(melt_request.inputs()).await?;
+
+        let init_saga = MeltSaga::new(
+            std::sync::Arc::new(self.clone()),
+            self.localstore.clone(),
+            std::sync::Arc::clone(&self.pubsub_manager),
+        );
+
+        // Step 1: Setup (TX1 - reserves inputs and outputs)
+        let setup_saga = init_saga.setup_melt(melt_request, verification).await?;
+
+        // Step 2: Attempt internal settlement (returns saga + SettlementDecision)
+        let (setup_saga, settlement) = setup_saga.attempt_internal_settlement(melt_request).await?;
+
+        // Extract quote info for the response
+        let quote_info = setup_saga.get_quote_info();
+        let quote_id = quote_info.id.clone();
+        let quote_response = MeltQuoteBolt11Response {
+            quote: quote_id.clone(),
+            paid: Some(false),
+            state: MeltQuoteState::Pending,
+            expiry: quote_info.expiry,
+            amount: quote_info.amount,
+            fee_reserve: quote_info.fee_reserve,
+            payment_preimage: None,
+            change: None,
+            request: Some(quote_info.request.to_string()),
+            unit: Some(quote_info.unit.clone()),
+        };
+
+        // Spawn background task to continue saga
+        self.spawn_melt_background_task(quote_id, setup_saga, settlement)
+            .await;
+
+        tracing::info!("Returning async melt response with PENDING state");
+
+        // Return immediately with PENDING state
+        Ok(quote_response)
     }
 }

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bip39::Mnemonic;
-use cashu::ProofsMethods;
+use cashu::{MeltQuoteBolt11Response, MeltRequest, ProofsMethods};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::{
     CurrencyUnit, MeltOptions, MeltQuoteState, MintQuoteState, MintRequest, Mpp,
@@ -442,4 +442,178 @@ async fn test_attempt_to_mint_unpaid() {
             panic!("Minting should not be allowed");
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_sync_without_async_header() {
+    let ln_client = get_test_client().await;
+
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let mint_amount = Amount::from(50);
+
+    // Fund the wallet
+    let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    ln_client
+        .pay_invoice(mint_quote.request.clone())
+        .await
+        .expect("failed to pay invoice");
+
+    let _proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .await
+        .unwrap();
+
+    // Create an invoice to melt
+    let invoice = ln_client.create_invoice(Some(10)).await.unwrap();
+
+    // Get melt quote
+    let melt_quote = wallet.melt_quote(invoice.clone(), None).await.unwrap();
+
+    // Manually create a melt request using reqwest for testing async behavior
+    let proofs = wallet.get_unspent_proofs().await.unwrap();
+    let melt_request = MeltRequest::new(melt_quote.id.clone(), proofs, None);
+
+    // Create HTTP client and construct POST request to melt endpoint
+    let client = reqwest::Client::new();
+    let melt_url = format!("{}/v1/melt/bolt11", get_mint_url_from_env());
+
+    // Test without async header first (sync behavior)
+    let start = tokio::time::Instant::now();
+    let response = client
+        .post(&melt_url)
+        .json(&melt_request)
+        .send()
+        .await
+        .expect("Failed to send sync melt request");
+
+    assert!(response.status().is_success(), "Sync melt request failed");
+    let melt_response: MeltQuoteBolt11Response<String> = response
+        .json()
+        .await
+        .expect("Failed to parse sync melt response");
+
+    let elapsed = start.elapsed();
+    println!(
+        "Sync melt completed in {:?} - no async header used",
+        elapsed
+    );
+
+    // For sync mode (no Prefer header), response should be final state
+    assert_eq!(melt_response.state, MeltQuoteState::Paid);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_async_with_async_header() {
+    let ln_client = get_test_client().await;
+
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let mint_amount = Amount::from(50);
+
+    // Fund the wallet
+    let mint_quote = wallet.mint_quote(mint_amount, None).await.unwrap();
+    ln_client
+        .pay_invoice(mint_quote.request.clone())
+        .await
+        .expect("failed to pay invoice");
+
+    let _proofs = wallet
+        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .await
+        .unwrap();
+
+    // Create an invoice to melt
+    let invoice = ln_client.create_invoice(Some(10)).await.unwrap();
+
+    // Get melt quote
+    let melt_quote = wallet.melt_quote(invoice.clone(), None).await.unwrap();
+
+    // Manually create melt request using reqwest for async header testing
+    let proofs = wallet.get_unspent_proofs().await.unwrap();
+    let melt_request = MeltRequest::new(melt_quote.id.clone(), proofs, None);
+
+    // Create HTTP client for testing async behavior with Prefer header
+    let client = reqwest::Client::new();
+    let melt_url = format!("{}/v1/melt/bolt11", get_mint_url_from_env());
+
+    // Test with async header (should return pending then final state)
+    let start = tokio::time::Instant::now();
+    let async_response = client
+        .post(&melt_url)
+        .header("Prefer", "respond-async")
+        .json(&melt_request)
+        .send()
+        .await
+        .expect("Failed to send async melt request");
+
+    assert!(
+        async_response.status().is_success(),
+        "Async melt request failed"
+    );
+    let async_melt_response: MeltQuoteBolt11Response<String> = async_response
+        .json()
+        .await
+        .expect("Failed to parse async melt response");
+
+    println!(
+        "Async melt initial response received in {:?} - should be fast",
+        start.elapsed()
+    );
+
+    // For async mode, initial response should be pending
+    assert_eq!(async_melt_response.state, MeltQuoteState::Pending);
+
+    // Poll for the final state
+    let mut final_state = MeltQuoteState::Pending;
+    let poll_start = tokio::time::Instant::now();
+    for _ in 0..10 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let status_response = client
+            .get(&format!(
+                "{}/v1/melt/quote/bolt11/{}",
+                get_mint_url_from_env(),
+                melt_quote.id
+            ))
+            .send()
+            .await
+            .expect("Failed to get melt status");
+
+        let status: MeltQuoteBolt11Response<String> = status_response
+            .json()
+            .await
+            .expect("Failed to parse status response");
+
+        final_state = status.state;
+        if final_state != MeltQuoteState::Pending {
+            break;
+        }
+    }
+
+    println!(
+        "Async melt final response received in {:?} total",
+        poll_start.elapsed()
+    );
+    println!(
+        "Async melt total time: {:?} from initial request",
+        start.elapsed()
+    );
+
+    // Should eventually become paid
+    assert_eq!(final_state, MeltQuoteState::Paid);
 }

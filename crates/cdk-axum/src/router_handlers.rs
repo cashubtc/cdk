@@ -37,6 +37,7 @@ macro_rules! post_cache_wrapper {
                 use std::ops::Deref;
                 let json_extracted_payload = payload.deref();
                 let State(mint_state) = state.clone();
+
                 let cache_key = match mint_state.cache.calculate_key(&json_extracted_payload) {
                     Some(key) => key,
                     None => {
@@ -44,7 +45,7 @@ macro_rules! post_cache_wrapper {
                         #[cfg(feature = "auth")]
                         return $handler(auth, state, payload).await;
                         #[cfg(not(feature = "auth"))]
-                        return $handler( state, payload).await;
+                        return $handler(state, payload).await;
                     }
                 };
                 if let Some(cached_response) = mint_state.cache.get::<$response_type>(&cache_key).await {
@@ -61,9 +62,69 @@ macro_rules! post_cache_wrapper {
     };
 }
 
+/// Macro to add cache to endpoint with header support
+/// Used for melt endpoints that check Prefer: respond-async header
+#[macro_export]
+macro_rules! post_cache_wrapper_with_headers {
+    ($handler:ident, $request_type:ty, $response_type:ty) => {
+        paste! {
+            /// Cache wrapper function for $handler:
+            /// Wrap $handler into a function that caches responses using the request as key
+            ///
+            /// Note: For async endpoints (melt with Prefer: respond-async header),
+            /// we do NOT cache PENDING responses, only cache final PAID/FAILED states
+            pub async fn [<cache_ $handler>](
+                #[cfg(feature = "auth")] auth: AuthHeader,
+                state: State<MintState>,
+                headers: axum::http::HeaderMap,
+                payload: Json<$request_type>
+            ) -> Result<Json<$response_type>, Response> {
+                use std::ops::Deref;
+                let json_extracted_payload = payload.deref();
+                let State(mint_state) = state.clone();
+
+                // Check if this is an async request
+                let is_async_request = headers
+                    .get("Prefer")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v.contains("respond-async"))
+                    .unwrap_or(false);
+
+                // Don't use cache for async requests (always return fresh status)
+                if is_async_request {
+                    #[cfg(feature = "auth")]
+                    return $handler(auth, state, headers, payload).await;
+                    #[cfg(not(feature = "auth"))]
+                    return $handler(state, headers, payload).await;
+                }
+
+                let cache_key = match mint_state.cache.calculate_key(&json_extracted_payload) {
+                    Some(key) => key,
+                    None => {
+                        // Could not calculate key, just return the handler result
+                        #[cfg(feature = "auth")]
+                        return $handler(auth, state, headers, payload).await;
+                        #[cfg(not(feature = "auth"))]
+                        return $handler(state, headers, payload).await;
+                    }
+                };
+                if let Some(cached_response) = mint_state.cache.get::<$response_type>(&cache_key).await {
+                    return Ok(Json(cached_response));
+                }
+                #[cfg(feature = "auth")]
+                let response = $handler(auth, state, headers, payload).await?;
+                #[cfg(not(feature = "auth"))]
+                let response = $handler(state, headers, payload).await?;
+                mint_state.cache.set(cache_key, &response.deref()).await;
+                Ok(response)
+            }
+        }
+    };
+}
+
 post_cache_wrapper!(post_swap, SwapRequest, SwapResponse);
 post_cache_wrapper!(post_mint_bolt11, MintRequest<QuoteId>, MintResponse);
-post_cache_wrapper!(
+post_cache_wrapper_with_headers!(
     post_melt_bolt11,
     MeltRequest<QuoteId>,
     MeltQuoteBolt11Response<QuoteId>
@@ -379,10 +440,18 @@ pub(crate) async fn get_check_melt_bolt11_quote(
 /// Melt tokens for a Bitcoin payment that the mint will make for the user in exchange
 ///
 /// Requests tokens to be destroyed and sent out via Lightning.
+///
+/// # Sync vs Async Behavior
+///
+/// - **Sync (default)**: Blocks until payment completes, returns PAID or FAILED
+/// - **Async**: Returns immediately with PENDING, wallet polls for completion
+///
+/// To request async behavior, include header: `Prefer: respond-async`
 #[instrument(skip_all)]
 pub(crate) async fn post_melt_bolt11(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
+    headers: axum::http::HeaderMap,
     Json(payload): Json<MeltRequest<QuoteId>>,
 ) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
     #[cfg(feature = "auth")]
@@ -397,7 +466,21 @@ pub(crate) async fn post_melt_bolt11(
             .map_err(into_response)?;
     }
 
-    let res = state.mint.melt(&payload).await.map_err(into_response)?;
+    // Check for Prefer: respond-async header
+    let prefer_async = headers
+        .get("Prefer")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("respond-async"))
+        .unwrap_or(false);
+
+    let res = if prefer_async {
+        tracing::debug!("Processing melt request asynchronously");
+        state.mint.melt_async(&payload).await
+    } else {
+        tracing::debug!("Processing melt request synchronously");
+        state.mint.melt(&payload).await
+    }
+    .map_err(into_response)?;
 
     Ok(Json(res))
 }

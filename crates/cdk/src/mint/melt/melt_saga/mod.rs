@@ -17,10 +17,10 @@ use self::state::{Initial, PaymentConfirmed, SettlementDecision, SetupComplete};
 use crate::cdk_payment::MakePaymentResponse;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::verification::Verification;
-use crate::mint::{MeltQuoteBolt11Response, MeltRequest};
+use crate::mint::{MeltQuote, MeltQuoteBolt11Response, MeltRequest};
 
 mod compensation;
-mod state;
+pub(crate) mod state;
 
 /// Saga pattern implementation for atomic melt operations.
 ///
@@ -95,8 +95,8 @@ mod state;
 /// - State-specific data (e.g., payment_result) only exists in the appropriate state type
 /// - No runtime state checks or `Option<T>` unwrapping needed
 /// - IDE autocomplete only shows valid operations for each state
-pub struct MeltSaga<'a, S> {
-    mint: &'a super::Mint,
+pub struct MeltSaga<S> {
+    mint: Arc<super::Mint>,
     db: DynMintDatabase,
     pubsub: Arc<PubSubManager>,
     /// Compensating actions in LIFO order (most recent first)
@@ -110,8 +110,8 @@ pub struct MeltSaga<'a, S> {
     state_data: S,
 }
 
-impl<'a> MeltSaga<'a, Initial> {
-    pub fn new(mint: &'a super::Mint, db: DynMintDatabase, pubsub: Arc<PubSubManager>) -> Self {
+impl MeltSaga<Initial> {
+    pub fn new(mint: Arc<super::Mint>, db: DynMintDatabase, pubsub: Arc<PubSubManager>) -> Self {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("melt_bolt11");
 
@@ -162,7 +162,7 @@ impl<'a> MeltSaga<'a, Initial> {
         self,
         melt_request: &MeltRequest<QuoteId>,
         input_verification: Verification,
-    ) -> Result<MeltSaga<'a, SetupComplete>, Error> {
+    ) -> Result<MeltSaga<SetupComplete>, Error> {
         tracing::info!("TX1: Setting up melt (verify + inputs + outputs)");
 
         let Verification {
@@ -356,7 +356,14 @@ impl<'a> MeltSaga<'a, Initial> {
     }
 }
 
-impl<'a> MeltSaga<'a, SetupComplete> {
+impl MeltSaga<SetupComplete> {
+    /// Get the quote information from the saga state
+    ///
+    /// This is useful for extracting quote data before moving the saga into a background task.
+    pub fn get_quote_info(&self) -> &MeltQuote {
+        &self.state_data.quote
+    }
+
     /// Attempts to settle the melt internally (melt-to-mint on same mint).
     ///
     /// This checks if the payment request corresponds to an existing mint quote
@@ -511,7 +518,7 @@ impl<'a> MeltSaga<'a, SetupComplete> {
     pub async fn make_payment(
         self,
         settlement: SettlementDecision,
-    ) -> Result<MeltSaga<'a, PaymentConfirmed>, Error> {
+    ) -> Result<MeltSaga<PaymentConfirmed>, Error> {
         tracing::info!("Making payment (external LN operation or internal settlement)");
 
         let payment_result = match settlement {
@@ -698,7 +705,7 @@ impl<'a> MeltSaga<'a, SetupComplete> {
     }
 }
 
-impl MeltSaga<'_, PaymentConfirmed> {
+impl MeltSaga<PaymentConfirmed> {
     /// Finalizes the melt by committing signatures and marking inputs as spent.
     ///
     /// This is the second and final transaction (TX2) in the saga and completes the melt.
@@ -785,7 +792,7 @@ impl MeltSaga<'_, PaymentConfirmed> {
             // We do not want to hold db txs across external calls
             tx.commit().await?;
             super::shared::process_melt_change(
-                self.mint,
+                &*self.mint,
                 &self.db,
                 &self.state_data.quote.id,
                 inputs_amount,
@@ -843,7 +850,7 @@ impl MeltSaga<'_, PaymentConfirmed> {
     }
 }
 
-impl<S> MeltSaga<'_, S> {
+impl<S> MeltSaga<S> {
     /// Execute all compensating actions and consume the saga.
     ///
     /// This method takes ownership of self to ensure the saga cannot be used
