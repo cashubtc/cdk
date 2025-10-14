@@ -827,6 +827,8 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip(self))]
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), Self::Err> {
+        let id = transaction.id();
+
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
@@ -835,7 +837,7 @@ impl WalletDatabase for WalletRedbDatabase {
                 .map_err(Error::from)?;
             table
                 .insert(
-                    transaction.id().as_slice(),
+                    id.as_slice(),
                     serde_json::to_string(&transaction)
                         .map_err(Error::from)?
                         .as_str(),

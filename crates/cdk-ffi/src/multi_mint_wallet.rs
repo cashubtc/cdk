@@ -118,9 +118,16 @@ impl MultiMintWallet {
         target_proof_count: Option<u32>,
     ) -> Result<(), FfiError> {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
-        self.inner
-            .add_mint(cdk_mint_url, target_proof_count.map(|c| c as usize))
-            .await?;
+
+        if let Some(count) = target_proof_count {
+            let config = cdk::wallet::multi_mint_wallet::WalletConfig::new()
+                .with_target_proof_count(count as usize);
+            self.inner
+                .add_mint_with_config(cdk_mint_url, config)
+                .await?;
+        } else {
+            self.inner.add_mint(cdk_mint_url).await?;
+        }
         Ok(())
     }
 
@@ -376,6 +383,68 @@ impl MultiMintWallet {
         let cdk_token = token.inner.clone();
         self.inner.verify_token_dleq(&cdk_token).await?;
         Ok(())
+    }
+
+    /// Query mint for current mint information
+    pub async fn fetch_mint_info(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let mint_info = self.inner.fetch_mint_info(&cdk_mint_url).await?;
+        Ok(mint_info.map(Into::into))
+    }
+}
+
+/// Auth methods for MultiMintWallet
+#[uniffi::export(async_runtime = "tokio")]
+impl MultiMintWallet {
+    /// Set Clear Auth Token (CAT) for a specific mint
+    pub async fn set_cat(&self, mint_url: MintUrl, cat: String) -> Result<(), FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        self.inner.set_cat(&cdk_mint_url, cat).await?;
+        Ok(())
+    }
+
+    /// Set refresh token for a specific mint
+    pub async fn set_refresh_token(
+        &self,
+        mint_url: MintUrl,
+        refresh_token: String,
+    ) -> Result<(), FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        self.inner
+            .set_refresh_token(&cdk_mint_url, refresh_token)
+            .await?;
+        Ok(())
+    }
+
+    /// Refresh access token for a specific mint using the stored refresh token
+    pub async fn refresh_access_token(&self, mint_url: MintUrl) -> Result<(), FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        self.inner.refresh_access_token(&cdk_mint_url).await?;
+        Ok(())
+    }
+
+    /// Mint blind auth tokens at a specific mint
+    pub async fn mint_blind_auth(
+        &self,
+        mint_url: MintUrl,
+        amount: Amount,
+    ) -> Result<Proofs, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let proofs = self
+            .inner
+            .mint_blind_auth(&cdk_mint_url, amount.into())
+            .await?;
+        Ok(proofs.into_iter().map(|p| Arc::new(p.into())).collect())
+    }
+
+    /// Get unspent auth proofs for a specific mint
+    pub async fn get_unspent_auth_proofs(
+        &self,
+        mint_url: MintUrl,
+    ) -> Result<Vec<AuthProof>, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let auth_proofs = self.inner.get_unspent_auth_proofs(&cdk_mint_url).await?;
+        Ok(auth_proofs.into_iter().map(Into::into).collect())
     }
 }
 

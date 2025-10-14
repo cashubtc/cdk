@@ -16,7 +16,6 @@ pub use self::mint_url::MintUrl;
 pub use self::nuts::*;
 pub use self::util::SECP256K1;
 
-#[cfg(feature = "mint")]
 pub mod quote_id;
 
 #[doc(hidden)]

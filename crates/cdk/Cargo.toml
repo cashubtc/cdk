@@ -57,11 +57,7 @@ url.workspace = true
 utoipa = { workspace = true, optional = true }
 uuid.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
-nostr-sdk = { optional = true, version = "0.43.0", default-features = false, features = [
-    "nip04",
-    "nip44",
-    "nip59"
-]}
+nostr-sdk = { workspace = true, optional = true }
 cdk-prometheus = {workspace = true, optional = true}
 web-time.workspace = true
 zeroize = "1"
@@ -100,8 +96,6 @@ ring = { version = "0.17.14", features = ["wasm32_unknown_unknown_js"] }
 rustls = { workspace = true, optional = true }
 
 uuid = { workspace = true, features = ["js"] }
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
 gloo-timers = { version = "0.3", features = ["futures"] }
 
 [[example]]
@@ -149,7 +143,7 @@ rand.workspace = true
 cdk-sqlite.workspace = true
 bip39.workspace = true
 tracing-subscriber.workspace = true
-criterion = "0.6.0"
+criterion.workspace = true
 reqwest = { workspace = true }
 anyhow.workspace = true
 ureq = { version = "3.1.0", features = ["json"] }

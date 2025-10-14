@@ -66,15 +66,18 @@ test:
 
   
 # run doc tests
-test-pure db="memory": build
+test-pure db="memory":
   #!/usr/bin/env bash
   set -euo pipefail
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
 
-  # Run pure integration tests
+  # Run pure integration tests (cargo test will only build what's needed for the test)
   CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1
+  
+  # Run swap flow tests (detailed testing of swap operation)
+  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test test_swap_flow -- --test-threads 1
 
 test-all db="memory":
     #!/usr/bin/env bash
