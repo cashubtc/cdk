@@ -86,8 +86,6 @@ struct TaskState {
     shutdown_notify: Option<Arc<Notify>>,
     /// Handle to the main supervisor task
     supervisor_handle: Option<JoinHandle<Result<(), Error>>>,
-    /// Background async melt tasks
-    async_melt_tasks: HashMap<QuoteId, JoinHandle<()>>,
 }
 
 impl Mint {
@@ -986,14 +984,6 @@ impl Mint {
         Ok(total_redeemed)
     }
 
-    /// Check if there's a pending background melt task for a quote
-    ///
-    /// This is useful for debugging or implementing rate limiting on async melts.
-    pub async fn has_pending_background_melt(&self, quote_id: &QuoteId) -> bool {
-        let task_state = self.task_state.lock().await;
-        task_state.async_melt_tasks.contains_key(quote_id)
-    }
-
     /// Spawn a background task to complete the melt saga
     ///
     /// This method is called by `melt_async` to continue the saga in the background.
@@ -1001,11 +991,10 @@ impl Mint {
     /// 1. Call make_payment() with the settlement decision
     /// 2. Call finalize() to complete the melt
     /// 3. Handle errors by triggering compensations
-    /// 4. Clean itself up from the task tracking map
     ///
     /// # Arguments
     ///
-    /// * `quote_id` - The quote ID for tracking
+    /// * `quote_id` - The quote ID for logging
     /// * `setup_saga` - The saga in SetupComplete state (now owned, can be moved)
     /// * `settlement` - The settlement decision from attempt_internal_settlement
     #[instrument(skip_all)]
@@ -1015,16 +1004,13 @@ impl Mint {
         setup_saga: melt::melt_saga::MeltSaga<melt::melt_saga::state::SetupComplete>,
         settlement: melt::melt_saga::state::SettlementDecision,
     ) {
-        let task_state_arc = Arc::clone(&self.task_state);
-        let quote_id_for_task = quote_id.clone();
-
         tracing::info!("Spawning background task for async melt quote {}", quote_id);
 
         // Spawn the background task - saga can now be moved since it owns Arc<Mint>
-        let task_handle = tokio::spawn(async move {
+        tokio::spawn(async move {
             tracing::info!(
                 "[ASYNC_MELT] Background task started for quote {}",
-                quote_id_for_task
+                quote_id
             );
 
             // Continue the saga: make payment then finalize
@@ -1041,31 +1027,19 @@ impl Mint {
                 Ok(response) => {
                     tracing::info!(
                         "[ASYNC_MELT] Background task completed successfully for quote {}. State: {:?}",
-                        quote_id_for_task,
+                        quote_id,
                         response.state
                     );
                 }
                 Err(err) => {
                     tracing::error!(
                         "[ASYNC_MELT] Background task failed for quote {}: {}. Compensations have been triggered.",
-                        quote_id_for_task,
+                        quote_id,
                         err
                     );
                 }
             }
-
-            // Cleanup: remove self from tracking map
-            let mut task_state = task_state_arc.lock().await;
-            task_state.async_melt_tasks.remove(&quote_id_for_task);
-            tracing::debug!(
-                "[ASYNC_MELT] Background task cleaned up for quote {}",
-                quote_id_for_task
-            );
         });
-
-        // Store the task handle
-        let mut task_state = self.task_state.lock().await;
-        task_state.async_melt_tasks.insert(quote_id, task_handle);
     }
 }
 
@@ -1230,130 +1204,5 @@ mod tests {
         // Should be able to start again after stopping
         mint.start().await.expect("Should be able to restart");
         mint.stop().await.expect("Final stop should work");
-    }
-
-    mod async_melt_tests {
-        use super::*;
-
-        /// Test that has_pending_background_melt correctly tracks background tasks
-        #[tokio::test]
-        async fn test_has_pending_background_melt() {
-            let mut supported_units = HashMap::new();
-            supported_units.insert(CurrencyUnit::default(), (0, 32));
-            let config = MintConfig::<'_> {
-                supported_units,
-                ..Default::default()
-            };
-            let mint = create_mint(config).await;
-
-            // Create a fake quote ID
-            let quote_id = QuoteId::new_uuid();
-
-            // Should not have pending task initially
-            assert!(!mint.has_pending_background_melt(&quote_id).await);
-
-            // Manually insert a fake task handle to test tracking
-            {
-                let mut task_state = mint.task_state.lock().await;
-                let fake_handle = tokio::spawn(async {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                });
-                task_state
-                    .async_melt_tasks
-                    .insert(quote_id.clone(), fake_handle);
-            }
-
-            // Now should have pending task
-            assert!(mint.has_pending_background_melt(&quote_id).await);
-
-            // Wait for task to complete
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-
-            // Task is still in map (it doesn't self-cleanup in this simple test)
-            assert!(mint.has_pending_background_melt(&quote_id).await);
-        }
-
-        /// Test that task tracking map can hold multiple quote IDs
-        #[tokio::test]
-        async fn test_multiple_async_melts_tracked() {
-            let mut supported_units = HashMap::new();
-            supported_units.insert(CurrencyUnit::default(), (0, 32));
-            let config = MintConfig::<'_> {
-                supported_units,
-                ..Default::default()
-            };
-            let mint = create_mint(config).await;
-
-            let quote_id_1 = QuoteId::new_uuid();
-            let quote_id_2 = QuoteId::new_uuid();
-            let quote_id_3 = QuoteId::new_uuid();
-
-            // Add multiple tasks
-            {
-                let mut task_state = mint.task_state.lock().await;
-                for quote_id in [&quote_id_1, &quote_id_2, &quote_id_3] {
-                    let fake_handle = tokio::spawn(async {
-                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                    });
-                    task_state
-                        .async_melt_tasks
-                        .insert(quote_id.clone(), fake_handle);
-                }
-            }
-
-            // All should be tracked
-            assert!(mint.has_pending_background_melt(&quote_id_1).await);
-            assert!(mint.has_pending_background_melt(&quote_id_2).await);
-            assert!(mint.has_pending_background_melt(&quote_id_3).await);
-
-            // Check count
-            {
-                let task_state = mint.task_state.lock().await;
-                assert_eq!(task_state.async_melt_tasks.len(), 3);
-            }
-        }
-
-        /// Test that task cleanup removes quote from tracking map
-        #[tokio::test]
-        async fn test_async_melt_task_cleanup() {
-            let mut supported_units = HashMap::new();
-            supported_units.insert(CurrencyUnit::default(), (0, 32));
-            let config = MintConfig::<'_> {
-                supported_units,
-                ..Default::default()
-            };
-            let mint = create_mint(config).await;
-
-            let quote_id = QuoteId::new_uuid();
-            let task_state_arc = Arc::clone(&mint.task_state);
-            let quote_id_for_task = quote_id.clone();
-
-            // Simulate the background task pattern with cleanup
-            let task_handle = tokio::spawn(async move {
-                // Simulate some work
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-                // Cleanup: remove self from tracking map
-                let mut task_state = task_state_arc.lock().await;
-                task_state.async_melt_tasks.remove(&quote_id_for_task);
-            });
-
-            // Insert into map
-            {
-                let mut task_state = mint.task_state.lock().await;
-                task_state
-                    .async_melt_tasks
-                    .insert(quote_id.clone(), task_handle);
-            }
-
-            // Should be tracked
-            assert!(mint.has_pending_background_melt(&quote_id).await);
-
-            // Wait for task to complete and cleanup
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-            // Should no longer be tracked
-            assert!(!mint.has_pending_background_melt(&quote_id).await);
-        }
     }
 }
