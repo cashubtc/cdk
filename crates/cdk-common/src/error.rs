@@ -335,7 +335,10 @@ pub enum Error {
     /// Http transport error
     #[error("Http transport error {0:?}: {1}")]
     HttpError(Option<u16>, String),
-    #[cfg(feature = "wallet")]
+    /// Parse invoice error
+    #[cfg(feature = "mint")]
+    #[error(transparent)]
+    Uuid(#[from] uuid::Error),
     // Crate error conversions
     /// Cashu Url Error
     #[error(transparent)]

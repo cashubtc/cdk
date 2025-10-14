@@ -7,7 +7,7 @@ use cashu::quote_id::QuoteId;
 use cashu::Amount;
 
 use super::Error;
-use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote};
+use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote, Operation};
 use crate::nuts::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
     State,
@@ -145,6 +145,7 @@ pub trait QuotesTransaction<'a> {
         &mut self,
         quote_id: Option<&QuoteId>,
         blinded_messages: &[BlindedMessage],
+        operation: &Operation,
     ) -> Result<(), Self::Err>;
 
     /// Delete blinded_messages by their blinded secrets
@@ -265,6 +266,7 @@ pub trait ProofsTransaction<'a> {
         &mut self,
         proof: Proofs,
         quote_id: Option<QuoteId>,
+        operation: &Operation,
     ) -> Result<(), Self::Err>;
     /// Updates the proofs to a given states and return the previous states
     async fn update_proofs_states(
@@ -285,6 +287,14 @@ pub trait ProofsTransaction<'a> {
         &self,
         quote_id: &QuoteId,
     ) -> Result<Vec<PublicKey>, Self::Err>;
+
+    /// Get [`Proofs`] by state and operation kind
+    /// Returns a HashMap where the key is the operation_id (Uuid) and the value is a Vec of Proofs
+    async fn get_proofs_by_state_and_operation_kind(
+        &self,
+        state: State,
+        operation_kind: &str,
+    ) -> Result<HashMap<uuid::Uuid, Proofs>, Self::Err>;
 }
 
 /// Mint Proof Database trait
@@ -328,6 +338,18 @@ pub trait SignaturesTransaction<'a> {
         &mut self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err>;
+
+    /// Get [`BlindSignature`]s by operation id
+    async fn get_blind_signatures_by_operation(
+        &self,
+        operation: &Operation,
+    ) -> Result<Vec<BlindSignature>, Self::Err>;
+
+    /// Delete [`BlindSignature`]s by operation id
+    async fn delete_blind_signatures_by_operation(
+        &mut self,
+        operation: &Operation,
+    ) -> Result<(), Self::Err>;
 }
 
 #[async_trait]

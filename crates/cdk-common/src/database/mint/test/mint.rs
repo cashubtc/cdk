@@ -8,7 +8,7 @@ use cashu::{Amount, Id, SecretKey};
 use crate::database::mint::test::unique_string;
 use crate::database::mint::{Database, Error, KeysDatabase};
 use crate::database::MintSignaturesDatabase;
-use crate::mint::{MeltPaymentRequest, MeltQuote, MintQuote};
+use crate::mint::{MeltPaymentRequest, MeltQuote, MintQuote, Operation};
 use crate::payment::PaymentIdentifier;
 
 /// Add a mint quote
@@ -435,7 +435,7 @@ where
     tx.add_melt_request(&quote.id, inputs_amount, inputs_fee)
         .await
         .unwrap();
-    tx.add_blinded_messages(Some(&quote.id), &blinded_messages)
+    tx.add_blinded_messages(Some(&quote.id), &blinded_messages, &Operation::new_melt())
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -497,7 +497,7 @@ where
         .await
         .unwrap();
     let result = tx
-        .add_blinded_messages(Some(&quote2.id), &blinded_messages)
+        .add_blinded_messages(Some(&quote2.id), &blinded_messages, &Operation::new_melt())
         .await;
     assert!(result.is_err() && matches!(result.unwrap_err(), Error::Duplicate));
     tx.rollback().await.unwrap(); // Rollback to avoid partial state
@@ -530,7 +530,7 @@ where
         .await
         .unwrap();
     assert!(tx
-        .add_blinded_messages(Some(&quote.id), &blinded_messages)
+        .add_blinded_messages(Some(&quote.id), &blinded_messages, &Operation::new_melt())
         .await
         .is_ok());
     tx.commit().await.unwrap();
@@ -543,7 +543,7 @@ where
         .await
         .unwrap();
     let result = tx
-        .add_blinded_messages(Some(&quote.id), &blinded_messages)
+        .add_blinded_messages(Some(&quote.id), &blinded_messages, &Operation::new_melt())
         .await;
     // Expect a database error due to unique violation
     assert!(result.is_err()); // Specific error might be DB-specific, e.g., SqliteError or PostgresError
@@ -576,7 +576,7 @@ where
     tx1.add_melt_request(&quote.id, inputs_amount, inputs_fee)
         .await
         .unwrap();
-    tx1.add_blinded_messages(Some(&quote.id), &blinded_messages)
+    tx1.add_blinded_messages(Some(&quote.id), &blinded_messages, &Operation::new_melt())
         .await
         .unwrap();
     tx1.commit().await.unwrap();
