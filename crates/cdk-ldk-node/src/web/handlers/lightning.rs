@@ -26,43 +26,33 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
         html! {
             h2 style="text-align: center; margin-bottom: 3rem;" { "Lightning" }
 
-            // Quick Actions section - individual cards
-            div class="card" style="margin-bottom: 2rem;" {
-                h2 { "Quick Actions" }
-                div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;" {
-                    // Open Channel Card
-                    div class="quick-action-card" {
-                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Open Channel" }
-                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Create a new Lightning Network channel to connect with another node." }
-                        a href="/channels/open" style="text-decoration: none;" {
-                            button class="button-outline" { "Open Channel" }
-                        }
-                    }
-
-                    // Create Invoice Card
-                    div class="quick-action-card" {
-                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Create Invoice" }
-                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Generate a Lightning invoice to receive payments from other users or services." }
-                        a href="/invoices" style="text-decoration: none;" {
-                            button class="button-outline" { "Create Invoice" }
-                        }
-                    }
-
-                    // Make Payment Card
-                    div class="quick-action-card" {
-                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Make Lightning Payment" }
-                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send Lightning payments to other users using invoices. BOLT 11 & 12 supported." }
-                        a href="/invoices" style="text-decoration: none;" {
-                            button class="button-outline" { "Make Payment" }
-                        }
+            // Inactive channels warning (only show if > 0)
+            @if num_inactive_channels > 0 {
+                div class="card" style="background-color: #fef3c7; border: 1px solid #f59e0b; margin-bottom: 2rem;" {
+                    h3 style="color: #92400e; margin-bottom: 0.5rem;" { "⚠️ Inactive Channels Detected" }
+                    p style="color: #78350f; margin: 0;" {
+                        "You have " (num_inactive_channels) " inactive channel(s). This may indicate a connectivity issue that requires attention."
                     }
                 }
             }
 
-            // Balance Information as metric cards
+            // Balance Information with action buttons in header
             div class="card" {
-                h2 { "Balance Information" }
-                div class="metrics-container" {
+                div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" {
+                    h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; margin: 0;" { "Balance Information" }
+                    div style="display: flex; gap: 0.5rem;" {
+                        a href="/payments/send" style="text-decoration: none;" {
+                            button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Send" }
+                        }
+                        a href="/invoices" style="text-decoration: none;" {
+                            button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Receive" }
+                        }
+                        a href="/channels/open" style="text-decoration: none;" {
+                            button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Open Channel" }
+                        }
+                    }
+                }
+                div class="metrics-container" style="margin-top: 1.5rem;" {
                     div class="metric-card" {
                         div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats)) }
                         div class="metric-label" { "Lightning Balance" }
@@ -75,9 +65,11 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                         div class="metric-value" { (format!("{}", num_active_channels)) }
                         div class="metric-label" { "Active Channels" }
                     }
-                    div class="metric-card" {
-                        div class="metric-value" { (format!("{}", num_inactive_channels)) }
-                        div class="metric-label" { "Inactive Channels" }
+                    @if num_inactive_channels > 0 {
+                        div class="metric-card" {
+                            div class="metric-value" style="color: #f59e0b;" { (format!("{}", num_inactive_channels)) }
+                            div class="metric-label" { "Inactive Channels" }
+                        }
                     }
                 }
             }
@@ -90,43 +82,33 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
         html! {
             h2 style="text-align: center; margin-bottom: 3rem;" { "Lightning" }
 
-            // Quick Actions section - individual cards
-            div class="card" style="margin-bottom: 2rem;" {
-                h2 { "Quick Actions" }
-                div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;" {
-                    // Open Channel Card
-                    div class="quick-action-card" {
-                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Open Channel" }
-                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Create a new Lightning channel by connecting with another node." }
-                        a href="/channels/open" style="text-decoration: none;" {
-                            button class="button-outline" { "Open Channel" }
-                        }
-                    }
-
-                    // Create Invoice Card
-                    div class="quick-action-card" {
-                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Create Invoice" }
-                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Generate a Lightning invoice to receive payments." }
-                        a href="/invoices" style="text-decoration: none;" {
-                            button class="button-outline" { "Create Invoice" }
-                        }
-                    }
-
-                    // Make Payment Card
-                    div class="quick-action-card" {
-                        h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Make Lightning Payment" }
-                        p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send Lightning payments to other users using invoices." }
-                        a href="/payments/send" style="text-decoration: none;" {
-                            button class="button-outline" { "Make Payment" }
-                        }
+            // Inactive channels warning (only show if > 0)
+            @if num_inactive_channels > 0 {
+                div class="card" style="background-color: #fef3c7; border: 1px solid #f59e0b; margin-bottom: 2rem;" {
+                    h3 style="color: #92400e; margin-bottom: 0.5rem;" { "⚠️ Inactive Channels Detected" }
+                    p style="color: #78350f; margin: 0;" {
+                        "You have " (num_inactive_channels) " inactive channel(s). This may indicate a connectivity issue that requires attention."
                     }
                 }
             }
 
-            // Balance Information as metric cards
+            // Balance Information with action buttons in header
             div class="card" {
-                h2 { "Balance Information" }
-                div class="metrics-container" {
+                div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" {
+                    h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; margin: 0;" { "Balance Information" }
+                    div style="display: flex; gap: 0.5rem;" {
+                        a href="/payments/send" style="text-decoration: none;" {
+                            button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Send" }
+                        }
+                        a href="/invoices" style="text-decoration: none;" {
+                            button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Receive" }
+                        }
+                        a href="/channels/open" style="text-decoration: none;" {
+                            button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Open Channel" }
+                        }
+                    }
+                }
+                div class="metrics-container" style="margin-top: 1.5rem;" {
                     div class="metric-card" {
                         div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats)) }
                         div class="metric-label" { "Lightning Balance" }
@@ -139,47 +121,48 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                         div class="metric-value" { (format!("{}", num_active_channels)) }
                         div class="metric-label" { "Active Channels" }
                     }
-                    div class="metric-card" {
-                        div class="metric-value" { (format!("{}", num_inactive_channels)) }
-                        div class="metric-label" { "Inactive Channels" }
+                    @if num_inactive_channels > 0 {
+                        div class="metric-card" {
+                            div class="metric-value" style="color: #f59e0b;" { (format!("{}", num_inactive_channels)) }
+                            div class="metric-label" { "Inactive Channels" }
+                        }
                     }
                 }
             }
 
             // Channel Details header (outside card)
-            h2 class="section-header" { "Channel Details" }
+            h2 class="section-header" style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5;" { "Channel Details" }
 
-            // Channels list
-            @for (index, channel) in channels.iter().enumerate() {
+                    // Channels list
+                    @for (index, channel) in channels.iter().enumerate() {
                 @let node_id = channel.counterparty_node_id.to_string();
                 @let channel_number = index + 1;
 
                 div class="channel-box" {
-                    // Channel number as prominent header
-                    div class="channel-alias" { (format!("Channel {}", channel_number)) }
+                    // Channel header with number on left and status badge on right
+                    div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 1.5rem;" {
+                        div class="channel-alias" style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; margin: 0;" { (format!("Channel {}", channel_number)) }
+                        @if channel.is_usable {
+                            span class="status-badge status-active" { "Active" }
+                        } @else {
+                            span class="status-badge status-inactive" { "Inactive" }
+                        }
+                    }
 
-                    // Channel details in left-aligned format
+                    // Channel details - ordered by label length
                     div class="channel-details" {
                         div class="detail-row" {
+                            span class="detail-label" { "Node ID" }
+                            span class="detail-value" { (node_id) }
+                        }
+                        div class="detail-row" {
                             span class="detail-label" { "Channel ID" }
-                            span class="detail-value-amount" { (channel.channel_id.to_string()) }
+                            span class="detail-value" { (channel.channel_id.to_string()) }
                         }
                         @if let Some(short_channel_id) = channel.short_channel_id {
                             div class="detail-row" {
                                 span class="detail-label" { "Short Channel ID" }
-                                span class="detail-value-amount" { (short_channel_id.to_string()) }
-                            }
-                        }
-                        div class="detail-row" {
-                            span class="detail-label" { "Node ID" }
-                            span class="detail-value-amount" { (node_id) }
-                        }
-                        div class="detail-row" {
-                            span class="detail-label" { "Status" }
-                            @if channel.is_usable {
-                                span class="status-badge status-active" { "Active" }
-                            } @else {
-                                span class="status-badge status-inactive" { "Inactive" }
+                                span class="detail-value" { (short_channel_id.to_string()) }
                             }
                         }
                     }

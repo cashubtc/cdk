@@ -18,6 +18,7 @@ pub fn payment_list_item(
         "Succeeded" => "status-active",
         "Failed" => "status-inactive",
         "Pending" => "status-pending",
+        "Unpaid" => "status-pending", // Use pending styling for unpaid
         _ => "status-badge",
     };
 
