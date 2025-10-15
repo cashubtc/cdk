@@ -15,10 +15,10 @@ use tracing::instrument;
 
 #[cfg(feature = "auth")]
 use crate::auth::AuthHeader;
-use crate::{into_response, post_cache_wrapper, MintState};
+use crate::{into_response, post_cache_wrapper, post_cache_wrapper_with_headers, MintState};
 
 post_cache_wrapper!(post_mint_bolt12, MintRequest<QuoteId>, MintResponse);
-post_cache_wrapper!(
+post_cache_wrapper_with_headers!(
     post_melt_bolt12,
     MeltRequest<QuoteId>,
     MeltQuoteBolt11Response<QuoteId>
@@ -190,9 +190,17 @@ pub async fn post_melt_bolt12_quote(
 /// Melt tokens for a Bitcoin payment that the mint will make for the user in exchange
 ///
 /// Requests tokens to be destroyed and sent out via Lightning.
+///
+/// # Sync vs Async Behavior
+///
+/// - **Sync (default)**: Blocks until payment completes, returns PAID or FAILED
+/// - **Async**: Returns immediately with PENDING, wallet polls for completion
+///
+/// To request async behavior, include header: `Prefer: respond-async`
 pub async fn post_melt_bolt12(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
+    headers: axum::http::HeaderMap,
     Json(payload): Json<MeltRequest<QuoteId>>,
 ) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
     #[cfg(feature = "auth")]
@@ -207,7 +215,21 @@ pub async fn post_melt_bolt12(
             .map_err(into_response)?;
     }
 
-    let res = state.mint.melt(&payload).await.map_err(into_response)?;
+    // Check for Prefer: respond-async header
+    let prefer_async = headers
+        .get("Prefer")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("respond-async"))
+        .unwrap_or(false);
+
+    let res = if prefer_async {
+        tracing::debug!("Processing bolt12 melt request asynchronously");
+        state.mint.melt_async(&payload).await
+    } else {
+        tracing::debug!("Processing bolt12 melt request synchronously");
+        state.mint.melt(&payload).await
+    }
+    .map_err(into_response)?;
 
     Ok(Json(res))
 }
