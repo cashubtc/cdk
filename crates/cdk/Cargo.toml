@@ -138,9 +138,16 @@ required-features = ["wallet"]
 name = "mint-token-bolt12"
 required-features = ["wallet"]
 
+[[example]]
+name = "spillman_channel"
+required-features = ["wallet", "mint"]
+
 [dev-dependencies]
 rand.workspace = true
+cashu.workspace = true
 cdk-sqlite.workspace = true
+cdk-fake-wallet.workspace = true
+cdk-common.workspace = true
 bip39.workspace = true
 tracing-subscriber.workspace = true
 criterion.workspace = true
