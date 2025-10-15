@@ -15,6 +15,9 @@ use crate::mint::subscription::PubSubManager;
 mod compensation;
 mod state;
 
+#[cfg(test)]
+mod tests;
+
 /// Saga pattern implementation for atomic swap operations.
 ///
 /// # Why Use the Saga Pattern?
@@ -346,6 +349,19 @@ impl SwapSaga<'_, Signed> {
         let mut tx = self.db.begin_transaction().await?;
 
         // Add blind signatures to outputs
+        // TODO: WE should move the should fail to the db so the there is not this extra rollback.
+        // This would allow the error to be from the same place in test and prod
+        #[cfg(test)]
+        {
+            if crate::test_helpers::mint::should_fail_for("ADD_SIGNATURES") {
+                tx.rollback().await?;
+                self.compensate_all().await?;
+                return Err(Error::Database(database::Error::Database(
+                    "Test failure: ADD_SIGNATURES".into(),
+                )));
+            }
+        }
+
         if let Err(err) = tx
             .add_blind_signatures(&blinded_secrets, &self.state_data.signatures, None)
             .await
@@ -356,6 +372,19 @@ impl SwapSaga<'_, Signed> {
         }
 
         // Mark input proofs as spent
+        // TODO: WE should move the should fail to the db so the there is not this extra rollback.
+        // This would allow the error to be from the same place in test and prod
+        #[cfg(test)]
+        {
+            if crate::test_helpers::mint::should_fail_for("UPDATE_PROOFS") {
+                tx.rollback().await?;
+                self.compensate_all().await?;
+                return Err(Error::Database(database::Error::Database(
+                    "Test failure: UPDATE_PROOFS".into(),
+                )));
+            }
+        }
+
         match tx
             .update_proofs_states(&self.state_data.ys, State::Spent)
             .await
