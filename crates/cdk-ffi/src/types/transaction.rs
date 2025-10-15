@@ -106,6 +106,21 @@ pub fn encode_transaction(transaction: Transaction) -> Result<String, FfiError> 
     Ok(serde_json::to_string(&transaction)?)
 }
 
+/// Check if a transaction matches the given filter conditions
+#[uniffi::export]
+pub fn transaction_matches_conditions(
+    transaction: &Transaction,
+    mint_url: Option<MintUrl>,
+    direction: Option<TransactionDirection>,
+    unit: Option<CurrencyUnit>,
+) -> Result<bool, FfiError> {
+    let cdk_transaction: cdk::wallet::types::Transaction = transaction.clone().try_into()?;
+    let cdk_mint_url = mint_url.map(|url| url.try_into()).transpose()?;
+    let cdk_direction = direction.map(Into::into);
+    let cdk_unit = unit.map(Into::into);
+    Ok(cdk_transaction.matches_conditions(&cdk_mint_url, &cdk_direction, &cdk_unit))
+}
+
 /// FFI-compatible TransactionDirection
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum TransactionDirection {
@@ -163,7 +178,9 @@ impl TransactionId {
 
     /// Create from proofs
     pub fn from_proofs(proofs: &Proofs) -> Result<Self, FfiError> {
-        let cdk_proofs: Vec<cdk::nuts::Proof> = proofs.iter().map(|p| p.inner.clone()).collect();
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.iter().map(|p| p.clone().try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
         let id = cdk::wallet::types::TransactionId::from_proofs(cdk_proofs)?;
         Ok(Self {
             hex: id.to_string(),
