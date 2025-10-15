@@ -918,10 +918,10 @@ VALUES (:quote_id, :amount, :timestamp);
         query(
             r#"
                 INSERT INTO mint_quote (
-                id, amount, unit, request, expiry, request_lookup_id, pubkey, created_time, payment_method, request_lookup_id_kind
+                id, amount, unit, request, expiry, request_lookup_id, pubkey, created_time, payment_method, request_lookup_id_kind, keyset_id
                 )
                 VALUES (
-                :id, :amount, :unit, :request, :expiry, :request_lookup_id, :pubkey, :created_time, :payment_method, :request_lookup_id_kind
+                :id, :amount, :unit, :request, :expiry, :request_lookup_id, :pubkey, :created_time, :payment_method, :request_lookup_id_kind, :keyset_id
                 )
             "#,
         )?
@@ -938,6 +938,7 @@ VALUES (:quote_id, :amount, :timestamp);
         .bind("created_time", quote.created_time as i64)
         .bind("payment_method", quote.payment_method.to_string())
         .bind("request_lookup_id_kind", quote.request_lookup_id.kind())
+        .bind("keyset_id", quote.keyset_id.map(|id| id.to_string()))
         .execute(&self.inner)
         .await?;
 
@@ -1098,7 +1099,8 @@ VALUES (:quote_id, :amount, :timestamp);
                 amount_paid,
                 amount_issued,
                 payment_method,
-                request_lookup_id_kind
+                request_lookup_id_kind,
+                keyset_id
             FROM
                 mint_quote
             WHERE id = :id
@@ -1164,7 +1166,8 @@ VALUES (:quote_id, :amount, :timestamp);
                 amount_paid,
                 amount_issued,
                 payment_method,
-                request_lookup_id_kind
+                request_lookup_id_kind,
+                keyset_id
             FROM
                 mint_quote
             WHERE request = :request
@@ -1205,7 +1208,8 @@ VALUES (:quote_id, :amount, :timestamp);
                 amount_paid,
                 amount_issued,
                 payment_method,
-                request_lookup_id_kind
+                request_lookup_id_kind,
+                keyset_id
             FROM
                 mint_quote
             WHERE request_lookup_id = :request_lookup_id
@@ -1264,7 +1268,8 @@ where
                     amount_paid,
                     amount_issued,
                     payment_method,
-                    request_lookup_id_kind
+                    request_lookup_id_kind,
+                    keyset_id
                 FROM
                     mint_quote
                 WHERE id = :id"#,
@@ -1312,7 +1317,8 @@ where
                 amount_paid,
                 amount_issued,
                 payment_method,
-                request_lookup_id_kind
+                request_lookup_id_kind,
+                keyset_id
             FROM
                 mint_quote
             WHERE request = :request"#,
@@ -1352,7 +1358,8 @@ where
                 amount_paid,
                 amount_issued,
                 payment_method,
-                request_lookup_id_kind
+                request_lookup_id_kind,
+                keyset_id
             FROM
                 mint_quote
             WHERE request_lookup_id = :request_lookup_id
@@ -1393,7 +1400,8 @@ where
                 amount_paid,
                 amount_issued,
                 payment_method,
-                request_lookup_id_kind
+                request_lookup_id_kind,
+                keyset_id
             FROM
                 mint_quote
             "#,
@@ -2182,8 +2190,19 @@ fn sql_row_to_mint_quote(
 ) -> Result<MintQuote, Error> {
     unpack_into!(
         let (
-            id, amount, unit, request, expiry, request_lookup_id,
-            pubkey, created_time, amount_paid, amount_issued, payment_method, request_lookup_id_kind
+            id,
+            amount,
+            unit,
+            request,
+            expiry,
+            request_lookup_id,
+            pubkey,
+            created_time,
+            amount_paid,
+            amount_issued,
+            payment_method,
+            request_lookup_id_kind,
+            keyset_id
         ) = row
     );
 
@@ -2204,6 +2223,9 @@ fn sql_row_to_mint_quote(
     let amount_paid: u64 = column_as_number!(amount_paid);
     let amount_issued: u64 = column_as_number!(amount_issued);
     let payment_method = column_as_string!(payment_method, PaymentMethod::from_str);
+    let keyset_id = column_as_nullable_string!(keyset_id)
+        .map(|value| Id::from_str(&value))
+        .transpose()?;
 
     Ok(MintQuote::new(
         Some(QuoteId::from_str(&id)?),
@@ -2220,6 +2242,7 @@ fn sql_row_to_mint_quote(
         column_as_number!(created_time),
         payments,
         issueances,
+        keyset_id,
     ))
 }
 

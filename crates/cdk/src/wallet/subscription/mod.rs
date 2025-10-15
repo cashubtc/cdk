@@ -160,6 +160,7 @@ impl SubscriptionClient {
             }
             NotificationId::MintQuoteBolt11(q) => (Kind::Bolt11MintQuote, q),
             NotificationId::MintQuoteBolt12(q) => (Kind::Bolt12MintQuote, q),
+            NotificationId::MintQuoteMiningShare(q) => (Kind::MiningShareMintQuote, q),
         };
 
         let request: WsRequest<_> = (
@@ -266,6 +267,23 @@ impl Transport for SubscriptionClient {
 
                     reply_to.send(MintEvent::new(
                         NotificationPayload::MintQuoteBolt11Response(response.clone()),
+                    ));
+                }
+                NotificationId::MintQuoteMiningShare(id) => {
+                    let response = match self
+                        .http_client
+                        .get_mint_quote_status_mining_share(&id)
+                        .await
+                    {
+                        Ok(success) => success,
+                        Err(err) => {
+                            tracing::error!("Error with MintMiningShare {} with {:?}", id, err);
+                            continue;
+                        }
+                    };
+
+                    reply_to.send(MintEvent::new(
+                        NotificationPayload::MintQuoteMiningShareResponse(response),
                     ));
                 }
                 NotificationId::MeltQuoteBolt11(id) => {

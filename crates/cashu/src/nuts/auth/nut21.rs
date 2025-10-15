@@ -128,9 +128,15 @@ pub enum RoutePath {
     /// Bolt11 Mint Quote
     #[serde(rename = "/v1/mint/quote/bolt11")]
     MintQuoteBolt11,
+    /// Mining-share Mint Quote
+    #[serde(rename = "/v1/mint/quote/mining_share")]
+    MintQuoteMiningShare,
     /// Bolt11 Mint
     #[serde(rename = "/v1/mint/bolt11")]
     MintBolt11,
+    /// Mining-share Mint
+    #[serde(rename = "/v1/mint/mining_share")]
+    MintMiningShare,
     /// Bolt11 Melt Quote
     #[serde(rename = "/v1/melt/quote/bolt11")]
     MeltQuoteBolt11,
@@ -213,6 +219,8 @@ mod tests {
         assert!(paths.contains(&RoutePath::MintBlindAuth));
         assert!(paths.contains(&RoutePath::MintQuoteBolt12));
         assert!(paths.contains(&RoutePath::MintBolt12));
+        assert!(paths.contains(&RoutePath::MintQuoteMiningShare));
+        assert!(paths.contains(&RoutePath::MintMiningShare));
     }
 
     #[test]
@@ -221,11 +229,13 @@ mod tests {
         let paths = matching_route_paths("^/v1/mint/.*").unwrap();
 
         // Should match only mint paths
-        assert_eq!(paths.len(), 4);
+        assert_eq!(paths.len(), 6);
         assert!(paths.contains(&RoutePath::MintQuoteBolt11));
         assert!(paths.contains(&RoutePath::MintBolt11));
         assert!(paths.contains(&RoutePath::MintQuoteBolt12));
         assert!(paths.contains(&RoutePath::MintBolt12));
+        assert!(paths.contains(&RoutePath::MintQuoteMiningShare));
+        assert!(paths.contains(&RoutePath::MintMiningShare));
 
         // Should not match other paths
         assert!(!paths.contains(&RoutePath::MeltQuoteBolt11));
@@ -241,11 +251,12 @@ mod tests {
         let paths = matching_route_paths(".*/quote/.*").unwrap();
 
         // Should match only quote paths
-        assert_eq!(paths.len(), 4);
+        assert_eq!(paths.len(), 5);
         assert!(paths.contains(&RoutePath::MintQuoteBolt11));
         assert!(paths.contains(&RoutePath::MeltQuoteBolt11));
         assert!(paths.contains(&RoutePath::MintQuoteBolt12));
         assert!(paths.contains(&RoutePath::MeltQuoteBolt12));
+        assert!(paths.contains(&RoutePath::MintQuoteMiningShare));
 
         // Should not match non-quote paths
         assert!(!paths.contains(&RoutePath::MintBolt11));

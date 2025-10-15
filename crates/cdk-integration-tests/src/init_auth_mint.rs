@@ -59,8 +59,11 @@ where
 
     let blind_auth_endpoints = vec![
         ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt11),
+        ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteMiningShare),
         ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11),
+        ProtectedEndpoint::new(Method::Post, RoutePath::MintMiningShare),
         ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
+        ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteMiningShare),
         ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuoteBolt11),
         ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuoteBolt11),
         ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11),

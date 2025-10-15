@@ -49,6 +49,9 @@ pub enum Path {
     /// Bolt11 Mint
     #[serde(rename = "/v1/mint/bolt11")]
     MintBolt11,
+    /// Mining-share Mint
+    #[serde(rename = "/v1/mint/mining_share")]
+    MintMiningShare,
     /// Bolt11 Melt
     #[serde(rename = "/v1/melt/bolt11")]
     MeltBolt11,
@@ -61,4 +64,7 @@ pub enum Path {
     /// Bolt12 Melt
     #[serde(rename = "/v1/melt/bolt12")]
     MeltBolt12,
+    /// Mining-share mint quote
+    #[serde(rename = "/v1/mint/quote/mining_share")]
+    MintQuoteMiningShare,
 }

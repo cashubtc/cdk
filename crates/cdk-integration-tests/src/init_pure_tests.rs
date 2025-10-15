@@ -17,8 +17,9 @@ use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
-    RestoreResponse, SwapRequest, SwapResponse,
+    MintQuoteBolt11Response, MintQuoteMiningShareRequest, MintQuoteMiningShareResponse,
+    MintRequest, MintResponse, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest,
+    SwapResponse,
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
@@ -203,6 +204,27 @@ impl MintConnector for DirectMintConnection {
         _request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         // Implementation to be added later
+        Err(Error::UnsupportedPaymentMethod)
+    }
+
+    async fn post_mint_quote_mining_share(
+        &self,
+        _request: MintQuoteMiningShareRequest,
+    ) -> Result<MintQuoteMiningShareResponse<String>, Error> {
+        Err(Error::UnsupportedPaymentMethod)
+    }
+
+    async fn get_mint_quote_status_mining_share(
+        &self,
+        _quote_id: &str,
+    ) -> Result<MintQuoteMiningShareResponse<String>, Error> {
+        Err(Error::UnsupportedPaymentMethod)
+    }
+
+    async fn post_mint_mining_share(
+        &self,
+        _request: MintRequest<String>,
+    ) -> Result<MintResponse, Error> {
         Err(Error::UnsupportedPaymentMethod)
     }
 }
