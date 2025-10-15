@@ -6,4 +6,5 @@
 //!
 //! These helpers are only compiled when running tests.
 
+#[cfg(feature = "mint")]
 pub mod mint;
