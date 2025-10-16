@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use crate::config::Lnd;
 
 // LND environment variables
-pub const ENV_LND_ADDRESS: &str = "CDK_MINTD_PAYMENT_BACKEND_LND_ADDRESS";
-pub const ENV_LND_CERT_FILE: &str = "CDK_MINTD_PAYMENT_BACKEND_LND_CERT_FILE";
-pub const ENV_LND_MACAROON_FILE: &str = "CDK_MINTD_PAYMENT_BACKEND_LND_MACAROON_FILE";
-pub const ENV_LND_FEE_PERCENT: &str = "CDK_MINTD_PAYMENT_BACKEND_LND_FEE_PERCENT";
-pub const ENV_LND_RESERVE_FEE_MIN: &str = "CDK_MINTD_PAYMENT_BACKEND_LND_RESERVE_FEE_MIN";
+pub const ENV_LND_ADDRESS: &str = "CDK_MINTD_LND_ADDRESS";
+pub const ENV_LND_CERT_FILE: &str = "CDK_MINTD_LND_CERT_FILE";
+pub const ENV_LND_MACAROON_FILE: &str = "CDK_MINTD_LND_MACAROON_FILE";
+pub const ENV_LND_FEE_PERCENT: &str = "CDK_MINTD_LND_FEE_PERCENT";
+pub const ENV_LND_RESERVE_FEE_MIN: &str = "CDK_MINTD_LND_RESERVE_FEE_MIN";
 
 impl Lnd {
     pub fn from_env(mut self) -> Self {
