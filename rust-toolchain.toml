@@ -1,4 +1,5 @@
 [toolchain]
 channel="1.90.0"
+targets = ["x86_64-pc-windows-gnu"]
 components = ["rustfmt", "clippy", "rust-analyzer"]
 
