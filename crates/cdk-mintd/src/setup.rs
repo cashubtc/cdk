@@ -361,7 +361,6 @@ impl LnBackendSetup for config::Spark {
             network,
             mnemonic: self.mnemonic.clone(),
             passphrase: self.passphrase.clone(),
-            storage_dir: self.storage_dir.clone(),
             api_key: self.api_key.clone(),
             operator_pool: None, // Use default operators
             service_provider: None, // Use default service provider

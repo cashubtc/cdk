@@ -2,7 +2,9 @@
 
 use cdk_common::common::FeeReserve;
 use serde::{Deserialize, Serialize};
-use spark_wallet::{Network, OperatorPoolConfig, ServiceProviderConfig};
+use spark_wallet::Network;
+use spark::operator::OperatorPoolConfig;
+use spark::ssp::ServiceProviderConfig;
 
 /// Configuration for the Spark Lightning backend
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,9 +18,6 @@ pub struct SparkConfig {
     /// Optional passphrase for the mnemonic
     #[serde(default)]
     pub passphrase: Option<String>,
-
-    /// Directory path for Spark wallet storage
-    pub storage_dir: String,
 
     /// Optional API key for Spark service provider
     #[serde(default)]
@@ -41,14 +40,14 @@ pub struct SparkConfig {
 
     /// Split secret threshold for multi-sig operations
     #[serde(default = "default_split_secret_threshold")]
-    pub split_secret_threshold: usize,
+    pub split_secret_threshold: u32,
 }
 
 fn default_reconnect_interval() -> u64 {
     30 // 30 seconds
 }
 
-fn default_split_secret_threshold() -> usize {
+fn default_split_secret_threshold() -> u32 {
     2 // Default threshold for secret sharing
 }
 
@@ -59,13 +58,6 @@ impl SparkConfig {
         if self.mnemonic.trim().is_empty() {
             return Err(crate::error::Error::Configuration(
                 "Mnemonic cannot be empty".to_string(),
-            ));
-        }
-
-        // Validate storage directory
-        if self.storage_dir.trim().is_empty() {
-            return Err(crate::error::Error::Configuration(
-                "Storage directory cannot be empty".to_string(),
             ));
         }
 
@@ -80,12 +72,11 @@ impl SparkConfig {
     }
 
     /// Create a default configuration for the given network
-    pub fn default_for_network(network: Network, mnemonic: String, storage_dir: String) -> Self {
+    pub fn default_for_network(network: Network, mnemonic: String) -> Self {
         Self {
             network,
             mnemonic,
             passphrase: None,
-            storage_dir,
             api_key: None,
             operator_pool: None,
             service_provider: None,

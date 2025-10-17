@@ -28,6 +28,7 @@ async-stream = "0.3"
 
 # Spark SDK dependencies
 spark-wallet = { path = "../../../spark-sdk/crates/spark-wallet" }
+spark = { path = "../../../spark-sdk/crates/spark" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

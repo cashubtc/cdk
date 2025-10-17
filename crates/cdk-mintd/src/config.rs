@@ -310,8 +310,6 @@ pub struct Spark {
     pub mnemonic: String,
     /// Optional passphrase for the mnemonic
     pub passphrase: Option<String>,
-    /// Directory path for Spark wallet storage
-    pub storage_dir: String,
     /// Optional API key for Spark service provider
     pub api_key: Option<String>,
     /// Fee percentage (e.g., 0.01 for 1%)
@@ -325,7 +323,7 @@ pub struct Spark {
     pub reconnect_interval_seconds: u64,
     /// Split secret threshold
     #[serde(default = "default_spark_split_secret_threshold")]
-    pub split_secret_threshold: usize,
+    pub split_secret_threshold: u32,
 }
 
 #[cfg(feature = "spark")]
@@ -335,7 +333,6 @@ impl Default for Spark {
             network: "signet".to_string(),
             mnemonic: String::new(),
             passphrase: None,
-            storage_dir: "./data/spark".to_string(),
             api_key: None,
             fee_percent: default_spark_fee_percent(),
             reserve_fee_min: default_spark_reserve_fee_min(),
@@ -361,7 +358,7 @@ fn default_spark_reconnect_interval() -> u64 {
 }
 
 #[cfg(feature = "spark")]
-fn default_spark_split_secret_threshold() -> usize {
+fn default_spark_split_secret_threshold() -> u32 {
     2
 }
 

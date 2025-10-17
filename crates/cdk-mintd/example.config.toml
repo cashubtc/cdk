@@ -166,12 +166,12 @@ max_delay_time = 3
 # network = "signet"  # Options: mainnet, testnet, signet, regtest
 # mnemonic = "your twelve or twenty four word mnemonic phrase here"
 # passphrase = ""  # Optional BIP39 passphrase
-# storage_dir = "./data/spark"
 # api_key = ""  # Optional Spark service provider API key
 # fee_percent = 0.01  # 1% fee
 # reserve_fee_min = 10
 # reconnect_interval_seconds = 30
 # split_secret_threshold = 2
+# Note: Spark manages storage internally in user data directory
 
 # [grpc_processor]
 # gRPC Payment Processor configuration
