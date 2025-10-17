@@ -441,9 +441,6 @@ async fn main() -> anyhow::Result<()> {
         "Bob's output count must match denominations count"
     );
 
-    println!("   Bob will give these to Alice to sign incrementally");
-    println!("   as she makes payments through the channel\n");
-
     // 7. PREPARE 2-OF-2 MULTISIG SPENDING CONDITIONS FOR EACH DENOMINATION
     println!("🔐 Preparing 2-of-2 multisig spending conditions...");
 
@@ -452,7 +449,7 @@ async fn main() -> anyhow::Result<()> {
         Some(vec![channel_params.bob_pubkey]),      // Bob's key as additional pubkey
         None,                                        // No refund keys (for now)
         Some(2),                                     // Require 2 signatures
-        Some(SigFlag::SigInputs),                   // Default sig flag
+        Some(SigFlag::SigAll),                      // Sign all outputs
         None,                                        // No refund sigs
     )?;
 
