@@ -22,17 +22,16 @@ use cdk_common::payment::{
     PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk_common::util::hex;
-use futures::stream::StreamExt;
 use futures::Stream;
 use lightning_invoice::Bolt11Invoice;
 use serde_json::Value;
 use spark_wallet::{
-    DefaultSigner, InvoiceDescription, KeySet, KeySetType, Network, SparkWallet, WalletBuilder,
+    DefaultSigner, InvoiceDescription, Network, SparkWallet, SparkWalletConfig, WalletBuilder,
     WalletEvent,
 };
 use tokio::sync::{broadcast, Mutex};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 pub mod config;
 pub mod error;
@@ -87,44 +86,32 @@ impl CdkSpark {
         let mnemonic = bip39::Mnemonic::from_str(&config.mnemonic)
             .map_err(|e| Error::InvalidMnemonic(e.to_string()))?;
 
-        // Create signer from mnemonic
-        let keyset = KeySet::from_mnemonic(
-            KeySetType::Mainnet, // Will be overridden by network in wallet config
-            mnemonic.to_string(),
-            config.passphrase.clone(),
-        )
-        .map_err(|e| Error::Configuration(format!("Failed to create keyset: {}", e)))?;
+        // Convert mnemonic to seed bytes
+        let seed = mnemonic.to_seed(config.passphrase.as_deref().unwrap_or(""));
 
+        // Create signer with seed and network
         let signer = Arc::new(
-            DefaultSigner::new(keyset)
+            DefaultSigner::new(&seed, config.network)
                 .map_err(|e| Error::Configuration(format!("Failed to create signer: {}", e)))?,
         );
 
-        // Build wallet configuration
-        let mut wallet_builder = WalletBuilder::new(config.network);
+        // Build SparkWalletConfig
+        let wallet_config = SparkWalletConfig {
+            network: config.network,
+            operator_pool: config.operator_pool.clone().unwrap_or_else(|| 
+                SparkWalletConfig::default_operator_pool_config(config.network)
+            ),
+            reconnect_interval_seconds: config.reconnect_interval_seconds,
+            service_provider_config: config.service_provider.clone().unwrap_or_else(|| 
+                SparkWalletConfig::default_config(config.network).service_provider_config
+            ),
+            split_secret_threshold: config.split_secret_threshold,
+            tokens_config: SparkWalletConfig::default_tokens_config(),
+        };
 
-        // Set storage directory
-        wallet_builder = wallet_builder.storage_dir(config.storage_dir.clone());
-
-        // Set operator pool if provided
-        if let Some(operator_config) = &config.operator_pool {
-            wallet_builder = wallet_builder.operator_pool(operator_config.clone());
-        }
-
-        // Set service provider if provided
-        if let Some(sp_config) = &config.service_provider {
-            wallet_builder = wallet_builder.service_provider(sp_config.clone());
-        }
-
-        // Set reconnect interval
-        wallet_builder = wallet_builder.reconnect_interval_seconds(config.reconnect_interval_seconds);
-
-        // Set split secret threshold
-        wallet_builder = wallet_builder.split_secret_threshold(config.split_secret_threshold);
-
-        // Build the wallet
-        let wallet = wallet_builder
-            .build(signer)
+        // Create wallet with config and signer
+        let wallet = WalletBuilder::new(wallet_config, signer)
+            .build()
             .await
             .map_err(|e| Error::SparkWallet(e))?;
 
@@ -157,9 +144,9 @@ impl CdkSpark {
     fn convert_amount(
         amount: Amount,
         from_unit: &CurrencyUnit,
-        to_unit: &CurrencyUnit,
+        target_unit: &CurrencyUnit,
     ) -> Result<Amount, Error> {
-        to_unit(amount, from_unit, to_unit)
+        to_unit(amount, from_unit, target_unit)
             .map_err(|e| Error::AmountConversion(format!("{:?}", e)))
     }
 
@@ -177,11 +164,11 @@ impl CdkSpark {
     /// Start the event listener for incoming payments
     async fn start_event_listener(&self) -> Result<(), Error> {
         let wallet = Arc::clone(&self.inner);
-        let sender = self.sender.clone();
+        let _sender = self.sender.clone();
         let cancel_token = self.wait_invoice_cancel_token.clone();
 
         tokio::spawn(async move {
-            let mut event_stream = wallet.subscribe_events().await;
+            let mut event_stream = wallet.subscribe_events();
 
             loop {
                 tokio::select! {
@@ -189,32 +176,24 @@ impl CdkSpark {
                         info!("Event listener cancelled");
                         break;
                     }
-                    Some(event) = event_stream.recv() => {
+                    Ok(event) = event_stream.recv() => {
                         match event {
-                            WalletEvent::IncomingPayment { payment } => {
-                                info!("Received incoming payment event: {:?}", payment);
-
-                                // Convert payment to WaitPaymentResponse
-                                let payment_hash = match lightning_invoice::Bolt11Invoice::from_str(&payment.invoice) {
-                                    Ok(invoice) => *invoice.payment_hash().as_ref(),
-                                    Err(e) => {
-                                        error!("Failed to parse invoice for payment hash: {}", e);
-                                        continue;
-                                    }
-                                };
-
-                                let amount_sat = payment.transfer_amount_sat.unwrap_or(0);
-
-                                let response = WaitPaymentResponse {
-                                    payment_identifier: PaymentIdentifier::PaymentHash(payment_hash),
-                                    payment_amount: amount_sat.into(),
-                                    unit: CurrencyUnit::Sat,
-                                    payment_id: payment.id,
-                                };
-
-                                if let Err(e) = sender.send(response) {
-                                    warn!("Failed to send payment notification: {}", e);
-                                }
+                            WalletEvent::TransferClaimed(transfer) => {
+                                info!("Transfer claimed event: {:?}", transfer.id);
+                                // Note: Lightning payments come through as transfers
+                                // CDK will poll check_incoming_payment_status for payment detection
+                                // This event is for awareness/logging
+                                debug!("Transfer details: sender={}, receiver={}, amount={}", 
+                                    transfer.sender_id, transfer.receiver_id, transfer.total_value_sat);
+                            }
+                            WalletEvent::Synced => {
+                                debug!("Wallet synced");
+                            }
+                            WalletEvent::StreamConnected => {
+                                info!("Spark stream connected");
+                            }
+                            WalletEvent::StreamDisconnected => {
+                                warn!("Spark stream disconnected");
                             }
                             _ => {
                                 debug!("Received other wallet event: {:?}", event);
@@ -382,7 +361,7 @@ impl MintPayment for CdkSpark {
                 // Get amount to send (for amountless invoices)
                 let amount_to_send = match bolt11_options.melt_options {
                     Some(MeltOptions::Amountless { amountless }) => {
-                        let amount_sat = amountless.amount_msat / 1000;
+                        let amount_sat = u64::from(amountless.amount_msat) / 1000;
                         Some(amount_sat)
                     }
                     _ => None,
@@ -405,7 +384,7 @@ impl MintPayment for CdkSpark {
                 let payment_hash = *invoice.payment_hash().as_ref();
 
                 // Get total spent (amount + fees)
-                let total_spent_sat = result.transfer.amount_sat;
+                let total_spent_sat = result.transfer.total_value_sat;
                 let total_spent = Self::sats_to_unit(total_spent_sat, unit)?;
 
                 // Get payment preimage if available

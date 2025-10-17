@@ -42,8 +42,7 @@ mnemonic = "your twelve or twenty four word mnemonic phrase goes here"
 # Optional: BIP39 passphrase for additional security
 # passphrase = "optional_passphrase"
 
-# Directory for Spark wallet data
-storage_dir = "./data/spark"
+# Note: Spark SDK manages storage internally in user data directory
 
 # Optional: API key for Spark service provider
 # Get your free API key at: https://breez.technology/request-api-key/

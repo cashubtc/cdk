@@ -96,9 +96,8 @@ mnemonic = "economy tooth crop sound merry satisfy album spell iron clean oven w
 # Optional: BIP39 passphrase (25th word) for additional security
 # passphrase = ""
 
-# Storage directory for Spark wallet data
-# Will be created if it doesn't exist
-storage_dir = "./data/spark-test"
+# Note: Spark SDK manages its own storage internally in user data directory
+# No storage_dir configuration needed
 
 # Optional: Spark Service Provider API Key
 # Get free key at: https://breez.technology/request-api-key/
