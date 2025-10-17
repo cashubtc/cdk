@@ -35,7 +35,7 @@ use cdk::nuts::{
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
 use cdk::wallet::{AuthWallet, MintConnector, ReceiveOptions, SendOptions, Wallet, WalletBuilder};
-use cdk::{dhke::blind_message, Error, Mint, StreamExt};
+use cdk::{dhke::{blind_message, construct_proofs}, Error, Mint, StreamExt};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::RwLock;
 use cdk::nuts::{BlindedMessage, nut10::Secret as Nut10Secret};
@@ -524,6 +524,31 @@ async fn main() -> anyhow::Result<()> {
     let swap_response = mint.process_swap_request(swap_request).await?;
 
     println!("✅ Swap successful! Received {} blind signatures\n", swap_response.signatures.len());
+
+    // 11. UNBLIND SIGNATURES TO CREATE 2-OF-2 LOCKED PROOFS
+    println!("🔓 Unblinding signatures to create final 2-of-2 proofs...");
+
+    // Get the mint's public keys for this keyset
+    let mint_keys = mint.keyset(&active_keyset_id)
+        .ok_or_else(|| anyhow::anyhow!("Keyset not found"))?;
+
+    // Unblind the signatures to create usable proofs
+    let locked_proofs = construct_proofs(
+        swap_response.signatures,
+        locked_secrets_and_rs.iter().map(|(_, r)| r.clone()).collect(),
+        locked_secrets_and_rs.iter().map(|(s, _)| s.clone()).collect(),
+        &mint_keys.keys,
+    )?;
+
+    println!("✅ Created {} locked proofs:", locked_proofs.len());
+    for (i, proof) in locked_proofs.iter().enumerate() {
+        let description = if i == 0 { " (special)" } else { "" };
+        println!("   Proof {}: {} msat{} - locked to 2-of-2", i + 1, u64::from(proof.amount), description);
+    }
+
+    println!("\n🎉 Spillman channel setup complete!");
+    println!("   Alice has {} proofs locked to 2-of-2 multisig", locked_proofs.len());
+    println!("   These can be spent with Alice + Bob signatures (or Alice alone after locktime)\n");
 
     Ok(())
 }
