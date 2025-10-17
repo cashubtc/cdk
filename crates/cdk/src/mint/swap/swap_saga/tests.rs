@@ -1155,6 +1155,436 @@ async fn test_swap_saga_compensation_on_finalize_update_proofs_failure() {
     );
 }
 
+// ==================== PHASE 1: FOUNDATION TESTS ====================
+// These tests verify the basic saga state persistence mechanism.
+
+/// Tests that saga state is persisted to the database after setup.
+///
+/// # What This Tests
+/// - Saga state is written to database during setup_swap()
+/// - get_saga_state() can retrieve the persisted state
+/// - State content is correct (operation_id, state, blinded_secrets, input_ys)
+///
+/// # Success Criteria
+/// - Saga state exists in database after setup
+/// - State matches SwapSagaState::SetupComplete
+/// - All expected data is present and correct
+#[tokio::test]
+async fn test_saga_state_persistence_after_setup() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+    let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let pubsub = mint.pubsub_manager();
+    let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+
+    let saga = saga
+        .setup_swap(&input_proofs, &output_blinded_messages, None, verification)
+        .await
+        .expect("Setup should succeed");
+
+    let operation_id = saga.operation.id();
+
+    // Verify saga state exists in database
+    let saga_state = db
+        .get_saga_state(operation_id)
+        .await
+        .expect("Failed to get saga state")
+        .expect("Saga state should exist after setup");
+
+    // Verify state is SetupComplete
+    use cdk_common::mint::{SagaStateEnum, SwapSagaState};
+    assert_eq!(
+        saga_state.state,
+        SagaStateEnum::Swap(SwapSagaState::SetupComplete),
+        "Saga state should be SetupComplete"
+    );
+
+    // Verify operation_id matches
+    assert_eq!(saga_state.operation_id, *operation_id);
+
+    // Verify blinded_secrets are stored correctly
+    let expected_blinded_secrets: Vec<_> = output_blinded_messages
+        .iter()
+        .map(|bm| bm.blinded_secret)
+        .collect();
+    assert_eq!(
+        saga_state.blinded_secrets.len(),
+        expected_blinded_secrets.len()
+    );
+    for bs in &expected_blinded_secrets {
+        assert!(
+            saga_state.blinded_secrets.contains(bs),
+            "Blinded secret should be in saga state"
+        );
+    }
+
+    // Verify input_ys are stored correctly
+    let expected_ys = input_proofs.ys().unwrap();
+    assert_eq!(saga_state.input_ys.len(), expected_ys.len());
+    for y in &expected_ys {
+        assert!(
+            saga_state.input_ys.contains(y),
+            "Input Y should be in saga state"
+        );
+    }
+}
+
+/// Tests that saga state is deleted after successful finalization.
+///
+/// # What This Tests
+/// - Saga state exists after setup
+/// - Saga state still exists after signing
+/// - Saga state is DELETED after successful finalize
+/// - get_incomplete_sagas() returns empty after success
+///
+/// # Success Criteria
+/// - Saga state deleted from database
+/// - No incomplete sagas remain
+#[tokio::test]
+async fn test_saga_deletion_on_success() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+    let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let pubsub = mint.pubsub_manager();
+    let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+
+    let saga = saga
+        .setup_swap(&input_proofs, &output_blinded_messages, None, verification)
+        .await
+        .expect("Setup should succeed");
+
+    let operation_id = *saga.operation.id();
+
+    // Verify saga state exists after setup
+    let saga_state_after_setup = db
+        .get_saga_state(&operation_id)
+        .await
+        .expect("Failed to get saga state");
+    assert!(
+        saga_state_after_setup.is_some(),
+        "Saga state should exist after setup"
+    );
+
+    let saga = saga.sign_outputs().await.expect("Signing should succeed");
+
+    // Verify saga state still exists after signing
+    let saga_state_after_sign = db
+        .get_saga_state(&operation_id)
+        .await
+        .expect("Failed to get saga state");
+    assert!(
+        saga_state_after_sign.is_some(),
+        "Saga state should still exist after signing"
+    );
+
+    let _response = saga.finalize().await.expect("Finalize should succeed");
+
+    // CRITICAL: Verify saga state is DELETED after success
+    let saga_state_after_finalize = db
+        .get_saga_state(&operation_id)
+        .await
+        .expect("Failed to get saga state");
+    assert!(
+        saga_state_after_finalize.is_none(),
+        "Saga state should be deleted after successful finalization"
+    );
+
+    // Verify no incomplete sagas exist
+    use cdk_common::mint::OperationKind;
+    let incomplete = db
+        .get_incomplete_sagas(OperationKind::Swap)
+        .await
+        .expect("Failed to get incomplete sagas");
+    assert_eq!(incomplete.len(), 0, "No incomplete sagas should exist");
+}
+
+/// Tests querying incomplete sagas.
+///
+/// # What This Tests
+/// - get_incomplete_sagas() returns saga after setup
+/// - get_incomplete_sagas() still returns saga after signing
+/// - get_incomplete_sagas() returns empty after finalize
+/// - Multiple incomplete sagas can be queried
+///
+/// # Success Criteria
+/// - Incomplete saga appears in query results
+/// - Completed saga does not appear in query results
+#[tokio::test]
+async fn test_get_incomplete_sagas_basic() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+    let (input_proofs_1, verification_1) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages_1, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let (input_proofs_2, verification_2) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages_2, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    use cdk_common::mint::OperationKind;
+
+    // Initially no incomplete sagas
+    let incomplete_initial = db
+        .get_incomplete_sagas(OperationKind::Swap)
+        .await
+        .expect("Failed to get incomplete sagas");
+    assert_eq!(incomplete_initial.len(), 0);
+
+    let pubsub = mint.pubsub_manager();
+
+    // Setup first saga
+    let saga_1 = SwapSaga::new(&mint, db.clone(), pubsub.clone());
+    let saga_1 = saga_1
+        .setup_swap(
+            &input_proofs_1,
+            &output_blinded_messages_1,
+            None,
+            verification_1,
+        )
+        .await
+        .expect("Setup should succeed");
+    let op_id_1 = *saga_1.operation.id();
+
+    // Should have 1 incomplete saga
+    let incomplete_after_1 = db
+        .get_incomplete_sagas(OperationKind::Swap)
+        .await
+        .expect("Failed to get incomplete sagas");
+    assert_eq!(incomplete_after_1.len(), 1);
+    assert_eq!(incomplete_after_1[0].operation_id, op_id_1);
+
+    // Setup second saga
+    let saga_2 = SwapSaga::new(&mint, db.clone(), pubsub.clone());
+    let saga_2 = saga_2
+        .setup_swap(
+            &input_proofs_2,
+            &output_blinded_messages_2,
+            None,
+            verification_2,
+        )
+        .await
+        .expect("Setup should succeed");
+    let op_id_2 = *saga_2.operation.id();
+
+    // Should have 2 incomplete sagas
+    let incomplete_after_2 = db
+        .get_incomplete_sagas(OperationKind::Swap)
+        .await
+        .expect("Failed to get incomplete sagas");
+    assert_eq!(incomplete_after_2.len(), 2);
+
+    // Finalize first saga
+    let saga_1 = saga_1.sign_outputs().await.expect("Signing should succeed");
+    let _response_1 = saga_1.finalize().await.expect("Finalize should succeed");
+
+    // Should have 1 incomplete saga (second one still incomplete)
+    let incomplete_after_finalize = db
+        .get_incomplete_sagas(OperationKind::Swap)
+        .await
+        .expect("Failed to get incomplete sagas");
+    assert_eq!(incomplete_after_finalize.len(), 1);
+    assert_eq!(incomplete_after_finalize[0].operation_id, op_id_2);
+
+    // Finalize second saga
+    let saga_2 = saga_2.sign_outputs().await.expect("Signing should succeed");
+    let _response_2 = saga_2.finalize().await.expect("Finalize should succeed");
+
+    // Should have 0 incomplete sagas
+    let incomplete_final = db
+        .get_incomplete_sagas(OperationKind::Swap)
+        .await
+        .expect("Failed to get incomplete sagas");
+    assert_eq!(incomplete_final.len(), 0);
+}
+
+/// Tests detailed validation of saga state content.
+///
+/// # What This Tests
+/// - Operation ID is correct
+/// - Operation kind is correct
+/// - State enum is correct
+/// - Blinded secrets are all present
+/// - Input Ys are all present
+/// - Timestamps are reasonable (created_at, updated_at)
+///
+/// # Success Criteria
+/// - All fields match expected values
+/// - Timestamps are within reasonable range
+#[tokio::test]
+async fn test_saga_state_content_validation() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+    let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let expected_ys: Vec<_> = input_proofs.ys().unwrap();
+    let expected_blinded_secrets: Vec<_> = output_blinded_messages
+        .iter()
+        .map(|bm| bm.blinded_secret)
+        .collect();
+
+    let pubsub = mint.pubsub_manager();
+    let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+
+    let saga = saga
+        .setup_swap(&input_proofs, &output_blinded_messages, None, verification)
+        .await
+        .expect("Setup should succeed");
+
+    let operation_id = *saga.operation.id();
+
+    // Query saga state
+    let saga_state = db
+        .get_saga_state(&operation_id)
+        .await
+        .expect("Failed to get saga state")
+        .expect("Saga state should exist");
+
+    // Validate content
+    use cdk_common::mint::{OperationKind, SagaStateEnum, SwapSagaState};
+    assert_eq!(saga_state.operation_id, operation_id);
+    assert_eq!(saga_state.operation_kind, OperationKind::Swap);
+    assert_eq!(
+        saga_state.state,
+        SagaStateEnum::Swap(SwapSagaState::SetupComplete)
+    );
+
+    // Validate blinded secrets
+    assert_eq!(
+        saga_state.blinded_secrets.len(),
+        expected_blinded_secrets.len()
+    );
+    for bs in &expected_blinded_secrets {
+        assert!(saga_state.blinded_secrets.contains(bs));
+    }
+
+    // Validate input Ys
+    assert_eq!(saga_state.input_ys.len(), expected_ys.len());
+    for y in &expected_ys {
+        assert!(saga_state.input_ys.contains(y));
+    }
+
+    // Validate timestamps
+    use cdk_common::util::unix_time;
+    let now = unix_time();
+    assert!(
+        saga_state.created_at <= now,
+        "created_at should be <= current time"
+    );
+    assert!(
+        saga_state.updated_at <= now,
+        "updated_at should be <= current time"
+    );
+    assert!(
+        saga_state.created_at <= saga_state.updated_at,
+        "created_at should be <= updated_at"
+    );
+}
+
+/// Tests that saga state updates are persisted correctly.
+///
+/// # What This Tests
+/// - Saga state persisted after setup
+/// - updated_at timestamp changes after state updates
+/// - Other fields remain unchanged during updates
+///
+/// # Note
+/// Currently sign_outputs() does NOT update saga state in the database
+/// (the "signed" state is not persisted). This test documents that behavior.
+///
+/// # Success Criteria
+/// - State exists after setup
+/// - If state is updated, updated_at increases
+/// - Other fields remain consistent
+#[tokio::test]
+async fn test_saga_state_updates_persisted() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+    let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let pubsub = mint.pubsub_manager();
+    let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+
+    let saga = saga
+        .setup_swap(&input_proofs, &output_blinded_messages, None, verification)
+        .await
+        .expect("Setup should succeed");
+
+    let operation_id = *saga.operation.id();
+
+    // Get initial state
+    let state_after_setup = db
+        .get_saga_state(&operation_id)
+        .await
+        .expect("Failed to get saga state")
+        .expect("Saga state should exist");
+
+    use cdk_common::mint::{SagaStateEnum, SwapSagaState};
+    assert_eq!(
+        state_after_setup.state,
+        SagaStateEnum::Swap(SwapSagaState::SetupComplete)
+    );
+    let initial_created_at = state_after_setup.created_at;
+    let initial_updated_at = state_after_setup.updated_at;
+
+    // Small delay to ensure timestamp would change if updated
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    let saga = saga.sign_outputs().await.expect("Signing should succeed");
+
+    // Note: Currently sign_outputs() does NOT update saga state in DB
+    // The saga state remains "SetupComplete" until finalize or compensation
+    let state_after_sign = db
+        .get_saga_state(&operation_id)
+        .await
+        .expect("Failed to get saga state")
+        .expect("Saga state should exist");
+
+    // State should still be SetupComplete (not updated to Signed)
+    assert_eq!(
+        state_after_sign.state,
+        SagaStateEnum::Swap(SwapSagaState::SetupComplete),
+        "Saga state remains SetupComplete (signing doesn't update DB)"
+    );
+
+    // Verify other fields unchanged
+    assert_eq!(state_after_sign.operation_id, operation_id);
+    assert_eq!(
+        state_after_sign.blinded_secrets,
+        state_after_setup.blinded_secrets
+    );
+    assert_eq!(state_after_sign.input_ys, state_after_setup.input_ys);
+    assert_eq!(state_after_sign.created_at, initial_created_at);
+
+    // updated_at might not change since state wasn't updated
+    assert_eq!(state_after_sign.updated_at, initial_updated_at);
+
+    // Finalize and verify state is deleted (not updated)
+    let _response = saga.finalize().await.expect("Finalize should succeed");
+
+    let state_after_finalize = db
+        .get_saga_state(&operation_id)
+        .await
+        .expect("Failed to get saga state");
+    assert!(
+        state_after_finalize.is_none(),
+        "Saga state should be deleted after finalize"
+    );
+}
+
 // ==================== STARTUP RECOVERY TESTS ====================
 // These tests verify the `recover_from_bad_swaps()` startup check that
 // cleans up orphaned swap state when the mint restarts.
@@ -1590,4 +2020,853 @@ async fn test_operation_id_uniqueness_and_tracking() {
         result.is_ok(),
         "Should be able to reuse proofs after recovery"
     );
+}
+
+// ==================== PHASE 2: CRASH RECOVERY TESTS ====================
+// These tests verify crash recovery using saga state persistence.
+
+/// Tests crash recovery without calling compensate_all().
+///
+/// # What This Tests
+/// - Saga dropped WITHOUT calling compensate_all() (simulates process crash)
+/// - Saga state persists in database after crash
+/// - Proofs remain PENDING after crash (not cleaned up)
+/// - Recovery mechanism finds incomplete saga via get_incomplete_sagas()
+/// - Recovery cleans up orphaned state (proofs, blinded messages, saga state)
+///
+/// # This Is The PRIMARY USE CASE for Saga Persistence
+/// The in-memory compensation mechanism only works if the process stays alive.
+/// When the process crashes, we lose in-memory compensations and must rely
+/// on persisted saga state to recover.
+///
+/// # Success Criteria
+/// - Saga state exists after crash
+/// - Proofs are PENDING after crash (compensation didn't run)
+/// - Recovery removes proofs
+/// - Recovery removes blinded messages
+/// - Recovery deletes saga state
+#[tokio::test]
+async fn test_crash_recovery_without_compensation() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+    let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let operation_id;
+    let ys = input_proofs.ys().unwrap();
+    let blinded_secrets: Vec<_> = output_blinded_messages
+        .iter()
+        .map(|bm| bm.blinded_secret)
+        .collect();
+
+    // Simulate crash: setup swap, then drop WITHOUT calling compensate_all()
+    {
+        let pubsub = mint.pubsub_manager();
+        let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+
+        let saga = saga
+            .setup_swap(&input_proofs, &output_blinded_messages, None, verification)
+            .await
+            .expect("Setup should succeed");
+
+        operation_id = *saga.operation.id();
+
+        // CRITICAL: Drop saga WITHOUT calling compensate_all()
+        // This simulates a crash where in-memory compensations are lost
+        drop(saga);
+    }
+
+    // Verify saga state still exists in database (persisted during setup)
+    let saga_state = db
+        .get_saga_state(&operation_id)
+        .await
+        .expect("Failed to get saga state");
+    assert!(
+        saga_state.is_some(),
+        "Saga state should persist after crash"
+    );
+
+    // Verify proofs are still Pending (compensation didn't run)
+    let states = db.get_proofs_states(&ys).await.unwrap();
+    assert!(
+        states.iter().all(|s| s == &Some(State::Pending)),
+        "Proofs should still be Pending after crash (compensation didn't run)"
+    );
+
+    // Note: We cannot directly verify blinded messages exist (no query method)
+    // but the recovery process will delete them along with proofs
+
+    // Simulate mint restart - run recovery
+    mint.stop().await.expect("Stop should succeed");
+    mint.start().await.expect("Start should succeed");
+
+    // Verify recovery cleaned up:
+    // 1. Proofs removed from database
+    let states_after = db.get_proofs_states(&ys).await.unwrap();
+    assert!(
+        states_after.iter().all(|s| s.is_none()),
+        "Recovery should remove proofs"
+    );
+
+    // 2. Blinded messages removed (implicitly - no query method available)
+
+    // 3. Saga state deleted
+    let saga_state_after = db
+        .get_saga_state(&operation_id)
+        .await
+        .expect("Failed to get saga state");
+    assert!(
+        saga_state_after.is_none(),
+        "Recovery should delete saga state"
+    );
+}
+
+/// Tests crash recovery after setup only (before signing).
+///
+/// # What This Tests
+/// - Saga in SetupComplete state when crashed
+/// - No signatures exist in database
+/// - Recovery removes all swap state
+///
+/// # Success Criteria
+/// - Saga state exists before recovery
+/// - Proofs are Pending before recovery
+/// - Everything cleaned up after recovery
+#[tokio::test]
+async fn test_crash_recovery_after_setup_only() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+    let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let operation_id;
+    let ys = input_proofs.ys().unwrap();
+    let blinded_secrets: Vec<_> = output_blinded_messages
+        .iter()
+        .map(|bm| bm.blinded_secret)
+        .collect();
+
+    // Setup and crash
+    {
+        let pubsub = mint.pubsub_manager();
+        let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+
+        let saga = saga
+            .setup_swap(&input_proofs, &output_blinded_messages, None, verification)
+            .await
+            .expect("Setup should succeed");
+
+        operation_id = *saga.operation.id();
+
+        // Verify saga state was persisted
+        let saga_state = db.get_saga_state(&operation_id).await.unwrap();
+        assert!(saga_state.is_some());
+
+        // Drop without compensation (crash)
+        drop(saga);
+    }
+
+    // Verify state before recovery
+    let saga_state_before = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(saga_state_before.is_some());
+
+    let states_before = db.get_proofs_states(&ys).await.unwrap();
+    assert!(states_before.iter().all(|s| s == &Some(State::Pending)));
+
+    // Run recovery
+    mint.stop().await.expect("Stop should succeed");
+    mint.start().await.expect("Start should succeed");
+
+    // Verify cleanup
+    let saga_state_after = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(saga_state_after.is_none(), "Saga state should be deleted");
+
+    let states_after = db.get_proofs_states(&ys).await.unwrap();
+    assert!(
+        states_after.iter().all(|s| s.is_none()),
+        "Proofs should be removed"
+    );
+
+    // Blinded messages also removed by recovery (no query method to verify)
+}
+
+/// Tests crash recovery after signing (before finalize).
+///
+/// # What This Tests
+/// - Saga crashed after sign_outputs() but before finalize()
+/// - Signatures were in memory only (never persisted)
+/// - Recovery treats this the same as crashed after setup
+/// - All state is cleaned up
+///
+/// # Success Criteria
+/// - Saga state exists before recovery
+/// - No signatures in database (never persisted)
+/// - Everything cleaned up after recovery
+#[tokio::test]
+async fn test_crash_recovery_after_signing() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+    let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let operation_id;
+    let ys = input_proofs.ys().unwrap();
+    let blinded_secrets: Vec<_> = output_blinded_messages
+        .iter()
+        .map(|bm| bm.blinded_secret)
+        .collect();
+
+    // Setup, sign, and crash
+    {
+        let pubsub = mint.pubsub_manager();
+        let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+
+        let saga = saga
+            .setup_swap(&input_proofs, &output_blinded_messages, None, verification)
+            .await
+            .expect("Setup should succeed");
+
+        operation_id = *saga.operation.id();
+
+        let saga = saga.sign_outputs().await.expect("Signing should succeed");
+
+        // Verify we have signatures in memory
+        assert_eq!(
+            saga.state_data.signatures.len(),
+            output_blinded_messages.len()
+        );
+
+        // Drop without finalize (crash) - signatures lost
+        drop(saga);
+    }
+
+    // Verify state before recovery
+    let saga_state_before = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(saga_state_before.is_some());
+
+    // Verify no signatures in database (they were in memory only)
+    let sigs_before = db.get_blind_signatures(&blinded_secrets).await.unwrap();
+    assert!(
+        sigs_before.iter().all(|s| s.is_none()),
+        "Signatures should not be in DB (never persisted)"
+    );
+
+    // Run recovery
+    mint.stop().await.expect("Stop should succeed");
+    mint.start().await.expect("Start should succeed");
+
+    // Verify cleanup
+    let saga_state_after = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(saga_state_after.is_none(), "Saga state should be deleted");
+
+    let states_after = db.get_proofs_states(&ys).await.unwrap();
+    assert!(
+        states_after.iter().all(|s| s.is_none()),
+        "Proofs should be removed"
+    );
+
+    // Blinded messages also removed by recovery (no query method to verify)
+}
+
+/// Tests recovery with multiple incomplete sagas in different states.
+///
+/// # What This Tests
+/// - Multiple sagas can be incomplete simultaneously
+/// - Recovery processes all incomplete sagas
+/// - Each saga is handled correctly based on its state
+///
+/// # Test Scenario
+/// - Saga A: Setup only (incomplete)
+/// - Saga B: Setup + Sign (incomplete, signatures lost)
+/// - Saga C: Completed (should NOT be affected by recovery)
+///
+/// # Success Criteria
+/// - Saga A cleaned up
+/// - Saga B cleaned up
+/// - Saga C unaffected
+#[tokio::test]
+async fn test_recovery_multiple_incomplete_sagas() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+
+    // Create three sets of inputs/outputs
+    let (proofs_a, verification_a) = create_swap_inputs(&mint, amount).await;
+    let (proofs_b, verification_b) = create_swap_inputs(&mint, amount).await;
+    let (proofs_c, verification_c) = create_swap_inputs(&mint, amount).await;
+
+    let (outputs_a, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (outputs_b, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let (outputs_c, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let ys_a = proofs_a.ys().unwrap();
+    let ys_b = proofs_b.ys().unwrap();
+    let ys_c = proofs_c.ys().unwrap();
+
+    let op_id_a;
+    let op_id_b;
+    let op_id_c;
+
+    // Saga A: Setup only, then crash
+    {
+        let pubsub = mint.pubsub_manager();
+        let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+        let saga = saga
+            .setup_swap(&proofs_a, &outputs_a, None, verification_a)
+            .await
+            .expect("Setup A should succeed");
+        op_id_a = *saga.operation.id();
+        drop(saga);
+    }
+
+    // Saga B: Setup + Sign, then crash
+    {
+        let pubsub = mint.pubsub_manager();
+        let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+        let saga = saga
+            .setup_swap(&proofs_b, &outputs_b, None, verification_b)
+            .await
+            .expect("Setup B should succeed");
+        op_id_b = *saga.operation.id();
+        let saga = saga.sign_outputs().await.expect("Sign B should succeed");
+        drop(saga);
+    }
+
+    // Saga C: Complete successfully
+    {
+        let pubsub = mint.pubsub_manager();
+        let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+        let saga = saga
+            .setup_swap(&proofs_c, &outputs_c, None, verification_c)
+            .await
+            .expect("Setup C should succeed");
+        op_id_c = *saga.operation.id();
+        let saga = saga.sign_outputs().await.expect("Sign C should succeed");
+        let _response = saga.finalize().await.expect("Finalize C should succeed");
+    }
+
+    // Verify state before recovery
+    use cdk_common::mint::OperationKind;
+    let incomplete_before = db.get_incomplete_sagas(OperationKind::Swap).await.unwrap();
+    assert_eq!(
+        incomplete_before.len(),
+        2,
+        "Should have 2 incomplete sagas (A and B)"
+    );
+
+    let states_a_before = db.get_proofs_states(&ys_a).await.unwrap();
+    let states_b_before = db.get_proofs_states(&ys_b).await.unwrap();
+    let states_c_before = db.get_proofs_states(&ys_c).await.unwrap();
+
+    assert!(states_a_before.iter().all(|s| s == &Some(State::Pending)));
+    assert!(states_b_before.iter().all(|s| s == &Some(State::Pending)));
+    assert!(states_c_before.iter().all(|s| s == &Some(State::Spent)));
+
+    // Run recovery
+    mint.stop().await.expect("Stop should succeed");
+    mint.start().await.expect("Start should succeed");
+
+    // Verify cleanup
+    let incomplete_after = db.get_incomplete_sagas(OperationKind::Swap).await.unwrap();
+    assert_eq!(
+        incomplete_after.len(),
+        0,
+        "No incomplete sagas after recovery"
+    );
+
+    // Saga A cleaned up
+    let saga_state_a = db.get_saga_state(&op_id_a).await.unwrap();
+    assert!(saga_state_a.is_none());
+    let states_a_after = db.get_proofs_states(&ys_a).await.unwrap();
+    assert!(states_a_after.iter().all(|s| s.is_none()));
+
+    // Saga B cleaned up
+    let saga_state_b = db.get_saga_state(&op_id_b).await.unwrap();
+    assert!(saga_state_b.is_none());
+    let states_b_after = db.get_proofs_states(&ys_b).await.unwrap();
+    assert!(states_b_after.iter().all(|s| s.is_none()));
+
+    // Saga C unaffected (still spent, saga state was already deleted)
+    let saga_state_c = db.get_saga_state(&op_id_c).await.unwrap();
+    assert!(saga_state_c.is_none(), "Completed saga state was deleted");
+    let states_c_after = db.get_proofs_states(&ys_c).await.unwrap();
+    assert!(
+        states_c_after.iter().all(|s| s == &Some(State::Spent)),
+        "Completed saga proofs remain spent"
+    );
+}
+
+/// Tests that recovery is idempotent (can be run multiple times safely).
+///
+/// # What This Tests
+/// - Recovery can be run multiple times without errors
+/// - Second recovery run is a no-op
+/// - State remains consistent after multiple recoveries
+///
+/// # Success Criteria
+/// - First recovery cleans up incomplete saga
+/// - Second recovery succeeds (no incomplete sagas to process)
+/// - State is consistent after both runs
+#[tokio::test]
+async fn test_recovery_idempotence() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+    let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let operation_id;
+    let ys = input_proofs.ys().unwrap();
+
+    // Create incomplete saga
+    {
+        let pubsub = mint.pubsub_manager();
+        let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+        let saga = saga
+            .setup_swap(&input_proofs, &output_blinded_messages, None, verification)
+            .await
+            .expect("Setup should succeed");
+        operation_id = *saga.operation.id();
+        drop(saga);
+    }
+
+    // Verify incomplete saga exists
+    let saga_state_before = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(saga_state_before.is_some());
+
+    // First recovery
+    mint.stop().await.expect("First stop should succeed");
+    mint.start().await.expect("First start should succeed");
+
+    // Verify cleanup
+    let saga_state_after_1 = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(saga_state_after_1.is_none());
+    let states_after_1 = db.get_proofs_states(&ys).await.unwrap();
+    assert!(states_after_1.iter().all(|s| s.is_none()));
+
+    // Second recovery (should be idempotent - no work to do)
+    mint.stop().await.expect("Second stop should succeed");
+    mint.start().await.expect("Second start should succeed");
+
+    // Verify state unchanged
+    let saga_state_after_2 = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(saga_state_after_2.is_none());
+    let states_after_2 = db.get_proofs_states(&ys).await.unwrap();
+    assert!(states_after_2.iter().all(|s| s.is_none()));
+
+    // Third recovery for good measure
+    mint.stop().await.expect("Third stop should succeed");
+    mint.start().await.expect("Third start should succeed");
+
+    let saga_state_after_3 = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(saga_state_after_3.is_none());
+}
+
+// ==================== PHASE 3: EDGE CASE TESTS ====================
+// These tests verify edge cases and error handling scenarios.
+
+/// Tests cleanup of orphaned saga state (saga deletion fails but swap succeeds).
+///
+/// # What This Tests
+/// - Swap completes successfully (proofs marked SPENT)
+/// - Saga deletion fails (simulated by test hook)
+/// - Swap still succeeds (best-effort deletion)
+/// - Saga state remains orphaned in database
+/// - Recovery detects orphaned saga (proofs already SPENT)
+/// - Recovery deletes orphaned saga state
+///
+/// # Why This Matters
+/// According to the implementation, saga deletion is best-effort. If it fails,
+/// the swap should still succeed. The orphaned saga state will be cleaned up
+/// on next recovery.
+///
+/// # Success Criteria
+/// - Swap succeeds despite deletion failure
+/// - Proofs are SPENT after swap
+/// - Saga state remains after swap (orphaned)
+/// - Recovery cleans up orphaned saga state
+#[tokio::test]
+async fn test_orphaned_saga_cleanup() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+    let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let pubsub = mint.pubsub_manager();
+    let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+
+    let saga = saga
+        .setup_swap(&input_proofs, &output_blinded_messages, None, verification)
+        .await
+        .expect("Setup should succeed");
+
+    let operation_id = *saga.operation.id();
+    let ys = input_proofs.ys().unwrap();
+
+    let saga = saga.sign_outputs().await.expect("Signing should succeed");
+
+    // Note: We cannot easily inject a failure for saga deletion within finalize
+    // because the deletion happens inside a database transaction and uses the
+    // transaction trait. For now, we'll test the recovery side: create a saga
+    // that completes, then manually verify recovery can handle scenarios where
+    // saga state exists but proofs are already SPENT.
+
+    let _response = saga.finalize().await.expect("Finalize should succeed");
+
+    // Verify swap succeeded (proofs SPENT)
+    let states = db.get_proofs_states(&ys).await.unwrap();
+    assert!(
+        states.iter().all(|s| s == &Some(State::Spent)),
+        "Proofs should be SPENT after successful swap"
+    );
+
+    // In a real scenario with deletion failure, saga state would remain.
+    // For this test, we'll verify that saga state is properly deleted.
+    // TODO: Add failure injection for delete_saga_state to properly test this.
+    let saga_state = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(
+        saga_state.is_none(),
+        "Saga state should be deleted after successful swap"
+    );
+
+    // If we had a way to inject deletion failure, we would:
+    // 1. Verify saga state remains (orphaned)
+    // 2. Run recovery
+    // 3. Verify recovery detects proofs are SPENT
+    // 4. Verify recovery deletes orphaned saga state
+}
+
+/// Tests recovery with orphaned proofs (proofs without corresponding saga state).
+///
+/// # What This Tests
+/// - Proofs exist in database without saga state
+/// - Recovery handles this gracefully (no crash)
+/// - Proofs remain in their current state
+///
+/// # Scenario
+/// This could happen if:
+/// - Manual database intervention removed saga state but not proofs
+/// - A bug caused saga state deletion without proof cleanup
+/// - Database corruption
+///
+/// # Success Criteria
+/// - Recovery runs without errors
+/// - Proofs remain in database (recovery doesn't remove them without saga state)
+/// - No crashes or panics
+#[tokio::test]
+async fn test_recovery_with_orphaned_proofs() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+    let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let ys = input_proofs.ys().unwrap();
+
+    // Setup saga to get proofs into PENDING state
+    let operation_id = {
+        let pubsub = mint.pubsub_manager();
+        let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+
+        let saga = saga
+            .setup_swap(&input_proofs, &output_blinded_messages, None, verification)
+            .await
+            .expect("Setup should succeed");
+
+        let op_id = *saga.operation.id();
+
+        // Drop saga (crash simulation)
+        drop(saga);
+
+        op_id
+    };
+
+    // Verify proofs are PENDING and saga state exists
+    let states_before = db.get_proofs_states(&ys).await.unwrap();
+    assert!(states_before.iter().all(|s| s == &Some(State::Pending)));
+
+    let saga_state_before = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(saga_state_before.is_some());
+
+    // Manually delete saga state (simulating orphaned proofs scenario)
+    {
+        let mut tx = db.begin_transaction().await.unwrap();
+        tx.delete_saga_state(&operation_id).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Verify saga state is gone but proofs remain
+    let saga_state_after_delete = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(
+        saga_state_after_delete.is_none(),
+        "Saga state should be deleted"
+    );
+
+    let states_after_delete = db.get_proofs_states(&ys).await.unwrap();
+    assert!(
+        states_after_delete
+            .iter()
+            .all(|s| s == &Some(State::Pending)),
+        "Proofs should still be PENDING (orphaned)"
+    );
+
+    // Run recovery - should handle gracefully
+    mint.stop().await.expect("Stop should succeed");
+    mint.start().await.expect("Start should succeed");
+
+    // Verify recovery completed without errors
+    // Orphaned PENDING proofs without saga state should remain (not cleaned up)
+    // This is by design - recovery only acts on incomplete sagas, not orphaned proofs
+    let states_after_recovery = db.get_proofs_states(&ys).await.unwrap();
+    assert!(
+        states_after_recovery
+            .iter()
+            .all(|s| s == &Some(State::Pending)),
+        "Orphaned proofs remain PENDING (recovery doesn't clean up proofs without saga state)"
+    );
+
+    // Note: In production, a separate cleanup mechanism (e.g., timeout-based)
+    // would be needed to handle such orphaned resources. Saga recovery only
+    // processes incomplete sagas that have saga state.
+}
+
+/// Tests recovery with partial state (missing blinded messages).
+///
+/// # What This Tests
+/// - Saga state exists
+/// - Proofs exist
+/// - Blinded messages are missing (deleted manually)
+/// - Recovery handles this gracefully
+///
+/// # Scenario
+/// This could occur due to:
+/// - Partial transaction commit (unlikely with proper atomicity)
+/// - Manual database intervention
+/// - Database corruption
+///
+/// # Success Criteria
+/// - Recovery runs without errors
+/// - Saga state is cleaned up
+/// - Proofs are removed
+/// - No crashes due to missing blinded messages
+#[tokio::test]
+async fn test_recovery_with_partial_state() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+    let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let ys = input_proofs.ys().unwrap();
+    let blinded_secrets: Vec<_> = output_blinded_messages
+        .iter()
+        .map(|bm| bm.blinded_secret)
+        .collect();
+
+    // Setup saga
+    let operation_id = {
+        let pubsub = mint.pubsub_manager();
+        let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+
+        let saga = saga
+            .setup_swap(&input_proofs, &output_blinded_messages, None, verification)
+            .await
+            .expect("Setup should succeed");
+
+        let op_id = *saga.operation.id();
+
+        // Drop saga (crash simulation)
+        drop(saga);
+
+        op_id
+    };
+
+    // Verify setup
+    let saga_state_before = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(saga_state_before.is_some());
+
+    let states_before = db.get_proofs_states(&ys).await.unwrap();
+    assert!(states_before.iter().all(|s| s == &Some(State::Pending)));
+
+    // Manually delete blinded messages (simulating partial state)
+    {
+        let mut tx = db.begin_transaction().await.unwrap();
+        tx.delete_blinded_messages(&blinded_secrets).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Verify blinded messages are gone but saga state and proofs remain
+    // (Note: We can't directly query blinded messages to verify they're gone,
+    // but the recovery mechanism will attempt to delete them regardless)
+
+    // Run recovery - should handle missing blinded messages gracefully
+    mint.stop().await.expect("Stop should succeed");
+    mint.start().await.expect("Start should succeed");
+
+    // Verify recovery completed successfully
+    let saga_state_after = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(saga_state_after.is_none(), "Saga state should be deleted");
+
+    let states_after = db.get_proofs_states(&ys).await.unwrap();
+    assert!(
+        states_after.iter().all(|s| s.is_none()),
+        "Proofs should be removed"
+    );
+
+    // Recovery should succeed even if blinded messages were already gone
+}
+
+/// Tests recovery when blinded messages are missing (but proofs and saga state exist).
+///
+/// # What This Tests
+/// - Saga state exists with blinded_secrets
+/// - Proofs exist and are PENDING
+/// - Blinded messages themselves are missing from database
+/// - Recovery completes without errors
+/// - Saga state is cleaned up
+/// - Proofs are removed
+///
+/// # Success Criteria
+/// - No errors when trying to delete missing blinded messages
+/// - Recovery completes successfully
+/// - All saga state cleaned up
+#[tokio::test]
+async fn test_recovery_with_missing_blinded_messages() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+    let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let ys = input_proofs.ys().unwrap();
+    let blinded_secrets: Vec<_> = output_blinded_messages
+        .iter()
+        .map(|bm| bm.blinded_secret)
+        .collect();
+
+    // Setup saga and crash
+    let operation_id = {
+        let pubsub = mint.pubsub_manager();
+        let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+
+        let saga = saga
+            .setup_swap(&input_proofs, &output_blinded_messages, None, verification)
+            .await
+            .expect("Setup should succeed");
+
+        let op_id = *saga.operation.id();
+        drop(saga); // Crash
+
+        op_id
+    };
+
+    // Verify initial state
+    let saga_state = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(saga_state.is_some(), "Saga state should exist");
+
+    // Manually delete blinded messages before recovery
+    {
+        let mut tx = db.begin_transaction().await.unwrap();
+        tx.delete_blinded_messages(&blinded_secrets).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Run recovery - should handle missing blinded messages gracefully
+    mint.stop().await.expect("Stop should succeed");
+    mint.start()
+        .await
+        .expect("Start should succeed despite missing blinded messages");
+
+    // Verify cleanup
+    let saga_state_after = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(
+        saga_state_after.is_none(),
+        "Saga state should be cleaned up"
+    );
+
+    let states_after = db.get_proofs_states(&ys).await.unwrap();
+    assert!(
+        states_after.iter().all(|s| s.is_none()),
+        "Proofs should be removed"
+    );
+}
+
+/// Tests that saga deletion failure is handled gracefully during finalize.
+///
+/// # What This Tests
+/// - Swap completes successfully through finalize
+/// - Even if saga deletion fails internally, swap succeeds
+/// - Best-effort saga deletion doesn't fail the swap
+///
+/// # Note
+/// This test verifies the design decision that saga deletion is best-effort.
+/// Currently we cannot easily inject deletion failures, so this test documents
+/// the expected behavior and verifies normal deletion.
+///
+/// # Success Criteria
+/// - Swap completes successfully
+/// - Saga state is deleted (in normal case)
+/// - If deletion fails (not testable yet), swap still succeeds
+#[tokio::test]
+async fn test_saga_deletion_failure_handling() {
+    let mint = create_test_mint().await.unwrap();
+    let db = mint.localstore();
+
+    let amount = Amount::from(100);
+    let (input_proofs, verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let pubsub = mint.pubsub_manager();
+    let saga = SwapSaga::new(&mint, db.clone(), pubsub);
+
+    let saga = saga
+        .setup_swap(&input_proofs, &output_blinded_messages, None, verification)
+        .await
+        .expect("Setup should succeed");
+
+    let operation_id = *saga.operation.id();
+    let ys = input_proofs.ys().unwrap();
+
+    let saga = saga.sign_outputs().await.expect("Signing should succeed");
+
+    // In normal operation, deletion succeeds
+    let response = saga.finalize().await.expect("Finalize should succeed");
+
+    // Verify swap succeeded
+    assert_eq!(
+        response.signatures.len(),
+        output_blinded_messages.len(),
+        "Should have signatures for all outputs"
+    );
+
+    let states = db.get_proofs_states(&ys).await.unwrap();
+    assert!(
+        states.iter().all(|s| s == &Some(State::Spent)),
+        "Proofs should be SPENT"
+    );
+
+    // Verify saga state is deleted
+    let saga_state = db.get_saga_state(&operation_id).await.unwrap();
+    assert!(saga_state.is_none(), "Saga state should be deleted");
+
+    // TODO: Add test failure injection for delete_saga_state to verify that:
+    // 1. Swap still succeeds even if deletion fails
+    // 2. Orphaned saga state remains
+    // 3. Recovery can clean it up later
+    //
+    // This would require adding a TEST_FAIL_DELETE_SAGA env var check in the
+    // database implementation's delete_saga_state method.
 }

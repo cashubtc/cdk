@@ -243,9 +243,9 @@ impl Mint {
         // Pending melt quotes where the payment has **failed** inputs are reset to unspent
         self.check_pending_melt_quotes().await?;
 
-        // Recover from bad swap operations
-        // This cleans up pending swap proofs that are left in an inconsistent state
-        self.recover_from_bad_swaps().await?;
+        // Recover from incomplete swap sagas
+        // This cleans up incomplete swap operations using persisted saga state
+        self.recover_from_incomplete_sagas().await?;
 
         let mut task_state = self.task_state.lock().await;
 

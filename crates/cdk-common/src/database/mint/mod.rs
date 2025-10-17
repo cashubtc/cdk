@@ -376,6 +376,45 @@ pub trait SignaturesDatabase {
 }
 
 #[async_trait]
+/// Saga Transaction trait
+pub trait SagaTransaction<'a> {
+    /// Saga Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Add saga state
+    async fn add_saga_state(&mut self, saga: &mint::SagaState) -> Result<(), Self::Err>;
+
+    /// Update saga state (only updates state and updated_at fields)
+    async fn update_saga_state(
+        &mut self,
+        operation_id: &uuid::Uuid,
+        new_state: mint::SagaStateEnum,
+    ) -> Result<(), Self::Err>;
+
+    /// Delete saga state
+    async fn delete_saga_state(&mut self, operation_id: &uuid::Uuid) -> Result<(), Self::Err>;
+}
+
+#[async_trait]
+/// Saga Database trait
+pub trait SagaDatabase {
+    /// Saga Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Get saga state by operation_id
+    async fn get_saga_state(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Option<mint::SagaState>, Self::Err>;
+
+    /// Get all incomplete sagas for a given operation kind
+    async fn get_incomplete_sagas(
+        &self,
+        operation_kind: mint::OperationKind,
+    ) -> Result<Vec<mint::SagaState>, Self::Err>;
+}
+
+#[async_trait]
 /// Commit and Rollback
 pub trait DbTransactionFinalizer {
     /// Mint Signature Database Error
@@ -431,6 +470,7 @@ pub trait Transaction<'a, Error>:
     + SignaturesTransaction<'a, Err = Error>
     + ProofsTransaction<'a, Err = Error>
     + KVStoreTransaction<'a, Error>
+    + SagaTransaction<'a, Err = Error>
 {
 }
 
@@ -475,6 +515,7 @@ pub trait Database<Error>:
     + QuotesDatabase<Err = Error>
     + ProofsDatabase<Err = Error>
     + SignaturesDatabase<Err = Error>
+    + SagaDatabase<Err = Error>
 {
     /// Beings a transaction
     async fn begin_transaction<'a>(

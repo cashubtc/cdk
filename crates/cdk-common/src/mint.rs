@@ -16,6 +16,144 @@ use crate::nuts::{MeltQuoteState, MintQuoteState};
 use crate::payment::PaymentIdentifier;
 use crate::{Amount, CurrencyUnit, Error, Id, KeySetInfo, PublicKey};
 
+/// Operation kind for saga persistence
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OperationKind {
+    /// Swap operation
+    Swap,
+    /// Mint operation
+    Mint,
+    /// Melt operation
+    Melt,
+}
+
+impl OperationKind {
+    /// Convert to string for database storage
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OperationKind::Swap => "swap",
+            OperationKind::Mint => "mint",
+            OperationKind::Melt => "melt",
+        }
+    }
+
+    /// Parse from string
+    pub fn from_str(s: &str) -> Result<Self, Error> {
+        match s {
+            "swap" => Ok(OperationKind::Swap),
+            "mint" => Ok(OperationKind::Mint),
+            "melt" => Ok(OperationKind::Melt),
+            _ => Err(Error::Custom(format!("Invalid operation kind: {}", s))),
+        }
+    }
+}
+
+/// States specific to swap saga
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwapSagaState {
+    /// Swap setup complete (proofs added, blinded messages added)
+    SetupComplete,
+    /// Outputs signed (signatures generated but not persisted)
+    Signed,
+}
+
+impl SwapSagaState {
+    /// Convert to string for database storage
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SwapSagaState::SetupComplete => "setup_complete",
+            SwapSagaState::Signed => "signed",
+        }
+    }
+
+    /// Parse from string
+    pub fn from_str(s: &str) -> Result<Self, Error> {
+        match s {
+            "setup_complete" => Ok(SwapSagaState::SetupComplete),
+            "signed" => Ok(SwapSagaState::Signed),
+            _ => Err(Error::Custom(format!("Invalid swap saga state: {}", s))),
+        }
+    }
+}
+
+/// Saga state for different operation types
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SagaStateEnum {
+    /// Swap saga states
+    Swap(SwapSagaState),
+    // Future: Mint saga states
+    // Mint(MintSagaState),
+    // Future: Melt saga states
+    // Melt(MeltSagaState),
+}
+
+impl SagaStateEnum {
+    /// Convert to string for database storage
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SagaStateEnum::Swap(state) => state.as_str(),
+        }
+    }
+
+    /// Parse from string given operation kind
+    pub fn from_str(operation_kind: OperationKind, s: &str) -> Result<Self, Error> {
+        match operation_kind {
+            OperationKind::Swap => Ok(SagaStateEnum::Swap(SwapSagaState::from_str(s)?)),
+            OperationKind::Mint => Err(Error::Custom("Mint saga not implemented yet".to_string())),
+            OperationKind::Melt => Err(Error::Custom("Melt saga not implemented yet".to_string())),
+        }
+    }
+}
+
+/// Persisted saga state for recovery
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SagaState {
+    /// Operation ID (correlation key)
+    pub operation_id: Uuid,
+    /// Operation kind (swap, mint, melt)
+    pub operation_kind: OperationKind,
+    /// Current saga state (operation-specific)
+    pub state: SagaStateEnum,
+    /// Blinded secrets (B values) from output blinded messages
+    pub blinded_secrets: Vec<PublicKey>,
+    /// Y values (public keys) from input proofs
+    pub input_ys: Vec<PublicKey>,
+    /// Unix timestamp when saga was created
+    pub created_at: u64,
+    /// Unix timestamp when saga was last updated
+    pub updated_at: u64,
+}
+
+impl SagaState {
+    /// Create new swap saga state
+    pub fn new_swap(
+        operation_id: Uuid,
+        state: SwapSagaState,
+        blinded_secrets: Vec<PublicKey>,
+        input_ys: Vec<PublicKey>,
+    ) -> Self {
+        let now = unix_time();
+        Self {
+            operation_id,
+            operation_kind: OperationKind::Swap,
+            state: SagaStateEnum::Swap(state),
+            blinded_secrets,
+            input_ys,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Update swap saga state
+    pub fn update_swap_state(&mut self, new_state: SwapSagaState) {
+        self.state = SagaStateEnum::Swap(new_state);
+        self.updated_at = unix_time();
+    }
+}
+
 /// Operation
 pub enum Operation {
     /// Mint

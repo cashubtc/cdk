@@ -7,7 +7,7 @@ use super::nut11::{enforce_sig_flag, EnforceSigFlag};
 use super::{Mint, SigFlag, SwapRequest, SwapResponse};
 use crate::Error;
 
-mod swap_saga;
+pub mod swap_saga;
 
 impl Mint {
     /// Process Swap

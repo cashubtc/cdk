@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use cdk_common::database::DynMintDatabase;
-use cdk_common::mint::Operation;
+use cdk_common::mint::{Operation, SagaState, SwapSagaState};
 use cdk_common::nuts::BlindedMessage;
 use cdk_common::{database, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 use tokio::sync::Mutex;
@@ -12,7 +12,7 @@ use self::compensation::{CompensatingAction, RemoveSwapSetup};
 use self::state::{Initial, SetupComplete, Signed};
 use crate::mint::subscription::PubSubManager;
 
-mod compensation;
+pub mod compensation;
 mod state;
 
 #[cfg(test)]
@@ -38,9 +38,13 @@ mod tests;
 /// # Transaction Boundaries
 ///
 /// - **TX1 (setup_swap)**: Atomically verifies balance, adds input proofs (pending),
-///   and adds output blinded messages
+///   adds output blinded messages, and persists saga state for crash recovery
 /// - **Signing (sign_outputs)**: Non-transactional cryptographic operation
-/// - **TX2 (finalize)**: Atomically adds signatures to outputs and marks inputs as spent
+/// - **TX2 (finalize)**: Atomically adds signatures to outputs, marks inputs as spent,
+///   and deletes saga state (best-effort, will be cleaned up on recovery if this fails)
+///
+/// Saga state persistence is atomic with swap state changes, ensuring consistency
+/// for crash recovery scenarios.
 ///
 /// # Expected Actions
 ///
@@ -119,7 +123,8 @@ impl<'a> SwapSaga<'a, Initial> {
     /// 2. Adds input proofs to the database
     /// 3. Updates input proof states from Unspent to Pending
     /// 4. Adds output blinded messages to the database
-    /// 5. Publishes proof state changes via pubsub
+    /// 5. Persists saga state for crash recovery (atomic with steps 1-4)
+    /// 6. Publishes proof state changes via pubsub
     ///
     /// # Compensation
     ///
@@ -221,8 +226,6 @@ impl<'a> SwapSaga<'a, Initial> {
             self.pubsub.proof_state((*pk, State::Pending));
         }
 
-        tx.commit().await?;
-
         // Store data in saga struct (avoid duplication in state enum)
         let blinded_messages_vec = blinded_messages.to_vec();
         let blinded_secrets: Vec<PublicKey> = blinded_messages_vec
@@ -230,13 +233,28 @@ impl<'a> SwapSaga<'a, Initial> {
             .map(|bm| bm.blinded_secret)
             .collect();
 
+        // Persist saga state for crash recovery (atomic with TX1)
+        let saga_state = SagaState::new_swap(
+            *self.operation.id(),
+            SwapSagaState::SetupComplete,
+            blinded_secrets.clone(),
+            ys.clone(),
+        );
+
+        if let Err(err) = tx.add_saga_state(&saga_state).await {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
+
+        tx.commit().await?;
+
         // Register compensation (uses LIFO via push_front)
         let compensations = Arc::clone(&self.compensations);
         compensations
             .lock()
             .await
             .push_front(Box::new(RemoveSwapSetup {
-                blinded_secrets,
+                blinded_secrets: blinded_secrets.clone(),
                 input_ys: ys.clone(),
             }));
 
@@ -286,6 +304,9 @@ impl<'a> SwapSaga<'a, SetupComplete> {
         {
             Ok(signatures) => {
                 // Transition to Signed state
+                // Note: We don't update saga state here because the "signed" state
+                // is not used by recovery logic - saga state remains "SetupComplete"
+                // until the swap is finalized or compensated
                 Ok(SwapSaga {
                     mint: self.mint,
                     db: self.db,
@@ -317,8 +338,9 @@ impl SwapSaga<'_, Signed> {
     /// Within a single database transaction:
     /// 1. Adds the blind signatures to the output blinded messages
     /// 2. Updates input proof states from Pending to Spent
-    /// 3. Publishes proof state changes via pubsub
-    /// 4. Clears all registered compensations (swap successfully completed)
+    /// 3. Deletes saga state (best-effort, won't fail swap if this fails)
+    /// 4. Publishes proof state changes via pubsub
+    /// 5. Clears all registered compensations (swap successfully completed)
     ///
     /// # Failure Handling
     ///
@@ -329,7 +351,9 @@ impl SwapSaga<'_, Signed> {
     /// # Success
     ///
     /// On success, compensations are cleared and the swap is complete. The client
-    /// can now use the returned signatures to construct valid proofs.
+    /// can now use the returned signatures to construct valid proofs. If saga state
+    /// deletion fails, a warning is logged but the swap still succeeds (orphaned
+    /// saga state will be cleaned up on next recovery).
     ///
     /// # Errors
     ///
@@ -408,6 +432,17 @@ impl SwapSaga<'_, Signed> {
             self.pubsub.proof_state((*pk, State::Spent));
         }
 
+        // Delete saga state - swap completed successfully (best-effort, atomic with TX2)
+        // Don't fail the swap if saga deletion fails - orphaned saga state will be
+        // cleaned up on next recovery
+        if let Err(e) = tx.delete_saga_state(&self.operation.id()).await {
+            tracing::warn!(
+                "Failed to delete saga state in finalize (will be cleaned up on recovery): {}",
+                e
+            );
+            // Don't rollback - swap succeeded, orphaned saga state is harmless
+        }
+
         tx.commit().await?;
 
         // Clear compensations - swap is complete
@@ -452,6 +487,27 @@ impl<S> SwapSaga<'_, S> {
                 );
             }
         }
+
+        // Delete saga state - swap was compensated
+        // Use a separate transaction since compensations already ran
+        // Don't fail the compensation if saga cleanup fails (log only)
+        let mut tx = match self.db.begin_transaction().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                tracing::error!(
+                    "Failed to begin tx for saga cleanup after compensation: {}",
+                    e
+                );
+                return Ok(()); // Compensations already ran, don't fail now
+            }
+        };
+
+        if let Err(e) = tx.delete_saga_state(&self.operation.id()).await {
+            tracing::warn!("Failed to delete saga state after compensation: {}", e);
+        } else if let Err(e) = tx.commit().await {
+            tracing::error!("Failed to commit saga cleanup after compensation: {}", e);
+        }
+        // Always succeed - compensations are done, saga cleanup is best-effort
 
         Ok(())
     }

@@ -3,12 +3,11 @@
 //! These checks are need in the case the mint was offline and the lightning node was node.
 //! These ensure that the status of the mint or melt quote matches in the mint db and on the node.
 
-use cdk_common::database;
-use cdk_common::mint::Operation;
+use cdk_common::mint::OperationKind;
 
 use super::{Error, Mint};
+use crate::mint::swap::swap_saga::compensation::{CompensatingAction, RemoveSwapSetup};
 use crate::mint::{MeltQuote, MeltQuoteState, PaymentMethod};
-use crate::nuts::State;
 use crate::types::PaymentProcessorKey;
 
 impl Mint {
@@ -84,105 +83,70 @@ impl Mint {
         Ok(())
     }
 
-    /// Recover from bad swap operations
+    /// Recover from incomplete swap sagas
     ///
-    /// Checks all PENDING proofs where operation_kind is "swap".
-    /// For each unique operation_id:
-    /// - If blind signatures exist for that operation_id, mark the proofs as SPENT
-    /// - If no blind signatures exist for that operation_id, remove the proofs from the database
-    pub async fn recover_from_bad_swaps(&self) -> Result<(), Error> {
-        use cdk_common::nut00::ProofsMethods;
-
-        let mut tx = self.localstore.begin_transaction().await?;
-
-        let pending_swap_proofs_by_operation = tx
-            .get_proofs_by_state_and_operation_kind(State::Pending, "swap")
+    /// Checks all persisted sagas for swap operations and compensates
+    /// incomplete ones by removing both proofs and blinded messages.
+    pub async fn recover_from_incomplete_sagas(&self) -> Result<(), Error> {
+        let incomplete_sagas = self
+            .localstore
+            .get_incomplete_sagas(OperationKind::Swap)
             .await?;
 
-        if pending_swap_proofs_by_operation.is_empty() {
-            tracing::info!("No pending swap proofs found to recover.");
-            tx.commit().await?;
+        if incomplete_sagas.is_empty() {
+            tracing::info!("No incomplete swap sagas found to recover.");
             return Ok(());
         }
 
-        let total_proofs: usize = pending_swap_proofs_by_operation
-            .values()
-            .map(|v| v.len())
-            .sum();
-        let operation_count = pending_swap_proofs_by_operation.len();
-        tracing::info!(
-            "Found {} pending swap proofs in {} operations to recover from bad swaps.",
-            total_proofs,
-            operation_count
-        );
+        let total_sagas = incomplete_sagas.len();
+        tracing::info!("Found {} incomplete swap sagas to recover.", total_sagas);
 
-        for (operation_id, proofs) in pending_swap_proofs_by_operation {
-            tracing::debug!(
-                "Checking operation_id {} with {} proofs",
-                operation_id,
-                proofs.len()
+        for saga in incomplete_sagas {
+            tracing::info!(
+                "Recovering saga {} in state '{}' (created: {}, updated: {})",
+                saga.operation_id,
+                saga.state.as_str(),
+                saga.created_at,
+                saga.updated_at
             );
 
-            let operation = Operation::Swap(operation_id);
+            // Use the same compensation logic as in-process failures
+            let compensation = RemoveSwapSetup {
+                blinded_secrets: saga.blinded_secrets.clone(),
+                input_ys: saga.input_ys.clone(),
+            };
 
-            // Check if blind signatures exist for this operation_id
-            let blind_signatures = tx.get_blind_signatures_by_operation(&operation).await?;
-
-            let proof_ys: Vec<_> = proofs.ys()?;
-
-            if !blind_signatures.is_empty() {
-                // Blind signatures exist, mark proofs as SPENT
-                tracing::info!(
-                    "Operation {} has {} blind signatures, marking {} proofs as SPENT",
-                    operation_id,
-                    blind_signatures.len(),
-                    proof_ys.len()
+            // Execute compensation
+            if let Err(e) = compensation.execute(&self.localstore).await {
+                tracing::error!(
+                    "Failed to compensate saga {}: {}. Continuing...",
+                    saga.operation_id,
+                    e
                 );
-
-                match tx.update_proofs_states(&proof_ys, State::Spent).await {
-                    Ok(_) => {}
-                    Err(database::Error::AttemptUpdateSpentProof) => {
-                        // Already processed - skip
-                        continue;
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            } else {
-                // No blind signatures exist, remove the proofs
-                tracing::info!(
-                    "Operation {} has no blind signatures, removing {} proofs",
-                    operation_id,
-                    proof_ys.len()
-                );
-
-                if let Err(err) = tx.remove_proofs(&proof_ys, None).await {
-                    tracing::error!(
-                        "Failed to remove proofs for operation {}: {}",
-                        operation_id,
-                        err
-                    );
-                    tx.rollback().await?;
-                    return Err(err.into());
-                }
-
-                if let Err(err) = tx.delete_blind_signatures_by_operation(&operation).await {
-                    tracing::error!(
-                        "Failed to remove proofs for operation {}: {}",
-                        operation_id,
-                        err
-                    );
-                    tx.rollback().await?;
-                    return Err(err.into());
-                }
+                continue;
             }
+
+            // Delete saga state after successful compensation
+            let mut tx = self.localstore.begin_transaction().await?;
+            if let Err(e) = tx.delete_saga_state(&saga.operation_id).await {
+                tracing::error!(
+                    "Failed to delete saga state for {}: {}",
+                    saga.operation_id,
+                    e
+                );
+                tx.rollback().await?;
+                continue;
+            }
+            tx.commit().await?;
+
+            tracing::info!("Successfully recovered saga {}", saga.operation_id);
         }
 
-        tx.commit().await?;
-
         tracing::info!(
-            "Successfully recovered from bad swaps by processing {} operations.",
-            operation_count
+            "Successfully recovered {} incomplete swap sagas.",
+            total_sagas
         );
+
         Ok(())
     }
 }
