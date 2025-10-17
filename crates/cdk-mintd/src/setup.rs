@@ -18,6 +18,7 @@ use cdk::nuts::CurrencyUnit;
     feature = "cln",
     feature = "lnd",
     feature = "ldk-node",
+    feature = "spark",
     feature = "fakewallet"
 ))]
 use cdk::types::FeeReserve;
@@ -325,5 +326,53 @@ impl LnBackendSetup for config::LdkNode {
         ldk_node.set_web_addr(webserver_addr);
 
         Ok(ldk_node)
+    }
+}
+
+#[cfg(feature = "spark")]
+#[async_trait]
+impl LnBackendSetup for config::Spark {
+    async fn setup(
+        &self,
+        _settings: &Settings,
+        _unit: CurrencyUnit,
+        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+        _work_dir: &Path,
+        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+    ) -> anyhow::Result<cdk_spark::CdkSpark> {
+        use cdk_spark::SparkConfig;
+
+        // Parse network
+        let network = match self.network.to_lowercase().as_str() {
+            "mainnet" | "bitcoin" => cdk_spark::Network::Mainnet,
+            "testnet" => cdk_spark::Network::Testnet,
+            "signet" => cdk_spark::Network::Signet,
+            _ => cdk_spark::Network::Regtest,
+        };
+
+        // Create fee reserve
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: self.reserve_fee_min,
+            percent_fee_reserve: self.fee_percent,
+        };
+
+        // Build Spark configuration
+        let spark_config = SparkConfig {
+            network,
+            mnemonic: self.mnemonic.clone(),
+            passphrase: self.passphrase.clone(),
+            storage_dir: self.storage_dir.clone(),
+            api_key: self.api_key.clone(),
+            operator_pool: None, // Use default operators
+            service_provider: None, // Use default service provider
+            fee_reserve,
+            reconnect_interval_seconds: self.reconnect_interval_seconds,
+            split_secret_threshold: self.split_secret_threshold,
+        };
+
+        // Create and return Spark backend
+        let spark = cdk_spark::CdkSpark::new(spark_config).await?;
+
+        Ok(spark)
     }
 }

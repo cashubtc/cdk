@@ -1,0 +1,195 @@
+# ==========================================
+# CDK Mint Test Configuration with Spark Backend
+# ==========================================
+# 
+# This is a TESTING configuration for Signet network
+# DO NOT USE IN PRODUCTION
+#
+# Generated: 2025-10-17
+# Network: Signet (safe test network)
+# ==========================================
+
+[info]
+# Mint URL (for testing locally)
+url = "http://127.0.0.1:8085"
+listen_host = "127.0.0.1"
+listen_port = 8085
+
+# CDK Mint Mnemonic (for signing ecash tokens)
+# This is a TEST mnemonic - generate your own for real use!
+mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+# Optional: Input fee (in parts per thousand)
+# input_fee_ppk = 0
+
+# Enable Swagger UI for API documentation (useful for testing)
+enable_swagger_ui = true
+
+[info.quote_ttl]
+# How long quotes are valid (in seconds)
+mint_ttl = 600  # 10 minutes
+melt_ttl = 120  # 2 minutes
+
+[info.logging]
+# Logging configuration
+output = "both"  # Log to both console and file
+console_level = "info"
+file_level = "debug"
+
+# ==========================================
+# Mint Information
+# ==========================================
+[mint_info]
+name = "Spark Test Mint"
+description = "Testing Spark Lightning Backend on Signet"
+description_long = "A test Cashu mint using Spark SDK for nodeless Lightning payments"
+motd = "🧪 Test Mint - Signet Network - Not Real Sats!"
+
+# Optional contact info
+# contact_email = "test@example.com"
+# contact_nostr_public_key = ""
+# icon_url = ""
+# tos_url = ""
+
+# ==========================================
+# Database Configuration
+# ==========================================
+[database]
+engine = "sqlite"
+# SQLite file will be created in current directory
+# For production, use absolute path: "/path/to/data/mint.db"
+
+# ==========================================
+# Mint Keyset Configuration
+# ==========================================
+[[mint_keyset]]
+unit = "sat"
+max_order = 64  # Maximum denomination: 2^64 sats
+# input_fee_ppk = 0  # No input fees for testing
+
+# ==========================================
+# Lightning Backend Configuration
+# ==========================================
+[ln]
+# Use Spark as the Lightning backend
+ln_backend = "spark"
+
+# Optional: Limits for minting and melting
+min_mint = 1      # Minimum 1 sat to mint
+max_mint = 500000 # Maximum 500k sats to mint
+min_melt = 1      # Minimum 1 sat to melt
+max_melt = 500000 # Maximum 500k sats to melt
+
+# ==========================================
+# Spark Lightning Backend Configuration
+# ==========================================
+[spark]
+# Network: signet is perfect for testing!
+# Options: "mainnet", "testnet", "signet", "regtest"
+network = "signet"
+
+# Spark Wallet Mnemonic (controls Lightning funds)
+# ⚠️ THIS IS A TEST MNEMONIC - GENERATE YOUR OWN FOR REAL USE!
+# ⚠️ This mnemonic is PUBLICLY KNOWN - only use for testing!
+mnemonic = "economy tooth crop sound merry satisfy album spell iron clean oven worry govern senior whisper venture glide cinnamon muscle left rough budget umbrella fox"
+
+# Optional: BIP39 passphrase (25th word) for additional security
+# passphrase = ""
+
+# Storage directory for Spark wallet data
+# Will be created if it doesn't exist
+storage_dir = "./data/spark-test"
+
+# Optional: Spark Service Provider API Key
+# Get free key at: https://breez.technology/request-api-key/
+# For testing, can work without it, but recommended to get one
+# api_key = "your_api_key_here"
+
+# Fee configuration
+fee_percent = 0.01        # 1% fee (0.01 = 1%, 0.02 = 2%)
+reserve_fee_min = 10      # Minimum 10 sats fee reserve
+
+# Advanced settings (usually leave as defaults)
+reconnect_interval_seconds = 30
+split_secret_threshold = 2
+
+# ==========================================
+# Optional: Mint Management RPC
+# ==========================================
+[mint_management_rpc]
+enabled = false
+# Uncomment to enable RPC management:
+# address = "127.0.0.1"
+# port = 8086
+
+# ==========================================
+# Optional: Prometheus Metrics
+# ==========================================
+# [prometheus]
+# enabled = true
+# address = "127.0.0.1"
+# port = 9090
+
+# ==========================================
+# Optional: Authentication (disabled for testing)
+# ==========================================
+# [auth]
+# auth_enabled = false
+# openid_discovery = "http://127.0.0.1:8080/realms/test/.well-known/openid-configuration"
+# openid_client_id = "cashu-client"
+
+# ==========================================
+# TESTING NOTES
+# ==========================================
+#
+# 1. First Time Setup:
+#    - The Spark wallet will initialize on first run
+#    - Storage directory will be created automatically
+#    - Wallet will connect to Signet network
+#
+# 2. Getting Test Sats:
+#    - Use a Signet faucet: https://signetfaucet.com/
+#    - Or use another Signet Lightning wallet to fund
+#
+# 3. Testing Flow:
+#    a) Start mint: cdk-mintd --config test-spark-mint.toml
+#    b) Create mint quote: POST to /v1/mint/quote/bolt11
+#    c) Pay the invoice from a Signet Lightning wallet
+#    d) Mint ecash: POST to /v1/mint/bolt11
+#    e) Create melt quote: POST to /v1/melt/quote/bolt11
+#    f) Melt ecash: POST to /v1/melt/bolt11
+#
+# 4. Accessing Swagger UI:
+#    http://127.0.0.1:8085/swagger-ui/
+#
+# 5. View Logs:
+#    Logs will be in console and in log file
+#
+# ==========================================
+# SECURITY REMINDERS FOR REAL DEPLOYMENT
+# ==========================================
+#
+# ⚠️ BEFORE PRODUCTION:
+# 1. Generate NEW unique mnemonics for both:
+#    - [info].mnemonic (CDK mint signing)
+#    - [spark].mnemonic (Lightning wallet)
+#
+# 2. Use environment variables:
+#    mnemonic = "${CDK_MINT_MNEMONIC}"
+#    [spark]
+#    mnemonic = "${SPARK_WALLET_MNEMONIC}"
+#    api_key = "${SPARK_API_KEY}"
+#
+# 3. Secure the config file:
+#    chmod 600 test-spark-mint.toml
+#
+# 4. Change network to "mainnet"
+#
+# 5. Get a Spark API key from Breez
+#
+# 6. Use absolute paths for storage_dir
+#
+# 7. Set up proper backup procedures
+#
+# ==========================================
+
