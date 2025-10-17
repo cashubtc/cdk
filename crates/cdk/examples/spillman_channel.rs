@@ -606,6 +606,25 @@ async fn main() -> anyhow::Result<()> {
         println!("   ✓ Proof {}: Spending conditions verified", i + 1);
     }
 
+    // Verify DLEQ proofs (required for all proofs)
+    println!("   Verifying DLEQ proofs...");
+    for (i, proof) in locked_proofs.iter().enumerate() {
+        // Bob requires DLEQ proof on every proof
+        if proof.dleq.is_none() {
+            anyhow::bail!("Proof {} is missing DLEQ proof!", i + 1);
+        }
+
+        // Get mint's public key for this amount
+        let mint_pubkey = mint_keys.keys.amount_key(proof.amount)
+            .ok_or_else(|| anyhow::anyhow!("No key for amount {}", proof.amount))?;
+
+        // Verify DLEQ proof using the proof's verify_dleq method
+        proof.verify_dleq(mint_pubkey)?;
+
+        println!("   ✓ Proof {}: DLEQ proof valid", i + 1);
+    }
+    println!("   ✓ All {} DLEQ proofs verified", locked_proofs.len());
+
     // Verify proof structure
     println!("   Verifying proof structure...");
     let total_amount = locked_proofs.total_amount()?;
@@ -626,8 +645,8 @@ async fn main() -> anyhow::Result<()> {
     println!("   - All proofs are locked to Alice + Bob 2-of-2");
     println!("   - Locktime allows Alice to refund after {}", channel_params.locktime);
     println!("   - Spending conditions are correct (SigAll, 2-of-2, locktime)");
+    println!("   - All DLEQ proofs verified (required)");
     println!("   - Total value: {} msat in {} denominations", total_amount, locked_proofs.len());
-    println!("\n   Note: Mint signatures will be verified when proofs are spent");
 
     Ok(())
 }
