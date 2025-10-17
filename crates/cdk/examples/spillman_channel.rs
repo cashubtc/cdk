@@ -38,9 +38,10 @@ use cdk::wallet::{AuthWallet, MintConnector, ReceiveOptions, SendOptions, Wallet
 use cdk::{dhke::{blind_message, construct_proofs}, Error, Mint, StreamExt};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::RwLock;
-use cdk::nuts::{BlindedMessage, nut10::Secret as Nut10Secret};
+use cdk::nuts::{BlindedMessage, nut10::Secret as Nut10Secret, ProofsMethods};
 use cdk::secret::Secret;
 use cdk::Amount;
+use cdk::nuts::nut10::Kind;
 
 /// Parameters for a Spillman payment channel
 #[derive(Debug, Clone)]
@@ -549,6 +550,84 @@ async fn main() -> anyhow::Result<()> {
     println!("\n🎉 Spillman channel setup complete!");
     println!("   Alice has {} proofs locked to 2-of-2 multisig", locked_proofs.len());
     println!("   These can be spent with Alice + Bob signatures (or Alice alone after locktime)\n");
+
+    // 12. BOB VERIFIES THE LOCKED PROOFS
+    println!("🔍 Bob verifying the locked proofs...");
+
+    // Verify spending conditions in each proof
+    for (i, proof) in locked_proofs.iter().enumerate() {
+        // Parse the secret to extract spending conditions
+        let nut10_secret: Nut10Secret = proof.secret.clone().try_into()?;
+
+        // Verify it's a P2PK secret
+        if nut10_secret.kind() != Kind::P2PK {
+            anyhow::bail!("Proof {} is not P2PK!", i + 1);
+        }
+
+        // Extract and verify spending conditions
+        let proof_conditions: SpendingConditions = nut10_secret.try_into()?;
+
+        // Verify Alice is the primary pubkey
+        if let SpendingConditions::P2PKConditions { data, conditions } = &proof_conditions {
+            if data != &channel_params.alice_pubkey {
+                anyhow::bail!("Proof {} primary key is not Alice!", i + 1);
+            }
+
+            if let Some(cond) = conditions {
+                // Verify Bob is in the pubkeys list
+                if !cond.pubkeys.as_ref().map_or(false, |keys| keys.contains(&channel_params.bob_pubkey)) {
+                    anyhow::bail!("Proof {} doesn't include Bob's pubkey!", i + 1);
+                }
+
+                // Verify 2-of-2 requirement
+                if cond.num_sigs != Some(2) {
+                    anyhow::bail!("Proof {} doesn't require 2 signatures!", i + 1);
+                }
+
+                // Verify locktime
+                if cond.locktime != Some(channel_params.locktime) {
+                    anyhow::bail!("Proof {} has wrong locktime!", i + 1);
+                }
+
+                // Verify refund keys (Alice can reclaim after locktime)
+                if !cond.refund_keys.as_ref().map_or(false, |keys| keys.contains(&channel_params.alice_pubkey)) {
+                    anyhow::bail!("Proof {} doesn't have Alice as refund key!", i + 1);
+                }
+
+                // Verify SigAll flag
+                if cond.sig_flag != SigFlag::SigAll {
+                    anyhow::bail!("Proof {} doesn't have SigAll flag!", i + 1);
+                }
+            } else {
+                anyhow::bail!("Proof {} has no conditions!", i + 1);
+            }
+        }
+
+        println!("   ✓ Proof {}: Spending conditions verified", i + 1);
+    }
+
+    // Verify proof structure
+    println!("   Verifying proof structure...");
+    let total_amount = locked_proofs.total_amount()?;
+    if total_amount != Amount::from(channel_params.capacity) {
+        anyhow::bail!("Total proof amount {} doesn't match capacity {}", total_amount, channel_params.capacity);
+    }
+    println!("   ✓ Total amount matches capacity: {} msat", total_amount);
+
+    // Verify denominations match expectations
+    let proof_amounts: Vec<u64> = locked_proofs.iter().map(|p| u64::from(p.amount)).collect();
+    if proof_amounts != channel_params.denominations {
+        anyhow::bail!("Proof denominations {:?} don't match expected {:?}", proof_amounts, channel_params.denominations);
+    }
+    println!("   ✓ Denominations match: {:?}", proof_amounts);
+
+    println!("\n✅ All proofs verified by Bob!");
+    println!("   Bob confirms:");
+    println!("   - All proofs are locked to Alice + Bob 2-of-2");
+    println!("   - Locktime allows Alice to refund after {}", channel_params.locktime);
+    println!("   - Spending conditions are correct (SigAll, 2-of-2, locktime)");
+    println!("   - Total value: {} msat in {} denominations", total_amount, locked_proofs.len());
+    println!("\n   Note: Mint signatures will be verified when proofs are spent");
 
     Ok(())
 }
