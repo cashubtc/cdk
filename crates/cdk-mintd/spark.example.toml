@@ -1,0 +1,71 @@
+# Example configuration for CDK Mint with Spark Lightning Backend
+#
+# Spark provides nodeless, self-custodial Lightning payments without requiring
+# channel management or running a full Lightning node.
+
+[info]
+name = "Spark Mint"
+description = "A Cashu mint powered by Spark SDK"
+description_long = "Self-custodial Lightning payments without node management"
+contact = [
+    ["email", "mint@example.com"],
+    ["nostr", "npub..."]
+]
+motd = "Welcome to our Spark-powered Cashu mint!"
+pubkey = ""
+
+[mint_info]
+url = "https://mint.example.com"
+
+[database]
+engine = "sqlite"
+connection_string = "./data/mint.db"
+
+[[mint_keyset]]
+unit = "sat"
+max_order = 64
+input_fee_ppk = 0
+
+[lightning]
+# Use Spark as the Lightning backend
+backend = "spark"
+
+[lightning.spark]
+# Network: mainnet, testnet, signet, or regtest
+network = "signet"
+
+# BIP39 mnemonic (12 or 24 words)
+# IMPORTANT: Keep this secure! Anyone with this mnemonic controls your funds.
+# For production, use environment variables or secure key management.
+mnemonic = "your twelve or twenty four word mnemonic phrase goes here"
+
+# Optional: BIP39 passphrase for additional security
+# passphrase = "optional_passphrase"
+
+# Directory for Spark wallet data
+storage_dir = "./data/spark"
+
+# Optional: API key for Spark service provider
+# Get your free API key at: https://breez.technology/request-api-key/
+# api_key = "your_spark_api_key_here"
+
+# Fee settings
+fee_reserve_min_sat = 10
+fee_reserve_percent = 0.01  # 1% fee
+
+# Connection settings
+reconnect_interval_seconds = 30
+split_secret_threshold = 2
+
+# Optional: Custom operator pool configuration
+# [lightning.spark.operator_pool]
+# operators = [
+#     { url = "https://operator1.example.com", pubkey = "..." },
+#     { url = "https://operator2.example.com", pubkey = "..." },
+# ]
+
+# Optional: Custom service provider configuration
+# [lightning.spark.service_provider]
+# url = "https://ssp.example.com"
+# api_key = "your_ssp_api_key"
+

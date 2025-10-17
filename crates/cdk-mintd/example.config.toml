@@ -87,7 +87,7 @@ max_connections = 20
 connection_timeout_seconds = 10
 
 [ln]
-# Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits', 'ldknode'
+# Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits', 'ldknode', 'spark'
 ln_backend = "fakewallet"
 # min_mint=1
 # max_mint=500000
@@ -159,6 +159,19 @@ fee_percent = 0.02
 reserve_fee_min = 1
 min_delay_time = 1
 max_delay_time = 3
+
+# Spark Lightning Backend - Nodeless, self-custodial Lightning
+# Get a free API key at: https://breez.technology/request-api-key/
+[spark]
+# network = "signet"  # Options: mainnet, testnet, signet, regtest
+# mnemonic = "your twelve or twenty four word mnemonic phrase here"
+# passphrase = ""  # Optional BIP39 passphrase
+# storage_dir = "./data/spark"
+# api_key = ""  # Optional Spark service provider API key
+# fee_percent = 0.01  # 1% fee
+# reserve_fee_min = 10
+# reconnect_interval_seconds = 30
+# split_secret_threshold = 2
 
 # [grpc_processor]
 # gRPC Payment Processor configuration

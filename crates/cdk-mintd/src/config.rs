@@ -136,6 +136,8 @@ pub enum LnBackend {
     Lnd,
     #[cfg(feature = "ldk-node")]
     LdkNode,
+    #[cfg(feature = "spark")]
+    Spark,
     #[cfg(feature = "grpc-processor")]
     GrpcProcessor,
 }
@@ -155,6 +157,8 @@ impl std::str::FromStr for LnBackend {
             "lnd" => Ok(LnBackend::Lnd),
             #[cfg(feature = "ldk-node")]
             "ldk-node" | "ldknode" => Ok(LnBackend::LdkNode),
+            #[cfg(feature = "spark")]
+            "spark" => Ok(LnBackend::Spark),
             #[cfg(feature = "grpc-processor")]
             "grpcprocessor" => Ok(LnBackend::GrpcProcessor),
             _ => Err(format!("Unknown Lightning backend: {s}")),
@@ -295,6 +299,70 @@ fn default_webserver_host() -> Option<String> {
 #[cfg(feature = "ldk-node")]
 fn default_webserver_port() -> Option<u16> {
     Some(8091)
+}
+
+#[cfg(feature = "spark")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Spark {
+    /// Bitcoin network (mainnet, testnet, signet, regtest)
+    pub network: String,
+    /// BIP39 mnemonic phrase for wallet seed
+    pub mnemonic: String,
+    /// Optional passphrase for the mnemonic
+    pub passphrase: Option<String>,
+    /// Directory path for Spark wallet storage
+    pub storage_dir: String,
+    /// Optional API key for Spark service provider
+    pub api_key: Option<String>,
+    /// Fee percentage (e.g., 0.01 for 1%)
+    #[serde(default = "default_spark_fee_percent")]
+    pub fee_percent: f32,
+    /// Minimum reserve fee
+    #[serde(default = "default_spark_reserve_fee_min")]
+    pub reserve_fee_min: Amount,
+    /// Reconnect interval in seconds
+    #[serde(default = "default_spark_reconnect_interval")]
+    pub reconnect_interval_seconds: u64,
+    /// Split secret threshold
+    #[serde(default = "default_spark_split_secret_threshold")]
+    pub split_secret_threshold: usize,
+}
+
+#[cfg(feature = "spark")]
+impl Default for Spark {
+    fn default() -> Self {
+        Self {
+            network: "signet".to_string(),
+            mnemonic: String::new(),
+            passphrase: None,
+            storage_dir: "./data/spark".to_string(),
+            api_key: None,
+            fee_percent: default_spark_fee_percent(),
+            reserve_fee_min: default_spark_reserve_fee_min(),
+            reconnect_interval_seconds: default_spark_reconnect_interval(),
+            split_secret_threshold: default_spark_split_secret_threshold(),
+        }
+    }
+}
+
+#[cfg(feature = "spark")]
+fn default_spark_fee_percent() -> f32 {
+    0.01 // 1%
+}
+
+#[cfg(feature = "spark")]
+fn default_spark_reserve_fee_min() -> Amount {
+    10.into()
+}
+
+#[cfg(feature = "spark")]
+fn default_spark_reconnect_interval() -> u64 {
+    30
+}
+
+#[cfg(feature = "spark")]
+fn default_spark_split_secret_threshold() -> usize {
+    2
 }
 
 #[cfg(feature = "fakewallet")]
