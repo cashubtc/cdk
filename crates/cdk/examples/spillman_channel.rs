@@ -454,10 +454,10 @@ async fn main() -> anyhow::Result<()> {
     let conditions = Conditions::new(
         Some(channel_params.locktime),              // Locktime for refunds
         Some(vec![channel_params.bob_pubkey]),      // Bob's key as additional pubkey
-        None,                                        // No refund keys (for now)
-        Some(2),                                     // Require 2 signatures
+        Some(vec![channel_params.alice_pubkey]),    // Alice can refund after locktime
+        Some(2),                                     // Require 2 signatures (before locktime)
         Some(SigFlag::SigAll),                      // Sign all outputs
-        None,                                        // No refund sigs
+        Some(1),                                     // Alice alone can refund (after locktime)
     )?;
 
     let spending_conditions = SpendingConditions::new_p2pk(
@@ -465,8 +465,8 @@ async fn main() -> anyhow::Result<()> {
         Some(conditions),
     );
 
-    println!("   Requires signatures from BOTH Alice and Bob");
-    println!("   Locktime: {} (for Alice's refund)\n", channel_params.locktime);
+    println!("   Before locktime: Requires BOTH Alice and Bob signatures");
+    println!("   After locktime {}: Alice can refund unilaterally\n", channel_params.locktime);
 
     // 9. CREATE NEW BLINDED MESSAGES WITH SPENDING CONDITIONS
     println!("🔒 Creating BlindedMessages with 2-of-2 spending conditions...");
