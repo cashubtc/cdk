@@ -396,7 +396,14 @@ async fn main() -> anyhow::Result<()> {
     println!("👨 Setting up Bob's wallet...");
     let bob_wallet = create_wallet(&mint, channel_params.unit.clone()).await?;
 
-    // 6. BOB CREATES BLINDED OUTPUTS FOR SPILLMAN CHANNEL
+    // 6. ALICE MINTS TOKENS FOR THE CHANNEL CAPACITY
+    println!("💰 Alice minting {} msat (full channel capacity)...", channel_params.capacity);
+    let quote = alice_wallet.mint_quote(channel_params.capacity.into(), None).await?;
+    let mut proof_stream = alice_wallet.proof_stream(quote, Default::default(), None);
+    let _proofs = proof_stream.next().await.expect("proofs")?;
+    println!("✅ Alice has {} msat\n", alice_wallet.total_balance().await?);
+
+    // 7. BOB CREATES BLINDED OUTPUTS FOR SPILLMAN CHANNEL
     println!("📦 Bob creating blinded outputs for channel...");
 
     // Get active keyset from mint
@@ -441,7 +448,7 @@ async fn main() -> anyhow::Result<()> {
         "Bob's output count must match denominations count"
     );
 
-    // 7. PREPARE 2-OF-2 MULTISIG SPENDING CONDITIONS FOR EACH DENOMINATION
+    // 8. PREPARE 2-OF-2 MULTISIG SPENDING CONDITIONS FOR EACH DENOMINATION
     println!("🔐 Preparing 2-of-2 multisig spending conditions...");
 
     let conditions = Conditions::new(
@@ -460,6 +467,57 @@ async fn main() -> anyhow::Result<()> {
 
     println!("   Requires signatures from BOTH Alice and Bob");
     println!("   Locktime: {} (for Alice's refund)\n", channel_params.locktime);
+
+    // 9. CREATE NEW BLINDED MESSAGES WITH SPENDING CONDITIONS
+    println!("🔒 Creating BlindedMessages with 2-of-2 spending conditions...");
+
+    // Convert spending conditions to NUT-10 secret format
+    let nut10_secret: Nut10Secret = spending_conditions.clone().into();
+
+    let mut locked_outputs = Vec::new();
+    let mut locked_secrets_and_rs = Vec::new();
+
+    for (i, &amount) in channel_params.denominations.iter().enumerate() {
+        // Create secret with 2-of-2 spending conditions
+        let secret: Secret = nut10_secret.clone().try_into()?;
+
+        // Blind the secret to get B_ = Y + rG
+        let (blinded_point, blinding_factor) = blind_message(&secret.to_bytes(), None)?;
+
+        // Create BlindedMessage
+        let blinded_msg = BlindedMessage::new(
+            Amount::from(amount),
+            active_keyset_id,
+            blinded_point,
+        );
+
+        locked_outputs.push(blinded_msg);
+        locked_secrets_and_rs.push((secret, blinding_factor));
+
+        let description = if i == 0 { " (special)" } else { "" };
+        println!("   Output {}: {} msat{} - locked to 2-of-2", i + 1, amount, description);
+    }
+
+    println!("✅ Created {} locked BlindedMessages\n", locked_outputs.len());
+
+    // 10. ALICE SWAPS HER TOKENS FOR LOCKED 2-OF-2 TOKENS
+    println!("🔄 Alice swapping her tokens for 2-of-2 locked tokens...");
+
+    let alice_proofs = alice_wallet
+        .localstore
+        .get_proofs(
+            Some(alice_wallet.mint_url.clone()),
+            Some(alice_wallet.unit.clone()),
+            None,
+            None,
+        )
+        .await?
+        .into_iter()
+        .map(|p| p.proof)
+        .collect::<Vec<_>>();
+
+    println!("   Alice inputs: {} msat", alice_proofs.iter().map(|p| u64::from(p.amount)).sum::<u64>());
+    println!("   Locked outputs: {:?}", channel_params.denominations);
 
     Ok(())
 }
