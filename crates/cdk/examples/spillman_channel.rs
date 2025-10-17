@@ -519,5 +519,11 @@ async fn main() -> anyhow::Result<()> {
     println!("   Alice inputs: {} msat", alice_proofs.iter().map(|p| u64::from(p.amount)).sum::<u64>());
     println!("   Locked outputs: {:?}", channel_params.denominations);
 
+    // Create and execute the swap
+    let swap_request = SwapRequest::new(alice_proofs, locked_outputs);
+    let swap_response = mint.process_swap_request(swap_request).await?;
+
+    println!("✅ Swap successful! Received {} blind signatures\n", swap_response.signatures.len());
+
     Ok(())
 }
