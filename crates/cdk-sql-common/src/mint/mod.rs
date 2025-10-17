@@ -273,51 +273,6 @@ where
         .collect::<Result<Vec<Proof>, _>>()?
         .ys()?)
     }
-
-    async fn get_proofs_by_state_and_operation_kind(
-        &self,
-        state: State,
-        operation_kind: &str,
-    ) -> Result<HashMap<uuid::Uuid, Proofs>, Self::Err> {
-        let rows = query(
-            r#"
-            SELECT
-                amount,
-                keyset_id,
-                secret,
-                c,
-                witness,
-                operation_id
-            FROM
-                proof
-            WHERE
-                state = :state AND operation_kind = :operation_kind
-            "#,
-        )?
-        .bind("state", state.to_string())
-        .bind("operation_kind", operation_kind.to_string())
-        .fetch_all(&self.inner)
-        .await?;
-
-        let mut proofs_by_operation: HashMap<uuid::Uuid, Vec<Proof>> = HashMap::new();
-
-        for row in rows {
-            let mut row_data = row;
-            let operation_id_col = row_data.pop().ok_or(Error::InvalidDbResponse)?;
-            let operation_id_str = column_as_string!(&operation_id_col);
-            let operation_id = uuid::Uuid::parse_str(&operation_id_str)
-                .map_err(|e| Error::Internal(format!("Invalid operation_id UUID: {}", e)))?;
-
-            let proof = sql_row_to_proof(row_data)?;
-
-            proofs_by_operation
-                .entry(operation_id)
-                .or_default()
-                .push(proof);
-        }
-
-        Ok(proofs_by_operation)
-    }
 }
 
 #[async_trait]
@@ -1844,52 +1799,6 @@ where
             .map(|y| blinded_signatures.remove(y))
             .collect())
     }
-
-    async fn get_blind_signatures_by_operation(
-        &self,
-        operation: &Operation,
-    ) -> Result<Vec<BlindSignature>, Self::Err> {
-        Ok(query(
-            r#"
-            SELECT
-                keyset_id,
-                amount,
-                c,
-                dleq_e,
-                dleq_s
-            FROM
-                blind_signature
-            WHERE
-                operation_id=:operation_id AND operation_kind=:operation_kind
-                AND c IS NOT NULL
-            "#,
-        )?
-        .bind("operation_id", operation.id().to_string())
-        .bind("operation_kind", operation.kind())
-        .fetch_all(&self.inner)
-        .await?
-        .into_iter()
-        .map(sql_row_to_blind_signature)
-        .collect::<Result<Vec<BlindSignature>, _>>()?)
-    }
-
-    async fn delete_blind_signatures_by_operation(
-        &mut self,
-        operation: &Operation,
-    ) -> Result<(), Self::Err> {
-        query(
-            r#"
-            DELETE FROM blind_signature
-            WHERE operation_id = :operation_id AND operation_kind = :operation_kind
-            "#,
-        )?
-        .bind("operation_id", operation.id().to_string())
-        .bind("operation_kind", operation.kind())
-        .execute(&self.inner)
-        .await?;
-
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -2225,7 +2134,35 @@ where
 {
     type Err = Error;
 
-    async fn add_saga_state(&mut self, saga: &mint::SagaState) -> Result<(), Self::Err> {
+    async fn get_saga(
+        &mut self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Option<mint::Saga>, Self::Err> {
+        Ok(query(
+            r#"
+            SELECT
+                operation_id,
+                operation_kind,
+                state,
+                blinded_secrets,
+                input_ys,
+                created_at,
+                updated_at
+            FROM
+                saga_state
+            WHERE
+                operation_id = :operation_id
+            FOR UPDATE
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .fetch_one(&self.inner)
+        .await?
+        .map(sql_row_to_saga)
+        .transpose()?)
+    }
+
+    async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
         let blinded_secrets_json = serde_json::to_string(&saga.blinded_secrets)
@@ -2243,8 +2180,8 @@ where
             "#,
         )?
         .bind("operation_id", saga.operation_id.to_string())
-        .bind("operation_kind", saga.operation_kind.as_str().to_string())
-        .bind("state", saga.state.as_str().to_string())
+        .bind("operation_kind", saga.operation_kind.to_string())
+        .bind("state", saga.state.state())
         .bind("blinded_secrets", blinded_secrets_json)
         .bind("input_ys", input_ys_json)
         .bind("created_at", saga.created_at as i64)
@@ -2255,7 +2192,7 @@ where
         Ok(())
     }
 
-    async fn update_saga_state(
+    async fn update_saga(
         &mut self,
         operation_id: &uuid::Uuid,
         new_state: mint::SagaStateEnum,
@@ -2269,7 +2206,7 @@ where
             WHERE operation_id = :operation_id
             "#,
         )?
-        .bind("state", new_state.as_str().to_string())
+        .bind("state", new_state.state())
         .bind("updated_at", current_time as i64)
         .bind("operation_id", operation_id.to_string())
         .execute(&self.inner)
@@ -2278,7 +2215,7 @@ where
         Ok(())
     }
 
-    async fn delete_saga_state(&mut self, operation_id: &uuid::Uuid) -> Result<(), Self::Err> {
+    async fn delete_saga(&mut self, operation_id: &uuid::Uuid) -> Result<(), Self::Err> {
         query(
             r#"
             DELETE FROM saga_state
@@ -2300,38 +2237,10 @@ where
 {
     type Err = Error;
 
-    async fn get_saga_state(
-        &self,
-        operation_id: &uuid::Uuid,
-    ) -> Result<Option<mint::SagaState>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT
-                operation_id,
-                operation_kind,
-                state,
-                blinded_secrets,
-                input_ys,
-                created_at,
-                updated_at
-            FROM
-                saga_state
-            WHERE
-                operation_id = :operation_id
-            "#,
-        )?
-        .bind("operation_id", operation_id.to_string())
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_saga_state)
-        .transpose()?)
-    }
-
     async fn get_incomplete_sagas(
         &self,
         operation_kind: mint::OperationKind,
-    ) -> Result<Vec<mint::SagaState>, Self::Err> {
+    ) -> Result<Vec<mint::Saga>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -2350,11 +2259,11 @@ where
             ORDER BY created_at ASC
             "#,
         )?
-        .bind("operation_kind", operation_kind.as_str().to_string())
+        .bind("operation_kind", operation_kind.to_string())
         .fetch_all(&*conn)
         .await?
         .into_iter()
-        .map(sql_row_to_saga_state)
+        .map(sql_row_to_saga)
         .collect::<Result<Vec<_>, _>>()?)
     }
 }
@@ -2622,7 +2531,7 @@ fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Error>
     })
 }
 
-fn sql_row_to_saga_state(row: Vec<Column>) -> Result<mint::SagaState, Error> {
+fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
     unpack_into!(
         let (
             operation_id,
@@ -2644,7 +2553,7 @@ fn sql_row_to_saga_state(row: Vec<Column>) -> Result<mint::SagaState, Error> {
         .map_err(|e| Error::Internal(format!("Invalid operation kind: {}", e)))?;
 
     let state_str = column_as_string!(&state);
-    let state = mint::SagaStateEnum::from_str(operation_kind, &state_str)
+    let state = mint::SagaStateEnum::new(operation_kind, &state_str)
         .map_err(|e| Error::Internal(format!("Invalid saga state: {}", e)))?;
 
     let blinded_secrets_str = column_as_string!(&blinded_secrets);
@@ -2658,7 +2567,7 @@ fn sql_row_to_saga_state(row: Vec<Column>) -> Result<mint::SagaState, Error> {
     let created_at: u64 = column_as_number!(created_at);
     let updated_at: u64 = column_as_number!(updated_at);
 
-    Ok(mint::SagaState {
+    Ok(mint::Saga {
         operation_id,
         operation_kind,
         state,

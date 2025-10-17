@@ -287,14 +287,6 @@ pub trait ProofsTransaction<'a> {
         &self,
         quote_id: &QuoteId,
     ) -> Result<Vec<PublicKey>, Self::Err>;
-
-    /// Get [`Proofs`] by state and operation kind
-    /// Returns a HashMap where the key is the operation_id (Uuid) and the value is a Vec of Proofs
-    async fn get_proofs_by_state_and_operation_kind(
-        &self,
-        state: State,
-        operation_kind: &str,
-    ) -> Result<HashMap<uuid::Uuid, Proofs>, Self::Err>;
 }
 
 /// Mint Proof Database trait
@@ -338,18 +330,6 @@ pub trait SignaturesTransaction<'a> {
         &mut self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err>;
-
-    /// Get [`BlindSignature`]s by operation id
-    async fn get_blind_signatures_by_operation(
-        &self,
-        operation: &Operation,
-    ) -> Result<Vec<BlindSignature>, Self::Err>;
-
-    /// Delete [`BlindSignature`]s by operation id
-    async fn delete_blind_signatures_by_operation(
-        &mut self,
-        operation: &Operation,
-    ) -> Result<(), Self::Err>;
 }
 
 #[async_trait]
@@ -381,18 +361,24 @@ pub trait SagaTransaction<'a> {
     /// Saga Database Error
     type Err: Into<Error> + From<Error>;
 
-    /// Add saga state
-    async fn add_saga_state(&mut self, saga: &mint::SagaState) -> Result<(), Self::Err>;
+    /// Get saga by operation_id
+    async fn get_saga(
+        &mut self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Option<mint::Saga>, Self::Err>;
+
+    /// Add saga
+    async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err>;
 
     /// Update saga state (only updates state and updated_at fields)
-    async fn update_saga_state(
+    async fn update_saga(
         &mut self,
         operation_id: &uuid::Uuid,
         new_state: mint::SagaStateEnum,
     ) -> Result<(), Self::Err>;
 
-    /// Delete saga state
-    async fn delete_saga_state(&mut self, operation_id: &uuid::Uuid) -> Result<(), Self::Err>;
+    /// Delete saga
+    async fn delete_saga(&mut self, operation_id: &uuid::Uuid) -> Result<(), Self::Err>;
 }
 
 #[async_trait]
@@ -401,17 +387,11 @@ pub trait SagaDatabase {
     /// Saga Database Error
     type Err: Into<Error> + From<Error>;
 
-    /// Get saga state by operation_id
-    async fn get_saga_state(
-        &self,
-        operation_id: &uuid::Uuid,
-    ) -> Result<Option<mint::SagaState>, Self::Err>;
-
     /// Get all incomplete sagas for a given operation kind
     async fn get_incomplete_sagas(
         &self,
         operation_kind: mint::OperationKind,
-    ) -> Result<Vec<mint::SagaState>, Self::Err>;
+    ) -> Result<Vec<mint::Saga>, Self::Err>;
 }
 
 #[async_trait]

@@ -1,5 +1,8 @@
 //! Mint types
 
+use std::fmt;
+use std::str::FromStr;
+
 use bitcoin::bip32::DerivationPath;
 use cashu::quote_id::QuoteId;
 use cashu::util::unix_time;
@@ -28,23 +31,25 @@ pub enum OperationKind {
     Melt,
 }
 
-impl OperationKind {
-    /// Convert to string for database storage
-    pub fn as_str(&self) -> &'static str {
+impl fmt::Display for OperationKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            OperationKind::Swap => "swap",
-            OperationKind::Mint => "mint",
-            OperationKind::Melt => "melt",
+            OperationKind::Swap => write!(f, "swap"),
+            OperationKind::Mint => write!(f, "mint"),
+            OperationKind::Melt => write!(f, "melt"),
         }
     }
+}
 
-    /// Parse from string
-    pub fn from_str(s: &str) -> Result<Self, Error> {
-        match s {
+impl FromStr for OperationKind {
+    type Err = Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let value = value.to_lowercase();
+        match value.as_str() {
             "swap" => Ok(OperationKind::Swap),
             "mint" => Ok(OperationKind::Mint),
             "melt" => Ok(OperationKind::Melt),
-            _ => Err(Error::Custom(format!("Invalid operation kind: {}", s))),
+            _ => Err(Error::Custom(format!("Invalid operation kind: {}", value))),
         }
     }
 }
@@ -59,21 +64,23 @@ pub enum SwapSagaState {
     Signed,
 }
 
-impl SwapSagaState {
-    /// Convert to string for database storage
-    pub fn as_str(&self) -> &'static str {
+impl fmt::Display for SwapSagaState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SwapSagaState::SetupComplete => "setup_complete",
-            SwapSagaState::Signed => "signed",
+            SwapSagaState::SetupComplete => write!(f, "setup_complete"),
+            SwapSagaState::Signed => write!(f, "signed"),
         }
     }
+}
 
-    /// Parse from string
-    pub fn from_str(s: &str) -> Result<Self, Error> {
-        match s {
+impl FromStr for SwapSagaState {
+    type Err = Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let value = value.to_lowercase();
+        match value.as_str() {
             "setup_complete" => Ok(SwapSagaState::SetupComplete),
             "signed" => Ok(SwapSagaState::Signed),
-            _ => Err(Error::Custom(format!("Invalid swap saga state: {}", s))),
+            _ => Err(Error::Custom(format!("Invalid swap saga state: {}", value))),
         }
     }
 }
@@ -91,26 +98,29 @@ pub enum SagaStateEnum {
 }
 
 impl SagaStateEnum {
-    /// Convert to string for database storage
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SagaStateEnum::Swap(state) => state.as_str(),
-        }
-    }
-
-    /// Parse from string given operation kind
-    pub fn from_str(operation_kind: OperationKind, s: &str) -> Result<Self, Error> {
+    /// Create from string given operation kind
+    pub fn new(operation_kind: OperationKind, s: &str) -> Result<Self, Error> {
         match operation_kind {
             OperationKind::Swap => Ok(SagaStateEnum::Swap(SwapSagaState::from_str(s)?)),
             OperationKind::Mint => Err(Error::Custom("Mint saga not implemented yet".to_string())),
             OperationKind::Melt => Err(Error::Custom("Melt saga not implemented yet".to_string())),
         }
     }
+
+    /// Get string representation of the state
+    pub fn state(&self) -> &str {
+        match self {
+            SagaStateEnum::Swap(state) => match state {
+                SwapSagaState::SetupComplete => "setup_complete",
+                SwapSagaState::Signed => "signed",
+            },
+        }
+    }
 }
 
-/// Persisted saga state for recovery
+/// Persisted saga for recovery
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SagaState {
+pub struct Saga {
     /// Operation ID (correlation key)
     pub operation_id: Uuid,
     /// Operation kind (swap, mint, melt)
@@ -127,8 +137,8 @@ pub struct SagaState {
     pub updated_at: u64,
 }
 
-impl SagaState {
-    /// Create new swap saga state
+impl Saga {
+    /// Create new swap saga
     pub fn new_swap(
         operation_id: Uuid,
         state: SwapSagaState,

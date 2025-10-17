@@ -9,3 +9,16 @@ ALTER TABLE blind_signature ADD COLUMN operation_id TEXT;
 CREATE INDEX idx_proof_state_operation ON proof(state, operation_kind);
 CREATE INDEX idx_proof_operation_id ON proof(operation_kind, operation_id);
 CREATE INDEX idx_blind_sig_operation_id ON blind_signature(operation_kind, operation_id);
+
+-- Add saga_state table for persisting saga state
+CREATE TABLE IF NOT EXISTS saga_state (
+    operation_id TEXT PRIMARY KEY,
+    operation_kind TEXT NOT NULL,
+    state TEXT NOT NULL,
+    blinded_secrets TEXT NOT NULL,
+    input_ys TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_saga_state_operation_kind ON saga_state(operation_kind);

@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use cdk_common::database::DynMintDatabase;
-use cdk_common::mint::{Operation, SagaState, SwapSagaState};
+use cdk_common::mint::{Operation, Saga, SwapSagaState};
 use cdk_common::nuts::BlindedMessage;
 use cdk_common::{database, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 use tokio::sync::Mutex;
@@ -234,14 +234,14 @@ impl<'a> SwapSaga<'a, Initial> {
             .collect();
 
         // Persist saga state for crash recovery (atomic with TX1)
-        let saga_state = SagaState::new_swap(
+        let saga = Saga::new_swap(
             *self.operation.id(),
             SwapSagaState::SetupComplete,
             blinded_secrets.clone(),
             ys.clone(),
         );
 
-        if let Err(err) = tx.add_saga_state(&saga_state).await {
+        if let Err(err) = tx.add_saga(&saga).await {
             tx.rollback().await?;
             return Err(err.into());
         }
@@ -432,15 +432,15 @@ impl SwapSaga<'_, Signed> {
             self.pubsub.proof_state((*pk, State::Spent));
         }
 
-        // Delete saga state - swap completed successfully (best-effort, atomic with TX2)
-        // Don't fail the swap if saga deletion fails - orphaned saga state will be
+        // Delete saga - swap completed successfully (best-effort, atomic with TX2)
+        // Don't fail the swap if saga deletion fails - orphaned saga will be
         // cleaned up on next recovery
-        if let Err(e) = tx.delete_saga_state(&self.operation.id()).await {
+        if let Err(e) = tx.delete_saga(self.operation.id()).await {
             tracing::warn!(
-                "Failed to delete saga state in finalize (will be cleaned up on recovery): {}",
+                "Failed to delete saga in finalize (will be cleaned up on recovery): {}",
                 e
             );
-            // Don't rollback - swap succeeded, orphaned saga state is harmless
+            // Don't rollback - swap succeeded, orphaned saga is harmless
         }
 
         tx.commit().await?;
@@ -488,7 +488,7 @@ impl<S> SwapSaga<'_, S> {
             }
         }
 
-        // Delete saga state - swap was compensated
+        // Delete saga - swap was compensated
         // Use a separate transaction since compensations already ran
         // Don't fail the compensation if saga cleanup fails (log only)
         let mut tx = match self.db.begin_transaction().await {
@@ -502,8 +502,8 @@ impl<S> SwapSaga<'_, S> {
             }
         };
 
-        if let Err(e) = tx.delete_saga_state(&self.operation.id()).await {
-            tracing::warn!("Failed to delete saga state after compensation: {}", e);
+        if let Err(e) = tx.delete_saga(self.operation.id()).await {
+            tracing::warn!("Failed to delete saga after compensation: {}", e);
         } else if let Err(e) = tx.commit().await {
             tracing::error!("Failed to commit saga cleanup after compensation: {}", e);
         }

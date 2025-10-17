@@ -105,7 +105,7 @@ impl Mint {
             tracing::info!(
                 "Recovering saga {} in state '{}' (created: {}, updated: {})",
                 saga.operation_id,
-                saga.state.as_str(),
+                saga.state.state(),
                 saga.created_at,
                 saga.updated_at
             );
@@ -126,14 +126,10 @@ impl Mint {
                 continue;
             }
 
-            // Delete saga state after successful compensation
+            // Delete saga after successful compensation
             let mut tx = self.localstore.begin_transaction().await?;
-            if let Err(e) = tx.delete_saga_state(&saga.operation_id).await {
-                tracing::error!(
-                    "Failed to delete saga state for {}: {}",
-                    saga.operation_id,
-                    e
-                );
+            if let Err(e) = tx.delete_saga(&saga.operation_id).await {
+                tracing::error!("Failed to delete saga for {}: {}", saga.operation_id, e);
                 tx.rollback().await?;
                 continue;
             }
