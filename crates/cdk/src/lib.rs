@@ -49,6 +49,9 @@ pub use oidc_client::OidcClient;
 pub mod event;
 pub mod fees;
 
+#[cfg(test)]
+pub mod test_helpers;
+
 #[doc(hidden)]
 pub use bitcoin::secp256k1;
 #[cfg(feature = "mint")]
