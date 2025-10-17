@@ -34,10 +34,13 @@ use cdk::nuts::{
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
-use cdk::wallet::{AuthWallet, MintConnector, ReceiveOptions, SendOptions, WalletBuilder};
-use cdk::{Error, Mint, StreamExt};
+use cdk::wallet::{AuthWallet, MintConnector, ReceiveOptions, SendOptions, Wallet, WalletBuilder};
+use cdk::{dhke::blind_message, Error, Mint, StreamExt};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::RwLock;
+use cdk::nuts::{BlindedMessage, nut10::Secret as Nut10Secret};
+use cdk::secret::Secret;
+use cdk::Amount;
 
 /// Parameters for a Spillman payment channel
 #[derive(Debug, Clone)]
@@ -48,10 +51,16 @@ struct SpillmanChannelParameters {
     bob_pubkey: cdk::nuts::PublicKey,
     /// Currency unit for the channel
     unit: CurrencyUnit,
-    /// Total channel capacity (must be a power of 2)
+    /// Log2 of capacity (e.g., 30 for 2^30)
+    log2_capacity: u32,
+    /// Total channel capacity (2^log2_capacity)
     capacity: u64,
     /// Locktime after which Alice can reclaim funds (unix timestamp)
     locktime: u64,
+    /// Denomination sizes for channel outputs
+    /// First element is special 1-unit output, rest are powers of 2
+    /// Example: for capacity 8, this is [1, 1, 2, 4]
+    denominations: Vec<u64>,
 }
 
 impl SpillmanChannelParameters {
@@ -59,31 +68,50 @@ impl SpillmanChannelParameters {
     ///
     /// # Errors
     ///
-    /// Returns an error if capacity is not a power of 2
+    /// Returns an error if capacity != 2^log2_capacity
     fn new(
         alice_pubkey: cdk::nuts::PublicKey,
         bob_pubkey: cdk::nuts::PublicKey,
         unit: CurrencyUnit,
+        log2_capacity: u32,
         capacity: u64,
         locktime: u64,
     ) -> anyhow::Result<Self> {
-        // Check that capacity is a power of 2
-        if capacity == 0 {
-            anyhow::bail!("Capacity must be greater than 0");
+        // Validate that capacity == 2^log2_capacity
+        if log2_capacity >= 64 {
+            anyhow::bail!("log2_capacity must be less than 64, got {}", log2_capacity);
         }
 
-        let mut i = 1u64;
-        while i < capacity {
-            i = i.checked_mul(2).ok_or_else(|| {
-                anyhow::anyhow!("Capacity {} is too large", capacity)
-            })?;
-        }
+        let expected_capacity = 1u64
+            .checked_shl(log2_capacity)
+            .ok_or_else(|| anyhow::anyhow!("log2_capacity {} is too large", log2_capacity))?;
 
-        if i != capacity {
+        if capacity != expected_capacity {
             anyhow::bail!(
-                "Capacity must be a power of 2, got {}. Try: {}",
-                capacity,
-                capacity.next_power_of_two()
+                "Capacity mismatch: expected 2^{} = {}, got {}",
+                log2_capacity,
+                expected_capacity,
+                capacity
+            );
+        }
+
+        // Build denominations vector
+        // First element: special 1-unit output (for double-spend prevention)
+        // Remaining elements: powers of 2 from 2^0 to 2^(log2_capacity - 1)
+        let mut denominations = vec![1]; // Special output
+
+        for i in 0..log2_capacity {
+            denominations.push(1u64 << i); // 2^i
+        }
+
+        // Verify sum of denominations equals capacity
+        let sum: u64 = denominations.iter().sum();
+        if sum != capacity {
+            anyhow::bail!(
+                "Denominations sum mismatch: sum({:?}) = {}, expected capacity {}",
+                denominations,
+                sum,
+                capacity
             );
         }
 
@@ -91,10 +119,29 @@ impl SpillmanChannelParameters {
             alice_pubkey,
             bob_pubkey,
             unit,
+            log2_capacity,
             capacity,
             locktime,
+            denominations,
         })
     }
+}
+
+/// Create a wallet connected to a mint
+async fn create_wallet(mint: &Mint, unit: CurrencyUnit) -> anyhow::Result<Wallet> {
+    let connector = DirectMintConnection::new(mint.clone());
+    let store = Arc::new(cdk_sqlite::wallet::memory::empty().await?);
+    let seed = Mnemonic::generate(12)?.to_seed_normalized("");
+
+    let wallet = WalletBuilder::new()
+        .mint_url("http://localhost:8080".parse().unwrap())
+        .unit(unit)
+        .localstore(store)
+        .seed(seed)
+        .client(connector)
+        .build()?;
+
+    Ok(wallet)
 }
 
 /// Create a local mint with FakeWallet backend for testing
@@ -327,10 +374,13 @@ async fn main() -> anyhow::Result<()> {
         alice_pubkey,
         bob_pubkey,
         CurrencyUnit::Msat,
-        1_073_741_824,              // 2^30 msat capacity (~1,073,741 sat)
+        3,                          // log2_capacity: 2^3 = 8 msat
+        8,                          // capacity: 8 msat total
         unix_time() + 86400,        // 1 day locktime
     )?;
-    println!("   Capacity: {} {:?} (2^30)", channel_params.capacity, channel_params.unit);
+    println!("   Capacity: {} {:?} (2^{})", channel_params.capacity, channel_params.unit, channel_params.log2_capacity);
+    println!("   Denominations: {:?}", channel_params.denominations);
+    println!("   (First 1 is special, rest are powers of 2)");
     println!("   Locktime: {} (1 day from now)\n", channel_params.locktime);
 
     // 3. CREATE LOCAL MINT
@@ -340,147 +390,79 @@ async fn main() -> anyhow::Result<()> {
 
     // 4. CREATE ALICE'S WALLET
     println!("👩 Setting up Alice's wallet...");
-    let connector = DirectMintConnection::new(mint.clone());
-    let alice_store = Arc::new(cdk_sqlite::wallet::memory::empty().await?);
-    let alice_seed = Mnemonic::generate(12)?.to_seed_normalized("");
+    let alice_wallet = create_wallet(&mint, channel_params.unit.clone()).await?;
 
-    let alice_wallet = WalletBuilder::new()
-        .mint_url("http://localhost:8080".parse().unwrap())
-        .unit(channel_params.unit.clone())  // Use channel unit
-        .localstore(alice_store)
-        .seed(alice_seed)
-        .client(connector.clone())
-        .build()?;
+    // 5. CREATE BOB'S WALLET
+    println!("👨 Setting up Bob's wallet...");
+    let bob_wallet = create_wallet(&mint, channel_params.unit.clone()).await?;
 
-    // 5. MINT TOKENS FOR ALICE
-    println!("💰 Alice minting {} msat (2^30)...", channel_params.capacity);
-    let quote = alice_wallet.mint_quote(channel_params.capacity.into(), None).await?;
-    let mut proof_stream = alice_wallet.proof_stream(quote, Default::default(), None);
-    let _proofs = proof_stream.next().await.expect("proofs")?;
-    println!(
-        "✅ Alice has {} msat\n",
-        alice_wallet.total_balance().await?
+    // 6. BOB CREATES BLINDED OUTPUTS FOR SPILLMAN CHANNEL
+    println!("📦 Bob creating blinded outputs for channel...");
+
+    // Get active keyset from mint
+    let active_keyset_id = mint.keysets().keysets.iter()
+        .find(|k| k.active && k.unit == channel_params.unit)
+        .expect("No active keyset")
+        .id;
+
+    println!("   Using keyset: {}", active_keyset_id);
+
+    // Bob creates one BlindedMessage for each denomination
+    let mut bob_outputs = Vec::new();
+    let mut bob_secrets_and_rs = Vec::new();
+
+    for (i, &amount) in channel_params.denominations.iter().enumerate() {
+        // Generate random secret
+        let secret = Secret::generate();
+
+        // Blind the secret to get B_ = Y + rG
+        let (blinded_point, blinding_factor) = blind_message(&secret.to_bytes(), None)?;
+
+        // Create BlindedMessage
+        let blinded_msg = BlindedMessage::new(
+            Amount::from(amount),
+            active_keyset_id,
+            blinded_point,
+        );
+
+        bob_outputs.push(blinded_msg);
+        bob_secrets_and_rs.push((secret, blinding_factor));
+
+        let description = if i == 0 { " (special)" } else { "" };
+        println!("   Output {}: {} msat{}", i + 1, amount, description);
+    }
+
+    println!("✅ Bob created {} blinded outputs\n", bob_outputs.len());
+
+    // Verify number of outputs matches denominations
+    assert_eq!(
+        bob_outputs.len(),
+        channel_params.denominations.len(),
+        "Bob's output count must match denominations count"
     );
 
-    // 6. CREATE 2-OF-2 MULTISIG SPENDING CONDITIONS
-    println!("🔒 Creating 2-of-2 multisig token...");
+    println!("   Bob will give these to Alice to sign incrementally");
+    println!("   as she makes payments through the channel\n");
+
+    // 7. PREPARE 2-OF-2 MULTISIG SPENDING CONDITIONS FOR EACH DENOMINATION
+    println!("🔐 Preparing 2-of-2 multisig spending conditions...");
+
     let conditions = Conditions::new(
-        Some(channel_params.locktime),     // locktime for refunds
-        Some(vec![channel_params.bob_pubkey]),    // Bob's key as additional pubkey
-        None,                              // no refund keys (for now)
-        Some(2),                           // require 2 signatures
-        Some(SigFlag::SigInputs),         // default sig flag
-        None,                              // no refund sigs
+        Some(channel_params.locktime),              // Locktime for refunds
+        Some(vec![channel_params.bob_pubkey]),      // Bob's key as additional pubkey
+        None,                                        // No refund keys (for now)
+        Some(2),                                     // Require 2 signatures
+        Some(SigFlag::SigInputs),                   // Default sig flag
+        None,                                        // No refund sigs
     )?;
 
     let spending_conditions = SpendingConditions::new_p2pk(
-        channel_params.alice_pubkey, // Alice's key as primary
+        channel_params.alice_pubkey,  // Alice's key as primary
         Some(conditions),
     );
 
     println!("   Requires signatures from BOTH Alice and Bob");
-
-    // 7. ALICE CREATES LOCKED TOKEN
-    let send_amount = channel_params.capacity / 2;  // Half the capacity
-    let prepared = alice_wallet
-        .prepare_send(
-            send_amount.into(),
-            SendOptions {
-                conditions: Some(spending_conditions),
-                include_fee: true,
-                ..Default::default()
-            },
-        )
-        .await?;
-
-    let token = prepared.confirm(None).await?;
-    println!("✅ Token created: {} msat (2^29) locked to 2-of-2 multisig", send_amount);
-    println!(
-        "   Alice balance: {} msat\n",
-        alice_wallet.total_balance().await?
-    );
-
-    // 8. CREATE BOB'S WALLET
-    println!("👨 Setting up Bob's wallet...");
-    let bob_connector = DirectMintConnection::new(mint.clone());
-    let bob_store = Arc::new(cdk_sqlite::wallet::memory::empty().await?);
-    let bob_seed = Mnemonic::generate(12)?.to_seed_normalized("");
-
-    let bob_wallet = WalletBuilder::new()
-        .mint_url("http://localhost:8080".parse().unwrap())
-        .unit(channel_params.unit.clone())  // Use channel unit
-        .localstore(bob_store)
-        .seed(bob_seed)
-        .client(bob_connector)
-        .build()?;
-
-    // 9. COLLABORATIVE REDEEM - BOTH ALICE AND BOB SIGN
-    println!("🤝 Redeeming with BOTH signatures...");
-    let received = bob_wallet
-        .receive(
-            &token.to_string(),
-            ReceiveOptions {
-                p2pk_signing_keys: vec![alice_secret.clone(), bob_secret], // Both keys!
-                ..Default::default()
-            },
-        )
-        .await?;
-
-    println!("✅ Redeemed {} msat!", u64::from(received));
-    println!(
-        "   Bob balance: {} msat\n",
-        bob_wallet.total_balance().await?
-    );
-
-    // 10. TRY WITH ONLY ONE KEY (WILL FAIL)
-    println!("❌ Testing with only Alice's signature...");
-
-    // Create another locked token
-    let spending_conditions2 = SpendingConditions::new_p2pk(
-        channel_params.alice_pubkey,
-        Some(Conditions::new(
-            Some(channel_params.locktime),
-            Some(vec![channel_params.bob_pubkey]),
-            None,
-            Some(2),
-            Some(SigFlag::SigInputs),
-            None,
-        )?),
-    );
-
-    let test_amount = channel_params.capacity / 4;  // Quarter of capacity
-    let prepared2 = alice_wallet
-        .prepare_send(
-            test_amount.into(),
-            SendOptions {
-                conditions: Some(spending_conditions2),
-                include_fee: true,
-                ..Default::default()
-            },
-        )
-        .await?;
-
-    let token2 = prepared2.confirm(None).await?;
-
-    // Try to redeem with only Alice's key
-    let result = bob_wallet
-        .receive(
-            &token2.to_string(),
-            ReceiveOptions {
-                p2pk_signing_keys: vec![alice_secret], // Only one key!
-                ..Default::default()
-            },
-        )
-        .await;
-
-    match result {
-        Ok(_) => println!("   Unexpected: succeeded with 1 signature"),
-        Err(e) => println!("   ✅ Correctly failed: {}\n", e),
-    }
-
-    println!("🎉 Demo complete!");
-    println!("   2-of-2 multisig works!");
-    println!("   Both signatures are required to spend.");
+    println!("   Locktime: {} (for Alice's refund)\n", channel_params.locktime);
 
     Ok(())
 }
