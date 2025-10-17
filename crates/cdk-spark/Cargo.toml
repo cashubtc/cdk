@@ -11,7 +11,7 @@ readme = "README.md"
 [dependencies]
 async-trait.workspace = true
 anyhow.workspace = true
-cdk-common.workspace = true
+cdk-common = { workspace = true, features = ["mint"] }
 futures.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
