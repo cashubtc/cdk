@@ -57,7 +57,7 @@ pub fn init_logging(enable_logging: bool, log_level: tracing::Level) {
     }
 }
 
-pub const ENV_LN_BACKEND: &str = "CDK_PAYMENT_PROCESSOR_LN_BACKEND";
+pub const ENV_PAYMENT_BACKEND: &str = "CDK_PAYMENT_PROCESSOR_BACKEND";
 pub const ENV_LISTEN_HOST: &str = "CDK_PAYMENT_PROCESSOR_LISTEN_HOST";
 pub const ENV_LISTEN_PORT: &str = "CDK_PAYMENT_PROCESSOR_LISTEN_PORT";
 pub const ENV_PAYMENT_PROCESSOR_TLS_DIR: &str = "CDK_PAYMENT_PROCESSOR_TLS_DIR";
@@ -91,15 +91,15 @@ async fn main() -> anyhow::Result<()> {
 
     #[cfg(any(feature = "cln", feature = "lnd", feature = "fake"))]
     {
-        let ln_backend: String = env::var(ENV_LN_BACKEND)?;
+        let payment_backend: String = env::var(ENV_PAYMENT_BACKEND)?;
         let listen_addr: String = env::var(ENV_LISTEN_HOST)?;
         let listen_port: u16 = env::var(ENV_LISTEN_PORT)?.parse()?;
         let tls_dir: Option<PathBuf> = env::var(ENV_PAYMENT_PROCESSOR_TLS_DIR)
             .ok()
             .map(PathBuf::from);
 
-        let ln_backed: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
-            match ln_backend.to_uppercase().as_str() {
+        let payment_backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
+            match payment_backend.to_uppercase().as_str() {
                 #[cfg(feature = "cln")]
                 "CLN" => {
                     let cln_settings = Cln::default().from_env();
@@ -158,7 +158,7 @@ async fn main() -> anyhow::Result<()> {
             };
 
         let mut server = cdk_payment_processor::PaymentProcessorServer::new(
-            ln_backed,
+            payment_backend,
             &listen_addr,
             listen_port,
         )?;

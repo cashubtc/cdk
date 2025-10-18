@@ -318,7 +318,7 @@ restart_mints() {
     export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR/cln_mint"
     export CDK_MINTD_LISTEN_HOST="127.0.0.1"
     export CDK_MINTD_LISTEN_PORT=8085
-    export CDK_MINTD_LN_BACKEND="cln"
+    export CDK_MINTD_PAYMENT_BACKEND="cln"
     export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
     export RUST_BACKTRACE=1
     
@@ -353,7 +353,7 @@ restart_mints() {
     export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR/lnd_mint"
     export CDK_MINTD_LISTEN_HOST="127.0.0.1"
     export CDK_MINTD_LISTEN_PORT=8087
-    export CDK_MINTD_LN_BACKEND="lnd"
+    export CDK_MINTD_PAYMENT_BACKEND="lnd"
     export CDK_MINTD_MNEMONIC="cattle gold bind busy sound reduce tone addict baby spend february strategy"
     
     cargo run --bin cdk-mintd > "$CDK_MINTD_WORK_DIR/mintd.log" 2>&1 &

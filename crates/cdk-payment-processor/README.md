@@ -29,7 +29,7 @@ The server requires different environment variables depending on your chosen Lig
 #### Core Settings
 ```sh
 # Choose backend: CLN, LND, or FAKEWALLET
-export CDK_PAYMENT_PROCESSOR_LN_BACKEND="CLN"
+export CDK_PAYMENT_PROCESSOR_BACKEND="CLN"
 
 # Server configuration
 export CDK_PAYMENT_PROCESSOR_LISTEN_HOST="127.0.0.1"

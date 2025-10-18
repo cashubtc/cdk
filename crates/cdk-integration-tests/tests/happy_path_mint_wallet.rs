@@ -425,12 +425,12 @@ async fn test_fake_melt_change_in_quote() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_pay_invoice_twice() {
-    let ln_backend = match env::var("LN_BACKEND") {
+    let payment_backend = match env::var("PAYMENT_BACKEND") {
         Ok(val) => Some(val),
-        Err(_) => env::var("CDK_MINTD_LN_BACKEND").ok(),
+        Err(_) => env::var("CDK_MINTD_PAYMENT_BACKEND").ok(),
     };
 
-    if ln_backend.map(|ln| ln.to_uppercase()) == Some("FAKEWALLET".to_string()) {
+    if payment_backend.map(|ln| ln.to_uppercase()) == Some("FAKEWALLET".to_string()) {
         // We can only perform this test on regtest backends as fake wallet just marks the quote as paid
         return;
     }

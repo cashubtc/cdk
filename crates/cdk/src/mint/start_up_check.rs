@@ -27,21 +27,24 @@ impl Mint {
         for pending_quote in pending_quotes {
             tracing::debug!("Checking status for melt quote {}.", pending_quote.id);
 
-            let ln_key = PaymentProcessorKey {
+            let payment_processor_key = PaymentProcessorKey {
                 unit: pending_quote.unit,
                 method: PaymentMethod::Bolt11,
             };
 
-            let ln_backend = match self.payment_processors.get(&ln_key) {
-                Some(ln_backend) => ln_backend,
-                None => {
-                    tracing::warn!("No backend for ln key: {:?}", ln_key);
-                    continue;
-                }
-            };
+            let payment_processor_backend =
+                match self.payment_processors.get(&payment_processor_key) {
+                    Some(payment_processor_backend) => payment_processor_backend,
+                    None => {
+                        tracing::warn!("No backend for ln key: {:?}", payment_processor_key);
+                        continue;
+                    }
+                };
 
             if let Some(lookup_id) = pending_quote.request_lookup_id {
-                let pay_invoice_response = ln_backend.check_outgoing_payment(&lookup_id).await?;
+                let pay_invoice_response = payment_processor_backend
+                    .check_outgoing_payment(&lookup_id)
+                    .await?;
 
                 tracing::warn!(
                     "There is no stored melt request for pending melt quote: {}",
