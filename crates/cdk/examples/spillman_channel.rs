@@ -408,10 +408,11 @@ async fn main() -> anyhow::Result<()> {
     println!("📦 Bob creating blinded outputs for channel...");
 
     // Get active keyset from mint
-    let active_keyset_id = mint.keysets().keysets.iter()
+    let keysets = mint.keysets();
+    let active_keyset = keysets.keysets.iter()
         .find(|k| k.active && k.unit == channel_params.unit)
-        .expect("No active keyset")
-        .id;
+        .expect("No active keyset");
+    let active_keyset_id = active_keyset.id;
 
     println!("   Using keyset: {}", active_keyset_id);
 
@@ -642,12 +643,6 @@ async fn main() -> anyhow::Result<()> {
     let mut unlocked_outputs = Vec::new();
     let mut unlocked_secrets_and_rs = Vec::new();
 
-    // Get fresh active keyset
-    let fresh_active_keyset_id = mint.keysets().keysets.iter()
-        .find(|k| k.active && k.unit == channel_params.unit)
-        .expect("No active keyset")
-        .id;
-
     // Output is just 1 msat
     let output_denominations = vec![1];
 
@@ -656,7 +651,7 @@ async fn main() -> anyhow::Result<()> {
         let (blinded_point, blinding_factor) = blind_message(&secret.to_bytes(), None)?;
         let blinded_msg = BlindedMessage::new(
             Amount::from(amount),
-            fresh_active_keyset_id,
+            active_keyset_id,
             blinded_point,
         );
         unlocked_outputs.push(blinded_msg);
@@ -685,14 +680,11 @@ async fn main() -> anyhow::Result<()> {
     })?;
 
     // Unblind to get final unlocked proof
-    let fresh_mint_keys = mint.keyset(&fresh_active_keyset_id)
-        .ok_or_else(|| anyhow::anyhow!("Fresh keyset not found"))?;
-
-    let unlocked_proofs = construct_proofs(
+    let _unlocked_proofs = construct_proofs(
         spend_swap_response.signatures,
         unlocked_secrets_and_rs.iter().map(|(_, r)| r.clone()).collect(),
         unlocked_secrets_and_rs.iter().map(|(s, _)| s.clone()).collect(),
-        &fresh_mint_keys.keys,
+        &mint_keys.keys,
     )?;
 
     println!("✅ Swap successful!");
