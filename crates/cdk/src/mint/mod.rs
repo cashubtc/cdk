@@ -1372,4 +1372,135 @@ mod tests {
         assert_eq!(output_proofs.len(), 1);
         assert_eq!(output_proofs[0].amount, Amount::from(1));
     }
+
+    #[tokio::test]
+    async fn test_melt_with_sig_all() {
+        use cdk_common::mint::MeltPaymentRequest;
+        use cdk_common::nuts::MeltQuoteState;
+        use crate::dhke::{blind_message, construct_proofs};
+        use crate::nuts::nut11::{Conditions, SigFlag};
+        use crate::nuts::{BlindedMessage, MeltRequest, SecretKey, SpendingConditions};
+        use crate::secret::Secret;
+        use crate::util::unix_time;
+        use crate::Amount;
+
+        // Setup mint with a melt quote
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::Msat, (0, 32));
+
+        let quote_id = QuoteId::new_uuid();
+        let melt_quote = MeltQuote {
+            id: quote_id.clone(),
+            unit: CurrencyUnit::Msat,
+            amount: Amount::from(1),
+            request: MeltPaymentRequest::Bolt11 {
+                bolt11: "lnbc100n1p5z3a63pp56854ytysg7e5z9fl3w5mgvrlqjfcytnjv8ff5hm5qt6gl6alxesqdqqcqzzsxqyz5vqsp5p0x0dlhn27s63j4emxnk26p7f94u0lyarnfp5yqmac9gzy4ngdss9qxpqysgqne3v0hnzt2lp0hc69xpzckk0cdcar7glvjhq60lsrfe8gejdm8c564prrnsft6ctxxyrewp4jtezrq3gxxqnfjj0f9tw2qs9y0lslmqpfu7et9".parse().unwrap(),
+            },
+            fee_reserve: Amount::ZERO,
+            state: MeltQuoteState::Unpaid,
+            expiry: unix_time() + 3600,
+            payment_preimage: None,
+            request_lookup_id: None,
+            options: None,
+            created_time: unix_time(),
+            paid_time: None,
+            payment_method: cdk_common::PaymentMethod::Bolt11,
+        };
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            melt_quotes: vec![melt_quote],
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+
+        // Get active keyset
+        let keysets = mint.keysets();
+        let active_keyset = keysets
+            .keysets
+            .iter()
+            .find(|k| k.active && k.unit == CurrencyUnit::Msat)
+            .expect("No active keyset");
+        let active_keyset_id = active_keyset.id;
+        let mint_keys = mint.pubkeys().keysets[0].keys.clone();
+
+        // Generate keypairs for Alice and Bob
+        let alice_secret_key = SecretKey::generate();
+        let alice_pubkey = alice_secret_key.public_key();
+        let bob_secret_key = SecretKey::generate();
+        let bob_pubkey = bob_secret_key.public_key();
+
+        // Create spending conditions: 2-of-2 multisig with SigAll
+        let conditions = Conditions::new(
+            None,                       // No locktime
+            Some(vec![bob_pubkey]),     // Bob as additional pubkey
+            None,                       // No refund keys
+            Some(2),                    // Require 2 signatures
+            Some(SigFlag::SigAll),      // Use SigAll
+            None,                       // No refund sig requirement
+        )
+        .unwrap();
+
+        let spending_conditions =
+            SpendingConditions::new_p2pk(alice_pubkey, Some(conditions.clone()));
+
+        // Create a blinded message with SigAll spending conditions (1 msat proof)
+        let nut10_secret: nuts::nut10::Secret = spending_conditions.clone().into();
+        let secret: Secret = nut10_secret.try_into().unwrap();
+        let (blinded_point, blinding_factor) = blind_message(&secret.to_bytes(), None).unwrap();
+
+        let blinded_msg =
+            BlindedMessage::new(Amount::from(1), active_keyset_id, blinded_point);
+
+        // Mint signs the blinded message
+        let promises = mint.blind_sign(vec![blinded_msg.clone()]).await.unwrap();
+
+        // Construct the proof from the blind signature
+        let proofs = construct_proofs(
+            promises.clone(),
+            vec![blinding_factor.clone()],
+            vec![secret.clone()],
+            &mint_keys,
+        )
+        .unwrap();
+
+        assert_eq!(proofs.len(), 1);
+        assert!(Mint::proof_uses_sig_all(&proofs[0]));
+
+        // Create MeltRequest with SigAll proofs (no outputs for simplicity)
+        let mut melt_request = MeltRequest::new(quote_id, proofs.clone(), None);
+
+        // Verify that unsigned request fails
+        assert!(
+            melt_request.verify_sig_all().is_err(),
+            "Unsigned melt request should fail verification"
+        );
+
+        // Sign with Alice only (should still fail - needs 2 sigs)
+        melt_request.sign_sig_all(alice_secret_key).unwrap();
+        assert!(
+            melt_request.verify_sig_all().is_err(),
+            "Melt with only 1 signature should fail (needs 2)"
+        );
+
+        // Sign with Bob (now should pass verification)
+        melt_request.sign_sig_all(bob_secret_key).unwrap();
+        assert!(
+            melt_request.verify_sig_all().is_ok(),
+            "Melt with both signatures should pass verification"
+        );
+
+        // Verify inputs pass (this would have failed before the fix)
+        // This is the key part: verify_inputs() calls verify_proofs() which now skips
+        // individual verification for SigAll and lets verify_sig_all() handle it
+        let verification = mint.verify_inputs(&melt_request.inputs()).await;
+        assert!(
+            verification.is_ok(),
+            "Melt request inputs with SigAll should verify successfully"
+        );
+
+        let input_verification = verification.unwrap();
+        assert_eq!(input_verification.amount, Amount::from(1));
+        assert_eq!(input_verification.unit, Some(CurrencyUnit::Msat));
+    }
 }
