@@ -458,7 +458,7 @@ async fn main() -> anyhow::Result<()> {
         Some(vec![bob_pubkey]),                 // Bob's key as additional pubkey
         None,                                    // No refund keys
         Some(2),                                 // Require 2 signatures (Alice + Bob)
-        None,                                    // Default SigFlag (SigInputs)
+        Some(SigFlag::SigAll),                   // SigAll: signatures commit to outputs
         None,                                    // No refund sig requirement
     )?;
 
@@ -640,21 +640,38 @@ async fn main() -> anyhow::Result<()> {
     println!("   Spending: 1 msat (requires Alice + Bob signatures)");
     println!("   Outputs: Using Bob's predetermined outputs");
 
-    // Sign the proof with BOTH Alice and Bob keys (2-of-2)
-    println!("   Signing proof with Alice...");
-    for proof in &mut proofs_to_spend {
-        proof.sign_p2pk(alice_secret.clone())?;
-    }
+    // Create swap request FIRST (for SigAll, signatures must commit to outputs)
+    let mut spend_swap_request = SwapRequest::new(proofs_to_spend.clone(), bob_outputs.clone());
+
+    // Verify that unsigned request fails
+    assert!(
+        spend_swap_request.verify_sig_all().is_err(),
+        "Unsigned swap request should fail verification"
+    );
+    println!("   ✓ Unsigned request fails verification (as expected)");
+
+    // Sign the entire swap request with BOTH Alice and Bob keys (2-of-2 SigAll)
+    println!("   Signing swap request with Alice...");
+    spend_swap_request.sign_sig_all(alice_secret)?;
     println!("   ✓ Signed with Alice");
 
-    println!("   Signing proof with Bob...");
-    for proof in &mut proofs_to_spend {
-        proof.sign_p2pk(bob_secret.clone())?;
-    }
+    // Verify that request with only Alice's signature fails (needs 2 signatures)
+    assert!(
+        spend_swap_request.verify_sig_all().is_err(),
+        "Swap request with only 1 signature should fail (needs 2)"
+    );
+    println!("   ✓ Request with only Alice's signature fails (needs 2)");
+
+    println!("   Signing swap request with Bob...");
+    spend_swap_request.sign_sig_all(bob_secret)?;
     println!("   ✓ Signed with Bob");
 
-    // Create swap request using Bob's predetermined outputs
-    let spend_swap_request = SwapRequest::new(proofs_to_spend.clone(), bob_outputs.clone());
+    // Verify the swap request is properly signed with both signatures
+    assert!(
+        spend_swap_request.verify_sig_all().is_ok(),
+        "Multi-sig SIG_ALL swap request should verify with both signatures"
+    );
+    println!("   ✓ SigAll verification passed with both signatures");
 
     println!("   Swapping locked proof for Bob's outputs...");
     let spend_swap_response = mint.process_swap_request(spend_swap_request).await.map_err(|e| {
