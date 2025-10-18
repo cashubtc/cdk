@@ -30,6 +30,47 @@ use cdk::nuts::{BlindedMessage, nut10::Secret as Nut10Secret, ProofsMethods};
 use cdk::secret::Secret;
 use cdk::Amount;
 use cdk::nuts::nut10::Kind;
+use cdk::nuts::Proof;
+
+/// Helper function to create an unsigned SwapRequest based on a spend vector
+fn create_swap_request_from_vector(
+    locked_proofs: &[Proof],
+    bob_outputs: &[BlindedMessage],
+    spend_vector: &[bool],
+) -> (SwapRequest, u64) {
+    // Select proofs to spend based on spend_vector
+    let proofs_to_spend: Vec<Proof> = spend_vector
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &should_spend)| {
+            if should_spend {
+                Some(locked_proofs[i].clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Calculate total spending
+    let total_spending: u64 = proofs_to_spend.iter().map(|p| u64::from(p.amount)).sum();
+
+    // Select bob's outputs based on spend_vector
+    let bob_outputs_to_use: Vec<BlindedMessage> = spend_vector
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &should_spend)| {
+            if should_spend {
+                Some(bob_outputs[i].clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Create and return the unsigned swap request and total
+    let swap_request = SwapRequest::new(proofs_to_spend, bob_outputs_to_use);
+    (swap_request, total_spending)
+}
 
 /// Parameters for a Spillman payment channel
 #[derive(Debug, Clone)]
@@ -631,33 +672,12 @@ async fn main() -> anyhow::Result<()> {
         "Spend vector length must be 1 + log2_capacity"
     );
 
-    // Select proofs to spend based on spend_vector
-    let mut proofs_to_spend = Vec::new();
-    for (i, &should_spend) in spend_vector.iter().enumerate() {
-        if should_spend {
-            proofs_to_spend.push(locked_proofs[i].clone());
-        }
-    }
+    // Create swap request using helper function
+    let (mut spend_swap_request, total_spending) =
+        create_swap_request_from_vector(&locked_proofs, &bob_outputs, &spend_vector);
 
-    let total_spending: u64 = proofs_to_spend.iter().map(|p| u64::from(p.amount)).sum();
     println!("   Spending: {} msat (requires Alice + Bob signatures)", total_spending);
     println!("   Outputs: Using Bob's predetermined outputs");
-
-    // Select bob's outputs based on spend_vector
-    let bob_outputs_to_use: Vec<_> = spend_vector
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &should_spend)| {
-            if should_spend {
-                Some(bob_outputs[i].clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Create swap request FIRST (for SigAll, signatures must commit to outputs)
-    let mut spend_swap_request = SwapRequest::new(proofs_to_spend.clone(), bob_outputs_to_use);
 
     // Verify that unsigned request fails
     assert!(
@@ -732,33 +752,12 @@ async fn main() -> anyhow::Result<()> {
         "Spend vector length must be 1 + log2_capacity"
     );
 
-    // Select proofs to spend based on spend_vector_2
-    let mut proofs_to_spend_2 = Vec::new();
-    for (i, &should_spend) in spend_vector_2.iter().enumerate() {
-        if should_spend {
-            proofs_to_spend_2.push(locked_proofs[i].clone());
-        }
-    }
+    // Create swap request using helper function
+    let (mut spend_swap_request_2, total_spending_2) =
+        create_swap_request_from_vector(&locked_proofs, &bob_outputs, &spend_vector_2);
 
-    let total_spending_2: u64 = proofs_to_spend_2.iter().map(|p| u64::from(p.amount)).sum();
     println!("   Spending: {} msat (requires Alice + Bob signatures)", total_spending_2);
     println!("   Outputs: Using Bob's predetermined outputs");
-
-    // Select bob's outputs based on spend_vector_2
-    let bob_outputs_to_use_2: Vec<_> = spend_vector_2
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &should_spend)| {
-            if should_spend {
-                Some(bob_outputs[i].clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Create swap request FIRST (for SigAll, signatures must commit to outputs)
-    let mut spend_swap_request_2 = SwapRequest::new(proofs_to_spend_2.clone(), bob_outputs_to_use_2);
 
     // Verify that unsigned request fails
     assert!(
@@ -828,33 +827,12 @@ async fn main() -> anyhow::Result<()> {
         "Spend vector length must be 1 + log2_capacity"
     );
 
-    // Select proofs to spend based on spend_vector_3
-    let mut proofs_to_spend_3 = Vec::new();
-    for (i, &should_spend) in spend_vector_3.iter().enumerate() {
-        if should_spend {
-            proofs_to_spend_3.push(locked_proofs[i].clone());
-        }
-    }
+    // Create swap request using helper function
+    let (mut spend_swap_request_3, total_spending_3) =
+        create_swap_request_from_vector(&locked_proofs, &bob_outputs, &spend_vector_3);
 
-    let total_spending_3: u64 = proofs_to_spend_3.iter().map(|p| u64::from(p.amount)).sum();
     println!("   Attempting to spend: {} msat", total_spending_3);
     println!("   (Proof 1 was spent in transaction 1, Proof 3 was spent in transaction 2)");
-
-    // Select bob's outputs based on spend_vector_3
-    let bob_outputs_to_use_3: Vec<_> = spend_vector_3
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &should_spend)| {
-            if should_spend {
-                Some(bob_outputs[i].clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Create swap request
-    let mut spend_swap_request_3 = SwapRequest::new(proofs_to_spend_3.clone(), bob_outputs_to_use_3);
 
     // Sign with both keys
     spend_swap_request_3.sign_sig_all(alice_secret.clone())?;
