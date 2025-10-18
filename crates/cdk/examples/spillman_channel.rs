@@ -375,8 +375,8 @@ async fn main() -> anyhow::Result<()> {
         alice_pubkey,
         bob_pubkey,
         CurrencyUnit::Msat,
-        3,                          // log2_capacity: 2^3 = 8 msat
-        8,                          // capacity: 8 msat total
+        0,                          // log2_capacity: 2^0 = 1 msat (simplified)
+        1,                          // capacity: 1 msat total
         unix_time() + 86400,        // 1 day locktime
     )?;
     println!("   Capacity: {} {:?} (2^{})", channel_params.capacity, channel_params.unit, channel_params.log2_capacity);
@@ -449,38 +449,27 @@ async fn main() -> anyhow::Result<()> {
         "Bob's output count must match denominations count"
     );
 
-    // 8. PREPARE 2-OF-2 MULTISIG SPENDING CONDITIONS FOR EACH DENOMINATION
-    println!("🔐 Preparing 2-of-2 multisig spending conditions...");
-
-    let conditions = Conditions::new(
-        Some(channel_params.locktime),              // Locktime for refunds
-        Some(vec![channel_params.bob_pubkey]),      // Bob's key as additional pubkey
-        Some(vec![channel_params.alice_pubkey]),    // Alice can refund after locktime
-        Some(2),                                     // Require 2 signatures (before locktime)
-        Some(SigFlag::SigAll),                      // Sign all outputs
-        Some(1),                                     // Alice alone can refund (after locktime)
-    )?;
+    // 8. PREPARE SIMPLE P2PK TO BOB (SIMPLIFIED)
+    println!("🔐 Preparing simple P2PK spending conditions (locked to Bob)...");
 
     let spending_conditions = SpendingConditions::new_p2pk(
-        channel_params.alice_pubkey,  // Alice's key as primary
-        Some(conditions),
+        bob_pubkey,  // Bob's key - only Bob can spend
+        None,        // No additional conditions
     );
 
-    println!("   Before locktime: Requires BOTH Alice and Bob signatures");
-    println!("   After locktime {}: Alice can refund unilaterally\n", channel_params.locktime);
+    println!("   Only Bob can spend these proofs\n");
 
-    // 9. CREATE NEW BLINDED MESSAGES WITH SPENDING CONDITIONS
-    println!("🔒 Creating BlindedMessages with 2-of-2 spending conditions...");
-
-    // Convert spending conditions to NUT-10 secret format
-    let nut10_secret: Nut10Secret = spending_conditions.clone().into();
+    // 9. CREATE NEW BLINDED MESSAGES WITH P2PK TO BOB
+    println!("🔒 Creating BlindedMessage locked to Bob...");
 
     let mut locked_outputs = Vec::new();
     let mut locked_secrets_and_rs = Vec::new();
 
     for (i, &amount) in channel_params.denominations.iter().enumerate() {
-        // Create secret with 2-of-2 spending conditions
-        let secret: Secret = nut10_secret.clone().try_into()?;
+        // Create a fresh NUT-10 secret with the same spending conditions
+        // Each proof MUST have a unique secret to avoid DuplicateInputs error
+        let nut10_secret: Nut10Secret = spending_conditions.clone().into();
+        let secret: Secret = nut10_secret.try_into()?;
 
         // Blind the secret to get B_ = Y + rG
         let (blinded_point, blinding_factor) = blind_message(&secret.to_bytes(), None)?;
@@ -495,14 +484,13 @@ async fn main() -> anyhow::Result<()> {
         locked_outputs.push(blinded_msg);
         locked_secrets_and_rs.push((secret, blinding_factor));
 
-        let description = if i == 0 { " (special)" } else { "" };
-        println!("   Output {}: {} msat{} - locked to 2-of-2", i + 1, amount, description);
+        println!("   Output {}: {} msat - locked to Bob", i + 1, amount);
     }
 
-    println!("✅ Created {} locked BlindedMessages\n", locked_outputs.len());
+    println!("✅ Created locked BlindedMessage\n");
 
-    // 10. ALICE SWAPS HER TOKENS FOR LOCKED 2-OF-2 TOKENS
-    println!("🔄 Alice swapping her tokens for 2-of-2 locked tokens...");
+    // 10. ALICE SWAPS HER TOKENS FOR LOCKED PROOF (P2PK TO BOB)
+    println!("🔄 Alice swapping her tokens for P2PK locked proof...");
 
     let alice_proofs = alice_wallet
         .localstore
@@ -526,8 +514,8 @@ async fn main() -> anyhow::Result<()> {
 
     println!("✅ Swap successful! Received {} blind signatures\n", swap_response.signatures.len());
 
-    // 11. UNBLIND SIGNATURES TO CREATE 2-OF-2 LOCKED PROOFS
-    println!("🔓 Unblinding signatures to create final 2-of-2 proofs...");
+    // 11. UNBLIND SIGNATURES TO CREATE P2PK LOCKED PROOF
+    println!("🔓 Unblinding signature to create final P2PK locked proof...");
 
     // Get the mint's public keys for this keyset
     let mint_keys = mint.keyset(&active_keyset_id)
@@ -541,69 +529,41 @@ async fn main() -> anyhow::Result<()> {
         &mint_keys.keys,
     )?;
 
-    println!("✅ Created {} locked proofs:", locked_proofs.len());
-    for (i, proof) in locked_proofs.iter().enumerate() {
-        let description = if i == 0 { " (special)" } else { "" };
-        println!("   Proof {}: {} msat{} - locked to 2-of-2", i + 1, u64::from(proof.amount), description);
-    }
+    println!("✅ Created 1 locked proof: 1 msat - locked to Bob (P2PK)\n");
 
-    println!("\n🎉 Spillman channel setup complete!");
-    println!("   Alice has {} proofs locked to 2-of-2 multisig", locked_proofs.len());
-    println!("   These can be spent with Alice + Bob signatures (or Alice alone after locktime)\n");
+    println!("🎉 Setup complete!");
+    println!("   Alice has 1 proof locked to Bob's key");
+    println!("   Only Bob can spend this proof\n");
 
-    // 12. BOB VERIFIES THE LOCKED PROOFS
-    println!("🔍 Bob verifying the locked proofs...");
+    // 12. BOB VERIFIES THE LOCKED PROOF
+    println!("🔍 Bob verifying the locked proof...");
 
-    // Verify spending conditions in each proof
+    // Verify spending conditions
     for (i, proof) in locked_proofs.iter().enumerate() {
         // Parse the secret to extract spending conditions
         let nut10_secret: Nut10Secret = proof.secret.clone().try_into()?;
 
         // Verify it's a P2PK secret
         if nut10_secret.kind() != Kind::P2PK {
-            anyhow::bail!("Proof {} is not P2PK!", i + 1);
+            anyhow::bail!("Proof is not P2PK!");
         }
 
         // Extract and verify spending conditions
         let proof_conditions: SpendingConditions = nut10_secret.try_into()?;
 
-        // Verify Alice is the primary pubkey
+        // Verify Bob is the key holder
         if let SpendingConditions::P2PKConditions { data, conditions } = &proof_conditions {
-            if data != &channel_params.alice_pubkey {
-                anyhow::bail!("Proof {} primary key is not Alice!", i + 1);
+            if data != &bob_pubkey {
+                anyhow::bail!("Proof is not locked to Bob's key!");
             }
 
-            if let Some(cond) = conditions {
-                // Verify Bob is in the pubkeys list
-                if !cond.pubkeys.as_ref().map_or(false, |keys| keys.contains(&channel_params.bob_pubkey)) {
-                    anyhow::bail!("Proof {} doesn't include Bob's pubkey!", i + 1);
-                }
-
-                // Verify 2-of-2 requirement
-                if cond.num_sigs != Some(2) {
-                    anyhow::bail!("Proof {} doesn't require 2 signatures!", i + 1);
-                }
-
-                // Verify locktime
-                if cond.locktime != Some(channel_params.locktime) {
-                    anyhow::bail!("Proof {} has wrong locktime!", i + 1);
-                }
-
-                // Verify refund keys (Alice can reclaim after locktime)
-                if !cond.refund_keys.as_ref().map_or(false, |keys| keys.contains(&channel_params.alice_pubkey)) {
-                    anyhow::bail!("Proof {} doesn't have Alice as refund key!", i + 1);
-                }
-
-                // Verify SigAll flag
-                if cond.sig_flag != SigFlag::SigAll {
-                    anyhow::bail!("Proof {} doesn't have SigAll flag!", i + 1);
-                }
-            } else {
-                anyhow::bail!("Proof {} has no conditions!", i + 1);
+            // Verify no additional conditions (simple P2PK)
+            if conditions.is_some() {
+                anyhow::bail!("Proof should have no additional conditions!");
             }
         }
 
-        println!("   ✓ Proof {}: Spending conditions verified", i + 1);
+        println!("   ✓ Proof locked to Bob's key");
     }
 
     // Verify DLEQ proofs (required for all proofs)
@@ -647,6 +607,71 @@ async fn main() -> anyhow::Result<()> {
     println!("   - Spending conditions are correct (SigAll, 2-of-2, locktime)");
     println!("   - All DLEQ proofs verified (required)");
     println!("   - Total value: {} msat in {} denominations", total_amount, locked_proofs.len());
+
+    // 13. TEST BOB SPENDING THE LOCKED PROOF
+    println!("\n🔓 Testing Bob spending the P2PK locked proof...");
+
+    // Take the proof
+    let mut proofs_to_spend = vec![
+        locked_proofs[0].clone(),
+    ];
+
+    println!("   Spending: 1 msat");
+
+    // Create new unlocked outputs to receive
+    let mut unlocked_outputs = Vec::new();
+    let mut unlocked_secrets_and_rs = Vec::new();
+
+    // Get fresh active keyset
+    let fresh_active_keyset_id = mint.keysets().keysets.iter()
+        .find(|k| k.active && k.unit == channel_params.unit)
+        .expect("No active keyset")
+        .id;
+
+    // Output is just 1 msat
+    let output_denominations = vec![1];
+
+    for amount in output_denominations {
+        let secret = Secret::generate();
+        let (blinded_point, blinding_factor) = blind_message(&secret.to_bytes(), None)?;
+        let blinded_msg = BlindedMessage::new(
+            Amount::from(amount),
+            fresh_active_keyset_id,
+            blinded_point,
+        );
+        unlocked_outputs.push(blinded_msg);
+        unlocked_secrets_and_rs.push((secret, blinding_factor));
+    }
+
+    // Sign the proof with Bob's key (simple P2PK)
+    println!("   Signing proof with Bob's key...");
+    for proof in &mut proofs_to_spend {
+        proof.sign_p2pk(bob_secret.clone())?;
+    }
+    println!("   ✓ Signed with Bob");
+
+    // Create swap request
+    let spend_swap_request = SwapRequest::new(proofs_to_spend.clone(), unlocked_outputs);
+
+    println!("   Swapping locked proof for unlocked proof...");
+    let spend_swap_response = mint.process_swap_request(spend_swap_request).await.map_err(|e| {
+        anyhow::anyhow!("Swap failed: {:?}", e)
+    })?;
+
+    // Unblind to get final unlocked proof
+    let fresh_mint_keys = mint.keyset(&fresh_active_keyset_id)
+        .ok_or_else(|| anyhow::anyhow!("Fresh keyset not found"))?;
+
+    let unlocked_proofs = construct_proofs(
+        spend_swap_response.signatures,
+        unlocked_secrets_and_rs.iter().map(|(_, r)| r.clone()).collect(),
+        unlocked_secrets_and_rs.iter().map(|(s, _)| s.clone()).collect(),
+        &fresh_mint_keys.keys,
+    )?;
+
+    println!("✅ Swap successful!");
+    println!("   Received 1 msat in unlocked proof");
+    println!("   This proof has no spending conditions and can be freely spent\n");
 
     Ok(())
 }
