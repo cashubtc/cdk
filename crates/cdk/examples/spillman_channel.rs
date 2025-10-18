@@ -32,6 +32,12 @@ use cdk::Amount;
 use cdk::nuts::nut10::Kind;
 use cdk::nuts::Proof;
 
+/// Format a boolean vector as binary string [101] instead of [true, false, true]
+fn format_spend_vector(vector: &[bool]) -> String {
+    let bits: String = vector.iter().map(|&b| if b { '1' } else { '0' }).collect();
+    format!("[{}]", bits)
+}
+
 /// Helper function to create an unsigned SwapRequest based on a spend vector
 fn create_swap_request_from_vector(
     locked_proofs: &[Proof],
@@ -154,6 +160,30 @@ impl SpillmanChannelParameters {
             locktime,
             denominations,
         })
+    }
+
+    /// Convert a balance to a boolean spend vector
+    /// The first element is always true (we always include the 1 msat proof)
+    /// The remaining elements are the binary representation of (balance - 1)
+    fn balance_to_spend_vector(&self, balance: u64) -> Vec<bool> {
+        assert!(balance > 0, "Balance must be greater than 0");
+        assert!(balance <= self.capacity, "Balance exceeds channel capacity");
+
+        let mut vector = Vec::with_capacity(1 + self.log2_capacity as usize);
+
+        // First element is always true (the special 1 msat proof)
+        vector.push(true);
+
+        // Remaining balance after the first proof
+        let remainder = balance - 1;
+
+        // Binary representation of remainder
+        for i in 0..self.log2_capacity {
+            let bit_set = (remainder & (1 << i)) != 0;
+            vector.push(bit_set);
+        }
+
+        vector
     }
 }
 
@@ -664,19 +694,15 @@ async fn main() -> anyhow::Result<()> {
     // Amount to send to Bob
     let amount_to_bob = 5;
 
-    // Vector to send to Bob (length = 1 + log2_capacity)
-    let spend_vector = vec![true, false, false, true];
-    assert_eq!(
-        spend_vector.len(),
-        1 + channel_params.log2_capacity as usize,
-        "Spend vector length must be 1 + log2_capacity"
-    );
+    // Convert balance to spend vector
+    let spend_vector = channel_params.balance_to_spend_vector(amount_to_bob);
 
     // Create swap request using helper function
     let (mut spend_swap_request, total_spending) =
         create_swap_request_from_vector(&locked_proofs, &bob_outputs, &spend_vector);
 
     println!("   Spending: {} msat (requires Alice + Bob signatures)", total_spending);
+    println!("   Spend vector: {}", format_spend_vector(&spend_vector));
     println!("   Outputs: Using Bob's predetermined outputs");
 
     // Verify that unsigned request fails
@@ -738,108 +764,27 @@ async fn main() -> anyhow::Result<()> {
     println!("   Bob received {} msat in his predetermined outputs", total_spending);
     println!("   These proofs have no spending conditions and can be freely spent by Bob\n");
 
-    // 14. SECOND TRANSACTION: SPEND THE SECOND AND THIRD PROOF (1 + 2 = 3 msat)
-    println!("🔓 Second transaction: spending proofs 2 and 3...");
+    // 14. SECOND TRANSACTION: TRY TO DOUBLE-SPEND (should fail)
+    println!("🔓 Second transaction: attempting to re-spend (double-spend attack)...");
 
-    // Amount to send to Bob in second transaction
-    let amount_to_bob_2 = 3;
-
-    // Vector for second transaction (length = 1 + log2_capacity)
-    let spend_vector_2 = vec![false, true, true, false];
-    assert_eq!(
-        spend_vector_2.len(),
-        1 + channel_params.log2_capacity as usize,
-        "Spend vector length must be 1 + log2_capacity"
-    );
+    // Try to spend an amount that would reuse already-spent proofs
+    let amount_to_bob_2 = 3;  // This will try to reuse the first proof (already spent)
+    let spend_vector_2 = channel_params.balance_to_spend_vector(amount_to_bob_2);
 
     // Create swap request using helper function
     let (mut spend_swap_request_2, total_spending_2) =
         create_swap_request_from_vector(&locked_proofs, &bob_outputs, &spend_vector_2);
 
-    println!("   Spending: {} msat (requires Alice + Bob signatures)", total_spending_2);
-    println!("   Outputs: Using Bob's predetermined outputs");
-
-    // Verify that unsigned request fails
-    assert!(
-        spend_swap_request_2.verify_sig_all().is_err(),
-        "Unsigned swap request should fail verification"
-    );
-    println!("   ✓ Unsigned request fails verification (as expected)");
-
-    // Sign the entire swap request with BOTH Alice and Bob keys (2-of-2 SigAll)
-    println!("   Signing swap request with Alice...");
-    spend_swap_request_2.sign_sig_all(alice_secret.clone())?;
-    println!("   ✓ Signed with Alice");
-
-    assert!(
-        spend_swap_request_2.verify_sig_all().is_err(),
-        "Swap request with only 1 signature should fail (needs 2)"
-    );
-    println!("   ✓ Request with only Alice's signature fails (needs 2)");
-
-    println!("   Signing swap request with Bob...");
-    spend_swap_request_2.sign_sig_all(bob_secret.clone())?;
-    println!("   ✓ Signed with Bob");
-
-    assert!(
-        spend_swap_request_2.verify_sig_all().is_ok(),
-        "Multi-sig SIG_ALL swap request should verify with both signatures"
-    );
-    println!("   ✓ SigAll verification passed with both signatures");
-
-    println!("   Swapping locked proofs for Bob's outputs...");
-    let spend_swap_response_2 = mint.process_swap_request(spend_swap_request_2).await.map_err(|e| {
-        anyhow::anyhow!("Swap failed: {:?}", e)
-    })?;
-
-    // Unblind to get Bob's final proofs (only for the spent outputs)
-    let bob_secrets_and_rs_to_use_2: Vec<_> = spend_vector_2
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &should_spend)| {
-            if should_spend {
-                Some(bob_secrets_and_rs[i].clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let _bob_final_proofs_2 = construct_proofs(
-        spend_swap_response_2.signatures,
-        bob_secrets_and_rs_to_use_2.iter().map(|(_, r)| r.clone()).collect(),
-        bob_secrets_and_rs_to_use_2.iter().map(|(s, _)| s.clone()).collect(),
-        &mint_keys.keys,
-    )?;
-
-    println!("✅ Second swap successful!");
-    println!("   Bob received {} msat in his predetermined outputs", total_spending_2);
-    println!("   These proofs have no spending conditions and can be freely spent by Bob\n");
-
-    // 15. THIRD TRANSACTION: TRY TO SPEND FIRST AND THIRD PROOF (already spent - should fail)
-    println!("🔓 Third transaction: attempting to spend proofs 1 and 3 (already spent)...");
-
-    // Vector for third transaction (length = 1 + log2_capacity)
-    let spend_vector_3 = vec![true, false, true, false];
-    assert_eq!(
-        spend_vector_3.len(),
-        1 + channel_params.log2_capacity as usize,
-        "Spend vector length must be 1 + log2_capacity"
-    );
-
-    // Create swap request using helper function
-    let (mut spend_swap_request_3, total_spending_3) =
-        create_swap_request_from_vector(&locked_proofs, &bob_outputs, &spend_vector_3);
-
-    println!("   Attempting to spend: {} msat", total_spending_3);
-    println!("   (Proof 1 was spent in transaction 1, Proof 3 was spent in transaction 2)");
+    println!("   Attempting to spend: {} msat", total_spending_2);
+    println!("   Spend vector: {}", format_spend_vector(&spend_vector_2));
+    println!("   (This will attempt to reuse outputs from the first transaction)");
 
     // Sign with both keys
-    spend_swap_request_3.sign_sig_all(alice_secret.clone())?;
-    spend_swap_request_3.sign_sig_all(bob_secret.clone())?;
+    spend_swap_request_2.sign_sig_all(alice_secret)?;
+    spend_swap_request_2.sign_sig_all(bob_secret)?;
 
     println!("   Attempting swap (this should fail)...");
-    match mint.process_swap_request(spend_swap_request_3).await {
+    match mint.process_swap_request(spend_swap_request_2).await {
         Ok(_) => {
             println!("❌ UNEXPECTED: Swap succeeded! Double-spend was not prevented!");
         }
