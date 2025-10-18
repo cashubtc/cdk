@@ -841,18 +841,38 @@ impl Mint {
                     if let Ok(secret) =
                         <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
                     {
-                        // Checks and verifies known secret kinds.
-                        // If it is an unknown secret kind it will be treated as a normal secret.
-                        // Spending conditions will **not** be check. It is up to the wallet to ensure
-                        // only supported secret kinds are used as there is no way for the mint to
-                        // enforce only signing supported secrets as they are blinded at
-                        // that point.
-                        match secret.kind() {
-                            Kind::P2PK => {
-                                proof.verify_p2pk()?;
-                            }
-                            Kind::HTLC => {
-                                proof.verify_htlc()?;
+                        // Detect SigAll flag: When using SIG_ALL, signatures are over the entire
+                        // transaction (all inputs + all outputs combined), not individual proof secrets.
+                        // Therefore, we must skip individual proof signature verification here.
+                        //
+                        // Verification flow for SigAll:
+                        // 1. Here (verify_proofs): Skip individual verify_p2pk/verify_htlc checks
+                        // 2. Later (validate_sig_flag in swap/melt): Call verify_sig_all() which
+                        //    verifies signatures against the combined transaction message
+                        //
+                        // Note: Even with SigAll, we still perform structural validation and DLEQ
+                        // proof verification (via signatory.verify_proofs() below).
+                        let uses_sig_all = secret
+                            .secret_data()
+                            .tags()
+                            .and_then(|tags| nuts::nut11::Conditions::try_from(tags.clone()).ok())
+                            .map_or(false, |c| c.sig_flag == nuts::nut11::SigFlag::SigAll);
+
+                        if !uses_sig_all {
+                            // For SigInputs (default): verify spending conditions on each proof individually.
+                            // Checks and verifies known secret kinds.
+                            // If it is an unknown secret kind it will be treated as a normal secret.
+                            // Spending conditions will **not** be check. It is up to the wallet to ensure
+                            // only supported secret kinds are used as there is no way for the mint to
+                            // enforce only signing supported secrets as they are blinded at
+                            // that point.
+                            match secret.kind() {
+                                Kind::P2PK => {
+                                    proof.verify_p2pk()?;
+                                }
+                                Kind::HTLC => {
+                                    proof.verify_htlc()?;
+                                }
                             }
                         }
                     }

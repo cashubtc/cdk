@@ -562,6 +562,12 @@ impl Mint {
             ));
         }
 
+        // For SIG_ALL: Verify signatures at the transaction level (all inputs + all outputs).
+        // This is called AFTER verify_inputs(), which skips individual proof verification
+        // for SigAll proofs (see verify_proofs in mint/mod.rs).
+        //
+        // For SigInputs (default): No transaction-level verification needed, as each proof
+        // was already verified individually in verify_inputs() -> verify_proofs().
         let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs().clone());
 
         if sig_flag == SigFlag::SigAll {
