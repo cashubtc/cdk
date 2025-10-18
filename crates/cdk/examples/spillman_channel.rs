@@ -638,25 +638,7 @@ async fn main() -> anyhow::Result<()> {
     ];
 
     println!("   Spending: 1 msat (requires Alice + Bob signatures)");
-
-    // Create new unlocked outputs to receive
-    let mut unlocked_outputs = Vec::new();
-    let mut unlocked_secrets_and_rs = Vec::new();
-
-    // Output is just 1 msat
-    let output_denominations = vec![1];
-
-    for amount in output_denominations {
-        let secret = Secret::generate();
-        let (blinded_point, blinding_factor) = blind_message(&secret.to_bytes(), None)?;
-        let blinded_msg = BlindedMessage::new(
-            Amount::from(amount),
-            active_keyset_id,
-            blinded_point,
-        );
-        unlocked_outputs.push(blinded_msg);
-        unlocked_secrets_and_rs.push((secret, blinding_factor));
-    }
+    println!("   Outputs: Using Bob's predetermined outputs");
 
     // Sign the proof with BOTH Alice and Bob keys (2-of-2)
     println!("   Signing proof with Alice...");
@@ -671,25 +653,25 @@ async fn main() -> anyhow::Result<()> {
     }
     println!("   ✓ Signed with Bob");
 
-    // Create swap request
-    let spend_swap_request = SwapRequest::new(proofs_to_spend.clone(), unlocked_outputs);
+    // Create swap request using Bob's predetermined outputs
+    let spend_swap_request = SwapRequest::new(proofs_to_spend.clone(), bob_outputs.clone());
 
-    println!("   Swapping locked proof for unlocked proof...");
+    println!("   Swapping locked proof for Bob's outputs...");
     let spend_swap_response = mint.process_swap_request(spend_swap_request).await.map_err(|e| {
         anyhow::anyhow!("Swap failed: {:?}", e)
     })?;
 
-    // Unblind to get final unlocked proof
-    let _unlocked_proofs = construct_proofs(
+    // Unblind to get Bob's final proofs
+    let _bob_final_proofs = construct_proofs(
         spend_swap_response.signatures,
-        unlocked_secrets_and_rs.iter().map(|(_, r)| r.clone()).collect(),
-        unlocked_secrets_and_rs.iter().map(|(s, _)| s.clone()).collect(),
+        bob_secrets_and_rs.iter().map(|(_, r)| r.clone()).collect(),
+        bob_secrets_and_rs.iter().map(|(s, _)| s.clone()).collect(),
         &mint_keys.keys,
     )?;
 
     println!("✅ Swap successful!");
-    println!("   Received 1 msat in unlocked proof");
-    println!("   This proof has no spending conditions and can be freely spent\n");
+    println!("   Bob received 1 msat in his predetermined output");
+    println!("   This proof has no spending conditions and can be freely spent by Bob\n");
 
     Ok(())
 }
