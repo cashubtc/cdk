@@ -769,7 +769,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Sign the entire swap request with BOTH Alice and Bob keys (2-of-2 SigAll)
     println!("   Signing swap request with Alice...");
-    spend_swap_request_2.sign_sig_all(alice_secret)?;
+    spend_swap_request_2.sign_sig_all(alice_secret.clone())?;
     println!("   ✓ Signed with Alice");
 
     assert!(
@@ -779,7 +779,7 @@ async fn main() -> anyhow::Result<()> {
     println!("   ✓ Request with only Alice's signature fails (needs 2)");
 
     println!("   Signing swap request with Bob...");
-    spend_swap_request_2.sign_sig_all(bob_secret)?;
+    spend_swap_request_2.sign_sig_all(bob_secret.clone())?;
     println!("   ✓ Signed with Bob");
 
     assert!(
@@ -816,6 +816,60 @@ async fn main() -> anyhow::Result<()> {
     println!("✅ Second swap successful!");
     println!("   Bob received {} msat in his predetermined outputs", total_spending_2);
     println!("   These proofs have no spending conditions and can be freely spent by Bob\n");
+
+    // 15. THIRD TRANSACTION: TRY TO SPEND FIRST AND THIRD PROOF (already spent - should fail)
+    println!("🔓 Third transaction: attempting to spend proofs 1 and 3 (already spent)...");
+
+    // Vector for third transaction (length = 1 + log2_capacity)
+    let spend_vector_3 = vec![true, false, true, false];
+    assert_eq!(
+        spend_vector_3.len(),
+        1 + channel_params.log2_capacity as usize,
+        "Spend vector length must be 1 + log2_capacity"
+    );
+
+    // Select proofs to spend based on spend_vector_3
+    let mut proofs_to_spend_3 = Vec::new();
+    for (i, &should_spend) in spend_vector_3.iter().enumerate() {
+        if should_spend {
+            proofs_to_spend_3.push(locked_proofs[i].clone());
+        }
+    }
+
+    let total_spending_3: u64 = proofs_to_spend_3.iter().map(|p| u64::from(p.amount)).sum();
+    println!("   Attempting to spend: {} msat", total_spending_3);
+    println!("   (Proof 1 was spent in transaction 1, Proof 3 was spent in transaction 2)");
+
+    // Select bob's outputs based on spend_vector_3
+    let bob_outputs_to_use_3: Vec<_> = spend_vector_3
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &should_spend)| {
+            if should_spend {
+                Some(bob_outputs[i].clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Create swap request
+    let mut spend_swap_request_3 = SwapRequest::new(proofs_to_spend_3.clone(), bob_outputs_to_use_3);
+
+    // Sign with both keys
+    spend_swap_request_3.sign_sig_all(alice_secret.clone())?;
+    spend_swap_request_3.sign_sig_all(bob_secret.clone())?;
+
+    println!("   Attempting swap (this should fail)...");
+    match mint.process_swap_request(spend_swap_request_3).await {
+        Ok(_) => {
+            println!("❌ UNEXPECTED: Swap succeeded! Double-spend was not prevented!");
+        }
+        Err(e) => {
+            println!("✅ Swap correctly rejected: {:?}", e);
+            println!("   The mint properly prevents double-spending\n");
+        }
+    }
 
     Ok(())
 }
