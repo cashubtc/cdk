@@ -43,6 +43,14 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
     type Error = cdk_common::Error;
 
     fn try_into(self) -> Result<crate::signatory::SignatoryKeySet, Self::Error> {
+        let keys = self
+            .keys
+            .ok_or(cdk_common::Error::Custom(INTERNAL_ERROR.to_owned()))?
+            .keys
+            .into_iter()
+            .map(|(amount, pk)| PublicKey::from_slice(&pk).map(|pk| (amount.into(), pk)))
+            .collect::<Result<BTreeMap<Amount, _>, _>>()?;
+
         Ok(crate::signatory::SignatoryKeySet {
             id: Id::from_bytes(&self.id)?,
             unit: self
@@ -52,15 +60,8 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
                 .map_err(|_| cdk_common::Error::Custom("Invalid currency unit".to_owned()))?,
             active: self.active,
             input_fee_ppk: self.input_fee_ppk,
-            keys: cdk_common::Keys::new(
-                self.keys
-                    .ok_or(cdk_common::Error::Custom(INTERNAL_ERROR.to_owned()))?
-                    .keys
-                    .into_iter()
-                    .map(|(amount, pk)| PublicKey::from_slice(&pk).map(|pk| (amount.into(), pk)))
-                    .collect::<Result<BTreeMap<Amount, _>, _>>()?,
-            ),
-            amounts: self.amounts,
+            amounts: keys.keys().map(|x| x.to_u64()).collect::<Vec<_>>(),
+            keys: cdk_common::Keys::new(keys),
             final_expiry: self.final_expiry,
         })
     }
@@ -81,7 +82,6 @@ impl From<crate::signatory::SignatoryKeySet> for KeySet {
                     .collect(),
             }),
             final_expiry: keyset.final_expiry,
-            amounts: keyset.amounts,
             version: Default::default(),
         }
     }
@@ -363,7 +363,6 @@ impl From<cdk_common::KeySetInfo> for KeySet {
             input_fee_ppk: value.input_fee_ppk,
             keys: Default::default(),
             final_expiry: value.final_expiry,
-            amounts: vec![],
             version: Default::default(),
         }
     }

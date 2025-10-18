@@ -836,6 +836,70 @@ ON CONFLICT(id) DO UPDATE SET
         .collect::<Vec<_>>())
     }
 
+    async fn get_balance(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        states: Option<Vec<State>>,
+    ) -> Result<u64, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        let mut query_str = "SELECT COALESCE(SUM(amount), 0) as total FROM proof".to_string();
+        let mut where_clauses = Vec::new();
+        let states = states
+            .unwrap_or_default()
+            .into_iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>();
+
+        if mint_url.is_some() {
+            where_clauses.push("mint_url = :mint_url");
+        }
+        if unit.is_some() {
+            where_clauses.push("unit = :unit");
+        }
+        if !states.is_empty() {
+            where_clauses.push("state IN (:states)");
+        }
+
+        if !where_clauses.is_empty() {
+            query_str.push_str(" WHERE ");
+            query_str.push_str(&where_clauses.join(" AND "));
+        }
+
+        let mut q = query(&query_str)?;
+
+        if let Some(ref mint_url) = mint_url {
+            q = q.bind("mint_url", mint_url.to_string());
+        }
+        if let Some(ref unit) = unit {
+            q = q.bind("unit", unit.to_string());
+        }
+
+        if !states.is_empty() {
+            q = q.bind_vec("states", states);
+        }
+
+        let balance = q
+            .pluck(&*conn)
+            .await?
+            .map(|n| {
+                // SQLite SUM returns INTEGER which we need to convert to u64
+                match n {
+                    crate::stmt::Column::Integer(i) => Ok(i as u64),
+                    crate::stmt::Column::Real(f) => Ok(f as u64),
+                    _ => Err(Error::Database(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Invalid balance type",
+                    )))),
+                }
+            })
+            .transpose()?
+            .unwrap_or(0);
+
+        Ok(balance)
+    }
+
     async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         query("UPDATE proof SET state = :state WHERE y IN (:ys)")?
@@ -890,7 +954,6 @@ ON CONFLICT(id) DO UPDATE SET
 
     #[instrument(skip(self))]
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let mint_url = transaction.mint_url.to_string();
         let direction = transaction.direction.to_string();
         let unit = transaction.unit.to_string();
@@ -902,27 +965,32 @@ ON CONFLICT(id) DO UPDATE SET
             .flat_map(|y| y.to_bytes().to_vec())
             .collect::<Vec<_>>();
 
+        let id = transaction.id();
+
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
         query(
             r#"
 INSERT INTO transactions
-(id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id)
+(id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id, payment_request, payment_proof)
 VALUES
-(:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id)
+(:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof)
 ON CONFLICT(id) DO UPDATE SET
     mint_url = excluded.mint_url,
     direction = excluded.direction,
     unit = excluded.unit,
     amount = excluded.amount,
     fee = excluded.fee,
-    ys = excluded.ys,
     timestamp = excluded.timestamp,
     memo = excluded.memo,
     metadata = excluded.metadata,
-    quote_id = excluded.quote_id
+    quote_id = excluded.quote_id,
+    payment_request = excluded.payment_request,
+    payment_proof = excluded.payment_proof
 ;
         "#,
         )?
-        .bind("id", transaction.id().as_slice().to_vec())
+        .bind("id", id.as_slice().to_vec())
         .bind("mint_url", mint_url)
         .bind("direction", direction)
         .bind("unit", unit)
@@ -936,6 +1004,8 @@ ON CONFLICT(id) DO UPDATE SET
             serde_json::to_string(&transaction.metadata).map_err(Error::from)?,
         )
         .bind("quote_id", transaction.quote_id)
+        .bind("payment_request", transaction.payment_request)
+        .bind("payment_proof", transaction.payment_proof)
         .execute(&*conn)
         .await?;
 
@@ -960,7 +1030,9 @@ ON CONFLICT(id) DO UPDATE SET
                 timestamp,
                 memo,
                 metadata,
-                quote_id
+                quote_id,
+                payment_request,
+                payment_proof
             FROM
                 transactions
             WHERE
@@ -995,7 +1067,9 @@ ON CONFLICT(id) DO UPDATE SET
                 timestamp,
                 memo,
                 metadata,
-                quote_id
+                quote_id,
+                payment_request,
+                payment_proof
             FROM
                 transactions
             "#,
@@ -1233,7 +1307,9 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             timestamp,
             memo,
             metadata,
-            quote_id
+            quote_id,
+            payment_request,
+            payment_proof
         ) = row
     );
 
@@ -1257,5 +1333,7 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
         })
         .unwrap_or_default(),
         quote_id: column_as_nullable_string!(quote_id),
+        payment_request: column_as_nullable_string!(payment_request),
+        payment_proof: column_as_nullable_string!(payment_proof),
     })
 }

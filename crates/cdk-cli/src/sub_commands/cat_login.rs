@@ -31,20 +31,13 @@ pub async fn cat_login(
 ) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
 
-    let wallet = match multi_mint_wallet.get_wallet(&mint_url).await {
-        Some(wallet) => wallet.clone(),
-        None => {
-            multi_mint_wallet.add_mint(mint_url.clone(), None).await?;
-            multi_mint_wallet
-                .get_wallet(&mint_url)
-                .await
-                .expect("Wallet should exist after adding mint")
-                .clone()
-        }
-    };
+    // Ensure the mint exists
+    if !multi_mint_wallet.has_mint(&mint_url).await {
+        multi_mint_wallet.add_mint(mint_url.clone()).await?;
+    }
 
-    let mint_info = wallet
-        .fetch_mint_info()
+    let mint_info = multi_mint_wallet
+        .fetch_mint_info(&mint_url)
         .await?
         .ok_or(anyhow!("Mint info not found"))?;
 

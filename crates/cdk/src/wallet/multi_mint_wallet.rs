@@ -4,6 +4,7 @@
 //! pairs
 
 use std::collections::BTreeMap;
+use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -25,6 +26,8 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut23::QuoteState;
 use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SpendingConditions, Token};
 use crate::types::Melted;
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+use crate::wallet::mint_connector::transport::tor_transport::TorAsync;
 use crate::wallet::types::MintQuote;
 use crate::{Amount, Wallet};
 
@@ -57,6 +60,50 @@ pub struct TransferResult {
     pub target_balance_after: Amount,
 }
 
+/// Configuration for individual wallets within MultiMintWallet
+#[derive(Clone, Default, Debug)]
+pub struct WalletConfig {
+    /// Custom mint connector implementation
+    pub mint_connector: Option<Arc<dyn super::MintConnector + Send + Sync>>,
+    /// Custom auth connector implementation
+    #[cfg(feature = "auth")]
+    pub auth_connector: Option<Arc<dyn super::auth::AuthMintConnector + Send + Sync>>,
+    /// Target number of proofs to maintain at each denomination
+    pub target_proof_count: Option<usize>,
+}
+
+impl WalletConfig {
+    /// Create a new empty WalletConfig
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set custom mint connector
+    pub fn with_mint_connector(
+        mut self,
+        connector: Arc<dyn super::MintConnector + Send + Sync>,
+    ) -> Self {
+        self.mint_connector = Some(connector);
+        self
+    }
+
+    /// Set custom auth connector
+    #[cfg(feature = "auth")]
+    pub fn with_auth_connector(
+        mut self,
+        connector: Arc<dyn super::auth::AuthMintConnector + Send + Sync>,
+    ) -> Self {
+        self.auth_connector = Some(connector);
+        self
+    }
+
+    /// Set target proof count
+    pub fn with_target_proof_count(mut self, count: usize) -> Self {
+        self.target_proof_count = Some(count);
+        self
+    }
+}
+
 /// Multi Mint Wallet
 ///
 /// A wallet that manages multiple mints but supports only one currency unit.
@@ -86,8 +133,8 @@ pub struct TransferResult {
 /// // Add mints to the wallet
 /// let mint_url1: MintUrl = "https://mint1.example.com".parse()?;
 /// let mint_url2: MintUrl = "https://mint2.example.com".parse()?;
-/// wallet.add_mint(mint_url1.clone(), None).await?;
-/// wallet.add_mint(mint_url2, None).await?;
+/// wallet.add_mint(mint_url1.clone()).await?;
+/// wallet.add_mint(mint_url2).await?;
 ///
 /// // Check total balance across all mints
 /// let balance = wallet.total_balance().await?;
@@ -114,6 +161,9 @@ pub struct MultiMintWallet {
     wallets: Arc<RwLock<BTreeMap<MintUrl, Wallet>>>,
     /// Proxy configuration for HTTP clients (optional)
     proxy_config: Option<url::Url>,
+    /// Shared Tor transport to be cloned into each TorHttpClient (if enabled)
+    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+    shared_tor_transport: Option<TorAsync>,
 }
 
 impl MultiMintWallet {
@@ -129,6 +179,8 @@ impl MultiMintWallet {
             unit,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
             proxy_config: None,
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            shared_tor_transport: None,
         };
 
         // Automatically load wallets from database for this currency unit
@@ -153,6 +205,35 @@ impl MultiMintWallet {
             unit,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
             proxy_config: Some(proxy_url),
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            shared_tor_transport: None,
+        };
+
+        // Automatically load wallets from database for this currency unit
+        wallet.load_wallets().await?;
+
+        Ok(wallet)
+    }
+
+    /// Create a new [MultiMintWallet] with Tor transport for all wallets
+    ///
+    /// When the `tor` feature is enabled (and not on wasm32), this constructor
+    /// creates a single Tor transport (TorAsync) that is cloned into each
+    /// TorHttpClient used by per-mint Wallets. This ensures only one Tor instance
+    /// is bootstrapped and shared across wallets.
+    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+    pub async fn new_with_tor(
+        localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+        seed: [u8; 64],
+        unit: CurrencyUnit,
+    ) -> Result<Self, Error> {
+        let wallet = Self {
+            localstore,
+            seed,
+            unit,
+            wallets: Arc::new(RwLock::new(BTreeMap::new())),
+            proxy_config: None,
+            shared_tor_transport: Some(TorAsync::new()),
         };
 
         // Automatically load wallets from database for this currency unit
@@ -162,12 +243,149 @@ impl MultiMintWallet {
     }
 
     /// Adds a mint to this [MultiMintWallet]
+    ///
+    /// Creates a wallet for the specified mint using default or global settings.
+    /// For custom configuration, use `add_mint_with_config()`.
     #[instrument(skip(self))]
-    pub async fn add_mint(
+    pub async fn add_mint(&self, mint_url: MintUrl) -> Result<(), Error> {
+        // Create wallet with default settings
+        let wallet = self
+            .create_wallet_with_config(mint_url.clone(), None)
+            .await?;
+
+        // Insert into wallets map
+        let mut wallets = self.wallets.write().await;
+        wallets.insert(mint_url, wallet);
+
+        Ok(())
+    }
+
+    /// Adds a mint to this [MultiMintWallet] with custom configuration
+    ///
+    /// The provided configuration is used to create the wallet with custom connectors
+    /// and settings. Configuration is stored within the Wallet instance itself.
+    #[instrument(skip(self))]
+    pub async fn add_mint_with_config(
         &self,
         mint_url: MintUrl,
-        target_proof_count: Option<usize>,
+        config: WalletConfig,
     ) -> Result<(), Error> {
+        // Create wallet with the provided config
+        let wallet = self
+            .create_wallet_with_config(mint_url.clone(), Some(&config))
+            .await?;
+
+        // Insert into wallets map
+        let mut wallets = self.wallets.write().await;
+        wallets.insert(mint_url, wallet);
+
+        Ok(())
+    }
+
+    /// Set or update configuration for a mint
+    ///
+    /// If the wallet already exists, it will be updated with the new config.
+    /// If the wallet doesn't exist, it will be created with the specified config.
+    #[instrument(skip(self))]
+    pub async fn set_mint_config(
+        &self,
+        mint_url: MintUrl,
+        config: WalletConfig,
+    ) -> Result<(), Error> {
+        // Check if wallet already exists
+        if self.has_mint(&mint_url).await {
+            // Update existing wallet in place
+            let mut wallets = self.wallets.write().await;
+            if let Some(wallet) = wallets.get_mut(&mint_url) {
+                // Update target_proof_count if provided
+                if let Some(count) = config.target_proof_count {
+                    wallet.set_target_proof_count(count);
+                }
+
+                // Update connector if provided
+                if let Some(connector) = config.mint_connector {
+                    wallet.set_client(connector);
+                }
+
+                // TODO: Handle auth_connector if provided
+                #[cfg(feature = "auth")]
+                if let Some(_auth_connector) = config.auth_connector {
+                    // For now, we can't easily inject auth_connector into the wallet
+                    // This would require additional work on the Wallet API
+                    // We'll note this as a future enhancement
+                }
+            }
+            Ok(())
+        } else {
+            // Wallet doesn't exist, create it with the provided config
+            self.add_mint_with_config(mint_url, config).await
+        }
+    }
+
+    /// Set the auth client (AuthWallet) for a specific mint
+    ///
+    /// This allows updating the auth wallet for an existing mint wallet without recreating it.
+    #[cfg(feature = "auth")]
+    #[instrument(skip_all)]
+    pub async fn set_auth_client(
+        &self,
+        mint_url: &MintUrl,
+        auth_wallet: Option<super::auth::AuthWallet>,
+    ) -> Result<(), Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.set_auth_client(auth_wallet).await;
+        Ok(())
+    }
+
+    /// Remove mint from MultiMintWallet
+    #[instrument(skip(self))]
+    pub async fn remove_mint(&self, mint_url: &MintUrl) {
+        let mut wallets = self.wallets.write().await;
+        wallets.remove(mint_url);
+    }
+
+    /// Internal: Create wallet with optional custom configuration
+    ///
+    /// Priority order for configuration:
+    /// 1. Custom connector from config (if provided)
+    /// 2. Global settings (proxy/Tor)
+    /// 3. Default HttpClient
+    async fn create_wallet_with_config(
+        &self,
+        mint_url: MintUrl,
+        config: Option<&WalletConfig>,
+    ) -> Result<Wallet, Error> {
+        // Check if custom connector is provided in config
+        if let Some(cfg) = config {
+            if let Some(custom_connector) = &cfg.mint_connector {
+                // Use custom connector with WalletBuilder
+                let builder = WalletBuilder::new()
+                    .mint_url(mint_url.clone())
+                    .unit(self.unit.clone())
+                    .localstore(self.localstore.clone())
+                    .seed(self.seed)
+                    .target_proof_count(cfg.target_proof_count.unwrap_or(3))
+                    .shared_client(custom_connector.clone());
+
+                // TODO: Handle auth_connector if provided
+                #[cfg(feature = "auth")]
+                if let Some(_auth_connector) = &cfg.auth_connector {
+                    // For now, we can't easily inject auth_connector into the wallet
+                    // This would require additional work on the Wallet/WalletBuilder API
+                    // We'll note this as a future enhancement
+                }
+
+                return builder.build();
+            }
+        }
+
+        // Fall back to existing logic: proxy/Tor/default
+        let target_proof_count = config.and_then(|c| c.target_proof_count).unwrap_or(3);
+
         let wallet = if let Some(proxy_url) = &self.proxy_config {
             // Create wallet with proxy-configured client
             let client = crate::wallet::HttpClient::with_proxy(
@@ -191,31 +409,62 @@ impl MultiMintWallet {
                 .unit(self.unit.clone())
                 .localstore(self.localstore.clone())
                 .seed(self.seed)
-                .target_proof_count(target_proof_count.unwrap_or(3))
+                .target_proof_count(target_proof_count)
                 .client(client)
                 .build()?
         } else {
-            // Create wallet with default client
-            Wallet::new(
-                &mint_url.to_string(),
-                self.unit.clone(),
-                self.localstore.clone(),
-                self.seed,
-                target_proof_count,
-            )?
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            if let Some(tor) = &self.shared_tor_transport {
+                // Create wallet with Tor transport client, cloning the shared transport
+                let client = {
+                    let transport = tor.clone();
+                    #[cfg(feature = "auth")]
+                    {
+                        crate::wallet::TorHttpClient::with_transport(
+                            mint_url.clone(),
+                            transport,
+                            None,
+                        )
+                    }
+                    #[cfg(not(feature = "auth"))]
+                    {
+                        crate::wallet::TorHttpClient::with_transport(mint_url.clone(), transport)
+                    }
+                };
+
+                WalletBuilder::new()
+                    .mint_url(mint_url.clone())
+                    .unit(self.unit.clone())
+                    .localstore(self.localstore.clone())
+                    .seed(self.seed)
+                    .target_proof_count(target_proof_count)
+                    .client(client)
+                    .build()?
+            } else {
+                // Create wallet with default client
+                Wallet::new(
+                    &mint_url.to_string(),
+                    self.unit.clone(),
+                    self.localstore.clone(),
+                    self.seed,
+                    Some(target_proof_count),
+                )?
+            }
+
+            #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
+            {
+                // Create wallet with default client
+                Wallet::new(
+                    &mint_url.to_string(),
+                    self.unit.clone(),
+                    self.localstore.clone(),
+                    self.seed,
+                    Some(target_proof_count),
+                )?
+            }
         };
 
-        let mut wallets = self.wallets.write().await;
-        wallets.insert(mint_url, wallet);
-
-        Ok(())
-    }
-
-    /// Remove mint from MultiMintWallet
-    #[instrument(skip(self))]
-    pub async fn remove_mint(&self, mint_url: &MintUrl) {
-        let mut wallets = self.wallets.write().await;
-        wallets.remove(mint_url);
+        Ok(wallet)
     }
 
     /// Load all wallets from database that have proofs for this currency unit
@@ -239,7 +488,7 @@ impl MultiMintWallet {
             if mint_has_proofs_for_unit {
                 // Add mint to the MultiMintWallet if not already present
                 if !self.has_mint(&mint_url).await {
-                    self.add_mint(mint_url.clone(), None).await?
+                    self.add_mint(mint_url.clone()).await?
                 }
             }
         }
@@ -598,7 +847,7 @@ impl MultiMintWallet {
                     // Check if this is a mint quote response with paid state
                     if let crate::nuts::nut17::NotificationPayload::MintQuoteBolt11Response(
                         quote_response,
-                    ) = notification
+                    ) = notification.deref()
                     {
                         if quote_response.state == QuoteState::Paid {
                             // Quote is paid, now mint the tokens
@@ -741,6 +990,32 @@ impl MultiMintWallet {
         wallet.mint_quote(amount, description).await
     }
 
+    /// Check a specific mint quote status
+    #[instrument(skip(self))]
+    pub async fn check_mint_quote(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+    ) -> Result<MintQuote, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        // Check the quote state from the mint
+        wallet.mint_quote_state(quote_id).await?;
+
+        // Get the updated quote from local storage
+        let quote = wallet
+            .localstore
+            .get_mint_quote(quote_id)
+            .await
+            .map_err(Error::Database)?
+            .ok_or(Error::UnknownQuote)?;
+
+        Ok(quote)
+    }
+
     /// Check all mint quotes
     /// If quote is paid, wallet will mint
     #[instrument(skip(self))]
@@ -781,6 +1056,37 @@ impl MultiMintWallet {
 
         wallet
             .mint(quote_id, SplitTarget::default(), conditions)
+            .await
+    }
+
+    /// Wait for a mint quote to be paid and automatically mint the proofs
+    #[cfg(not(target_arch = "wasm32"))]
+    #[instrument(skip(self))]
+    pub async fn wait_for_mint_quote(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+        split_target: SplitTarget,
+        conditions: Option<SpendingConditions>,
+        timeout_secs: u64,
+    ) -> Result<Proofs, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        // Get the mint quote from local storage
+        let quote = wallet
+            .localstore
+            .get_mint_quote(quote_id)
+            .await
+            .map_err(Error::Database)?
+            .ok_or(Error::UnknownQuote)?;
+
+        // Wait for the quote to be paid and mint the proofs
+        let timeout_duration = tokio::time::Duration::from_secs(timeout_secs);
+        wallet
+            .wait_and_mint_quote(quote, split_target, conditions, timeout_duration)
             .await
     }
 
@@ -845,7 +1151,7 @@ impl MultiMintWallet {
 
         // Add the untrusted mint temporarily if needed
         if !is_trusted {
-            self.add_mint(mint_url.clone(), None).await?;
+            self.add_mint(mint_url.clone()).await?;
         }
 
         let wallets = self.wallets.read().await;
@@ -1130,7 +1436,7 @@ impl MultiMintWallet {
     /// Melt (pay invoice) with automatic wallet selection (deprecated, use specific mint functions for better control)
     ///
     /// Automatically selects the best wallet to pay from based on:
-    /// - Available balance  
+    /// - Available balance
     /// - Fees
     ///
     /// # Examples
@@ -1278,6 +1584,103 @@ impl MultiMintWallet {
         }
 
         Ok(total_consolidated)
+    }
+
+    /// Mint blind auth tokens for a specific mint
+    ///
+    /// This is a convenience method that calls the underlying wallet's mint_blind_auth.
+    #[cfg(feature = "auth")]
+    #[instrument(skip_all)]
+    pub async fn mint_blind_auth(
+        &self,
+        mint_url: &MintUrl,
+        amount: Amount,
+    ) -> Result<Proofs, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.mint_blind_auth(amount).await
+    }
+
+    /// Get unspent auth proofs for a specific mint
+    ///
+    /// This is a convenience method that calls the underlying wallet's get_unspent_auth_proofs.
+    #[cfg(feature = "auth")]
+    #[instrument(skip_all)]
+    pub async fn get_unspent_auth_proofs(
+        &self,
+        mint_url: &MintUrl,
+    ) -> Result<Vec<cdk_common::AuthProof>, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.get_unspent_auth_proofs().await
+    }
+
+    /// Set Clear Auth Token (CAT) for authentication at a specific mint
+    ///
+    /// This is a convenience method that calls the underlying wallet's set_cat.
+    #[cfg(feature = "auth")]
+    #[instrument(skip_all)]
+    pub async fn set_cat(&self, mint_url: &MintUrl, cat: String) -> Result<(), Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.set_cat(cat).await
+    }
+
+    /// Set refresh token for authentication at a specific mint
+    ///
+    /// This is a convenience method that calls the underlying wallet's set_refresh_token.
+    #[cfg(feature = "auth")]
+    #[instrument(skip_all)]
+    pub async fn set_refresh_token(
+        &self,
+        mint_url: &MintUrl,
+        refresh_token: String,
+    ) -> Result<(), Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.set_refresh_token(refresh_token).await
+    }
+
+    /// Refresh CAT token for a specific mint
+    ///
+    /// This is a convenience method that calls the underlying wallet's refresh_access_token.
+    #[cfg(feature = "auth")]
+    #[instrument(skip(self))]
+    pub async fn refresh_access_token(&self, mint_url: &MintUrl) -> Result<(), Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.refresh_access_token().await
+    }
+
+    /// Query mint for current mint information
+    ///
+    /// This is a convenience method that calls the underlying wallet's fetch_mint_info.
+    #[instrument(skip(self))]
+    pub async fn fetch_mint_info(
+        &self,
+        mint_url: &MintUrl,
+    ) -> Result<Option<crate::nuts::MintInfo>, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.fetch_mint_info().await
     }
 }
 

@@ -71,6 +71,50 @@ pub async fn pay(
         bail!("No funds available");
     }
 
+    // Determine which mint to use for melting BEFORE processing payment (unless using MPP)
+    let selected_mint = if sub_command_args.mpp {
+        None // MPP mode handles mint selection differently
+    } else if let Some(mint_url) = &sub_command_args.mint_url {
+        Some(MintUrl::from_str(mint_url)?)
+    } else {
+        // Display all mints with their balances and let user select
+        let balances_map = multi_mint_wallet.get_balances().await?;
+        if balances_map.is_empty() {
+            bail!("No mints available in the wallet");
+        }
+
+        let balances_vec: Vec<(MintUrl, Amount)> = balances_map.into_iter().collect();
+
+        println!("\nAvailable mints and balances:");
+        for (index, (mint_url, balance)) in balances_vec.iter().enumerate() {
+            println!(
+                "  {}: {} - {} {}",
+                index,
+                mint_url,
+                balance,
+                multi_mint_wallet.unit()
+            );
+        }
+        println!("  {}: Any mint (auto-select best)", balances_vec.len());
+
+        let selection = loop {
+            let selection: usize =
+                get_number_input("Enter mint number to melt from (or select Any)")?;
+
+            if selection == balances_vec.len() {
+                break None; // "Any" option selected
+            }
+
+            if let Some((mint_url, _)) = balances_vec.get(selection) {
+                break Some(mint_url.clone());
+            }
+
+            println!("Invalid selection, please try again.");
+        };
+
+        selection
+    };
+
     if sub_command_args.mpp {
         // Manual MPP - user specifies which mints and amounts to use
         if !matches!(sub_command_args.method, PaymentType::Bolt11) {
@@ -180,12 +224,9 @@ pub async fn pay(
                 let options =
                     create_melt_options(available_funds, bolt11.amount_milli_satoshis(), &prompt)?;
 
-                // Use mint-specific functions or auto-select
-                let melted = if let Some(mint_url) = &sub_command_args.mint_url {
-                    // User specified a mint - use the new mint-specific functions
-                    let mint_url = MintUrl::from_str(mint_url)?;
-
-                    // Create a melt quote for the specific mint
+                // Use selected mint or auto-select
+                let melted = if let Some(mint_url) = selected_mint {
+                    // User selected a specific mint - use the new mint-specific functions
                     let quote = multi_mint_wallet
                         .melt_quote(&mint_url, bolt11_str.clone(), options)
                         .await?;
@@ -200,7 +241,7 @@ pub async fn pay(
                         .melt_with_mint(&mint_url, &quote.id)
                         .await?
                 } else {
-                    // Let the wallet automatically select the best mint
+                    // User selected "Any" - let the wallet auto-select the best mint
                     multi_mint_wallet.melt(&bolt11_str, options, None).await?
                 };
 
@@ -227,40 +268,24 @@ pub async fn pay(
 
                 let options = create_melt_options(available_funds, amount_msat, &prompt)?;
 
-                // Get wallet for BOLT12
-                let wallet = if let Some(mint_url) = &sub_command_args.mint_url {
-                    // User specified a mint
-                    let mint_url = MintUrl::from_str(mint_url)?;
-                    multi_mint_wallet
-                        .get_wallet(&mint_url)
-                        .await
-                        .ok_or_else(|| anyhow::anyhow!("Mint {} not found", mint_url))?
+                // Get wallet for BOLT12 using the selected mint
+                let mint_url = if let Some(specific_mint) = selected_mint {
+                    specific_mint
                 } else {
-                    // Show available mints and let user select
+                    // User selected "Any" - just pick the first mint with any balance
                     let balances = multi_mint_wallet.get_balances().await?;
-                    println!("\nAvailable mints:");
-                    for (i, (mint_url, balance)) in balances.iter().enumerate() {
-                        println!(
-                            "  {}: {} - {} {}",
-                            i,
-                            mint_url,
-                            balance,
-                            multi_mint_wallet.unit()
-                        );
-                    }
 
-                    let mint_number: usize = get_number_input("Enter mint number to melt from")?;
-                    let selected_mint = balances
-                        .iter()
-                        .nth(mint_number)
-                        .map(|(url, _)| url)
-                        .ok_or_else(|| anyhow::anyhow!("Invalid mint number"))?;
-
-                    multi_mint_wallet
-                        .get_wallet(selected_mint)
-                        .await
-                        .ok_or_else(|| anyhow::anyhow!("Mint {} not found", selected_mint))?
+                    balances
+                        .into_iter()
+                        .find(|(_, balance)| *balance > Amount::ZERO)
+                        .map(|(mint_url, _)| mint_url)
+                        .ok_or_else(|| anyhow::anyhow!("No mint available for BOLT12 payment"))?
                 };
+
+                let wallet = multi_mint_wallet
+                    .get_wallet(&mint_url)
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("Mint {} not found", mint_url))?;
 
                 // Get melt quote for BOLT12
                 let quote = wallet.melt_bolt12_quote(offer_str, options).await?;
@@ -293,40 +318,24 @@ pub async fn pay(
                 // BIP353 payments are always amountless for now
                 let options = create_melt_options(available_funds, None, &prompt)?;
 
-                // Get wallet for BIP353
-                let wallet = if let Some(mint_url) = &sub_command_args.mint_url {
-                    // User specified a mint
-                    let mint_url = MintUrl::from_str(mint_url)?;
-                    multi_mint_wallet
-                        .get_wallet(&mint_url)
-                        .await
-                        .ok_or_else(|| anyhow::anyhow!("Mint {} not found", mint_url))?
+                // Get wallet for BIP353 using the selected mint
+                let mint_url = if let Some(specific_mint) = selected_mint {
+                    specific_mint
                 } else {
-                    // Show available mints and let user select
+                    // User selected "Any" - just pick the first mint with any balance
                     let balances = multi_mint_wallet.get_balances().await?;
-                    println!("\nAvailable mints:");
-                    for (i, (mint_url, balance)) in balances.iter().enumerate() {
-                        println!(
-                            "  {}: {} - {} {}",
-                            i,
-                            mint_url,
-                            balance,
-                            multi_mint_wallet.unit()
-                        );
-                    }
 
-                    let mint_number: usize = get_number_input("Enter mint number to melt from")?;
-                    let selected_mint = balances
-                        .iter()
-                        .nth(mint_number)
-                        .map(|(url, _)| url)
-                        .ok_or_else(|| anyhow::anyhow!("Invalid mint number"))?;
-
-                    multi_mint_wallet
-                        .get_wallet(selected_mint)
-                        .await
-                        .ok_or_else(|| anyhow::anyhow!("Mint {} not found", selected_mint))?
+                    balances
+                        .into_iter()
+                        .find(|(_, balance)| *balance > Amount::ZERO)
+                        .map(|(mint_url, _)| mint_url)
+                        .ok_or_else(|| anyhow::anyhow!("No mint available for BIP353 payment"))?
                 };
+
+                let wallet = multi_mint_wallet
+                    .get_wallet(&mint_url)
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("Mint {} not found", mint_url))?;
 
                 // Get melt quote for BIP353 address (internally resolves and gets BOLT12 quote)
                 let quote = wallet
