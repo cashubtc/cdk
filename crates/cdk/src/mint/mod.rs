@@ -827,6 +827,21 @@ impl Mint {
         result
     }
 
+    /// Check if a proof uses SIG_ALL flag
+    fn proof_uses_sig_all(proof: &nuts::Proof) -> bool {
+        if let Ok(secret) =
+            <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
+        {
+            secret
+                .secret_data()
+                .tags()
+                .and_then(|tags| nuts::nut11::Conditions::try_from(tags.clone()).ok())
+                .map_or(false, |c| c.sig_flag == nuts::nut11::SigFlag::SigAll)
+        } else {
+            false
+        }
+    }
+
     /// Verify [`Proof`] meets conditions and is signed
     #[tracing::instrument(skip_all)]
     pub async fn verify_proofs(&self, proofs: Proofs) -> Result<(), Error> {
@@ -852,13 +867,7 @@ impl Mint {
                         //
                         // Note: Even with SigAll, we still perform structural validation and DLEQ
                         // proof verification (via signatory.verify_proofs() below).
-                        let uses_sig_all = secret
-                            .secret_data()
-                            .tags()
-                            .and_then(|tags| nuts::nut11::Conditions::try_from(tags.clone()).ok())
-                            .map_or(false, |c| c.sig_flag == nuts::nut11::SigFlag::SigAll);
-
-                        if !uses_sig_all {
+                        if !Self::proof_uses_sig_all(proof) {
                             // For SigInputs (default): verify spending conditions on each proof individually.
                             // Checks and verifies known secret kinds.
                             // If it is an unknown secret kind it will be treated as a normal secret.
@@ -1240,5 +1249,127 @@ mod tests {
         // Should be able to start again after stopping
         mint.start().await.expect("Should be able to restart");
         mint.stop().await.expect("Final stop should work");
+    }
+
+    #[tokio::test]
+    async fn test_swap_with_sig_all() {
+        use crate::dhke::{blind_message, construct_proofs};
+        use crate::nuts::nut11::{Conditions, SigFlag};
+        use crate::nuts::{BlindedMessage, SecretKey, SpendingConditions, SwapRequest};
+        use crate::secret::Secret;
+        use crate::Amount;
+
+        // Setup mint
+        let mut supported_units = HashMap::new();
+        supported_units.insert(CurrencyUnit::Msat, (0, 32));
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+
+        // Get active keyset
+        let keysets = mint.keysets();
+        let active_keyset = keysets
+            .keysets
+            .iter()
+            .find(|k| k.active && k.unit == CurrencyUnit::Msat)
+            .expect("No active keyset");
+        let active_keyset_id = active_keyset.id;
+        let mint_keys = mint.pubkeys().keysets[0].keys.clone();
+
+        // Generate keypairs for Alice and Bob
+        let alice_secret_key = SecretKey::generate();
+        let alice_pubkey = alice_secret_key.public_key();
+        let bob_secret_key = SecretKey::generate();
+        let bob_pubkey = bob_secret_key.public_key();
+
+        // Create spending conditions: 2-of-2 multisig with SigAll
+        let conditions = Conditions::new(
+            None,                       // No locktime
+            Some(vec![bob_pubkey]),     // Bob as additional pubkey
+            None,                       // No refund keys
+            Some(2),                    // Require 2 signatures
+            Some(SigFlag::SigAll),      // Use SigAll
+            None,                       // No refund sig requirement
+        )
+        .unwrap();
+
+        let spending_conditions =
+            SpendingConditions::new_p2pk(alice_pubkey, Some(conditions.clone()));
+
+        // Create a blinded message with SigAll spending conditions (1 msat proof)
+        let nut10_secret: nuts::nut10::Secret = spending_conditions.clone().into();
+        let secret: Secret = nut10_secret.try_into().unwrap();
+        let (blinded_point, blinding_factor) = blind_message(&secret.to_bytes(), None).unwrap();
+
+        let blinded_msg =
+            BlindedMessage::new(Amount::from(1), active_keyset_id, blinded_point);
+
+        // Mint signs the blinded message
+        let promises = mint.blind_sign(vec![blinded_msg.clone()]).await.unwrap();
+
+        // Construct the proof from the blind signature
+        let proofs = construct_proofs(
+            promises.clone(),
+            vec![blinding_factor.clone()],
+            vec![secret.clone()],
+            &mint_keys,
+        )
+        .unwrap();
+
+        assert_eq!(proofs.len(), 1);
+        assert!(Mint::proof_uses_sig_all(&proofs[0]));
+
+        // Create output for swap (1 msat, no spending conditions)
+        let output_secret = Secret::generate();
+        let (output_blinded, output_r) = blind_message(&output_secret.to_bytes(), None).unwrap();
+        let output_blinded_msg =
+            BlindedMessage::new(Amount::from(1), active_keyset_id, output_blinded);
+
+        // Create SwapRequest with SigAll proofs
+        let mut swap_request = SwapRequest::new(proofs.clone(), vec![output_blinded_msg.clone()]);
+
+        // Verify that unsigned request fails
+        assert!(
+            swap_request.verify_sig_all().is_err(),
+            "Unsigned swap request should fail verification"
+        );
+
+        // Sign with Alice only (should still fail - needs 2 sigs)
+        swap_request.sign_sig_all(alice_secret_key).unwrap();
+        assert!(
+            swap_request.verify_sig_all().is_err(),
+            "Swap with only 1 signature should fail (needs 2)"
+        );
+
+        // Sign with Bob (now should pass verification)
+        swap_request.sign_sig_all(bob_secret_key).unwrap();
+        assert!(
+            swap_request.verify_sig_all().is_ok(),
+            "Swap with both signatures should pass verification"
+        );
+
+        // Process the swap request through the mint
+        // This would have failed before the fix because verify_proofs() tried to verify
+        // SigAll signatures against individual proof secrets instead of skipping them
+        let swap_response = mint
+            .process_swap_request(swap_request)
+            .await
+            .expect("Swap with SigAll should succeed");
+
+        assert_eq!(swap_response.signatures.len(), 1);
+
+        // Verify we can construct the output proof
+        let output_proofs = construct_proofs(
+            swap_response.signatures,
+            vec![output_r],
+            vec![output_secret],
+            &mint_keys,
+        )
+        .unwrap();
+
+        assert_eq!(output_proofs.len(), 1);
+        assert_eq!(output_proofs[0].amount, Amount::from(1));
     }
 }
