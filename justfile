@@ -123,7 +123,7 @@ test-nutshell:
   
   # Set environment variables and run tests
   export CDK_TEST_MINT_URL=http://127.0.0.1:3338
-  export LN_BACKEND=FAKEWALLET
+  export PAYMENT_BACKEND=FAKEWALLET
   
   # Track test results
   test_exit_code=0
@@ -143,7 +143,7 @@ test-nutshell:
   fi
   
   unset CDK_TEST_MINT_URL
-  unset LN_BACKEND
+  unset PAYMENT_BACKEND
   
   # Exit with error code if any test failed
   if [ $test_exit_code -ne 0 ]; then

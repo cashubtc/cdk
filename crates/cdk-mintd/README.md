@@ -72,7 +72,7 @@ cdk-mintd --work-dir /my/custom/path
 **Environment variables only**:
 ```bash
 export CDK_MINTD_LISTEN_PORT=3000
-export CDK_MINTD_LN_BACKEND=fakewallet
+export CDK_MINTD_PAYMENT_BACKEND=fakewallet
 export CDK_MINTD_DATABASE=sqlite
 cdk-mintd
 ```
@@ -81,10 +81,10 @@ cdk-mintd
 
 ### With LDK Node (Recommended for Testing)
 ```toml
-[ln]
-ln_backend = "ldk-node"
+[payment_backend]
+kind =  "ldk-node"
 
-[ldk_node]
+[payment_backend.ldk_node]
 bitcoin_network = "signet"  # Use "mainnet" for production
 esplora_url = "https://mutinynet.com/api"
 rgs_url = "https://rgs.mutinynet.com/snapshot/0"
@@ -95,10 +95,10 @@ storage_dir_path = "/var/lib/cdk-mintd/ldk-node"
 
 ### With CLN Lightning Backend
 ```toml
-[ln]
-ln_backend = "cln"
+[payment_backend]
+kind =  "cln"
 
-[cln]
+[payment_backend.cln]
 rpc_path = "/home/bitcoin/.lightning/bitcoin/lightning-rpc"
 fee_percent = 0.01
 reserve_fee_min = 10
@@ -106,10 +106,10 @@ reserve_fee_min = 10
 
 ### With LND Lightning Backend
 ```toml
-[ln]
-ln_backend = "lnd"
+[payment_backend]
+kind =  "lnd"
 
-[lnd]
+[payment_backend.lnd]
 address = "https://localhost:10009"
 macaroon_file = "/home/bitcoin/.lnd/data/chain/bitcoin/mainnet/admin.macaroon"
 cert_file = "/home/bitcoin/.lnd/tls.cert"
@@ -182,7 +182,7 @@ All configuration can be done through environment variables:
 
 ```yaml
 environment:
-  - CDK_MINTD_LN_BACKEND=ldk-node
+  - CDK_MINTD_PAYMENT_BACKEND=ldk-node
   - CDK_MINTD_DATABASE=sqlite
   - CDK_MINTD_LISTEN_HOST=0.0.0.0
   - CDK_MINTD_LISTEN_PORT=8085
@@ -242,7 +242,7 @@ cdk-mintd --help
 
 - `CDK_MINTD_DATABASE`: Database engine (`sqlite`/`postgres`/`redb`)
 - `CDK_MINTD_DATABASE_URL`: PostgreSQL connection string
-- `CDK_MINTD_LN_BACKEND`: Lightning backend (`cln`/`lnd`/`lnbits`/`ldk-node`/`fakewallet`)
+- `CDK_MINTD_PAYMENT_BACKEND`: Lightning backend (`cln`/`lnd`/`lnbits`/`ldk-node`/`fakewallet`)
 - `CDK_MINTD_LISTEN_HOST`: Host to bind to (default: `127.0.0.1`)
 - `CDK_MINTD_LISTEN_PORT`: Port to bind to (default: `8085`)
 
