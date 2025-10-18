@@ -849,6 +849,25 @@ impl Mint {
         global::inc_in_flight_requests("verify_proofs");
 
         let result = async {
+            // Determine if this transaction uses SigAll by checking the first proof
+            // All proofs in a transaction must use the same sig_flag
+            let uses_sig_all = if let Some(first_proof) = proofs.first() {
+                Self::proof_uses_sig_all(first_proof)
+            } else {
+                false // No proofs, default to SigInputs behavior
+            };
+
+            // Verify all proofs have consistent sig_flag (all SigAll or all SigInputs)
+            for proof in proofs.iter() {
+                let proof_sig_all = Self::proof_uses_sig_all(proof);
+                if proof_sig_all != uses_sig_all {
+                    return Err(Error::InvalidSpendConditions(
+                        "All proofs must have the same SigFlag (either all SigAll or all SigInputs)"
+                            .to_string(),
+                    ));
+                }
+            }
+
             proofs
                 .iter()
                 .map(|proof| {
@@ -867,7 +886,7 @@ impl Mint {
                         //
                         // Note: Even with SigAll, we still perform structural validation and DLEQ
                         // proof verification (via signatory.verify_proofs() below).
-                        if !Self::proof_uses_sig_all(proof) {
+                        if !uses_sig_all {
                             // For SigInputs (default): verify spending conditions on each proof individually.
                             // Checks and verifies known secret kinds.
                             // If it is an unknown secret kind it will be treated as a normal secret.
