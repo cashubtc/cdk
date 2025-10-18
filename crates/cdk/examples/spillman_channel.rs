@@ -363,8 +363,8 @@ async fn main() -> anyhow::Result<()> {
         alice_pubkey,
         bob_pubkey,
         CurrencyUnit::Msat,
-        0,                          // log2_capacity: 2^0 = 1 msat (simplified)
-        1,                          // capacity: 1 msat total
+        3,                          // log2_capacity: 2^3 = 8 msat
+        8,                          // capacity: 8 msat total
         unix_time() + 86400,        // 1 day locktime
     )?;
     println!("   Capacity: {} {:?} (2^{})", channel_params.capacity, channel_params.unit, channel_params.log2_capacity);
@@ -620,16 +620,44 @@ async fn main() -> anyhow::Result<()> {
     // 13. TEST SPENDING WITH BOTH ALICE AND BOB SIGNATURES
     println!("\n🔓 Testing spending with both Alice and Bob signatures...");
 
-    // Take the proof
-    let mut proofs_to_spend = vec![
-        locked_proofs[0].clone(),
-    ];
+    // Amount to send to Bob
+    let amount_to_bob = 5;
 
-    println!("   Spending: 1 msat (requires Alice + Bob signatures)");
+    // Vector to send to Bob (length = 1 + log2_capacity)
+    let spend_vector = vec![true, false, false, true];
+    assert_eq!(
+        spend_vector.len(),
+        1 + channel_params.log2_capacity as usize,
+        "Spend vector length must be 1 + log2_capacity"
+    );
+
+    // Select proofs to spend based on spend_vector
+    let mut proofs_to_spend = Vec::new();
+    for (i, &should_spend) in spend_vector.iter().enumerate() {
+        if should_spend {
+            proofs_to_spend.push(locked_proofs[i].clone());
+        }
+    }
+
+    let total_spending: u64 = proofs_to_spend.iter().map(|p| u64::from(p.amount)).sum();
+    println!("   Spending: {} msat (requires Alice + Bob signatures)", total_spending);
     println!("   Outputs: Using Bob's predetermined outputs");
 
+    // Select bob's outputs based on spend_vector
+    let bob_outputs_to_use: Vec<_> = spend_vector
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &should_spend)| {
+            if should_spend {
+                Some(bob_outputs[i].clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
     // Create swap request FIRST (for SigAll, signatures must commit to outputs)
-    let mut spend_swap_request = SwapRequest::new(proofs_to_spend.clone(), bob_outputs.clone());
+    let mut spend_swap_request = SwapRequest::new(proofs_to_spend.clone(), bob_outputs_to_use);
 
     // Verify that unsigned request fails
     assert!(
@@ -666,17 +694,29 @@ async fn main() -> anyhow::Result<()> {
         anyhow::anyhow!("Swap failed: {:?}", e)
     })?;
 
-    // Unblind to get Bob's final proofs
+    // Unblind to get Bob's final proofs (only for the spent outputs)
+    let bob_secrets_and_rs_to_use: Vec<_> = spend_vector
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &should_spend)| {
+            if should_spend {
+                Some(bob_secrets_and_rs[i].clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
     let _bob_final_proofs = construct_proofs(
         spend_swap_response.signatures,
-        bob_secrets_and_rs.iter().map(|(_, r)| r.clone()).collect(),
-        bob_secrets_and_rs.iter().map(|(s, _)| s.clone()).collect(),
+        bob_secrets_and_rs_to_use.iter().map(|(_, r)| r.clone()).collect(),
+        bob_secrets_and_rs_to_use.iter().map(|(s, _)| s.clone()).collect(),
         &mint_keys.keys,
     )?;
 
     println!("✅ Swap successful!");
-    println!("   Bob received 1 msat in his predetermined output");
-    println!("   This proof has no spending conditions and can be freely spent by Bob\n");
+    println!("   Bob received {} msat in his predetermined outputs", total_spending);
+    println!("   These proofs have no spending conditions and can be freely spent by Bob\n");
 
     Ok(())
 }
