@@ -2,18 +2,6 @@
 //!
 //! This example will demonstrate a Cashu implementation of Spillman channels,
 //! allowing Alice and Bob to set up an offline unidirectional payment channel.
-//!
-//! Current implementation:
-//! - Creating a local mint with FakeWallet backend
-//! - Alice creating a token locked to 2-of-2 multisig (Alice + Bob)
-//! - Both parties collaboratively redeeming the token
-//! - Showing that a single signature fails to redeem
-//!
-//! TODO: Evolve into full Spillman channel with:
-//! - Powers-of-2 denomination proofs
-//! - Special 1-millisat proof for double-spend prevention
-//! - Incremental signature updates for balance changes
-//! - Bob's unilateral exit capability
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
