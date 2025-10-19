@@ -128,7 +128,7 @@ impl Proof {
     /// Verify P2PK signature on individual [Proof] with SIG_INPUT flag
     /// This function is ONLY for SigInputs verification at the individual proof level.
     /// For SigAll, verification happens at the transaction level in verify_sig_all().
-    pub fn verify_p2pk_for_SIG_INPUT(&self) -> Result<(), Error> {
+    pub fn verify_p2pk_for_sig_input(&self) -> Result<(), Error> {
         let secret: Nut10Secret = self.secret.clone().try_into()?;
         let spending_conditions: Conditions = secret
             .secret_data()
@@ -149,7 +149,7 @@ impl Proof {
         assert_eq!(
             spending_conditions.sig_flag,
             SigFlag::SigInputs,
-            "verify_p2pk_for_SIG_INPUT() should only be called for SigInputs proofs. SigAll verification happens at transaction level."
+            "verify_p2pk_for_sig_input() should only be called for SigInputs proofs. SigAll verification happens at transaction level."
         );
 
         let mut verified_pubkeys = HashSet::new();
@@ -1380,7 +1380,7 @@ mod tests {
         proof.sign_p2pk(secret_key).unwrap();
         proof.sign_p2pk(signing_key_two).unwrap();
 
-        assert!(proof.verify_p2pk().is_ok());
+        assert!(proof.verify_p2pk_for_sig_input().is_ok());
     }
 
     #[test]
@@ -1395,15 +1395,15 @@ mod tests {
         }"#;
         let valid_proof: Proof = serde_json::from_str(json).unwrap();
 
-        valid_proof.verify_p2pk().unwrap();
-        assert!(valid_proof.verify_p2pk().is_ok());
+        valid_proof.verify_p2pk_for_sig_input().unwrap();
+        assert!(valid_proof.verify_p2pk_for_sig_input().is_ok());
 
         // Proof with a signature that is in a different secret
         let invalid_proof = r#"{"amount":1,"secret":"[\"P2PK\",{\"nonce\":\"859d4935c4907062a6297cf4e663e2835d90d97ecdd510745d32f6816323a41f\",\"data\":\"0249098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\",\"tags\":[[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","id":"009a1f293253e41e","witness":"{\"signatures\":[\"3426df9730d365a9d18d79bed2f3e78e9172d7107c55306ac5ddd1b2d065893366cfa24ff3c874ebf1fc22360ba5888ddf6ff5dbcb9e5f2f5a1368f7afc64f15\"]}"}"#;
 
         let invalid_proof: Proof = serde_json::from_str(invalid_proof).unwrap();
 
-        assert!(invalid_proof.verify_p2pk().is_err());
+        assert!(invalid_proof.verify_p2pk_for_sig_input().is_err());
     }
 
     #[test]
@@ -1413,7 +1413,7 @@ mod tests {
 
         let valid_proof: Proof = serde_json::from_str(valid_proof).unwrap();
 
-        assert!(valid_proof.verify_p2pk().is_ok());
+        assert!(valid_proof.verify_p2pk_for_sig_input().is_ok());
 
         // Proof with only one of the required signatures
         let invalid_proof = r#"{"amount":0,"secret":"[\"P2PK\",{\"nonce\":\"0ed3fcb22c649dd7bbbdcca36e0c52d4f0187dd3b6a19efcc2bfbebb5f85b2a1\",\"data\":\"0249098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\",\"tags\":[[\"pubkeys\",\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"02142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","id":"009a1f293253e41e","witness":"{\"signatures\":[\"83564aca48c668f50d022a426ce0ed19d3a9bdcffeeaee0dc1e7ea7e98e9eff1840fcc821724f623468c94f72a8b0a7280fa9ef5a54a1b130ef3055217f467b3\"]}"}"#;
@@ -1421,7 +1421,7 @@ mod tests {
         let invalid_proof: Proof = serde_json::from_str(invalid_proof).unwrap();
 
         // Verification should fail without the requires signatures
-        assert!(invalid_proof.verify_p2pk().is_err());
+        assert!(invalid_proof.verify_p2pk_for_sig_input().is_err());
     }
 
     #[test]
@@ -1429,13 +1429,13 @@ mod tests {
         let valid_proof = r#"{"amount":1,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"902685f492ef3bb2ca35a47ddbba484a3365d143b9776d453947dcbf1ddf9689\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"pubkeys\",\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"locktime\",\"21\"],[\"n_sigs\",\"2\"],[\"refund\",\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\"],[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","witness":"{\"signatures\":[\"710507b4bc202355c91ea3c147c0d0189c75e179d995e566336afd759cb342bcad9a593345f559d9b9e108ac2c9b5bd9f0b4b6a295028a98606a0a2e95eb54f7\"]}"}"#;
 
         let valid_proof: Proof = serde_json::from_str(valid_proof).unwrap();
-        assert!(valid_proof.verify_p2pk().is_ok());
+        assert!(valid_proof.verify_p2pk_for_sig_input().is_ok());
 
         let invalid_proof = r#"{"amount":1,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"64c46e5d30df27286166814b71b5d69801704f23a7ad626b05688fbdb48dcc98\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"pubkeys\",\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"locktime\",\"21\"],[\"n_sigs\",\"2\"],[\"refund\",\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\"],[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","witness":"{\"signatures\":[\"f661d3dc046d636d47cb3d06586da42c498f0300373d1c2a4f417a44252cdf3809bce207c8888f934dba0d2b1671f1b8622d526840f2d5883e571b462630c1ff\"]}"}"#;
 
         let invalid_proof: Proof = serde_json::from_str(invalid_proof).unwrap();
 
-        assert!(invalid_proof.verify_p2pk().is_err());
+        assert!(invalid_proof.verify_p2pk_for_sig_input().is_err());
     }
 
     #[test]
@@ -1482,15 +1482,15 @@ mod tests {
 
         proof.sign_p2pk(signing_key_three.clone()).unwrap();
 
-        assert!(proof.verify_p2pk().is_err());
+        assert!(proof.verify_p2pk_for_sig_input().is_err());
 
         proof.witness = None;
 
         proof.sign_p2pk(secret_key).unwrap();
-        assert!(proof.verify_p2pk().is_err());
+        assert!(proof.verify_p2pk_for_sig_input().is_err());
         proof.sign_p2pk(signing_key_two).unwrap();
 
-        assert!(proof.verify_p2pk().is_ok());
+        assert!(proof.verify_p2pk_for_sig_input().is_ok());
     }
 
     // Helper functions for melt request tests

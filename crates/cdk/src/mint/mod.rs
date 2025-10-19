@@ -866,9 +866,9 @@ impl Mint {
                                     // For SigAll, individual proof verification is skipped.
                                     // Transaction-level verification happens in validate_sig_flag()
                                 } else {
-                                    tracing::info!("Proof #{} is P2PK with SigInputs, calling verify_p2pk_for_SIG_INPUT()", i);
-                                    proof.verify_p2pk_for_SIG_INPUT()?;
-                                    tracing::info!("Proof #{} verify_p2pk_for_SIG_INPUT() succeeded", i);
+                                    tracing::info!("Proof #{} is P2PK with SigInputs, calling verify_p2pk_for_sig_input()", i);
+                                    proof.verify_p2pk_for_sig_input()?;
+                                    tracing::info!("Proof #{} verify_p2pk_for_sig_input() succeeded", i);
                                 }
                             }
                             Kind::HTLC => {
