@@ -876,6 +876,62 @@ impl From<Tag> for Vec<String> {
     }
 }
 
+/// Get verification parameters for SIG_ALL proofs, accounting for locktime and refund keys
+/// Returns (pubkeys, required_sigs) where required_sigs=0 means "anyone can spend"
+/// Used by both SwapRequest and MeltRequest for SIG_ALL verification
+fn get_sig_all_required_sigs(inputs: &Proofs) -> Result<(Vec<PublicKey>, u64), Error> {
+    let first_input = inputs.first().ok_or(Error::SpendConditionsNotMet)?;
+    let first_conditions: SpendingConditions =
+        SpendingConditions::try_from(&first_input.secret)?;
+
+    // Verify this is a P2PK proof with SigAll
+    let required_sigs = match first_conditions.clone() {
+        SpendingConditions::P2PKConditions { conditions, .. } => {
+            let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
+
+            if SigFlag::SigAll != conditions.sig_flag {
+                return Err(Error::IncorrectSecretKind);
+            }
+
+            conditions.num_sigs.unwrap_or(1)
+        }
+        _ => return Err(Error::IncorrectSecretKind),
+    };
+
+    // Check locktime to determine which keys to verify against
+    let now = unix_time();
+    let locktime_passed = first_conditions
+        .locktime()
+        .map(|lt| now >= lt)
+        .unwrap_or(false);
+
+    // Determine verification keys and required signature count based on locktime
+    if locktime_passed {
+        // Locktime has passed - check for refund keys
+        if let Some(refund_keys) = first_conditions.refund_keys() {
+            // Use refund keys and refund signature requirement
+            let refund_sigs_required = match &first_conditions {
+                SpendingConditions::P2PKConditions { conditions, .. } => {
+                    conditions.as_ref()
+                        .and_then(|c| c.num_sigs_refund)
+                        .unwrap_or(1)
+                }
+                _ => 1,
+            };
+            Ok((refund_keys, refund_sigs_required))
+        } else {
+            // Locktime passed but no refund keys - anyone can spend (0 sigs required)
+            Ok((vec![], 0))
+        }
+    } else {
+        // Before locktime - use normal pubkeys
+        let pubkeys = first_conditions
+            .pubkeys()
+            .ok_or(Error::P2PKPubkeyRequired)?;
+        Ok((pubkeys, required_sigs))
+    }
+}
+
 impl SwapRequest {
     /// Generate the message to sign for SIG_ALL validation
     /// Concatenates all input secrets and output blinded messages in order
@@ -897,27 +953,6 @@ impl SwapRequest {
         msg_to_sign
     }
 
-    /// Get required signature count from first input's spending conditions
-    fn get_sig_all_required_sigs(&self) -> Result<(u64, SpendingConditions), Error> {
-        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
-        let first_conditions: SpendingConditions =
-            SpendingConditions::try_from(&first_input.secret)?;
-
-        let required_sigs = match first_conditions.clone() {
-            SpendingConditions::P2PKConditions { conditions, .. } => {
-                let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
-
-                if SigFlag::SigAll != conditions.sig_flag {
-                    return Err(Error::IncorrectSecretKind);
-                }
-
-                conditions.num_sigs.unwrap_or(1)
-            }
-            _ => return Err(Error::IncorrectSecretKind),
-        };
-
-        Ok((required_sigs, first_conditions))
-    }
 
     /// Verify all inputs have matching secrets and tags
     fn verify_matching_conditions(&self) -> Result<(), Error> {
@@ -1029,25 +1064,29 @@ impl SwapRequest {
 
     /// Validate SIG_ALL conditions and signatures for the swap request
     pub fn verify_sig_all(&self) -> Result<(), Error> {
-        // Get required signatures and conditions from first input
-        let (required_sigs, first_conditions) = self.get_sig_all_required_sigs()?;
-
         // Verify all inputs have matching secrets
+        // After this call, we know ALL proofs have identical conditions (locktime, pubkeys, refund_keys, etc.)
         self.verify_matching_conditions()?;
+
+        // Get verification parameters (accounts for locktime and refund keys)
+        // These are "relevant" because they depend on locktime:
+        // - Before locktime: normal pubkeys + num_sigs
+        // - After locktime with refund_keys: refund_keys + num_sigs_refund
+        // - After locktime without refund_keys: empty vec + 0 (anyone can spend)
+        let (relevant_pubkeys, relevant_num_sigs_required) = get_sig_all_required_sigs(self.inputs())?;
+
+        if relevant_num_sigs_required == 0 {
+            return Ok(());
+        }
 
         // Get and validate witness signatures
         let signatures = self.get_valid_witness_signatures()?;
 
-        // Get signing pubkeys
-        let verifying_pubkeys = first_conditions
-            .pubkeys()
-            .ok_or(Error::P2PKPubkeyRequired)?;
-
         // Get aggregated message and validate signatures
         let msg = self.sig_all_msg_to_sign();
-        let valid_sigs = valid_signatures(msg.as_bytes(), &verifying_pubkeys, &signatures)?;
+        let valid_sigs = valid_signatures(msg.as_bytes(), &relevant_pubkeys, &signatures)?;
 
-        if valid_sigs >= required_sigs {
+        if valid_sigs >= relevant_num_sigs_required {
             Ok(())
         } else {
             Err(Error::SpendConditionsNotMet)
@@ -1080,27 +1119,6 @@ impl<Q: std::fmt::Display + Serialize + DeserializeOwned> MeltRequest<Q> {
         msg_to_sign
     }
 
-    /// Get required signature count from first input's spending conditions
-    fn get_sig_all_required_sigs(&self) -> Result<(u64, SpendingConditions), Error> {
-        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
-        let first_conditions: SpendingConditions =
-            SpendingConditions::try_from(&first_input.secret)?;
-
-        let required_sigs = match first_conditions.clone() {
-            SpendingConditions::P2PKConditions { conditions, .. } => {
-                let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
-
-                if SigFlag::SigAll != conditions.sig_flag {
-                    return Err(Error::IncorrectSecretKind);
-                }
-
-                conditions.num_sigs.unwrap_or(1)
-            }
-            _ => return Err(Error::IncorrectSecretKind),
-        };
-
-        Ok((required_sigs, first_conditions))
-    }
 
     /// Verify all inputs have matching secrets and tags
     fn verify_matching_conditions(&self) -> Result<(), Error> {
@@ -1212,25 +1230,29 @@ impl<Q: std::fmt::Display + Serialize + DeserializeOwned> MeltRequest<Q> {
 
     /// Validate SIG_ALL conditions and signatures for the melt request
     pub fn verify_sig_all(&self) -> Result<(), Error> {
-        // Get required signatures and conditions from first input
-        let (required_sigs, first_conditions) = self.get_sig_all_required_sigs()?;
-
         // Verify all inputs have matching secrets
+        // After this call, we know ALL proofs have identical conditions (locktime, pubkeys, refund_keys, etc.)
         self.verify_matching_conditions()?;
+
+        // Get verification parameters (accounts for locktime and refund keys)
+        // These are "relevant" because they depend on locktime:
+        // - Before locktime: normal pubkeys + num_sigs
+        // - After locktime with refund_keys: refund_keys + num_sigs_refund
+        // - After locktime without refund_keys: empty vec + 0 (anyone can spend)
+        let (relevant_pubkeys, relevant_num_sigs_required) = get_sig_all_required_sigs(self.inputs())?;
+
+        if relevant_num_sigs_required == 0 {
+            return Ok(());
+        }
 
         // Get and validate witness signatures
         let signatures = self.get_valid_witness_signatures()?;
 
-        // Get signing pubkeys
-        let verifying_pubkeys = first_conditions
-            .pubkeys()
-            .ok_or(Error::P2PKPubkeyRequired)?;
-
         // Get aggregated message and validate signatures
         let msg = self.sig_all_msg_to_sign();
-        let valid_sigs = valid_signatures(msg.as_bytes(), &verifying_pubkeys, &signatures)?;
+        let valid_sigs = valid_signatures(msg.as_bytes(), &relevant_pubkeys, &signatures)?;
 
-        if valid_sigs >= required_sigs {
+        if valid_sigs >= relevant_num_sigs_required {
             Ok(())
         } else {
             Err(Error::SpendConditionsNotMet)
