@@ -727,56 +727,32 @@ impl FromStr for SigFlag {
     }
 }
 
-/// Get the signature flag that should be enforced for a set of proofs and the
-/// public keys that signatures are valid for
-pub fn enforce_sig_flag(proofs: Proofs) -> EnforceSigFlag {
-    let mut sig_flag = SigFlag::SigInputs;
-    let mut pubkeys = HashSet::new();
-    let mut sigs_required = 1;
+/// Check if at least one proof in the transaction uses SigAll.
+///
+/// This function can be called with any mix of proof types:
+/// - Regular proofs (no spending conditions) - will be skipped
+/// - P2PK proofs (NUT-11) - will be checked for SigAll flag
+/// - HTLC proofs (NUT-14) - will be checked for SigAll flag
+///
+/// Returns true if ANY proof has sig_flag == SigAll, false otherwise.
+/// For SigAll transactions, all proofs with spending conditions must have
+/// matching conditions (enforced by verify_matching_conditions).
+pub fn has_at_least_one_sig_all_proof(proofs: Proofs) -> bool {
     for proof in proofs {
+        // Try to parse as NUT-10 secret (P2PK or HTLC)
         if let Ok(secret) = Nut10Secret::try_from(proof.secret) {
-            if secret.kind().eq(&Kind::P2PK) {
-                if let Ok(verifying_key) = PublicKey::from_str(secret.secret_data().data()) {
-                    pubkeys.insert(verifying_key);
-                }
-            }
-
+            // Check if this proof has spending conditions with SigAll
             if let Some(tags) = secret.secret_data().tags() {
                 if let Ok(conditions) = Conditions::try_from(tags.clone()) {
-                    if conditions.sig_flag.eq(&SigFlag::SigAll) {
-                        sig_flag = SigFlag::SigAll;
-                    }
-
-                    if let Some(sigs) = conditions.num_sigs {
-                        if sigs > sigs_required {
-                            sigs_required = sigs;
-                        }
-                    }
-
-                    if let Some(pubs) = conditions.pubkeys {
-                        pubkeys.extend(pubs);
+                    if conditions.sig_flag == SigFlag::SigAll {
+                        return true;
                     }
                 }
             }
         }
+        // Regular proofs (non-NUT-10) are skipped
     }
-
-    EnforceSigFlag {
-        sig_flag,
-        pubkeys,
-        sigs_required,
-    }
-}
-
-/// Enforce Sigflag info
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnforceSigFlag {
-    /// Sigflag required for proofs
-    pub sig_flag: SigFlag,
-    /// Pubkeys that can sign for proofs
-    pub pubkeys: HashSet<PublicKey>,
-    /// Number of sigs required for proofs
-    pub sigs_required: u64,
+    false
 }
 
 /// Tag

@@ -26,8 +26,7 @@ use crate::amount::to_unit;
 use crate::cdk_payment::MakePaymentResponse;
 use crate::mint::proof_writer::ProofWriter;
 use crate::mint::verification::Verification;
-use crate::mint::SigFlag;
-use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
+use crate::nuts::nut11::has_at_least_one_sig_all_proof;
 use crate::nuts::MeltQuoteState;
 use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
@@ -568,9 +567,7 @@ impl Mint {
         //
         // For SigInputs (default): No transaction-level verification needed, as each proof
         // was already verified individually in verify_inputs() -> verify_proofs().
-        let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs().clone());
-
-        if sig_flag == SigFlag::SigAll {
+        if has_at_least_one_sig_all_proof(melt_request.inputs().clone()) {
             melt_request.verify_sig_all()?;
         }
 

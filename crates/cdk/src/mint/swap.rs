@@ -3,9 +3,9 @@ use cdk_prometheus::METRICS;
 use tracing::instrument;
 
 use super::blinded_message_writer::BlindedMessageWriter;
-use super::nut11::{enforce_sig_flag, EnforceSigFlag};
+use super::nut11::has_at_least_one_sig_all_proof;
 use super::proof_writer::ProofWriter;
-use super::{Mint, PublicKey, SigFlag, State, SwapRequest, SwapResponse};
+use super::{Mint, PublicKey, State, SwapRequest, SwapResponse};
 use crate::Error;
 
 impl Mint {
@@ -156,15 +156,13 @@ impl Mint {
     }
 
     async fn validate_sig_flag(&self, swap_request: &SwapRequest) -> Result<(), Error> {
-        let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(swap_request.inputs().clone());
-
         // For SIG_ALL: Verify signatures at the transaction level (all inputs + all outputs).
         // This is called AFTER verify_inputs(), which skips individual proof verification
         // for SigAll proofs (see verify_proofs in mint/mod.rs).
         //
         // For SigInputs (default): No transaction-level verification needed, as each proof
         // was already verified individually in verify_inputs() -> verify_proofs().
-        if sig_flag == SigFlag::SigAll {
+        if has_at_least_one_sig_all_proof(swap_request.inputs().clone()) {
             swap_request.verify_sig_all()?;
         }
 
