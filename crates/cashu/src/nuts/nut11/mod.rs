@@ -172,6 +172,7 @@ impl Proof {
                     let needed_refund_sigs =
                         spending_conditions.num_sigs_refund.unwrap_or(1) as usize;
                     let mut valid_pubkeys = HashSet::new();
+
                     // After locktime, require signatures from refund keys
                     for s in witness_signatures.iter() {
                         let sig = Signature::from_str(s).map_err(|_| Error::InvalidSignature)?;
