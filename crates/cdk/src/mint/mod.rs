@@ -830,17 +830,13 @@ impl Mint {
     /// Verify [`Proof`] meets conditions and is signed
     #[tracing::instrument(skip_all)]
     pub async fn verify_proofs(&self, proofs: Proofs) -> Result<(), Error> {
-        tracing::info!("=== VERIFY_PROOFS START === ({} proofs)", proofs.len());
-
         #[cfg(feature = "prometheus")]
         global::inc_in_flight_requests("verify_proofs");
 
         let result = async {
             proofs
                 .iter()
-                .enumerate()
-                .map(|(i, proof)| {
-                    tracing::info!("Verifying proof #{}", i);
+                .map(|proof| {
                     // Check if secret is a nut10 secret with conditions
                     if let Ok(secret) =
                         <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
@@ -862,19 +858,14 @@ impl Mint {
                                     .try_into()?;
 
                                 if conditions.sig_flag == nuts::nut11::SigFlag::SigAll {
-                                    tracing::info!("Proof #{} is P2PK with SigAll - skipping individual verification (will verify at transaction level)", i);
                                     // For SigAll, individual proof verification is skipped.
                                     // Transaction-level verification happens in validate_sig_flag()
                                 } else {
-                                    tracing::info!("Proof #{} is P2PK with SigInputs, calling verify_p2pk_for_sig_input()", i);
                                     proof.verify_p2pk_for_sig_input()?;
-                                    tracing::info!("Proof #{} verify_p2pk_for_sig_input() succeeded", i);
                                 }
                             }
                             Kind::HTLC => {
-                                tracing::info!("Proof #{} is HTLC, calling verify_htlc()", i);
                                 proof.verify_htlc()?;
-                                tracing::info!("Proof #{} verify_htlc() succeeded", i);
                             }
                         }
                     }
@@ -882,7 +873,6 @@ impl Mint {
                 })
                 .collect::<Result<Vec<()>, Error>>()?;
 
-            tracing::info!("All P2PK/HTLC checks passed, calling signatory.verify_proofs()");
             self.signatory.verify_proofs(proofs).await
         }
         .await;
@@ -891,12 +881,6 @@ impl Mint {
         {
             global::dec_in_flight_requests("verify_proofs");
             global::record_mint_operation("verify_proofs", result.is_ok());
-        }
-
-        if result.is_ok() {
-            tracing::info!("=== VERIFY_PROOFS SUCCESS ===");
-        } else {
-            tracing::info!("=== VERIFY_PROOFS FAILED: {:?} ===", result);
         }
 
         result
