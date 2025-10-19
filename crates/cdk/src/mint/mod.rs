@@ -862,13 +862,13 @@ impl Mint {
                                     .try_into()?;
 
                                 if conditions.sig_flag == nuts::nut11::SigFlag::SigAll {
-                                    tracing::info!("Proof #{} is P2PK with SigAll - skipping verify_p2pk() (will verify at transaction level)", i);
+                                    tracing::info!("Proof #{} is P2PK with SigAll - skipping individual verification (will verify at transaction level)", i);
                                     // For SigAll, individual proof verification is skipped.
                                     // Transaction-level verification happens in validate_sig_flag()
                                 } else {
-                                    tracing::info!("Proof #{} is P2PK with SigInputs, calling verify_p2pk()", i);
-                                    proof.verify_p2pk()?;
-                                    tracing::info!("Proof #{} verify_p2pk() succeeded", i);
+                                    tracing::info!("Proof #{} is P2PK with SigInputs, calling verify_p2pk_for_SIG_INPUT()", i);
+                                    proof.verify_p2pk_for_SIG_INPUT()?;
+                                    tracing::info!("Proof #{} verify_p2pk_for_SIG_INPUT() succeeded", i);
                                 }
                             }
                             Kind::HTLC => {

@@ -125,8 +125,10 @@ impl Proof {
         Ok(())
     }
 
-    /// Verify P2PK signature on [Proof]
-    pub fn verify_p2pk(&self) -> Result<(), Error> {
+    /// Verify P2PK signature on individual [Proof] with SIG_INPUT flag
+    /// This function is ONLY for SigInputs verification at the individual proof level.
+    /// For SigAll, verification happens at the transaction level in verify_sig_all().
+    pub fn verify_p2pk_for_SIG_INPUT(&self) -> Result<(), Error> {
         let secret: Nut10Secret = self.secret.clone().try_into()?;
         let spending_conditions: Conditions = secret
             .secret_data()
@@ -136,20 +138,18 @@ impl Proof {
             .try_into()?;
         let msg: &[u8] = self.secret.as_bytes();
 
-        tracing::info!("=== VERIFY_P2PK START ===");
+        tracing::info!("=== VERIFY_P2PK_FOR_SIG_INPUT START ===");
         tracing::info!("Spending conditions: sig_flag={:?}, num_sigs={:?}, locktime={:?}, refund_keys={:?}",
             spending_conditions.sig_flag,
             spending_conditions.num_sigs,
             spending_conditions.locktime,
             spending_conditions.refund_keys.as_ref().map(|v| v.len()));
 
-        // NUT-11: verify_p2pk() is only for SigInputs verification.
-        // For SigAll, verification happens at the transaction level in validate_sig_flag().
-        // This function should never be called for SigAll proofs.
+        // Ensure this is only called for SigInputs proofs
         assert_eq!(
             spending_conditions.sig_flag,
             SigFlag::SigInputs,
-            "verify_p2pk() should only be called for SigInputs proofs. SigAll verification happens at transaction level."
+            "verify_p2pk_for_SIG_INPUT() should only be called for SigInputs proofs. SigAll verification happens at transaction level."
         );
 
         let mut verified_pubkeys = HashSet::new();
