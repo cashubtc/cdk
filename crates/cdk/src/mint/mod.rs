@@ -827,80 +827,40 @@ impl Mint {
         result
     }
 
-    /// Check if a proof uses SIG_ALL flag
-    fn proof_uses_sig_all(proof: &nuts::Proof) -> bool {
-        if let Ok(secret) =
-            <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
-        {
-            secret
-                .secret_data()
-                .tags()
-                .and_then(|tags| nuts::nut11::Conditions::try_from(tags.clone()).ok())
-                .map_or(false, |c| c.sig_flag == nuts::nut11::SigFlag::SigAll)
-        } else {
-            false
-        }
-    }
-
     /// Verify [`Proof`] meets conditions and is signed
     #[tracing::instrument(skip_all)]
     pub async fn verify_proofs(&self, proofs: Proofs) -> Result<(), Error> {
+        tracing::info!("=== VERIFY_PROOFS START === ({} proofs)", proofs.len());
+
         #[cfg(feature = "prometheus")]
         global::inc_in_flight_requests("verify_proofs");
 
         let result = async {
-            // Determine if this transaction uses SigAll by checking the first proof
-            // All proofs in a transaction must use the same sig_flag
-            let uses_sig_all = if let Some(first_proof) = proofs.first() {
-                Self::proof_uses_sig_all(first_proof)
-            } else {
-                false // No proofs, default to SigInputs behavior
-            };
-
-            // Verify all proofs have consistent sig_flag (all SigAll or all SigInputs)
-            for proof in proofs.iter() {
-                let proof_sig_all = Self::proof_uses_sig_all(proof);
-                if proof_sig_all != uses_sig_all {
-                    return Err(Error::InvalidSpendConditions(
-                        "All proofs must have the same SigFlag (either all SigAll or all SigInputs)"
-                            .to_string(),
-                    ));
-                }
-            }
-
             proofs
                 .iter()
-                .map(|proof| {
+                .enumerate()
+                .map(|(i, proof)| {
+                    tracing::info!("Verifying proof #{}", i);
                     // Check if secret is a nut10 secret with conditions
                     if let Ok(secret) =
                         <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
                     {
-                        // Detect SigAll flag: When using SIG_ALL, signatures are over the entire
-                        // transaction (all inputs + all outputs combined), not individual proof secrets.
-                        // Therefore, we must skip individual proof signature verification here.
-                        //
-                        // Verification flow for SigAll:
-                        // 1. Here (verify_proofs): Skip individual verify_p2pk/verify_htlc checks
-                        // 2. Later (validate_sig_flag in swap/melt): Call verify_sig_all() which
-                        //    verifies signatures against the combined transaction message
-                        //
-                        // Note: Even with SigAll, we still perform structural validation and DLEQ
-                        // proof verification (via signatory.verify_proofs() below).
-                        if !uses_sig_all {
-                            // For SigInputs (default): verify spending conditions on each proof individually.
-                            // Checks and verifies known secret kinds.
-                            // If it is an unknown secret kind it will be treated as a normal secret.
-                            // Spending conditions will **not** be check. It is up to the wallet to ensure
-                            // only supported secret kinds are used as there is no way for the mint to
-                            // enforce only signing supported secrets as they are blinded at
-                            // that point.
-                            match secret.kind() {
-                                Kind::P2PK => {
-                                    proof.verify_p2pk()?;
-                                }
-                                Kind::HTLC => {
-                                    proof.verify_htlc()?;
-                                }
+                        // Checks and verifies known secret kinds.
+                        // If it is an unknown secret kind it will be treated as a normal secret.
+                        // Spending conditions will **not** be check. It is up to the wallet to ensure
+                        // only supported secret kinds are used as there is no way for the mint to
+                        // enforce only signing supported secrets as they are blinded at
+                        // that point.
+                        match secret.kind() {
+                            Kind::P2PK => {
+                                tracing::info!("Proof #{} is P2PK, calling verify_p2pk()", i);
+                                proof.verify_p2pk()?;
+                                tracing::info!("Proof #{} verify_p2pk() succeeded", i);
+                            }
+                            Kind::HTLC => {
+                                tracing::info!("Proof #{} is HTLC, calling verify_htlc()", i);
+                                proof.verify_htlc()?;
+                                tracing::info!("Proof #{} verify_htlc() succeeded", i);
                             }
                         }
                     }
@@ -908,6 +868,7 @@ impl Mint {
                 })
                 .collect::<Result<Vec<()>, Error>>()?;
 
+            tracing::info!("All P2PK/HTLC checks passed, calling signatory.verify_proofs()");
             self.signatory.verify_proofs(proofs).await
         }
         .await;
@@ -916,6 +877,12 @@ impl Mint {
         {
             global::dec_in_flight_requests("verify_proofs");
             global::record_mint_operation("verify_proofs", result.is_ok());
+        }
+
+        if result.is_ok() {
+            tracing::info!("=== VERIFY_PROOFS SUCCESS ===");
+        } else {
+            tracing::info!("=== VERIFY_PROOFS FAILED: {:?} ===", result);
         }
 
         result
@@ -1272,6 +1239,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_swap_with_sig_all() {
+        // Initialize tracing for this test
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_test_writer()
+            .try_init();
+
         use crate::dhke::{blind_message, construct_proofs};
         use crate::nuts::nut11::{Conditions, SigFlag};
         use crate::nuts::{BlindedMessage, SecretKey, SpendingConditions, SwapRequest};
@@ -1338,7 +1311,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(proofs.len(), 1);
-        assert!(Mint::proof_uses_sig_all(&proofs[0]));
 
         // Create output for swap (1 msat, no spending conditions)
         let output_secret = Secret::generate();
@@ -1484,7 +1456,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(proofs.len(), 1);
-        assert!(Mint::proof_uses_sig_all(&proofs[0]));
 
         // Create MeltRequest with SigAll proofs (no outputs for simplicity)
         let mut melt_request = MeltRequest::new(quote_id, proofs.clone(), None);

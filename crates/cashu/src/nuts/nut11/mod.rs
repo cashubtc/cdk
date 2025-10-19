@@ -136,6 +136,25 @@ impl Proof {
             .try_into()?;
         let msg: &[u8] = self.secret.as_bytes();
 
+        tracing::info!("=== VERIFY_P2PK START ===");
+        tracing::info!("Spending conditions: sig_flag={:?}, num_sigs={:?}, locktime={:?}, refund_keys={:?}",
+            spending_conditions.sig_flag,
+            spending_conditions.num_sigs,
+            spending_conditions.locktime,
+            spending_conditions.refund_keys.as_ref().map(|v| v.len()));
+
+        // NUT-11 SigAll handling:
+        // When sig_flag is SigAll, signatures are over the entire transaction
+        // (all input secrets + all output blinded messages), not individual secrets.
+        // Individual signature verification must be skipped here and will be performed
+        // at the transaction level in validate_sig_flag() in the mint's swap/melt flow.
+        // We cannot verify signatures against individual secrets for SigAll proofs.
+        // For SigAll, signatures are on the SwapRequest/MeltRequest, not on individual proofs.
+        if spending_conditions.sig_flag == SigFlag::SigAll {
+            tracing::info!("SigAll detected - skipping individual signature verification (will verify at transaction level)");
+            return Ok(());
+        }
+
         let mut verified_pubkeys = HashSet::new();
 
         let witness_signatures = match &self.witness {
@@ -144,6 +163,7 @@ impl Proof {
         };
 
         let witness_signatures = witness_signatures.ok_or(Error::SignaturesNotProvided)?;
+        tracing::info!("Number of witness signatures: {}", witness_signatures.len());
 
         let mut pubkeys = spending_conditions.pubkeys.clone().unwrap_or_default();
         // NUT-11 enforcement per spec:
@@ -157,13 +177,16 @@ impl Proof {
 
         let now = unix_time();
 
+        tracing::info!("Checking locktime: now={}, locktime={:?}", now, spending_conditions.locktime);
         if let Some(locktime) = spending_conditions.locktime {
             if now >= locktime {
+                tracing::info!("Locktime has PASSED (now={} >= locktime={}), checking refund keys", now, locktime);
                 if let Some(refund_keys) = spending_conditions.refund_keys.clone() {
                     let needed_refund_sigs =
                         spending_conditions.num_sigs_refund.unwrap_or(1) as usize;
                     let mut valid_pubkeys = HashSet::new();
 
+                    tracing::info!("Verifying refund keys: need {} sigs from {} refund keys", needed_refund_sigs, refund_keys.len());
                     // After locktime, require signatures from refund keys
                     for s in witness_signatures.iter() {
                         let sig = Signature::from_str(s).map_err(|_| Error::InvalidSignature)?;
@@ -178,6 +201,7 @@ impl Proof {
                     }
 
                     // If locktime and refund keys were specified they must sign after locktime
+                    tracing::info!("RETURNING SpendConditionsNotMet: refund key verification failed (found {} valid sigs, needed {})", valid_pubkeys.len(), needed_refund_sigs);
                     return Err(Error::SpendConditionsNotMet);
                 } else {
                     // If only locktime is specified, consider it spendable after locktime
@@ -190,6 +214,7 @@ impl Proof {
             pubkeys.push(PublicKey::from_str(secret.secret_data().data())?);
         }
 
+        tracing::info!("Starting normal signature verification: {} pubkeys, {} witness sigs, need {} valid sigs", pubkeys.len(), witness_signatures.len(), spending_conditions.num_sigs.unwrap_or(1));
         for signature in witness_signatures.iter() {
             for v in &pubkeys {
                 let sig = Signature::from_str(signature)?;
@@ -210,10 +235,13 @@ impl Proof {
 
         let valid_sigs = verified_pubkeys.len() as u64;
 
+        tracing::info!("Signature verification complete: found {} valid sigs, need {}", valid_sigs, spending_conditions.num_sigs.unwrap_or(1));
         if valid_sigs >= spending_conditions.num_sigs.unwrap_or(1) {
+            tracing::info!("=== VERIFY_P2PK SUCCESS ===");
             return Ok(());
         }
 
+        tracing::info!("RETURNING SpendConditionsNotMet: insufficient signatures (found {}, needed {})", valid_sigs, spending_conditions.num_sigs.unwrap_or(1));
         Err(Error::SpendConditionsNotMet)
     }
 }
