@@ -125,8 +125,10 @@ impl Proof {
         Ok(())
     }
 
-    /// Verify P2PK signature on [Proof]
-    pub fn verify_p2pk(&self) -> Result<(), Error> {
+    /// Verify P2PK signature on individual [Proof] with SIG_INPUT flag
+    /// This function is ONLY for SigInputs verification at the individual proof level.
+    /// For SigAll, verification happens at the transaction level in verify_sig_all().
+    pub fn verify_p2pk_for_sig_input(&self) -> Result<(), Error> {
         let secret: Nut10Secret = self.secret.clone().try_into()?;
         let spending_conditions: Conditions = secret
             .secret_data()
@@ -135,6 +137,13 @@ impl Proof {
             .unwrap_or_default()
             .try_into()?;
         let msg: &[u8] = self.secret.as_bytes();
+
+        // Ensure this is only called for SigInputs proofs
+        assert_eq!(
+            spending_conditions.sig_flag,
+            SigFlag::SigInputs,
+            "verify_p2pk_for_sig_input() should only be called for SigInputs proofs. SigAll verification happens at transaction level."
+        );
 
         let mut verified_pubkeys = HashSet::new();
 
@@ -702,56 +711,32 @@ impl FromStr for SigFlag {
     }
 }
 
-/// Get the signature flag that should be enforced for a set of proofs and the
-/// public keys that signatures are valid for
-pub fn enforce_sig_flag(proofs: Proofs) -> EnforceSigFlag {
-    let mut sig_flag = SigFlag::SigInputs;
-    let mut pubkeys = HashSet::new();
-    let mut sigs_required = 1;
+/// Check if at least one proof in the transaction uses SigAll.
+///
+/// This function can be called with any mix of proof types:
+/// - Regular proofs (no spending conditions) - will be skipped
+/// - P2PK proofs (NUT-11) - will be checked for SigAll flag
+/// - HTLC proofs (NUT-14) - will be checked for SigAll flag
+///
+/// Returns true if ANY proof has sig_flag == SigAll, false otherwise.
+/// For SigAll transactions, all proofs with spending conditions must have
+/// matching conditions (enforced by verify_matching_conditions).
+pub fn has_at_least_one_sig_all_proof(proofs: Proofs) -> bool {
     for proof in proofs {
+        // Try to parse as NUT-10 secret (P2PK or HTLC)
         if let Ok(secret) = Nut10Secret::try_from(proof.secret) {
-            if secret.kind().eq(&Kind::P2PK) {
-                if let Ok(verifying_key) = PublicKey::from_str(secret.secret_data().data()) {
-                    pubkeys.insert(verifying_key);
-                }
-            }
-
+            // Check if this proof has spending conditions with SigAll
             if let Some(tags) = secret.secret_data().tags() {
                 if let Ok(conditions) = Conditions::try_from(tags.clone()) {
-                    if conditions.sig_flag.eq(&SigFlag::SigAll) {
-                        sig_flag = SigFlag::SigAll;
-                    }
-
-                    if let Some(sigs) = conditions.num_sigs {
-                        if sigs > sigs_required {
-                            sigs_required = sigs;
-                        }
-                    }
-
-                    if let Some(pubs) = conditions.pubkeys {
-                        pubkeys.extend(pubs);
+                    if conditions.sig_flag == SigFlag::SigAll {
+                        return true;
                     }
                 }
             }
         }
+        // Regular proofs (non-NUT-10) are skipped
     }
-
-    EnforceSigFlag {
-        sig_flag,
-        pubkeys,
-        sigs_required,
-    }
-}
-
-/// Enforce Sigflag info
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnforceSigFlag {
-    /// Sigflag required for proofs
-    pub sig_flag: SigFlag,
-    /// Pubkeys that can sign for proofs
-    pub pubkeys: HashSet<PublicKey>,
-    /// Number of sigs required for proofs
-    pub sigs_required: u64,
+    false
 }
 
 /// Tag
@@ -875,6 +860,62 @@ impl From<Tag> for Vec<String> {
     }
 }
 
+/// Get verification parameters for SIG_ALL proofs, accounting for locktime and refund keys
+/// Returns (pubkeys, required_sigs) where required_sigs=0 means "anyone can spend"
+/// Used by both SwapRequest and MeltRequest for SIG_ALL verification
+fn get_sig_all_required_sigs(inputs: &Proofs) -> Result<(Vec<PublicKey>, u64), Error> {
+    let first_input = inputs.first().ok_or(Error::SpendConditionsNotMet)?;
+    let first_conditions: SpendingConditions =
+        SpendingConditions::try_from(&first_input.secret)?;
+
+    // Verify this is a P2PK proof with SigAll
+    let required_sigs = match first_conditions.clone() {
+        SpendingConditions::P2PKConditions { conditions, .. } => {
+            let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
+
+            if SigFlag::SigAll != conditions.sig_flag {
+                return Err(Error::IncorrectSecretKind);
+            }
+
+            conditions.num_sigs.unwrap_or(1)
+        }
+        _ => return Err(Error::IncorrectSecretKind),
+    };
+
+    // Check locktime to determine which keys to verify against
+    let now = unix_time();
+    let locktime_passed = first_conditions
+        .locktime()
+        .map(|lt| now >= lt)
+        .unwrap_or(false);
+
+    // Determine verification keys and required signature count based on locktime
+    if locktime_passed {
+        // Locktime has passed - check for refund keys
+        if let Some(refund_keys) = first_conditions.refund_keys() {
+            // Use refund keys and refund signature requirement
+            let refund_sigs_required = match &first_conditions {
+                SpendingConditions::P2PKConditions { conditions, .. } => {
+                    conditions.as_ref()
+                        .and_then(|c| c.num_sigs_refund)
+                        .unwrap_or(1)
+                }
+                _ => 1,
+            };
+            Ok((refund_keys, refund_sigs_required))
+        } else {
+            // Locktime passed but no refund keys - anyone can spend (0 sigs required)
+            Ok((vec![], 0))
+        }
+    } else {
+        // Before locktime - use normal pubkeys
+        let pubkeys = first_conditions
+            .pubkeys()
+            .ok_or(Error::P2PKPubkeyRequired)?;
+        Ok((pubkeys, required_sigs))
+    }
+}
+
 impl SwapRequest {
     /// Generate the message to sign for SIG_ALL validation
     /// Concatenates all input secrets and output blinded messages in order
@@ -896,27 +937,6 @@ impl SwapRequest {
         msg_to_sign
     }
 
-    /// Get required signature count from first input's spending conditions
-    fn get_sig_all_required_sigs(&self) -> Result<(u64, SpendingConditions), Error> {
-        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
-        let first_conditions: SpendingConditions =
-            SpendingConditions::try_from(&first_input.secret)?;
-
-        let required_sigs = match first_conditions.clone() {
-            SpendingConditions::P2PKConditions { conditions, .. } => {
-                let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
-
-                if SigFlag::SigAll != conditions.sig_flag {
-                    return Err(Error::IncorrectSecretKind);
-                }
-
-                conditions.num_sigs.unwrap_or(1)
-            }
-            _ => return Err(Error::IncorrectSecretKind),
-        };
-
-        Ok((required_sigs, first_conditions))
-    }
 
     /// Verify all inputs have matching secrets and tags
     fn verify_matching_conditions(&self) -> Result<(), Error> {
@@ -1028,25 +1048,29 @@ impl SwapRequest {
 
     /// Validate SIG_ALL conditions and signatures for the swap request
     pub fn verify_sig_all(&self) -> Result<(), Error> {
-        // Get required signatures and conditions from first input
-        let (required_sigs, first_conditions) = self.get_sig_all_required_sigs()?;
-
         // Verify all inputs have matching secrets
+        // After this call, we know ALL proofs have identical conditions (locktime, pubkeys, refund_keys, etc.)
         self.verify_matching_conditions()?;
+
+        // Get verification parameters (accounts for locktime and refund keys)
+        // These are "relevant" because they depend on locktime:
+        // - Before locktime: normal pubkeys + num_sigs
+        // - After locktime with refund_keys: refund_keys + num_sigs_refund
+        // - After locktime without refund_keys: empty vec + 0 (anyone can spend)
+        let (relevant_pubkeys, relevant_num_sigs_required) = get_sig_all_required_sigs(self.inputs())?;
+
+        if relevant_num_sigs_required == 0 {
+            return Ok(());
+        }
 
         // Get and validate witness signatures
         let signatures = self.get_valid_witness_signatures()?;
 
-        // Get signing pubkeys
-        let verifying_pubkeys = first_conditions
-            .pubkeys()
-            .ok_or(Error::P2PKPubkeyRequired)?;
-
         // Get aggregated message and validate signatures
         let msg = self.sig_all_msg_to_sign();
-        let valid_sigs = valid_signatures(msg.as_bytes(), &verifying_pubkeys, &signatures)?;
+        let valid_sigs = valid_signatures(msg.as_bytes(), &relevant_pubkeys, &signatures)?;
 
-        if valid_sigs >= required_sigs {
+        if valid_sigs >= relevant_num_sigs_required {
             Ok(())
         } else {
             Err(Error::SpendConditionsNotMet)
@@ -1079,27 +1103,6 @@ impl<Q: std::fmt::Display + Serialize + DeserializeOwned> MeltRequest<Q> {
         msg_to_sign
     }
 
-    /// Get required signature count from first input's spending conditions
-    fn get_sig_all_required_sigs(&self) -> Result<(u64, SpendingConditions), Error> {
-        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
-        let first_conditions: SpendingConditions =
-            SpendingConditions::try_from(&first_input.secret)?;
-
-        let required_sigs = match first_conditions.clone() {
-            SpendingConditions::P2PKConditions { conditions, .. } => {
-                let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
-
-                if SigFlag::SigAll != conditions.sig_flag {
-                    return Err(Error::IncorrectSecretKind);
-                }
-
-                conditions.num_sigs.unwrap_or(1)
-            }
-            _ => return Err(Error::IncorrectSecretKind),
-        };
-
-        Ok((required_sigs, first_conditions))
-    }
 
     /// Verify all inputs have matching secrets and tags
     fn verify_matching_conditions(&self) -> Result<(), Error> {
@@ -1211,25 +1214,29 @@ impl<Q: std::fmt::Display + Serialize + DeserializeOwned> MeltRequest<Q> {
 
     /// Validate SIG_ALL conditions and signatures for the melt request
     pub fn verify_sig_all(&self) -> Result<(), Error> {
-        // Get required signatures and conditions from first input
-        let (required_sigs, first_conditions) = self.get_sig_all_required_sigs()?;
-
         // Verify all inputs have matching secrets
+        // After this call, we know ALL proofs have identical conditions (locktime, pubkeys, refund_keys, etc.)
         self.verify_matching_conditions()?;
+
+        // Get verification parameters (accounts for locktime and refund keys)
+        // These are "relevant" because they depend on locktime:
+        // - Before locktime: normal pubkeys + num_sigs
+        // - After locktime with refund_keys: refund_keys + num_sigs_refund
+        // - After locktime without refund_keys: empty vec + 0 (anyone can spend)
+        let (relevant_pubkeys, relevant_num_sigs_required) = get_sig_all_required_sigs(self.inputs())?;
+
+        if relevant_num_sigs_required == 0 {
+            return Ok(());
+        }
 
         // Get and validate witness signatures
         let signatures = self.get_valid_witness_signatures()?;
 
-        // Get signing pubkeys
-        let verifying_pubkeys = first_conditions
-            .pubkeys()
-            .ok_or(Error::P2PKPubkeyRequired)?;
-
         // Get aggregated message and validate signatures
         let msg = self.sig_all_msg_to_sign();
-        let valid_sigs = valid_signatures(msg.as_bytes(), &verifying_pubkeys, &signatures)?;
+        let valid_sigs = valid_signatures(msg.as_bytes(), &relevant_pubkeys, &signatures)?;
 
-        if valid_sigs >= required_sigs {
+        if valid_sigs >= relevant_num_sigs_required {
             Ok(())
         } else {
             Err(Error::SpendConditionsNotMet)
@@ -1357,7 +1364,7 @@ mod tests {
         proof.sign_p2pk(secret_key).unwrap();
         proof.sign_p2pk(signing_key_two).unwrap();
 
-        assert!(proof.verify_p2pk().is_ok());
+        assert!(proof.verify_p2pk_for_sig_input().is_ok());
     }
 
     #[test]
@@ -1372,15 +1379,15 @@ mod tests {
         }"#;
         let valid_proof: Proof = serde_json::from_str(json).unwrap();
 
-        valid_proof.verify_p2pk().unwrap();
-        assert!(valid_proof.verify_p2pk().is_ok());
+        valid_proof.verify_p2pk_for_sig_input().unwrap();
+        assert!(valid_proof.verify_p2pk_for_sig_input().is_ok());
 
         // Proof with a signature that is in a different secret
         let invalid_proof = r#"{"amount":1,"secret":"[\"P2PK\",{\"nonce\":\"859d4935c4907062a6297cf4e663e2835d90d97ecdd510745d32f6816323a41f\",\"data\":\"0249098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\",\"tags\":[[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","id":"009a1f293253e41e","witness":"{\"signatures\":[\"3426df9730d365a9d18d79bed2f3e78e9172d7107c55306ac5ddd1b2d065893366cfa24ff3c874ebf1fc22360ba5888ddf6ff5dbcb9e5f2f5a1368f7afc64f15\"]}"}"#;
 
         let invalid_proof: Proof = serde_json::from_str(invalid_proof).unwrap();
 
-        assert!(invalid_proof.verify_p2pk().is_err());
+        assert!(invalid_proof.verify_p2pk_for_sig_input().is_err());
     }
 
     #[test]
@@ -1390,7 +1397,7 @@ mod tests {
 
         let valid_proof: Proof = serde_json::from_str(valid_proof).unwrap();
 
-        assert!(valid_proof.verify_p2pk().is_ok());
+        assert!(valid_proof.verify_p2pk_for_sig_input().is_ok());
 
         // Proof with only one of the required signatures
         let invalid_proof = r#"{"amount":0,"secret":"[\"P2PK\",{\"nonce\":\"0ed3fcb22c649dd7bbbdcca36e0c52d4f0187dd3b6a19efcc2bfbebb5f85b2a1\",\"data\":\"0249098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\",\"tags\":[[\"pubkeys\",\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"02142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","id":"009a1f293253e41e","witness":"{\"signatures\":[\"83564aca48c668f50d022a426ce0ed19d3a9bdcffeeaee0dc1e7ea7e98e9eff1840fcc821724f623468c94f72a8b0a7280fa9ef5a54a1b130ef3055217f467b3\"]}"}"#;
@@ -1398,7 +1405,7 @@ mod tests {
         let invalid_proof: Proof = serde_json::from_str(invalid_proof).unwrap();
 
         // Verification should fail without the requires signatures
-        assert!(invalid_proof.verify_p2pk().is_err());
+        assert!(invalid_proof.verify_p2pk_for_sig_input().is_err());
     }
 
     #[test]
@@ -1406,13 +1413,13 @@ mod tests {
         let valid_proof = r#"{"amount":1,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"902685f492ef3bb2ca35a47ddbba484a3365d143b9776d453947dcbf1ddf9689\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"pubkeys\",\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"locktime\",\"21\"],[\"n_sigs\",\"2\"],[\"refund\",\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\"],[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","witness":"{\"signatures\":[\"710507b4bc202355c91ea3c147c0d0189c75e179d995e566336afd759cb342bcad9a593345f559d9b9e108ac2c9b5bd9f0b4b6a295028a98606a0a2e95eb54f7\"]}"}"#;
 
         let valid_proof: Proof = serde_json::from_str(valid_proof).unwrap();
-        assert!(valid_proof.verify_p2pk().is_ok());
+        assert!(valid_proof.verify_p2pk_for_sig_input().is_ok());
 
         let invalid_proof = r#"{"amount":1,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"64c46e5d30df27286166814b71b5d69801704f23a7ad626b05688fbdb48dcc98\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"pubkeys\",\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"locktime\",\"21\"],[\"n_sigs\",\"2\"],[\"refund\",\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\"],[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","witness":"{\"signatures\":[\"f661d3dc046d636d47cb3d06586da42c498f0300373d1c2a4f417a44252cdf3809bce207c8888f934dba0d2b1671f1b8622d526840f2d5883e571b462630c1ff\"]}"}"#;
 
         let invalid_proof: Proof = serde_json::from_str(invalid_proof).unwrap();
 
-        assert!(invalid_proof.verify_p2pk().is_err());
+        assert!(invalid_proof.verify_p2pk_for_sig_input().is_err());
     }
 
     #[test]
@@ -1459,15 +1466,15 @@ mod tests {
 
         proof.sign_p2pk(signing_key_three.clone()).unwrap();
 
-        assert!(proof.verify_p2pk().is_err());
+        assert!(proof.verify_p2pk_for_sig_input().is_err());
 
         proof.witness = None;
 
         proof.sign_p2pk(secret_key).unwrap();
-        assert!(proof.verify_p2pk().is_err());
+        assert!(proof.verify_p2pk_for_sig_input().is_err());
         proof.sign_p2pk(signing_key_two).unwrap();
 
-        assert!(proof.verify_p2pk().is_ok());
+        assert!(proof.verify_p2pk_for_sig_input().is_ok());
     }
 
     // Helper functions for melt request tests
