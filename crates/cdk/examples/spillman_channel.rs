@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bip39::Mnemonic;
+use bitcoin::secp256k1::schnorr::Signature;
 use cashu::quote_id::QuoteId;
 use cashu::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
 use cdk::mint::{MintBuilder, MintMeltLimits};
@@ -18,11 +19,11 @@ use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo,
     MintQuoteBolt11Request, MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod,
-    RestoreRequest, RestoreResponse, SecretKey, SpendingConditions, SwapRequest, SwapResponse,
+    RestoreRequest, RestoreResponse, SecretKey, SpendingConditions, State, SwapRequest, SwapResponse,
 };
-use cdk::types::{FeeReserve, QuoteTTL};
+use cdk::types::{FeeReserve, ProofInfo, QuoteTTL};
 use cdk::util::unix_time;
-use cdk::wallet::{AuthWallet, MintConnector, ReceiveOptions, SendOptions, Wallet, WalletBuilder};
+use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
 use cdk::{dhke::{blind_message, construct_proofs}, Error, Mint, StreamExt};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::RwLock;
@@ -434,8 +435,8 @@ async fn main() -> anyhow::Result<()> {
         alice_pubkey,
         bob_pubkey,
         CurrencyUnit::Msat,
-        3,                          // log2_capacity: 2^3 = 8 msat
-        8,                          // capacity: 8 msat total
+        9,                          // log2_capacity: 2^9 = 512 msat
+        512,                        // capacity: 512 msat total
         unix_time() + 5,            // 5 second locktime
     )?;
     println!("   Capacity: {} {:?} (2^{})", channel_params.capacity, channel_params.unit, channel_params.log2_capacity);
@@ -541,16 +542,16 @@ async fn main() -> anyhow::Result<()> {
     println!("🔐 Preparing 2-of-2 multisig spending conditions with locktime refund...");
 
     let conditions = Conditions::new(
-        Some(channel_params.locktime),           // Locktime for Alice's refund
-        Some(vec![bob_pubkey]),                  // Bob's key as additional pubkey
-        Some(vec![alice_pubkey]),                // Alice can refund after locktime
-        Some(2),                                 // Require 2 signatures (Alice + Bob)
-        Some(SigFlag::SigAll),                   // SigAll: signatures commit to outputs
-        Some(1),                                 // Only 1 signature needed for refund (Alice)
+        Some(channel_params.locktime),                // Locktime for Alice's refund
+        Some(vec![channel_params.bob_pubkey]),        // Bob's key as additional pubkey
+        Some(vec![channel_params.alice_pubkey]),      // Alice can refund after locktime
+        Some(2),                                      // Require 2 signatures (Alice + Bob)
+        Some(SigFlag::SigAll),                        // SigAll: signatures commit to outputs
+        Some(1),                                      // Only 1 signature needed for refund (Alice)
     )?;
 
     let spending_conditions = SpendingConditions::new_p2pk(
-        alice_pubkey,  // Alice's key as primary
+        channel_params.alice_pubkey,  // Alice's key as primary
         Some(conditions),
     );
 
@@ -652,20 +653,40 @@ async fn main() -> anyhow::Result<()> {
         // Verify 2-of-2 multisig conditions
         if let SpendingConditions::P2PKConditions { data, conditions } = &proof_conditions {
             // Alice should be primary
-            if data != &alice_pubkey {
+            if data != &channel_params.alice_pubkey {
                 anyhow::bail!("Proof primary key is not Alice!");
             }
 
             // Check additional conditions
             if let Some(cond) = conditions {
                 // Verify Bob is in the pubkeys list
-                if !cond.pubkeys.as_ref().map_or(false, |keys| keys.contains(&bob_pubkey)) {
+                if !cond.pubkeys.as_ref().map_or(false, |keys| keys.contains(&channel_params.bob_pubkey)) {
                     anyhow::bail!("Proof doesn't include Bob's pubkey!");
                 }
 
                 // Verify 2-of-2 requirement
                 if cond.num_sigs != Some(2) {
                     anyhow::bail!("Proof doesn't require 2 signatures!");
+                }
+
+                // Verify locktime matches expected value
+                if cond.locktime != Some(channel_params.locktime) {
+                    anyhow::bail!("Proof locktime {:?} doesn't match expected {}", cond.locktime, channel_params.locktime);
+                }
+
+                // Verify Alice's refund key is present
+                if !cond.refund_keys.as_ref().map_or(false, |keys| keys.contains(&channel_params.alice_pubkey)) {
+                    anyhow::bail!("Proof doesn't include Alice's refund key!");
+                }
+
+                // Verify SigAll flag is set
+                if cond.sig_flag != SigFlag::SigAll {
+                    anyhow::bail!("Proof sig_flag is not SigAll!");
+                }
+
+                // Verify refund requires only 1 signature (Alice only)
+                if cond.num_sigs_refund != Some(1) {
+                    anyhow::bail!("Proof refund doesn't require exactly 1 signature!");
                 }
             } else {
                 anyhow::bail!("Proof has no conditions!");
@@ -711,10 +732,15 @@ async fn main() -> anyhow::Result<()> {
 
     println!("\n✅ All proofs verified by Bob!");
     println!("   Bob confirms:");
-    println!("   - All proofs are locked to Alice + Bob 2-of-2");
-    println!("   - Locktime allows Alice to refund after {}", channel_params.locktime);
-    println!("   - Spending conditions are correct (SigAll, 2-of-2, locktime)");
-    println!("   - All DLEQ proofs verified (required)");
+    println!("   - All proofs are P2PK type with correct spending conditions");
+    println!("   - Primary key: Alice ({})", channel_params.alice_pubkey);
+    println!("   - Additional pubkey: Bob ({})", channel_params.bob_pubkey);
+    println!("   - Refund key: Alice (can refund alone after locktime)");
+    println!("   - Spending requires 2-of-2 signatures (Alice + Bob)");
+    println!("   - Refund requires 1 signature (Alice only)");
+    println!("   - Locktime: {} (Alice can refund after this)", channel_params.locktime);
+    println!("   - SigFlag: SigAll (signatures cover entire transaction)");
+    println!("   - All {} DLEQ proofs verified", locked_proofs.len());
     println!("   - Total value: {} msat in {} denominations", total_amount, locked_proofs.len());
 
     // 13. TEST SPENDING BEFORE LOCKTIME (REQUIRES BOTH ALICE AND BOB SIGNATURES)
@@ -724,7 +750,7 @@ async fn main() -> anyhow::Result<()> {
     println!("   Time until locktime: {} seconds\n", channel_params.locktime.saturating_sub(unix_time()));
 
     // Amount to send to Bob
-    let amount_to_bob = 5;
+    let amount_to_bob = 315;  // Binary: 100111011 in the spend vector
 
     // Convert balance to spend vector
     let spend_vector = channel_params.balance_to_spend_vector(amount_to_bob);
@@ -756,6 +782,44 @@ async fn main() -> anyhow::Result<()> {
     );
     println!("   ✓ Request with only Alice's signature fails (needs 2)");
 
+    // Bob verifies Alice's signature before adding his own
+    // NOTE: For SigAll, all signatures are in the witness of the FIRST proof only
+    println!("   Bob verifying Alice's signature...");
+
+    // Reconstruct the SigAll message (same as sig_all_msg_to_sign)
+    let mut msg_to_sign = String::new();
+    for proof in spend_swap_request.inputs() {
+        msg_to_sign.push_str(&proof.secret.to_string());
+    }
+    for output in spend_swap_request.outputs() {
+        msg_to_sign.push_str(&output.blinded_secret.to_string());
+    }
+
+    let first_proof = spend_swap_request.inputs().first()
+        .ok_or_else(|| anyhow::anyhow!("No inputs in swap request"))?;
+
+    let alice_sig_valid = if let Some(ref witness) = first_proof.witness {
+        if let cashu::nuts::Witness::P2PKWitness(p2pk_witness) = witness {
+            // Check if any signature in the witness is from Alice
+            p2pk_witness.signatures.iter().any(|sig_str| {
+                if let Ok(sig) = sig_str.parse::<Signature>() {
+                    channel_params.alice_pubkey.verify(msg_to_sign.as_bytes(), &sig).is_ok()
+                } else {
+                    false
+                }
+            })
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !alice_sig_valid {
+        anyhow::bail!("Alice's signature not found or invalid!");
+    }
+    println!("   ✓ Bob verified Alice's signature is present and valid");
+
     println!("   Signing swap request with Bob...");
     spend_swap_request.sign_sig_all(bob_secret.clone())?;
     println!("   ✓ Signed with Bob");
@@ -785,7 +849,7 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect();
 
-    let _bob_final_proofs = construct_proofs(
+    let bob_final_proofs = construct_proofs(
         spend_swap_response.signatures,
         bob_secrets_and_rs_to_use.iter().map(|(_, r)| r.clone()).collect(),
         bob_secrets_and_rs_to_use.iter().map(|(s, _)| s.clone()).collect(),
@@ -794,13 +858,30 @@ async fn main() -> anyhow::Result<()> {
 
     println!("✅ Swap successful!");
     println!("   Bob received {} msat in his predetermined outputs", total_spending);
-    println!("   These proofs have no spending conditions and can be freely spent by Bob\n");
+    println!("   These proofs have no spending conditions and can be freely spent by Bob");
+
+    // Add Bob's proofs to his wallet for validation
+    println!("   Adding Bob's proofs to his wallet...");
+    let bob_proof_infos: Vec<ProofInfo> = bob_final_proofs
+        .iter()
+        .map(|proof| {
+            ProofInfo::new(
+                proof.clone(),
+                "http://localhost:8080".parse().unwrap(),
+                State::Unspent,
+                channel_params.unit.clone(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    bob_wallet.localstore.update_proofs(bob_proof_infos, vec![]).await?;
+    println!("   ✓ Bob's wallet balance: {} msat\n", bob_wallet.total_balance().await?);
 
     // 14. SECOND TRANSACTION: TRY TO DOUBLE-SPEND (should fail)
     println!("🔓 Second transaction: attempting to re-spend (double-spend attack)...");
 
     // Try to spend an amount that would reuse already-spent proofs
-    let amount_to_bob_2 = 3;  // This will try to reuse the first proof (already spent)
+    let amount_to_bob_2 = 129;  // This will try to reuse some proofs already spent
     let spend_vector_2 = channel_params.balance_to_spend_vector(amount_to_bob_2);
 
     // Create swap request using helper function
@@ -826,59 +907,34 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // 15. TEST ALICE-ONLY REFUND - TRY EVERY SECOND UNTIL LOCKTIME PASSES
-    println!("⏰ Testing locktime enforcement - trying refund every second...");
+    // 15. TEST ALICE-ONLY REFUND - CLAIM EACH UNSPENT PROOF INDIVIDUALLY
+    println!("⏰ Testing locktime enforcement - Alice tries to claim unspent proofs individually...");
     println!("   Current time: {}", unix_time());
     println!("   Locktime: {}", channel_params.locktime);
-    println!("   Expected: Refund should FAIL until locktime passes, then SUCCEED\n");
-
-    // Calculate total remaining (we spent 5 msat earlier, so 3 msat remains)
-    let remaining_amount = channel_params.capacity - amount_to_bob;
-    println!("   Using Alice's pre-generated outputs for {} msat refund (remaining after payment to Bob)", remaining_amount);
+    println!("   Expected: All refunds should FAIL before locktime, then SUCCEED after locktime\n");
 
     // Determine which proofs are still unspent (those not used in first transaction)
-    let unspent_proofs: Vec<Proof> = spend_vector
+    let unspent_indices: Vec<usize> = spend_vector
         .iter()
         .enumerate()
         .filter_map(|(i, &was_spent)| {
             if !was_spent {
-                Some(locked_proofs[i].clone())
+                Some(i)
             } else {
                 None
             }
         })
         .collect();
 
-    // Use Alice's pre-generated outputs for the unspent proofs
-    let alice_refund_outputs: Vec<BlindedMessage> = spend_vector
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &was_spent)| {
-            if !was_spent {
-                Some(alice_outputs[i].clone())
-            } else {
-                None
-            }
-        })
-        .collect();
+    println!("   Alice has {} unspent proofs to refund", unspent_indices.len());
 
-    let alice_refund_secrets_and_rs: Vec<_> = spend_vector
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &was_spent)| {
-            if !was_spent {
-                Some(alice_secrets_and_rs[i].clone())
-            } else {
-                None
-            }
-        })
-        .collect();
+    // FIRST ATTEMPT: Before locktime (should fail for all)
+    println!("\n   📍 FIRST ATTEMPT (immediately after Bob exits - before locktime - trying ALL proofs):");
+    let mut refunded_count = 0;
 
-    println!("   Using {} unspent proofs for refund", unspent_proofs.len());
-
-    // Try refund every second until it succeeds
-    let mut attempt = 1;
-    let refund_swap_response = loop {
+    for i in 0..locked_proofs.len() {
+        let proof_amount = locked_proofs[i].amount;
+        let was_spent = spend_vector[i];
         let current_time = unix_time();
         let time_diff = if current_time >= channel_params.locktime {
             format!("+{} sec past locktime", current_time - channel_params.locktime)
@@ -886,40 +942,94 @@ async fn main() -> anyhow::Result<()> {
             format!("{} sec before locktime", channel_params.locktime - current_time)
         };
 
-        println!("   Attempt #{} at time {} ({})", attempt, current_time, time_diff);
+        let status = if was_spent { "(spent by Bob)" } else { "(unspent)" };
+        println!("      Trying to refund proof {} ({} msat) {} at time {} ({})", i, proof_amount, status, current_time, time_diff);
 
-        // Create fresh refund swap request for this attempt
-        let mut refund_swap_request = SwapRequest::new(unspent_proofs.clone(), alice_refund_outputs.clone());
+        // Create refund swap request for this single proof
+        let mut refund_swap_request = SwapRequest::new(
+            vec![locked_proofs[i].clone()],
+            vec![alice_outputs[i].clone()]
+        );
 
         // Sign with ONLY Alice (no Bob signature)
         refund_swap_request.sign_sig_all(alice_secret.clone())?;
-        println!("      - Signed with only Alice's key");
+
+        // Try to process the refund
+        match mint.process_swap_request(refund_swap_request).await {
+            Ok(_) => {
+                println!("         ✅ Refund succeeded");
+                refunded_count += 1;
+            }
+            Err(e) => {
+                println!("         ❌ Refund failed: {:?}", e);
+            }
+        }
+    }
+
+    println!("\n   Result: {}/{} proofs refunded before locktime", refunded_count, locked_proofs.len());
+
+    // Wait for locktime to pass
+    let current_time = unix_time();
+    let delay_seconds = if current_time < channel_params.locktime {
+        (channel_params.locktime - current_time) + 1  // Add 1 second buffer to ensure locktime has passed
+    } else {
+        1  // Already past locktime, just wait 1 second
+    };
+    println!("\n   ⏳ Waiting {} seconds for locktime to pass...\n", delay_seconds);
+    tokio::time::sleep(tokio::time::Duration::from_secs(delay_seconds)).await;
+
+    // SECOND ATTEMPT: After locktime (should succeed for unspent, fail for spent)
+    println!("   📍 SECOND ATTEMPT (after locktime delay - trying ALL proofs):");
+    refunded_count = 0;
+    let mut alice_refund_proofs = Vec::new();
+
+    for i in 0..locked_proofs.len() {
+        let proof_amount = locked_proofs[i].amount;
+        let was_spent = spend_vector[i];
+        let current_time = unix_time();
+        let time_diff = if current_time >= channel_params.locktime {
+            format!("+{} sec past locktime", current_time - channel_params.locktime)
+        } else {
+            format!("{} sec before locktime", channel_params.locktime - current_time)
+        };
+
+        let status = if was_spent { "(spent by Bob)" } else { "(unspent)" };
+        println!("      Trying to refund proof {} ({} msat) {} at time {} ({})", i, proof_amount, status, current_time, time_diff);
+
+        // Create refund swap request for this single proof
+        let mut refund_swap_request = SwapRequest::new(
+            vec![locked_proofs[i].clone()],
+            vec![alice_outputs[i].clone()]
+        );
+
+        // Sign with ONLY Alice (no Bob signature)
+        refund_swap_request.sign_sig_all(alice_secret.clone())?;
 
         // Try to process the refund
         match mint.process_swap_request(refund_swap_request).await {
             Ok(response) => {
-                println!("      ✅ REFUND SUCCEEDED (locktime has passed)");
-                break response;
+                println!("         ✅ Refund succeeded (Alice reclaimed this proof)");
+
+                // Unblind to get Alice's refund proof
+                let refund_proof = construct_proofs(
+                    response.signatures,
+                    vec![alice_secrets_and_rs[i].1.clone()],
+                    vec![alice_secrets_and_rs[i].0.clone()],
+                    &mint_keys.keys,
+                )?;
+                alice_refund_proofs.extend(refund_proof);
+                refunded_count += 1;
             }
             Err(e) => {
-                println!("      ❌ Refund failed: {:?}", e);
-                println!("      (Expected - locktime not yet reached)\n");
-                attempt += 1;
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                println!("         ❌ Refund failed: {:?}", e);
             }
         }
-    };
+    }
 
-    // Unblind to get Alice's refund proofs
-    let _alice_refund_proofs = construct_proofs(
-        refund_swap_response.signatures,
-        alice_refund_secrets_and_rs.iter().map(|(_, r)| r.clone()).collect(),
-        alice_refund_secrets_and_rs.iter().map(|(s, _)| s.clone()).collect(),
-        &mint_keys.keys,
-    )?;
-
-    println!("\n✅ Refund successful after {} attempts!", attempt);
-    println!("   Alice reclaimed {} msat using ONLY her signature", remaining_amount);
+    let total_refunded = alice_refund_proofs.total_amount()?;
+    println!("\n   Result: {}/{} proofs successfully refunded (out of {} total proofs)", refunded_count, locked_proofs.len(), locked_proofs.len());
+    println!("\n✅ Refund tests complete!");
+    println!("   Alice reclaimed {} msat using ONLY her signature", total_refunded);
     println!("   Bob's signature was NOT required (locktime refund)\n");
 
     println!("🎉 All tests passed!");
