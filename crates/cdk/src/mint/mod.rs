@@ -853,9 +853,23 @@ impl Mint {
                         // that point.
                         match secret.kind() {
                             Kind::P2PK => {
-                                tracing::info!("Proof #{} is P2PK, calling verify_p2pk()", i);
-                                proof.verify_p2pk()?;
-                                tracing::info!("Proof #{} verify_p2pk() succeeded", i);
+                                // Check if this proof uses SigAll
+                                let conditions: nuts::nut11::Conditions = secret
+                                    .secret_data()
+                                    .tags()
+                                    .cloned()
+                                    .unwrap_or_default()
+                                    .try_into()?;
+
+                                if conditions.sig_flag == nuts::nut11::SigFlag::SigAll {
+                                    tracing::info!("Proof #{} is P2PK with SigAll - skipping verify_p2pk() (will verify at transaction level)", i);
+                                    // For SigAll, individual proof verification is skipped.
+                                    // Transaction-level verification happens in validate_sig_flag()
+                                } else {
+                                    tracing::info!("Proof #{} is P2PK with SigInputs, calling verify_p2pk()", i);
+                                    proof.verify_p2pk()?;
+                                    tracing::info!("Proof #{} verify_p2pk() succeeded", i);
+                                }
                             }
                             Kind::HTLC => {
                                 tracing::info!("Proof #{} is HTLC, calling verify_htlc()", i);

@@ -143,17 +143,14 @@ impl Proof {
             spending_conditions.locktime,
             spending_conditions.refund_keys.as_ref().map(|v| v.len()));
 
-        // NUT-11 SigAll handling:
-        // When sig_flag is SigAll, signatures are over the entire transaction
-        // (all input secrets + all output blinded messages), not individual secrets.
-        // Individual signature verification must be skipped here and will be performed
-        // at the transaction level in validate_sig_flag() in the mint's swap/melt flow.
-        // We cannot verify signatures against individual secrets for SigAll proofs.
-        // For SigAll, signatures are on the SwapRequest/MeltRequest, not on individual proofs.
-        if spending_conditions.sig_flag == SigFlag::SigAll {
-            tracing::info!("SigAll detected - skipping individual signature verification (will verify at transaction level)");
-            return Ok(());
-        }
+        // NUT-11: verify_p2pk() is only for SigInputs verification.
+        // For SigAll, verification happens at the transaction level in validate_sig_flag().
+        // This function should never be called for SigAll proofs.
+        assert_eq!(
+            spending_conditions.sig_flag,
+            SigFlag::SigInputs,
+            "verify_p2pk() should only be called for SigInputs proofs. SigAll verification happens at transaction level."
+        );
 
         let mut verified_pubkeys = HashSet::new();
 
