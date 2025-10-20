@@ -39,6 +39,28 @@ fn format_spend_vector(vector: &[bool]) -> String {
     format!("[{}]", bits)
 }
 
+/// Extract signatures from the first proof's witness in a swap request
+/// For SigAll, all signatures are stored in the witness of the FIRST proof only
+fn get_signatures_from_swap_request(swap_request: &SwapRequest) -> Result<Vec<Signature>, anyhow::Error> {
+    let first_proof = swap_request.inputs().first()
+        .ok_or_else(|| anyhow::anyhow!("No inputs in swap request"))?;
+
+    let signatures = if let Some(ref witness) = first_proof.witness {
+        if let cashu::nuts::Witness::P2PKWitness(p2pk_witness) = witness {
+            // Parse all signature strings into Signature objects
+            p2pk_witness.signatures.iter()
+                .filter_map(|sig_str| sig_str.parse::<Signature>().ok())
+                .collect()
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
+
+    Ok(signatures)
+}
+
 /// Message to be signed for a SigAll swap request
 /// Constructed by concatenating all input secrets and output blinded secrets
 struct UnsignedSwapMessage {
@@ -844,25 +866,13 @@ async fn main() -> anyhow::Result<()> {
     // Create the message to verify
     let unsigned_msg = UnsignedSwapMessage::from_swap_request(&spend_swap_request);
 
-    let first_proof = spend_swap_request.inputs().first()
-        .ok_or_else(|| anyhow::anyhow!("No inputs in swap request"))?;
+    // Get all signatures from the swap request
+    let signatures = get_signatures_from_swap_request(&spend_swap_request)?;
 
-    let alice_sig_valid = if let Some(ref witness) = first_proof.witness {
-        if let cashu::nuts::Witness::P2PKWitness(p2pk_witness) = witness {
-            // Check if any signature in the witness is from Alice
-            p2pk_witness.signatures.iter().any(|sig_str| {
-                if let Ok(sig) = sig_str.parse::<Signature>() {
-                    unsigned_msg.verify_signature(&channel_params.alice_pubkey, &sig)
-                } else {
-                    false
-                }
-            })
-        } else {
-            false
-        }
-    } else {
-        false
-    };
+    // Check if any signature is valid for Alice's pubkey
+    let alice_sig_valid = signatures.iter().any(|sig| {
+        unsigned_msg.verify_signature(&channel_params.alice_pubkey, sig)
+    });
 
     if !alice_sig_valid {
         anyhow::bail!("Alice's signature not found or invalid!");
