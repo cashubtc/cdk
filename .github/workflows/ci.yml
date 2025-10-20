@@ -8,6 +8,10 @@ on:
   release:
     types: [created]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -129,12 +133,8 @@ jobs:
     timeout-minutes: 30
     needs: pre-commit-checks
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
-        build-args:
-          [
-            -p cdk-integration-tests,
-          ]
         database:
           [
             SQLITE,
@@ -178,10 +178,6 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        build-args:
-          [
-            -p cdk-integration-tests,
-          ]
         database:
           [
           SQLITE,
@@ -215,7 +211,7 @@ jobs:
           shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Clippy
         run: nix develop -i -L .#stable --command cargo clippy -- -D warnings
-      - name: Test fake auth mint
+      - name: Test fake mint
         run: nix develop -i -L .#stable --command just fake-mint-itest ${{ matrix.database }}
 
   pure-itest:
