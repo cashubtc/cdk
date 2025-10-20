@@ -897,30 +897,20 @@ async fn main() -> anyhow::Result<()> {
     let mut latest_balance_update: Option<BalanceUpdateMessage> = None;
 
     for amount_to_bob in 1..=num_iterations {
-        println!("\n   Balance update #{}: {} msat to Bob", amount_to_bob, amount_to_bob);
-
         // Alice creates swap request for updated balance
         let (mut swap_request, total) = channel_fixtures.create_updated_swap_request(amount_to_bob);
         assert_eq!(total, amount_to_bob, "Amount mismatch");
-        println!("      ✓ Alice: Swap request created");
 
         // Alice signs the swap request
         swap_request.sign_sig_all(alice_secret.clone())?;
-        println!("      ✓ Alice: Signed swap request");
 
         // Alice creates the balance update message
         let balance_update = BalanceUpdateMessage::from_signed_swap_request(amount_to_bob, &swap_request)?;
-        println!("      ✓ Alice: Created balance update message");
-
-        // --- Alice sends balance_update to Bob over the network ---
-        println!("      📨 Alice → Bob: Sending balance update message");
 
         // Bob receives and verifies the balance update
         if !balance_update.verify(&channel_params.alice_pubkey, &channel_fixtures) {
             anyhow::bail!("Bob: Signature verification failed for amount {}", amount_to_bob);
         }
-        println!("      ✓ Bob: Verified Alice's signature");
-        println!("      ✓ Bob: Accepted balance update ({} msat)", balance_update.amount);
 
         // Store intermediate balance update (halfway through)
         if amount_to_bob == num_iterations / 2 {
@@ -929,8 +919,17 @@ async fn main() -> anyhow::Result<()> {
 
         // Store the latest balance update
         latest_balance_update = Some(balance_update);
+
+        // Progress bar: print a dot every 100 iterations, newline every 1000
+        if amount_to_bob % 100 == 0 {
+            print!(".");
+            if amount_to_bob % 1000 == 0 {
+                println!(" {}/{}", amount_to_bob, num_iterations);
+            }
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+        }
     }
-    println!("\n✅ All balance updates successfully created and verified!\n");
+    println!("\n✅ All {} balance updates successfully created and verified!\n", num_iterations);
 
     // 13. BOB CLOSES THE CHANNEL BY EXECUTING THE LATEST BALANCE UPDATE
     println!("🔓 Bob closing the channel with the latest balance update...");
