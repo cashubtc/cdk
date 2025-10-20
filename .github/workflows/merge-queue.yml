@@ -99,3 +99,44 @@ jobs:
           shared-key: "stable"
       - name: Clippy
         run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
+
+  msrv-build:
+    name: "MSRV build"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        build-args:
+          [
+            -p cashu --no-default-features --features "wallet mint",
+            -p cdk-common --no-default-features --features "wallet mint",
+            -p cdk-sql-common,
+            -p cdk,
+            -p cdk --no-default-features --features "mint auth",
+            -p cdk --no-default-features --features "wallet auth",
+            -p cdk --no-default-features --features "http_subscription",
+            -p cdk-axum,
+            -p cdk-axum --no-default-features --features redis,
+            -p cdk-lnbits,
+            -p cdk-fake-wallet,
+            -p cdk-cln,
+            -p cdk-lnd,
+            -p cdk-mint-rpc,
+            -p cdk-sqlite,
+            -p cdk-mintd,
+            -p cdk-payment-processor --no-default-features,
+          ]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "msrv"
+      - name: Build
+        run: nix develop -i -L .#msrv --command cargo build ${{ matrix.build-args }}
