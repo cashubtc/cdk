@@ -91,6 +91,46 @@ impl UnsignedSwapMessage {
     }
 }
 
+/// A signed balance update message that can be sent from Alice to Bob
+/// Represents Alice's commitment to a new channel balance
+#[derive(Debug, Clone)]
+struct BalanceUpdateMessage {
+    /// New balance for the receiver (Bob)
+    amount: u64,
+    /// Alice's signature over the swap request
+    signature: Signature,
+}
+
+impl BalanceUpdateMessage {
+    /// Create a balance update message from a signed swap request
+    fn from_signed_swap_request(
+        amount: u64,
+        swap_request: &SwapRequest,
+    ) -> Result<Self, anyhow::Error> {
+        // Extract Alice's signature from the swap request
+        let signatures = get_signatures_from_swap_request(swap_request)?;
+        let signature = signatures.first()
+            .ok_or_else(|| anyhow::anyhow!("No signature found in swap request"))?
+            .clone();
+
+        Ok(Self {
+            amount,
+            signature,
+        })
+    }
+
+    /// Verify the signature using the sender's public key and channel fixtures
+    /// Bob reconstructs the swap request from the amount to verify the signature
+    fn verify(&self, sender_pubkey: &cdk::nuts::PublicKey, channel_fixtures: &ChannelFixtures) -> bool {
+        // Reconstruct the swap request from the amount
+        let (swap_request, _) = channel_fixtures.create_updated_swap_request(self.amount);
+
+        // Create the message and verify the signature
+        let unsigned_msg = UnsignedSwapMessage::from_swap_request(&swap_request);
+        unsigned_msg.verify_signature(sender_pubkey, &self.signature)
+    }
+}
+
 /// Fixed channel components known to both parties
 /// These are established at channel creation and never change
 #[derive(Debug, Clone)]
@@ -822,6 +862,36 @@ async fn main() -> anyhow::Result<()> {
     println!("   The channel is now ready for off-chain payments.");
     println!("   Capacity: {} msat", channel_params.capacity);
     println!("   Alice can send up to {} msat to Bob via signed balance updates", channel_params.capacity);
+
+    // DEMO: Create and verify multiple balance updates
+    println!("\n📝 Demo: Creating and verifying balance updates (1-5 msat)...");
+    for amount_to_bob in 1..=5 {
+        println!("\n   Balance update #{}: {} msat to Bob", amount_to_bob, amount_to_bob);
+
+        // Alice creates swap request for updated balance
+        let (mut swap_request, total) = channel_fixtures.create_updated_swap_request(amount_to_bob);
+        assert_eq!(total, amount_to_bob, "Amount mismatch");
+        println!("      ✓ Alice: Swap request created");
+
+        // Alice signs the swap request
+        swap_request.sign_sig_all(alice_secret.clone())?;
+        println!("      ✓ Alice: Signed swap request");
+
+        // Alice creates the balance update message
+        let balance_update = BalanceUpdateMessage::from_signed_swap_request(amount_to_bob, &swap_request)?;
+        println!("      ✓ Alice: Created balance update message");
+
+        // --- Alice sends balance_update to Bob over the network ---
+        println!("      📨 Alice → Bob: Sending balance update message");
+
+        // Bob receives and verifies the balance update
+        if !balance_update.verify(&channel_params.alice_pubkey, &channel_fixtures) {
+            anyhow::bail!("Bob: Signature verification failed for amount {}", amount_to_bob);
+        }
+        println!("      ✓ Bob: Verified Alice's signature");
+        println!("      ✓ Bob: Accepted balance update ({} msat)", balance_update.amount);
+    }
+    println!("\n✅ All balance updates successfully created and verified!\n");
 
     // 13. TEST SPENDING BEFORE LOCKTIME (REQUIRES BOTH ALICE AND BOB SIGNATURES)
     println!("\n🔓 Testing spending BEFORE locktime (requires both Alice and Bob)...");
