@@ -920,7 +920,7 @@ async fn main() -> anyhow::Result<()> {
         println!("      ✓ Bob: Accepted balance update ({} msat)", balance_update.amount);
 
         // Store intermediate balance update (halfway through)
-        if 2 * amount_to_bob == num_iterations {
+        if amount_to_bob == num_iterations / 2 {
             intermediate_balance_update = Some(balance_update.clone());
         }
 
@@ -1027,6 +1027,39 @@ async fn main() -> anyhow::Result<()> {
 
     bob_wallet.localstore.update_proofs(bob_proof_infos, vec![]).await?;
     println!("   ✓ Bob's wallet balance: {} msat\n", bob_wallet.total_balance().await?);
+
+    // 14. TRY TO EXECUTE INTERMEDIATE BALANCE UPDATE (should fail - double spend)
+    println!("🔓 Bob attempting to also execute the intermediate balance update (should fail)...");
+
+    // Get the intermediate balance update
+    let intermediate_balance = intermediate_balance_update
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No intermediate balance update found"))?;
+
+    println!("   Bob has intermediate balance update: {} msat", intermediate_balance.amount);
+    println!("   (This should fail because some proofs were already spent in the latest balance update)");
+
+    // Bob reconstructs the swap request from the intermediate balance update
+    let mut intermediate_swap_request = intermediate_balance.get_sender_signed_swap_request(&channel_fixtures);
+
+    // Compute spend vector for display
+    let intermediate_spend_vector = channel_fixtures.params.balance_to_spend_vector(intermediate_balance.amount);
+    println!("   Spend vector: {}", format_spend_vector(&intermediate_spend_vector));
+
+    // Bob adds his signature
+    intermediate_swap_request.sign_sig_all(bob_secret.clone())?;
+
+    // Try to submit to mint (should fail)
+    println!("   Submitting swap request to mint...");
+    match mint.process_swap_request(intermediate_swap_request).await {
+        Ok(_) => {
+            println!("❌ UNEXPECTED: Swap succeeded! Double-spend was not prevented!");
+        }
+        Err(e) => {
+            println!("✅ Swap correctly rejected: {:?}", e);
+            println!("   The mint properly prevents double-spending\n");
+        }
+    }
 
     // 15. TEST ALICE-ONLY REFUND - CLAIM EACH UNSPENT PROOF INDIVIDUALLY
     println!("⏰ Testing locktime enforcement - Alice tries to claim unspent proofs individually...");
