@@ -129,6 +129,29 @@ impl BalanceUpdateMessage {
         let unsigned_msg = UnsignedSwapMessage::from_swap_request(&swap_request);
         unsigned_msg.verify_signature(sender_pubkey, &self.signature)
     }
+
+    /// Reconstruct the swap request with the sender's signature
+    /// This allows Bob to get a fully signed swap request that he can submit to the mint
+    fn get_sender_signed_swap_request(
+        &self,
+        channel_fixtures: &ChannelFixtures,
+    ) -> SwapRequest {
+        // Reconstruct the unsigned swap request from the amount
+        let (mut swap_request, _) = channel_fixtures.create_updated_swap_request(self.amount);
+
+        // Add the signature to the first proof's witness
+        let signature_str = self.signature.to_string();
+        let witness = cashu::nuts::P2PKWitness {
+            signatures: vec![signature_str],
+        };
+
+        // Set the witness on the first input proof
+        if let Some(first_proof) = swap_request.inputs_mut().first_mut() {
+            first_proof.witness = Some(cashu::nuts::Witness::P2PKWitness(witness));
+        }
+
+        swap_request
+    }
 }
 
 /// Fixed channel components known to both parties
