@@ -1,0 +1,101 @@
+name: Merge Queue
+
+on:
+  merge_group:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  clippy:
+    name: "Clippy checks for crates and features"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        build-args:
+          [
+            # Core crate testing
+            -p cashu,
+            -p cashu --no-default-features,
+            -p cashu --no-default-features --features wallet,
+            -p cashu --no-default-features --features mint,
+            -p cashu --no-default-features --features auth,
+            -p cdk-common,
+            -p cdk-common --no-default-features,
+            -p cdk-common --no-default-features --features wallet,
+            -p cdk-common --no-default-features --features mint,
+            -p cdk-common --no-default-features --features auth,
+            -p cdk,
+            -p cdk --no-default-features,
+            -p cdk --no-default-features --features wallet,
+            -p cdk --no-default-features --features mint,
+            -p cdk --no-default-features --features auth,
+            -p cdk-sql-common,
+            -p cdk-sql-common --no-default-features --features wallet,
+            -p cdk-sql-common --no-default-features --features mint,
+            
+            # Database and infrastructure crates
+            -p cdk-redb,
+            -p cdk-sqlite,
+            -p cdk-sqlite --features sqlcipher,
+            
+            # HTTP/API layer - consolidated
+            -p cdk-axum,
+            -p cdk-axum --no-default-features,
+            -p cdk-axum --no-default-features --features redis,
+            -p cdk-axum --no-default-features --features "redis swagger",
+            
+            # Lightning backends
+            -p cdk-cln,
+            -p cdk-lnd,
+            -p cdk-lnbits,
+            -p cdk-fake-wallet,
+            -p cdk-payment-processor,
+            -p cdk-ldk-node,
+            
+            -p cdk-signatory,
+            -p cdk-mint-rpc,
+
+            -p cdk-prometheus,
+            
+            # FFI bindings
+            -p cdk-ffi,
+            
+            # Binaries
+            --bin cdk-cli,
+            --bin cdk-cli --features sqlcipher,
+            --bin cdk-cli --features redb,
+            --bin cdk-mintd,
+            --bin cdk-mintd --features redis,
+            --bin cdk-mintd --features sqlcipher,
+            --bin cdk-mintd --no-default-features --features lnd --features sqlite,
+            --bin cdk-mintd --no-default-features --features cln --features postgres,
+            --bin cdk-mintd --no-default-features --features lnbits --features sqlite,
+            --bin cdk-mintd --no-default-features --features fakewallet --features sqlite,
+            --bin cdk-mintd --no-default-features --features grpc-processor --features sqlite,
+            --bin cdk-mintd --no-default-features --features "management-rpc lnd sqlite",
+            --bin cdk-mintd --no-default-features --features cln --features sqlite,
+            --bin cdk-mintd --no-default-features --features lnd --features postgres,
+            --bin cdk-mintd --no-default-features --features lnbits --features postgres,
+            --bin cdk-mintd --no-default-features --features fakewallet --features postgres,
+            --bin cdk-mintd --no-default-features --features grpc-processor --features postgres,
+            --bin cdk-mintd --no-default-features --features "management-rpc cln postgres",
+            --bin cdk-mintd --no-default-features --features "auth sqlite fakewallet",
+            --bin cdk-mintd --no-default-features --features "auth postgres lnd",
+            --bin cdk-mint-cli,
+          ]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
+      - name: Clippy
+        run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
