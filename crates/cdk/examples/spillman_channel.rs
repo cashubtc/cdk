@@ -39,44 +39,66 @@ fn format_spend_vector(vector: &[bool]) -> String {
     format!("[{}]", bits)
 }
 
-/// Helper function to create an unsigned SwapRequest based on a spend vector
-fn create_swap_request_from_vector(
-    locked_proofs: &[Proof],
-    bob_outputs: &[BlindedMessage],
-    spend_vector: &[bool],
-) -> (SwapRequest, u64) {
-    // Select proofs to spend based on spend_vector
-    let proofs_to_spend: Vec<Proof> = spend_vector
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &should_spend)| {
-            if should_spend {
-                Some(locked_proofs[i].clone())
-            } else {
-                None
-            }
-        })
-        .collect();
+/// Fixed channel components known to both parties
+/// These are established at channel creation and never change
+#[derive(Debug, Clone)]
+struct ChannelFixtures {
+    /// Locked proofs (2-of-2 multisig with locktime refund)
+    locked_proofs: Vec<Proof>,
+    /// Bob's predetermined blinded outputs
+    bob_outputs: Vec<BlindedMessage>,
+}
 
-    // Calculate total spending
-    let total_spending: u64 = proofs_to_spend.iter().map(|p| u64::from(p.amount)).sum();
+impl ChannelFixtures {
+    /// Create new channel fixtures
+    fn new(locked_proofs: Vec<Proof>, bob_outputs: Vec<BlindedMessage>) -> Self {
+        assert_eq!(
+            locked_proofs.len(),
+            bob_outputs.len(),
+            "Locked proofs and Bob's outputs must have same length"
+        );
+        Self {
+            locked_proofs,
+            bob_outputs,
+        }
+    }
 
-    // Select bob's outputs based on spend_vector
-    let bob_outputs_to_use: Vec<BlindedMessage> = spend_vector
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &should_spend)| {
-            if should_spend {
-                Some(bob_outputs[i].clone())
-            } else {
-                None
-            }
-        })
-        .collect();
+    /// Create an unsigned SwapRequest based on a spend vector
+    /// Returns the swap request and total amount being spent
+    fn create_swap_request_from_vector(&self, spend_vector: &[bool]) -> (SwapRequest, u64) {
+        // Select proofs to spend based on spend_vector
+        let proofs_to_spend: Vec<Proof> = spend_vector
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &should_spend)| {
+                if should_spend {
+                    Some(self.locked_proofs[i].clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-    // Create and return the unsigned swap request and total
-    let swap_request = SwapRequest::new(proofs_to_spend, bob_outputs_to_use);
-    (swap_request, total_spending)
+        // Calculate total spending
+        let total_spending: u64 = proofs_to_spend.iter().map(|p| u64::from(p.amount)).sum();
+
+        // Select bob's outputs based on spend_vector
+        let bob_outputs_to_use: Vec<BlindedMessage> = spend_vector
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &should_spend)| {
+                if should_spend {
+                    Some(self.bob_outputs[i].clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Create and return the unsigned swap request and total
+        let swap_request = SwapRequest::new(proofs_to_spend, bob_outputs_to_use);
+        (swap_request, total_spending)
+    }
 }
 
 /// Parameters for a Spillman payment channel
@@ -602,6 +624,9 @@ async fn main() -> anyhow::Result<()> {
 
     println!("✅ Created 1 locked proof: 1 msat - locked to 2-of-2 multisig\n");
 
+    // Create channel fixtures (fixed for the lifetime of the channel)
+    let channel_fixtures = ChannelFixtures::new(locked_proofs.clone(), bob_outputs.clone());
+
     println!("🎉 Setup complete!");
     println!("   Alice has 1 proof locked to Alice + Bob 2-of-2");
     println!("   Requires BOTH Alice and Bob to spend\n");
@@ -610,7 +635,7 @@ async fn main() -> anyhow::Result<()> {
     println!("🔍 Bob verifying the locked proof...");
 
     // Verify spending conditions
-    for (_i, proof) in locked_proofs.iter().enumerate() {
+    for (_i, proof) in channel_fixtures.locked_proofs.iter().enumerate() {
         // Parse the secret to extract spending conditions
         let nut10_secret: Nut10Secret = proof.secret.clone().try_into()?;
 
@@ -670,7 +695,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Verify DLEQ proofs (required for all proofs)
     println!("   Verifying DLEQ proofs...");
-    for (i, proof) in locked_proofs.iter().enumerate() {
+    for (i, proof) in channel_fixtures.locked_proofs.iter().enumerate() {
         // Bob requires DLEQ proof on every proof
         if proof.dleq.is_none() {
             anyhow::bail!("Proof {} is missing DLEQ proof!", i + 1);
@@ -685,18 +710,18 @@ async fn main() -> anyhow::Result<()> {
 
         println!("   ✓ Proof {}: DLEQ proof valid", i + 1);
     }
-    println!("   ✓ All {} DLEQ proofs verified", locked_proofs.len());
+    println!("   ✓ All {} DLEQ proofs verified", channel_fixtures.locked_proofs.len());
 
     // Verify proof structure
     println!("   Verifying proof structure...");
-    let total_amount = locked_proofs.total_amount()?;
+    let total_amount = channel_fixtures.locked_proofs.total_amount()?;
     if total_amount != Amount::from(channel_params.capacity) {
         anyhow::bail!("Total proof amount {} doesn't match capacity {}", total_amount, channel_params.capacity);
     }
     println!("   ✓ Total amount matches capacity: {} msat", total_amount);
 
     // Verify denominations match expectations
-    let proof_amounts: Vec<u64> = locked_proofs.iter().map(|p| u64::from(p.amount)).collect();
+    let proof_amounts: Vec<u64> = channel_fixtures.locked_proofs.iter().map(|p| u64::from(p.amount)).collect();
     if proof_amounts != channel_params.denominations {
         anyhow::bail!("Proof denominations {:?} don't match expected {:?}", proof_amounts, channel_params.denominations);
     }
@@ -712,8 +737,8 @@ async fn main() -> anyhow::Result<()> {
     println!("   - Refund requires 1 signature (Alice only)");
     println!("   - Locktime: {} (Alice can refund after this)", channel_params.locktime);
     println!("   - SigFlag: SigAll (signatures cover entire transaction)");
-    println!("   - All {} DLEQ proofs verified", locked_proofs.len());
-    println!("   - Total value: {} msat in {} denominations", total_amount, locked_proofs.len());
+    println!("   - All {} DLEQ proofs verified", channel_fixtures.locked_proofs.len());
+    println!("   - Total value: {} msat in {} denominations", total_amount, channel_fixtures.locked_proofs.len());
 
     // 13. TEST SPENDING BEFORE LOCKTIME (REQUIRES BOTH ALICE AND BOB SIGNATURES)
     println!("\n🔓 Testing spending BEFORE locktime (requires both Alice and Bob)...");
@@ -727,9 +752,9 @@ async fn main() -> anyhow::Result<()> {
     // Convert balance to spend vector
     let spend_vector = channel_params.balance_to_spend_vector(amount_to_bob);
 
-    // Create swap request using helper function
+    // Create swap request using channel fixtures
     let (mut spend_swap_request, total_spending) =
-        create_swap_request_from_vector(&locked_proofs, &bob_outputs, &spend_vector);
+        channel_fixtures.create_swap_request_from_vector(&spend_vector);
 
     println!("   Spending: {} msat (requires Alice + Bob signatures)", total_spending);
     println!("   Spend vector: {}", format_spend_vector(&spend_vector));
@@ -856,9 +881,9 @@ async fn main() -> anyhow::Result<()> {
     let amount_to_bob_2 = 129;  // This will try to reuse some proofs already spent
     let spend_vector_2 = channel_params.balance_to_spend_vector(amount_to_bob_2);
 
-    // Create swap request using helper function
+    // Create swap request using channel fixtures
     let (mut spend_swap_request_2, total_spending_2) =
-        create_swap_request_from_vector(&locked_proofs, &bob_outputs, &spend_vector_2);
+        channel_fixtures.create_swap_request_from_vector(&spend_vector_2);
 
     println!("   Attempting to spend: {} msat", total_spending_2);
     println!("   Spend vector: {}", format_spend_vector(&spend_vector_2));
@@ -932,8 +957,8 @@ async fn main() -> anyhow::Result<()> {
     println!("\n   📍 FIRST ATTEMPT (immediately after Bob exits - before locktime - trying ALL proofs):");
     let mut refunded_count = 0;
 
-    for i in 0..locked_proofs.len() {
-        let proof_amount = locked_proofs[i].amount;
+    for i in 0..channel_fixtures.locked_proofs.len() {
+        let proof_amount = channel_fixtures.locked_proofs[i].amount;
         let was_spent = spend_vector[i];
         let current_time = unix_time();
         let time_diff = if current_time >= channel_params.locktime {
@@ -947,7 +972,7 @@ async fn main() -> anyhow::Result<()> {
 
         // Create refund swap request for this single proof
         let mut refund_swap_request = SwapRequest::new(
-            vec![locked_proofs[i].clone()],
+            vec![channel_fixtures.locked_proofs[i].clone()],
             vec![alice_outputs[i].clone()]
         );
 
@@ -966,7 +991,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    println!("\n   Result: {}/{} proofs refunded before locktime", refunded_count, locked_proofs.len());
+    println!("\n   Result: {}/{} proofs refunded before locktime", refunded_count, channel_fixtures.locked_proofs.len());
 
     // Wait for locktime to pass
     let current_time = unix_time();
@@ -983,8 +1008,8 @@ async fn main() -> anyhow::Result<()> {
     refunded_count = 0;
     let mut alice_refund_proofs = Vec::new();
 
-    for i in 0..locked_proofs.len() {
-        let proof_amount = locked_proofs[i].amount;
+    for i in 0..channel_fixtures.locked_proofs.len() {
+        let proof_amount = channel_fixtures.locked_proofs[i].amount;
         let was_spent = spend_vector[i];
         let current_time = unix_time();
         let time_diff = if current_time >= channel_params.locktime {
@@ -998,7 +1023,7 @@ async fn main() -> anyhow::Result<()> {
 
         // Create refund swap request for this single proof
         let mut refund_swap_request = SwapRequest::new(
-            vec![locked_proofs[i].clone()],
+            vec![channel_fixtures.locked_proofs[i].clone()],
             vec![alice_outputs[i].clone()]
         );
 
@@ -1027,7 +1052,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let total_refunded = alice_refund_proofs.total_amount()?;
-    println!("\n   Result: {}/{} proofs successfully refunded (out of {} total proofs)", refunded_count, locked_proofs.len(), locked_proofs.len());
+    println!("\n   Result: {}/{} proofs successfully refunded (out of {} total proofs)", refunded_count, channel_fixtures.locked_proofs.len(), channel_fixtures.locked_proofs.len());
     println!("\n✅ Refund tests complete!");
     println!("   Alice reclaimed {} msat using ONLY her signature", total_refunded);
     println!("   Bob's signature was NOT required (locktime refund)\n");
