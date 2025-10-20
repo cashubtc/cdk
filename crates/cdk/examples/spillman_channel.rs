@@ -672,7 +672,7 @@ async fn main() -> anyhow::Result<()> {
         &mint_keys.keys,
     )?;
 
-    println!("✅ Created 1 locked proof: 1 msat - locked to 2-of-2 multisig\n");
+    println!("✅ Created {} locked proofs - locked to 2-of-2 multisig\n", locked_proofs.len());
 
     // Create channel fixtures (fixed for the lifetime of the channel)
     let channel_fixtures = ChannelFixtures::new(
@@ -682,7 +682,8 @@ async fn main() -> anyhow::Result<()> {
     );
 
     println!("🎉 Setup complete!");
-    println!("   Alice has 1 proof locked to Alice + Bob 2-of-2");
+    println!("   Alice has {} proofs locked to Alice + Bob 2-of-2", locked_proofs.len());
+    println!("   Total capacity: {} msat across {} denominations", channel_params.capacity, locked_proofs.len());
     println!("   Requires BOTH Alice and Bob to spend\n");
 
     // 12. BOB VERIFIES THE LOCKED PROOF
