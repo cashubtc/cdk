@@ -43,6 +43,8 @@ fn format_spend_vector(vector: &[bool]) -> String {
 /// These are established at channel creation and never change
 #[derive(Debug, Clone)]
 struct ChannelFixtures {
+    /// Channel parameters
+    params: SpillmanChannelParameters,
     /// Locked proofs (2-of-2 multisig with locktime refund)
     locked_proofs: Vec<Proof>,
     /// Bob's predetermined blinded outputs
@@ -51,16 +53,34 @@ struct ChannelFixtures {
 
 impl ChannelFixtures {
     /// Create new channel fixtures
-    fn new(locked_proofs: Vec<Proof>, bob_outputs: Vec<BlindedMessage>) -> Self {
+    fn new(
+        params: SpillmanChannelParameters,
+        locked_proofs: Vec<Proof>,
+        bob_outputs: Vec<BlindedMessage>,
+    ) -> Self {
         assert_eq!(
             locked_proofs.len(),
             bob_outputs.len(),
             "Locked proofs and Bob's outputs must have same length"
         );
+        assert_eq!(
+            locked_proofs.len(),
+            params.denominations.len(),
+            "Locked proofs must match denominations count"
+        );
         Self {
+            params,
             locked_proofs,
             bob_outputs,
         }
+    }
+
+    /// Create an unsigned SwapRequest for an updated receiver balance
+    /// Computes the spend vector and delegates to create_swap_request_from_vector
+    /// Returns the swap request and total amount being spent
+    fn create_updated_swap_request(&self, new_balance_for_receiver: u64) -> (SwapRequest, u64) {
+        let spend_vector = self.params.balance_to_spend_vector(new_balance_for_receiver);
+        self.create_swap_request_from_vector(&spend_vector)
     }
 
     /// Create an unsigned SwapRequest based on a spend vector
@@ -625,7 +645,11 @@ async fn main() -> anyhow::Result<()> {
     println!("✅ Created 1 locked proof: 1 msat - locked to 2-of-2 multisig\n");
 
     // Create channel fixtures (fixed for the lifetime of the channel)
-    let channel_fixtures = ChannelFixtures::new(locked_proofs.clone(), bob_outputs.clone());
+    let channel_fixtures = ChannelFixtures::new(
+        channel_params.clone(),
+        locked_proofs.clone(),
+        bob_outputs.clone(),
+    );
 
     println!("🎉 Setup complete!");
     println!("   Alice has 1 proof locked to Alice + Bob 2-of-2");
@@ -746,18 +770,18 @@ async fn main() -> anyhow::Result<()> {
     println!("   Locktime: {}", channel_params.locktime);
     println!("   Time until locktime: {} seconds\n", channel_params.locktime.saturating_sub(unix_time()));
 
-    // Amount to send to Bob
-    let amount_to_bob = 315;  // Binary: 100111011 in the spend vector
+    // New balance for Bob (receiver)
+    let amount_to_bob = 315;
 
-    // Convert balance to spend vector
-    let spend_vector = channel_params.balance_to_spend_vector(amount_to_bob);
-
-    // Create swap request using channel fixtures
+    // Create swap request for updated balance (computes spend vector internally)
     let (mut spend_swap_request, total_spending) =
-        channel_fixtures.create_swap_request_from_vector(&spend_vector);
+        channel_fixtures.create_updated_swap_request(amount_to_bob);
 
-    // Verify the spend vector produces the correct amount
-    assert_eq!(total_spending, amount_to_bob, "Spend vector calculation mismatch");
+    // Verify the swap request produces the correct amount
+    assert_eq!(total_spending, amount_to_bob, "Swap request calculation mismatch");
+
+    // Compute spend vector for display
+    let spend_vector = channel_fixtures.params.balance_to_spend_vector(amount_to_bob);
 
     println!("   Spending: {} msat (requires Alice + Bob signatures)", total_spending);
     println!("   Spend vector: {}", format_spend_vector(&spend_vector));
@@ -882,14 +906,16 @@ async fn main() -> anyhow::Result<()> {
 
     // Try to spend an amount that would reuse already-spent proofs
     let amount_to_bob_2 = 129;  // This will try to reuse some proofs already spent
-    let spend_vector_2 = channel_params.balance_to_spend_vector(amount_to_bob_2);
 
-    // Create swap request using channel fixtures
+    // Create swap request for updated balance
     let (mut spend_swap_request_2, total_spending_2) =
-        channel_fixtures.create_swap_request_from_vector(&spend_vector_2);
+        channel_fixtures.create_updated_swap_request(amount_to_bob_2);
 
-    // Verify the spend vector produces the correct amount
-    assert_eq!(total_spending_2, amount_to_bob_2, "Spend vector calculation mismatch");
+    // Verify the swap request produces the correct amount
+    assert_eq!(total_spending_2, amount_to_bob_2, "Swap request calculation mismatch");
+
+    // Compute spend vector for display
+    let spend_vector_2 = channel_fixtures.params.balance_to_spend_vector(amount_to_bob_2);
 
     println!("   Attempting to spend: {} msat", total_spending_2);
     println!("   Spend vector: {}", format_spend_vector(&spend_vector_2));
