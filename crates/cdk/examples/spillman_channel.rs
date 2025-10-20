@@ -817,6 +817,12 @@ async fn main() -> anyhow::Result<()> {
     println!("   - All {} DLEQ proofs verified", channel_fixtures.locked_proofs.len());
     println!("   - Total value: {} msat in {} denominations", total_amount, channel_fixtures.locked_proofs.len());
 
+    println!("\n🎊 CHANNEL OPEN! 🎊");
+    println!("   Both parties have verified all conditions.");
+    println!("   The channel is now ready for off-chain payments.");
+    println!("   Capacity: {} msat", channel_params.capacity);
+    println!("   Alice can send up to {} msat to Bob via signed balance updates", channel_params.capacity);
+
     // 13. TEST SPENDING BEFORE LOCKTIME (REQUIRES BOTH ALICE AND BOB SIGNATURES)
     println!("\n🔓 Testing spending BEFORE locktime (requires both Alice and Bob)...");
     println!("   Current time: {}", unix_time());
