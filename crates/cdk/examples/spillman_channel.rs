@@ -887,8 +887,13 @@ async fn main() -> anyhow::Result<()> {
     println!("   Alice can send up to {} msat to Bob via signed balance updates", channel_params.capacity);
 
     // DEMO: Create and verify multiple balance updates
-    println!("\n📝 Demo: Creating and verifying balance updates (1-5 msat)...");
-    for amount_to_bob in 1..=5 {
+    let num_iterations = 5;
+    println!("\n📝 Demo: Creating and verifying balance updates (1-{} msat)...", num_iterations);
+
+    let mut intermediate_balance_update: Option<BalanceUpdateMessage> = None;
+    let mut latest_balance_update: Option<BalanceUpdateMessage> = None;
+
+    for amount_to_bob in 1..=num_iterations {
         println!("\n   Balance update #{}: {} msat to Bob", amount_to_bob, amount_to_bob);
 
         // Alice creates swap request for updated balance
@@ -913,6 +918,14 @@ async fn main() -> anyhow::Result<()> {
         }
         println!("      ✓ Bob: Verified Alice's signature");
         println!("      ✓ Bob: Accepted balance update ({} msat)", balance_update.amount);
+
+        // Store intermediate balance update (halfway through)
+        if 2 * amount_to_bob == num_iterations {
+            intermediate_balance_update = Some(balance_update.clone());
+        }
+
+        // Store the latest balance update
+        latest_balance_update = Some(balance_update);
     }
     println!("\n✅ All balance updates successfully created and verified!\n");
 
