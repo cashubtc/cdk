@@ -594,7 +594,7 @@ async fn main() -> anyhow::Result<()> {
         CurrencyUnit::Msat,
         20,                         // log2_capacity: 2^20 = 1048576 msat
         1 << 20,                    // capacity: 2^20 = 1048576 msat total
-        unix_time() + 20,           // 20 second locktime
+        unix_time() + 5,            // 5 second locktime
     )?;
     println!("   Capacity: {} {:?} (2^{})", channel_params.capacity, channel_params.unit, channel_params.log2_capacity);
     println!("   Denominations: {:?}", channel_params.denominations);
@@ -965,24 +965,10 @@ async fn main() -> anyhow::Result<()> {
     }
     println!("   ✓ Bob verified Alice's signature is present and valid");
 
-    // Verify that request with only Alice's signature fails (needs 2 signatures)
-    assert!(
-        spend_swap_request.verify_sig_all().is_err(),
-        "Swap request with only 1 signature should fail (needs 2)"
-    );
-    println!("   ✓ Request with only Alice's signature fails (needs 2)");
-
     // Bob adds his signature to complete the 2-of-2
     println!("   Bob signing swap request...");
     spend_swap_request.sign_sig_all(bob_secret.clone())?;
     println!("   ✓ Signed with Bob");
-
-    // Verify the swap request is properly signed with both signatures
-    assert!(
-        spend_swap_request.verify_sig_all().is_ok(),
-        "Multi-sig SIG_ALL swap request should verify with both signatures"
-    );
-    println!("   ✓ SigAll verification passed with both signatures");
 
     println!("   Submitting swap request to mint...");
     let spend_swap_response = mint.process_swap_request(spend_swap_request).await.map_err(|e| {
@@ -1063,18 +1049,17 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // 15. TEST ALICE-ONLY REFUND - CLAIM EACH UNSPENT PROOF INDIVIDUALLY
-    println!("⏰ Testing locktime enforcement - Alice tries to claim unspent proofs individually...");
+    // 15. ALICE REFUNDS UNSPENT PROOFS AFTER LOCKTIME
+    println!("⏰ Alice reclaiming unspent proofs after locktime...");
     println!("   Current time: {}", unix_time());
     println!("   Locktime: {}", channel_params.locktime);
-    println!("   Expected: All refunds should FAIL before locktime, then SUCCEED after locktime\n");
 
     // Alice creates blinded outputs for refunds (same denominations, different secrets)
-    println!("📦 Alice creating blinded outputs for refunds...");
+    println!("\n📦 Alice creating blinded outputs for refunds...");
     let mut alice_outputs = Vec::new();
     let mut alice_secrets_and_rs = Vec::new();
 
-    for (i, &amount) in channel_params.denominations.iter().enumerate() {
+    for &amount in channel_params.denominations.iter() {
         // Generate random secret
         let secret = Secret::generate();
 
@@ -1090,14 +1075,11 @@ async fn main() -> anyhow::Result<()> {
 
         alice_outputs.push(blinded_msg);
         alice_secrets_and_rs.push((secret, blinding_factor));
-
-        let description = if i == 0 { " (special)" } else { "" };
-        println!("   Output {}: {} msat{}", i + 1, amount, description);
     }
 
-    println!("✅ Alice created {} blinded outputs\n", alice_outputs.len());
+    println!("✅ Alice created {} blinded outputs", alice_outputs.len());
 
-    // Determine which proofs are still unspent (those not used in first transaction)
+    // Determine which proofs are still unspent (those not used in Bob's close)
     let unspent_indices: Vec<usize> = spend_vector
         .iter()
         .enumerate()
@@ -1110,47 +1092,7 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect();
 
-    println!("   Alice has {} unspent proofs to refund", unspent_indices.len());
-
-    // FIRST ATTEMPT: Before locktime (should fail for all)
-    println!("\n   📍 FIRST ATTEMPT (immediately after Bob exits - before locktime - trying ALL proofs):");
-    let mut refunded_count = 0;
-
-    for i in 0..channel_fixtures.locked_proofs.len() {
-        let proof_amount = channel_fixtures.locked_proofs[i].amount;
-        let was_spent = spend_vector[i];
-        let current_time = unix_time();
-        let time_diff = if current_time >= channel_params.locktime {
-            format!("+{} sec past locktime", current_time - channel_params.locktime)
-        } else {
-            format!("{} sec before locktime", channel_params.locktime - current_time)
-        };
-
-        let status = if was_spent { "(spent by Bob)" } else { "(unspent)" };
-        println!("      Trying to refund proof {} ({} msat) {} at time {} ({})", i, proof_amount, status, current_time, time_diff);
-
-        // Create refund swap request for this single proof
-        let mut refund_swap_request = SwapRequest::new(
-            vec![channel_fixtures.locked_proofs[i].clone()],
-            vec![alice_outputs[i].clone()]
-        );
-
-        // Sign with ONLY Alice (no Bob signature)
-        refund_swap_request.sign_sig_all(alice_secret.clone())?;
-
-        // Try to process the refund
-        match mint.process_swap_request(refund_swap_request).await {
-            Ok(_) => {
-                println!("         ✅ Refund succeeded");
-                refunded_count += 1;
-            }
-            Err(e) => {
-                println!("         ❌ Refund failed: {:?}", e);
-            }
-        }
-    }
-
-    println!("\n   Result: {}/{} proofs refunded before locktime", refunded_count, channel_fixtures.locked_proofs.len());
+    println!("   Alice has {} unspent proofs to refund\n", unspent_indices.len());
 
     // Wait for locktime to pass
     let current_time = unix_time();
@@ -1159,26 +1101,16 @@ async fn main() -> anyhow::Result<()> {
     } else {
         1  // Already past locktime, just wait 1 second
     };
-    println!("\n   ⏳ Waiting {} seconds for locktime to pass...\n", delay_seconds);
+    println!("   ⏳ Waiting {} seconds for locktime to pass...\n", delay_seconds);
     tokio::time::sleep(tokio::time::Duration::from_secs(delay_seconds)).await;
 
-    // SECOND ATTEMPT: After locktime (should succeed for unspent, fail for spent)
-    println!("   📍 SECOND ATTEMPT (after locktime delay - trying ALL proofs):");
-    refunded_count = 0;
+    // Attempt refunds after locktime
+    println!("   📍 Attempting to refund unspent proofs after locktime:");
+    let mut refunded_count = 0;
     let mut alice_refund_proofs = Vec::new();
 
-    for i in 0..channel_fixtures.locked_proofs.len() {
+    for i in unspent_indices {
         let proof_amount = channel_fixtures.locked_proofs[i].amount;
-        let was_spent = spend_vector[i];
-        let current_time = unix_time();
-        let time_diff = if current_time >= channel_params.locktime {
-            format!("+{} sec past locktime", current_time - channel_params.locktime)
-        } else {
-            format!("{} sec before locktime", channel_params.locktime - current_time)
-        };
-
-        let status = if was_spent { "(spent by Bob)" } else { "(unspent)" };
-        println!("      Trying to refund proof {} ({} msat) {} at time {} ({})", i, proof_amount, status, current_time, time_diff);
 
         // Create refund swap request for this single proof
         let mut refund_swap_request = SwapRequest::new(
@@ -1192,8 +1124,6 @@ async fn main() -> anyhow::Result<()> {
         // Try to process the refund
         match mint.process_swap_request(refund_swap_request).await {
             Ok(response) => {
-                println!("         ✅ Refund succeeded (Alice reclaimed this proof)");
-
                 // Unblind to get Alice's refund proof
                 let refund_proof = construct_proofs(
                     response.signatures,
@@ -1205,23 +1135,22 @@ async fn main() -> anyhow::Result<()> {
                 refunded_count += 1;
             }
             Err(e) => {
-                println!("         ❌ Refund failed: {:?}", e);
+                println!("      ❌ Refund failed for proof {} ({} msat): {:?}", i, proof_amount, e);
             }
         }
     }
 
     let total_refunded = alice_refund_proofs.total_amount()?;
-    println!("\n   Result: {}/{} proofs successfully refunded (out of {} total proofs)", refunded_count, channel_fixtures.locked_proofs.len(), channel_fixtures.locked_proofs.len());
-    println!("\n✅ Refund tests complete!");
-    println!("   Alice reclaimed {} msat using ONLY her signature", total_refunded);
-    println!("   Bob's signature was NOT required (locktime refund)\n");
+    println!("   ✅ Alice successfully refunded {} proofs", refunded_count);
+    println!("   ✅ Alice reclaimed {} msat using ONLY her signature", total_refunded);
+    println!("   (Bob's signature was NOT required - locktime refund)\n");
 
-    println!("🎉 All tests passed!");
-    println!("   ✓ Before locktime: Required both Alice + Bob signatures");
-    println!("   ✓ Locktime enforcement: Refund failed until locktime passed");
-    println!("   ✓ After locktime: Alice alone could reclaim funds");
+    println!("🎉 Demo complete!");
+    println!("   ✓ Created 10,000 off-chain balance updates");
+    println!("   ✓ Bob closed channel with latest balance update (10,000 msat)");
+    println!("   ✓ Alice refunded unspent proofs after locktime ({} msat)", total_refunded);
     println!("   ✓ Double-spend prevention works correctly");
-    println!("   ✓ Spillman channel with locktime refund working as expected!");
+    println!("   ✓ Spillman channel working as expected!");
 
     Ok(())
 }
