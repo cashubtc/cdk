@@ -39,6 +39,36 @@ fn format_spend_vector(vector: &[bool]) -> String {
     format!("[{}]", bits)
 }
 
+/// Message to be signed for a SigAll swap request
+/// Constructed by concatenating all input secrets and output blinded secrets
+struct UnsignedSwapMessage {
+    msg_to_sign: String,
+}
+
+impl UnsignedSwapMessage {
+    /// Create message from a swap request
+    fn from_swap_request(swap_request: &SwapRequest) -> Self {
+        let mut msg_to_sign = String::new();
+
+        // Concatenate all input secrets
+        for proof in swap_request.inputs() {
+            msg_to_sign.push_str(&proof.secret.to_string());
+        }
+
+        // Concatenate all output blinded secrets
+        for output in swap_request.outputs() {
+            msg_to_sign.push_str(&output.blinded_secret.to_string());
+        }
+
+        Self { msg_to_sign }
+    }
+
+    /// Verify a signature against this message using a public key
+    fn verify_signature(&self, pubkey: &cdk::nuts::PublicKey, signature: &Signature) -> bool {
+        pubkey.verify(self.msg_to_sign.as_bytes(), signature).is_ok()
+    }
+}
+
 /// Fixed channel components known to both parties
 /// These are established at channel creation and never change
 #[derive(Debug, Clone)]
@@ -810,14 +840,8 @@ async fn main() -> anyhow::Result<()> {
     // NOTE: For SigAll, all signatures are in the witness of the FIRST proof only
     println!("   Bob verifying Alice's signature...");
 
-    // Reconstruct the SigAll message (same as sig_all_msg_to_sign)
-    let mut msg_to_sign = String::new();
-    for proof in spend_swap_request.inputs() {
-        msg_to_sign.push_str(&proof.secret.to_string());
-    }
-    for output in spend_swap_request.outputs() {
-        msg_to_sign.push_str(&output.blinded_secret.to_string());
-    }
+    // Create the message to verify
+    let unsigned_msg = UnsignedSwapMessage::from_swap_request(&spend_swap_request);
 
     let first_proof = spend_swap_request.inputs().first()
         .ok_or_else(|| anyhow::anyhow!("No inputs in swap request"))?;
@@ -827,7 +851,7 @@ async fn main() -> anyhow::Result<()> {
             // Check if any signature in the witness is from Alice
             p2pk_witness.signatures.iter().any(|sig_str| {
                 if let Ok(sig) = sig_str.parse::<Signature>() {
-                    channel_params.alice_pubkey.verify(msg_to_sign.as_bytes(), &sig).is_ok()
+                    unsigned_msg.verify_signature(&channel_params.alice_pubkey, &sig)
                 } else {
                     false
                 }
