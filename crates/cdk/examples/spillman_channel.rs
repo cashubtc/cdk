@@ -592,8 +592,8 @@ async fn main() -> anyhow::Result<()> {
         alice_pubkey,
         bob_pubkey,
         CurrencyUnit::Msat,
-        9,                          // log2_capacity: 2^9 = 512 msat
-        512,                        // capacity: 512 msat total
+        20,                         // log2_capacity: 2^20 = 1048576 msat
+        1 << 20,                    // capacity: 2^20 = 1048576 msat total
         unix_time() + 5,            // 5 second locktime
     )?;
     println!("   Capacity: {} {:?} (2^{})", channel_params.capacity, channel_params.unit, channel_params.log2_capacity);
@@ -887,7 +887,10 @@ async fn main() -> anyhow::Result<()> {
     println!("   Alice can send up to {} msat to Bob via signed balance updates", channel_params.capacity);
 
     // DEMO: Create and verify multiple balance updates
-    let num_iterations = 5;
+    let num_iterations = 1000;
+    if num_iterations > channel_params.capacity {
+        anyhow::bail!("Number of iterations ({}) exceeds channel capacity ({})", num_iterations, channel_params.capacity);
+    }
     println!("\n📝 Demo: Creating and verifying balance updates (1-{} msat)...", num_iterations);
 
     let mut intermediate_balance_update: Option<BalanceUpdateMessage> = None;
