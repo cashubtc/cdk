@@ -756,6 +756,9 @@ async fn main() -> anyhow::Result<()> {
     let (mut spend_swap_request, total_spending) =
         channel_fixtures.create_swap_request_from_vector(&spend_vector);
 
+    // Verify the spend vector produces the correct amount
+    assert_eq!(total_spending, amount_to_bob, "Spend vector calculation mismatch");
+
     println!("   Spending: {} msat (requires Alice + Bob signatures)", total_spending);
     println!("   Spend vector: {}", format_spend_vector(&spend_vector));
     println!("   Outputs: Using Bob's predetermined outputs");
@@ -884,6 +887,9 @@ async fn main() -> anyhow::Result<()> {
     // Create swap request using channel fixtures
     let (mut spend_swap_request_2, total_spending_2) =
         channel_fixtures.create_swap_request_from_vector(&spend_vector_2);
+
+    // Verify the spend vector produces the correct amount
+    assert_eq!(total_spending_2, amount_to_bob_2, "Spend vector calculation mismatch");
 
     println!("   Attempting to spend: {} msat", total_spending_2);
     println!("   Spend vector: {}", format_spend_vector(&spend_vector_2));
