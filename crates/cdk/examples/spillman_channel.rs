@@ -929,59 +929,31 @@ async fn main() -> anyhow::Result<()> {
     }
     println!("\n✅ All balance updates successfully created and verified!\n");
 
-    // 13. TEST SPENDING BEFORE LOCKTIME (REQUIRES BOTH ALICE AND BOB SIGNATURES)
-    println!("\n🔓 Testing spending BEFORE locktime (requires both Alice and Bob)...");
+    // 13. BOB CLOSES THE CHANNEL BY EXECUTING THE LATEST BALANCE UPDATE
+    println!("🔓 Bob closing the channel with the latest balance update...");
     println!("   Current time: {}", unix_time());
     println!("   Locktime: {}", channel_params.locktime);
     println!("   Time until locktime: {} seconds\n", channel_params.locktime.saturating_sub(unix_time()));
 
-    // New balance for Bob (receiver)
-    let amount_to_bob = 315;
+    // Get the latest balance update
+    let latest_balance = latest_balance_update
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No balance update found"))?;
 
-    // Create swap request for updated balance (computes spend vector internally)
-    let (mut spend_swap_request, total_spending) =
-        channel_fixtures.create_updated_swap_request(amount_to_bob);
+    println!("   Bob has latest balance update: {} msat", latest_balance.amount);
 
-    // Verify the swap request produces the correct amount
-    assert_eq!(total_spending, amount_to_bob, "Swap request calculation mismatch");
+    // Bob reconstructs the swap request from the balance update message
+    let mut spend_swap_request = latest_balance.get_sender_signed_swap_request(&channel_fixtures);
 
     // Compute spend vector for display
-    let spend_vector = channel_fixtures.params.balance_to_spend_vector(amount_to_bob);
-
-    println!("   Spending: {} msat (requires Alice + Bob signatures)", total_spending);
+    let spend_vector = channel_fixtures.params.balance_to_spend_vector(latest_balance.amount);
     println!("   Spend vector: {}", format_spend_vector(&spend_vector));
     println!("   Outputs: Using Bob's predetermined outputs");
 
-    // Verify that unsigned request fails
-    assert!(
-        spend_swap_request.verify_sig_all().is_err(),
-        "Unsigned swap request should fail verification"
-    );
-    println!("   ✓ Unsigned request fails verification (as expected)");
-
-    // Sign the entire swap request with BOTH Alice and Bob keys (2-of-2 SigAll)
-    println!("   Signing swap request with Alice...");
-    spend_swap_request.sign_sig_all(alice_secret.clone())?;
-    println!("   ✓ Signed with Alice");
-
-    // Verify that request with only Alice's signature fails (needs 2 signatures)
-    assert!(
-        spend_swap_request.verify_sig_all().is_err(),
-        "Swap request with only 1 signature should fail (needs 2)"
-    );
-    println!("   ✓ Request with only Alice's signature fails (needs 2)");
-
-    // Bob verifies Alice's signature before adding his own
-    // NOTE: For SigAll, all signatures are in the witness of the FIRST proof only
-    println!("   Bob verifying Alice's signature...");
-
-    // Create the message to verify
+    // Verify that the swap request has Alice's signature but not Bob's
+    println!("   Verifying Alice's signature...");
     let unsigned_msg = UnsignedSwapMessage::from_swap_request(&spend_swap_request);
-
-    // Get all signatures from the swap request
     let signatures = get_signatures_from_swap_request(&spend_swap_request)?;
-
-    // Check if any signature is valid for Alice's pubkey
     let alice_sig_valid = signatures.iter().any(|sig| {
         unsigned_msg.verify_signature(&channel_params.alice_pubkey, sig)
     });
@@ -991,7 +963,15 @@ async fn main() -> anyhow::Result<()> {
     }
     println!("   ✓ Bob verified Alice's signature is present and valid");
 
-    println!("   Signing swap request with Bob...");
+    // Verify that request with only Alice's signature fails (needs 2 signatures)
+    assert!(
+        spend_swap_request.verify_sig_all().is_err(),
+        "Swap request with only 1 signature should fail (needs 2)"
+    );
+    println!("   ✓ Request with only Alice's signature fails (needs 2)");
+
+    // Bob adds his signature to complete the 2-of-2
+    println!("   Bob signing swap request...");
     spend_swap_request.sign_sig_all(bob_secret.clone())?;
     println!("   ✓ Signed with Bob");
 
@@ -1002,7 +982,7 @@ async fn main() -> anyhow::Result<()> {
     );
     println!("   ✓ SigAll verification passed with both signatures");
 
-    println!("   Swapping locked proof for Bob's outputs...");
+    println!("   Submitting swap request to mint...");
     let spend_swap_response = mint.process_swap_request(spend_swap_request).await.map_err(|e| {
         anyhow::anyhow!("Swap failed: {:?}", e)
     })?;
@@ -1027,11 +1007,11 @@ async fn main() -> anyhow::Result<()> {
         &mint_keys.keys,
     )?;
 
-    println!("✅ Swap successful!");
-    println!("   Bob received {} msat in his predetermined outputs", total_spending);
+    println!("✅ Channel closed successfully!");
+    println!("   Bob received {} msat in his predetermined outputs", latest_balance.amount);
     println!("   These proofs have no spending conditions and can be freely spent by Bob");
 
-    // Add Bob's proofs to his wallet for validation
+    // Add Bob's proofs to his wallet
     println!("   Adding Bob's proofs to his wallet...");
     let bob_proof_infos: Vec<ProofInfo> = bob_final_proofs
         .iter()
@@ -1047,41 +1027,6 @@ async fn main() -> anyhow::Result<()> {
 
     bob_wallet.localstore.update_proofs(bob_proof_infos, vec![]).await?;
     println!("   ✓ Bob's wallet balance: {} msat\n", bob_wallet.total_balance().await?);
-
-    // 14. SECOND TRANSACTION: TRY TO DOUBLE-SPEND (should fail)
-    println!("🔓 Second transaction: attempting to re-spend (double-spend attack)...");
-
-    // Try to spend an amount that would reuse already-spent proofs
-    let amount_to_bob_2 = 129;  // This will try to reuse some proofs already spent
-
-    // Create swap request for updated balance
-    let (mut spend_swap_request_2, total_spending_2) =
-        channel_fixtures.create_updated_swap_request(amount_to_bob_2);
-
-    // Verify the swap request produces the correct amount
-    assert_eq!(total_spending_2, amount_to_bob_2, "Swap request calculation mismatch");
-
-    // Compute spend vector for display
-    let spend_vector_2 = channel_fixtures.params.balance_to_spend_vector(amount_to_bob_2);
-
-    println!("   Attempting to spend: {} msat", total_spending_2);
-    println!("   Spend vector: {}", format_spend_vector(&spend_vector_2));
-    println!("   (This will attempt to reuse outputs from the first transaction)");
-
-    // Sign with both keys
-    spend_swap_request_2.sign_sig_all(alice_secret.clone())?;
-    spend_swap_request_2.sign_sig_all(bob_secret.clone())?;
-
-    println!("   Attempting swap (this should fail)...");
-    match mint.process_swap_request(spend_swap_request_2).await {
-        Ok(_) => {
-            println!("❌ UNEXPECTED: Swap succeeded! Double-spend was not prevented!");
-        }
-        Err(e) => {
-            println!("✅ Swap correctly rejected: {:?}", e);
-            println!("   The mint properly prevents double-spending\n");
-        }
-    }
 
     // 15. TEST ALICE-ONLY REFUND - CLAIM EACH UNSPENT PROOF INDIVIDUALLY
     println!("⏰ Testing locktime enforcement - Alice tries to claim unspent proofs individually...");
