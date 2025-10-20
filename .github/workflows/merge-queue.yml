@@ -140,3 +140,65 @@ jobs:
           shared-key: "msrv"
       - name: Build
         run: nix develop -i -L .#msrv --command cargo build ${{ matrix.build-args }}
+
+  check-wasm:
+    name: Check WASM
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        rust:
+          - stable
+        target:
+          - wasm32-unknown-unknown
+        build-args:
+          [
+            -p cdk,
+            -p cdk --no-default-features,
+            -p cdk --no-default-features --features wallet,
+          ]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable"
+      - name: Build cdk and binding
+        run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
+
+  check-wasm-msrv:
+    name: Check WASM MSRV
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        rust:
+          - msrv
+        target:
+          - wasm32-unknown-unknown
+        build-args:
+          [
+            -p cdk,
+            -p cdk --no-default-features,
+            -p cdk --no-default-features --features wallet,
+          ]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "msrv"
+      - name: Build cdk wasm
+        run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}

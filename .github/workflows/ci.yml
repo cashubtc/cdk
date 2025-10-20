@@ -340,19 +340,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: pre-commit-checks
-    strategy:
-      fail-fast: true
-      matrix:
-        rust:
-          - stable
-        target:
-          - wasm32-unknown-unknown
-        build-args:
-          [
-            -p cdk,
-            -p cdk --no-default-features,
-            -p cdk --no-default-features --features wallet,
-          ]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -410,7 +397,7 @@ jobs:
         with:
           shared-key: "msrv-${{ steps.flake-hash.outputs.hash }}"
       - name: Build cdk wasm
-        run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
+        run: nix develop -i -L .#stable --command cargo build -p cdk --target wasm32-unknown-unknown
 
   fake-mint-auth-itest:
     name: "Integration fake mint auth tests"
