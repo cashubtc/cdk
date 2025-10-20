@@ -308,33 +308,10 @@ jobs:
         run: nix develop -i -L .#stable --command just itest-payment-processor ${{matrix.ln}}
 
   msrv-build:
-    name: "MSRV build"
+    name: "MSRV workspace build"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: pre-commit-checks
-    strategy:
-      fail-fast: true
-      matrix:
-        build-args:
-          [
-            -p cashu --no-default-features --features "wallet mint",
-            -p cdk-common --no-default-features --features "wallet mint",
-            -p cdk-sql-common,
-            -p cdk,
-            -p cdk --no-default-features --features "mint auth",
-            -p cdk --no-default-features --features "wallet auth",
-            -p cdk --no-default-features --features "http_subscription",
-            -p cdk-axum,
-            -p cdk-axum --no-default-features --features redis,
-            -p cdk-lnbits,
-            -p cdk-fake-wallet,
-            -p cdk-cln,
-            -p cdk-lnd,
-            -p cdk-mint-rpc,
-            -p cdk-sqlite,
-            -p cdk-mintd,
-            -p cdk-payment-processor --no-default-features,
-          ]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -354,6 +331,8 @@ jobs:
           shared-key: "msrv-${{ steps.flake-hash.outputs.hash }}"
       - name: Build
         run: nix develop -i -L .#msrv --command cargo build ${{ matrix.build-args }}
+      - name: Build workspace
+        run: nix develop -i -L .#msrv --command cargo build --workspace
 
 
   check-wasm:
