@@ -510,34 +510,6 @@ async fn main() -> anyhow::Result<()> {
         "Bob's output count must match denominations count"
     );
 
-    // Alice also creates blinded outputs (same denominations, different secrets)
-    println!("📦 Alice creating blinded outputs for refunds...");
-    let mut alice_outputs = Vec::new();
-    let mut alice_secrets_and_rs = Vec::new();
-
-    for (i, &amount) in channel_params.denominations.iter().enumerate() {
-        // Generate random secret
-        let secret = Secret::generate();
-
-        // Blind the secret to get B_ = Y + rG
-        let (blinded_point, blinding_factor) = blind_message(&secret.to_bytes(), None)?;
-
-        // Create BlindedMessage
-        let blinded_msg = BlindedMessage::new(
-            Amount::from(amount),
-            active_keyset_id,
-            blinded_point,
-        );
-
-        alice_outputs.push(blinded_msg);
-        alice_secrets_and_rs.push((secret, blinding_factor));
-
-        let description = if i == 0 { " (special)" } else { "" };
-        println!("   Output {}: {} msat{}", i + 1, amount, description);
-    }
-
-    println!("✅ Alice created {} blinded outputs\n", alice_outputs.len());
-
     // 8. PREPARE 2-OF-2 MULTISIG SPENDING CONDITIONS WITH LOCKTIME REFUND
     println!("🔐 Preparing 2-of-2 multisig spending conditions with locktime refund...");
 
@@ -912,6 +884,34 @@ async fn main() -> anyhow::Result<()> {
     println!("   Current time: {}", unix_time());
     println!("   Locktime: {}", channel_params.locktime);
     println!("   Expected: All refunds should FAIL before locktime, then SUCCEED after locktime\n");
+
+    // Alice creates blinded outputs for refunds (same denominations, different secrets)
+    println!("📦 Alice creating blinded outputs for refunds...");
+    let mut alice_outputs = Vec::new();
+    let mut alice_secrets_and_rs = Vec::new();
+
+    for (i, &amount) in channel_params.denominations.iter().enumerate() {
+        // Generate random secret
+        let secret = Secret::generate();
+
+        // Blind the secret to get B_ = Y + rG
+        let (blinded_point, blinding_factor) = blind_message(&secret.to_bytes(), None)?;
+
+        // Create BlindedMessage
+        let blinded_msg = BlindedMessage::new(
+            Amount::from(amount),
+            active_keyset_id,
+            blinded_point,
+        );
+
+        alice_outputs.push(blinded_msg);
+        alice_secrets_and_rs.push((secret, blinding_factor));
+
+        let description = if i == 0 { " (special)" } else { "" };
+        println!("   Output {}: {} msat{}", i + 1, amount, description);
+    }
+
+    println!("✅ Alice created {} blinded outputs\n", alice_outputs.len());
 
     // Determine which proofs are still unspent (those not used in first transaction)
     let unspent_indices: Vec<usize> = spend_vector
