@@ -1069,6 +1069,38 @@ where
     }
 
     #[instrument(skip(self))]
+    async fn get_unpaid_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT
+                id,
+                mint_url,
+                amount,
+                unit,
+                request,
+                state,
+                expiry,
+                secret_key,
+                payment_method,
+                amount_issued,
+                amount_paid
+            FROM
+                mint_quote
+            WHERE
+                (amount_paid > amount_issued AND amount_paid > 0)
+                OR
+                payment_method = 'bolt12'
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_mint_quote)
+        .collect::<Result<_, _>>()?)
+    }
+
+    #[instrument(skip(self))]
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         get_melt_quote_inner(&*conn, quote_id, false).await
