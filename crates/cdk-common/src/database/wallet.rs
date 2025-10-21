@@ -62,6 +62,8 @@ pub trait Database: Debug {
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<WalletMintQuote>, Self::Err>;
     /// Get mint quotes from storage
     async fn get_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Self::Err>;
+    /// Get pending mint quotes from storage (quotes with mintable balance or bolt12 quotes)
+    async fn get_pending_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Self::Err>;
     /// Remove mint quote from storage
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 

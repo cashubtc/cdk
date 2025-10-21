@@ -511,6 +511,25 @@ impl WalletDatabase for WalletRedbDatabase {
             .collect())
     }
 
+    async fn get_pending_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+        let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
+        let table = read_txn
+            .open_table(MINT_QUOTES_TABLE)
+            .map_err(Error::from)?;
+
+        Ok(table
+            .iter()
+            .map_err(Error::from)?
+            .flatten()
+            .flat_map(|(_id, quote)| serde_json::from_str::<MintQuote>(quote.value()).ok())
+            .filter(|quote| {
+                // Return quotes with pending balance OR bolt12 quotes
+                (quote.amount_paid > quote.amount_issued && u64::from(quote.amount_paid) > 0)
+                    || quote.payment_method.to_string() == "bolt12"
+            })
+            .collect())
+    }
+
     #[instrument(skip_all)]
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
