@@ -1,5 +1,5 @@
 -- Add created_time column to mint_quote table for ordering queries
-ALTER TABLE mint_quote ADD COLUMN created_time INTEGER NOT NULL DEFAULT (strftime('%s', 'now'));
+ALTER TABLE mint_quote ADD COLUMN created_time INTEGER NOT NULL DEFAULT 0;
 
 -- Composite index for optimized pending quotes query
 -- Supports WHERE (amount_paid > amount_issued) OR payment_method = 'bolt12'
