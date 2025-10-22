@@ -1183,11 +1183,6 @@ pub async fn run_mintd_with_shutdown(
 
     let mint = Arc::new(mint);
 
-    // Checks the status of all pending melt quotes
-    // Pending melt quotes where the payment has gone through inputs are burnt
-    // Pending melt quotes where the payment has **failed** inputs are reset to unspent
-    mint.check_pending_melt_quotes().await?;
-
     start_services_with_shutdown(
         mint.clone(),
         settings,

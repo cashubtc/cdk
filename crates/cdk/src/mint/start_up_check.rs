@@ -3,7 +3,10 @@
 //! These checks are need in the case the mint was offline and the lightning node was node.
 //! These ensure that the status of the mint or melt quote matches in the mint db and on the node.
 
+use cdk_common::mint::OperationKind;
+
 use super::{Error, Mint};
+use crate::mint::swap::swap_saga::compensation::{CompensatingAction, RemoveSwapSetup};
 use crate::mint::{MeltQuote, MeltQuoteState, PaymentMethod};
 use crate::types::PaymentProcessorKey;
 
@@ -76,6 +79,69 @@ impl Mint {
         }
 
         tx.commit().await?;
+
+        Ok(())
+    }
+
+    /// Recover from incomplete swap sagas
+    ///
+    /// Checks all persisted sagas for swap operations and compensates
+    /// incomplete ones by removing both proofs and blinded messages.
+    pub async fn recover_from_incomplete_sagas(&self) -> Result<(), Error> {
+        let incomplete_sagas = self
+            .localstore
+            .get_incomplete_sagas(OperationKind::Swap)
+            .await?;
+
+        if incomplete_sagas.is_empty() {
+            tracing::info!("No incomplete swap sagas found to recover.");
+            return Ok(());
+        }
+
+        let total_sagas = incomplete_sagas.len();
+        tracing::info!("Found {} incomplete swap sagas to recover.", total_sagas);
+
+        for saga in incomplete_sagas {
+            tracing::info!(
+                "Recovering saga {} in state '{}' (created: {}, updated: {})",
+                saga.operation_id,
+                saga.state.state(),
+                saga.created_at,
+                saga.updated_at
+            );
+
+            // Use the same compensation logic as in-process failures
+            let compensation = RemoveSwapSetup {
+                blinded_secrets: saga.blinded_secrets.clone(),
+                input_ys: saga.input_ys.clone(),
+            };
+
+            // Execute compensation
+            if let Err(e) = compensation.execute(&self.localstore).await {
+                tracing::error!(
+                    "Failed to compensate saga {}: {}. Continuing...",
+                    saga.operation_id,
+                    e
+                );
+                continue;
+            }
+
+            // Delete saga after successful compensation
+            let mut tx = self.localstore.begin_transaction().await?;
+            if let Err(e) = tx.delete_saga(&saga.operation_id).await {
+                tracing::error!("Failed to delete saga for {}: {}", saga.operation_id, e);
+                tx.rollback().await?;
+                continue;
+            }
+            tx.commit().await?;
+
+            tracing::info!("Successfully recovered saga {}", saga.operation_id);
+        }
+
+        tracing::info!(
+            "Successfully recovered {} incomplete swap sagas.",
+            total_sagas
+        );
 
         Ok(())
     }

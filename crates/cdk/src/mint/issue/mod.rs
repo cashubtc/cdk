@@ -1,4 +1,4 @@
-use cdk_common::mint::MintQuote;
+use cdk_common::mint::{MintQuote, Operation};
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
     IncomingPaymentOptions, WaitPaymentResponse,
@@ -656,6 +656,10 @@ impl Mint {
 
         let unit = unit.ok_or(Error::UnsupportedUnit).unwrap();
         ensure_cdk!(unit == mint_quote.unit, Error::UnsupportedUnit);
+
+        let operation = Operation::new_mint();
+
+        tx.add_blinded_messages(Some(&mint_request.quote), &mint_request.outputs, &operation).await?;
 
         tx.add_blind_signatures(
             &mint_request

@@ -1,5 +1,8 @@
 //! Mint types
 
+use std::fmt;
+use std::str::FromStr;
+
 use bitcoin::bip32::DerivationPath;
 use cashu::quote_id::QuoteId;
 use cashu::util::unix_time;
@@ -14,7 +17,206 @@ use uuid::Uuid;
 
 use crate::nuts::{MeltQuoteState, MintQuoteState};
 use crate::payment::PaymentIdentifier;
-use crate::{Amount, CurrencyUnit, Id, KeySetInfo, PublicKey};
+use crate::{Amount, CurrencyUnit, Error, Id, KeySetInfo, PublicKey};
+
+/// Operation kind for saga persistence
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OperationKind {
+    /// Swap operation
+    Swap,
+    /// Mint operation
+    Mint,
+    /// Melt operation
+    Melt,
+}
+
+impl fmt::Display for OperationKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OperationKind::Swap => write!(f, "swap"),
+            OperationKind::Mint => write!(f, "mint"),
+            OperationKind::Melt => write!(f, "melt"),
+        }
+    }
+}
+
+impl FromStr for OperationKind {
+    type Err = Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let value = value.to_lowercase();
+        match value.as_str() {
+            "swap" => Ok(OperationKind::Swap),
+            "mint" => Ok(OperationKind::Mint),
+            "melt" => Ok(OperationKind::Melt),
+            _ => Err(Error::Custom(format!("Invalid operation kind: {}", value))),
+        }
+    }
+}
+
+/// States specific to swap saga
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwapSagaState {
+    /// Swap setup complete (proofs added, blinded messages added)
+    SetupComplete,
+    /// Outputs signed (signatures generated but not persisted)
+    Signed,
+}
+
+impl fmt::Display for SwapSagaState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SwapSagaState::SetupComplete => write!(f, "setup_complete"),
+            SwapSagaState::Signed => write!(f, "signed"),
+        }
+    }
+}
+
+impl FromStr for SwapSagaState {
+    type Err = Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let value = value.to_lowercase();
+        match value.as_str() {
+            "setup_complete" => Ok(SwapSagaState::SetupComplete),
+            "signed" => Ok(SwapSagaState::Signed),
+            _ => Err(Error::Custom(format!("Invalid swap saga state: {}", value))),
+        }
+    }
+}
+
+/// Saga state for different operation types
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SagaStateEnum {
+    /// Swap saga states
+    Swap(SwapSagaState),
+    // Future: Mint saga states
+    // Mint(MintSagaState),
+    // Future: Melt saga states
+    // Melt(MeltSagaState),
+}
+
+impl SagaStateEnum {
+    /// Create from string given operation kind
+    pub fn new(operation_kind: OperationKind, s: &str) -> Result<Self, Error> {
+        match operation_kind {
+            OperationKind::Swap => Ok(SagaStateEnum::Swap(SwapSagaState::from_str(s)?)),
+            OperationKind::Mint => Err(Error::Custom("Mint saga not implemented yet".to_string())),
+            OperationKind::Melt => Err(Error::Custom("Melt saga not implemented yet".to_string())),
+        }
+    }
+
+    /// Get string representation of the state
+    pub fn state(&self) -> &str {
+        match self {
+            SagaStateEnum::Swap(state) => match state {
+                SwapSagaState::SetupComplete => "setup_complete",
+                SwapSagaState::Signed => "signed",
+            },
+        }
+    }
+}
+
+/// Persisted saga for recovery
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Saga {
+    /// Operation ID (correlation key)
+    pub operation_id: Uuid,
+    /// Operation kind (swap, mint, melt)
+    pub operation_kind: OperationKind,
+    /// Current saga state (operation-specific)
+    pub state: SagaStateEnum,
+    /// Blinded secrets (B values) from output blinded messages
+    pub blinded_secrets: Vec<PublicKey>,
+    /// Y values (public keys) from input proofs
+    pub input_ys: Vec<PublicKey>,
+    /// Unix timestamp when saga was created
+    pub created_at: u64,
+    /// Unix timestamp when saga was last updated
+    pub updated_at: u64,
+}
+
+impl Saga {
+    /// Create new swap saga
+    pub fn new_swap(
+        operation_id: Uuid,
+        state: SwapSagaState,
+        blinded_secrets: Vec<PublicKey>,
+        input_ys: Vec<PublicKey>,
+    ) -> Self {
+        let now = unix_time();
+        Self {
+            operation_id,
+            operation_kind: OperationKind::Swap,
+            state: SagaStateEnum::Swap(state),
+            blinded_secrets,
+            input_ys,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Update swap saga state
+    pub fn update_swap_state(&mut self, new_state: SwapSagaState) {
+        self.state = SagaStateEnum::Swap(new_state);
+        self.updated_at = unix_time();
+    }
+}
+
+/// Operation
+pub enum Operation {
+    /// Mint
+    Mint(Uuid),
+    /// Melt
+    Melt(Uuid),
+    /// Swap
+    Swap(Uuid),
+}
+
+impl Operation {
+    /// Mint
+    pub fn new_mint() -> Self {
+        Self::Mint(Uuid::new_v4())
+    }
+    /// Melt
+    pub fn new_melt() -> Self {
+        Self::Melt(Uuid::new_v4())
+    }
+    /// Swap
+    pub fn new_swap() -> Self {
+        Self::Swap(Uuid::new_v4())
+    }
+
+    /// Operation id
+    pub fn id(&self) -> &Uuid {
+        match self {
+            Operation::Mint(id) => id,
+            Operation::Melt(id) => id,
+            Operation::Swap(id) => id,
+        }
+    }
+
+    /// Operation kind
+    pub fn kind(&self) -> &str {
+        match self {
+            Operation::Mint(_) => "mint",
+            Operation::Melt(_) => "melt",
+            Operation::Swap(_) => "swap",
+        }
+    }
+
+    /// From kind and i
+    pub fn from_kind_and_id(kind: &str, id: &str) -> Result<Self, Error> {
+        let uuid = Uuid::parse_str(id)?;
+        match kind {
+            "mint" => Ok(Self::Mint(uuid)),
+            "melt" => Ok(Self::Melt(uuid)),
+            "swap" => Ok(Self::Swap(uuid)),
+            _ => Err(Error::Custom(format!("Invalid operation kind: {}", kind))),
+        }
+    }
+}
 
 /// Mint Quote Info
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
