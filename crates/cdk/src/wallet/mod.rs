@@ -42,6 +42,8 @@ mod keysets;
 mod melt;
 mod mint_connector;
 pub mod multi_mint_wallet;
+#[cfg(feature = "npubcash")]
+mod npubcash;
 pub mod payment_request;
 mod proofs;
 mod receive;
@@ -65,6 +67,8 @@ pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::AuthHttpClient;
 pub use mint_connector::{HttpClient, MintConnector};
 pub use multi_mint_wallet::{MultiMintReceiveOptions, MultiMintSendOptions, MultiMintWallet};
+#[cfg(feature = "npubcash")]
+pub use npubcash::NpubCashWallet;
 pub use receive::ReceiveOptions;
 pub use send::{PreparedSend, SendMemo, SendOptions};
 pub use types::{MeltQuote, MintQuote, SendKind};
@@ -88,6 +92,8 @@ pub struct Wallet {
     pub target_proof_count: usize,
     #[cfg(feature = "auth")]
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
+    #[cfg(feature = "npubcash")]
+    npubcash_wallet: Arc<RwLock<Option<NpubCashWallet>>>,
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
@@ -153,9 +159,9 @@ impl Wallet {
     /// Create new [`Wallet`] using the builder pattern
     /// # Synopsis
     /// ```rust
-    /// use bitcoin::bip32::Xpriv;
     /// use std::sync::Arc;
     ///
+    /// use bitcoin::bip32::Xpriv;
     /// use cdk::nuts::CurrencyUnit;
     /// use cdk::wallet::{Wallet, WalletBuilder};
     /// use cdk_sqlite::wallet::memory;
