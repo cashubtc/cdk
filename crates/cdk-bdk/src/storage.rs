@@ -1,12 +1,14 @@
 //! BDK storage operations using KV store
 
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use cdk_common::bitcoin::hashes::Hash;
 use cdk_common::bitcoin::{OutPoint, Txid};
 use cdk_common::database::MintKVStore;
 use cdk_common::payment::{MakePaymentResponse, WaitPaymentResponse};
+use cdk_common::QuoteId;
 
 use crate::error::Error;
 
@@ -97,7 +99,7 @@ impl BdkStorage {
     /// Store a pending outgoing transaction
     pub async fn store_pending_outgoing_tx(
         &self,
-        outpoint: OutPoint,
+        quote_id: QuoteId,
         response: MakePaymentResponse,
     ) -> Result<(), Error> {
         let serialized = serde_json::to_vec(&response).map_err(Error::from)?;
@@ -109,7 +111,7 @@ impl BdkStorage {
         tx.kv_write(
             BDK_NAMESPACE,
             PENDING_OUTGOING_NAMESPACE,
-            &encode_outpoint_for_db(&outpoint),
+            &quote_id.to_string(),
             &serialized,
         )
         .await
@@ -152,7 +154,7 @@ impl BdkStorage {
     /// Get all pending outgoing transactions
     pub async fn get_pending_outgoing_txs(
         &self,
-    ) -> Result<HashMap<OutPoint, MakePaymentResponse>, Error> {
+    ) -> Result<HashMap<QuoteId, MakePaymentResponse>, Error> {
         let keys = self
             .kv_store
             .kv_list(BDK_NAMESPACE, PENDING_OUTGOING_NAMESPACE)
@@ -169,7 +171,7 @@ impl BdkStorage {
                 .map_err(Error::from)?
             {
                 if let (Ok(outpoint), Ok(response)) = (
-                    decode_outpoint_from_db(&key),
+                    QuoteId::from_str(&key),
                     serde_json::from_slice::<MakePaymentResponse>(&data),
                 ) {
                     pending_txs.insert(outpoint, response);
@@ -199,7 +201,7 @@ impl BdkStorage {
     }
 
     /// Remove a pending outgoing transaction
-    pub async fn remove_pending_outgoing_tx(&self, outpoint: &OutPoint) -> Result<(), Error> {
+    pub async fn remove_pending_outgoing_tx(&self, quote_id: &QuoteId) -> Result<(), Error> {
         let mut tx = self
             .kv_store
             .begin_transaction()
@@ -208,7 +210,7 @@ impl BdkStorage {
         tx.kv_remove(
             BDK_NAMESPACE,
             PENDING_OUTGOING_NAMESPACE,
-            &encode_outpoint_for_db(outpoint),
+            &quote_id.to_string(),
         )
         .await
         .map_err(Error::from)?;

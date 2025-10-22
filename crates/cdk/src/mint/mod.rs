@@ -11,7 +11,7 @@ use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::MintAuthDatabase;
 use cdk_common::database::{self, MintDatabase, MintTransaction};
 use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
-use cdk_common::payment::WaitPaymentResponse;
+use cdk_common::payment::{MakePaymentResponse, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
 use cdk_common::secret;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
@@ -26,6 +26,7 @@ use tracing::instrument;
 use crate::cdk_payment::{self, MintPayment};
 use crate::error::Error;
 use crate::fees::calculate_fee;
+use crate::mint::proof_writer::ProofWriter;
 use crate::nuts::*;
 #[cfg(feature = "auth")]
 use crate::OidcClient;
@@ -243,7 +244,8 @@ impl Mint {
         let payment_processors = self.payment_processors.clone();
         let localstore = Arc::clone(&self.localstore);
         let pubsub_manager = Arc::clone(&self.pubsub_manager);
-        let shutdown_clone = shutdown_notify.clone();
+        let shutdown_clone = Arc::clone(&shutdown_notify);
+        let signatory = Arc::clone(&self.signatory);
 
         // Spawn the supervisor task
         let supervisor_handle = tokio::spawn(async move {
@@ -252,6 +254,7 @@ impl Mint {
                 localstore,
                 pubsub_manager,
                 shutdown_clone,
+                signatory,
             )
             .await
         });
@@ -448,6 +451,7 @@ impl Mint {
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
         pubsub_manager: Arc<PubSubManager>,
         shutdown: Arc<Notify>,
+        signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<(), Error> {
         let mut join_set = JoinSet::new();
 
@@ -473,6 +477,7 @@ impl Mint {
             let localstore = Arc::clone(&localstore);
             let pubsub_manager = Arc::clone(&pubsub_manager);
             let shutdown = Arc::clone(&shutdown);
+            let signatory = Arc::clone(&signatory);
 
             join_set.spawn(async move {
                 let result = Self::wait_for_processor_payments(
@@ -480,6 +485,7 @@ impl Mint {
                     localstore,
                     pubsub_manager,
                     shutdown,
+                    signatory,
                 )
                 .await;
 
@@ -521,6 +527,7 @@ impl Mint {
         localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
         pubsub_manager: Arc<PubSubManager>,
         shutdown: Arc<Notify>,
+        signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<(), Error> {
         loop {
             tokio::select! {
@@ -541,6 +548,18 @@ impl Mint {
                                         ).await {
                                             tracing::warn!("Payment notification error: {:?}", e);
                                         }
+                                    }
+                                    cdk_common::payment::Event::PaymentSuccessful{ quote_id, details} => {
+                                        if let Err(e) = Self::handle_outgoing_payment_notification(
+                                            &localstore,
+                                            &pubsub_manager,
+                                            quote_id,
+                                            details,
+                                            &signatory
+                                        ).await {
+                                            tracing::warn!("Payment notification error: {:?}", e);
+                                        }
+
                                     }
                                 }
                             }
@@ -593,6 +612,59 @@ impl Mint {
         }
 
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Handle incoming ayment notification without needing full Mint instance
+    #[instrument(skip_all)]
+    async fn handle_outgoing_payment_notification(
+        localstore: &Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+        pubsub_manager: &Arc<PubSubManager>,
+        melt_quote_id: QuoteId,
+        make_payment_response: MakePaymentResponse,
+        _signatory: &Arc<dyn Signatory + Send + Sync>,
+    ) -> Result<(), Error> {
+        let quote = localstore
+            .get_melt_quote(&melt_quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        tracing::debug!(
+            "Received outgoing payment notification of {} {} for melt quote {} with payment id {:?}",
+            make_payment_response.total_spent,
+            make_payment_response.unit,
+            quote.id,
+            make_payment_response.payment_proof
+        );
+
+        let proofs = localstore.get_proof_ys_by_quote_id(&quote.id).await?;
+
+        let mut proof_writer = ProofWriter::new(Arc::clone(localstore), Arc::clone(pubsub_manager));
+
+        let mut tx = localstore.begin_transaction().await?;
+
+        proof_writer
+            .update_proofs_states(&mut tx, &proofs, State::Spent)
+            .await?;
+
+        tx.update_melt_quote_state(
+            &quote.id,
+            MeltQuoteState::Paid,
+            make_payment_response.payment_proof.clone(),
+        )
+        .await?;
+
+        tx.commit().await?;
+
+        let change = None;
+
+        pubsub_manager.melt_quote_status(
+            &quote,
+            make_payment_response.payment_proof,
+            change.clone(),
+            MeltQuoteState::Paid,
+        );
+
         Ok(())
     }
 

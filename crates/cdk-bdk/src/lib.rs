@@ -24,7 +24,7 @@ use bdk_wallet::{KeychainKind, PersistedWallet, Wallet};
 use cdk_common::common::FeeReserve;
 use cdk_common::database::MintKVStore;
 use cdk_common::payment::{self, *};
-use cdk_common::{Amount, CurrencyUnit, MeltQuoteState};
+use cdk_common::{Amount, CurrencyUnit, MeltQuoteState, QuoteId};
 use futures::{Stream, StreamExt};
 use tokio::sync::{oneshot, Mutex};
 use tokio::time::{interval, Duration};
@@ -45,6 +45,7 @@ const NUM_CONFS: u32 = 3;
 enum CdkCommand {
     /// Process an immediate payout
     ProcessPayout {
+        quote_id: QuoteId,
         amount: Amount,
         max_fee: Amount,
         address: Address,
@@ -208,6 +209,7 @@ impl CdkBdk {
             tracing::info!("Receivced {:?}", command);
             match command {
                 CdkCommand::ProcessPayout {
+                    quote_id,
                     amount,
                     max_fee,
                     address,
@@ -215,7 +217,9 @@ impl CdkBdk {
                 } => {
                     tracing::info!("Processing payout: {} sats to {}", amount, address);
 
-                    let result = self.process_payout_internal(amount, max_fee, address).await;
+                    let result = self
+                        .process_payout_internal(quote_id, amount, max_fee, address)
+                        .await;
 
                     if let Err(err) = response.send(result) {
                         tracing::error!("Failed to send payout response: {:?}", err);
@@ -256,6 +260,7 @@ impl CdkBdk {
     /// Internal payout processing method
     async fn process_payout_internal(
         &self,
+        quote_id: QuoteId,
         amount: Amount,
         max_fee: Amount,
         address: Address,
@@ -334,7 +339,7 @@ impl CdkBdk {
         };
 
         self.storage
-            .store_pending_outgoing_tx(outpoint, make_payment_response)
+            .store_pending_outgoing_tx(quote_id, make_payment_response)
             .await?;
 
         Ok((
@@ -514,13 +519,29 @@ impl CdkBdk {
 
         let mut to_remove = vec![];
 
-        for (outpoint, _make_payment_response) in pending_txs.iter() {
+        for (quote_id, make_payment_response) in pending_txs
+            .iter()
+            .filter(|(_q, w)| w.payment_proof.is_some())
+        {
+            let outpoint = OutPoint::from_str(
+                &make_payment_response
+                    .payment_proof
+                    .clone()
+                    .expect("We've filtered none"),
+            )
+            .unwrap();
+
             if let Some(tx) = wallet_with_db.wallet.get_tx(outpoint.txid) {
                 match &tx.chain_position {
                     ChainPosition::Confirmed { anchor, .. } => {
                         if anchor.block_id.height < older_then {
-                            to_remove.push(*outpoint);
-                            // TODO we need another channel to notifier of update
+                            to_remove.push(quote_id);
+                            self.payment_sender
+                                .send(Event::PaymentSuccessful {
+                                    quote_id: quote_id.clone(),
+                                    details: make_payment_response.to_owned(),
+                                })
+                                .unwrap();
                         }
                     }
                     ChainPosition::Unconfirmed { .. } => (),
@@ -723,6 +744,7 @@ impl MintPayment for CdkBdk {
                 let (response_sender, response_receiver) = oneshot::channel();
 
                 let command = CdkCommand::ProcessPayout {
+                    quote_id: outgoing.quote_id,
                     amount: outgoing.amount,
                     max_fee: outgoing.max_fee_amount.unwrap_or_default(),
                     address: outgoing.address,

@@ -226,6 +226,8 @@ pub struct Bolt12OutgoingPaymentOptions {
 /// Options for onchain outgoing payments
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OnchainOutgoingPaymentOptions {
+    /// Quote id
+    pub quote_id: QuoteId,
     /// Onchain address to send to
     pub address: Address,
     /// Amount to send
@@ -276,6 +278,7 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
             }
             MeltPaymentRequest::Onchain { address } => Ok(OutgoingPaymentOptions::Onchain(
                 Box::new(OnchainOutgoingPaymentOptions {
+                    quote_id: melt_quote.id,
                     address,
                     amount: melt_quote.amount,
                     max_fee_amount: Some(melt_quote.fee_reserve),
@@ -360,6 +363,13 @@ pub trait MintPayment {
 pub enum Event {
     /// A payment has been received.
     PaymentReceived(WaitPaymentResponse),
+    /// Payment sent
+    PaymentSuccessful {
+        /// Quote Id
+        quote_id: QuoteId,
+        /// Payment details
+        details: MakePaymentResponse,
+    },
 }
 
 /// Wait any invoice response

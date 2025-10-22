@@ -171,7 +171,7 @@ where
     async fn add_proofs(
         &mut self,
         proofs: Proofs,
-        quote_id: Option<Uuid>,
+        quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
@@ -214,7 +214,7 @@ where
                 proof.witness.map(|w| serde_json::to_string(&w).unwrap()),
             )
             .bind("state", "UNSPENT".to_string())
-            .bind("quote_id", quote_id.map(|q| q.hyphenated().to_string()))
+            .bind("quote_id", quote_id.clone().map(|q| q.to_string()))
             .bind("created_time", current_time as i64)
             .execute(&self.inner)
             .await?;
@@ -1407,7 +1407,10 @@ where
         Ok(ys.iter().map(|y| proofs.remove(y)).collect())
     }
 
-    async fn get_proof_ys_by_quote_id(&self, quote_id: &Uuid) -> Result<Vec<PublicKey>, Self::Err> {
+    async fn get_proof_ys_by_quote_id(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Vec<PublicKey>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -1423,7 +1426,7 @@ where
                 quote_id = :quote_id
             "#,
         )?
-        .bind("quote_id", quote_id.as_hyphenated().to_string())
+        .bind("quote_id", quote_id.to_string())
         .fetch_all(&*conn)
         .await?
         .into_iter()

@@ -296,6 +296,36 @@ impl MeltQuote {
             payment_method,
         }
     }
+
+    /// Create new [`MeltQuote`]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_id(
+        id: QuoteId,
+        request: MeltPaymentRequest,
+        unit: CurrencyUnit,
+        amount: Amount,
+        fee_reserve: Amount,
+        expiry: u64,
+        request_lookup_id: Option<PaymentIdentifier>,
+        options: Option<MeltOptions>,
+        payment_method: PaymentMethod,
+    ) -> Self {
+        Self {
+            id,
+            amount,
+            unit,
+            request,
+            fee_reserve,
+            state: MeltQuoteState::Unpaid,
+            expiry,
+            payment_preimage: None,
+            request_lookup_id,
+            options,
+            created_time: unix_time(),
+            paid_time: None,
+            payment_method,
+        }
+    }
 }
 
 /// Mint Keyset Info

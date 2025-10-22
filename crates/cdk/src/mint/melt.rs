@@ -365,7 +365,10 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
+        let quote_id = QuoteId::new_uuid();
+
         let outgoing_payment_options = OnchainOutgoingPaymentOptions {
+            quote_id: quote_id.clone(),
             address: address.clone(),
             amount: *amount,
             max_fee_amount: None,
@@ -388,7 +391,8 @@ impl Mint {
 
         let payment_request = MeltPaymentRequest::Onchain { address };
 
-        let quote = MeltQuote::new(
+        let quote = MeltQuote::new_with_id(
+            quote_id,
             payment_request,
             unit.clone(),
             payment_quote.amount,
