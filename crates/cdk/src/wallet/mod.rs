@@ -5,7 +5,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use cdk_common::amount::FeeAndAmounts;
-use cdk_common::database::{self, WalletDatabase};
+use cdk_common::database::{self, WalletDatabase, WalletDatabaseTransaction};
 use cdk_common::subscription::WalletParams;
 use getrandom::getrandom;
 use subscription::{ActiveSubscription, SubscriptionManager};
@@ -70,6 +70,9 @@ pub use send::{PreparedSend, SendMemo, SendOptions};
 pub use types::{MeltQuote, MintQuote, SendKind};
 
 use crate::nuts::nut00::ProofsMethods;
+
+pub(crate) type Tx<'a, 'b> =
+    Box<dyn WalletDatabaseTransaction<'a, database::Error> + Send + Sync + 'b>;
 
 /// CDK Wallet
 ///
@@ -249,9 +252,10 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn update_mint_url(&mut self, new_mint_url: MintUrl) -> Result<(), Error> {
         // Update the mint URL in the wallet DB
-        self.localstore
-            .update_mint_url(self.mint_url.clone(), new_mint_url.clone())
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        tx.update_mint_url(self.mint_url.clone(), new_mint_url.clone())
             .await?;
+        tx.commit().await?;
 
         // Update the mint URL in the wallet struct field
         self.mint_url = new_mint_url;
@@ -260,8 +264,11 @@ impl Wallet {
     }
 
     /// Query mint for current mint information
-    #[instrument(skip(self))]
-    pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, Error> {
+    #[instrument(skip(self, tx))]
+    pub async fn fetch_mint_info(
+        &self,
+        tx: Option<&mut Tx<'_, '_>>,
+    ) -> Result<Option<MintInfo>, Error> {
         match self.client.get_mint_info().await {
             Ok(mint_info) => {
                 // If mint provides time make sure it is accurate
@@ -314,9 +321,15 @@ impl Wallet {
                     }
                 }
 
-                self.localstore
-                    .add_mint(self.mint_url.clone(), Some(mint_info.clone()))
-                    .await?;
+                if let Some(tx) = tx {
+                    tx.add_mint(self.mint_url.clone(), Some(mint_info.clone()))
+                        .await?;
+                } else {
+                    let mut tx = self.localstore.begin_db_transaction().await?;
+                    tx.add_mint(self.mint_url.clone(), Some(mint_info.clone()))
+                        .await?;
+                    tx.commit().await?;
+                };
 
                 tracing::trace!("Mint info updated for {}", self.mint_url);
 
@@ -399,7 +412,7 @@ impl Wallet {
             .await?
             .is_none()
         {
-            self.fetch_mint_info().await?;
+            self.fetch_mint_info(None).await?;
         }
 
         let keysets = self.load_mint_keysets().await?;
@@ -407,7 +420,8 @@ impl Wallet {
         let mut restored_value = Amount::ZERO;
 
         for keyset in keysets {
-            let keys = self.load_keyset_keys(keyset.id).await?;
+            let mut tx = self.localstore.begin_db_transaction().await?;
+            let keys = self.load_keyset_keys(keyset.id, Some(&mut tx)).await?;
             let mut empty_batch = 0;
             let mut start_counter = 0;
 
@@ -458,11 +472,12 @@ impl Wallet {
 
                 tracing::debug!("Restored {} proofs", proofs.len());
 
-                self.localstore
-                    .increment_keyset_counter(&keyset.id, proofs.len() as u32)
+                tx.increment_keyset_counter(&keyset.id, proofs.len() as u32)
                     .await?;
 
-                let states = self.check_proofs_spent(proofs.clone()).await?;
+                let states = self
+                    .check_proofs_spent(proofs.clone(), Some(&mut tx))
+                    .await?;
 
                 let unspent_proofs: Vec<Proof> = proofs
                     .iter()
@@ -486,13 +501,13 @@ impl Wallet {
                     })
                     .collect::<Result<Vec<ProofInfo>, _>>()?;
 
-                self.localstore
-                    .update_proofs(unspent_proofs, vec![])
-                    .await?;
+                tx.update_proofs(unspent_proofs, vec![]).await?;
 
                 empty_batch = 0;
                 start_counter += 100;
             }
+
+            tx.commit().await?;
         }
         Ok(restored_value)
     }
@@ -656,7 +671,7 @@ impl Wallet {
             let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
                 Some(keys) => keys.amount_key(proof.amount),
                 None => {
-                    let keys = self.load_keyset_keys(proof.keyset_id).await?;
+                    let keys = self.load_keyset_keys(proof.keyset_id, None).await?;
 
                     let key = keys.amount_key(proof.amount);
                     keys_cache.insert(proof.keyset_id, keys);

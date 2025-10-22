@@ -14,30 +14,36 @@ use crate::nuts::{
 use crate::types::ProofInfo;
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
+use super::Tx;
+
 impl Wallet {
     /// Get unspent proofs for mint
     #[instrument(skip(self))]
     pub async fn get_unspent_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::Unspent]), None).await
+        self.get_proofs_with(Some(vec![State::Unspent]), None, None)
+            .await
     }
 
     /// Get pending [`Proofs`]
-    #[instrument(skip(self))]
-    pub async fn get_pending_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::Pending]), None).await
+    #[instrument(skip(self, tx))]
+    pub async fn get_pending_proofs(&self, tx: Option<&mut Tx<'_, '_>>) -> Result<Proofs, Error> {
+        self.get_proofs_with(Some(vec![State::Pending]), None, tx)
+            .await
     }
 
     /// Get reserved [`Proofs`]
     #[instrument(skip(self))]
     pub async fn get_reserved_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::Reserved]), None)
+        self.get_proofs_with(Some(vec![State::Reserved]), None, None)
             .await
     }
 
     /// Get pending spent [`Proofs`]
-    #[instrument(skip(self))]
-    pub async fn get_pending_spent_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::PendingSpent]), None)
+    pub async fn get_pending_spent_proofs(
+        &self,
+        tx: Option<&mut Tx<'_, '_>>,
+    ) -> Result<Proofs, Error> {
+        self.get_proofs_with(Some(vec![State::PendingSpent]), None, tx)
             .await
     }
 
@@ -46,10 +52,10 @@ impl Wallet {
         &self,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
+        tx: Option<&mut Tx<'_, '_>>,
     ) -> Result<Proofs, Error> {
-        Ok(self
-            .localstore
-            .get_proofs(
+        Ok(if let Some(tx) = tx {
+            tx.get_proofs(
                 Some(self.mint_url.clone()),
                 Some(self.unit.clone()),
                 state,
@@ -58,23 +64,37 @@ impl Wallet {
             .await?
             .into_iter()
             .map(|p| p.proof)
-            .collect())
+            .collect()
+        } else {
+            self.localstore
+                .get_proofs(
+                    Some(self.mint_url.clone()),
+                    Some(self.unit.clone()),
+                    state,
+                    spending_conditions,
+                )
+                .await?
+                .into_iter()
+                .map(|p| p.proof)
+                .collect()
+        })
     }
 
     /// Return proofs to unspent allowing them to be selected and spent
     #[instrument(skip(self))]
     pub async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
-        Ok(self
-            .localstore
-            .update_proofs_state(ys, State::Unspent)
-            .await?)
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
+        tx.update_proofs_state(ys, State::Unspent).await?;
+
+        Ok(tx.commit().await?)
     }
 
     /// Reclaim unspent proofs
     ///
     /// Checks the stats of [`Proofs`] swapping for a new [`Proof`] if unspent
-    #[instrument(skip(self, proofs))]
-    pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), Error> {
+    #[instrument(skip(self, proofs, tx))]
+    pub async fn reclaim_unspent(&self, proofs: Proofs, tx: &mut Tx<'_, '_>) -> Result<(), Error> {
         let proof_ys = proofs.ys()?;
 
         let transaction_id = TransactionId::new(proof_ys.clone());
@@ -94,7 +114,7 @@ impl Wallet {
         self.swap(None, SplitTarget::default(), unspent, None, false)
             .await?;
 
-        match self.localstore.remove_transaction(transaction_id).await {
+        match tx.remove_transaction(transaction_id).await {
             Ok(_) => (),
             Err(e) => {
                 tracing::warn!("Failed to remove transaction: {:?}", e);
@@ -105,8 +125,12 @@ impl Wallet {
     }
 
     /// NUT-07 Check the state of a [`Proof`] with the mint
-    #[instrument(skip(self, proofs))]
-    pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {
+    #[instrument(skip(self, proofs, tx))]
+    pub async fn check_proofs_spent(
+        &self,
+        proofs: Proofs,
+        tx: Option<&mut Tx<'_, '_>>,
+    ) -> Result<Vec<ProofState>, Error> {
         let spendable = self
             .client
             .post_check_state(CheckStateRequest { ys: proofs.ys()? })
@@ -121,7 +145,13 @@ impl Wallet {
             })
             .collect();
 
-        self.localstore.update_proofs(vec![], spent_ys).await?;
+        if let Some(tx) = tx {
+            tx.update_proofs(vec![], spent_ys).await?;
+        } else {
+            let mut tx = self.localstore.begin_db_transaction().await?;
+            tx.update_proofs(vec![], spent_ys).await?;
+            tx.commit().await?;
+        }
 
         Ok(spendable.states)
     }
@@ -131,8 +161,9 @@ impl Wallet {
     pub async fn check_all_pending_proofs(&self) -> Result<Amount, Error> {
         let mut balance = Amount::ZERO;
 
-        let proofs = self
-            .localstore
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
+        let proofs = tx
             .get_proofs(
                 Some(self.mint_url.clone()),
                 Some(self.unit.clone()),
@@ -146,7 +177,10 @@ impl Wallet {
         }
 
         let states = self
-            .check_proofs_spent(proofs.clone().into_iter().map(|p| p.proof).collect())
+            .check_proofs_spent(
+                proofs.clone().into_iter().map(|p| p.proof).collect(),
+                Some(&mut tx),
+            )
             .await?;
 
         // Both `State::Pending` and `State::Unspent` should be included in the pending
@@ -165,14 +199,15 @@ impl Wallet {
 
         let amount = Amount::try_sum(pending_proofs.iter().map(|p| p.proof.amount))?;
 
-        self.localstore
-            .update_proofs(
-                vec![],
-                non_pending_proofs.into_iter().map(|p| p.y).collect(),
-            )
-            .await?;
+        tx.update_proofs(
+            vec![],
+            non_pending_proofs.into_iter().map(|p| p.y).collect(),
+        )
+        .await?;
 
         balance += amount;
+
+        tx.commit().await?;
 
         Ok(balance)
     }

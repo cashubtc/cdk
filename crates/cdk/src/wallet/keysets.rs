@@ -7,13 +7,19 @@ use tracing::instrument;
 use crate::nuts::{Id, KeySetInfo, Keys};
 use crate::{Error, Wallet};
 
+use super::Tx;
+
 impl Wallet {
     /// Load keys for mint keyset
     ///
     /// Returns keys from local database if they are already stored.
     /// If keys are not found locally, goes online to query the mint for the keyset and stores the [`Keys`] in local database.
-    #[instrument(skip(self))]
-    pub async fn load_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
+    #[instrument(skip(self, tx))]
+    pub async fn load_keyset_keys(
+        &self,
+        keyset_id: Id,
+        tx: Option<&mut Tx<'_, '_>>,
+    ) -> Result<Keys, Error> {
         let keys = if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
             keys
         } else {
@@ -27,7 +33,13 @@ impl Wallet {
 
             keys.verify_id()?;
 
-            self.localstore.add_keys(keys.clone()).await?;
+            if let Some(tx) = tx {
+                tx.add_keys(keys.clone()).await?;
+            } else {
+                let mut tx = self.localstore.begin_db_transaction().await?;
+                tx.add_keys(keys.clone()).await?;
+                tx.commit().await?;
+            }
 
             keys.keys
         };
@@ -51,7 +63,7 @@ impl Wallet {
             Some(keysets_info) => Ok(keysets_info),
             None => {
                 // If we don't have any keysets, fetch them from the mint
-                let keysets = self.refresh_keysets().await?;
+                let keysets = self.refresh_keysets(None).await?;
                 Ok(keysets)
             }
         }
@@ -80,26 +92,37 @@ impl Wallet {
     /// It updates the local database with the fetched keysets and ensures we have keys
     /// for all active keysets. This is used when operations need the most up-to-date
     /// keyset information and are willing to go online.
-    #[instrument(skip(self))]
-    pub async fn refresh_keysets(&self) -> Result<KeySetInfos, Error> {
+    #[instrument(skip(self, tx))]
+    pub async fn refresh_keysets(&self, tx: Option<&mut Tx<'_, '_>>) -> Result<KeySetInfos, Error> {
         tracing::debug!("Refreshing keysets and ensuring we have keys");
-        let _ = self.fetch_mint_info().await?;
+        let _ = self.fetch_mint_info(None).await?;
 
         // Fetch all current keysets from mint
         let keysets_response = self.client.get_mint_keysets().await?;
         let all_keysets = keysets_response.keysets;
 
         // Update local storage with keyset info
-        self.localstore
-            .add_mint_keysets(self.mint_url.clone(), all_keysets.clone())
-            .await?;
+        let mut tx = tx;
+        if let Some(tx) = tx.as_mut() {
+            tx.add_mint_keysets(self.mint_url.clone(), all_keysets.clone())
+                .await?;
+        } else {
+            let mut tx = self.localstore.begin_db_transaction().await?;
+            tx.add_mint_keysets(self.mint_url.clone(), all_keysets.clone())
+                .await?;
+            tx.commit().await?;
+        }
 
         // Filter for active keysets matching our unit
         let keysets: KeySetInfos = all_keysets.unit(self.unit.clone()).cloned().collect();
 
         // Ensure we have keys for all active keysets
         for keyset in &keysets {
-            self.load_keyset_keys(keyset.id).await?;
+            if let Some(tx) = tx.as_mut() {
+                self.load_keyset_keys(keyset.id, Some(*tx)).await?;
+            } else {
+                self.load_keyset_keys(keyset.id, None).await?;
+            }
         }
 
         Ok(keysets)
@@ -110,9 +133,12 @@ impl Wallet {
     /// This method always goes online to refresh keysets from the mint and then returns
     /// the active keyset with the minimum input fees. Use this when you need the most
     /// up-to-date keyset information for operations.
-    #[instrument(skip(self))]
-    pub async fn fetch_active_keyset(&self) -> Result<KeySetInfo, Error> {
-        self.refresh_keysets()
+    #[instrument(skip(self, tx))]
+    pub async fn fetch_active_keyset(
+        &self,
+        tx: Option<&mut Tx<'_, '_>>,
+    ) -> Result<KeySetInfo, Error> {
+        self.refresh_keysets(tx)
             .await?
             .active()
             .min_by_key(|k| k.input_fee_ppk)
@@ -158,7 +184,7 @@ impl Wallet {
                 keyset.id,
                 (
                     keyset.input_fee_ppk,
-                    self.load_keyset_keys(keyset.id)
+                    self.load_keyset_keys(keyset.id, None)
                         .await?
                         .iter()
                         .map(|(amount, _)| amount.to_u64())

@@ -128,7 +128,7 @@ async fn test_fake_melt_payment_fail() {
 
     // The mint should have unset proofs from pending since payment failed
     let all_proof = wallet.get_unspent_proofs().await.unwrap();
-    let states = wallet.check_proofs_spent(all_proof).await.unwrap();
+    let states = wallet.check_proofs_spent(all_proof, None).await.unwrap();
     for state in states {
         assert!(state.state == State::Unspent);
     }
@@ -749,7 +749,7 @@ async fn test_fake_mint_multiple_unit_swap() {
         None,
     )
     .expect("failed to create usd wallet");
-    wallet_usd.refresh_keysets().await.unwrap();
+    wallet_usd.refresh_keysets(None).await.unwrap();
 
     let mint_quote = wallet_usd.mint_quote(100.into(), None).await.unwrap();
 

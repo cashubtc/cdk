@@ -338,7 +338,7 @@ async fn test_restore() {
 
     let proofs = wallet.get_unspent_proofs().await.unwrap();
 
-    let states = wallet.check_proofs_spent(proofs).await.unwrap();
+    let states = wallet.check_proofs_spent(proofs, None).await.unwrap();
 
     for state in states {
         if state.state != State::Spent {

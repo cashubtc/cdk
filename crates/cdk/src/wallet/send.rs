@@ -33,7 +33,7 @@ impl Wallet {
 
         // If online send check mint for current keysets fees
         if opts.send_kind.is_online() {
-            if let Err(e) = self.refresh_keysets().await {
+            if let Err(e) = self.refresh_keysets(None).await {
                 tracing::error!("Error refreshing keysets: {:?}. Using stored keysets", e);
             }
         }
@@ -46,6 +46,7 @@ impl Wallet {
             .get_proofs_with(
                 Some(vec![State::Unspent]),
                 opts.conditions.clone().map(|c| vec![c]),
+                None,
             )
             .await?;
 
@@ -128,6 +129,7 @@ impl Wallet {
         proofs: Proofs,
         force_swap: bool,
     ) -> Result<PreparedSend, Error> {
+        let wallet = self.clone();
         // Split amount with fee if necessary
         let active_keyset_id = self.get_active_keyset().await?.id;
         let fee_and_amounts = self
@@ -152,10 +154,12 @@ impl Wallet {
         tracing::debug!("Send amounts: {:?}", send_amounts);
         tracing::debug!("Send fee: {:?}", send_fee);
 
+        let mut tx = wallet.localstore.begin_db_transaction().await?;
+
         // Reserve proofs
-        self.localstore
-            .update_proofs_state(proofs.ys()?, State::Reserved)
+        tx.update_proofs_state(proofs.ys()?, State::Reserved)
             .await?;
+        tx.commit().await?;
 
         // Check if proofs are exact send amount (and does not exceed max_proofs)
         let mut exact_proofs = proofs.total_amount()? == amount + send_fee;
@@ -190,7 +194,7 @@ impl Wallet {
 
         // Return prepared send
         Ok(PreparedSend {
-            wallet: self.clone(),
+            wallet,
             amount,
             options: opts,
             proofs_to_swap,
@@ -262,8 +266,10 @@ impl PreparedSend {
         let total_send_fee = self.fee();
         let mut proofs_to_send = self.proofs_to_send;
 
+        let mut tx = self.wallet.localstore.begin_db_transaction().await?;
+
         // Get active keyset ID
-        let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
+        let active_keyset_id = self.wallet.fetch_active_keyset(Some(&mut tx)).await?.id;
         tracing::debug!("Active keyset ID: {:?}", active_keyset_id);
 
         // Get keyset fees
@@ -311,9 +317,11 @@ impl PreparedSend {
             .get_proofs_with(
                 Some(vec![State::Reserved, State::Unspent]),
                 self.options.conditions.clone().map(|c| vec![c]),
+                None,
             )
             .await?
             .ys()?;
+
         if proofs_to_send
             .ys()?
             .iter()
@@ -328,9 +336,7 @@ impl PreparedSend {
             "Updating proofs state to pending spent: {:?}",
             proofs_to_send.ys()?
         );
-        self.wallet
-            .localstore
-            .update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
+        tx.update_proofs_state(proofs_to_send.ys()?, State::PendingSpent)
             .await?;
 
         // Include token memo
@@ -338,23 +344,23 @@ impl PreparedSend {
         let memo = send_memo.and_then(|m| if m.include_memo { Some(m.memo) } else { None });
 
         // Add transaction to store
-        self.wallet
-            .localstore
-            .add_transaction(Transaction {
-                mint_url: self.wallet.mint_url.clone(),
-                direction: TransactionDirection::Outgoing,
-                amount: self.amount,
-                fee: total_send_fee,
-                unit: self.wallet.unit.clone(),
-                ys: proofs_to_send.ys()?,
-                timestamp: unix_time(),
-                memo: memo.clone(),
-                metadata: self.options.metadata,
-                quote_id: None,
-                payment_request: None,
-                payment_proof: None,
-            })
-            .await?;
+        tx.add_transaction(Transaction {
+            mint_url: self.wallet.mint_url.clone(),
+            direction: TransactionDirection::Outgoing,
+            amount: self.amount,
+            fee: total_send_fee,
+            unit: self.wallet.unit.clone(),
+            ys: proofs_to_send.ys()?,
+            timestamp: unix_time(),
+            memo: memo.clone(),
+            metadata: self.options.metadata,
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+        })
+        .await?;
+
+        tx.commit().await?;
 
         // Create and return token
         Ok(Token::new(
@@ -368,6 +374,7 @@ impl PreparedSend {
     /// Cancel the prepared send
     pub async fn cancel(self) -> Result<(), Error> {
         tracing::info!("Cancelling prepared send");
+        let mut tx = self.wallet.localstore.begin_db_transaction().await?;
 
         // Double-check proofs state
         let reserved_proofs = self.wallet.get_reserved_proofs().await?.ys()?;
@@ -380,10 +387,10 @@ impl PreparedSend {
             return Err(Error::UnexpectedProofState);
         }
 
-        self.wallet
-            .localstore
-            .update_proofs_state(self.proofs().ys()?, State::Unspent)
+        tx.update_proofs_state(self.proofs().ys()?, State::Unspent)
             .await?;
+
+        tx.commit().await?;
 
         Ok(())
     }

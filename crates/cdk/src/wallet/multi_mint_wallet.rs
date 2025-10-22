@@ -1173,8 +1173,15 @@ impl MultiMintWallet {
 
         let mut amount_received = Amount::ZERO;
 
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
         match wallet
-            .receive_proofs(proofs, opts.receive_options, token_data.memo().clone())
+            .receive_proofs(
+                &mut tx,
+                proofs,
+                opts.receive_options,
+                token_data.memo().clone(),
+            )
             .await
         {
             Ok(amount) => {
@@ -1189,6 +1196,8 @@ impl MultiMintWallet {
                 return Err(err);
             }
         }
+
+        tx.commit().await?;
 
         drop(wallets);
 
@@ -1680,7 +1689,7 @@ impl MultiMintWallet {
             mint_url: mint_url.to_string(),
         })?;
 
-        wallet.fetch_mint_info().await
+        wallet.fetch_mint_info(None).await
     }
 }
 

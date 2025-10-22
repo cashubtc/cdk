@@ -41,8 +41,10 @@ impl Wallet {
             return Err(Error::InvalidTransactionDirection);
         }
 
+        let mut db_tx = self.localstore.begin_db_transaction().await?;
+
         let pending_spent_proofs = self
-            .get_pending_spent_proofs()
+            .get_pending_spent_proofs(Some(&mut db_tx))
             .await?
             .into_iter()
             .filter(|p| match p.y() {
@@ -51,7 +53,11 @@ impl Wallet {
             })
             .collect::<Vec<_>>();
 
-        self.reclaim_unspent(pending_spent_proofs).await?;
+        self.reclaim_unspent(pending_spent_proofs, &mut db_tx)
+            .await?;
+
+        db_tx.commit().await?;
+
         Ok(())
     }
 }

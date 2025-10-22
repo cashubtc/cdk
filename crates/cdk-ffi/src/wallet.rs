@@ -82,7 +82,7 @@ impl Wallet {
 
     /// Get mint info
     pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
-        let info = self.inner.fetch_mint_info().await?;
+        let info = self.inner.fetch_mint_info(None).await?;
         Ok(info.map(Into::into))
     }
 
@@ -271,9 +271,9 @@ impl Wallet {
         for state in states {
             let proofs = match state {
                 ProofState::Unspent => self.inner.get_unspent_proofs().await?,
-                ProofState::Pending => self.inner.get_pending_proofs().await?,
+                ProofState::Pending => self.inner.get_pending_proofs(None).await?,
                 ProofState::Reserved => self.inner.get_reserved_proofs().await?,
-                ProofState::PendingSpent => self.inner.get_pending_spent_proofs().await?,
+                ProofState::PendingSpent => self.inner.get_pending_spent_proofs(None).await?,
                 ProofState::Spent => {
                     // CDK doesn't have a method to get spent proofs directly
                     // They are removed from the database when spent
@@ -351,7 +351,7 @@ impl Wallet {
 
     /// Refresh keysets from the mint
     pub async fn refresh_keysets(&self) -> Result<Vec<KeySetInfo>, FfiError> {
-        let keysets = self.inner.refresh_keysets().await?;
+        let keysets = self.inner.refresh_keysets(None).await?;
         Ok(keysets.into_iter().map(Into::into).collect())
     }
 

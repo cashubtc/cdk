@@ -7,6 +7,8 @@ use tracing::instrument;
 
 use crate::Wallet;
 
+use super::Tx;
+
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 mod melt_bip353;
 mod melt_bolt11;
@@ -48,6 +50,7 @@ impl Wallet {
         &self,
         quote: &MeltQuote,
         response: &MeltQuoteBolt11Response<String>,
+        tx: &mut Tx<'_, '_>,
     ) -> Result<(), Error> {
         if quote.state != response.state {
             tracing::info!(
@@ -57,29 +60,28 @@ impl Wallet {
                 response.state
             );
             if response.state == MeltQuoteState::Paid {
-                let pending_proofs = self.get_pending_proofs().await?;
+                let pending_proofs = self.get_pending_proofs(Some(tx)).await?;
                 let proofs_total = pending_proofs.total_amount().unwrap_or_default();
                 let change_total = response.change_amount().unwrap_or_default();
 
-                self.localstore
-                    .add_transaction(Transaction {
-                        mint_url: self.mint_url.clone(),
-                        direction: TransactionDirection::Outgoing,
-                        amount: response.amount,
-                        fee: proofs_total
-                            .checked_sub(response.amount)
-                            .and_then(|amt| amt.checked_sub(change_total))
-                            .unwrap_or_default(),
-                        unit: quote.unit.clone(),
-                        ys: pending_proofs.ys()?,
-                        timestamp: unix_time(),
-                        memo: None,
-                        metadata: HashMap::new(),
-                        quote_id: Some(quote.id.clone()),
-                        payment_request: Some(quote.request.clone()),
-                        payment_proof: response.payment_preimage.clone(),
-                    })
-                    .await?;
+                tx.add_transaction(Transaction {
+                    mint_url: self.mint_url.clone(),
+                    direction: TransactionDirection::Outgoing,
+                    amount: response.amount,
+                    fee: proofs_total
+                        .checked_sub(response.amount)
+                        .and_then(|amt| amt.checked_sub(change_total))
+                        .unwrap_or_default(),
+                    unit: quote.unit.clone(),
+                    ys: pending_proofs.ys()?,
+                    timestamp: unix_time(),
+                    memo: None,
+                    metadata: HashMap::new(),
+                    quote_id: Some(quote.id.clone()),
+                    payment_request: Some(quote.request.clone()),
+                    payment_proof: response.payment_preimage.clone(),
+                })
+                .await?;
             }
         }
         Ok(())

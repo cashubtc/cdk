@@ -35,7 +35,7 @@ async fn list_proofs(
         }
 
         // Pending proofs
-        let pending_proofs = wallet.get_pending_proofs().await?;
+        let pending_proofs = wallet.get_pending_proofs(None).await?;
         for proof in pending_proofs {
             println!(
                 "| {:8} | {:4} | {:8} | {:64} | {}",

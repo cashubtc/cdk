@@ -99,7 +99,7 @@ async fn test_swap_to_send() {
         HashSet::<_, RandomState>::from_iter(token_proofs.ys().expect("Failed to get ys")),
         HashSet::from_iter(
             wallet_alice
-                .get_pending_spent_proofs()
+                .get_pending_spent_proofs(None)
                 .await
                 .expect("Failed to get pending spent proofs")
                 .ys()
@@ -765,10 +765,16 @@ async fn test_mint_change_with_fee_melt() {
         .await
         .unwrap();
 
-    let w = wallet_alice
-        .melt_proofs(&melt_quote.id, proofs)
+    let mut tx = wallet_alice
+        .localstore
+        .begin_db_transaction()
         .await
         .unwrap();
+    let w = wallet_alice
+        .melt_proofs_with_metadata(&melt_quote.id, proofs, HashMap::new(), &mut tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
 
     assert_eq!(w.change.unwrap().total_amount().unwrap(), 97.into());
 }
