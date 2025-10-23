@@ -198,6 +198,19 @@ impl<'a> cdk::cdk_database::WalletDatabaseTransaction<'a, cdk::cdk_database::Err
             .transpose()
     }
 
+    async fn get_mint_keysets(
+        &mut self,
+        mint_url: cdk::mint_url::MintUrl,
+    ) -> Result<Option<Vec<cdk::nuts::KeySetInfo>>, cdk::cdk_database::Error> {
+        let ffi_mint_url = mint_url.into();
+        let result = self
+            .ffi_db
+            .get_mint_keysets(ffi_mint_url)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+        Ok(result.map(|keysets| keysets.into_iter().map(Into::into).collect()))
+    }
+
     async fn add_mint(
         &mut self,
         mint_url: cdk::mint_url::MintUrl,

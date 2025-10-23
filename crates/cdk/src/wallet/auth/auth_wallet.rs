@@ -203,11 +203,14 @@ impl AuthWallet {
         &self,
         tx: Option<&mut Tx<'_, '_>>,
     ) -> Result<Vec<KeySetInfo>, Error> {
-        match self
-            .localstore
-            .get_mint_keysets(self.mint_url.clone())
-            .await?
-        {
+        let mut tx = tx;
+        match if let Some(tx) = tx.as_mut() {
+            tx.get_mint_keysets(self.mint_url.clone()).await?
+        } else {
+            self.localstore
+                .get_mint_keysets(self.mint_url.clone())
+                .await?
+        } {
             Some(keysets_info) => {
                 let auth_keysets: Vec<KeySetInfo> =
                     keysets_info.unit(CurrencyUnit::Sat).cloned().collect();

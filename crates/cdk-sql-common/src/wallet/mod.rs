@@ -173,6 +173,37 @@ where
         .transpose()?)
     }
 
+    #[instrument(skip(self))]
+    async fn get_mint_keysets(
+        &mut self,
+        mint_url: MintUrl,
+    ) -> Result<Option<Vec<KeySetInfo>>, Error> {
+        let keysets = query(
+            r#"
+            SELECT
+                id,
+                unit,
+                active,
+                input_fee_ppk,
+                final_expiry
+            FROM
+                keyset
+            WHERE mint_url = :mint_url
+            "#,
+        )?
+        .bind("mint_url", mint_url.to_string())
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(sql_row_to_keyset)
+        .collect::<Result<Vec<_>, Error>>()?;
+
+        match keysets.is_empty() {
+            false => Ok(Some(keysets)),
+            true => Ok(None),
+        }
+    }
+
     #[instrument(skip(self, mint_info))]
     async fn add_mint(
         &mut self,

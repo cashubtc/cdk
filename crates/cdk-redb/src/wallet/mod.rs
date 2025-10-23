@@ -16,7 +16,9 @@ use cdk_common::{
     database, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions,
     State,
 };
-use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
+use redb::{
+    Database, MultimapTableDefinition, ReadableMultimapTable, ReadableTable, TableDefinition,
+};
 use tracing::instrument;
 
 use super::error::Error;
@@ -486,7 +488,7 @@ impl<'a> cdk_common::database::WalletDatabaseTransaction<'a, database::Error>
     for RedbWalletTransaction
 {
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
-    async fn get_keys(&mut self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
+    async fn get_keys(&mut self, keyset_id: &Id) -> Result<Option<Keys>, database::Error> {
         let txn = self.txn().map_err(Into::<database::Error>::into)?;
         let table = txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
 
@@ -498,6 +500,44 @@ impl<'a> cdk_common::database::WalletDatabaseTransaction<'a, database::Error>
         }
 
         Ok(None)
+    }
+
+    #[instrument(skip(self))]
+    async fn get_mint_keysets(
+        &mut self,
+        mint_url: MintUrl,
+    ) -> Result<Option<Vec<KeySetInfo>>, database::Error> {
+        let txn = self.txn().map_err(Into::<database::Error>::into)?;
+        let table = txn
+            .open_multimap_table(MINT_KEYSETS_TABLE)
+            .map_err(Error::from)?;
+
+        let keyset_ids = table
+            .get(mint_url.to_string().as_str())
+            .map_err(Error::from)?
+            .flatten()
+            .map(|k| Id::from_bytes(k.value()))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut keysets = vec![];
+
+        let keysets_t = txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
+
+        for keyset_id in keyset_ids {
+            if let Some(keyset) = keysets_t
+                .get(keyset_id.to_bytes().as_slice())
+                .map_err(Error::from)?
+            {
+                let keyset = serde_json::from_str(keyset.value()).map_err(Error::from)?;
+
+                keysets.push(keyset);
+            }
+        }
+
+        match keysets.is_empty() {
+            true => Ok(None),
+            false => Ok(Some(keysets)),
+        }
     }
 
     #[instrument(skip(self, mint_info))]
