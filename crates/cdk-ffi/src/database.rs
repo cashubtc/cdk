@@ -168,16 +168,20 @@ impl std::fmt::Debug for WalletDatabaseBridge {
     }
 }
 
-#[async_trait::async_trait]
-impl CdkWalletDatabase for WalletDatabaseBridge {
-    type Err = cdk::cdk_database::Error;
+/// Transaction bridge that wraps FFI atomic operations
+struct WalletDatabaseTransactionBridge {
+    ffi_db: Arc<dyn WalletDatabase>,
+}
 
-    // Mint Management
+#[async_trait::async_trait]
+impl<'a> cdk::cdk_database::WalletDatabaseTransaction<'a, cdk::cdk_database::Error>
+    for WalletDatabaseTransactionBridge
+{
     async fn add_mint(
-        &self,
+        &mut self,
         mint_url: cdk::mint_url::MintUrl,
         mint_info: Option<cdk::nuts::MintInfo>,
-    ) -> Result<(), Self::Err> {
+    ) -> Result<(), cdk::cdk_database::Error> {
         let ffi_mint_url = mint_url.into();
         let ffi_mint_info = mint_info.map(Into::into);
         self.ffi_db
@@ -186,12 +190,253 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
-    async fn remove_mint(&self, mint_url: cdk::mint_url::MintUrl) -> Result<(), Self::Err> {
+    async fn remove_mint(
+        &mut self,
+        mint_url: cdk::mint_url::MintUrl,
+    ) -> Result<(), cdk::cdk_database::Error> {
         let ffi_mint_url = mint_url.into();
         self.ffi_db
             .remove_mint(ffi_mint_url)
             .await
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn update_mint_url(
+        &mut self,
+        old_mint_url: cdk::mint_url::MintUrl,
+        new_mint_url: cdk::mint_url::MintUrl,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        let ffi_old = old_mint_url.into();
+        let ffi_new = new_mint_url.into();
+        self.ffi_db
+            .update_mint_url(ffi_old, ffi_new)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn add_mint_keysets(
+        &mut self,
+        mint_url: cdk::mint_url::MintUrl,
+        keysets: Vec<cdk::nuts::KeySetInfo>,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        let ffi_mint_url = mint_url.into();
+        let ffi_keysets = keysets.into_iter().map(Into::into).collect();
+        self.ffi_db
+            .add_mint_keysets(ffi_mint_url, ffi_keysets)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn get_mint_quote(
+        &mut self,
+        quote_id: &str,
+    ) -> Result<Option<cdk::wallet::MintQuote>, cdk::cdk_database::Error> {
+        self.ffi_db
+            .get_mint_quote(quote_id.to_string())
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?
+            .map(|q| q.try_into())
+            .transpose()
+            .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn add_mint_quote(
+        &mut self,
+        quote: cdk::wallet::MintQuote,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        let ffi_quote = quote.into();
+        self.ffi_db
+            .add_mint_quote(ffi_quote)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn remove_mint_quote(&mut self, quote_id: &str) -> Result<(), cdk::cdk_database::Error> {
+        self.ffi_db
+            .remove_mint_quote(quote_id.to_string())
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn get_melt_quote(
+        &mut self,
+        quote_id: &str,
+    ) -> Result<Option<cdk::wallet::MeltQuote>, cdk::cdk_database::Error> {
+        self.ffi_db
+            .get_melt_quote(quote_id.to_string())
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?
+            .map(|q| q.try_into())
+            .transpose()
+            .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn add_melt_quote(
+        &mut self,
+        quote: cdk::wallet::MeltQuote,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        let ffi_quote = quote.into();
+        self.ffi_db
+            .add_melt_quote(ffi_quote)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn remove_melt_quote(&mut self, quote_id: &str) -> Result<(), cdk::cdk_database::Error> {
+        self.ffi_db
+            .remove_melt_quote(quote_id.to_string())
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn add_keys(&mut self, keyset: cdk::nuts::KeySet) -> Result<(), cdk::cdk_database::Error> {
+        let ffi_keyset = keyset.into();
+        self.ffi_db
+            .add_keys(ffi_keyset)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn remove_keys(&mut self, id: &cdk::nuts::Id) -> Result<(), cdk::cdk_database::Error> {
+        let ffi_id = (*id).into();
+        self.ffi_db
+            .remove_keys(ffi_id)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn get_proofs(
+        &mut self,
+        mint_url: Option<cdk::mint_url::MintUrl>,
+        unit: Option<cdk::nuts::CurrencyUnit>,
+        state: Option<Vec<cdk::nuts::State>>,
+        spending_conditions: Option<Vec<cdk::nuts::SpendingConditions>>,
+    ) -> Result<Vec<cdk::types::ProofInfo>, cdk::cdk_database::Error> {
+        let ffi_mint_url = mint_url.map(Into::into);
+        let ffi_unit = unit.map(Into::into);
+        let ffi_state = state.map(|s| s.into_iter().map(Into::into).collect());
+        let ffi_spending = spending_conditions.map(|sc| sc.into_iter().map(Into::into).collect());
+
+        let result = self
+            .ffi_db
+            .get_proofs(ffi_mint_url, ffi_unit, ffi_state, ffi_spending)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+
+        result
+            .into_iter()
+            .map(|info| {
+                Ok::<cdk::types::ProofInfo, cdk::cdk_database::Error>(cdk::types::ProofInfo {
+                    proof: info.proof.inner.clone(),
+                    y: info.y.try_into().map_err(|e: FfiError| {
+                        cdk::cdk_database::Error::Database(e.to_string().into())
+                    })?,
+                    mint_url: info.mint_url.try_into().map_err(|e: FfiError| {
+                        cdk::cdk_database::Error::Database(e.to_string().into())
+                    })?,
+                    state: info.state.into(),
+                    spending_condition: info
+                        .spending_condition
+                        .map(|sc| sc.try_into())
+                        .transpose()
+                        .map_err(|e: FfiError| {
+                            cdk::cdk_database::Error::Database(e.to_string().into())
+                        })?,
+                    unit: info.unit.into(),
+                })
+            })
+            .collect()
+    }
+
+    async fn update_proofs(
+        &mut self,
+        added: Vec<cdk::types::ProofInfo>,
+        removed_ys: Vec<cdk::nuts::PublicKey>,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        let ffi_added = added.into_iter().map(Into::into).collect();
+        let ffi_removed = removed_ys.into_iter().map(Into::into).collect();
+        self.ffi_db
+            .update_proofs(ffi_added, ffi_removed)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn update_proofs_state(
+        &mut self,
+        ys: Vec<cdk::nuts::PublicKey>,
+        state: cdk::nuts::State,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        let ffi_ys = ys.into_iter().map(Into::into).collect();
+        let ffi_state = state.into();
+        self.ffi_db
+            .update_proofs_state(ffi_ys, ffi_state)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn increment_keyset_counter(
+        &mut self,
+        keyset_id: &cdk::nuts::Id,
+        count: u32,
+    ) -> Result<u32, cdk::cdk_database::Error> {
+        let ffi_id = (*keyset_id).into();
+        self.ffi_db
+            .increment_keyset_counter(ffi_id, count)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn add_transaction(
+        &mut self,
+        transaction: cdk::wallet::types::Transaction,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        let ffi_tx = transaction.into();
+        self.ffi_db
+            .add_transaction(ffi_tx)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn remove_transaction(
+        &mut self,
+        transaction_id: cdk::wallet::types::TransactionId,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        let ffi_id = transaction_id.into();
+        self.ffi_db
+            .remove_transaction(ffi_id)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+}
+
+#[async_trait::async_trait]
+impl cdk::cdk_database::DbTransactionFinalizer for WalletDatabaseTransactionBridge {
+    type Err = cdk::cdk_database::Error;
+
+    async fn commit(self: Box<Self>) -> Result<(), cdk::cdk_database::Error> {
+        // No-op: FFI operations are atomic and auto-commit
+        Ok(())
+    }
+
+    async fn rollback(self: Box<Self>) -> Result<(), cdk::cdk_database::Error> {
+        // No-op: FFI operations are atomic
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl CdkWalletDatabase for WalletDatabaseBridge {
+    type Err = cdk::cdk_database::Error;
+
+    async fn begin_db_transaction<'a>(
+        &'a self,
+    ) -> Result<
+        Box<dyn cdk::cdk_database::WalletDatabaseTransaction<'a, Self::Err> + Send + Sync + 'a>,
+        cdk::cdk_database::Error,
+    > {
+        Ok(Box::new(WalletDatabaseTransactionBridge {
+            ffi_db: Arc::clone(&self.ffi_db),
+        }))
     }
 
     async fn get_mint(
@@ -226,34 +471,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         Ok(cdk_result)
     }
 
-    async fn update_mint_url(
-        &self,
-        old_mint_url: cdk::mint_url::MintUrl,
-        new_mint_url: cdk::mint_url::MintUrl,
-    ) -> Result<(), Self::Err> {
-        let ffi_old_mint_url = old_mint_url.into();
-        let ffi_new_mint_url = new_mint_url.into();
-        self.ffi_db
-            .update_mint_url(ffi_old_mint_url, ffi_new_mint_url)
-            .await
-            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
-    }
-
-    // Keyset Management
-    async fn add_mint_keysets(
-        &self,
-        mint_url: cdk::mint_url::MintUrl,
-        keysets: Vec<cdk::nuts::KeySetInfo>,
-    ) -> Result<(), Self::Err> {
-        let ffi_mint_url = mint_url.into();
-        let ffi_keysets: Vec<KeySetInfo> = keysets.into_iter().map(Into::into).collect();
-
-        self.ffi_db
-            .add_mint_keysets(ffi_mint_url, ffi_keysets)
-            .await
-            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
-    }
-
     async fn get_mint_keysets(
         &self,
         mint_url: cdk::mint_url::MintUrl,
@@ -278,15 +495,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .await
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
         Ok(result.map(Into::into))
-    }
-
-    // Mint Quote Management
-    async fn add_mint_quote(&self, quote: cdk::wallet::MintQuote) -> Result<(), Self::Err> {
-        let ffi_quote = quote.into();
-        self.ffi_db
-            .add_mint_quote(ffi_quote)
-            .await
-            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
     async fn get_mint_quote(
@@ -321,22 +529,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
-        self.ffi_db
-            .remove_mint_quote(quote_id.to_string())
-            .await
-            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
-    }
-
-    // Melt Quote Management
-    async fn add_melt_quote(&self, quote: cdk::wallet::MeltQuote) -> Result<(), Self::Err> {
-        let ffi_quote = quote.into();
-        self.ffi_db
-            .add_melt_quote(ffi_quote)
-            .await
-            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
-    }
-
     async fn get_melt_quote(
         &self,
         quote_id: &str,
@@ -369,22 +561,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
-        self.ffi_db
-            .remove_melt_quote(quote_id.to_string())
-            .await
-            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
-    }
-
-    // Keys Management
-    async fn add_keys(&self, keyset: cdk::nuts::KeySet) -> Result<(), Self::Err> {
-        let ffi_keyset: KeySet = keyset.into();
-        self.ffi_db
-            .add_keys(ffi_keyset)
-            .await
-            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
-    }
-
     async fn get_keys(&self, id: &cdk::nuts::Id) -> Result<Option<cdk::nuts::Keys>, Self::Err> {
         let ffi_id: Id = (*id).into();
         let result = self
@@ -401,29 +577,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
                     .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
             })
             .transpose()
-    }
-
-    async fn remove_keys(&self, id: &cdk::nuts::Id) -> Result<(), Self::Err> {
-        let ffi_id = (*id).into();
-        self.ffi_db
-            .remove_keys(ffi_id)
-            .await
-            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
-    }
-
-    // Proof Management
-    async fn update_proofs(
-        &self,
-        added: Vec<cdk::types::ProofInfo>,
-        removed_ys: Vec<cdk::nuts::PublicKey>,
-    ) -> Result<(), Self::Err> {
-        let ffi_added: Vec<ProofInfo> = added.into_iter().map(Into::into).collect();
-        let ffi_removed_ys: Vec<PublicKey> = removed_ys.into_iter().map(Into::into).collect();
-
-        self.ffi_db
-            .update_proofs(ffi_added, ffi_removed_ys)
-            .await
-            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
     async fn get_proofs(
@@ -491,45 +644,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
-    async fn update_proofs_state(
-        &self,
-        ys: Vec<cdk::nuts::PublicKey>,
-        state: cdk::nuts::State,
-    ) -> Result<(), Self::Err> {
-        let ffi_ys: Vec<PublicKey> = ys.into_iter().map(Into::into).collect();
-        let ffi_state = state.into();
-
-        self.ffi_db
-            .update_proofs_state(ffi_ys, ffi_state)
-            .await
-            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
-    }
-
-    // Keyset Counter Management
-    async fn increment_keyset_counter(
-        &self,
-        keyset_id: &cdk::nuts::Id,
-        count: u32,
-    ) -> Result<u32, Self::Err> {
-        let ffi_id = (*keyset_id).into();
-        self.ffi_db
-            .increment_keyset_counter(ffi_id, count)
-            .await
-            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
-    }
-
-    // Transaction Management
-    async fn add_transaction(
-        &self,
-        transaction: cdk::wallet::types::Transaction,
-    ) -> Result<(), Self::Err> {
-        let ffi_transaction = transaction.into();
-        self.ffi_db
-            .add_transaction(ffi_transaction)
-            .await
-            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
-    }
-
     async fn get_transaction(
         &self,
         transaction_id: cdk::wallet::types::TransactionId,
@@ -567,17 +681,6 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .into_iter()
             .map(|tx| tx.try_into())
             .collect::<Result<Vec<_>, FfiError>>()
-            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
-    }
-
-    async fn remove_transaction(
-        &self,
-        transaction_id: cdk::wallet::types::TransactionId,
-    ) -> Result<(), Self::Err> {
-        let ffi_id = transaction_id.into();
-        self.ffi_db
-            .remove_transaction(ffi_id)
-            .await
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 }

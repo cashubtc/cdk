@@ -123,10 +123,12 @@ impl Wallet {
             proofs.into_iter().map(|p| p.try_into()).collect();
         let cdk_proofs = cdk_proofs?;
 
+        let mut tx = self.inner.localstore.begin_db_transaction().await?;
         let amount = self
             .inner
-            .receive_proofs(cdk_proofs, options.into(), memo)
+            .receive_proofs(&mut tx, cdk_proofs, options.into(), memo)
             .await?;
+        Box::new(tx).commit().await?;
         Ok(amount.into())
     }
 
@@ -295,7 +297,7 @@ impl Wallet {
             proofs.into_iter().map(|p| p.try_into()).collect();
         let cdk_proofs = cdk_proofs?;
 
-        let proof_states = self.inner.check_proofs_spent(cdk_proofs).await?;
+        let proof_states = self.inner.check_proofs_spent(cdk_proofs, None).await?;
         // Convert ProofState to bool (spent = true, unspent = false)
         let spent_bools = proof_states
             .into_iter()
