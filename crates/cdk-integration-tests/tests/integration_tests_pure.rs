@@ -126,14 +126,21 @@ async fn test_swap_to_send() {
     let wallet_carol = create_test_wallet_for_mint(mint_bob.clone())
         .await
         .expect("Failed to create Carol's wallet");
+    let mut tx = wallet_carol
+        .localstore
+        .begin_db_transaction()
+        .await
+        .expect("valid begin tx");
     let received_amount = wallet_carol
         .receive_proofs(
+            &mut tx,
             token_proofs.clone(),
             ReceiveOptions::default(),
             token.memo().clone(),
         )
         .await
         .expect("Failed to receive proofs");
+    tx.commit().await.expect("valid commit");
 
     assert_eq!(Amount::from(40), received_amount);
     assert_eq!(
@@ -197,7 +204,7 @@ async fn test_mint_nut06() {
 
     let initial_mint_url = wallet_alice.mint_url.clone();
     let mint_info_before = wallet_alice
-        .fetch_mint_info()
+        .fetch_mint_info(None)
         .await
         .expect("Failed to get mint info")
         .unwrap();
