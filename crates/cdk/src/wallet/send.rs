@@ -39,7 +39,7 @@ impl Wallet {
         }
 
         // Get keyset fees from localstore
-        let keyset_fees = self.get_keyset_fees_and_amounts().await?;
+        let keyset_fees = self.get_keyset_fees_and_amounts(None).await?;
 
         // Get available proofs matching conditions
         let mut available_proofs = self
@@ -133,7 +133,7 @@ impl Wallet {
         // Split amount with fee if necessary
         let active_keyset_id = self.get_active_keyset().await?.id;
         let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id, None)
             .await?;
         let (send_amounts, send_fee) = if opts.include_fee {
             tracing::debug!("Keyset fee per proof: {:?}", fee_and_amounts.fee());
@@ -275,7 +275,7 @@ impl PreparedSend {
         // Get keyset fees
         let keyset_fee_ppk = self
             .wallet
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id, Some(&mut tx))
             .await?;
         tracing::debug!("Keyset fees: {:?}", keyset_fee_ppk);
 

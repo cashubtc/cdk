@@ -106,7 +106,7 @@ impl Wallet {
 
         let active_keyset_id = self.fetch_active_keyset(Some(&mut tx)).await?.id;
         let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id, Some(&mut tx))
             .await?;
 
         let amount = match amount {

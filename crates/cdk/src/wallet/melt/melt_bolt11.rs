@@ -387,7 +387,7 @@ impl Wallet {
             .into_iter()
             .map(|k| k.id)
             .collect();
-        let keyset_fees = self.get_keyset_fees_and_amounts().await?;
+        let keyset_fees = self.get_keyset_fees_and_amounts(Some(&mut tx)).await?;
         let (mut input_proofs, mut exchange) = Wallet::select_exact_proofs(
             inputs_needed_amount,
             available_proofs,

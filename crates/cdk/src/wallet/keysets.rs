@@ -190,12 +190,21 @@ impl Wallet {
     /// Returns a HashMap of keyset IDs to their input fee rates (per-proof-per-thousand)
     /// from cached keysets in the local database. This is an offline operation that does
     /// not contact the mint. If no keysets are found locally, returns an error.
-    pub async fn get_keyset_fees_and_amounts(&self) -> Result<KeysetFeeAndAmounts, Error> {
-        let keysets = self
-            .localstore
-            .get_mint_keysets(self.mint_url.clone())
-            .await?
-            .ok_or(Error::UnknownKeySet)?;
+    pub async fn get_keyset_fees_and_amounts(
+        &self,
+        tx: Option<&mut Tx<'_, '_>>,
+    ) -> Result<KeysetFeeAndAmounts, Error> {
+        let mut tx = tx;
+        let keysets = if let Some(tx) = tx.as_mut() {
+            tx.get_mint_keysets(self.mint_url.clone())
+                .await?
+                .ok_or(Error::UnknownKeySet)?
+        } else {
+            self.localstore
+                .get_mint_keysets(self.mint_url.clone())
+                .await?
+                .ok_or(Error::UnknownKeySet)?
+        };
 
         let mut fees = HashMap::new();
         for keyset in keysets {
@@ -203,11 +212,18 @@ impl Wallet {
                 keyset.id,
                 (
                     keyset.input_fee_ppk,
-                    self.load_keyset_keys(keyset.id, None)
-                        .await?
-                        .iter()
-                        .map(|(amount, _)| amount.to_u64())
-                        .collect::<Vec<_>>(),
+                    self.load_keyset_keys(
+                        keyset.id,
+                        if let Some(tx) = tx.as_mut() {
+                            Some(*tx)
+                        } else {
+                            None
+                        },
+                    )
+                    .await?
+                    .iter()
+                    .map(|(amount, _)| amount.to_u64())
+                    .collect::<Vec<_>>(),
                 )
                     .into(),
             );
@@ -224,8 +240,9 @@ impl Wallet {
     pub async fn get_keyset_fees_and_amounts_by_id(
         &self,
         keyset_id: Id,
+        tx: Option<&mut Tx<'_, '_>>,
     ) -> Result<FeeAndAmounts, Error> {
-        self.get_keyset_fees_and_amounts()
+        self.get_keyset_fees_and_amounts(tx)
             .await?
             .get(&keyset_id)
             .cloned()

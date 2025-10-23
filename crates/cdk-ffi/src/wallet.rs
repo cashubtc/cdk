@@ -369,7 +369,7 @@ impl Wallet {
             .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
         Ok(self
             .inner
-            .get_keyset_fees_and_amounts_by_id(id)
+            .get_keyset_fees_and_amounts_by_id(id, None)
             .await?
             .fee())
     }

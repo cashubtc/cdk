@@ -45,7 +45,7 @@ impl Wallet {
 
         let active_keyset_id = pre_swap.pre_mint_secrets.keyset_id;
         let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id, Some(&mut tx))
             .await?;
 
         let active_keys = self
@@ -181,7 +181,7 @@ impl Wallet {
             .map(|k| k.id)
             .collect();
 
-        let keyset_fees = self.get_keyset_fees_and_amounts().await?;
+        let keyset_fees = self.get_keyset_fees_and_amounts(Some(&mut tx)).await?;
         let proofs = Wallet::select_proofs(
             amount,
             available_proofs,
@@ -238,7 +238,7 @@ impl Wallet {
             .ok_or(Error::InsufficientFunds)?;
 
         let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id, Some(tx))
             .await?;
 
         let (send_amount, change_amount) = match include_fees {
