@@ -20,28 +20,40 @@ impl Wallet {
         keyset_id: Id,
         tx: Option<&mut Tx<'_, '_>>,
     ) -> Result<Keys, Error> {
-        let keys = if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
-            keys
-        } else {
-            tracing::debug!(
-                "Keyset {} not in db fetching from mint {}",
-                keyset_id,
-                self.mint_url
-            );
-
-            let keys = self.client.get_mint_keyset(keyset_id).await?;
-
-            keys.verify_id()?;
-
-            if let Some(tx) = tx {
-                tx.add_keys(keys.clone()).await?;
+        let keys = if let Some(tx) = tx {
+            if let Some(keys) = tx.get_keys(&keyset_id).await? {
+                keys
             } else {
+                tracing::debug!(
+                    "Keyset {} not in db fetching from mint {}",
+                    keyset_id,
+                    self.mint_url
+                );
+
+                let keys = self.client.get_mint_keyset(keyset_id).await?;
+
+                keys.verify_id()?;
+                tx.add_keys(keys.clone()).await?;
+                keys.keys
+            }
+        } else {
+            if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
+                keys
+            } else {
+                tracing::debug!(
+                    "Keyset {} not in db fetching from mint {}",
+                    keyset_id,
+                    self.mint_url
+                );
+
+                let keys = self.client.get_mint_keyset(keyset_id).await?;
+
+                keys.verify_id()?;
                 let mut tx = self.localstore.begin_db_transaction().await?;
                 tx.add_keys(keys.clone()).await?;
                 tx.commit().await?;
+                keys.keys
             }
-
-            keys.keys
         };
 
         Ok(keys)
@@ -95,14 +107,21 @@ impl Wallet {
     #[instrument(skip(self, tx))]
     pub async fn refresh_keysets(&self, tx: Option<&mut Tx<'_, '_>>) -> Result<KeySetInfos, Error> {
         tracing::debug!("Refreshing keysets and ensuring we have keys");
-        let _ = self.fetch_mint_info(None).await?;
+
+        let mut tx = tx;
+        let _ = self
+            .fetch_mint_info(if let Some(tx) = tx.as_mut() {
+                Some(*tx)
+            } else {
+                None
+            })
+            .await?;
 
         // Fetch all current keysets from mint
         let keysets_response = self.client.get_mint_keysets().await?;
         let all_keysets = keysets_response.keysets;
 
         // Update local storage with keyset info
-        let mut tx = tx;
         if let Some(tx) = tx.as_mut() {
             tx.add_mint_keysets(self.mint_url.clone(), all_keysets.clone())
                 .await?;

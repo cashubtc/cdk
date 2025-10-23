@@ -177,6 +177,27 @@ struct WalletDatabaseTransactionBridge {
 impl<'a> cdk::cdk_database::WalletDatabaseTransaction<'a, cdk::cdk_database::Error>
     for WalletDatabaseTransactionBridge
 {
+    async fn get_keys(
+        &mut self,
+        id: &cdk::nuts::Id,
+    ) -> Result<Option<cdk::nuts::Keys>, cdk::cdk_database::Error> {
+        let ffi_id: Id = (*id).into();
+        let result = self
+            .ffi_db
+            .get_keys(ffi_id)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+
+        // Convert FFI Keys back to CDK Keys using TryFrom
+        result
+            .map(|ffi_keys| {
+                ffi_keys
+                    .try_into()
+                    .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+            })
+            .transpose()
+    }
+
     async fn add_mint(
         &mut self,
         mint_url: cdk::mint_url::MintUrl,
@@ -289,7 +310,10 @@ impl<'a> cdk::cdk_database::WalletDatabaseTransaction<'a, cdk::cdk_database::Err
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
-    async fn add_keys(&mut self, keyset: cdk::nuts::KeySet) -> Result<(), cdk::cdk_database::Error> {
+    async fn add_keys(
+        &mut self,
+        keyset: cdk::nuts::KeySet,
+    ) -> Result<(), cdk::cdk_database::Error> {
         let ffi_keyset = keyset.into();
         self.ffi_db
             .add_keys(ffi_keyset)

@@ -485,6 +485,21 @@ impl WalletDatabase for WalletRedbDatabase {
 impl<'a> cdk_common::database::WalletDatabaseTransaction<'a, database::Error>
     for RedbWalletTransaction
 {
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn get_keys(&mut self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
+        let txn = self.txn().map_err(Into::<database::Error>::into)?;
+        let table = txn.open_table(MINT_KEYS_TABLE).map_err(Error::from)?;
+
+        if let Some(mint_info) = table
+            .get(keyset_id.to_string().as_str())
+            .map_err(Error::from)?
+        {
+            return Ok(serde_json::from_str(mint_info.value()).map_err(Error::from)?);
+        }
+
+        Ok(None)
+    }
+
     #[instrument(skip(self, mint_info))]
     async fn add_mint(
         &mut self,

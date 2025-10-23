@@ -152,6 +152,27 @@ impl<'a, RM> WalletDatabaseTransaction<'a, Error> for SQLWalletTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
+    /// Read the key from a transaction but it will not lock it
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn get_keys(&mut self, keyset_id: &Id) -> Result<Option<Keys>, Error> {
+        Ok(query(
+            r#"
+            SELECT
+                keys
+            FROM key
+            WHERE id = :id
+            "#,
+        )?
+        .bind("id", keyset_id.to_string())
+        .pluck(&self.inner)
+        .await?
+        .map(|keys| {
+            let keys = column_as_string!(keys);
+            serde_json::from_str(&keys).map_err(Error::from)
+        })
+        .transpose()?)
+    }
+
     #[instrument(skip(self, mint_info))]
     async fn add_mint(
         &mut self,
