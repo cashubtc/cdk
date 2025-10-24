@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use bip39::Mnemonic;
 use cdk_ffi::sqlite::WalletSqliteDatabase;
-use cdk_ffi::types::{Amount, CurrencyUnit, QuoteState, SplitTarget};
+use cdk_ffi::types::{encode_mint_quote, Amount, CurrencyUnit, QuoteState, SplitTarget};
 use cdk_ffi::wallet::Wallet as FfiWallet;
 use cdk_ffi::WalletConfig;
 use cdk_integration_tests::{get_mint_url_from_env, pay_if_regtest};
@@ -157,7 +157,7 @@ async fn test_ffi_full_minting_flow() {
     );
 
     // Calculate total amount of minted proofs
-    let total_minted: u64 = mint_result.iter().map(|proof| proof.amount().value).sum();
+    let total_minted: u64 = mint_result.iter().map(|proof| proof.amount.value).sum();
     assert_eq!(
         total_minted, mint_amount.value,
         "Total minted amount should equal requested amount"
@@ -166,14 +166,11 @@ async fn test_ffi_full_minting_flow() {
     // Verify each proof has valid properties
     for proof in &mint_result {
         assert!(
-            proof.amount().value > 0,
+            proof.amount.value > 0,
             "Each proof should have positive amount"
         );
-        assert!(
-            !proof.secret().is_empty(),
-            "Each proof should have a secret"
-        );
-        assert!(!proof.c().is_empty(), "Each proof should have a C value");
+        assert!(!proof.secret.is_empty(), "Each proof should have a secret");
+        assert!(!proof.c.is_empty(), "Each proof should have a C value");
     }
 
     // Step 4: Verify wallet balance after minting
@@ -235,7 +232,7 @@ async fn test_ffi_mint_quote_creation() {
         );
 
         // Test quote JSON serialization (useful for bindings that need JSON)
-        let quote_json = quote.to_json().expect("Quote should serialize to JSON");
+        let quote_json = encode_mint_quote(quote.clone()).expect("Quote should serialize to JSON");
         assert!(!quote_json.is_empty(), "Quote JSON should not be empty");
 
         println!(
