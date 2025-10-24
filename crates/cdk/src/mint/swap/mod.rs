@@ -9,6 +9,12 @@ use crate::Error;
 
 pub mod swap_saga;
 
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod p2pk_tests;
+
 impl Mint {
     /// Process Swap
     #[instrument(skip_all)]
