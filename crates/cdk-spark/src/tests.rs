@@ -73,7 +73,6 @@ mod tests {
             network: spark_wallet::Network::Signet,
             mnemonic: "word1 word2 word3".to_string(),
             passphrase: None,
-            storage_dir: "./data".to_string(),
             api_key: None,
             operator_pool: None,
             service_provider: None,
@@ -91,11 +90,6 @@ mod tests {
         bad_config.mnemonic = "".to_string();
         assert!(bad_config.validate().is_err());
 
-        // Invalid config - empty storage dir
-        let mut bad_config = config.clone();
-        bad_config.storage_dir = "".to_string();
-        assert!(bad_config.validate().is_err());
-
         // Invalid config - negative fee
         let mut bad_config = config.clone();
         bad_config.fee_reserve.percent_fee_reserve = -0.01;
@@ -107,12 +101,10 @@ mod tests {
         let config = SparkConfig::default_for_network(
             spark_wallet::Network::Signet,
             "test mnemonic".to_string(),
-            "./data".to_string(),
         );
 
         assert_eq!(config.network, spark_wallet::Network::Signet);
         assert_eq!(config.mnemonic, "test mnemonic");
-        assert_eq!(config.storage_dir, "./data");
         assert_eq!(u64::from(config.fee_reserve.min_fee_reserve), 10);
         assert_eq!(config.fee_reserve.percent_fee_reserve, 0.01);
         assert_eq!(config.reconnect_interval_seconds, 30);
@@ -135,7 +127,6 @@ mod tests {
             let config = SparkConfig::default_for_network(
                 network,
                 "test".to_string(),
-                "./data".to_string(),
             );
             assert_eq!(config.network, network);
         }

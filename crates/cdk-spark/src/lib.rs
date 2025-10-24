@@ -24,7 +24,7 @@ use futures::Stream;
 use lightning_invoice::Bolt11Invoice;
 use serde_json::Value;
 use spark_wallet::{
-    DefaultSigner, InvoiceDescription, Network, SparkWallet, SparkWalletConfig, WalletBuilder,
+    DefaultSigner, InvoiceDescription, SparkWallet, SparkWalletConfig, WalletBuilder,
     WalletEvent,
 };
 
