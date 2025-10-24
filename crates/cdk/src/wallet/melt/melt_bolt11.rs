@@ -378,7 +378,9 @@ impl Wallet {
 
         let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
 
-        let available_proofs = self.get_unspent_proofs().await?;
+        let available_proofs = self
+            .get_proofs_with(Some(vec![State::Unspent]), None, Some(&mut tx))
+            .await?;
 
         let active_keyset_ids = self
             .refresh_keysets(Some(&mut tx))
