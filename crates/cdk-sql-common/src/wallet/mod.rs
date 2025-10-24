@@ -691,6 +691,28 @@ ON CONFLICT(mint_url) DO UPDATE SET
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn get_keyset_by_id(&mut self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Error> {
+        Ok(query(
+            r#"
+               SELECT
+                   id,
+                   unit,
+                   active,
+                   input_fee_ppk,
+                   final_expiry
+               FROM
+                   keyset
+               WHERE id = :id
+               "#,
+        )?
+        .bind("id", keyset_id.to_string())
+        .fetch_one(&self.inner)
+        .await?
+        .map(sql_row_to_keyset)
+        .transpose()?)
+    }
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn increment_keyset_counter(&mut self, keyset_id: &Id, count: u32) -> Result<u32, Error> {
         // Lock the row and get current counter
         let current_counter = query(

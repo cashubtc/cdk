@@ -94,7 +94,7 @@ impl Wallet {
 
         // Check if selected proofs are exact
         let send_fee = if opts.include_fee {
-            self.get_proofs_fee(&selected_proofs).await?
+            self.get_proofs_fee(None, &selected_proofs).await?
         } else {
             Amount::ZERO
         };
@@ -140,6 +140,7 @@ impl Wallet {
             let send_split = amount.split_with_fee(&fee_and_amounts)?;
             let send_fee = self
                 .get_proofs_fee_by_count(
+                    None,
                     vec![(active_keyset_id, send_split.len() as u64)]
                         .into_iter()
                         .collect(),
@@ -159,7 +160,6 @@ impl Wallet {
         // Reserve proofs
         tx.update_proofs_state(proofs.ys()?, State::Reserved)
             .await?;
-        tx.commit().await?;
 
         // Check if proofs are exact send amount (and does not exceed max_proofs)
         let mut exact_proofs = proofs.total_amount()? == amount + send_fee;
@@ -190,7 +190,9 @@ impl Wallet {
         }
 
         // Calculate swap fee
-        let swap_fee = self.get_proofs_fee(&proofs_to_swap).await?;
+        let swap_fee = self.get_proofs_fee(Some(&mut tx), &proofs_to_swap).await?;
+
+        tx.commit().await?;
 
         // Return prepared send
         Ok(PreparedSend {
@@ -318,7 +320,7 @@ impl PreparedSend {
             .get_proofs_with(
                 Some(vec![State::Reserved, State::Unspent]),
                 self.options.conditions.clone().map(|c| vec![c]),
-                None,
+                Some(&mut tx),
             )
             .await?
             .ys()?;

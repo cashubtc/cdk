@@ -411,6 +411,19 @@ impl<'a> cdk::cdk_database::WalletDatabaseTransaction<'a, cdk::cdk_database::Err
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
+    async fn get_keyset_by_id(
+        &mut self,
+        keyset_id: &cdk::nuts::Id,
+    ) -> Result<Option<cdk::nuts::KeySetInfo>, cdk::cdk_database::Error> {
+        let ffi_id = (*keyset_id).into();
+        let result = self
+            .ffi_db
+            .get_keyset_by_id(ffi_id)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+        Ok(result.map(Into::into))
+    }
+
     async fn increment_keyset_counter(
         &mut self,
         keyset_id: &cdk::nuts::Id,

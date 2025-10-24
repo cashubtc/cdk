@@ -946,6 +946,30 @@ impl<'a> cdk_common::database::WalletDatabaseTransaction<'a, database::Error>
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
+    async fn get_keyset_by_id(
+        &mut self,
+        keyset_id: &Id,
+    ) -> Result<Option<KeySetInfo>, database::Error> {
+        let txn = self.txn().map_err(Into::<database::Error>::into)?;
+        let table = txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
+
+        let result = match table
+            .get(keyset_id.to_bytes().as_slice())
+            .map_err(Error::from)?
+        {
+            Some(keyset) => {
+                let keyset: KeySetInfo =
+                    serde_json::from_str(keyset.value()).map_err(Error::from)?;
+
+                Ok(Some(keyset))
+            }
+            None => Ok(None),
+        };
+
+        result
+    }
+
+    #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn increment_keyset_counter(
         &mut self,
         keyset_id: &Id,

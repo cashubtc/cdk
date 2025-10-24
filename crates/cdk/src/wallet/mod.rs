@@ -206,24 +206,35 @@ impl Wallet {
 
     /// Fee required for proof set
     #[instrument(skip_all)]
-    pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
+    pub async fn get_proofs_fee(
+        &self,
+        tx: Option<&mut Tx<'_, '_>>,
+        proofs: &Proofs,
+    ) -> Result<Amount, Error> {
         let proofs_per_keyset = proofs.count_by_keyset();
-        self.get_proofs_fee_by_count(proofs_per_keyset).await
+        self.get_proofs_fee_by_count(tx, proofs_per_keyset).await
     }
 
     /// Fee required for proof set by count
     pub async fn get_proofs_fee_by_count(
         &self,
+        tx: Option<&mut Tx<'_, '_>>,
         proofs_per_keyset: HashMap<Id, u64>,
     ) -> Result<Amount, Error> {
         let mut fee_per_keyset = HashMap::new();
+        let mut tx = tx;
 
         for keyset_id in proofs_per_keyset.keys() {
-            let mint_keyset_info = self
-                .localstore
-                .get_keyset_by_id(keyset_id)
-                .await?
-                .ok_or(Error::UnknownKeySet)?;
+            let mint_keyset_info = if let Some(tx) = tx.as_mut() {
+                tx.get_keyset_by_id(keyset_id)
+                    .await?
+                    .ok_or(Error::UnknownKeySet)?
+            } else {
+                self.localstore
+                    .get_keyset_by_id(keyset_id)
+                    .await?
+                    .ok_or(Error::UnknownKeySet)?
+            };
             fee_per_keyset.insert(*keyset_id, mint_keyset_info.input_fee_ppk);
         }
 
@@ -343,12 +354,15 @@ impl Wallet {
     }
 
     /// Get amounts needed to refill proof state
-    #[instrument(skip(self))]
+    #[instrument(skip(self, tx))]
     pub async fn amounts_needed_for_state_target(
         &self,
+        tx: Option<&mut Tx<'_, '_>>,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Vec<Amount>, Error> {
-        let unspent_proofs = self.get_unspent_proofs().await?;
+        let unspent_proofs = self
+            .get_proofs_with(Some(vec![State::Unspent]), None, tx)
+            .await?;
 
         let amounts_count: HashMap<u64, u64> =
             unspent_proofs
@@ -378,14 +392,15 @@ impl Wallet {
     }
 
     /// Determine [`SplitTarget`] for amount based on state
-    #[instrument(skip(self))]
+    #[instrument(skip(self, tx))]
     async fn determine_split_target_values(
         &self,
+        tx: Option<&mut Tx<'_, '_>>,
         change_amount: Amount,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<SplitTarget, Error> {
         let mut amounts_needed_refill = self
-            .amounts_needed_for_state_target(fee_and_amounts)
+            .amounts_needed_for_state_target(tx, fee_and_amounts)
             .await?;
 
         amounts_needed_refill.sort();

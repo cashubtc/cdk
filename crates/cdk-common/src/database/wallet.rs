@@ -48,6 +48,9 @@ pub trait DatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
         new_mint_url: MintUrl,
     ) -> Result<(), Error>;
 
+    /// Get mint keyset by id
+    async fn get_keyset_by_id(&mut self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Error>;
+
     /// Add mint keyset to storage
     async fn add_mint_keysets(
         &mut self,

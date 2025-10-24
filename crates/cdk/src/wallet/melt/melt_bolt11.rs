@@ -147,8 +147,7 @@ impl Wallet {
 
         let active_keyset_id = self.fetch_active_keyset(Some(tx)).await?.id;
 
-        let active_keys = self
-            .localstore
+        let active_keys = tx
             .get_keys(&active_keyset_id)
             .await?
             .ok_or(Error::NoActiveKeyset)?;

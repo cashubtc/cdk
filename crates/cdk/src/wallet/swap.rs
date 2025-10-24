@@ -46,8 +46,7 @@ impl Wallet {
             .get_keyset_fees_and_amounts_by_id(active_keyset_id, Some(tx))
             .await?;
 
-        let active_keys = self
-            .localstore
+        let active_keys = tx
             .get_keys(&active_keyset_id)
             .await?
             .ok_or(Error::NoActiveKeyset)?;
@@ -263,7 +262,7 @@ impl Wallet {
         let ys: Vec<PublicKey> = proofs.ys()?;
         tx.update_proofs_state(ys, State::Reserved).await?;
 
-        let fee = self.get_proofs_fee(&proofs).await?;
+        let fee = self.get_proofs_fee(Some(tx), &proofs).await?;
 
         let total_to_subtract = amount
             .unwrap_or(Amount::ZERO)
@@ -306,7 +305,7 @@ impl Wallet {
         // else use state refill
         let change_split_target = match amount_split_target {
             SplitTarget::None => {
-                self.determine_split_target_values(change_amount, &fee_and_amounts)
+                self.determine_split_target_values(Some(tx), change_amount, &fee_and_amounts)
                     .await?
             }
             s => s,
