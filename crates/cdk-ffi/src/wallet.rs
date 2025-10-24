@@ -119,8 +119,9 @@ impl Wallet {
         options: ReceiveOptions,
         memo: Option<String>,
     ) -> Result<Amount, FfiError> {
-        let cdk_proofs: Vec<cdk::nuts::Proof> =
-            proofs.into_iter().map(|p| p.inner.clone()).collect();
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
 
         let amount = self
             .inner
@@ -166,10 +167,7 @@ impl Wallet {
             .inner
             .mint(&quote_id, amount_split_target.into(), conditions)
             .await?;
-        Ok(proofs
-            .into_iter()
-            .map(|p| std::sync::Arc::new(p.into()))
-            .collect())
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
     /// Get a melt quote
@@ -222,10 +220,7 @@ impl Wallet {
             )
             .await?;
 
-        Ok(proofs
-            .into_iter()
-            .map(|p| std::sync::Arc::new(p.into()))
-            .collect())
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
     /// Get a quote for a bolt12 melt
@@ -248,8 +243,9 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<Option<Proofs>, FfiError> {
-        let cdk_proofs: Vec<cdk::nuts::Proof> =
-            input_proofs.into_iter().map(|p| p.inner.clone()).collect();
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            input_proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
 
         // Convert spending conditions if provided
         let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
@@ -265,12 +261,7 @@ impl Wallet {
             )
             .await?;
 
-        Ok(result.map(|proofs| {
-            proofs
-                .into_iter()
-                .map(|p| std::sync::Arc::new(p.into()))
-                .collect()
-        }))
+        Ok(result.map(|proofs| proofs.into_iter().map(|p| p.into()).collect()))
     }
 
     /// Get proofs by states
@@ -291,7 +282,7 @@ impl Wallet {
             };
 
             for proof in proofs {
-                all_proofs.push(std::sync::Arc::new(proof.into()));
+                all_proofs.push(proof.into());
             }
         }
 
@@ -300,8 +291,9 @@ impl Wallet {
 
     /// Check if proofs are spent
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<bool>, FfiError> {
-        let cdk_proofs: Vec<cdk::nuts::Proof> =
-            proofs.into_iter().map(|p| p.inner.clone()).collect();
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
 
         let proof_states = self.inner.check_proofs_spent(cdk_proofs).await?;
         // Convert ProofState to bool (spent = true, unspent = false)
@@ -382,7 +374,9 @@ impl Wallet {
 
     /// Reclaim unspent proofs (mark them as unspent in the database)
     pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), FfiError> {
-        let cdk_proofs: Vec<cdk::nuts::Proof> = proofs.iter().map(|p| p.inner.clone()).collect();
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.iter().map(|p| p.clone().try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
         self.inner.reclaim_unspent(cdk_proofs).await?;
         Ok(())
     }
@@ -401,9 +395,11 @@ impl Wallet {
     ) -> Result<Amount, FfiError> {
         let id = cdk::nuts::Id::from_str(&keyset_id)
             .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
-        let fee_and_amounts = self.inner.get_keyset_fees_and_amounts_by_id(id).await?;
-        let total_fee = (proof_count as u64 * fee_and_amounts.fee()) / 1000; // fee is per thousand
-        Ok(Amount::new(total_fee))
+        let fee = self
+            .inner
+            .get_keyset_count_fee(&id, proof_count as u64)
+            .await?;
+        Ok(fee.into())
     }
 }
 
@@ -453,10 +449,7 @@ impl Wallet {
     /// Mint blind auth tokens
     pub async fn mint_blind_auth(&self, amount: Amount) -> Result<Proofs, FfiError> {
         let proofs = self.inner.mint_blind_auth(amount.into()).await?;
-        Ok(proofs
-            .into_iter()
-            .map(|p| std::sync::Arc::new(p.into()))
-            .collect())
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 
     /// Get unspent auth proofs

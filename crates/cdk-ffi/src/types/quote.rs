@@ -77,30 +77,25 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
     }
 }
 
-impl MintQuote {
-    /// Get total amount (amount + fees)
-    pub fn total_amount(&self) -> Amount {
-        if let Some(amount) = self.amount {
-            Amount::new(amount.value + self.amount_paid.value - self.amount_issued.value)
-        } else {
-            Amount::zero()
-        }
-    }
+/// Get total amount for a mint quote (amount paid)
+#[uniffi::export]
+pub fn mint_quote_total_amount(quote: &MintQuote) -> Result<Amount, FfiError> {
+    let cdk_quote: cdk::wallet::MintQuote = quote.clone().try_into()?;
+    Ok(cdk_quote.total_amount().into())
+}
 
-    /// Check if quote is expired
-    pub fn is_expired(&self, current_time: u64) -> bool {
-        current_time > self.expiry
-    }
+/// Check if mint quote is expired
+#[uniffi::export]
+pub fn mint_quote_is_expired(quote: &MintQuote, current_time: u64) -> Result<bool, FfiError> {
+    let cdk_quote: cdk::wallet::MintQuote = quote.clone().try_into()?;
+    Ok(cdk_quote.is_expired(current_time))
+}
 
-    /// Get amount that can be minted
-    pub fn amount_mintable(&self) -> Amount {
-        Amount::new(self.amount_paid.value - self.amount_issued.value)
-    }
-
-    /// Convert MintQuote to JSON string
-    pub fn to_json(&self) -> Result<String, FfiError> {
-        Ok(serde_json::to_string(self)?)
-    }
+/// Get amount that can be minted from a mint quote
+#[uniffi::export]
+pub fn mint_quote_amount_mintable(quote: &MintQuote) -> Result<Amount, FfiError> {
+    let cdk_quote: cdk::wallet::MintQuote = quote.clone().try_into()?;
+    Ok(cdk_quote.amount_mintable().into())
 }
 
 /// Decode MintQuote from JSON string
@@ -117,7 +112,7 @@ pub fn encode_mint_quote(quote: MintQuote) -> Result<String, FfiError> {
 }
 
 /// FFI-compatible MintQuoteBolt11Response
-#[derive(Debug, uniffi::Object)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MintQuoteBolt11Response {
     /// Quote ID
     pub quote: String,
@@ -149,46 +144,8 @@ impl From<cdk::nuts::MintQuoteBolt11Response<String>> for MintQuoteBolt11Respons
     }
 }
 
-#[uniffi::export]
-impl MintQuoteBolt11Response {
-    /// Get quote ID
-    pub fn quote(&self) -> String {
-        self.quote.clone()
-    }
-
-    /// Get request string
-    pub fn request(&self) -> String {
-        self.request.clone()
-    }
-
-    /// Get state
-    pub fn state(&self) -> QuoteState {
-        self.state.clone()
-    }
-
-    /// Get expiry
-    pub fn expiry(&self) -> Option<u64> {
-        self.expiry
-    }
-
-    /// Get amount
-    pub fn amount(&self) -> Option<Amount> {
-        self.amount
-    }
-
-    /// Get unit
-    pub fn unit(&self) -> Option<CurrencyUnit> {
-        self.unit.clone()
-    }
-
-    /// Get pubkey
-    pub fn pubkey(&self) -> Option<String> {
-        self.pubkey.clone()
-    }
-}
-
 /// FFI-compatible MeltQuoteBolt11Response
-#[derive(Debug, uniffi::Object)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MeltQuoteBolt11Response {
     /// Quote ID
     pub quote: String,
@@ -222,50 +179,6 @@ impl From<cdk::nuts::MeltQuoteBolt11Response<String>> for MeltQuoteBolt11Respons
         }
     }
 }
-
-#[uniffi::export]
-impl MeltQuoteBolt11Response {
-    /// Get quote ID
-    pub fn quote(&self) -> String {
-        self.quote.clone()
-    }
-
-    /// Get amount
-    pub fn amount(&self) -> Amount {
-        self.amount
-    }
-
-    /// Get fee reserve
-    pub fn fee_reserve(&self) -> Amount {
-        self.fee_reserve
-    }
-
-    /// Get state
-    pub fn state(&self) -> QuoteState {
-        self.state.clone()
-    }
-
-    /// Get expiry
-    pub fn expiry(&self) -> u64 {
-        self.expiry
-    }
-
-    /// Get payment preimage
-    pub fn payment_preimage(&self) -> Option<String> {
-        self.payment_preimage.clone()
-    }
-
-    /// Get request
-    pub fn request(&self) -> Option<String> {
-        self.request.clone()
-    }
-
-    /// Get unit
-    pub fn unit(&self) -> Option<CurrencyUnit> {
-        self.unit.clone()
-    }
-}
-
 /// FFI-compatible PaymentMethod
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum PaymentMethod {

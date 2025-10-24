@@ -246,7 +246,7 @@ impl WalletDatabase for WalletPostgresDatabase {
             .into_iter()
             .map(|info| {
                 Ok::<cdk::types::ProofInfo, FfiError>(cdk::types::ProofInfo {
-                    proof: info.proof.inner.clone(),
+                    proof: info.proof.try_into()?,
                     y: info.y.try_into()?,
                     mint_url: info.mint_url.try_into()?,
                     state: info.state.into(),
