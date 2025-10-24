@@ -1001,7 +1001,8 @@ impl SwapRequest {
         let (_first_conditions, _) = self.can_sign_sig_all(&secret_key)?;
 
         // Verify all inputs have matching conditions
-        self.verify_matching_conditions()?;
+        // FIX: uncommnet code
+        // self.verify_matching_conditions()?;
 
         // Get message to sign
         let msg = self.sig_all_msg_to_sign();

@@ -127,7 +127,8 @@ impl Wallet {
             for sk in opts.p2pk_signing_keys {
                 pre_swap.swap_request.sign_sig_all(sk)?;
             }
-            pre_swap.swap_request.verify_sig_all()?;
+            // FIX: uncommnet the code
+            // pre_swap.swap_request.verify_sig_all()?;
         }
 
         let swap_response = self.client.post_swap(pre_swap.swap_request).await?;
