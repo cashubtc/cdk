@@ -27,6 +27,8 @@ mod lnd;
 mod management_rpc;
 #[cfg(feature = "prometheus")]
 mod prometheus;
+#[cfg(feature = "spark")]
+mod spark;
 
 use std::env;
 use std::str::FromStr;
@@ -147,6 +149,10 @@ impl Settings {
             LnBackend::GrpcProcessor => {
                 self.grpc_processor =
                     Some(self.grpc_processor.clone().unwrap_or_default().from_env());
+            }
+            #[cfg(feature = "spark")]
+            LnBackend::Spark => {
+                self.spark = Some(self.spark.clone().unwrap_or_default().from_env());
             }
             LnBackend::None => bail!("Ln backend must be set"),
             #[allow(unreachable_patterns)]

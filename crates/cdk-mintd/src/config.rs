@@ -547,6 +547,8 @@ pub struct Settings {
     pub ldk_node: Option<LdkNode>,
     #[cfg(feature = "fakewallet")]
     pub fake_wallet: Option<FakeWallet>,
+    #[cfg(feature = "spark")]
+    pub spark: Option<Spark>,
     pub grpc_processor: Option<GrpcProcessor>,
     pub database: Database,
     #[cfg(feature = "auth")]
@@ -680,6 +682,13 @@ impl Settings {
                 assert!(
                     settings.grpc_processor.is_some(),
                     "GRPC backend requires a valid config."
+                )
+            }
+            #[cfg(feature = "spark")]
+            LnBackend::Spark => {
+                assert!(
+                    settings.spark.is_some(),
+                    "Spark backend requires a valid config."
                 )
             }
         }

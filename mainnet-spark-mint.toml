@@ -1,0 +1,144 @@
+# ==========================================
+# CDK Mint Mainnet Configuration with Spark Backend
+# ==========================================
+# 
+# This is a MAINNET configuration for production use
+# ⚠️ USE REAL BITCOIN - NOT TEST COINS!
+#
+# Generated: 2025-10-24
+# Network: Mainnet (real Bitcoin)
+# ==========================================
+
+[info]
+# Mint URL (update with your actual domain/IP)
+url = "https://mint.trailscoffee.com"
+listen_host = "0.0.0.0"  # Listen on all interfaces for web access
+listen_port = 8085
+
+# CDK Mint Mnemonic (for signing ecash tokens)
+# ⚠️ GENERATE A SECURE RANDOM MNEMONIC FOR PRODUCTION!
+# This is just a placeholder - replace with your secure mnemonic
+mnemonic = "cabin song ridge protect poem crumble aware oppose before clay teach click bike public fog heavy business diary random giraffe ladder fee cute genre"
+
+# Enable Swagger UI for API documentation
+enable_swagger_ui = true
+
+[info.quote_ttl]
+# How long quotes are valid (in seconds)
+mint_ttl = 600  # 10 minutes
+melt_ttl = 120  # 2 minutes
+
+[info.logging]
+# Logging configuration
+output = "both"  # Log to both console and file
+console_level = "info"
+file_level = "debug"
+
+# ==========================================
+# Mint Information
+# ==========================================
+[mint_info]
+name = "Spark Mainnet Mint"
+description = "Nodeless Lightning Cashu Mint on Mainnet"
+description_long = "A production Cashu mint using Spark SDK for nodeless Lightning payments"
+motd = "⚡ Welcome to our Spark-powered Cashu mint! Real Bitcoin, real Lightning! ⚡"
+
+# Contact info (optional but recommended)
+contact_email = "mint@trailscoffee.com"
+contact_nostr_public_key = "npub1trailscoffeeexample"
+
+# Additional mint info fields
+icon_url = "https://trailscoffee.com/icon.png"
+tos_url = "https://trailscoffee.com/terms"
+
+# Mint URLs (array of valid mint endpoints)
+urls = ["https://mint.trailscoffee.com"]
+
+# ==========================================
+# Database Configuration
+# ==========================================
+[database]
+engine = "sqlite"
+# SQLite file will be created in current directory
+# For production, use absolute path: "/path/to/data/mint.db"
+
+# ==========================================
+# Mint Keyset Configuration
+# ==========================================
+[[mint_keyset]]
+unit = "sat"
+max_order = 64  # Maximum denomination: 2^64 sats
+input_fee_ppk = 0  # Input fee per proof key (0 = no fee)
+
+# ==========================================
+# Lightning Backend Configuration
+# ==========================================
+[ln]
+# Use Spark as the Lightning backend
+ln_backend = "spark"
+
+# Limits for minting and melting (adjust as needed)
+min_mint = 1      # Minimum 1 sat to mint
+max_mint = 1000000 # Maximum 1M sats to mint (1 BTC)
+min_melt = 1      # Minimum 1 sat to melt
+max_melt = 1000000 # Maximum 1M sats to melt
+
+# ==========================================
+# Spark Lightning Backend Configuration
+# ==========================================
+[spark]
+# Network: mainnet for real Bitcoin
+network = "mainnet"
+
+# Spark Wallet Mnemonic (controls Lightning funds)
+# ⚠️ GENERATE A SECURE RANDOM MNEMONIC FOR PRODUCTION!
+# This controls your Lightning funds - keep it secure!
+mnemonic = "open luxury analyst shove snack style art giant soccer agree enrich ill sock immense maple social rice dismiss shuffle wife luggage very silent song"
+
+# Required: Storage directory for Spark wallet persistent data
+storage_dir = "./data/spark-mainnet"
+
+# Optional: BIP39 passphrase (25th word) for additional security
+# passphrase = "your_optional_passphrase"
+
+# Optional: Spark Service Provider API Key
+# Get free key at: https://breez.technology/request-api-key/
+# Highly recommended for production use
+api_key = "MIIBfDCCAS6gAwIBAgIHPo0lHJJaJTAFBgMrZXAwEDEOMAwGA1UEAxMFQnJlZXowHhcNMjUxMDE3MDExODI4WhcNMzUxMDE1MDExODI4WjA2MR0wGwYDVQQKExRBbm1vcmUgVHJhaWxzIENvZmZlZTEVMBMGA1UEAxMMSnVhbiBHYXZpcmlhMCowBQYDK2VwAyEA0IP1y98gPByiIMoph1P0G6cctLb864rNXw1LRLOpXXejgYAwfjAOBgNVHQ8BAf8EBAMCBaAwDAYDVR0TAQH/BAIwADAdBgNVHQ4EFgQU2jmj7l5rSw0yVb/vlWAYkK/YBwkwHwYDVR0jBBgwFoAU3qrWklbzjed0khb8TLYgsmsomGswHgYDVR0RBBcwFYETanBAdHJhaWxzY29mZmVlLmNvbTAFBgMrZXADQQAF5QwIgYc/BOqfLrHqacyVj9d8DSeBjrxDxu9WGwVZK6GaIwO7tqL7C7OuMNmiY3S5aP3TgnLRJUj0gWi/YCEF"
+
+# Fee configuration (adjust as needed)
+fee_percent = 0.005       # 0.5% fee (0.005 = 0.5%, 0.01 = 1%)
+reserve_fee_min = 1       # Minimum 1 sat fee reserve
+
+# Advanced settings (usually leave as defaults)
+reconnect_interval_seconds = 30
+split_secret_threshold = 2
+
+# ==========================================
+# Security Notes
+# ==========================================
+# 
+# 1. Generate secure mnemonics:
+#    - Use a proper BIP39 generator
+#    - Store them securely offline
+#    - Never commit them to version control
+#
+# 2. Get a Breez API key:
+#    - Visit: https://breez.technology/request-api-key/
+#    - It's free and improves reliability
+#
+# 3. Set up HTTPS:
+#    - Use nginx or caddy as reverse proxy
+#    - Get SSL certificate (Let's Encrypt)
+#
+# 4. Monitor your mint:
+#    - Check logs regularly
+#    - Monitor wallet balance
+#    - Set up alerts for unusual activity
+#
+# 5. Backup everything:
+#    - Mnemonics (most important!)
+#    - Database file
+#    - Configuration files
+#
+# ==========================================
