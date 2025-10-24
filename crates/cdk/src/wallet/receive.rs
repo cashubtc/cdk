@@ -78,6 +78,9 @@ impl Wallet {
                     .try_into();
                 if let Ok(conditions) = conditions {
                     let mut pubkeys = conditions.pubkeys.unwrap_or_default();
+                    if conditions.sig_flag.eq(&SigFlag::SigAll) {
+                        sig_flag = SigFlag::SigAll;
+                    }
 
                     match secret.kind() {
                         Kind::P2PK => {
@@ -93,14 +96,14 @@ impl Wallet {
                             proof.add_preimage(preimage.to_string());
                         }
                     }
-                    for pubkey in pubkeys {
-                        if let Some(signing) = p2pk_signing_keys.get(&pubkey.x_only_public_key()) {
-                            proof.sign_p2pk(signing.to_owned().clone())?;
+                    if sig_flag.ne(&SigFlag::SigAll) {
+                        for pubkey in pubkeys {
+                            if let Some(signing) =
+                                p2pk_signing_keys.get(&pubkey.x_only_public_key())
+                            {
+                                proof.sign_p2pk(signing.to_owned().clone())?;
+                            }
                         }
-                    }
-
-                    if conditions.sig_flag.eq(&SigFlag::SigAll) {
-                        sig_flag = SigFlag::SigAll;
                     }
                 }
             }
@@ -121,11 +124,10 @@ impl Wallet {
             .await?;
 
         if sig_flag.eq(&SigFlag::SigAll) {
-            for blinded_message in pre_swap.swap_request.outputs_mut() {
-                for signing_key in p2pk_signing_keys.values() {
-                    blinded_message.sign_p2pk(signing_key.to_owned().clone())?
-                }
+            for sk in opts.p2pk_signing_keys {
+                pre_swap.swap_request.sign_sig_all(sk)?;
             }
+            pre_swap.swap_request.verify_sig_all()?;
         }
 
         let swap_response = self.client.post_swap(pre_swap.swap_request).await?;

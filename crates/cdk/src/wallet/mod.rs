@@ -57,6 +57,7 @@ pub mod util;
 pub use auth::{AuthMintConnector, AuthWallet};
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
+pub use melt::MeltProofsOptions;
 #[cfg(feature = "auth")]
 pub use mint_connector::http_client::AuthHttpClient as BaseAuthHttpClient;
 pub use mint_connector::http_client::HttpClient as BaseHttpClient;
@@ -69,6 +70,7 @@ pub use receive::ReceiveOptions;
 pub use send::{PreparedSend, SendMemo, SendOptions};
 pub use types::{MeltQuote, MintQuote, SendKind};
 
+// pub use melt::Melt;
 use crate::nuts::nut00::ProofsMethods;
 
 /// CDK Wallet

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection};
 use cdk_common::{Error, MeltQuoteBolt11Response, MeltQuoteState, ProofsMethods};
+pub use melt_bolt11::MeltProofsOptions;
 use tracing::instrument;
 
 use crate::Wallet;

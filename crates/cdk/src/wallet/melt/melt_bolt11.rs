@@ -1,22 +1,26 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
+use bitcoin::XOnlyPublicKey;
 use cdk_common::amount::SplitTarget;
+use cdk_common::util::hex;
 use cdk_common::wallet::{Transaction, TransactionDirection};
-use cdk_common::PaymentMethod;
+use cdk_common::{Kind, PaymentMethod};
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
 use crate::amount::to_unit;
 use crate::dhke::construct_proofs;
 use crate::nuts::{
-    CurrencyUnit, MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest,
-    PreMintSecrets, Proofs, ProofsMethods, State,
+    Conditions, CurrencyUnit, MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
+    MeltRequest, PreMintSecrets, Proofs, ProofsMethods, PublicKey, SecretKey, SigFlag, State,
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
 use crate::wallet::MeltQuote;
-use crate::{ensure_cdk, Amount, Error, Wallet};
+use crate::{ensure_cdk, Amount, Error, Wallet, SECP256K1};
 
 impl Wallet {
     /// Melt Quote
@@ -129,7 +133,7 @@ impl Wallet {
     /// Melt specific proofs
     #[instrument(skip(self, proofs))]
     pub async fn melt_proofs(&self, quote_id: &str, proofs: Proofs) -> Result<Melted, Error> {
-        self.melt_proofs_with_metadata(quote_id, proofs, HashMap::new())
+        self.melt_proofs_with_metadata(quote_id, proofs, HashMap::new(), None)
             .await
     }
 
@@ -140,6 +144,7 @@ impl Wallet {
         quote_id: &str,
         proofs: Proofs,
         metadata: HashMap<String, String>,
+        opts: Option<MeltProofsOptions>,
     ) -> Result<Melted, Error> {
         let quote_info = self
             .localstore
@@ -152,6 +157,7 @@ impl Wallet {
             Error::ExpiredQuote(quote_info.expiry, unix_time())
         );
 
+        let mut proofs = proofs;
         let proofs_total = proofs.total_amount()?;
         if proofs_total < quote_info.amount + quote_info.fee_reserve {
             return Err(Error::InsufficientFunds);
@@ -161,6 +167,78 @@ impl Wallet {
         self.localstore
             .update_proofs_state(ys, State::Pending)
             .await?;
+
+        let mut sig_flag = SigFlag::SigInputs;
+
+        if let Some(opts) = opts.clone() {
+            // Map hash of preimage to preimage
+            let hashed_to_preimage: HashMap<String, &String> = opts
+                .preimages
+                .iter()
+                .map(|p| {
+                    let hex_bytes = hex::decode(p)?;
+                    Ok::<(String, &String), Error>((Sha256Hash::hash(&hex_bytes).to_string(), p))
+                })
+                .collect::<Result<HashMap<String, &String>, _>>()?;
+
+            let p2pk_signing_keys: HashMap<XOnlyPublicKey, &SecretKey> = opts
+                .p2pk_signing_keys
+                .iter()
+                .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
+                .collect();
+
+            for proof in &mut proofs {
+                // Verify that proof DLEQ is valid
+                if proof.dleq.is_some() {
+                    let keys = self.load_keyset_keys(proof.keyset_id).await?;
+                    let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
+                    proof.verify_dleq(key)?;
+                }
+
+                if let Ok(secret) =
+                    <crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(
+                        proof.secret.clone(),
+                    )
+                {
+                    let conditions: Result<Conditions, _> = secret
+                        .secret_data()
+                        .tags()
+                        .cloned()
+                        .unwrap_or_default()
+                        .try_into();
+                    if let Ok(conditions) = conditions {
+                        let mut pubkeys = conditions.pubkeys.unwrap_or_default();
+                        if conditions.sig_flag.eq(&SigFlag::SigAll) {
+                            sig_flag = SigFlag::SigAll;
+                        }
+
+                        match secret.kind() {
+                            Kind::P2PK => {
+                                let data_key = PublicKey::from_str(secret.secret_data().data())?;
+
+                                pubkeys.push(data_key);
+                            }
+                            Kind::HTLC => {
+                                let hashed_preimage = secret.secret_data().data();
+                                let preimage = hashed_to_preimage
+                                    .get(hashed_preimage)
+                                    .ok_or(Error::PreimageNotProvided)?;
+                                proof.add_preimage(preimage.to_string());
+                            }
+                        }
+                        if sig_flag.ne(&SigFlag::SigAll) {
+                            for pubkey in pubkeys {
+                                if let Some(signing) =
+                                    p2pk_signing_keys.get(&pubkey.x_only_public_key())
+                                {
+                                    proof.sign_p2pk(signing.to_owned().clone())?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
 
@@ -191,11 +269,20 @@ impl Wallet {
             PreMintSecrets::from_seed_blank(active_keyset_id, count, &self.seed, change_amount)?
         };
 
-        let request = MeltRequest::new(
+        let mut request = MeltRequest::new(
             quote_id.to_string(),
             proofs.clone(),
             Some(premint_secrets.blinded_messages()),
         );
+
+        if let Some(opts) = opts {
+            if sig_flag.eq(&SigFlag::SigAll) {
+                for sk in opts.p2pk_signing_keys {
+                    request.sign_sig_all(sk)?;
+                }
+                request.verify_sig_all()?;
+            }
+        }
 
         let melt_response = match quote_info.payment_method {
             cdk_common::PaymentMethod::Bolt11 => self.client.post_melt(request).await,
@@ -422,7 +509,20 @@ impl Wallet {
             input_proofs.extend_from_slice(&new_proofs);
         }
 
-        self.melt_proofs_with_metadata(quote_id, input_proofs, metadata)
+        self.melt_proofs_with_metadata(quote_id, input_proofs, metadata, None)
             .await
     }
+}
+///
+/// Melt options for proofs
+#[derive(Debug, Clone, Default)]
+pub struct MeltProofsOptions {
+    /// Amount split target
+    pub amount_split_target: SplitTarget,
+    /// P2PK signing keys
+    pub p2pk_signing_keys: Vec<SecretKey>,
+    /// Preimages
+    pub preimages: Vec<String>,
+    /// Metadata
+    pub metadata: HashMap<String, String>,
 }
