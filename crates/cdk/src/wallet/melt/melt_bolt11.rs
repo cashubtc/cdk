@@ -132,8 +132,23 @@ impl Wallet {
     }
 
     /// Melt specific proofs
-    #[instrument(skip(self, tx, proofs))]
     pub async fn melt_proofs_with_metadata(
+        &self,
+        quote_id: &str,
+        proofs: Proofs,
+        metadata: HashMap<String, String>,
+    ) -> Result<Melted, Error> {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let result = self
+            .melt_proofs_with_metadata_with_tx(&mut tx, quote_id, proofs, metadata)
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Melt specific proofs with transaction
+    #[instrument(skip(self, tx, proofs))]
+    pub async fn melt_proofs_with_metadata_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
         quote_id: &str,
@@ -211,7 +226,7 @@ impl Wallet {
                 tracing::error!("Could not melt: {}", err);
                 tracing::info!("Checking status of input proofs.");
 
-                self.reclaim_unspent(tx, proofs).await?;
+                self.reclaim_unspent_with_tx(tx, proofs).await?;
 
                 return Err(err);
             }
@@ -399,8 +414,8 @@ impl Wallet {
 
         if let Some((proof, exact_amount)) = exchange.take() {
             let new_proofs = self
-                .swap(
-                    Some(&mut tx),
+                .swap_with_tx(
+                    &mut tx,
                     Some(exact_amount),
                     SplitTarget::None,
                     vec![proof],
@@ -417,7 +432,7 @@ impl Wallet {
         }
 
         let melted = self
-            .melt_proofs_with_metadata(&mut tx, quote_id, input_proofs, metadata)
+            .melt_proofs_with_metadata_with_tx(&mut tx, quote_id, input_proofs, metadata)
             .await?;
 
         tx.commit().await?;

@@ -28,7 +28,7 @@ impl Wallet {
         let unit = &self.unit;
 
         let pre_swap = self
-            .create_swap(
+            .create_swap_with_tx(
                 tx,
                 amount,
                 amount_split_target.clone(),
@@ -140,43 +140,51 @@ impl Wallet {
     }
 
     /// Swap
-    #[instrument(skip(self, tx, input_proofs))]
     pub async fn swap(
         &self,
-        tx: Option<&mut Tx<'_, '_>>,
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
         input_proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<Option<Proofs>, Error> {
-        if let Some(tx) = tx {
-            self.swap_inner(
-                tx,
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let ret = self
+            .swap_with_tx(
+                &mut tx,
                 amount,
                 amount_split_target,
                 input_proofs,
                 spending_conditions,
                 include_fees,
             )
-            .await
-        } else {
-            let mut tx = self.localstore.begin_db_transaction().await?;
-            let ret = self
-                .swap_inner(
-                    &mut tx,
-                    amount,
-                    amount_split_target,
-                    input_proofs,
-                    spending_conditions,
-                    include_fees,
-                )
-                .await?;
+            .await?;
 
-            tx.commit().await?;
+        tx.commit().await?;
 
-            Ok(ret)
-        }
+        Ok(ret)
+    }
+
+    /// Swap with transaction
+    #[instrument(skip(self, tx, input_proofs))]
+    pub async fn swap_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+        amount: Option<Amount>,
+        amount_split_target: SplitTarget,
+        input_proofs: Proofs,
+        spending_conditions: Option<SpendingConditions>,
+        include_fees: bool,
+    ) -> Result<Option<Proofs>, Error> {
+        self.swap_inner(
+            tx,
+            amount,
+            amount_split_target,
+            input_proofs,
+            spending_conditions,
+            include_fees,
+        )
+        .await
     }
 
     /// Swap from unspent proofs in db
@@ -225,8 +233,8 @@ impl Wallet {
         )?;
 
         let to_return = self
-            .swap(
-                Some(&mut tx),
+            .swap_with_tx(
+                &mut tx,
                 Some(amount),
                 SplitTarget::default(),
                 proofs,
@@ -242,8 +250,32 @@ impl Wallet {
     }
 
     /// Create Swap Payload
-    #[instrument(skip(self, tx, proofs))]
     pub async fn create_swap(
+        &self,
+        amount: Option<Amount>,
+        amount_split_target: SplitTarget,
+        proofs: Proofs,
+        spending_conditions: Option<SpendingConditions>,
+        include_fees: bool,
+    ) -> Result<PreSwap, Error> {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let result = self
+            .create_swap_with_tx(
+                &mut tx,
+                amount,
+                amount_split_target,
+                proofs,
+                spending_conditions,
+                include_fees,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Create Swap Payload with transaction
+    #[instrument(skip(self, tx, proofs))]
+    pub async fn create_swap_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
         amount: Option<Amount>,

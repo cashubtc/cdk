@@ -92,8 +92,22 @@ impl Wallet {
     /// Reclaim unspent proofs
     ///
     /// Checks the stats of [`Proofs`] swapping for a new [`Proof`] if unspent
+    pub async fn reclaim_unspent(&self, proofs: Proofs) -> Result<(), Error> {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        self.reclaim_unspent_with_tx(&mut tx, proofs).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Reclaim unspent proofs with transaction
+    ///
+    /// Checks the stats of [`Proofs`] swapping for a new [`Proof`] if unspent
     #[instrument(skip(self, tx, proofs))]
-    pub async fn reclaim_unspent(&self, tx: &mut Tx<'_, '_>, proofs: Proofs) -> Result<(), Error> {
+    pub async fn reclaim_unspent_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+        proofs: Proofs,
+    ) -> Result<(), Error> {
         let proof_ys = proofs.ys()?;
 
         let transaction_id = TransactionId::new(proof_ys.clone());
@@ -110,7 +124,7 @@ impl Wallet {
             .filter_map(|(p, s)| (s.state == State::Unspent).then_some(p))
             .collect();
 
-        self.swap(Some(tx), None, SplitTarget::default(), unspent, None, false)
+        self.swap_with_tx(tx, None, SplitTarget::default(), unspent, None, false)
             .await?;
 
         match tx.remove_transaction(transaction_id).await {

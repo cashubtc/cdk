@@ -364,7 +364,9 @@ impl<'a> cdk::cdk_database::WalletDatabaseTransaction<'a, cdk::cdk_database::Err
             .into_iter()
             .map(|info| {
                 Ok::<cdk::types::ProofInfo, cdk::cdk_database::Error>(cdk::types::ProofInfo {
-                    proof: info.proof.inner.clone(),
+                    proof: info.proof.try_into().map_err(|e: FfiError| {
+                        cdk::cdk_database::Error::Database(e.to_string().into())
+                    })?,
                     y: info.y.try_into().map_err(|e: FfiError| {
                         cdk::cdk_database::Error::Database(e.to_string().into())
                     })?,

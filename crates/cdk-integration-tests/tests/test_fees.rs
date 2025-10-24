@@ -110,12 +110,10 @@ async fn test_fake_melt_change_in_quote() {
 
     let fee = wallet.get_proofs_fee(None, &proofs).await.unwrap();
 
-    let mut tx = wallet.localstore.begin_db_transaction().await.unwrap();
     let melt = wallet
-        .melt_proofs_with_metadata(&mut tx, &melt_quote.id, proofs, HashMap::new())
+        .melt_proofs_with_metadata(&melt_quote.id, proofs, HashMap::new())
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     let change = melt.change.unwrap().total_amount().unwrap();
     let idk = proofs_total - Amount::from(invoice_amount) - change;

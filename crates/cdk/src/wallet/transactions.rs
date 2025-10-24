@@ -53,7 +53,7 @@ impl Wallet {
             })
             .collect::<Vec<_>>();
 
-        self.reclaim_unspent(&mut db_tx, pending_spent_proofs)
+        self.reclaim_unspent_with_tx(&mut db_tx, pending_spent_proofs)
             .await?;
 
         db_tx.commit().await?;

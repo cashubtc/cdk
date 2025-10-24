@@ -20,8 +20,23 @@ use crate::{ensure_cdk, Amount, Error, Wallet, SECP256K1};
 
 impl Wallet {
     /// Receive proofs
-    #[instrument(skip_all)]
     pub async fn receive_proofs(
+        &self,
+        proofs: Proofs,
+        opts: ReceiveOptions,
+        memo: Option<String>,
+    ) -> Result<Amount, Error> {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let result = self
+            .receive_proofs_with_tx(&mut tx, proofs, opts, memo)
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Receive proofs with transaction
+    #[instrument(skip_all)]
+    pub async fn receive_proofs_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
         proofs: Proofs,
@@ -117,7 +132,7 @@ impl Wallet {
         tx.update_proofs(proofs_info.clone(), vec![]).await?;
 
         let mut pre_swap = self
-            .create_swap(tx, None, opts.amount_split_target, proofs, None, false)
+            .create_swap_with_tx(tx, None, opts.amount_split_target, proofs, None, false)
             .await?;
 
         if sig_flag.eq(&SigFlag::SigAll) {
@@ -222,7 +237,7 @@ impl Wallet {
         let mut tx = self.localstore.begin_db_transaction().await?;
 
         let amount = self
-            .receive_proofs(&mut tx, proofs, opts, token.memo().clone())
+            .receive_proofs_with_tx(&mut tx, proofs, opts, token.memo().clone())
             .await?;
 
         tx.commit().await?;

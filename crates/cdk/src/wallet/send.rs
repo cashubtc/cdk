@@ -291,8 +291,8 @@ impl PreparedSend {
             tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
             if let Some(proofs) = self
                 .wallet
-                .swap(
-                    Some(&mut tx),
+                .swap_with_tx(
+                    &mut tx,
                     Some(swap_amount),
                     SplitTarget::None,
                     self.proofs_to_swap,

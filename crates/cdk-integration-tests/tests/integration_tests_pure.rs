@@ -132,7 +132,7 @@ async fn test_swap_to_send() {
         .await
         .expect("valid begin tx");
     let received_amount = wallet_carol
-        .receive_proofs(
+        .receive_proofs_with_tx(
             &mut tx,
             token_proofs.clone(),
             ReceiveOptions::default(),
@@ -778,7 +778,7 @@ async fn test_mint_change_with_fee_melt() {
         .await
         .unwrap();
     let w = wallet_alice
-        .melt_proofs_with_metadata(&mut tx, &melt_quote.id, proofs, HashMap::new())
+        .melt_proofs_with_metadata_with_tx(&mut tx, &melt_quote.id, proofs, HashMap::new())
         .await
         .unwrap();
     tx.commit().await.unwrap();

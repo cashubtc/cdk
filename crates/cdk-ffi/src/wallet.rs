@@ -126,9 +126,9 @@ impl Wallet {
         let mut tx = self.inner.localstore.begin_db_transaction().await?;
         let amount = self
             .inner
-            .receive_proofs(&mut tx, cdk_proofs, options.into(), memo)
+            .receive_proofs_with_tx(&mut tx, cdk_proofs, options.into(), memo)
             .await?;
-        Box::new(tx).commit().await?;
+        tx.commit().await?;
         Ok(amount.into())
     }
 
@@ -255,7 +255,6 @@ impl Wallet {
         let result = self
             .inner
             .swap(
-                None,
                 amount.map(Into::into),
                 amount_split_target.into(),
                 cdk_proofs,

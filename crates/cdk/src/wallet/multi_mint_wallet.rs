@@ -1176,7 +1176,7 @@ impl MultiMintWallet {
         let mut tx = self.localstore.begin_db_transaction().await?;
 
         match wallet
-            .receive_proofs(
+            .receive_proofs_with_tx(
                 &mut tx,
                 proofs,
                 opts.receive_options,
@@ -1544,14 +1544,7 @@ impl MultiMintWallet {
                 let proofs = wallet.get_unspent_proofs().await?;
                 if !proofs.is_empty() {
                     return wallet
-                        .swap(
-                            None,
-                            amount,
-                            SplitTarget::default(),
-                            proofs,
-                            conditions,
-                            false,
-                        )
+                        .swap(amount, SplitTarget::default(), proofs, conditions, false)
                         .await;
                 }
             }
@@ -1577,7 +1570,6 @@ impl MultiMintWallet {
                 // Swap for optimized proof set
                 match wallet
                     .swap(
-                        None,
                         Some(proofs_amount),
                         SplitTarget::default(),
                         proofs,

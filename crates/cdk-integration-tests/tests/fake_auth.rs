@@ -373,7 +373,6 @@ async fn test_swap_with_auth() {
 
     let swapped_proofs = wallet
         .swap(
-            None,
             Some(proofs.total_amount().unwrap()),
             SplitTarget::default(),
             proofs.clone(),

@@ -325,11 +325,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
     // Create a single-use BOLT12 quote
     let mint_quote = wallet.mint_bolt12_quote(None, None).await?;
 
-    let mut tx = wallet.localstore.begin_db_transaction().await?;
-    let state = wallet
-        .mint_bolt12_quote_state(&mut tx, &mint_quote.id)
-        .await?;
-    tx.commit().await?;
+    let state = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
 
     assert_eq!(state.amount_paid, Amount::ZERO);
     assert_eq!(state.amount_issued, Amount::ZERO);
@@ -350,11 +346,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         .await?
         .unwrap();
 
-    let mut tx = wallet.localstore.begin_db_transaction().await?;
-    let state = wallet
-        .mint_bolt12_quote_state(&mint_quote.id, &mut tx)
-        .await?;
-    tx.commit().await?;
+    let state = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
 
     assert_eq!(payment, state.amount_paid);
     assert_eq!(state.amount_paid, (pay_amount_msats / 1_000).into());
@@ -444,12 +436,10 @@ async fn test_attempt_to_mint_unpaid() {
         .await
         .unwrap();
 
-    let mut tx = wallet.localstore.begin_db_transaction().await.expect("tx");
     let state = wallet
-        .mint_bolt12_quote_state(&mut tx, &mint_quote.id)
+        .mint_bolt12_quote_state(&mint_quote.id)
         .await
         .unwrap();
-    tx.commit().await.expect("commit");
 
     assert!(state.amount_paid == Amount::ZERO);
 
