@@ -35,24 +35,22 @@ impl Wallet {
                 tx.add_keys(keys.clone()).await?;
                 keys.keys
             }
+        } else if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
+            keys
         } else {
-            if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
-                keys
-            } else {
-                tracing::debug!(
-                    "Keyset {} not in db fetching from mint {}",
-                    keyset_id,
-                    self.mint_url
-                );
+            tracing::debug!(
+                "Keyset {} not in db fetching from mint {}",
+                keyset_id,
+                self.mint_url
+            );
 
-                let keys = self.client.get_mint_keyset(keyset_id).await?;
+            let keys = self.client.get_mint_keyset(keyset_id).await?;
 
-                keys.verify_id()?;
-                let mut tx = self.localstore.begin_db_transaction().await?;
-                tx.add_keys(keys.clone()).await?;
-                tx.commit().await?;
-                keys.keys
-            }
+            keys.verify_id()?;
+            let mut tx = self.localstore.begin_db_transaction().await?;
+            tx.add_keys(keys.clone()).await?;
+            tx.commit().await?;
+            keys.keys
         };
 
         Ok(keys)
