@@ -79,6 +79,7 @@ pub async fn attempt_to_swap_pending(wallet: &Wallet) -> Result<()> {
     let swap = wallet
         .swap(
             None,
+            None,
             SplitTarget::None,
             pending.into_iter().map(|p| p.proof).collect(),
             None,

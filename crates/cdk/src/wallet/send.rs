@@ -290,6 +290,7 @@ impl PreparedSend {
             if let Some(proofs) = self
                 .wallet
                 .swap(
+                    Some(&mut tx),
                     Some(swap_amount),
                     SplitTarget::None,
                     self.proofs_to_swap,

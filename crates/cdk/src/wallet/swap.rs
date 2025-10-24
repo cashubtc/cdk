@@ -13,18 +13,16 @@ use crate::{ensure_cdk, Amount, Error, Wallet};
 use super::Tx;
 
 impl Wallet {
-    /// Swap
-    #[instrument(skip(self, input_proofs))]
-    pub async fn swap(
+    async fn swap_inner(
         &self,
+        tx: &mut Tx<'_, '_>,
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
         input_proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<Option<Proofs>, Error> {
-        let mut tx = self.localstore.begin_db_transaction().await?;
-        self.refresh_keysets(Some(&mut tx)).await?;
+        self.refresh_keysets(Some(tx)).await?;
 
         tracing::info!("Swapping");
         let mint_url = &self.mint_url;
@@ -32,7 +30,7 @@ impl Wallet {
 
         let pre_swap = self
             .create_swap(
-                &mut tx,
+                tx,
                 amount,
                 amount_split_target.clone(),
                 input_proofs.clone(),
@@ -45,7 +43,7 @@ impl Wallet {
 
         let active_keyset_id = pre_swap.pre_mint_secrets.keyset_id;
         let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id, Some(&mut tx))
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id, Some(tx))
             .await?;
 
         let active_keys = self
@@ -140,9 +138,47 @@ impl Wallet {
 
         tx.update_proofs(added_proofs, deleted_ys).await?;
 
-        tx.commit().await?;
-
         Ok(send_proofs)
+    }
+
+    /// Swap
+    #[instrument(skip(self, tx, input_proofs))]
+    pub async fn swap(
+        &self,
+        tx: Option<&mut Tx<'_, '_>>,
+        amount: Option<Amount>,
+        amount_split_target: SplitTarget,
+        input_proofs: Proofs,
+        spending_conditions: Option<SpendingConditions>,
+        include_fees: bool,
+    ) -> Result<Option<Proofs>, Error> {
+        if let Some(tx) = tx {
+            self.swap_inner(
+                tx,
+                amount,
+                amount_split_target,
+                input_proofs,
+                spending_conditions,
+                include_fees,
+            )
+            .await
+        } else {
+            let mut tx = self.localstore.begin_db_transaction().await?;
+            let ret = self
+                .swap_inner(
+                    &mut tx,
+                    amount,
+                    amount_split_target,
+                    input_proofs,
+                    spending_conditions,
+                    include_fees,
+                )
+                .await?;
+
+            tx.commit().await?;
+
+            Ok(ret)
+        }
     }
 
     /// Swap from unspent proofs in db
@@ -192,6 +228,7 @@ impl Wallet {
 
         let to_return = self
             .swap(
+                Some(&mut tx),
                 Some(amount),
                 SplitTarget::default(),
                 proofs,

@@ -255,6 +255,7 @@ impl Wallet {
         let result = self
             .inner
             .swap(
+                None,
                 amount.map(Into::into),
                 amount_split_target.into(),
                 cdk_proofs,

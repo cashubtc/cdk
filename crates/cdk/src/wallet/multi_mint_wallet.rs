@@ -1544,7 +1544,14 @@ impl MultiMintWallet {
                 let proofs = wallet.get_unspent_proofs().await?;
                 if !proofs.is_empty() {
                     return wallet
-                        .swap(amount, SplitTarget::default(), proofs, conditions, false)
+                        .swap(
+                            None,
+                            amount,
+                            SplitTarget::default(),
+                            proofs,
+                            conditions,
+                            false,
+                        )
                         .await;
                 }
             }
@@ -1570,6 +1577,7 @@ impl MultiMintWallet {
                 // Swap for optimized proof set
                 match wallet
                     .swap(
+                        None,
                         Some(proofs_amount),
                         SplitTarget::default(),
                         proofs,

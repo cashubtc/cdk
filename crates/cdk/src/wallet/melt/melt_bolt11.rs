@@ -399,6 +399,7 @@ impl Wallet {
         if let Some((proof, exact_amount)) = exchange.take() {
             let new_proofs = self
                 .swap(
+                    Some(&mut tx),
                     Some(exact_amount),
                     SplitTarget::None,
                     vec![proof],

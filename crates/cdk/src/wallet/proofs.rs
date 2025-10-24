@@ -111,7 +111,7 @@ impl Wallet {
             .filter_map(|(p, s)| (s.state == State::Unspent).then_some(p))
             .collect();
 
-        self.swap(None, SplitTarget::default(), unspent, None, false)
+        self.swap(Some(tx), None, SplitTarget::default(), unspent, None, false)
             .await?;
 
         match tx.remove_transaction(transaction_id).await {
