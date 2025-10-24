@@ -29,11 +29,10 @@ jobs:
         with:
           diagnostic-endpoint: ""
           use-flakehub: false
-          flake-inputs-key: "nix-nightly-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "nightly"
+          shared-key: "nightly-${{ steps.flake-hash.outputs.hash }}"
       - name: Cargo fmt
         run: |
           nix develop -i -L .#nightly --command bash -c '
@@ -73,11 +72,10 @@ jobs:
         with:
           diagnostic-endpoint: ""
           use-flakehub: false
-          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "stable"
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Run example
         run: nix develop -i -L .#stable --command cargo r --example ${{ matrix.build-args }}
 
@@ -174,11 +172,10 @@ jobs:
         with:
           diagnostic-endpoint: ""
           use-flakehub: false
-          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "stable"
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Clippy
         run: nix develop -i -L .#stable --command cargo clippy ${{ matrix.build-args }} -- -D warnings
       - name: Test
@@ -224,11 +221,10 @@ jobs:
         with:
           diagnostic-endpoint: ""
           use-flakehub: false
-          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "stable"
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Test
         run: nix develop -i -L .#stable --command just itest ${{ matrix.database }}
 
@@ -271,11 +267,10 @@ jobs:
         with:
           diagnostic-endpoint: ""
           use-flakehub: false
-          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "stable"
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Clippy
         run: nix develop -i -L .#stable --command cargo clippy -- -D warnings
       - name: Test fake auth mint
@@ -318,11 +313,10 @@ jobs:
         with:
           diagnostic-endpoint: ""
           use-flakehub: false
-          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "stable"
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Test fake mint
         run: nix develop -i -L .#stable --command just test-pure ${{ matrix.database }}
       - name: Install Postgres
@@ -368,11 +362,10 @@ jobs:
         with:
           diagnostic-endpoint: ""
           use-flakehub: false
-          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "stable"
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Test
         run: nix develop -i -L .#stable --command just itest-payment-processor ${{matrix.ln}}
 
@@ -417,11 +410,10 @@ jobs:
         with:
           diagnostic-endpoint: ""
           use-flakehub: false
-          flake-inputs-key: "nix-msrv-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "msrv"
+          shared-key: "msrv-${{ steps.flake-hash.outputs.hash }}"
       - name: Build
         run: nix develop -i -L .#msrv --command cargo build ${{ matrix.build-args }}
 
@@ -457,11 +449,10 @@ jobs:
         with:
           diagnostic-endpoint: ""
           use-flakehub: false
-          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "stable"
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Build cdk and binding
         run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
 
@@ -497,11 +488,10 @@ jobs:
         with:
           diagnostic-endpoint: ""
           use-flakehub: false
-          flake-inputs-key: "nix-msrv-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "msrv"
+          shared-key: "msrv-${{ steps.flake-hash.outputs.hash }}"
       - name: Build cdk wasm
         run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
 
@@ -540,11 +530,10 @@ jobs:
         with:
           diagnostic-endpoint: ""
           use-flakehub: false
-          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "stable"
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Start Keycloak with Backup
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml up -d
@@ -587,11 +576,10 @@ jobs:
         with:
           diagnostic-endpoint: ""
           use-flakehub: false
-          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "stable"
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Run doc tests
         run: nix develop -i -L .#stable --command cargo test --doc
 
@@ -613,10 +601,9 @@ jobs:
         with:
           diagnostic-endpoint: ""
           use-flakehub: false
-          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "stable"
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Check docs with strict warnings
         run: nix develop -i -L .#stable --command just docs-strict
