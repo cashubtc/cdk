@@ -136,8 +136,6 @@ impl Wallet {
                     .mint(&mint_quote.id, SplitTarget::default(), None)
                     .await?;
                 total_amount += proofs.total_amount()?;
-            } else if mint_quote.expiry.le(&unix_time()) {
-                self.localstore.remove_mint_quote(&mint_quote.id).await?;
             }
         }
         Ok(total_amount)
@@ -155,6 +153,17 @@ impl Wallet {
                 && quote.expiry > unix_time
         });
         Ok(mint_quotes)
+    }
+
+    /// Get pending mint quotes
+    /// Returns mint quotes that have mintable balance or are bolt12 quotes (reusable).
+    /// Filters out expired quotes and quotes from other mints.
+    #[instrument(skip(self))]
+    pub async fn get_pending_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        let mut pending_quotes = self.localstore.get_pending_mint_quotes().await?;
+        let unix_time = unix_time();
+        pending_quotes.retain(|quote| quote.mint_url == self.mint_url && quote.expiry > unix_time);
+        Ok(pending_quotes)
     }
 
     /// Mint
@@ -297,9 +306,6 @@ impl Wallet {
             premint_secrets.secrets(),
             &keys,
         )?;
-
-        // Remove filled quote from store
-        self.localstore.remove_mint_quote(&quote_info.id).await?;
 
         let proof_infos = proofs
             .iter()

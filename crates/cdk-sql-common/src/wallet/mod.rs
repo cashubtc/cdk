@@ -569,6 +569,40 @@ ON CONFLICT(id) DO UPDATE SET
     }
 
     #[instrument(skip(self))]
+    async fn get_pending_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT
+                id,
+                mint_url,
+                amount,
+                unit,
+                request,
+                state,
+                expiry,
+                secret_key,
+                payment_method,
+                amount_issued,
+                amount_paid,
+                keyset_id
+            FROM
+                mint_quote
+            WHERE
+                (amount_paid > amount_issued AND amount_paid > 0)
+                OR
+                payment_method = 'bolt12'
+            ORDER BY created_time ASC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_mint_quote)
+        .collect::<Result<_, _>>()?)
+    }
+
+    #[instrument(skip(self))]
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         query(r#"DELETE FROM mint_quote WHERE id=:id"#)?
