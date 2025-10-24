@@ -877,20 +877,19 @@ impl From<Tag> for Vec<String> {
 
 impl SwapRequest {
     /// Generate the message to sign for SIG_ALL validation
-    /// Concatenates all input secrets and output blinded messages in order
+    /// Concatenates all input secrets, signatures, and output data in order
     fn sig_all_msg_to_sign(&self) -> String {
         let mut msg_to_sign = String::new();
 
-        // Add all input secrets in order
         for proof in self.inputs() {
-            let secret = proof.secret.to_string();
-            msg_to_sign.push_str(&secret);
+            msg_to_sign.push_str(&proof.secret.to_string());
+            msg_to_sign.push_str(&proof.c.to_string());
         }
 
-        // Add all output blinded messages in order
         for output in self.outputs() {
-            let message = output.blinded_secret.to_string();
-            msg_to_sign.push_str(&message);
+            msg_to_sign.push_str(&output.amount.to_string());
+            msg_to_sign.push_str(&output.keyset_id.to_string());
+            msg_to_sign.push_str(&output.blinded_secret.to_string());
         }
 
         msg_to_sign
@@ -1056,24 +1055,23 @@ impl SwapRequest {
 
 impl<Q: std::fmt::Display + Serialize + DeserializeOwned> MeltRequest<Q> {
     /// Generate the message to sign for SIG_ALL validation
-    /// Concatenates all input secrets, blank outputs, and quote ID in order
+    /// Concatenates all input secrets, signatures, outputs, and quote ID in order
     fn sig_all_msg_to_sign(&self) -> String {
         let mut msg_to_sign = String::new();
 
-        // Add all input secrets in order
         for proof in self.inputs() {
-            let secret = proof.secret.to_string();
-            msg_to_sign.push_str(&secret);
+            msg_to_sign.push_str(&proof.secret.to_string());
+            msg_to_sign.push_str(&proof.c.to_string());
         }
 
-        // Add all blank outputs in order if they exist
         if let Some(outputs) = self.outputs() {
             for output in outputs {
-                msg_to_sign.push_str(&output.blinded_secret.to_hex());
+                msg_to_sign.push_str(&output.amount.to_string());
+                msg_to_sign.push_str(&output.keyset_id.to_string());
+                msg_to_sign.push_str(&output.blinded_secret.to_string());
             }
         }
 
-        // Add quote ID
         msg_to_sign.push_str(&self.quote().to_string());
 
         msg_to_sign
