@@ -1712,6 +1712,8 @@ mod tests {
             melt.verify_sig_all().is_ok(),
             "Both signatures should verify successfully"
         );
+        println!("{}", serde_json::to_string(&melt).unwrap());
+
     }
 
     #[test]
@@ -1755,7 +1757,7 @@ mod tests {
     #[test]
     fn test_sig_all_swap_single_sig() {
         // Valid SwapRequest with SIG_ALL signature
-        let valid_swap = r#"{"inputs":[{"amount":0,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"fc14ca312b7442d05231239d0e3cdcb6b2335250defcb8bec7d2efe9e26c90a6\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","witness":"{\"signatures\":[\"aa6f3b3f112ec3e834aded446ea67a90cdb26b43e08cfed259e0bbd953395c4af11117c58ec0ec3de404f31076692426cde40d2c1602d9dd067a872cb11ac3c0\"]}"},{"amount":0,"id":"009a1f293253e41f","secret":"[\"P2PK\",{\"nonce\":\"fc14ca312b7442d05231239d0e3cdcb6b2335250defcb8bec7d2efe9e26c90a6\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a"}],"outputs":[{"amount":0,"id":"009a1f293253e41e","B_":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a"}]}"#;
+        let valid_swap = r#"{"inputs":[{"amount":0,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"3d0ac62061e2077e6fbf1e61cf3098df6365e804926f8ce987b3a23a3518c099\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","witness":"{\"signatures\":[\"c783ab4c5bd4be46dec3633bd4f9f96807d07db3498fe23520ca91639368feed53c756a8322b6e2646dff907ff0ff2a029df5db50be55d9841010f645f472c32\"]}"},{"amount":0,"id":"009a1f293253e41f","secret":"[\"P2PK\",{\"nonce\":\"3d0ac62061e2077e6fbf1e61cf3098df6365e804926f8ce987b3a23a3518c099\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a"}],"outputs":[{"amount":0,"id":"009a1f293253e41e","B_":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a"}]}"#;
 
         let valid_swap: SwapRequest = serde_json::from_str(valid_swap).unwrap();
         assert!(
@@ -1798,7 +1800,7 @@ mod tests {
     #[test]
     fn test_sig_all_swap_multi_sig() {
         // SwapRequest with multi-sig SIG_ALL requiring 2 signatures
-        let multisig_swap = r#"{"inputs":[{"amount":0,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"c537ea76c1ac9cfa44d15dac91a63315903a3b4afa8e4e20f868f87f65ff2d16\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"pubkeys\",\"03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","witness":"{\"signatures\":[\"c38cf7943f59206dc22734d39c17e342674a4025e6d3b424eb79d445a57257d57b45dd94fcd1b8dd8013e9240a4133bdef6523f64cd7288d890f3bbb8e3c6453\",\"f766dbb80e5c27de9a4770486e11e1bac0b1c4f782bf807a5189ea9c3e294559a3de4e217d3dfceafd4d9e8dcbfe4e9a188052d6dab9df07df7844224292de36\"]}"}],"outputs":[{"amount":0,"id":"009a1f293253e41e","B_":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a"}]}"#;
+        let multisig_swap = r#"{"inputs":[{"amount":0,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"33b779d51cba15e183250c00eb097271902e1e29d5a613dac688551c9ca0e138\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","witness":"{\"signatures\":[\"a04daa7838103c2a3b368f1eee5102abdfcf6486c2ae62b2ee90852fe97ebac71437472218c595a14393bf73a1e40f0407bbbe9a2c57ff02b9a135bbb30fa211\"]}"},{"amount":0,"id":"009a1f293253e41f","secret":"[\"P2PK\",{\"nonce\":\"33b779d51cba15e183250c00eb097271902e1e29d5a613dac688551c9ca0e138\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a"}],"outputs":[{"amount":0,"id":"009a1f293253e41e","B_":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a"}]}"#;
 
         let multisig_swap: SwapRequest = serde_json::from_str(multisig_swap).unwrap();
         assert!(
@@ -1820,14 +1822,14 @@ mod tests {
 
         assert_eq!(
             msg_to_sign,
-            r#"["P2PK",{"nonce":"c537ea76c1ac9cfa44d15dac91a63315903a3b4afa8e4e20f868f87f65ff2d16","data":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","tags":[["pubkeys","03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9"],["n_sigs","2"],["sigflag","SIG_ALL"]]}]026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a"#
+            r#"["P2PK",{"nonce":"c537ea76c1ac9cfa44d15dac91a63315903a3b4afa8e4e20f868f87f65ff2d16","data":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","tags":[["pubkeys","03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9"],["n_sigs","2"],["sigflag","SIG_ALL"]]}]026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a0009a1f293253e41e026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a"#
         )
     }
 
     #[test]
     fn test_sig_all_melt() {
         // MeltRequest with valid SIG_ALL signature
-        let valid_melt = r#"{"quote":"0f983814-de91-46b8-8875-1b358a35298a","inputs":[{"amount":0,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"600050bd36cccdc71dec82e97679fa3e7712c22ea33cf4fe69d4d78223757e57\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"pubkeys\",\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\"],[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","witness":"{\"signatures\":[\"b66c342654ccc95a62100f8f4a76afe1aea612c9c63383be3c7feb5110bb8eabe7ccaa9f117abd524be8c9a2e331e7d70248aeae337b9ce405625b3c49fc627d\"]}"}],"outputs":[{"amount":0,"id":"009a1f293253e41e","B_":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a"}]}"#;
+        let valid_melt = r#"{"quote":"e9961278-4578-4047-9d93-89c0084cbc93","inputs":[{"amount":0,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"373a50e3867131fbf0c599361d08c5fb86541608f7862749064759d2886d427f\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"pubkeys\",\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","witness":"{\"signatures\":[\"c1b99f5fa0d34ad2261547073c67066d441e157a3d412bd685e5d3fd3ede9968cfe18e32afb81415d7fa8d9262736d14b9c92c4714077d5fd50fc24c3393bd1f\",\"abf2445510534f936be930333096fb1d761a804cf5cd3d44f651c6cda7ff7c56073c36e366d175d43567ee2c0b8f030bde07071a9ed0cd517674d7cc9c76cf97\"]}"}],"outputs":[{"amount":0,"id":"009a1f293253e41e","B_":"02a9be1dc4f916524e32a1a13cfa8c0355cc0ec90aaeaf3afce78ce6fef7e8b180"}]}"#;
 
         let valid_melt: MeltRequest<String> = serde_json::from_str(valid_melt).unwrap();
         assert!(
@@ -1863,19 +1865,18 @@ mod tests {
         let multisig_melt = r#"{"quote":"2fc40ad3-2f6a-4a7e-91fb-b8c2b5dc2bf7","inputs":[{"amount":0,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"1d0db9cbd2aa7370a3d6e0e3ce5714758ed7a085e2f8da9814924100e1fc622e\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"pubkeys\",\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","witness":"{\"signatures\":[\"b2077717cfe43086582679ce3fbe1802f9b8652f93828c2e1a75b9e553c0ab66cd14b9c5f6c45a098375fe6583e106c7ccdb1421636daf893576e15815f3483f\",\"179f687c2236c3d0767f3b2af88478cad312e7f76183fb5781754494709334c578c7232dc57017d06b9130a406f8e3ece18245064cda4ef66808ed3ff68c933e\"]}"}],"outputs":[{"amount":0,"id":"009a1f293253e41e","B_":"028b708cfd03b38bdc0a561008119594106f0c563061ae3fbfc8981b5595fd4e2b"}]}"#;
 
         let multisig_melt: MeltRequest<String> = serde_json::from_str(multisig_melt).unwrap();
-
         let msg_to_sign = multisig_melt.sig_all_msg_to_sign();
 
         assert_eq!(
             msg_to_sign,
-            r#"["P2PK",{"nonce":"1d0db9cbd2aa7370a3d6e0e3ce5714758ed7a085e2f8da9814924100e1fc622e","data":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","tags":[["pubkeys","026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9"],["n_sigs","2"],["sigflag","SIG_ALL"]]}]028b708cfd03b38bdc0a561008119594106f0c563061ae3fbfc8981b5595fd4e2b2fc40ad3-2f6a-4a7e-91fb-b8c2b5dc2bf7"#
+            r#"["P2PK",{"nonce":"1d0db9cbd2aa7370a3d6e0e3ce5714758ed7a085e2f8da9814924100e1fc622e","data":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","tags":[["pubkeys","026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9"],["n_sigs","2"],["sigflag","SIG_ALL"]]}]026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a0009a1f293253e41e028b708cfd03b38bdc0a561008119594106f0c563061ae3fbfc8981b5595fd4e2b2fc40ad3-2f6a-4a7e-91fb-b8c2b5dc2bf7"#
         );
     }
 
     #[test]
     fn test_sig_all_melt_multi_sig() {
         // MeltRequest with multi-sig SIG_ALL requiring 2 signatures
-        let multisig_melt = r#"{"quote":"2fc40ad3-2f6a-4a7e-91fb-b8c2b5dc2bf7","inputs":[{"amount":0,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"1d0db9cbd2aa7370a3d6e0e3ce5714758ed7a085e2f8da9814924100e1fc622e\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"pubkeys\",\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","witness":"{\"signatures\":[\"b2077717cfe43086582679ce3fbe1802f9b8652f93828c2e1a75b9e553c0ab66cd14b9c5f6c45a098375fe6583e106c7ccdb1421636daf893576e15815f3483f\",\"179f687c2236c3d0767f3b2af88478cad312e7f76183fb5781754494709334c578c7232dc57017d06b9130a406f8e3ece18245064cda4ef66808ed3ff68c933e\"]}"}],"outputs":[{"amount":0,"id":"009a1f293253e41e","B_":"028b708cfd03b38bdc0a561008119594106f0c563061ae3fbfc8981b5595fd4e2b"}]}"#;
+        let multisig_melt = r#"{"quote":"db9bd46c-0b87-4136-af9a-12289cf7706f","inputs":[{"amount":0,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"96389cb344c91e2028d7347c965f7a5278f78271d1f32c7c45707c6159933ba8\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"pubkeys\",\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","witness":"{\"signatures\":[\"0fc9d8736905a90f6a3b1ae803096122e6cd03b9ff90990937432ad7b7e6b942542a4b5361655be2b1ad41535cf2d7086a6fd197ee2ecc9778376dd6c5a89c0d\",\"489108c0233cda46a9a91e8ae22648491d6f728bf781c8327314b8afd91c1f860378515ce03a26a750cc07280663f9d92354437d98bd59bb55ccebe647e54685\"]}"}],"outputs":[{"amount":0,"id":"009a1f293253e41e","B_":"03c4f5be6106cd133523c7576320da84d8a72087f7e3f923f22cf7fa47cb89755f"}]}"#;
 
         let multisig_melt: MeltRequest<String> = serde_json::from_str(multisig_melt).unwrap();
         assert!(
