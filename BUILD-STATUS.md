@@ -32,7 +32,7 @@ If you have WSL installed:
 
 ```bash
 # In WSL terminal
-cd /mnt/c/Users/JuanPabloGaviria/git/cdk
+cd /path/to/cdk
 cargo build --package cdk-mintd --features spark --release
 
 # Binary at: target/release/cdk-mintd

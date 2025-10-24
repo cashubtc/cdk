@@ -341,7 +341,7 @@ du -h target/release/cdk-mintd
 
 ```bash
 # In WSL terminal (Ubuntu/Debian)
-cd /mnt/c/Users/JuanPabloGaviria/git/cdk
+cd /path/to/cdk
 
 # Install dependencies
 sudo apt update

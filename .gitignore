@@ -12,3 +12,8 @@ Cargo.lock
 .aider*
 **/postgres_data/
 **/.env
+
+# Local development files
+data/
+test-fake-mint.toml
+mainnet-*.toml

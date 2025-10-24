@@ -61,7 +61,7 @@ Runtime Testing:             ░░░░░░░░░░   0% ⏸️
 
 ```bash
 # In WSL terminal
-cd /mnt/c/Users/JuanPabloGaviria/git/cdk
+cd /path/to/cdk
 cargo build --package cdk-mintd --features spark --release
 
 # Expected time: 5-15 minutes
@@ -551,7 +551,7 @@ wsl --install
 
 **2. Build in WSL** (10-15 min)
 ```bash
-cd /mnt/c/Users/JuanPabloGaviria/git/cdk
+cd /path/to/cdk
 cargo build --package cdk-mintd --features spark --release
 ```
 
@@ -726,7 +726,7 @@ cd C:/Users/JuanPabloGaviria/git/cdk
 cargo build --package cdk-mintd --features spark --release
 
 # If fails, Option B: Use WSL
-# (In WSL): cd /mnt/c/Users/JuanPabloGaviria/git/cdk
+# (In WSL): cd /path/to/cdk
 # (In WSL): cargo build --package cdk-mintd --features spark --release
 
 # 4. Once build succeeds:
