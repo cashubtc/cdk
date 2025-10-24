@@ -29,7 +29,7 @@ bare_urls = "warn"
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.88.0"
+rust-version = "1.85.0"
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
@@ -104,7 +104,7 @@ once_cell = "1.20.2"
 web-time = "1.1.0"
 rand = "0.9.1"
 regex = "1"
-home = "0.5.5"
+home = ">=0.5.5, <0.5.12"
 tonic = { version = "0.13.1", features = ["tls-ring", "codegen", "prost", "transport"], default-features = false }
 prost = "0.13.1"
 tonic-build = "0.13.1"
