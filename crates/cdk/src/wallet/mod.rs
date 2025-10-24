@@ -69,6 +69,9 @@ pub use receive::ReceiveOptions;
 pub use send::{PreparedSend, SendMemo, SendOptions};
 pub use types::{MeltQuote, MintQuote, SendKind};
 
+pub use melt::MeltProofsOptions;
+
+// pub use melt::Melt;
 use crate::nuts::nut00::ProofsMethods;
 
 /// CDK Wallet
