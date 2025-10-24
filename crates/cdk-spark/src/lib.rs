@@ -27,6 +27,9 @@ use spark_wallet::{
     DefaultSigner, InvoiceDescription, Network, SparkWallet, SparkWalletConfig, WalletBuilder,
     WalletEvent,
 };
+
+// Re-export Network for external use
+pub use spark_wallet::Network;
 use tokio::sync::{broadcast, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};

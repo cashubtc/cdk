@@ -548,6 +548,24 @@ async fn configure_lightning_backend(
             )
             .await?;
         }
+        #[cfg(feature = "spark")]
+        LnBackend::Spark => {
+            let spark_settings = settings.clone().spark.expect("Checked at config load");
+            tracing::info!("Using Spark backend: {:?}", spark_settings);
+
+            let spark = spark_settings
+                .setup(settings, CurrencyUnit::Sat, None, work_dir, _kv_store)
+                .await?;
+
+            mint_builder = configure_backend_for_unit(
+                settings,
+                mint_builder,
+                CurrencyUnit::Sat,
+                mint_melt_limits,
+                Arc::new(spark),
+            )
+            .await?;
+        }
         LnBackend::None => {
             tracing::error!(
                 "Payment backend was not set or feature disabled. {:?}",

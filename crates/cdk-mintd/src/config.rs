@@ -682,6 +682,13 @@ impl Settings {
                     "GRPC backend requires a valid config."
                 )
             }
+            #[cfg(feature = "spark")]
+            LnBackend::Spark => {
+                assert!(
+                    settings.spark.is_some(),
+                    "Spark backend requires a valid config."
+                )
+            }
         }
 
         Ok(settings)
