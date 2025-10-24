@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -52,7 +53,7 @@ async fn test_swap() {
 
     let proofs = send.proofs();
 
-    let fee = wallet.get_proofs_fee(&proofs).await.unwrap();
+    let fee = wallet.get_proofs_fee(None, &proofs).await.unwrap();
 
     assert_eq!(fee, 1.into());
 
@@ -107,17 +108,17 @@ async fn test_fake_melt_change_in_quote() {
 
     let proofs_total = proofs.total_amount().unwrap();
 
-    let fee = wallet.get_proofs_fee(&proofs).await.unwrap();
+    let fee = wallet.get_proofs_fee(None, &proofs).await.unwrap();
 
     let mut tx = wallet.localstore.begin_db_transaction().await.unwrap();
     let melt = wallet
-        .melt_proofs_with_metadata(&melt_quote.id, proofs, HashMap::new())
+        .melt_proofs_with_metadata(&melt_quote.id, proofs, HashMap::new(), &mut tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
 
     let change = melt.change.unwrap().total_amount().unwrap();
-    let idk = proofs.total_amount().unwrap() - Amount::from(invoice_amount) - change;
+    let idk = proofs_total - Amount::from(invoice_amount) - change;
 
     println!("{}", idk);
     println!("{}", fee);

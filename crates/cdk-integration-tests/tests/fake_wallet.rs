@@ -729,7 +729,7 @@ async fn test_fake_mint_multiple_unit_swap() {
     )
     .expect("failed to create new wallet");
 
-    wallet.refresh_keysets().await.unwrap();
+    wallet.refresh_keysets(None).await.unwrap();
 
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
 

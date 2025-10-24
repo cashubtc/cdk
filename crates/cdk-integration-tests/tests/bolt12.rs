@@ -350,7 +350,9 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         .await?
         .unwrap();
 
-    let state = wallet.mint_bolt12_quote_state(&mint_quote.id).await?;
+    let mut tx = wallet.localstore.begin_db_transaction().await?;
+    let state = wallet.mint_bolt12_quote_state(&mint_quote.id, &mut tx).await?;
+    tx.commit().await?;
 
     assert_eq!(payment, state.amount_paid);
     assert_eq!(state.amount_paid, (pay_amount_msats / 1_000).into());

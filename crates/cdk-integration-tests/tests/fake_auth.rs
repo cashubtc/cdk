@@ -41,7 +41,7 @@ async fn test_invalid_credentials() {
         .expect("Wallet");
 
     let mint_info = wallet
-        .fetch_mint_info()
+        .fetch_mint_info(None)
         .await
         .expect("mint info")
         .expect("could not get mint info");
@@ -309,7 +309,7 @@ async fn test_mint_with_auth() {
         .expect("Wallet");
 
     let mint_info = wallet
-        .fetch_mint_info()
+        .fetch_mint_info(None)
         .await
         .expect("mint info")
         .expect("could not get mint info");
@@ -516,11 +516,11 @@ async fn test_reuse_auth_proof() {
         assert!(quote.amount == Some(10.into()));
     }
 
-    wallet
-        .localstore
-        .update_proofs(proofs, vec![])
-        .await
-        .unwrap();
+    {
+        let mut tx = wallet.localstore.begin_db_transaction().await.unwrap();
+        tx.update_proofs(proofs, vec![]).await.unwrap();
+        tx.commit().await.unwrap();
+    }
 
     {
         let quote_res = wallet.mint_quote(10.into(), None).await;
@@ -700,7 +700,7 @@ async fn test_auth_token_spending_order() {
         .expect("Wallet");
 
     let mint_info = wallet
-        .fetch_mint_info()
+        .fetch_mint_info(None)
         .await
         .expect("mint info")
         .expect("could not get mint info");
