@@ -10,6 +10,9 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
@@ -24,6 +27,10 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-integration-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Test Nutshell
@@ -49,12 +56,19 @@ jobs:
           large-packages: true
           docker-images: true
           swap-storage: true
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Pull Nutshell Docker image
         run: docker pull cashubtc/nutshell:latest
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-integration-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Test Nutshell Wallet

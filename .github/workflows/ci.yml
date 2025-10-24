@@ -19,10 +19,17 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-nightly-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -56,10 +63,17 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -150,10 +164,17 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -183,6 +204,9 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
@@ -197,6 +221,10 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -223,6 +251,9 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
@@ -237,6 +268,10 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -263,6 +298,9 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
@@ -277,6 +315,10 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -306,6 +348,9 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
@@ -320,6 +365,10 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -358,10 +407,17 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-msrv-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -391,10 +447,17 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -424,10 +487,17 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-msrv-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -450,6 +520,9 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
@@ -464,6 +537,10 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -490,6 +567,9 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
@@ -504,6 +584,10 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -519,10 +603,17 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+          flake-inputs-key: "nix-stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
