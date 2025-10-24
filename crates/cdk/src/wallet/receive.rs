@@ -78,6 +78,9 @@ impl Wallet {
                     .try_into();
                 if let Ok(conditions) = conditions {
                     let mut pubkeys = conditions.pubkeys.unwrap_or_default();
+                    if conditions.sig_flag.eq(&SigFlag::SigAll) {
+                        sig_flag = SigFlag::SigAll;
+                    }
 
                     match secret.kind() {
                         Kind::P2PK => {
@@ -93,14 +96,14 @@ impl Wallet {
                             proof.add_preimage(preimage.to_string());
                         }
                     }
-                    for pubkey in pubkeys {
-                        if let Some(signing) = p2pk_signing_keys.get(&pubkey.x_only_public_key()) {
-                            proof.sign_p2pk(signing.to_owned().clone())?;
+                    if sig_flag.ne(&SigFlag::SigAll) {
+                        for pubkey in pubkeys {
+                            if let Some(signing) =
+                                p2pk_signing_keys.get(&pubkey.x_only_public_key())
+                            {
+                                proof.sign_p2pk(signing.to_owned().clone())?;
+                            }
                         }
-                    }
-
-                    if conditions.sig_flag.eq(&SigFlag::SigAll) {
-                        sig_flag = SigFlag::SigAll;
                     }
                 }
             }
