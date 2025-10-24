@@ -132,13 +132,13 @@ impl Wallet {
     }
 
     /// Melt specific proofs
-    #[instrument(skip(self, proofs, tx))]
+    #[instrument(skip(self, tx, proofs))]
     pub async fn melt_proofs_with_metadata(
         &self,
+        tx: &mut Tx<'_, '_>,
         quote_id: &str,
         proofs: Proofs,
         metadata: HashMap<String, String>,
-        tx: &mut Tx<'_, '_>,
     ) -> Result<Melted, Error> {
         let quote_info = tx
             .get_melt_quote(quote_id)
@@ -211,7 +211,7 @@ impl Wallet {
                 tracing::error!("Could not melt: {}", err);
                 tracing::info!("Checking status of input proofs.");
 
-                self.reclaim_unspent(proofs, tx).await?;
+                self.reclaim_unspent(tx, proofs).await?;
 
                 return Err(err);
             }
@@ -415,7 +415,7 @@ impl Wallet {
         }
 
         let melted = self
-            .melt_proofs_with_metadata(quote_id, input_proofs, metadata, &mut tx)
+            .melt_proofs_with_metadata(&mut tx, quote_id, input_proofs, metadata)
             .await?;
 
         tx.commit().await?;

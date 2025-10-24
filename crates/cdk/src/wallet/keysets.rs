@@ -4,10 +4,9 @@ use cdk_common::amount::{FeeAndAmounts, KeysetFeeAndAmounts};
 use cdk_common::nut02::{KeySetInfos, KeySetInfosMethods};
 use tracing::instrument;
 
+use super::Tx;
 use crate::nuts::{Id, KeySetInfo, Keys};
 use crate::{Error, Wallet};
-
-use super::Tx;
 
 impl Wallet {
     /// Load keys for mint keyset

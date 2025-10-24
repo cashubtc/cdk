@@ -114,7 +114,7 @@ impl Wallet {
             None => {
                 // If an amount it not supplied with check the status of the quote
                 // The mint will tell us how much can be minted
-                let state = self.mint_bolt12_quote_state(quote_id, &mut tx).await?;
+                let state = self.mint_bolt12_quote_state(&mut tx, quote_id).await?;
 
                 state.amount_paid - state.amount_issued
             }
@@ -248,11 +248,11 @@ impl Wallet {
     }
 
     /// Check mint quote status
-    #[instrument(skip(self, quote_id, tx))]
+    #[instrument(skip(self, tx, quote_id))]
     pub async fn mint_bolt12_quote_state(
         &self,
-        quote_id: &str,
         tx: &mut Tx<'_, '_>,
+        quote_id: &str,
     ) -> Result<MintQuoteBolt12Response<String>, Error> {
         let response = self.client.get_mint_quote_bolt12_status(quote_id).await?;
 

@@ -5,6 +5,7 @@ use cdk_common::wallet::TransactionId;
 use cdk_common::Id;
 use tracing::instrument;
 
+use super::Tx;
 use crate::amount::SplitTarget;
 use crate::fees::calculate_fee;
 use crate::nuts::nut00::ProofsMethods;
@@ -13,8 +14,6 @@ use crate::nuts::{
 };
 use crate::types::ProofInfo;
 use crate::{ensure_cdk, Amount, Error, Wallet};
-
-use super::Tx;
 
 impl Wallet {
     /// Get unspent proofs for mint
@@ -93,8 +92,8 @@ impl Wallet {
     /// Reclaim unspent proofs
     ///
     /// Checks the stats of [`Proofs`] swapping for a new [`Proof`] if unspent
-    #[instrument(skip(self, proofs, tx))]
-    pub async fn reclaim_unspent(&self, proofs: Proofs, tx: &mut Tx<'_, '_>) -> Result<(), Error> {
+    #[instrument(skip(self, tx, proofs))]
+    pub async fn reclaim_unspent(&self, tx: &mut Tx<'_, '_>, proofs: Proofs) -> Result<(), Error> {
         let proof_ys = proofs.ys()?;
 
         let transaction_id = TransactionId::new(proof_ys.clone());

@@ -112,7 +112,7 @@ async fn test_fake_melt_change_in_quote() {
 
     let mut tx = wallet.localstore.begin_db_transaction().await.unwrap();
     let melt = wallet
-        .melt_proofs_with_metadata(&melt_quote.id, proofs, HashMap::new(), &mut tx)
+        .melt_proofs_with_metadata(&mut tx, &melt_quote.id, proofs, HashMap::new())
         .await
         .unwrap();
     tx.commit().await.unwrap();

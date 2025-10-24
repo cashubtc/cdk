@@ -8,6 +8,7 @@ use cdk_common::util::unix_time;
 use cdk_common::wallet::{Transaction, TransactionDirection};
 use tracing::instrument;
 
+use super::Tx;
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
@@ -16,8 +17,6 @@ use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State, Toke
 use crate::types::ProofInfo;
 use crate::util::hex;
 use crate::{ensure_cdk, Amount, Error, Wallet, SECP256K1};
-
-use super::Tx;
 
 impl Wallet {
     /// Receive proofs

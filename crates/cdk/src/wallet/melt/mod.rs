@@ -5,9 +5,8 @@ use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection};
 use cdk_common::{Error, MeltQuoteBolt11Response, MeltQuoteState, ProofsMethods};
 use tracing::instrument;
 
-use crate::Wallet;
-
 use super::Tx;
+use crate::Wallet;
 
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 mod melt_bip353;

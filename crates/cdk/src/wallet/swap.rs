@@ -1,6 +1,7 @@
 use cdk_common::nut02::KeySetInfosMethods;
 use tracing::instrument;
 
+use super::Tx;
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
@@ -9,8 +10,6 @@ use crate::nuts::{
 };
 use crate::types::ProofInfo;
 use crate::{ensure_cdk, Amount, Error, Wallet};
-
-use super::Tx;
 
 impl Wallet {
     async fn swap_inner(
