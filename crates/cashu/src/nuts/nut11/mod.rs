@@ -1712,8 +1712,6 @@ mod tests {
             melt.verify_sig_all().is_ok(),
             "Both signatures should verify successfully"
         );
-        println!("{}", serde_json::to_string(&melt).unwrap());
-
     }
 
     #[test]
