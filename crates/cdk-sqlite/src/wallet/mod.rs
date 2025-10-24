@@ -94,10 +94,14 @@ mod tests {
         let proof_info =
             ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat).unwrap();
 
+        let mut tx = db.begin_db_transaction().await.expect("tx");
+
         // Store the proof in the database
-        db.update_proofs(vec![proof_info.clone()], vec![])
+        tx.update_proofs(vec![proof_info.clone()], vec![])
             .await
             .unwrap();
+
+        tx.commit().await.expect("commit");
 
         // Retrieve the proof from the database
         let retrieved_proofs = db
@@ -154,6 +158,8 @@ mod tests {
             PaymentMethod::Custom("custom".to_string()),
         ];
 
+        let mut tx = db.begin_db_transaction().await.expect("begin");
+
         for (i, payment_method) in payment_methods.iter().enumerate() {
             let quote = MintQuote {
                 id: format!("test_quote_{}", i),
@@ -170,13 +176,14 @@ mod tests {
             };
 
             // Store the quote
-            db.add_mint_quote(quote.clone()).await.unwrap();
+            tx.add_mint_quote(quote.clone()).await.unwrap();
 
             // Retrieve and verify
-            let retrieved = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
+            let retrieved = tx.get_mint_quote(&quote.id).await.unwrap().unwrap();
             assert_eq!(retrieved.payment_method, *payment_method);
             assert_eq!(retrieved.amount_issued, Amount::from(0));
             assert_eq!(retrieved.amount_paid, Amount::from(0));
         }
+        tx.commit().await.expect("commit");
     }
 }
