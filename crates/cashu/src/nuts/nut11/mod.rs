@@ -883,14 +883,15 @@ impl SwapRequest {
 
         // Add all input secrets in order
         for proof in self.inputs() {
-            let secret = proof.secret.to_string();
-            msg_to_sign.push_str(&secret);
+            msg_to_sign.push_str(&proof.secret.to_string());
+            msg_to_sign.push_str(&proof.c.to_hex());
         }
 
-        // Add all output blinded messages in order
+        // Add all blank outputs in order if they exist
         for output in self.outputs() {
-            let message = output.blinded_secret.to_string();
-            msg_to_sign.push_str(&message);
+            msg_to_sign.push_str(&output.amount.to_string());
+            msg_to_sign.push_str(&output.keyset_id.to_string());
+            msg_to_sign.push_str(&output.blinded_secret.to_hex());
         }
 
         msg_to_sign
@@ -1062,13 +1063,15 @@ impl<Q: std::fmt::Display + Serialize + DeserializeOwned> MeltRequest<Q> {
 
         // Add all input secrets in order
         for proof in self.inputs() {
-            let secret = proof.secret.to_string();
-            msg_to_sign.push_str(&secret);
+            msg_to_sign.push_str(&proof.secret.to_string());
+            msg_to_sign.push_str(&proof.c.to_hex());
         }
-
+        //
         // Add all blank outputs in order if they exist
         if let Some(outputs) = self.outputs() {
             for output in outputs {
+                msg_to_sign.push_str(&output.amount.to_string());
+                msg_to_sign.push_str(&output.keyset_id.to_string());
                 msg_to_sign.push_str(&output.blinded_secret.to_hex());
             }
         }
