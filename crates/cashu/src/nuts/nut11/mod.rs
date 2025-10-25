@@ -103,6 +103,62 @@ impl P2PKWitness {
     }
 }
 
+/// Get the relevant public keys and required signature count for P2PK verification
+///
+/// Takes into account locktime - if locktime has passed, returns refund keys,
+/// otherwise returns primary pubkeys. Returns (pubkeys, required_sigs).
+pub fn get_pubkeys_and_required_sigs_for_p2pk(
+    secret: &Nut10Secret,
+    current_time: u64,
+) -> Result<(Vec<PublicKey>, u64), Error> {
+    debug_assert!(
+        secret.kind() == Kind::P2PK,
+        "get_pubkeys_and_required_sigs_for_p2pk called with non-P2PK secret - this is a bug"
+    );
+
+    let conditions: Conditions = secret
+        .secret_data()
+        .tags()
+        .cloned()
+        .unwrap_or_default()
+        .try_into()?;
+
+    // Check if locktime has passed
+    let locktime_passed = conditions
+        .locktime
+        .map(|locktime| locktime < current_time)
+        .unwrap_or(false);
+
+    // Determine which keys and signature count to use
+    let (pubkeys, required_sigs) = if locktime_passed {
+        if let Some(refund_keys) = &conditions.refund_keys {
+            // Locktime has passed and refund keys exist - use refund keys
+            let refund_sigs = conditions.num_sigs_refund.unwrap_or(1);
+            (refund_keys.clone(), refund_sigs)
+        } else {
+            // Locktime has passed with no refund keys - anyone can spend
+            (vec![], 0)
+        }
+    } else {
+        // Use primary pubkeys - include data field pubkey and any additional pubkeys from conditions
+        let mut primary_keys = vec![];
+
+        // Add the pubkey from secret.data
+        let data_pubkey = PublicKey::from_str(secret.secret_data().data())?;
+        primary_keys.push(data_pubkey);
+
+        // Add any additional pubkeys from conditions
+        if let Some(additional_keys) = &conditions.pubkeys {
+            primary_keys.extend(additional_keys.clone());
+        }
+
+        let primary_num_sigs_required = conditions.num_sigs.unwrap_or(1);
+        (primary_keys, primary_num_sigs_required)
+    };
+
+    Ok((pubkeys, required_sigs))
+}
+
 impl Proof {
     /// Sign [Proof]
     pub fn sign_p2pk(&mut self, secret_key: SecretKey) -> Result<(), Error> {
@@ -135,92 +191,42 @@ impl Proof {
             .unwrap_or_default()
             .try_into()?;
 
-        // debug_assert!(
-        //     spending_conditions.sig_flag != SigFlag::SigAll,
-        //     "verify_p2pk called with SIG_ALL proof - this is a bug"
-        // );
+        debug_assert!(
+            spending_conditions.sig_flag != SigFlag::SigAll,
+            "verify_p2pk called with SIG_ALL proof - this is a bug"
+        );
 
-        let msg: &[u8] = self.secret.as_bytes();
+        debug_assert!(
+            secret.kind() == Kind::P2PK,
+            "verify_p2pk called with non-P2PK secret - this is a bug"
+        );
 
-        let mut verified_pubkeys = HashSet::new();
+        // Based on the current time, we must identify the relevant keys
+        let now = unix_time();
+        let (relevant_pubkeys, relevant_num_sigs_required) = get_pubkeys_and_required_sigs_for_p2pk(&secret, now)?;
 
+        // Handle "anyone can spend" case (locktime passed with no refund keys)
+        if relevant_num_sigs_required == 0 {
+            return Ok(());
+        }
+
+        // Extract witness signatures
         let witness_signatures = match &self.witness {
             Some(witness) => witness.signatures(),
             None => None,
         };
-
         let witness_signatures = witness_signatures.ok_or(Error::SignaturesNotProvided)?;
 
-        let mut pubkeys = spending_conditions.pubkeys.clone().unwrap_or_default();
-        // NUT-11 enforcement per spec:
-        // - If locktime has passed and refund keys are present, spend must be authorized by
-        //   refund pubkeys (n_sigs_refund-of-refund). This supersedes normal pubkey enforcement
-        //   after expiry.
-        // - If locktime has passed and no refund keys are present, proof becomes spendable
-        //   without further key checks (anyone-can-spend behavior).
-        // - Otherwise (before locktime), enforce normal multisig on the set of authorized
-        //   pubkeys: Secret.data plus optional `pubkeys` tag, requiring n_sigs unique signers.
+        // Count valid signatures using relevant_pubkeys
+        let msg: &[u8] = self.secret.as_bytes();
+        let valid_sig_count = valid_signatures(msg, &relevant_pubkeys, &witness_signatures.iter().map(|s| Signature::from_str(s)).collect::<Result<Vec<_>, _>>()?)?;
 
-        let now = unix_time();
-
-        if let Some(locktime) = spending_conditions.locktime {
-            if now >= locktime {
-                if let Some(refund_keys) = spending_conditions.refund_keys.clone() {
-                    let needed_refund_sigs =
-                        spending_conditions.num_sigs_refund.unwrap_or(1) as usize;
-                    let mut valid_pubkeys = HashSet::new();
-
-                    // After locktime, require signatures from refund keys
-                    for s in witness_signatures.iter() {
-                        let sig = Signature::from_str(s).map_err(|_| Error::InvalidSignature)?;
-                        for v in &refund_keys {
-                            if v.verify(msg, &sig).is_ok() {
-                                valid_pubkeys.insert(v);
-                                if valid_pubkeys.len() >= needed_refund_sigs {
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
-
-                    // If locktime and refund keys were specified they must sign after locktime
-                    return Err(Error::SpendConditionsNotMet);
-                } else {
-                    // If only locktime is specified, consider it spendable after locktime
-                    return Ok(());
-                }
-            }
+        // Check if we have enough valid signatures
+        if valid_sig_count >= relevant_num_sigs_required {
+            Ok(())
+        } else {
+            Err(Error::SpendConditionsNotMet)
         }
-
-        if secret.kind().eq(&Kind::P2PK) {
-            pubkeys.push(PublicKey::from_str(secret.secret_data().data())?);
-        }
-
-        for signature in witness_signatures.iter() {
-            for v in &pubkeys {
-                let sig = Signature::from_str(signature)?;
-
-                if v.verify(msg, &sig).is_ok() {
-                    // If the pubkey is already verified, return a duplicate signature error
-                    if !verified_pubkeys.insert(*v) {
-                        return Err(Error::DuplicateSignature);
-                    }
-                } else {
-                    tracing::debug!(
-                        "Could not verify signature: {sig} on message: {}",
-                        self.secret.to_string()
-                    )
-                }
-            }
-        }
-
-        let valid_sigs = verified_pubkeys.len() as u64;
-
-        if valid_sigs >= spending_conditions.num_sigs.unwrap_or(1) {
-            return Ok(());
-        }
-
-        Err(Error::SpendConditionsNotMet)
     }
 }
 

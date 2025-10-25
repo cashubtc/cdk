@@ -68,11 +68,12 @@ fn verify_full_sig_all_check(
     // Record current time for locktime evaluation
     let current_time = cdk_common::util::unix_time();
 
-    // Get the first input (all inputs are identical per SIG_ALL requirements)
+    // Get the first input, as it's the one with the signatures
     let first_input = inputs.first().ok_or(Error::Internal)?;
+    let first_secret = cdk_common::nuts::nut10::Secret::try_from(&first_input.secret)?;
 
     // Get the relevant public keys and required signature count based on locktime
-    let (pubkeys, required_sigs) = get_pubkeys_and_required_sigs(first_input, current_time)?;
+    let (pubkeys, required_sigs) = cdk_common::nuts::nut11::get_pubkeys_and_required_sigs_for_p2pk(&first_secret, current_time)?;
 
     // Handle "anyone can spend" case (locktime passed with no refund keys)
     if required_sigs == 0 {
@@ -134,56 +135,6 @@ fn verify_full_sig_all_check(
     }
 
     Ok(())
-}
-
-/// Get the relevant public keys and required signature count for a proof
-///
-/// Takes into account locktime - if locktime has passed, returns refund keys,
-/// otherwise returns primary pubkeys.
-fn get_pubkeys_and_required_sigs(
-    proof: &cdk_common::Proof,
-    current_time: u64,
-) -> Result<(Vec<cdk_common::nuts::PublicKey>, u64), Error> {
-    let secret = cdk_common::nuts::nut10::Secret::try_from(&proof.secret)?;
-    let conditions = cdk_common::nuts::Conditions::try_from(
-        secret.secret_data().tags().cloned().unwrap_or_default()
-    )?;
-
-    // Check if locktime has passed
-    let locktime_passed = conditions
-        .locktime
-        .map(|locktime| locktime < current_time)
-        .unwrap_or(false);
-
-    // Determine which keys and signature count to use
-    let (pubkeys, required_sigs) = if locktime_passed {
-        if let Some(refund_keys) = conditions.refund_keys {
-            // Locktime has passed and refund keys exist - use refund keys
-            let refund_sigs = conditions.num_sigs_refund.unwrap_or(1);
-            (refund_keys, refund_sigs)
-        } else {
-            // Locktime has passed with no refund keys - anyone can spend
-            (vec![], 0)
-        }
-    } else {
-        // Use primary pubkeys - include data field pubkey and any additional pubkeys from conditions
-        let mut primary_keys = vec![];
-
-        // Add the pubkey from secret.data
-        let data_pubkey = cdk_common::nuts::PublicKey::from_hex(secret.secret_data().data())
-            .map_err(|_| Error::Internal)?;
-        primary_keys.push(data_pubkey);
-
-        // Add any additional pubkeys from conditions
-        if let Some(additional_keys) = conditions.pubkeys {
-            primary_keys.extend(additional_keys);
-        }
-
-        let primary_num_sigs_required = conditions.num_sigs.unwrap_or(1);
-        (primary_keys, primary_num_sigs_required)
-    };
-
-    Ok((pubkeys, required_sigs))
 }
 
 /// Construct the message to sign for SIG_ALL verification
