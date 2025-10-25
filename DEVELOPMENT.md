@@ -170,6 +170,30 @@ just itest REDB/SQLITE/MEMORY
 
 NOTE: if this command fails on macos change the nix channel to unstable (in the `flake.nix` file modify `nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";` to `nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";`)
 
+### Running Mutation Tests
+
+Mutation testing validates test suite quality by introducing small code changes (mutations) and verifying tests catch them.
+
+```bash
+# Run mutation tests on cashu crate (configured in .cargo/mutants.toml)
+cargo mutants
+
+# Check specific files only
+cargo mutants --file crates/cashu/src/amount.rs
+
+# Re-run previously caught mutations to verify fixes
+cargo mutants --in-diff
+```
+
+**Understanding Results:**
+- **Caught mutations**: Tests correctly detected the code change (good!)
+- **Missed mutations**: Code change went undetected - indicates missing test coverage
+- **Timeouts**: Mutation caused infinite loop - some are excluded in config to keep tests practical
+
+The `.cargo/mutants.toml` file excludes mutations that cause infinite loops during testing. These don't indicate bugs - they're just mutations that would make the test suite hang indefinitely.
+
+See [cargo-mutants documentation](https://mutants.rs/) for more options.
+
 ### Running Format
 ```bash
 just format
