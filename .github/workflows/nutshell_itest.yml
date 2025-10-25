@@ -10,6 +10,9 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
@@ -24,8 +27,13 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "integration-${{ steps.flake-hash.outputs.hash }}"
       - name: Test Nutshell
         run: nix develop -i -L .#integration --command just test-nutshell
       - name: Show logs if tests fail
@@ -39,6 +47,9 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
@@ -55,8 +66,13 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "integration-${{ steps.flake-hash.outputs.hash }}"
       - name: Test Nutshell Wallet
         run: |
           nix develop -i -L .#integration --command just nutshell-wallet-itest
