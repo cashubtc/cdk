@@ -575,6 +575,94 @@ async fn test_p2pk_sig_all_locktime_before_expiry() {
     println!("✓ Spending with primary key (Alice) BEFORE locktime succeeded");
 }
 
+/// Test: P2PK with locktime (after expiry) - SIG_ALL
+///
+/// Verifies that after locktime expires with SIG_ALL:
+/// 1. Spending with primary key (Alice) fails
+/// 2. Spending with refund key (Bob) succeeds
+#[tokio::test]
+async fn test_p2pk_sig_all_locktime_after_expiry() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
+
+    let (alice_secret, alice_pubkey) = create_test_keypair();
+    let (bob_secret, bob_pubkey) = create_test_keypair();
+
+    // Set locktime in the past (already expired)
+    let locktime = unix_time() - 3600;
+
+    println!("Alice (primary): {}", alice_pubkey);
+    println!("Bob (refund): {}", bob_pubkey);
+    println!("Current time: {}", unix_time());
+    println!("Locktime: {} (expired 1 hour ago)", locktime);
+
+    // Step 1: Mint regular proofs
+    let input_amount = Amount::from(10);
+    let input_proofs = test_mint.mint_proofs(input_amount).await.unwrap();
+
+    // Step 2: Create conditions with Alice as primary and Bob as refund key with SIG_ALL
+    let spending_conditions = SpendingConditions::new_p2pk(
+        alice_pubkey,
+        Some(Conditions {
+            locktime: Some(locktime), // locktime in the past (expired)
+            pubkeys: None, // no additional pubkeys
+            refund_keys: Some(vec![bob_pubkey]), // Bob is refund key
+            num_sigs: None, // default (1)
+            sig_flag: SigFlag::SigAll, // SIG_ALL flag
+            num_sigs_refund: None, // default (1)
+        })
+    );
+    println!("Created P2PK with expired locktime and refund key with SIG_ALL");
+
+    // Step 3: Create P2PK blinded messages
+    let split_amounts = test_mint.split_amount(input_amount).unwrap();
+    let (p2pk_outputs, blinding_factors, secrets) = unzip3(
+        split_amounts
+            .iter()
+            .map(|&amt| test_mint.create_blinded_message(amt, &spending_conditions))
+            .collect(),
+    );
+
+    // Step 4: Swap for P2PK proofs
+    let swap_request = cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+
+    // Step 5: Construct the P2PK proofs
+    let p2pk_proofs = construct_proofs(
+        swap_response.signatures.clone(),
+        blinding_factors.clone(),
+        secrets.clone(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    ).unwrap();
+
+    // Step 6: Try to spend with primary key (Alice) AFTER locktime expires (should fail)
+    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount).await.unwrap();
+    let mut swap_request_primary = cdk_common::nuts::SwapRequest::new(
+        p2pk_proofs.clone(),
+        new_outputs.clone(),
+    );
+
+    // Sign with Alice (primary key) using SIG_ALL
+    swap_request_primary.sign_sig_all(alice_secret.clone()).unwrap();
+
+    let result = mint.process_swap_request(swap_request_primary).await;
+    assert!(result.is_err(), "Should fail - primary key cannot spend after locktime expires");
+    println!("✓ Spending with primary key (Alice) AFTER locktime failed as expected: {:?}", result.err());
+
+    // Step 7: Spend with refund key (Bob) AFTER locktime (should succeed)
+    let mut swap_request_refund = cdk_common::nuts::SwapRequest::new(
+        p2pk_proofs.clone(),
+        new_outputs.clone(),
+    );
+
+    // Sign with Bob (refund key) using SIG_ALL
+    swap_request_refund.sign_sig_all(bob_secret.clone()).unwrap();
+
+    let result = mint.process_swap_request(swap_request_refund).await;
+    assert!(result.is_ok(), "Should succeed - refund key can spend after locktime: {:?}", result.err());
+    println!("✓ Spending with refund key (Bob) AFTER locktime succeeded");
+}
+
 /// Test: P2PK with locktime after expiry, no refund keys (anyone can spend) - SIG_ALL
 ///
 /// Verifies that after locktime expires with NO refund keys configured and SIG_ALL,
@@ -645,4 +733,100 @@ async fn test_p2pk_sig_all_locktime_after_expiry_no_refund_anyone_can_spend() {
     let result = mint.process_swap_request(swap_request_no_sig).await;
     assert!(result.is_ok(), "Should succeed - anyone can spend after locktime with no refund keys: {:?}", result.err());
     println!("✓ Spending WITHOUT any signatures succeeded (anyone can spend)");
+}
+
+/// Test: P2PK multisig with locktime (2-of-3 before, 1-of-2 after) - SIG_ALL
+///
+/// Complex scenario with SIG_ALL: Different multisig requirements before and after locktime
+/// Before locktime: Need 2-of-3 from (Alice, Bob, Carol)
+/// After locktime: Need 1-of-2 from (Dave, Eve) as refund keys
+#[tokio::test]
+async fn test_p2pk_sig_all_multisig_locktime() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
+
+    // Before locktime: Need 2-of-3 from (Alice, Bob, Carol)
+    let (alice_secret, alice_pubkey) = create_test_keypair();
+    let (bob_secret, bob_pubkey) = create_test_keypair();
+    let (_carol_secret, carol_pubkey) = create_test_keypair();
+
+    // After locktime: Need 1-of-2 from (Dave, Eve) as refund keys
+    let (dave_secret, dave_pubkey) = create_test_keypair();
+    let (_eve_secret, eve_pubkey) = create_test_keypair();
+
+    let locktime = unix_time() - 100; // Already expired
+
+    println!("Primary multisig: Alice, Bob, Carol (need 2-of-3)");
+    println!("Refund multisig: Dave, Eve (need 1-of-2)");
+    println!("Current time: {}", unix_time());
+    println!("Locktime: {} (expired)", locktime);
+
+    // Step 1: Mint regular proofs
+    let input_amount = Amount::from(10);
+    let input_proofs = test_mint.mint_proofs(input_amount).await.unwrap();
+
+    // Step 2: Create complex conditions with SIG_ALL
+    // Before locktime: 2-of-3 (Alice, Bob, Carol)
+    // After locktime: 1-of-2 (Dave, Eve)
+    let spending_conditions = SpendingConditions::new_p2pk(
+        alice_pubkey,
+        Some(Conditions {
+            locktime: Some(locktime), // Already expired
+            pubkeys: Some(vec![bob_pubkey, carol_pubkey]), // Bob and Carol (with Alice = 3 total)
+            refund_keys: Some(vec![dave_pubkey, eve_pubkey]), // Dave and Eve for refund
+            num_sigs: Some(2), // Need 2 signatures before locktime
+            sig_flag: SigFlag::SigAll, // SIG_ALL flag
+            num_sigs_refund: Some(1), // Need 1 signature after locktime
+        })
+    );
+    println!("Created complex P2PK with SIG_ALL: 2-of-3 before locktime, 1-of-2 after locktime");
+
+    // Step 3: Create P2PK blinded messages
+    let split_amounts = test_mint.split_amount(input_amount).unwrap();
+    let (p2pk_outputs, blinding_factors, secrets) = unzip3(
+        split_amounts
+            .iter()
+            .map(|&amt| test_mint.create_blinded_message(amt, &spending_conditions))
+            .collect(),
+    );
+
+    // Step 4: Swap for P2PK proofs
+    let swap_request = cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+
+    // Step 5: Construct the P2PK proofs
+    let p2pk_proofs = construct_proofs(
+        swap_response.signatures.clone(),
+        blinding_factors.clone(),
+        secrets.clone(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    ).unwrap();
+
+    // Step 6: Try to spend with primary keys (Alice + Bob) AFTER locktime (should fail)
+    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount).await.unwrap();
+    let mut swap_request_primary = cdk_common::nuts::SwapRequest::new(
+        p2pk_proofs.clone(),
+        new_outputs.clone(),
+    );
+
+    // Sign with Alice + Bob (primary multisig) using SIG_ALL
+    swap_request_primary.sign_sig_all(alice_secret.clone()).unwrap();
+    swap_request_primary.sign_sig_all(bob_secret.clone()).unwrap();
+
+    let result = mint.process_swap_request(swap_request_primary).await;
+    assert!(result.is_err(), "Should fail - locktime expired, only refund keys valid");
+    println!("✓ Spending with primary keys (Alice + Bob) AFTER locktime failed as expected: {:?}", result.err());
+
+    // Step 7: Spend with refund key (Dave) AFTER locktime (should succeed - only need 1-of-2)
+    let mut swap_request_refund = cdk_common::nuts::SwapRequest::new(
+        p2pk_proofs.clone(),
+        new_outputs.clone(),
+    );
+
+    // Sign with Dave only (refund key, need 1-of-2) using SIG_ALL
+    swap_request_refund.sign_sig_all(dave_secret.clone()).unwrap();
+
+    let result = mint.process_swap_request(swap_request_refund).await;
+    assert!(result.is_ok(), "Should succeed - refund key can spend after locktime: {:?}", result.err());
+    println!("✓ Spending with refund key (Dave, 1-of-2) AFTER locktime succeeded");
 }
