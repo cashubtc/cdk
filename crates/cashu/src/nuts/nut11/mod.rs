@@ -1002,6 +1002,7 @@ impl SwapRequest {
     }
 
     /// Validate SIG_ALL conditions and signatures for the swap request
+    /// This is no longer used, and is incorrect as it doesn't take locktime into account
     pub fn verify_sig_all(&self) -> Result<(), Error> {
         // Get required signatures and conditions from first input
         let (required_sigs, first_conditions) = self.get_sig_all_required_sigs()?;
