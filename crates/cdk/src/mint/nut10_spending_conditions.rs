@@ -38,14 +38,14 @@ pub fn has_at_least_one_sig_all(proofs: &Proofs) -> Result<bool, Error> {
 ///
 /// This is the main entry point for spending condition verification.
 /// It checks if any input has SIG_ALL and dispatches to the appropriate verification path.
-pub fn verify_spending_conditions(
+pub fn verify_spending_conditions_for_swap(
     inputs: &Proofs,
     outputs: &[BlindedMessage],
 ) -> Result<(), Error> {
     // Check if any input has SIG_ALL flag
     if has_at_least_one_sig_all(inputs)? {
         // at least one input has SIG_ALL
-        verify_full_sig_all_check(inputs, outputs)
+        verify_full_sig_all_check_swap(inputs, outputs)
     } else {
         // none of the inputs are SIG_ALL, so we can simply check
         // each independently and verify any spending conditions
@@ -57,7 +57,7 @@ pub fn verify_spending_conditions(
 /// Verify spending conditions when SIG_ALL is present
 ///
 /// When SIG_ALL is set, all proofs in the transaction must be signed together.
-fn verify_full_sig_all_check(
+fn verify_full_sig_all_check_swap(
     inputs: &Proofs,
     outputs: &[BlindedMessage],
 ) -> Result<(), Error> {
@@ -81,7 +81,7 @@ fn verify_full_sig_all_check(
     }
 
     // Construct the message that should be signed (all input secrets + all output blinded messages)
-    let msg_to_sign = construct_sig_all_message(inputs, outputs);
+    let msg_to_sign = construct_sig_all_message_swap(inputs, outputs);
 
     // Debug: verify our message construction matches the existing SwapRequest implementation
     #[cfg(debug_assertions)]
@@ -140,7 +140,7 @@ fn verify_full_sig_all_check(
 /// Construct the message to sign for SIG_ALL verification
 ///
 /// Concatenates all input secrets and output blinded messages in order
-fn construct_sig_all_message(inputs: &cdk_common::Proofs, outputs: &[BlindedMessage]) -> String {
+fn construct_sig_all_message_swap(inputs: &cdk_common::Proofs, outputs: &[BlindedMessage]) -> String {
     let mut msg_to_sign = String::new();
 
     // Add all input secrets in order

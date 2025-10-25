@@ -29,7 +29,7 @@ impl Mint {
 
         // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK
         // and HTLC (including SIGALL)
-        super::nut10_spending_conditions::verify_spending_conditions(
+        super::nut10_spending_conditions::verify_spending_conditions_for_swap(
             swap_request.inputs(),
             swap_request.outputs(),
         )?;
