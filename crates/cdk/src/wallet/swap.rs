@@ -167,7 +167,7 @@ impl Wallet {
 
     /// Swap with transaction
     #[instrument(skip(self, tx, input_proofs))]
-    pub async fn swap_with_tx(
+    pub(super) async fn swap_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
         amount: Option<Amount>,
@@ -275,7 +275,7 @@ impl Wallet {
 
     /// Create Swap Payload with transaction
     #[instrument(skip(self, tx, proofs))]
-    pub async fn create_swap_with_tx(
+    pub(super) async fn create_swap_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
         amount: Option<Amount>,

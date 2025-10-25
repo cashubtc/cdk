@@ -30,7 +30,7 @@ impl Wallet {
             .await
             .as_ref()
             .ok_or(Error::AuthSettingsUndefined)?
-            .get_unspent_auth_proofs(None)
+            .get_unspent_auth_proofs()
             .await
     }
 

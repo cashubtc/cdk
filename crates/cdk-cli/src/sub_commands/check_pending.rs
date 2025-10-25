@@ -9,12 +9,10 @@ pub async fn check_pending(multi_mint_wallet: &MultiMintWallet) -> Result<()> {
         let mint_url = wallet.mint_url.clone();
         println!("{i}: {mint_url}");
 
-        let mut tx = wallet.localstore.begin_db_transaction().await?;
-
         // Get all pending proofs
         //
 
-        let pending_proofs = wallet.get_pending_proofs_with_tx(&mut tx).await?;
+        let pending_proofs = wallet.get_pending_proofs().await?;
         if pending_proofs.is_empty() {
             println!("No pending proofs found");
             continue;
@@ -28,15 +26,10 @@ pub async fn check_pending(multi_mint_wallet: &MultiMintWallet) -> Result<()> {
         );
 
         // Try to reclaim any proofs that are no longer pending
-        match wallet
-            .reclaim_unspent_with_tx(&mut tx, pending_proofs)
-            .await
-        {
+        match wallet.reclaim_unspent(pending_proofs).await {
             Ok(()) => println!("Successfully reclaimed pending proofs"),
             Err(e) => println!("Error reclaimed pending proofs: {e}"),
         }
-
-        tx.commit().await?;
     }
     Ok(())
 }

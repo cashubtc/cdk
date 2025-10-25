@@ -53,7 +53,7 @@ async fn test_swap() {
 
     let proofs = send.proofs();
 
-    let fee = wallet.get_proofs_fee(None, &proofs).await.unwrap();
+    let fee = wallet.get_proofs_fee(&proofs).await.unwrap();
 
     assert_eq!(fee, 1.into());
 
@@ -108,7 +108,7 @@ async fn test_fake_melt_change_in_quote() {
 
     let proofs_total = proofs.total_amount().unwrap();
 
-    let fee = wallet.get_proofs_fee(None, &proofs).await.unwrap();
+    let fee = wallet.get_proofs_fee(&proofs).await.unwrap();
 
     let melt = wallet
         .melt_proofs_with_metadata(&melt_quote.id, proofs, HashMap::new())

@@ -213,7 +213,7 @@ impl Wallet {
 
     /// Fee required for proof set with transaction
     #[instrument(skip_all)]
-    pub async fn get_proofs_fee_with_tx(
+    pub(super) async fn get_proofs_fee_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
         proofs: &Proofs,
@@ -245,7 +245,7 @@ impl Wallet {
     }
 
     /// Fee required for proof set by count with transaction
-    pub async fn get_proofs_fee_by_count_with_tx(
+    pub(super) async fn get_proofs_fee_by_count_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
         proofs_per_keyset: HashMap<Id, u64>,
@@ -307,7 +307,7 @@ impl Wallet {
 
     /// Query mint for current mint information with transaction
     #[instrument(skip(self, tx))]
-    pub async fn fetch_mint_info_with_tx(
+    pub(super) async fn fetch_mint_info_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
     ) -> Result<Option<MintInfo>, Error> {
@@ -416,7 +416,7 @@ impl Wallet {
 
     /// Get amounts needed to refill proof state with transaction
     #[instrument(skip(self, tx))]
-    pub async fn amounts_needed_for_state_target_with_tx(
+    pub(super) async fn amounts_needed_for_state_target_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
         fee_and_amounts: &FeeAndAmounts,

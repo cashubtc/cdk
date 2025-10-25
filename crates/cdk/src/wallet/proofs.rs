@@ -30,7 +30,10 @@ impl Wallet {
 
     /// Get pending [`Proofs`] with transaction
     #[instrument(skip(self, tx))]
-    pub async fn get_pending_proofs_with_tx(&self, tx: &mut Tx<'_, '_>) -> Result<Proofs, Error> {
+    pub(super) async fn get_pending_proofs_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+    ) -> Result<Proofs, Error> {
         self.get_proofs_with_tx(tx, Some(vec![State::Pending]), None)
             .await
     }
@@ -49,7 +52,7 @@ impl Wallet {
     }
 
     /// Get pending spent [`Proofs`] with transaction
-    pub async fn get_pending_spent_proofs_with_tx(
+    pub(super) async fn get_pending_spent_proofs_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
     ) -> Result<Proofs, Error> {
@@ -78,7 +81,7 @@ impl Wallet {
     }
 
     /// Get this wallet's [Proofs] that match the args with transaction
-    pub async fn get_proofs_with_tx(
+    pub(super) async fn get_proofs_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
         state: Option<Vec<State>>,
@@ -121,7 +124,7 @@ impl Wallet {
     ///
     /// Checks the stats of [`Proofs`] swapping for a new [`Proof`] if unspent
     #[instrument(skip(self, tx, proofs))]
-    pub async fn reclaim_unspent_with_tx(
+    pub(super) async fn reclaim_unspent_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
         proofs: Proofs,
@@ -166,7 +169,7 @@ impl Wallet {
 
     /// NUT-07 Check the state of a [`Proof`] with the mint with transaction
     #[instrument(skip(self, tx, proofs))]
-    pub async fn check_proofs_spent_with_tx(
+    pub(super) async fn check_proofs_spent_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
         proofs: Proofs,

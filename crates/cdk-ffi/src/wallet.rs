@@ -123,12 +123,10 @@ impl Wallet {
             proofs.into_iter().map(|p| p.try_into()).collect();
         let cdk_proofs = cdk_proofs?;
 
-        let mut tx = self.inner.localstore.begin_db_transaction().await?;
         let amount = self
             .inner
-            .receive_proofs_with_tx(&mut tx, cdk_proofs, options.into(), memo)
+            .receive_proofs(cdk_proofs, options.into(), memo)
             .await?;
-        tx.commit().await?;
         Ok(amount.into())
     }
 

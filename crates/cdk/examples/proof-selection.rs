@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Select proofs to send
     let amount = Amount::from(64);
     let active_keyset_ids = wallet
-        .refresh_keysets(None)
+        .refresh_keysets()
         .await?
         .active()
         .map(|keyset| keyset.id)

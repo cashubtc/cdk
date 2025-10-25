@@ -151,7 +151,7 @@ impl Wallet {
 
     /// Melt specific proofs with transaction
     #[instrument(skip(self, tx, proofs))]
-    pub async fn melt_proofs_with_metadata_with_tx(
+    pub(super) async fn melt_proofs_with_metadata_with_tx(
         &self,
         mut tx: Tx<'_, '_>,
         quote_id: &str,

@@ -36,7 +36,7 @@ impl Wallet {
 
     /// Receive proofs with transaction
     #[instrument(skip_all)]
-    pub async fn receive_proofs_with_tx(
+    pub(super) async fn receive_proofs_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
         proofs: Proofs,

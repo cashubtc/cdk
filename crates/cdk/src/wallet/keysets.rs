@@ -36,7 +36,7 @@ impl Wallet {
 
     /// Load keyset keys with transaction
     #[instrument(skip(self, tx))]
-    pub async fn load_keyset_keys_with_tx(
+    pub(super) async fn load_keyset_keys_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
         keyset_id: Id,
@@ -115,7 +115,10 @@ impl Wallet {
 
     /// Refresh keysets from mint with transaction
     #[instrument(skip(self, tx))]
-    pub async fn refresh_keysets_with_tx(&self, tx: &mut Tx<'_, '_>) -> Result<KeySetInfos, Error> {
+    pub(super) async fn refresh_keysets_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+    ) -> Result<KeySetInfos, Error> {
         tracing::debug!("Refreshing keysets and ensuring we have keys");
 
         let _ = self.fetch_mint_info_with_tx(tx).await?;
@@ -156,7 +159,7 @@ impl Wallet {
 
     /// Get the active keyset with the lowest fees with transaction - always goes online
     #[instrument(skip(self, tx))]
-    pub async fn fetch_active_keyset_with_tx(
+    pub(super) async fn fetch_active_keyset_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
     ) -> Result<KeySetInfo, Error> {
@@ -220,7 +223,7 @@ impl Wallet {
     }
 
     /// Get keyset fees and amounts for mint with transaction
-    pub async fn get_keyset_fees_and_amounts_with_tx(
+    pub(super) async fn get_keyset_fees_and_amounts_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
     ) -> Result<KeysetFeeAndAmounts, Error> {
@@ -265,7 +268,7 @@ impl Wallet {
     }
 
     /// Get keyset fees and amounts for mint by keyset id with transaction
-    pub async fn get_keyset_fees_and_amounts_by_id_with_tx(
+    pub(super) async fn get_keyset_fees_and_amounts_by_id_with_tx(
         &self,
         tx: &mut Tx<'_, '_>,
         keyset_id: Id,
