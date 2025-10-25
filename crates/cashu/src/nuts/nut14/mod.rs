@@ -13,7 +13,7 @@ use thiserror::Error;
 use super::nut00::Witness;
 use super::nut10::Secret;
 use super::nut11::valid_signatures;
-use super::{Conditions, Proof};
+use super::{Conditions, Proof, SigFlag};
 use crate::ensure_cdk;
 use crate::util::unix_time;
 
@@ -65,12 +65,18 @@ pub struct HTLCWitness {
 impl Proof {
     /// Verify HTLC
     pub fn verify_htlc(&self) -> Result<(), Error> {
-        // TODO: assert that flag!=SIG_ALL, as the code should never reach here for SIG_ALL proofs
         let secret: Secret = self.secret.clone().try_into()?;
         let conditions: Option<Conditions> = secret
             .secret_data()
             .tags()
             .and_then(|c| c.clone().try_into().ok());
+
+        // if let Some(ref conds) = conditions {
+        //     debug_assert!(
+        //         conds.sig_flag != SigFlag::SigAll,
+        //         "verify_htlc called with SIG_ALL proof - this is a bug"
+        //     );
+        // }
 
         let htlc_witness = match &self.witness {
             Some(Witness::HTLCWitness(witness)) => witness,

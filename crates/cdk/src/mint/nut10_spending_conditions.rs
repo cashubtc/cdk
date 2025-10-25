@@ -74,6 +74,16 @@ fn verify_inputs_individually(inputs: &Proofs) -> Result<(), Error> {
     for proof in inputs {
         // Check if secret is a nut10 secret with conditions
         if let Ok(secret) = cdk_common::nuts::nut10::Secret::try_from(&proof.secret) {
+            // Verify this function isn't being called with SIG_ALL proofs (development check)
+            if let Ok(conditions) = cdk_common::nuts::Conditions::try_from(
+                secret.secret_data().tags().cloned().unwrap_or_default()
+            ) {
+                debug_assert!(
+                    conditions.sig_flag != cdk_common::nuts::SigFlag::SigAll,
+                    "verify_inputs_individually called with SIG_ALL proof - this is a bug"
+                );
+            }
+
             match secret.kind() {
                 cdk_common::nuts::Kind::P2PK => {
                     proof.verify_p2pk()?;

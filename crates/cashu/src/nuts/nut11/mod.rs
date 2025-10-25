@@ -127,7 +127,6 @@ impl Proof {
 
     /// Verify P2PK signature on [Proof]
     pub fn verify_p2pk(&self) -> Result<(), Error> {
-        // TODO: assert that flag!=SIG_ALL, as the code should never reach here for SIG_ALL proofs
         let secret: Nut10Secret = self.secret.clone().try_into()?;
         let spending_conditions: Conditions = secret
             .secret_data()
@@ -135,6 +134,12 @@ impl Proof {
             .cloned()
             .unwrap_or_default()
             .try_into()?;
+
+        // debug_assert!(
+        //     spending_conditions.sig_flag != SigFlag::SigAll,
+        //     "verify_p2pk called with SIG_ALL proof - this is a bug"
+        // );
+
         let msg: &[u8] = self.secret.as_bytes();
 
         let mut verified_pubkeys = HashSet::new();
