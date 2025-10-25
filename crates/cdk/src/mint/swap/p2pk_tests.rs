@@ -9,7 +9,7 @@
 //! - Refund keys
 //! - Signature validation
 
-use cdk_common::nuts::{SecretKey, PublicKey, SpendingConditions, BlindedMessage, Id, CurrencyUnit, Keys};
+use cdk_common::nuts::{SecretKey, PublicKey, SpendingConditions, BlindedMessage, Id, CurrencyUnit, Keys, Conditions};
 use cdk_common::nuts::nut10::Secret as Nut10Secret;
 use cdk_common::Amount;
 use cdk_common::dhke::{blind_message, construct_proofs};
@@ -233,24 +233,117 @@ async fn test_p2pk_single_pubkey_requires_all_proofs_signed() {
 
 /// Test: P2PK multisig (2-of-3)
 ///
-/// Creates proofs requiring 2 signatures from a set of 3 public keys
+/// Creates proofs requiring 2 signatures from a set of 3 public keys and verifies:
+/// 1. Spending with only 1 valid signature fails (Alice only)
+/// 2. Spending with 2 invalid signatures fails (wrong keys)
+/// 3. Spending with 2 valid signatures succeeds (Alice + Bob)
 #[tokio::test]
 async fn test_p2pk_multisig_2of3() {
-    let mint = create_test_mint().await.unwrap();
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
 
-    // Generate 3 keypairs
+    // Generate 3 keypairs for the multisig
     let (alice_secret, alice_pubkey) = create_test_keypair();
     let (bob_secret, bob_pubkey) = create_test_keypair();
     let (carol_secret, carol_pubkey) = create_test_keypair();
+
+    // Generate 2 wrong keypairs (not in the multisig set)
+    let (dave_secret, _dave_pubkey) = create_test_keypair();
+    let (eve_secret, _eve_pubkey) = create_test_keypair();
 
     println!("Alice: {}", alice_pubkey);
     println!("Bob: {}", bob_pubkey);
     println!("Carol: {}", carol_pubkey);
 
-    // TODO: Create 2-of-3 multisig spending conditions
-    // TODO: Test with Alice + Bob signatures (should succeed)
-    // TODO: Test with only Alice signature (should fail)
-    // TODO: Test with Alice + Carol signatures (should succeed)
+    // Step 1: Mint regular proofs
+    let input_amount = Amount::from(10);
+    let input_proofs = test_mint.mint_proofs(input_amount).await.unwrap();
+
+    // Step 2: Create 2-of-3 multisig conditions
+    // Primary key: Alice
+    // Additional keys: Bob, Carol
+    // Requires 2 signatures total
+    let conditions = Conditions::new(
+        None, // no locktime
+        Some(vec![bob_pubkey, carol_pubkey]), // additional pubkeys
+        None, // no refund keys
+        Some(2), // require 2 signatures
+        None, // default sig_flag
+        None, // no num_sigs_refund
+    ).unwrap();
+
+    let spending_conditions = SpendingConditions::new_p2pk(alice_pubkey, Some(conditions));
+    println!("Created 2-of-3 multisig spending conditions (Alice, Bob, Carol)");
+
+    // Step 3: Create P2PK blinded messages with multisig conditions
+    let split_amounts = test_mint.split_amount(input_amount).unwrap();
+    let (p2pk_outputs, blinding_factors, secrets) = unzip3(
+        split_amounts
+            .iter()
+            .map(|&amt| test_mint.create_blinded_message(amt, &spending_conditions))
+            .collect(),
+    );
+
+    // Step 4: Swap for P2PK multisig proofs
+    let swap_request = cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    println!("Created P2PK multisig proofs (2-of-3)");
+
+    // Step 5: Construct the P2PK proofs
+    let p2pk_proofs = construct_proofs(
+        swap_response.signatures.clone(),
+        blinding_factors.clone(),
+        secrets.clone(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    ).unwrap();
+
+    // Step 6: Try to spend with only 1 signature (Alice only - should fail)
+    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount).await.unwrap();
+    let mut swap_request_one_sig = cdk_common::nuts::SwapRequest::new(
+        p2pk_proofs.clone(),
+        new_outputs.clone(),
+    );
+
+    // Sign with only Alice
+    for proof in swap_request_one_sig.inputs_mut() {
+        proof.sign_p2pk(alice_secret.clone()).unwrap();
+    }
+
+    let result = mint.process_swap_request(swap_request_one_sig).await;
+    assert!(result.is_err(), "Should fail with only 1 signature (need 2)");
+    println!("✓ Spending with only 1 signature (Alice) failed as expected: {:?}", result.err());
+
+    // Step 7: Try to spend with 2 invalid signatures (Dave + Eve - not in multisig set)
+    let mut swap_request_invalid_sigs = cdk_common::nuts::SwapRequest::new(
+        p2pk_proofs.clone(),
+        new_outputs.clone(),
+    );
+
+    // Sign with Dave and Eve (wrong keys!)
+    for proof in swap_request_invalid_sigs.inputs_mut() {
+        proof.sign_p2pk(dave_secret.clone()).unwrap();
+        proof.sign_p2pk(eve_secret.clone()).unwrap();
+    }
+
+    let result = mint.process_swap_request(swap_request_invalid_sigs).await;
+    assert!(result.is_err(), "Should fail with 2 invalid signatures");
+    println!("✓ Spending with 2 INVALID signatures (Dave + Eve) failed as expected: {:?}", result.err());
+
+    // Step 8: Spend with 2 valid signatures (Alice + Bob - should succeed)
+    let mut swap_request_valid_sigs = cdk_common::nuts::SwapRequest::new(
+        p2pk_proofs.clone(),
+        new_outputs.clone(),
+    );
+
+    // Sign with Alice and Bob
+    for proof in swap_request_valid_sigs.inputs_mut() {
+        proof.sign_p2pk(alice_secret.clone()).unwrap();
+        proof.sign_p2pk(bob_secret.clone()).unwrap();
+    }
+
+    let result = mint.process_swap_request(swap_request_valid_sigs).await;
+    assert!(result.is_ok(), "Should succeed with 2 valid signatures: {:?}", result.err());
+    println!("✓ Spending with 2 VALID signatures (Alice + Bob) succeeded");
 }
 
 /// Test: P2PK with locktime (before expiry)
