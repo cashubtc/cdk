@@ -574,3 +574,75 @@ async fn test_p2pk_sig_all_locktime_before_expiry() {
     assert!(result.is_ok(), "Should succeed - primary key can spend before locktime: {:?}", result.err());
     println!("✓ Spending with primary key (Alice) BEFORE locktime succeeded");
 }
+
+/// Test: P2PK with locktime after expiry, no refund keys (anyone can spend) - SIG_ALL
+///
+/// Verifies that after locktime expires with NO refund keys configured and SIG_ALL,
+/// anyone can spend the proofs without providing any signatures at all.
+#[tokio::test]
+async fn test_p2pk_sig_all_locktime_after_expiry_no_refund_anyone_can_spend() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
+
+    let (_alice_secret, alice_pubkey) = create_test_keypair();
+
+    // Set locktime in the past (already expired)
+    let locktime = unix_time() - 3600;
+
+    println!("Alice (primary): {}", alice_pubkey);
+    println!("Current time: {}", unix_time());
+    println!("Locktime: {} (expired 1 hour ago)", locktime);
+    println!("No refund keys configured - anyone can spend after locktime");
+
+    // Step 1: Mint regular proofs
+    let input_amount = Amount::from(10);
+    let input_proofs = test_mint.mint_proofs(input_amount).await.unwrap();
+
+    // Step 2: Create conditions with Alice as primary, NO refund keys, with SIG_ALL
+    let spending_conditions = SpendingConditions::new_p2pk(
+        alice_pubkey,
+        Some(Conditions {
+            locktime: Some(locktime), // locktime in the past (expired)
+            pubkeys: None, // no additional pubkeys
+            refund_keys: None, // NO refund keys - anyone can spend!
+            num_sigs: None, // default (1)
+            sig_flag: SigFlag::SigAll, // SIG_ALL flag
+            num_sigs_refund: None, // default (1)
+        })
+    );
+    println!("Created P2PK with expired locktime, NO refund keys, and SIG_ALL");
+
+    // Step 3: Create P2PK blinded messages
+    let split_amounts = test_mint.split_amount(input_amount).unwrap();
+    let (p2pk_outputs, blinding_factors, secrets) = unzip3(
+        split_amounts
+            .iter()
+            .map(|&amt| test_mint.create_blinded_message(amt, &spending_conditions))
+            .collect(),
+    );
+
+    // Step 4: Swap for P2PK proofs
+    let swap_request = cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+
+    // Step 5: Construct the P2PK proofs
+    let p2pk_proofs = construct_proofs(
+        swap_response.signatures.clone(),
+        blinding_factors.clone(),
+        secrets.clone(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    ).unwrap();
+
+    // Step 6: Spend WITHOUT any signatures (should succeed - anyone can spend!)
+    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount).await.unwrap();
+    let swap_request_no_sig = cdk_common::nuts::SwapRequest::new(
+        p2pk_proofs.clone(),
+        new_outputs.clone(),
+    );
+
+    // No signatures added at all!
+
+    let result = mint.process_swap_request(swap_request_no_sig).await;
+    assert!(result.is_ok(), "Should succeed - anyone can spend after locktime with no refund keys: {:?}", result.err());
+    println!("✓ Spending WITHOUT any signatures succeeded (anyone can spend)");
+}
