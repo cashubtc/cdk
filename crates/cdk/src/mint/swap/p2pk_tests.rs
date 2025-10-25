@@ -618,14 +618,71 @@ async fn test_p2pk_signed_by_wrong_person() {
 /// Test: Duplicate signatures are rejected
 ///
 /// Verifies that using the same signature twice doesn't count as multiple signers
+/// in a 2-of-2 multisig scenario
 #[tokio::test]
 async fn test_p2pk_duplicate_signatures() {
-    let mint = create_test_mint().await.unwrap();
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
 
     let (alice_secret, alice_pubkey) = create_test_keypair();
-    let (bob_secret, bob_pubkey) = create_test_keypair();
+    let (_bob_secret, bob_pubkey) = create_test_keypair();
 
-    // TODO: Create 2-of-2 multisig (Alice, Bob)
-    // TODO: Sign with Alice twice (instead of Alice + Bob)
-    // TODO: Verify swap fails - duplicate signatures not allowed
+    println!("Alice: {}", alice_pubkey);
+    println!("Bob: {}", bob_pubkey);
+
+    // Step 1: Mint regular proofs
+    let input_amount = Amount::from(10);
+    let input_proofs = test_mint.mint_proofs(input_amount).await.unwrap();
+
+    // Step 2: Create 2-of-2 multisig (Alice and Bob, need both)
+    let spending_conditions = SpendingConditions::new_p2pk(
+        alice_pubkey,
+        Some(Conditions::new(
+            None, // no locktime
+            Some(vec![bob_pubkey]), // Bob is additional pubkey
+            None, // no refund keys
+            Some(2), // require 2 signatures (Alice + Bob)
+            None, // default sig_flag
+            None, // no num_sigs_refund
+        ).unwrap())
+    );
+    println!("Created 2-of-2 multisig (Alice, Bob)");
+
+    // Step 3: Create P2PK blinded messages
+    let split_amounts = test_mint.split_amount(input_amount).unwrap();
+    let (p2pk_outputs, blinding_factors, secrets) = unzip3(
+        split_amounts
+            .iter()
+            .map(|&amt| test_mint.create_blinded_message(amt, &spending_conditions))
+            .collect(),
+    );
+
+    // Step 4: Swap for P2PK proofs
+    let swap_request = cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+
+    // Step 5: Construct the P2PK proofs
+    let p2pk_proofs = construct_proofs(
+        swap_response.signatures.clone(),
+        blinding_factors.clone(),
+        secrets.clone(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    ).unwrap();
+
+    // Step 6: Try to spend with Alice's signature TWICE (should fail - need Alice + Bob, not Alice + Alice)
+    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount).await.unwrap();
+    let mut swap_request_duplicate = cdk_common::nuts::SwapRequest::new(
+        p2pk_proofs.clone(),
+        new_outputs.clone(),
+    );
+
+    // Sign with Alice twice instead of Alice + Bob
+    for proof in swap_request_duplicate.inputs_mut() {
+        proof.sign_p2pk(alice_secret.clone()).unwrap();
+        proof.sign_p2pk(alice_secret.clone()).unwrap(); // Duplicate!
+    }
+
+    let result = mint.process_swap_request(swap_request_duplicate).await;
+    assert!(result.is_err(), "Should fail - duplicate signatures not allowed");
+    println!("✓ Spending with duplicate signatures (Alice + Alice) failed as expected: {:?}", result.err());
 }
