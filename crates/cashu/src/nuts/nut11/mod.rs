@@ -975,11 +975,8 @@ impl SwapRequest {
             .map_err(Error::from)
     }
 
-    /// Sign swap request with SIG_ALL if conditions are met
+    /// Sign swap request with SIG_ALL
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
-        // Verify all inputs have matching conditions
-        self.verify_matching_conditions()?;
-
         // Get message to sign
         let msg = self.sig_all_msg_to_sign();
         let signature = secret_key.sign(msg.as_bytes())?;
@@ -1124,11 +1121,8 @@ impl<Q: std::fmt::Display + Serialize + DeserializeOwned> MeltRequest<Q> {
             .map_err(Error::from)
     }
 
-    /// Sign melt request with SIG_ALL if conditions are met
+    /// Sign melt request with SIG_ALL
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
-        // Verify all inputs have matching conditions
-        self.verify_matching_conditions()?;
-
         // Get message to sign
         let msg = self.sig_all_msg_to_sign();
         let signature = secret_key.sign(msg.as_bytes())?;
