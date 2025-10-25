@@ -58,10 +58,66 @@ pub fn verify_spending_conditions(
 ///
 /// When SIG_ALL is set, all proofs in the transaction must be signed together.
 fn verify_full_sig_all_check(
-    _inputs: &Proofs,
+    inputs: &Proofs,
     _outputs: &[BlindedMessage],
 ) -> Result<(), Error> {
-    // TODO: Implement SIG_ALL verification
+    // Verify all inputs meet SIG_ALL requirements per NUT-11:
+    // All inputs must have: (1) same kind, (2) SIG_ALL flag, (3) same data, (4) same tags
+    verify_all_inputs_match_for_sig_all(inputs)?;
+
+    // TODO: Implement SIG_ALL signature verification
+    Ok(())
+}
+
+/// Verify all inputs meet SIG_ALL requirements per NUT-11
+///
+/// When any input has SIG_ALL, all inputs must have:
+/// 1. Same kind (P2PK or HTLC)
+/// 2. SIG_ALL flag set
+/// 3. Same Secret.data
+/// 4. Same Secret.tags
+fn verify_all_inputs_match_for_sig_all(inputs: &Proofs) -> Result<(), Error> {
+    if inputs.is_empty() {
+        return Err(Error::Internal);
+    }
+
+    // Get first input's properties
+    let first_input = inputs.first().ok_or(Error::Internal)?;
+    let first_secret = cdk_common::nuts::nut10::Secret::try_from(&first_input.secret)?;
+    let first_kind = first_secret.kind();
+    let first_data = first_secret.secret_data().data();
+    let first_tags = first_secret.secret_data().tags();
+
+    // Get first input's conditions to check SIG_ALL flag
+    let first_conditions = cdk_common::nuts::Conditions::try_from(
+        first_tags.cloned().unwrap_or_default()
+    )?;
+
+    // Verify first input has SIG_ALL (it should, since we only call this function when SIG_ALL is detected)
+    if first_conditions.sig_flag != cdk_common::nuts::SigFlag::SigAll {
+        return Err(Error::Internal);
+    }
+
+    // Verify all remaining inputs match
+    for proof in inputs.iter().skip(1) {
+        let secret = cdk_common::nuts::nut10::Secret::try_from(&proof.secret)?;
+
+        // Check kind matches
+        if secret.kind() != first_kind {
+            return Err(Error::InvalidSpendConditions("All inputs must have same kind for SIG_ALL".into()));
+        }
+
+        // Check data matches
+        if secret.secret_data().data() != first_data {
+            return Err(Error::InvalidSpendConditions("All inputs must have same data for SIG_ALL".into()));
+        }
+
+        // Check tags match (this also ensures SIG_ALL flag matches, since sig_flag is part of tags)
+        if secret.secret_data().tags() != first_tags {
+            return Err(Error::InvalidSpendConditions("All inputs must have same tags for SIG_ALL".into()));
+        }
+    }
+
     Ok(())
 }
 

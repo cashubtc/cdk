@@ -925,6 +925,10 @@ impl SwapRequest {
     }
 
     /// Verify all inputs have matching secrets and tags
+    ///
+    /// WARNING: This function may be incomplete. According to NUT-11, when SIG_ALL is present,
+    /// all inputs must have: (1) same kind, (2) SIG_ALL flag, (3) same data, (4) same tags.
+    /// This function only checks (3) and (4), but not (1) and (2).
     fn verify_matching_conditions(&self) -> Result<(), Error> {
         let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
         let first_nut10: Nut10Secret = (&first_input.secret).try_into()?;
@@ -1108,6 +1112,10 @@ impl<Q: std::fmt::Display + Serialize + DeserializeOwned> MeltRequest<Q> {
     }
 
     /// Verify all inputs have matching secrets and tags
+    ///
+    /// WARNING: This function may be incomplete. According to NUT-11, when SIG_ALL is present,
+    /// all inputs must have: (1) same kind, (2) SIG_ALL flag, (3) same data, (4) same tags.
+    /// This function only checks (3) and (4), but not (1) and (2).
     fn verify_matching_conditions(&self) -> Result<(), Error> {
         let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
         let first_nut10: Nut10Secret = (&first_input.secret).try_into()?;
