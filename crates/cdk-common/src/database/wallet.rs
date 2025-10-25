@@ -22,6 +22,9 @@ use crate::wallet::{
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait DatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
+    /// Get mint from storage
+    async fn get_mint(&mut self, mint_url: MintUrl) -> Result<Option<MintInfo>, Error>;
+
     /// Get [`Keys`] from storage
     async fn get_keys(&mut self, id: &Id) -> Result<Option<Keys>, Error>;
 

@@ -23,7 +23,7 @@ impl Wallet {
     /// Total pending balance
     #[instrument(skip(self))]
     pub async fn total_pending_balance(&self) -> Result<Amount, Error> {
-        Ok(self.get_pending_proofs(None).await?.total_amount()?)
+        Ok(self.get_pending_proofs().await?.total_amount()?)
     }
 
     /// Total reserved balance

@@ -54,12 +54,11 @@ impl Wallet {
 
         let mut tx = self.localstore.begin_db_transaction().await?;
 
-        self.refresh_keysets(Some(&mut tx)).await?;
+        self.refresh_keysets_with_tx(&mut tx).await?;
 
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
-            let settings = self
-                .localstore
+            let settings = tx
                 .get_mint(mint_url.clone())
                 .await?
                 .ok_or(Error::IncorrectMint)?
@@ -206,7 +205,7 @@ impl Wallet {
     ) -> Result<Proofs, Error> {
         let mut tx = self.localstore.begin_db_transaction().await?;
 
-        self.refresh_keysets(Some(&mut tx)).await?;
+        self.refresh_keysets_with_tx(&mut tx).await?;
 
         let quote_info = tx
             .get_mint_quote(quote_id)
@@ -230,9 +229,9 @@ impl Wallet {
             tracing::warn!("Attempting to mint with expired quote.");
         }
 
-        let active_keyset_id = self.fetch_active_keyset(Some(&mut tx)).await?.id;
+        let active_keyset_id = self.fetch_active_keyset_with_tx(&mut tx).await?.id;
         let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id, Some(&mut tx))
+            .get_keyset_fees_and_amounts_by_id_with_tx(&mut tx, active_keyset_id)
             .await?;
 
         let premint_secrets = match &spending_conditions {
@@ -286,13 +285,15 @@ impl Wallet {
         let mint_res = self.client.post_mint(request).await?;
 
         let keys = self
-            .load_keyset_keys(active_keyset_id, Some(&mut tx))
+            .load_keyset_keys_with_tx(&mut tx, active_keyset_id)
             .await?;
 
         // Verify the signature DLEQ is valid
         {
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
-                let keys = self.load_keyset_keys(sig.keyset_id, Some(&mut tx)).await?;
+                let keys = self
+                    .load_keyset_keys_with_tx(&mut tx, sig.keyset_id)
+                    .await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
                 match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
                     Ok(_) | Err(nut12::Error::MissingDleqProof) => (),

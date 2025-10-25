@@ -82,7 +82,7 @@ impl Wallet {
 
     /// Get mint info
     pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
-        let info = self.inner.fetch_mint_info(None).await?;
+        let info = self.inner.fetch_mint_info().await?;
         Ok(info.map(Into::into))
     }
 
@@ -273,9 +273,9 @@ impl Wallet {
         for state in states {
             let proofs = match state {
                 ProofState::Unspent => self.inner.get_unspent_proofs().await?,
-                ProofState::Pending => self.inner.get_pending_proofs(None).await?,
+                ProofState::Pending => self.inner.get_pending_proofs().await?,
                 ProofState::Reserved => self.inner.get_reserved_proofs().await?,
-                ProofState::PendingSpent => self.inner.get_pending_spent_proofs(None).await?,
+                ProofState::PendingSpent => self.inner.get_pending_spent_proofs().await?,
                 ProofState::Spent => {
                     // CDK doesn't have a method to get spent proofs directly
                     // They are removed from the database when spent
@@ -297,7 +297,7 @@ impl Wallet {
             proofs.into_iter().map(|p| p.try_into()).collect();
         let cdk_proofs = cdk_proofs?;
 
-        let proof_states = self.inner.check_proofs_spent(cdk_proofs, None).await?;
+        let proof_states = self.inner.check_proofs_spent(cdk_proofs).await?;
         // Convert ProofState to bool (spent = true, unspent = false)
         let spent_bools = proof_states
             .into_iter()
@@ -353,7 +353,7 @@ impl Wallet {
 
     /// Refresh keysets from the mint
     pub async fn refresh_keysets(&self) -> Result<Vec<KeySetInfo>, FfiError> {
-        let keysets = self.inner.refresh_keysets(None).await?;
+        let keysets = self.inner.refresh_keysets().await?;
         Ok(keysets.into_iter().map(Into::into).collect())
     }
 
@@ -369,7 +369,7 @@ impl Wallet {
             .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
         Ok(self
             .inner
-            .get_keyset_fees_and_amounts_by_id(id, None)
+            .get_keyset_fees_and_amounts_by_id(id)
             .await?
             .fee())
     }

@@ -45,11 +45,11 @@ impl Wallet {
     ) -> Result<Amount, Error> {
         let mint_url = &self.mint_url;
 
-        self.refresh_keysets(Some(tx)).await?;
+        self.refresh_keysets_with_tx(tx).await?;
 
-        let active_keyset_id = self.fetch_active_keyset(Some(tx)).await?.id;
+        let active_keyset_id = self.fetch_active_keyset_with_tx(tx).await?.id;
 
-        let keys = self.load_keyset_keys(active_keyset_id, Some(tx)).await?;
+        let keys = self.load_keyset_keys_with_tx(tx, active_keyset_id).await?;
 
         let mut proofs = proofs;
 
@@ -77,7 +77,7 @@ impl Wallet {
         for proof in &mut proofs {
             // Verify that proof DLEQ is valid
             if proof.dleq.is_some() {
-                let keys = self.load_keyset_keys(proof.keyset_id, Some(tx)).await?;
+                let keys = self.load_keyset_keys_with_tx(tx, proof.keyset_id).await?;
                 let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
                 proof.verify_dleq(key)?;
             }

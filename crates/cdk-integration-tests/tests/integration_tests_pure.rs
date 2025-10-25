@@ -99,7 +99,7 @@ async fn test_swap_to_send() {
         HashSet::<_, RandomState>::from_iter(token_proofs.ys().expect("Failed to get ys")),
         HashSet::from_iter(
             wallet_alice
-                .get_pending_spent_proofs(None)
+                .get_pending_spent_proofs()
                 .await
                 .expect("Failed to get pending spent proofs")
                 .ys()
@@ -204,7 +204,7 @@ async fn test_mint_nut06() {
 
     let initial_mint_url = wallet_alice.mint_url.clone();
     let mint_info_before = wallet_alice
-        .fetch_mint_info(None)
+        .fetch_mint_info()
         .await
         .expect("Failed to get mint info")
         .unwrap();
@@ -772,7 +772,7 @@ async fn test_mint_change_with_fee_melt() {
         .await
         .unwrap();
 
-    let mut tx = wallet_alice
+    let tx = wallet_alice
         .localstore
         .begin_db_transaction()
         .await

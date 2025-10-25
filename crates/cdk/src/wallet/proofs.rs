@@ -19,30 +19,41 @@ impl Wallet {
     /// Get unspent proofs for mint
     #[instrument(skip(self))]
     pub async fn get_unspent_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::Unspent]), None, None)
-            .await
+        self.get_proofs_with(Some(vec![State::Unspent]), None).await
     }
 
     /// Get pending [`Proofs`]
+    #[instrument(skip(self))]
+    pub async fn get_pending_proofs(&self) -> Result<Proofs, Error> {
+        self.get_proofs_with(Some(vec![State::Pending]), None).await
+    }
+
+    /// Get pending [`Proofs`] with transaction
     #[instrument(skip(self, tx))]
-    pub async fn get_pending_proofs(&self, tx: Option<&mut Tx<'_, '_>>) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::Pending]), None, tx)
+    pub async fn get_pending_proofs_with_tx(&self, tx: &mut Tx<'_, '_>) -> Result<Proofs, Error> {
+        self.get_proofs_with_tx(tx, Some(vec![State::Pending]), None)
             .await
     }
 
     /// Get reserved [`Proofs`]
     #[instrument(skip(self))]
     pub async fn get_reserved_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::Reserved]), None, None)
+        self.get_proofs_with(Some(vec![State::Reserved]), None)
             .await
     }
 
     /// Get pending spent [`Proofs`]
-    pub async fn get_pending_spent_proofs(
+    pub async fn get_pending_spent_proofs(&self) -> Result<Proofs, Error> {
+        self.get_proofs_with(Some(vec![State::PendingSpent]), None)
+            .await
+    }
+
+    /// Get pending spent [`Proofs`] with transaction
+    pub async fn get_pending_spent_proofs_with_tx(
         &self,
-        tx: Option<&mut Tx<'_, '_>>,
+        tx: &mut Tx<'_, '_>,
     ) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::PendingSpent]), None, tx)
+        self.get_proofs_with_tx(tx, Some(vec![State::PendingSpent]), None)
             .await
     }
 
@@ -51,10 +62,10 @@ impl Wallet {
         &self,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
-        tx: Option<&mut Tx<'_, '_>>,
     ) -> Result<Proofs, Error> {
-        Ok(if let Some(tx) = tx {
-            tx.get_proofs(
+        Ok(self
+            .localstore
+            .get_proofs(
                 Some(self.mint_url.clone()),
                 Some(self.unit.clone()),
                 state,
@@ -63,20 +74,27 @@ impl Wallet {
             .await?
             .into_iter()
             .map(|p| p.proof)
-            .collect()
-        } else {
-            self.localstore
-                .get_proofs(
-                    Some(self.mint_url.clone()),
-                    Some(self.unit.clone()),
-                    state,
-                    spending_conditions,
-                )
-                .await?
-                .into_iter()
-                .map(|p| p.proof)
-                .collect()
-        })
+            .collect())
+    }
+
+    /// Get this wallet's [Proofs] that match the args with transaction
+    pub async fn get_proofs_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+        state: Option<Vec<State>>,
+        spending_conditions: Option<Vec<SpendingConditions>>,
+    ) -> Result<Proofs, Error> {
+        Ok(tx
+            .get_proofs(
+                Some(self.mint_url.clone()),
+                Some(self.unit.clone()),
+                state,
+                spending_conditions,
+            )
+            .await?
+            .into_iter()
+            .map(|p| p.proof)
+            .collect())
     }
 
     /// Return proofs to unspent allowing them to be selected and spent
@@ -138,11 +156,20 @@ impl Wallet {
     }
 
     /// NUT-07 Check the state of a [`Proof`] with the mint
-    #[instrument(skip(self, proofs, tx))]
-    pub async fn check_proofs_spent(
+    #[instrument(skip(self, proofs))]
+    pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Error> {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let result = self.check_proofs_spent_with_tx(&mut tx, proofs).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// NUT-07 Check the state of a [`Proof`] with the mint with transaction
+    #[instrument(skip(self, tx, proofs))]
+    pub async fn check_proofs_spent_with_tx(
         &self,
+        tx: &mut Tx<'_, '_>,
         proofs: Proofs,
-        tx: Option<&mut Tx<'_, '_>>,
     ) -> Result<Vec<ProofState>, Error> {
         let spendable = self
             .client
@@ -158,13 +185,7 @@ impl Wallet {
             })
             .collect();
 
-        if let Some(tx) = tx {
-            tx.update_proofs(vec![], spent_ys).await?;
-        } else {
-            let mut tx = self.localstore.begin_db_transaction().await?;
-            tx.update_proofs(vec![], spent_ys).await?;
-            tx.commit().await?;
-        }
+        tx.update_proofs(vec![], spent_ys).await?;
 
         Ok(spendable.states)
     }
@@ -190,9 +211,9 @@ impl Wallet {
         }
 
         let states = self
-            .check_proofs_spent(
+            .check_proofs_spent_with_tx(
+                &mut tx,
                 proofs.clone().into_iter().map(|p| p.proof).collect(),
-                Some(&mut tx),
             )
             .await?;
 

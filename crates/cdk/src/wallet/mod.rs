@@ -206,35 +206,57 @@ impl Wallet {
 
     /// Fee required for proof set
     #[instrument(skip_all)]
-    pub async fn get_proofs_fee(
+    pub async fn get_proofs_fee(&self, proofs: &Proofs) -> Result<Amount, Error> {
+        let proofs_per_keyset = proofs.count_by_keyset();
+        self.get_proofs_fee_by_count(proofs_per_keyset).await
+    }
+
+    /// Fee required for proof set with transaction
+    #[instrument(skip_all)]
+    pub async fn get_proofs_fee_with_tx(
         &self,
-        tx: Option<&mut Tx<'_, '_>>,
+        tx: &mut Tx<'_, '_>,
         proofs: &Proofs,
     ) -> Result<Amount, Error> {
         let proofs_per_keyset = proofs.count_by_keyset();
-        self.get_proofs_fee_by_count(tx, proofs_per_keyset).await
+        self.get_proofs_fee_by_count_with_tx(tx, proofs_per_keyset)
+            .await
     }
 
     /// Fee required for proof set by count
     pub async fn get_proofs_fee_by_count(
         &self,
-        tx: Option<&mut Tx<'_, '_>>,
         proofs_per_keyset: HashMap<Id, u64>,
     ) -> Result<Amount, Error> {
         let mut fee_per_keyset = HashMap::new();
-        let mut tx = tx;
 
         for keyset_id in proofs_per_keyset.keys() {
-            let mint_keyset_info = if let Some(tx) = tx.as_mut() {
-                tx.get_keyset_by_id(keyset_id)
-                    .await?
-                    .ok_or(Error::UnknownKeySet)?
-            } else {
-                self.localstore
-                    .get_keyset_by_id(keyset_id)
-                    .await?
-                    .ok_or(Error::UnknownKeySet)?
-            };
+            let mint_keyset_info = self
+                .localstore
+                .get_keyset_by_id(keyset_id)
+                .await?
+                .ok_or(Error::UnknownKeySet)?;
+            fee_per_keyset.insert(*keyset_id, mint_keyset_info.input_fee_ppk);
+        }
+
+        let fee = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
+
+        Ok(fee)
+    }
+
+    /// Fee required for proof set by count with transaction
+    pub async fn get_proofs_fee_by_count_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+        proofs_per_keyset: HashMap<Id, u64>,
+    ) -> Result<Amount, Error> {
+        let mut fee_per_keyset = HashMap::new();
+
+        for keyset_id in proofs_per_keyset.keys() {
+            let mint_keyset_info = tx
+                .get_keyset_by_id(keyset_id)
+                .await?
+                .ok_or(Error::UnknownKeySet)?;
             fee_per_keyset.insert(*keyset_id, mint_keyset_info.input_fee_ppk);
         }
 
@@ -275,10 +297,19 @@ impl Wallet {
     }
 
     /// Query mint for current mint information
+    #[instrument(skip(self))]
+    pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, Error> {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let result = self.fetch_mint_info_with_tx(&mut tx).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Query mint for current mint information with transaction
     #[instrument(skip(self, tx))]
-    pub async fn fetch_mint_info(
+    pub async fn fetch_mint_info_with_tx(
         &self,
-        tx: Option<&mut Tx<'_, '_>>,
+        tx: &mut Tx<'_, '_>,
     ) -> Result<Option<MintInfo>, Error> {
         match self.client.get_mint_info().await {
             Ok(mint_info) => {
@@ -332,15 +363,8 @@ impl Wallet {
                     }
                 }
 
-                if let Some(tx) = tx {
-                    tx.add_mint(self.mint_url.clone(), Some(mint_info.clone()))
-                        .await?;
-                } else {
-                    let mut tx = self.localstore.begin_db_transaction().await?;
-                    tx.add_mint(self.mint_url.clone(), Some(mint_info.clone()))
-                        .await?;
-                    tx.commit().await?;
-                };
+                tx.add_mint(self.mint_url.clone(), Some(mint_info.clone()))
+                    .await?;
 
                 tracing::trace!("Mint info updated for {}", self.mint_url);
 
@@ -354,14 +378,51 @@ impl Wallet {
     }
 
     /// Get amounts needed to refill proof state
-    #[instrument(skip(self, tx))]
+    #[instrument(skip(self))]
     pub async fn amounts_needed_for_state_target(
         &self,
-        tx: Option<&mut Tx<'_, '_>>,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Vec<Amount>, Error> {
         let unspent_proofs = self
-            .get_proofs_with(Some(vec![State::Unspent]), None, tx)
+            .get_proofs_with(Some(vec![State::Unspent]), None)
+            .await?;
+
+        let amounts_count: HashMap<u64, u64> =
+            unspent_proofs
+                .iter()
+                .fold(HashMap::new(), |mut acc, proof| {
+                    let amount = proof.amount;
+                    let counter = acc.entry(u64::from(amount)).or_insert(0);
+                    *counter += 1;
+                    acc
+                });
+
+        let needed_amounts =
+            fee_and_amounts
+                .amounts()
+                .iter()
+                .fold(Vec::new(), |mut acc, amount| {
+                    let count_needed = (self.target_proof_count as u64)
+                        .saturating_sub(*amounts_count.get(amount).unwrap_or(&0));
+
+                    for _i in 0..count_needed {
+                        acc.push(Amount::from(*amount));
+                    }
+
+                    acc
+                });
+        Ok(needed_amounts)
+    }
+
+    /// Get amounts needed to refill proof state with transaction
+    #[instrument(skip(self, tx))]
+    pub async fn amounts_needed_for_state_target_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+        fee_and_amounts: &FeeAndAmounts,
+    ) -> Result<Vec<Amount>, Error> {
+        let unspent_proofs = self
+            .get_proofs_with_tx(tx, Some(vec![State::Unspent]), None)
             .await?;
 
         let amounts_count: HashMap<u64, u64> =
@@ -395,12 +456,12 @@ impl Wallet {
     #[instrument(skip(self, tx))]
     async fn determine_split_target_values(
         &self,
-        tx: Option<&mut Tx<'_, '_>>,
+        tx: &mut Tx<'_, '_>,
         change_amount: Amount,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<SplitTarget, Error> {
         let mut amounts_needed_refill = self
-            .amounts_needed_for_state_target(tx, fee_and_amounts)
+            .amounts_needed_for_state_target_with_tx(tx, fee_and_amounts)
             .await?;
 
         amounts_needed_refill.sort();
@@ -427,7 +488,7 @@ impl Wallet {
             .await?
             .is_none()
         {
-            self.fetch_mint_info(None).await?;
+            self.fetch_mint_info().await?;
         }
 
         let keysets = self.load_mint_keysets().await?;
@@ -436,7 +497,7 @@ impl Wallet {
 
         for keyset in keysets {
             let mut tx = self.localstore.begin_db_transaction().await?;
-            let keys = self.load_keyset_keys(keyset.id, Some(&mut tx)).await?;
+            let keys = self.load_keyset_keys_with_tx(&mut tx, keyset.id).await?;
             let mut empty_batch = 0;
             let mut start_counter = 0;
 
@@ -491,7 +552,7 @@ impl Wallet {
                     .await?;
 
                 let states = self
-                    .check_proofs_spent(proofs.clone(), Some(&mut tx))
+                    .check_proofs_spent_with_tx(&mut tx, proofs.clone())
                     .await?;
 
                 let unspent_proofs: Vec<Proof> = proofs
@@ -686,7 +747,7 @@ impl Wallet {
             let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
                 Some(keys) => keys.amount_key(proof.amount),
                 None => {
-                    let keys = self.load_keyset_keys(proof.keyset_id, None).await?;
+                    let keys = self.load_keyset_keys(proof.keyset_id).await?;
 
                     let key = keys.amount_key(proof.amount);
                     keys_cache.insert(proof.keyset_id, keys);

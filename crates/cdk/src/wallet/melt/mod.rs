@@ -59,7 +59,7 @@ impl Wallet {
                 response.state
             );
             if response.state == MeltQuoteState::Paid {
-                let pending_proofs = self.get_pending_proofs(Some(tx)).await?;
+                let pending_proofs = self.get_pending_proofs_with_tx(tx).await?;
                 let proofs_total = pending_proofs.total_amount().unwrap_or_default();
                 let change_total = response.change_amount().unwrap_or_default();
 

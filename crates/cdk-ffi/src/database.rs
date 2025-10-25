@@ -459,6 +459,20 @@ impl<'a> cdk::cdk_database::WalletDatabaseTransaction<'a, cdk::cdk_database::Err
             .await
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
+
+    async fn get_mint(
+        &mut self,
+        mint_url: cdk::mint_url::MintUrl,
+    ) -> Result<Option<cdk::nuts::MintInfo>, cdk::cdk_database::Error> {
+        let ffi_mint_url = mint_url.into();
+        let result = self
+            .ffi_db
+            .get_mint(ffi_mint_url)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+
+        Ok(result.map(Into::into))
+    }
 }
 
 #[async_trait::async_trait]

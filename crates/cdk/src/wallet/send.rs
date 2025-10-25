@@ -33,20 +33,19 @@ impl Wallet {
 
         // If online send check mint for current keysets fees
         if opts.send_kind.is_online() {
-            if let Err(e) = self.refresh_keysets(None).await {
+            if let Err(e) = self.refresh_keysets().await {
                 tracing::error!("Error refreshing keysets: {:?}. Using stored keysets", e);
             }
         }
 
         // Get keyset fees from localstore
-        let keyset_fees = self.get_keyset_fees_and_amounts(None).await?;
+        let keyset_fees = self.get_keyset_fees_and_amounts().await?;
 
         // Get available proofs matching conditions
         let mut available_proofs = self
             .get_proofs_with(
                 Some(vec![State::Unspent]),
                 opts.conditions.clone().map(|c| vec![c]),
-                None,
             )
             .await?;
 
@@ -94,7 +93,7 @@ impl Wallet {
 
         // Check if selected proofs are exact
         let send_fee = if opts.include_fee {
-            self.get_proofs_fee(None, &selected_proofs).await?
+            self.get_proofs_fee(&selected_proofs).await?
         } else {
             Amount::ZERO
         };
@@ -133,14 +132,13 @@ impl Wallet {
         // Split amount with fee if necessary
         let active_keyset_id = self.get_active_keyset().await?.id;
         let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id, None)
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
         let (send_amounts, send_fee) = if opts.include_fee {
             tracing::debug!("Keyset fee per proof: {:?}", fee_and_amounts.fee());
             let send_split = amount.split_with_fee(&fee_and_amounts)?;
             let send_fee = self
                 .get_proofs_fee_by_count(
-                    None,
                     vec![(active_keyset_id, send_split.len() as u64)]
                         .into_iter()
                         .collect(),
@@ -190,7 +188,9 @@ impl Wallet {
         }
 
         // Calculate swap fee
-        let swap_fee = self.get_proofs_fee(Some(&mut tx), &proofs_to_swap).await?;
+        let swap_fee = self
+            .get_proofs_fee_with_tx(&mut tx, &proofs_to_swap)
+            .await?;
 
         tx.commit().await?;
 
@@ -271,13 +271,13 @@ impl PreparedSend {
         let mut tx = self.wallet.localstore.begin_db_transaction().await?;
 
         // Get active keyset ID
-        let active_keyset_id = self.wallet.fetch_active_keyset(Some(&mut tx)).await?.id;
+        let active_keyset_id = self.wallet.fetch_active_keyset_with_tx(&mut tx).await?.id;
         tracing::debug!("Active keyset ID: {:?}", active_keyset_id);
 
         // Get keyset fees
         let keyset_fee_ppk = self
             .wallet
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id, Some(&mut tx))
+            .get_keyset_fees_and_amounts_by_id_with_tx(&mut tx, active_keyset_id)
             .await?;
         tracing::debug!("Keyset fees: {:?}", keyset_fee_ppk);
 
@@ -317,10 +317,10 @@ impl PreparedSend {
         // Check if proofs are reserved or unspent
         let sendable_proof_ys = self
             .wallet
-            .get_proofs_with(
+            .get_proofs_with_tx(
+                &mut tx,
                 Some(vec![State::Reserved, State::Unspent]),
                 self.options.conditions.clone().map(|c| vec![c]),
-                Some(&mut tx),
             )
             .await?
             .ys()?;

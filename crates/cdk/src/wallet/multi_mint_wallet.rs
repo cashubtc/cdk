@@ -1689,7 +1689,7 @@ impl MultiMintWallet {
             mint_url: mint_url.to_string(),
         })?;
 
-        wallet.fetch_mint_info(None).await
+        wallet.fetch_mint_info().await
     }
 }
 

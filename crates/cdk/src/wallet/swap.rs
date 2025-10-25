@@ -21,7 +21,7 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<Option<Proofs>, Error> {
-        self.refresh_keysets(Some(tx)).await?;
+        self.refresh_keysets_with_tx(tx).await?;
 
         tracing::info!("Swapping");
         let mint_url = &self.mint_url;
@@ -42,7 +42,7 @@ impl Wallet {
 
         let active_keyset_id = pre_swap.pre_mint_secrets.keyset_id;
         let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id, Some(tx))
+            .get_keyset_fees_and_amounts_by_id_with_tx(tx, active_keyset_id)
             .await?;
 
         let active_keys = tx
@@ -217,13 +217,13 @@ impl Wallet {
         ensure_cdk!(proofs_sum >= amount, Error::InsufficientFunds);
 
         let active_keyset_ids = self
-            .refresh_keysets(Some(&mut tx))
+            .refresh_keysets_with_tx(&mut tx)
             .await?
             .active()
             .map(|k| k.id)
             .collect();
 
-        let keyset_fees = self.get_keyset_fees_and_amounts(Some(&mut tx)).await?;
+        let keyset_fees = self.get_keyset_fees_and_amounts_with_tx(&mut tx).await?;
         let proofs = Wallet::select_proofs(
             amount,
             available_proofs,
@@ -285,7 +285,7 @@ impl Wallet {
         include_fees: bool,
     ) -> Result<PreSwap, Error> {
         tracing::info!("Creating swap");
-        let active_keyset_id = self.fetch_active_keyset(Some(tx)).await?.id;
+        let active_keyset_id = self.fetch_active_keyset_with_tx(tx).await?.id;
 
         // Desired amount is either amount passed or value of all proof
         let proofs_total = proofs.total_amount()?;
@@ -293,7 +293,7 @@ impl Wallet {
         let ys: Vec<PublicKey> = proofs.ys()?;
         tx.update_proofs_state(ys, State::Reserved).await?;
 
-        let fee = self.get_proofs_fee(Some(tx), &proofs).await?;
+        let fee = self.get_proofs_fee_with_tx(tx, &proofs).await?;
 
         let total_to_subtract = amount
             .unwrap_or(Amount::ZERO)
@@ -305,7 +305,7 @@ impl Wallet {
             .ok_or(Error::InsufficientFunds)?;
 
         let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id, Some(tx))
+            .get_keyset_fees_and_amounts_by_id_with_tx(tx, active_keyset_id)
             .await?;
 
         let (send_amount, change_amount) = match include_fees {
@@ -336,7 +336,7 @@ impl Wallet {
         // else use state refill
         let change_split_target = match amount_split_target {
             SplitTarget::None => {
-                self.determine_split_target_values(Some(tx), change_amount, &fee_and_amounts)
+                self.determine_split_target_values(tx, change_amount, &fee_and_amounts)
                     .await?
             }
             s => s,

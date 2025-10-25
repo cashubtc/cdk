@@ -14,7 +14,7 @@ pub async fn check_pending(multi_mint_wallet: &MultiMintWallet) -> Result<()> {
         // Get all pending proofs
         //
 
-        let pending_proofs = wallet.get_pending_proofs(Some(&mut tx)).await?;
+        let pending_proofs = wallet.get_pending_proofs_with_tx(&mut tx).await?;
         if pending_proofs.is_empty() {
             println!("No pending proofs found");
             continue;

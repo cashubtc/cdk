@@ -44,7 +44,7 @@ impl Wallet {
         let mut db_tx = self.localstore.begin_db_transaction().await?;
 
         let pending_spent_proofs = self
-            .get_pending_spent_proofs(Some(&mut db_tx))
+            .get_pending_spent_proofs_with_tx(&mut db_tx)
             .await?
             .into_iter()
             .filter(|p| match p.y() {

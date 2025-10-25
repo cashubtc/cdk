@@ -49,7 +49,7 @@ impl Wallet {
         request: String,
         options: Option<MeltOptions>,
     ) -> Result<MeltQuote, Error> {
-        self.refresh_keysets(None).await?;
+        self.refresh_keysets().await?;
 
         let invoice = Bolt11Invoice::from_str(&request)?;
 
@@ -163,7 +163,7 @@ impl Wallet {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let active_keyset_id = self.fetch_active_keyset(Some(&mut tx)).await?.id;
+        let active_keyset_id = self.fetch_active_keyset_with_tx(&mut tx).await?.id;
 
         let active_keys = tx
             .get_keys(&active_keyset_id)
@@ -400,16 +400,16 @@ impl Wallet {
         let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
 
         let available_proofs = self
-            .get_proofs_with(Some(vec![State::Unspent]), None, Some(&mut tx))
+            .get_proofs_with_tx(&mut tx, Some(vec![State::Unspent]), None)
             .await?;
 
         let active_keyset_ids = self
-            .refresh_keysets(Some(&mut tx))
+            .refresh_keysets_with_tx(&mut tx)
             .await?
             .into_iter()
             .map(|k| k.id)
             .collect();
-        let keyset_fees = self.get_keyset_fees_and_amounts(Some(&mut tx)).await?;
+        let keyset_fees = self.get_keyset_fees_and_amounts_with_tx(&mut tx).await?;
         let (mut input_proofs, mut exchange) = Wallet::select_exact_proofs(
             inputs_needed_amount,
             available_proofs,

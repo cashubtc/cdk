@@ -152,6 +152,35 @@ impl<'a, RM> WalletDatabaseTransaction<'a, Error> for SQLWalletTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
+    #[instrument(skip(self))]
+    async fn get_mint(&mut self, mint_url: MintUrl) -> Result<Option<MintInfo>, Error> {
+        Ok(query(
+            r#"
+            SELECT
+                name,
+                pubkey,
+                version,
+                description,
+                description_long,
+                contact,
+                nuts,
+                icon_url,
+                motd,
+                urls,
+                mint_time,
+                tos_url
+            FROM
+                mint
+            WHERE mint_url = :mint_url
+            "#,
+        )?
+        .bind("mint_url", mint_url.to_string())
+        .fetch_one(&self.inner)
+        .await?
+        .map(sql_row_to_mint_info)
+        .transpose()?)
+    }
+
     /// Read the key from a transaction but it will not lock it
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keys(&mut self, keyset_id: &Id) -> Result<Option<Keys>, Error> {
