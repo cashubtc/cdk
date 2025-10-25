@@ -56,7 +56,7 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.86.0".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.90.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
           extensions = [
             "rustfmt"
@@ -172,6 +172,8 @@
             msrv = pkgs.mkShell (
               {
                 shellHook = "
+                  cargo update
+                  cargo update home --precise 0.5.11
               ${_shellHook}
               ";
                 buildInputs = buildInputs ++ [ msrv_toolchain ];
