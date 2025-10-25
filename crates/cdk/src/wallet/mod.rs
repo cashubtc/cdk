@@ -67,8 +67,6 @@ pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::AuthHttpClient;
 pub use mint_connector::{HttpClient, MintConnector};
 pub use multi_mint_wallet::{MultiMintReceiveOptions, MultiMintSendOptions, MultiMintWallet};
-#[cfg(feature = "npubcash")]
-pub use npubcash::NpubCashWallet;
 pub use receive::ReceiveOptions;
 pub use send::{PreparedSend, SendMemo, SendOptions};
 pub use types::{MeltQuote, MintQuote, SendKind};
@@ -93,7 +91,7 @@ pub struct Wallet {
     #[cfg(feature = "auth")]
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
     #[cfg(feature = "npubcash")]
-    npubcash_wallet: Arc<RwLock<Option<NpubCashWallet>>>,
+    npubcash_client: Arc<RwLock<Option<Arc<cdk_npubcash::NpubCashClient>>>>,
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,

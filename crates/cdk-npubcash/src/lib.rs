@@ -29,7 +29,7 @@
 //!     let client = NpubCashClient::new(base_url, auth_provider);
 //!
 //!     // Fetch all quotes
-//!     let quotes = client.get_all_quotes().await?;
+//!     let quotes = client.get_quotes(None).await?;
 //!     println!("Found {} quotes", quotes.len());
 //!
 //!     // Poll for new quotes every 5 seconds
@@ -43,10 +43,7 @@
 //!         .await?;
 //!
 //!     // Update mint URL setting
-//!     client
-//!         .settings
-//!         .set_mint_url("https://example-mint.tld")
-//!         .await?;
+//!     client.set_mint_url("https://example-mint.tld").await?;
 //!
 //!     Ok(())
 //! }
@@ -70,10 +67,10 @@
 //! # let auth_provider = Arc::new(JwtAuthProvider::new(base_url.clone(), keys));
 //! # let client = NpubCashClient::new(base_url, auth_provider);
 //! // Fetch all quotes
-//! let all_quotes = client.get_all_quotes().await?;
+//! let all_quotes = client.get_quotes(None).await?;
 //!
 //! // Fetch quotes since a specific timestamp
-//! let recent_quotes = client.get_quotes_since(1234567890).await?;
+//! let recent_quotes = client.get_quotes(Some(1234567890)).await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -132,14 +129,35 @@
 pub mod auth;
 pub mod client;
 pub mod error;
-pub mod settings;
 pub mod types;
 
 // Re-export main types for convenient access
-pub use auth::{AuthProvider, JwtAuthProvider};
-pub use client::{NpubCashClient, PollingHandle};
+pub use auth::JwtAuthProvider;
+pub use client::NpubCashClient;
 pub use error::{Error, Result};
-pub use settings::SettingsManager;
 pub use types::{
     Metadata, Nip98Data, Nip98Response, Quote, QuotesData, QuotesResponse, UserData, UserResponse,
 };
+
+/// Extract authentication URL (scheme + host + path, no query params)
+///
+/// # Arguments
+///
+/// * `url` - The full URL to parse
+///
+/// # Errors
+///
+/// Returns an error if the URL is invalid or missing required components
+pub(crate) fn extract_auth_url(url: &str) -> Result<String> {
+    let parsed_url = url::Url::parse(url)?;
+    let host = parsed_url
+        .host_str()
+        .ok_or_else(|| Error::Custom("Invalid URL: missing host".to_string()))?;
+
+    Ok(format!(
+        "{}://{}{}",
+        parsed_url.scheme(),
+        host,
+        parsed_url.path()
+    ))
+}

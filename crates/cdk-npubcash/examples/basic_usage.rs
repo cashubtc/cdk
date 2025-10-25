@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = NpubCashClient::new(base_url, auth_provider);
 
     println!("\n=== Fetching all quotes ===");
-    match client.get_all_quotes().await {
+    match client.get_quotes(None).await {
         Ok(quotes) => {
             println!("Successfully fetched {} quotes", quotes.len());
             if let Some(first) = quotes.first() {
@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         - 3600;
 
     println!("\n=== Fetching quotes from last hour ===");
-    match client.get_quotes_since(one_hour_ago).await {
+    match client.get_quotes(Some(one_hour_ago)).await {
         Ok(quotes) => {
             println!("Found {} quotes in the last hour", quotes.len());
         }

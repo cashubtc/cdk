@@ -5,41 +5,12 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use async_trait::async_trait;
 use base64::Engine;
 use nostr_sdk::{EventBuilder, Keys, Kind, Tag};
 use tokio::sync::RwLock;
 
 use crate::types::Nip98Response;
 use crate::{Error, Result};
-
-/// Trait for providing authentication tokens
-#[async_trait]
-pub trait AuthProvider: Send + Sync + std::fmt::Debug {
-    /// Get a Bearer token for authenticated requests
-    ///
-    /// # Arguments
-    ///
-    /// * `url` - The URL being accessed
-    /// * `method` - The HTTP method being used
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if token generation or fetching fails
-    async fn get_auth_token(&self, url: &str, method: &str) -> Result<String>;
-
-    /// Get a NIP-98 Nostr token
-    ///
-    /// # Arguments
-    ///
-    /// * `url` - The URL being accessed
-    /// * `method` - The HTTP method being used
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if token signing fails
-    async fn get_nostr_token(&self, url: &str, method: &str) -> Result<String>;
-}
 
 #[derive(Debug)]
 struct CachedToken {
@@ -205,16 +176,19 @@ impl JwtAuthProvider {
         tracing::debug!("Base64 encoded token length: {}", encoded.len());
         Ok(encoded)
     }
-}
 
-#[async_trait]
-impl AuthProvider for JwtAuthProvider {
-    async fn get_auth_token(&self, _url: &str, _method: &str) -> Result<String> {
+    /// Get a Bearer token for authenticated requests
+    ///
+    /// # Arguments
+    ///
+    /// * `_url` - The URL being accessed (unused, kept for future extensibility)
+    /// * `_method` - The HTTP method being used (unused, kept for future extensibility)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if token generation or fetching fails
+    pub async fn get_auth_token(&self, _url: &str, _method: &str) -> Result<String> {
         let token = self.ensure_cached_token().await?;
         Ok(format!("Bearer {token}"))
-    }
-
-    async fn get_nostr_token(&self, url: &str, method: &str) -> Result<String> {
-        self.create_nip98_token(url, method)
     }
 }

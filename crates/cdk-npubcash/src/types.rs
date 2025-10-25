@@ -9,6 +9,9 @@ use cdk_common::wallet::MintQuote;
 use cdk_common::Amount;
 use serde::{Deserialize, Serialize};
 
+/// Default mint URL used when quote doesn't specify one
+const DEFAULT_MINT_URL: &str = "http://localhost:3338";
+
 /// A quote from the NpubCash service
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,8 +118,7 @@ impl From<Quote> for MintQuote {
             .mint_url
             .and_then(|url| MintUrl::from_str(&url).ok())
             .unwrap_or_else(|| {
-                MintUrl::from_str("http://localhost:3338")
-                    .expect("default mint URL should be valid")
+                MintUrl::from_str(DEFAULT_MINT_URL).expect("default mint URL should be valid")
             });
 
         let unit = CurrencyUnit::from_str(&quote.unit).unwrap_or(CurrencyUnit::Sat);

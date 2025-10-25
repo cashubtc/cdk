@@ -2,9 +2,19 @@ use anyhow::{bail, Result};
 use cdk::amount::SplitTarget;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::MintQuoteState;
-use cdk::wallet::MultiMintWallet;
+use cdk::wallet::{MultiMintWallet, Wallet};
 use clap::Subcommand;
 use nostr_sdk::ToBech32;
+
+/// Helper function to get the first wallet from MultiMintWallet
+async fn get_first_wallet(multi_mint_wallet: &MultiMintWallet) -> Result<Wallet> {
+    multi_mint_wallet
+        .get_wallets()
+        .await
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No wallet available. Please add a mint first."))
+}
 
 #[derive(Subcommand)]
 pub enum NpubCashSubCommand {
@@ -58,10 +68,7 @@ pub async fn npubcash(
 async fn sync(multi_mint_wallet: &MultiMintWallet, base_url: &str) -> Result<()> {
     println!("Syncing quotes from NpubCash...");
 
-    let wallets = multi_mint_wallet.get_wallets().await;
-    let wallet = wallets
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("No wallet available. Please add a mint first."))?;
+    let wallet = get_first_wallet(multi_mint_wallet).await?;
 
     // Enable NpubCash if not already enabled
     wallet.enable_npubcash(base_url.to_string()).await?;
@@ -78,10 +85,7 @@ async fn list(
     since: Option<u64>,
     format: &str,
 ) -> Result<()> {
-    let wallets = multi_mint_wallet.get_wallets().await;
-    let wallet = wallets
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("No wallet available. Please add a mint first."))?;
+    let wallet = get_first_wallet(multi_mint_wallet).await?;
 
     // Enable NpubCash if not already enabled
     wallet.enable_npubcash(base_url.to_string()).await?;
@@ -127,10 +131,7 @@ async fn subscribe(
 ) -> Result<()> {
     println!("=== NpubCash Quote Subscription ===\n");
 
-    let wallets = multi_mint_wallet.get_wallets().await;
-    let wallet = wallets
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("No wallet available. Please add a mint first."))?;
+    let wallet = get_first_wallet(multi_mint_wallet).await?;
 
     // Enable NpubCash if not already enabled
     wallet.enable_npubcash(base_url.to_string()).await?;
@@ -157,8 +158,9 @@ async fn subscribe(
     // Clone wallet for use in callback
     let wallet_clone = wallet.clone();
 
-    let _handle = wallet
-        .subscribe_npubcash_updates(move |quotes| {
+    // Run polling and wait for Ctrl+C
+    tokio::select! {
+        result = wallet.subscribe_npubcash_updates(move |quotes| {
             let wallet = wallet_clone.clone();
 
             println!("Received {} new quote(s)", quotes.len());
@@ -178,25 +180,29 @@ async fn subscribe(
                     let quote_id = quote.id.clone();
 
                     tokio::spawn(async move {
-                        match wallet_mint
+                        let proofs = match wallet_mint
                             .mint(&quote_id, SplitTarget::default(), None)
                             .await
                         {
-                            Ok(proofs) => match proofs.total_amount() {
-                                Ok(amount) => {
-                                    println!("     Successfully minted {} sats!", amount);
-
-                                    if let Ok(balance) = wallet_mint.total_balance().await {
-                                        println!("     Wallet balance: {} sats", balance);
-                                    }
-                                }
-                                Err(e) => {
-                                    println!("     Failed to calculate amount: {}", e);
-                                }
-                            },
+                            Ok(proofs) => proofs,
                             Err(e) => {
                                 println!("     Failed to mint: {}", e);
+                                return;
                             }
+                        };
+
+                        let amount = match proofs.total_amount() {
+                            Ok(amt) => amt,
+                            Err(e) => {
+                                println!("     Failed to calculate amount: {}", e);
+                                return;
+                            }
+                        };
+
+                        println!("     Successfully minted {} sats!", amount);
+
+                        if let Ok(balance) = wallet_mint.total_balance().await {
+                            println!("     Wallet balance: {} sats", balance);
                         }
                     });
                 } else {
@@ -204,12 +210,14 @@ async fn subscribe(
                 }
             }
             println!();
-        })
-        .await?;
-
-    // Wait for Ctrl+C
-    tokio::signal::ctrl_c().await?;
-    println!("\nStopping quote polling...");
+        }) => {
+            // Polling returned with an error
+            result?;
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("\nStopping quote polling...");
+        }
+    }
 
     // Show final wallet balance
     let balance = wallet.total_balance().await?;
@@ -221,10 +229,7 @@ async fn subscribe(
 async fn set_mint(multi_mint_wallet: &MultiMintWallet, base_url: &str, url: &str) -> Result<()> {
     println!("Setting NpubCash mint URL to: {}", url);
 
-    let wallets = multi_mint_wallet.get_wallets().await;
-    let wallet = wallets
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("No wallet available. Please add a mint first."))?;
+    let wallet = get_first_wallet(multi_mint_wallet).await?;
 
     // Enable NpubCash if not already enabled
     wallet.enable_npubcash(base_url.to_string()).await?;
@@ -239,7 +244,8 @@ async fn set_mint(multi_mint_wallet: &MultiMintWallet, base_url: &str, url: &str
         Err(e) => {
             let error_msg = e.to_string();
 
-            if error_msg.contains("404") || error_msg.contains("API error") {
+            // Check if the error is a 404 (endpoint not supported)
+            if error_msg.contains("API error (404)") {
                 println!("⚠️  Warning: NpubCash server does not support setting mint URL");
                 println!("\nThis means:");
                 println!(
@@ -260,38 +266,41 @@ async fn set_mint(multi_mint_wallet: &MultiMintWallet, base_url: &str, url: &str
 }
 
 async fn show_keys(multi_mint_wallet: &MultiMintWallet) -> Result<()> {
-    let wallets = multi_mint_wallet.get_wallets().await;
-    let wallet = wallets
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("No wallet available. Please add a mint first."))?;
+    let wallet = get_first_wallet(multi_mint_wallet).await?;
 
     let keys = wallet.get_npubcash_keys()?;
+    let npub = keys.public_key().to_bech32()?;
+    let nsec = keys.secret_key().to_bech32()?;
 
-    println!("\n╔═══════════════════════════════════════════════════════════════════════════╗");
-    println!("║                         NpubCash Nostr Keys                               ║");
-    println!("╠═══════════════════════════════════════════════════════════════════════════╣");
-    println!("║                                                                           ║");
-    println!("║  These keys are automatically derived from your wallet seed and are      ║");
-    println!("║  used for authenticating with the NpubCash service.                      ║");
-    println!("║                                                                           ║");
-    println!("╠═══════════════════════════════════════════════════════════════════════════╣");
-    println!("║                                                                           ║");
-    println!("║  Public Key (npub):                                                       ║");
-    println!("║  {}  ║", keys.public_key().to_bech32()?);
-    println!("║                                                                           ║");
-    println!("║  NpubCash Address:                                                        ║");
-    println!("║  {}@npubx.cash         ║", keys.public_key().to_bech32()?);
-    println!("║                                                                           ║");
-    println!("╠═══════════════════════════════════════════════════════════════════════════╣");
-    println!("║                                                                           ║");
-    println!("║  Secret Key (nsec):                                                       ║");
-    println!("║  {}  ║", keys.secret_key().to_bech32()?);
-    println!("║                                                                           ║");
-    println!("║  ⚠️  KEEP THIS SECRET! Anyone with this key can access your npubcash     ║");
-    println!("║      account and authenticate as you.                                    ║");
-    println!("║                                                                           ║");
-    println!("╚═══════════════════════════════════════════════════════════════════════════╝");
-    println!();
+    println!(
+        r#"
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                         NpubCash Nostr Keys                               ║
+╠═══════════════════════════════════════════════════════════════════════════╣
+║                                                                           ║
+║  These keys are automatically derived from your wallet seed and are      ║
+║  used for authenticating with the NpubCash service.                      ║
+║                                                                           ║
+╠═══════════════════════════════════════════════════════════════════════════╣
+║                                                                           ║
+║  Public Key (npub):                                                       ║
+║  {}  ║
+║                                                                           ║
+║  NpubCash Address:                                                        ║
+║  {}@npubx.cash         ║
+║                                                                           ║
+╠═══════════════════════════════════════════════════════════════════════════╣
+║                                                                           ║
+║  Secret Key (nsec):                                                       ║
+║  {}  ║
+║                                                                           ║
+║  ⚠️  KEEP THIS SECRET! Anyone with this key can access your npubcash     ║
+║      account and authenticate as you.                                    ║
+║                                                                           ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+"#,
+        npub, npub, nsec
+    );
 
     Ok(())
 }

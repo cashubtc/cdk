@@ -21,10 +21,6 @@ pub enum Error {
     #[error("Authentication failed: {0}")]
     Auth(String),
 
-    /// WebSocket error
-    #[error("WebSocket error: {0}")]
-    WebSocket(String),
-
     /// HTTP request failed
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
@@ -40,14 +36,6 @@ pub enum Error {
     /// Nostr signing error
     #[error("Nostr signing error: {0}")]
     Nostr(String),
-
-    /// Token has expired
-    #[error("Token expired")]
-    TokenExpired,
-
-    /// Invalid response from server
-    #[error("Invalid response: {0}")]
-    InvalidResponse(String),
 
     /// Custom error message
     #[error("{0}")]

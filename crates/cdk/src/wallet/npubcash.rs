@@ -5,125 +5,13 @@
 
 use std::sync::Arc;
 
-use cdk_npubcash::{JwtAuthProvider, NpubCashClient, PollingHandle, Quote, UserResponse};
-use nostr_sdk::Keys;
+use cdk_npubcash::{JwtAuthProvider, NpubCashClient, Quote};
 use tracing::instrument;
 
 use crate::error::Error;
 use crate::nuts::SecretKey;
 use crate::wallet::types::{MintQuote, TransactionDirection};
 use crate::wallet::Wallet;
-
-/// NpubCash client wrapper for wallet integration
-#[derive(Debug, Clone)]
-pub struct NpubCashWallet {
-    client: Arc<NpubCashClient>,
-}
-
-impl NpubCashWallet {
-    /// Create a new NpubCash wallet instance
-    ///
-    /// # Arguments
-    ///
-    /// * `npubcash_url` - Base URL of the NpubCash service (e.g., "<https://npubx.cash>")
-    /// * `keys` - Nostr keys for authentication
-    pub fn new(npubcash_url: String, keys: Keys) -> Self {
-        let auth_provider = Arc::new(JwtAuthProvider::new(npubcash_url.clone(), keys));
-        let client = Arc::new(NpubCashClient::new(npubcash_url, auth_provider));
-
-        Self { client }
-    }
-
-    /// Fetch all quotes from NpubCash
-    ///
-    /// This method fetches all available quotes with automatic pagination.
-    #[instrument(skip(self))]
-    pub async fn sync_quotes(&self) -> Result<Vec<Quote>, Error> {
-        tracing::info!("Syncing all quotes from NpubCash");
-
-        let quotes = self
-            .client
-            .get_all_quotes()
-            .await
-            .map_err(|e| Error::Custom(format!("Failed to sync quotes: {}", e)))?;
-
-        tracing::debug!("Successfully synced {} quotes", quotes.len());
-        Ok(quotes)
-    }
-
-    /// Fetch quotes since a specific timestamp
-    ///
-    /// # Arguments
-    ///
-    /// * `since` - Unix timestamp to fetch quotes from
-    #[instrument(skip(self))]
-    pub async fn sync_quotes_since(&self, since: u64) -> Result<Vec<Quote>, Error> {
-        tracing::info!("Syncing quotes since timestamp: {}", since);
-
-        let quotes = self
-            .client
-            .get_quotes_since(since)
-            .await
-            .map_err(|e| Error::Custom(format!("Failed to sync quotes: {}", e)))?;
-
-        tracing::debug!("Successfully synced {} quotes", quotes.len());
-        Ok(quotes)
-    }
-
-    /// Subscribe to real-time quote updates via polling
-    ///
-    /// # Arguments
-    ///
-    /// * `callback` - Function to call when new quotes are found
-    ///
-    /// # Returns
-    ///
-    /// A [`PollingHandle`] that will stop polling when dropped
-    #[instrument(skip(self, callback))]
-    pub async fn subscribe_updates<F>(&self, callback: F) -> Result<PollingHandle, Error>
-    where
-        F: FnMut(Vec<Quote>) + Send + 'static,
-    {
-        use std::time::Duration;
-
-        tracing::info!("Starting NpubCash quote polling");
-
-        let handle = self
-            .client
-            .poll_quotes_with_callback(Duration::from_secs(5), callback)
-            .await
-            .map_err(|e| Error::Custom(format!("Failed to start polling: {}", e)))?;
-
-        tracing::debug!("Successfully started quote polling");
-        Ok(handle)
-    }
-
-    /// Set the mint URL in NpubCash settings
-    ///
-    /// # Arguments
-    ///
-    /// * `mint_url` - The mint URL to set
-    #[instrument(skip(self, mint_url))]
-    pub async fn set_mint_url(&self, mint_url: impl Into<String>) -> Result<UserResponse, Error> {
-        let mint_url = mint_url.into();
-        tracing::info!("Setting NpubCash mint URL to: {}", mint_url);
-
-        let response = self
-            .client
-            .settings
-            .set_mint_url(mint_url)
-            .await
-            .map_err(|e| Error::Custom(format!("Failed to set mint URL: {}", e)))?;
-
-        tracing::debug!("Successfully updated mint URL");
-        Ok(response)
-    }
-
-    /// Get the underlying NpubCash client for advanced operations
-    pub fn client(&self) -> &Arc<NpubCashClient> {
-        &self.client
-    }
-}
 
 impl Wallet {
     /// Enable NpubCash integration for this wallet
@@ -134,14 +22,15 @@ impl Wallet {
     ///
     /// # Errors
     ///
-    /// Returns an error if the NpubCash wallet cannot be initialized
+    /// Returns an error if the NpubCash client cannot be initialized
     #[instrument(skip(self))]
     pub async fn enable_npubcash(&self, npubcash_url: String) -> Result<(), Error> {
         let keys = self.derive_npubcash_keys()?;
-        let npubcash_wallet = NpubCashWallet::new(npubcash_url, keys);
+        let auth_provider = Arc::new(JwtAuthProvider::new(npubcash_url.clone(), keys));
+        let client = Arc::new(NpubCashClient::new(npubcash_url, auth_provider));
 
-        let mut wallet = self.npubcash_wallet.write().await;
-        *wallet = Some(npubcash_wallet);
+        let mut npubcash = self.npubcash_client.write().await;
+        *npubcash = Some(client);
 
         tracing::info!("NpubCash integration enabled");
         Ok(())
@@ -175,6 +64,34 @@ impl Wallet {
         self.derive_npubcash_keys()
     }
 
+    /// Helper to get NpubCash client reference
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if NpubCash is not enabled
+    async fn get_npubcash_client(&self) -> Result<Arc<NpubCashClient>, Error> {
+        self.npubcash_client
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| Error::Custom("NpubCash not enabled".to_string()))
+    }
+
+    /// Helper to process npubcash quotes and add them to the wallet
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if adding quotes fails
+    async fn process_npubcash_quotes(&self, quotes: Vec<Quote>) -> Result<Vec<MintQuote>, Error> {
+        let mut mint_quotes = Vec::with_capacity(quotes.len());
+        for quote in quotes {
+            if let Some(mint_quote) = self.add_npubcash_mint_quote(quote).await? {
+                mint_quotes.push(mint_quote);
+            }
+        }
+        Ok(mint_quotes)
+    }
+
     /// Sync quotes from NpubCash and add them to the wallet
     ///
     /// # Errors
@@ -182,24 +99,12 @@ impl Wallet {
     /// Returns an error if NpubCash is not enabled or the sync fails
     #[instrument(skip(self))]
     pub async fn sync_npubcash_quotes(&self) -> Result<Vec<MintQuote>, Error> {
-        let wallet = self.npubcash_wallet.read().await;
-        let npubcash = wallet
-            .as_ref()
-            .ok_or_else(|| Error::Custom("NpubCash not enabled".to_string()))?;
-
-        let quotes = npubcash.sync_quotes().await?;
-        drop(wallet);
-
-        let mut mint_quotes = Vec::with_capacity(quotes.len());
-        for quote in quotes {
-            let mint_quote = self.add_npubcash_mint_quote(quote).await?;
-
-            if let Some(mint_quote) = mint_quote {
-                mint_quotes.push(mint_quote);
-            }
-        }
-
-        Ok(mint_quotes)
+        let client = self.get_npubcash_client().await?;
+        let quotes = client
+            .get_quotes(None)
+            .await
+            .map_err(|e| Error::Custom(format!("Failed to sync quotes: {}", e)))?;
+        self.process_npubcash_quotes(quotes).await
     }
 
     /// Sync quotes from NpubCash since a specific timestamp and add them to the wallet
@@ -213,26 +118,19 @@ impl Wallet {
     /// Returns an error if NpubCash is not enabled or the sync fails
     #[instrument(skip(self))]
     pub async fn sync_npubcash_quotes_since(&self, since: u64) -> Result<Vec<MintQuote>, Error> {
-        let wallet = self.npubcash_wallet.read().await;
-        let npubcash = wallet
-            .as_ref()
-            .ok_or_else(|| Error::Custom("NpubCash not enabled".to_string()))?;
-
-        let quotes = npubcash.sync_quotes_since(since).await?;
-        drop(wallet);
-
-        let mut mint_quotes = Vec::with_capacity(quotes.len());
-        for quote in quotes {
-            let mint_quote = self.add_npubcash_mint_quote(quote).await?;
-            if let Some(mint_quote) = mint_quote {
-                mint_quotes.push(mint_quote);
-            }
-        }
-
-        Ok(mint_quotes)
+        let client = self.get_npubcash_client().await?;
+        let quotes = client
+            .get_quotes(Some(since))
+            .await
+            .map_err(|e| Error::Custom(format!("Failed to sync quotes: {}", e)))?;
+        self.process_npubcash_quotes(quotes).await
     }
 
     /// Subscribe to NpubCash quote updates via polling and add them to the wallet
+    ///
+    /// This method polls for new quotes every 5 seconds and calls the callback
+    /// with newly added quotes. This function runs indefinitely and only returns
+    /// on error.
     ///
     /// # Arguments
     ///
@@ -240,46 +138,60 @@ impl Wallet {
     ///
     /// # Errors
     ///
-    /// Returns an error if NpubCash is not enabled or polling fails to start
+    /// Returns an error if NpubCash is not enabled or if fetching/processing quotes fails
     #[instrument(skip(self, callback))]
-    pub async fn subscribe_npubcash_updates<F>(
-        &self,
-        callback: F,
-    ) -> Result<cdk_npubcash::PollingHandle, Error>
+    pub async fn subscribe_npubcash_updates<F>(&self, callback: F) -> Result<(), Error>
     where
         F: Fn(Vec<MintQuote>) + Send + Sync + 'static,
     {
-        use std::sync::Arc;
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-        let wallet_clone = self.clone();
-        let callback = Arc::new(callback);
+        tracing::info!("Starting NpubCash quote polling");
 
-        let internal_callback = move |npubcash_quotes: Vec<cdk_npubcash::Quote>| {
-            let wallet = wallet_clone.clone();
-            let cb = callback.clone();
+        // Verify NpubCash is enabled
+        let client = self.get_npubcash_client().await?;
 
-            tokio::spawn(async move {
-                let mut mint_quotes = Vec::with_capacity(npubcash_quotes.len());
-                for quote in npubcash_quotes {
-                    match wallet.add_npubcash_mint_quote(quote).await {
-                        Ok(Some(mint_quote)) => mint_quotes.push(mint_quote),
-                        Ok(None) => (),
-                        Err(e) => tracing::error!("Failed to add NpubCash quote: {}", e),
+        // Get initial timestamp
+        let mut last_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| Error::Custom(e.to_string()))?
+            .as_secs();
+
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+
+            // Fetch raw npubcash quotes
+            match client.get_quotes(Some(last_timestamp)).await {
+                Ok(npubcash_quotes) => {
+                    if !npubcash_quotes.is_empty() {
+                        tracing::debug!("Found {} new quotes", npubcash_quotes.len());
+
+                        // Update timestamp to most recent quote
+                        if let Some(max_ts) = npubcash_quotes.iter().map(|q| q.created_at).max() {
+                            last_timestamp = max_ts;
+                        }
+
+                        // Convert quotes and add to wallet
+                        let mut mint_quotes = Vec::with_capacity(npubcash_quotes.len());
+                        for quote in npubcash_quotes {
+                            match self.add_npubcash_mint_quote(quote).await {
+                                Ok(Some(mint_quote)) => mint_quotes.push(mint_quote),
+                                Ok(None) => (),
+                                Err(e) => tracing::error!("Failed to add NpubCash quote: {}", e),
+                            }
+                        }
+
+                        if !mint_quotes.is_empty() {
+                            callback(mint_quotes);
+                        }
                     }
                 }
-
-                if !mint_quotes.is_empty() {
-                    cb(mint_quotes);
+                Err(e) => {
+                    tracing::debug!("Error polling quotes: {}", e);
+                    // Continue polling despite errors
                 }
-            });
-        };
-
-        let npubcash_wallet = self.npubcash_wallet.read().await;
-        let npubcash = npubcash_wallet
-            .as_ref()
-            .ok_or_else(|| Error::Custom("NpubCash not enabled".to_string()))?;
-
-        npubcash.subscribe_updates(internal_callback).await
+            }
+        }
     }
 
     /// Set the mint URL in NpubCash settings
@@ -296,12 +208,11 @@ impl Wallet {
         &self,
         mint_url: impl Into<String>,
     ) -> Result<cdk_npubcash::UserResponse, Error> {
-        let wallet = self.npubcash_wallet.read().await;
-        let npubcash = wallet
-            .as_ref()
-            .ok_or_else(|| Error::Custom("NpubCash not enabled".to_string()))?;
-
-        npubcash.set_mint_url(mint_url).await
+        let client = self.get_npubcash_client().await?;
+        client
+            .set_mint_url(mint_url)
+            .await
+            .map_err(|e| Error::Custom(e.to_string()))
     }
 
     /// Add an NpubCash quote to the wallet's mint quote database
@@ -344,13 +255,13 @@ impl Wallet {
         Ok(Some(mint_quote))
     }
 
-    /// Get reference to the NpubCash wallet if enabled
-    pub async fn npubcash_wallet(&self) -> Option<NpubCashWallet> {
-        self.npubcash_wallet.read().await.clone()
+    /// Get reference to the NpubCash client if enabled
+    pub async fn npubcash_client(&self) -> Option<Arc<NpubCashClient>> {
+        self.npubcash_client.read().await.clone()
     }
 
     /// Check if NpubCash is enabled for this wallet
     pub async fn is_npubcash_enabled(&self) -> bool {
-        self.npubcash_wallet.read().await.is_some()
+        self.npubcash_client.read().await.is_some()
     }
 }

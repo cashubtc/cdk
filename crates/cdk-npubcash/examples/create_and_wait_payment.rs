@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Checking for existing quotes ===");
     tracing::debug!("Fetching all existing quotes");
-    match client.get_all_quotes().await {
+    match client.get_quotes(None).await {
         Ok(quotes) => {
             tracing::debug!("Successfully fetched {} quotes", quotes.len());
             if quotes.is_empty() {
@@ -102,31 +102,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Checking for new payments every 5 seconds... Press Ctrl+C to stop.\n");
 
     tracing::debug!("Starting quote polling with 5 second interval");
-    let _handle = client
-        .poll_quotes_with_callback(Duration::from_secs(5), |quotes| {
-            tracing::debug!("Callback triggered with {} new quotes", quotes.len());
-            for quote in quotes {
-                tracing::info!(
-                    "New quote received: ID={}, amount={}, unit={}",
-                    quote.id,
-                    quote.amount,
-                    quote.unit
-                );
-                println!("🔔 New quote received!");
-                println!("   Quote ID: {}", quote.id);
-                println!("   Amount: {} {}", quote.amount, quote.unit);
-                println!(
-                    "   Timestamp: {}",
-                    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
-                );
-                println!();
-            }
-        })
-        .await?;
 
-    tracing::debug!("Polling handle created, waiting for Ctrl+C");
-    tokio::signal::ctrl_c().await?;
-    tracing::info!("Received Ctrl+C signal, stopping payment monitor");
+    // Get initial timestamp for polling
+    let mut last_timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+
+    // Poll for quotes and handle Ctrl+C
+    tokio::select! {
+        _ = async {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+
+                match client.get_quotes(Some(last_timestamp)).await {
+                    Ok(quotes) => {
+                        if !quotes.is_empty() {
+                            tracing::debug!("Found {} new quotes", quotes.len());
+
+                            // Update timestamp to most recent quote
+                            if let Some(max_ts) = quotes.iter().map(|q| q.created_at).max() {
+                                last_timestamp = max_ts;
+                            }
+
+                            for quote in quotes {
+                                tracing::info!(
+                                    "New quote received: ID={}, amount={}, unit={}",
+                                    quote.id,
+                                    quote.amount,
+                                    quote.unit
+                                );
+                                println!("🔔 New quote received!");
+                                println!("   Quote ID: {}", quote.id);
+                                println!("   Amount: {} {}", quote.amount, quote.unit);
+                                println!(
+                                    "   Timestamp: {}",
+                                    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+                                );
+                                println!();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("Error polling quotes: {}", e);
+                    }
+                }
+            }
+        } => {}
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received Ctrl+C signal, stopping payment monitor");
+        }
+    }
     println!("\n✓ Stopped monitoring for payments");
 
     Ok(())

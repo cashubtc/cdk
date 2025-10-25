@@ -98,10 +98,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting quote polling...");
     println!("Press Ctrl+C to stop.\n");
 
-    // Subscribe to quote updates with a callback
+    // Subscribe to quote updates with a callback, handling Ctrl+C
     let wallet_clone = wallet.clone();
-    let _handle = wallet
-        .subscribe_npubcash_updates(move |quotes| {
+
+    tokio::select! {
+        result = wallet.subscribe_npubcash_updates(move |quotes| {
             let wallet = wallet_clone.clone();
 
             println!("Received {} new quote(s)", quotes.len());
@@ -148,12 +149,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             println!();
-        })
-        .await?;
-
-    // Keep the program running until Ctrl+C
-    tokio::signal::ctrl_c().await?;
-    println!("\nStopping quote polling...");
+        }) => {
+            // Polling returned with an error
+            result?;
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("\nStopping quote polling...");
+        }
+    }
 
     // Show final wallet balance
     let balance = wallet.total_balance().await?;

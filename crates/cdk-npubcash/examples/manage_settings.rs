@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Setting Mint URL ===");
     let mint_url = "https://testnut.cashu.space";
-    match client.settings.set_mint_url(mint_url).await {
+    match client.set_mint_url(mint_url).await {
         Ok(response) => {
             println!("✓ Successfully set mint URL");
             println!(

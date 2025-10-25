@@ -170,7 +170,7 @@ impl WalletBuilder {
             #[cfg(feature = "auth")]
             auth_wallet: Arc::new(RwLock::new(self.auth_wallet)),
             #[cfg(feature = "npubcash")]
-            npubcash_wallet: Arc::new(RwLock::new(None)),
+            npubcash_client: Arc::new(RwLock::new(None)),
             seed,
             client: client.clone(),
             subscription: SubscriptionManager::new(client, self.use_http_subscription),

@@ -7,8 +7,8 @@ Rust client SDK for the NpubCash v2 API.
 - **HTTP Client**: Fetch quotes with automatic pagination
 - **NIP-98 Authentication**: Sign requests using Nostr keys
 - **JWT Token Caching**: Automatic token refresh and caching
-- **WebSocket Subscriptions**: Real-time quote updates
-- **Settings Management**: Configure mint URL and quote locking
+- **Quote Polling**: Subscribe to quote updates via polling
+- **Settings Management**: Configure mint URL
 
 ## Usage
 
@@ -23,35 +23,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let auth_provider = JwtAuthProvider::new(base_url.clone(), keys);
     let client = NpubCashClient::new(base_url, std::sync::Arc::new(auth_provider));
-    
+
     // Fetch all quotes
-    let quotes = client.get_all_quotes().await?;
+    let quotes = client.get_quotes(None).await?;
     println!("Found {} quotes", quotes.len());
-    
+
     // Fetch quotes since timestamp
-    let recent_quotes = client.get_quotes_since(1234567890).await?;
-    
+    let recent_quotes = client.get_quotes(Some(1234567890)).await?;
+
     // Update mint URL setting
-    client.settings.set_mint_url("https://example-mint.tld").await?;
+    client.set_mint_url("https://example-mint.tld").await?;
     
     Ok(())
 }
-```
-
-## WebSocket Subscriptions
-
-```rust
-use cdk_npubcash::SubscriptionManager;
-
-let ws_url = "wss://npubx.cash/api/v2/wallet/quotes/subscribe".to_string();
-let subscription_manager = SubscriptionManager::new(ws_url, auth_provider);
-
-let handle = subscription_manager.subscribe(|quote_id| {
-    println!("Quote updated: {}", quote_id);
-}).await?;
-
-// Keep handle alive to maintain subscription
-// Drop handle to cancel subscription
 ```
 
 ## Examples
@@ -59,7 +43,6 @@ let handle = subscription_manager.subscribe(|quote_id| {
 The SDK includes several examples to help you get started:
 
 - **`basic_usage.rs`** - Demonstrates fetching quotes and basic client usage
-- **`subscribe_quotes.rs`** - Shows how to subscribe to real-time quote updates
 - **`manage_settings.rs`** - Illustrates settings management (mint URL)
 - **`create_and_wait_payment.rs`** - Demonstrates creating a npub.cash address and monitoring for payments
 
