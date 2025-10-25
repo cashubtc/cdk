@@ -263,16 +263,17 @@ async fn test_p2pk_multisig_2of3() {
     // Primary key: Alice
     // Additional keys: Bob, Carol
     // Requires 2 signatures total
-    let conditions = Conditions::new(
-        None, // no locktime
-        Some(vec![bob_pubkey, carol_pubkey]), // additional pubkeys
-        None, // no refund keys
-        Some(2), // require 2 signatures
-        None, // default sig_flag
-        None, // no num_sigs_refund
-    ).unwrap();
-
-    let spending_conditions = SpendingConditions::new_p2pk(alice_pubkey, Some(conditions));
+    let spending_conditions = SpendingConditions::new_p2pk(
+        alice_pubkey,
+        Some(Conditions::new(
+            None, // no locktime
+            Some(vec![bob_pubkey, carol_pubkey]), // additional pubkeys
+            None, // no refund keys
+            Some(2), // require 2 signatures
+            None, // default sig_flag
+            None, // no num_sigs_refund
+        ).unwrap())
+    );
     println!("Created 2-of-3 multisig spending conditions (Alice, Bob, Carol)");
 
     // Step 3: Create P2PK blinded messages with multisig conditions
@@ -372,16 +373,17 @@ async fn test_p2pk_locktime_before_expiry() {
     let input_proofs = test_mint.mint_proofs(input_amount).await.unwrap();
 
     // Step 2: Create conditions with Alice as primary and Bob as refund key
-    let conditions = Conditions::new(
-        Some(locktime), // locktime in the future
-        None, // no additional pubkeys
-        Some(vec![bob_pubkey]), // Bob is refund key
-        None, // default num_sigs (1)
-        None, // default sig_flag
-        None, // default num_sigs_refund (1)
-    ).unwrap();
-
-    let spending_conditions = SpendingConditions::new_p2pk(alice_pubkey, Some(conditions));
+    let spending_conditions = SpendingConditions::new_p2pk(
+        alice_pubkey,
+        Some(Conditions::new(
+            Some(locktime), // locktime in the future
+            None, // no additional pubkeys
+            Some(vec![bob_pubkey]), // Bob is refund key
+            None, // default num_sigs (1)
+            None, // default sig_flag
+            None, // default num_sigs_refund (1)
+        ).unwrap())
+    );
     println!("Created P2PK with locktime and refund key");
 
     // Step 3: Create P2PK blinded messages
