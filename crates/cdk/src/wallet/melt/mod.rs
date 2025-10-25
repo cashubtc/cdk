@@ -14,8 +14,6 @@ mod melt_bip353;
 mod melt_bolt11;
 mod melt_bolt12;
 
-
-
 impl Wallet {
     /// Check pending melt quotes
     #[instrument(skip_all)]

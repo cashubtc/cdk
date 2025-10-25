@@ -378,8 +378,6 @@ impl SpendingConditions {
                 let mut pubkeys = vec![*data];
                 if let Some(conditions) = conditions {
                     pubkeys.extend(conditions.pubkeys.clone().unwrap_or_default());
-                    // FIXME: Add refund pubkeys for signing
-                    pubkeys.extend(conditions.refund_keys.clone().unwrap_or_default());
                 }
                 // Remove duplicates
                 let unique_pubkeys: HashSet<_> = pubkeys.into_iter().collect();
@@ -493,10 +491,9 @@ impl Conditions {
         sig_flag: Option<SigFlag>,
         num_sigs_refund: Option<u64>,
     ) -> Result<Self, Error> {
-        // FIX: uncomment this change
-        // if let Some(locktime) = locktime {
-        //     ensure_cdk!(locktime.ge(&unix_time()), Error::LocktimeInPast);
-        // }
+        if let Some(locktime) = locktime {
+            ensure_cdk!(locktime.ge(&unix_time()), Error::LocktimeInPast);
+        }
 
         Ok(Self {
             locktime,
@@ -1004,8 +1001,7 @@ impl SwapRequest {
         let (_first_conditions, _) = self.can_sign_sig_all(&secret_key)?;
 
         // Verify all inputs have matching conditions
-        // FIX: uncommnet code
-        // self.verify_matching_conditions()?;
+        self.verify_matching_conditions()?;
 
         // Get message to sign
         let msg = self.sig_all_msg_to_sign();

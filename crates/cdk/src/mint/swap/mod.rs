@@ -35,8 +35,7 @@ impl Mint {
                 })?;
 
         // Verify signature flag (no DB needed)
-        // FIXME: uncomment this code
-        // self.validate_sig_flag(&swap_request).await?;
+        self.validate_sig_flag(&swap_request).await?;
 
         // Step 1: Initialize the swap saga
         let init_saga = SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone());
