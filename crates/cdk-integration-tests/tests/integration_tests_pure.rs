@@ -778,10 +778,9 @@ async fn test_mint_change_with_fee_melt() {
         .await
         .unwrap();
     let w = wallet_alice
-        .melt_proofs_with_metadata_with_tx(&mut tx, &melt_quote.id, proofs, HashMap::new())
+        .melt_proofs_with_metadata_with_tx(tx, &melt_quote.id, proofs, HashMap::new())
         .await
         .unwrap();
-    tx.commit().await.unwrap();
 
     assert_eq!(w.change.unwrap().total_amount().unwrap(), 97.into());
 }

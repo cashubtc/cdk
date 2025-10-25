@@ -138,11 +138,14 @@ impl Wallet {
         proofs: Proofs,
         metadata: HashMap<String, String>,
     ) -> Result<Melted, Error> {
-        let mut tx = self.localstore.begin_db_transaction().await?;
         let result = self
-            .melt_proofs_with_metadata_with_tx(&mut tx, quote_id, proofs, metadata)
+            .melt_proofs_with_metadata_with_tx(
+                self.localstore.begin_db_transaction().await?,
+                quote_id,
+                proofs,
+                metadata,
+            )
             .await?;
-        tx.commit().await?;
         Ok(result)
     }
 
@@ -150,7 +153,7 @@ impl Wallet {
     #[instrument(skip(self, tx, proofs))]
     pub async fn melt_proofs_with_metadata_with_tx(
         &self,
-        tx: &mut Tx<'_, '_>,
+        mut tx: Tx<'_, '_>,
         quote_id: &str,
         proofs: Proofs,
         metadata: HashMap<String, String>,
@@ -160,7 +163,7 @@ impl Wallet {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let active_keyset_id = self.fetch_active_keyset(Some(tx)).await?.id;
+        let active_keyset_id = self.fetch_active_keyset(Some(&mut tx)).await?.id;
 
         let active_keys = tx
             .get_keys(&active_keyset_id)
@@ -226,7 +229,8 @@ impl Wallet {
                 tracing::error!("Could not melt: {}", err);
                 tracing::info!("Checking status of input proofs.");
 
-                self.reclaim_unspent_with_tx(tx, proofs).await?;
+                self.reclaim_unspent_with_tx(&mut tx, proofs).await?;
+                tx.commit().await?;
 
                 return Err(err);
             }
@@ -310,6 +314,8 @@ impl Wallet {
             payment_proof: payment_preimage,
         })
         .await?;
+
+        tx.commit().await?;
 
         Ok(melted)
     }
@@ -432,10 +438,8 @@ impl Wallet {
         }
 
         let melted = self
-            .melt_proofs_with_metadata_with_tx(&mut tx, quote_id, input_proofs, metadata)
+            .melt_proofs_with_metadata_with_tx(tx, quote_id, input_proofs, metadata)
             .await?;
-
-        tx.commit().await?;
 
         Ok(melted)
     }
