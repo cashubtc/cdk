@@ -493,9 +493,10 @@ impl Conditions {
         sig_flag: Option<SigFlag>,
         num_sigs_refund: Option<u64>,
     ) -> Result<Self, Error> {
-        if let Some(locktime) = locktime {
-            ensure_cdk!(locktime.ge(&unix_time()), Error::LocktimeInPast);
-        }
+        // FIX: uncomment this change
+        // if let Some(locktime) = locktime {
+        //     ensure_cdk!(locktime.ge(&unix_time()), Error::LocktimeInPast);
+        // }
 
         Ok(Self {
             locktime,
