@@ -3,7 +3,7 @@
 //! This module implements verification logic for spending conditions (NUT-10/NUT-11).
 //! See: https://cashubtc.github.io/nuts/10/
 
-use cdk_common::Proofs;
+use cdk_common::{BlindedMessage, Proofs};
 
 use super::Error;
 
@@ -32,4 +32,58 @@ pub fn has_at_least_one_sig_all(proofs: &Proofs) -> Result<bool, Error> {
     }
 
     Ok(false)
+}
+
+/// Verify spending conditions for a swap transaction
+///
+/// This is the main entry point for spending condition verification.
+/// It checks if any input has SIG_ALL and dispatches to the appropriate verification path.
+pub fn verify_spending_conditions(
+    inputs: &Proofs,
+    outputs: &[BlindedMessage],
+) -> Result<(), Error> {
+    // Check if any input has SIG_ALL flag
+    if has_at_least_one_sig_all(inputs)? {
+        // at least one input has SIG_ALL
+        verify_full_sig_all_check(inputs, outputs)
+    } else {
+        // none of the inputs are SIG_ALL, so we can simply check
+        // each independently and verify any spending conditions
+        // that may - or may not - be there.
+        verify_inputs_individually(inputs)
+    }
+}
+
+/// Verify spending conditions when SIG_ALL is present
+///
+/// When SIG_ALL is set, all proofs in the transaction must be signed together.
+fn verify_full_sig_all_check(
+    _inputs: &Proofs,
+    _outputs: &[BlindedMessage],
+) -> Result<(), Error> {
+    // TODO: Implement SIG_ALL verification
+    Ok(())
+}
+
+/// Verify spending conditions for each input individually
+///
+/// Handles SIG_INPUTS mode, non-NUT-10 secrets, and any other case where inputs
+/// are verified independently rather than as a group.
+/// This function will NOT be called if any input has SIG_ALL; see 'verify_spending_conditions'
+fn verify_inputs_individually(inputs: &Proofs) -> Result<(), Error> {
+    for proof in inputs {
+        // Check if secret is a nut10 secret with conditions
+        if let Ok(secret) = cdk_common::nuts::nut10::Secret::try_from(&proof.secret) {
+            match secret.kind() {
+                cdk_common::nuts::Kind::P2PK => {
+                    proof.verify_p2pk()?;
+                }
+                cdk_common::nuts::Kind::HTLC => {
+                    proof.verify_htlc()?;
+                }
+            }
+        }
+        // If not a nut10 secret, skip verification (plain secret)
+    }
+    Ok(())
 }

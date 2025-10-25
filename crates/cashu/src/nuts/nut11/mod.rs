@@ -127,6 +127,7 @@ impl Proof {
 
     /// Verify P2PK signature on [Proof]
     pub fn verify_p2pk(&self) -> Result<(), Error> {
+        // TODO: assert that flag!=SIG_ALL, as the code should never reach here for SIG_ALL proofs
         let secret: Nut10Secret = self.secret.clone().try_into()?;
         let spending_conditions: Conditions = secret
             .secret_data()

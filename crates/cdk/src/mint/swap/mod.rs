@@ -28,6 +28,12 @@ impl Mint {
         swap_request.input_amount()?;
         swap_request.output_amount()?;
 
+        // Verify spending conditions (NUT-10/NUT-11)
+        super::nut10_spending_conditions::verify_spending_conditions(
+            swap_request.inputs(),
+            swap_request.outputs(),
+        )?;
+
         // Verify inputs (cryptographic verification, no DB needed)
         let input_verification =
             self.verify_inputs(swap_request.inputs())

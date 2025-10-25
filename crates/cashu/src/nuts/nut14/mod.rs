@@ -65,6 +65,7 @@ pub struct HTLCWitness {
 impl Proof {
     /// Verify HTLC
     pub fn verify_htlc(&self) -> Result<(), Error> {
+        // TODO: assert that flag!=SIG_ALL, as the code should never reach here for SIG_ALL proofs
         let secret: Secret = self.secret.clone().try_into()?;
         let conditions: Option<Conditions> = secret
             .secret_data()
