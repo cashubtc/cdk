@@ -969,46 +969,8 @@ impl SwapRequest {
             .map_err(Error::from)
     }
 
-    /// Check if swap request can be signed with the given secret key
-    fn can_sign_sig_all(
-        &self,
-        secret_key: &SecretKey,
-    ) -> Result<(SpendingConditions, PublicKey), Error> {
-        // Get the first input since all must match for SIG_ALL
-        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
-        let first_conditions: SpendingConditions =
-            SpendingConditions::try_from(&first_input.secret)?;
-
-        // Verify this is a P2PK condition with SIG_ALL
-        match first_conditions.clone() {
-            SpendingConditions::P2PKConditions { conditions, .. } => {
-                let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
-                if conditions.sig_flag != SigFlag::SigAll {
-                    return Err(Error::IncorrectSecretKind);
-                }
-                conditions
-            }
-            _ => return Err(Error::IncorrectSecretKind),
-        };
-
-        // Get authorized keys and verify secret_key matches one
-        let pubkey = secret_key.public_key();
-        let authorized_keys = first_conditions
-            .pubkeys()
-            .ok_or(Error::P2PKPubkeyRequired)?;
-
-        if !authorized_keys.contains(&pubkey) {
-            return Err(Error::SpendConditionsNotMet);
-        }
-
-        Ok((first_conditions, pubkey))
-    }
-
     /// Sign swap request with SIG_ALL if conditions are met
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
-        // Verify we can sign and get conditions
-        let (_first_conditions, _) = self.can_sign_sig_all(&secret_key)?;
-
         // Verify all inputs have matching conditions
         self.verify_matching_conditions()?;
 
@@ -1156,46 +1118,8 @@ impl<Q: std::fmt::Display + Serialize + DeserializeOwned> MeltRequest<Q> {
             .map_err(Error::from)
     }
 
-    /// Check if melt request can be signed with the given secret key
-    fn can_sign_sig_all(
-        &self,
-        secret_key: &SecretKey,
-    ) -> Result<(SpendingConditions, PublicKey), Error> {
-        // Get the first input since all must match for SIG_ALL
-        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
-        let first_conditions: SpendingConditions =
-            SpendingConditions::try_from(&first_input.secret)?;
-
-        // Verify this is a P2PK condition with SIG_ALL
-        match first_conditions.clone() {
-            SpendingConditions::P2PKConditions { conditions, .. } => {
-                let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
-                if conditions.sig_flag != SigFlag::SigAll {
-                    return Err(Error::IncorrectSecretKind);
-                }
-                conditions
-            }
-            _ => return Err(Error::IncorrectSecretKind),
-        };
-
-        // Get authorized keys and verify secret_key matches one
-        let pubkey = secret_key.public_key();
-        let authorized_keys = first_conditions
-            .pubkeys()
-            .ok_or(Error::P2PKPubkeyRequired)?;
-
-        if !authorized_keys.contains(&pubkey) {
-            return Err(Error::SpendConditionsNotMet);
-        }
-
-        Ok((first_conditions, pubkey))
-    }
-
     /// Sign melt request with SIG_ALL if conditions are met
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
-        // Verify we can sign and get conditions
-        let (_first_conditions, _) = self.can_sign_sig_all(&secret_key)?;
-
         // Verify all inputs have matching conditions
         self.verify_matching_conditions()?;
 
