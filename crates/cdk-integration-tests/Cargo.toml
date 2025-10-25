@@ -37,8 +37,11 @@ once_cell.workspace = true
 uuid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-# ln-regtest-rs = { path = "../../../../ln-regtest-rs" }
-ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "df81424" }
+bitcoincore-rpc.workspace = true
+cln-rpc.workspace = true
+fedimint-tonic-lnd.workspace = true
+lightning.workspace = true
+tempfile.workspace = true
 lightning-invoice.workspace = true
 ldk-node.workspace = true
 tracing.workspace = true

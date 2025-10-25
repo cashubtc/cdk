@@ -11,13 +11,14 @@ use cdk_lnd::Lnd as CdkLnd;
 use cdk_sqlite::mint::memory;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use ldk_node::Node;
-use ln_regtest_rs::bitcoin_client::BitcoinClient;
-use ln_regtest_rs::bitcoind::Bitcoind;
-use ln_regtest_rs::cln::Clnd;
-use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
-use ln_regtest_rs::lnd::Lnd;
 use tokio::sync::oneshot::Sender;
 use tokio::sync::Notify;
+
+use crate::ln_regtest::bitcoin_client::BitcoinClient;
+use crate::ln_regtest::bitcoind::Bitcoind;
+use crate::ln_regtest::cln::Clnd;
+use crate::ln_regtest::ln_client::{ClnClient, LightningClient, LndClient};
+use crate::ln_regtest::lnd::Lnd;
 
 pub const BITCOIND_ADDR: &str = "127.0.0.1:18443";
 pub const ZMQ_RAW_BLOCK: &str = "tcp://127.0.0.1:28332";

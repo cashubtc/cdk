@@ -11,8 +11,8 @@ use cashu::{Amount, CurrencyUnit, MintRequest, MintUrl, PreMintSecrets, ProofsMe
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletBuilder};
 use cdk_integration_tests::get_mint_url_from_env;
 use cdk_integration_tests::init_regtest::{get_cln_dir, get_temp_dir};
+use cdk_integration_tests::ln_regtest::ln_client::ClnClient;
 use cdk_sqlite::wallet::memory;
-use ln_regtest_rs::ln_client::ClnClient;
 
 // Helper function to get temp directory from environment or fallback
 fn get_test_temp_dir() -> PathBuf {
