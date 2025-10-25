@@ -107,6 +107,12 @@ impl BitcoinClient {
         Ok(balance.to_sat())
     }
 
+    /// Get blockchain info (useful for checking if bitcoind is ready)
+    pub fn get_blockchain_info(&self) -> Result<()> {
+        let _ = self.client.get_blockchain_info()?;
+        Ok(())
+    }
+
     pub fn list_fund(&self) -> Result<()> {
         let client = &self.client;
 

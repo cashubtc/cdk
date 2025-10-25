@@ -1,28 +1,28 @@
 //! Bitcoind
 
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::Result;
+use tokio::time::sleep;
+
+use crate::util::{ProcessHandle, ProcessManager};
 
 /// Bitcoind
+#[derive(Clone)]
 pub struct Bitcoind {
-    rpc_user: String,
-    rpc_password: String,
-    _addr: PathBuf,
-    data_dir: PathBuf,
-    child: Option<Child>,
-    zmq_raw_block: String,
-    zmq_raw_tx: String,
+    pub rpc_user: String,
+    pub rpc_password: String,
+    pub data_dir: PathBuf,
+    pub zmq_raw_block: String,
+    pub zmq_raw_tx: String,
+    process_handle: Option<ProcessHandle>,
 }
 
 impl Bitcoind {
     /// Create new [`Bitcoind`]
     pub fn new(
         data_dir: PathBuf,
-        addr: PathBuf,
         rpc_user: String,
         rpc_password: String,
         zmq_raw_block: String,
@@ -31,74 +31,60 @@ impl Bitcoind {
         Bitcoind {
             rpc_user,
             rpc_password,
-            _addr: addr,
             data_dir,
-            child: None,
             zmq_raw_block,
             zmq_raw_tx,
+            process_handle: None,
         }
     }
 
-    /// Start bitcoind
-    pub fn start_bitcoind(&mut self) -> Result<()> {
-        println!("Starting btcd");
+    /// Start bitcoind using ProcessManager
+    pub async fn start_bitcoind(&mut self, process_mgr: &ProcessManager) -> Result<()> {
+        let start = Instant::now();
+        tracing::info!("Starting bitcoind");
 
-        std::fs::create_dir_all(&self.data_dir).unwrap();
-        println!("created dir: {}", self.data_dir.display());
+        std::fs::create_dir_all(&self.data_dir)?;
+        tracing::debug!("Created bitcoind data dir: {}", self.data_dir.display());
 
-        let mut cmd = Command::new("bitcoind");
+        let mut cmd = crate::cmd!(
+            "bitcoind",
+            "-regtest",
+            format!("-datadir={}", self.data_dir.display()),
+            "-fallbackfee=0.00001",
+            "-rpcallowip=0.0.0.0/0",
+            format!("-rpcuser={}", self.rpc_user),
+            format!("-rpcpassword={}", self.rpc_password),
+            format!("-zmqpubrawblock={}", self.zmq_raw_block),
+            format!("-zmqpubrawtx={}", self.zmq_raw_tx),
+            "-deprecatedrpc=warnings"
+        );
 
-        cmd.arg("-regtest");
-        cmd.arg(format!("-datadir={}", self.data_dir.to_string_lossy()));
-        cmd.arg("-fallbackfee=0.00001");
-        cmd.arg("-rpcallowip=0.0.0.0/0");
-        cmd.arg(format!("-rpcuser={}", self.rpc_user));
-        cmd.arg(format!("-rpcpassword={}", self.rpc_password));
-        cmd.arg(format!("-zmqpubrawblock={}", self.zmq_raw_block));
-        cmd.arg(format!("-zmqpubrawtx={}", self.zmq_raw_tx));
-        cmd.arg("-deprecatedrpc=warnings");
-
-        //        cmd.arg(format!("-bind={}", self.addr.to_string_lossy()));
-
-        // Send output to dev null
-        cmd.stdout(Stdio::null());
-
-        let child = cmd.spawn().unwrap();
-
-        self.child = Some(child);
+        let handle = process_mgr.spawn_daemon("bitcoind", cmd).await?;
+        self.process_handle = Some(handle);
 
         // Let bitcoind start up
-        sleep(Duration::from_secs(5));
+        sleep(Duration::from_secs(5)).await;
 
+        tracing::info!(
+            "Bitcoind started successfully in {:.2}s",
+            start.elapsed().as_secs_f64()
+        );
         Ok(())
     }
 
-    pub fn pid(&self) -> Result<u32> {
-        let child = self.child.as_ref().ok_or(anyhow!("Unknown child"))?;
-
-        Ok(child.id())
-    }
-
-    /// Stop bitcoind
-    pub fn stop_bitcoind(&mut self) -> Result<()> {
-        let child = self.child.take();
-
-        match child {
-            Some(mut child) => {
-                child.kill()?;
-            }
-            None => bail!("No child to kill"),
-        }
-
-        Ok(())
+    pub fn pid(&self) -> Option<u32> {
+        self.process_handle.as_ref().and_then(|h| h.pid())
     }
 }
 
 impl Drop for Bitcoind {
     fn drop(&mut self) {
-        tracing::info!("Dropping bitcoind");
-        if let Err(err) = self.stop_bitcoind() {
-            tracing::error!("Could not stop bitcoind: {}", err);
-        }
+        let pid = self.pid();
+        tracing::warn!(
+            ?pid,
+            has_process_handle = self.process_handle.is_some(),
+            "Dropping Bitcoind struct - this will trigger ProcessHandle cleanup"
+        );
+        // ProcessHandle will handle cleanup automatically in its own Drop
     }
 }

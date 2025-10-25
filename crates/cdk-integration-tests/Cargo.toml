@@ -54,6 +54,7 @@ reqwest.workspace = true
 bitcoin = "0.32.0"
 clap = { workspace = true, features = ["derive"] }
 web-time.workspace = true
+nix = { workspace = true, features = ["signal"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio.workspace = true

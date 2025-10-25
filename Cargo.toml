@@ -121,6 +121,7 @@ nostr-sdk = { version = "0.43.0", default-features = false, features = [
     "nip44",
     "nip59"
 ]}
+nix = { version = "0.29", features = ["signal"] }
 
 
 

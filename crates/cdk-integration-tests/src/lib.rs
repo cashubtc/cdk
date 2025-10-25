@@ -35,8 +35,10 @@ pub mod cli;
 pub mod init_auth_mint;
 pub mod init_pure_tests;
 pub mod init_regtest;
+pub mod jit;
 pub mod ln_regtest;
 pub mod shared;
+pub mod util;
 
 pub async fn fund_wallet(wallet: Arc<Wallet>, amount: Amount) {
     let quote = wallet
