@@ -830,3 +830,151 @@ async fn test_p2pk_sig_all_multisig_locktime() {
     assert!(result.is_ok(), "Should succeed - refund key can spend after locktime: {:?}", result.err());
     println!("✓ Spending with refund key (Dave, 1-of-2) AFTER locktime succeeded");
 }
+
+/// Test: SIG_ALL with mixed proofs (different data) should fail
+///
+/// Per NUT-11, when any proof has SIG_ALL, all proofs must have:
+/// 1. Same kind, 2. SIG_ALL flag, 3. Same data, 4. Same tags
+/// This test verifies that mixing proofs with different pubkeys (different data) is rejected.
+#[tokio::test]
+async fn test_p2pk_sig_all_mixed_proofs_different_data() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
+
+    // Create two different keypairs
+    let (alice_secret, alice_pubkey) = create_test_keypair();
+    let (bob_secret, bob_pubkey) = create_test_keypair();
+
+    println!("Alice pubkey: {}", alice_pubkey);
+    println!("Bob pubkey: {}", bob_pubkey);
+
+    // Step 1: Mint regular proofs for Alice
+    let alice_input_amount = Amount::from(10);
+    let alice_input_proofs = test_mint.mint_proofs(alice_input_amount).await.unwrap();
+
+    // Step 2: Create Alice's P2PK spending conditions with SIG_ALL
+    let alice_spending_conditions = SpendingConditions::new_p2pk(
+        alice_pubkey,
+        Some(Conditions {
+            locktime: None,
+            pubkeys: None,
+            refund_keys: None,
+            num_sigs: None,
+            sig_flag: SigFlag::SigAll,
+            num_sigs_refund: None,
+        })
+    );
+
+    // Step 3: Swap for Alice's P2PK proofs
+    let alice_split_amounts = test_mint.split_amount(alice_input_amount).unwrap();
+    let (alice_outputs, alice_blinding_factors, alice_secrets) = unzip3(
+        alice_split_amounts
+            .iter()
+            .map(|&amt| test_mint.create_blinded_message(amt, &alice_spending_conditions))
+            .collect(),
+    );
+
+    let swap_request_alice = cdk_common::nuts::SwapRequest::new(
+        alice_input_proofs,
+        alice_outputs.clone(),
+    );
+    let swap_response_alice = mint.process_swap_request(swap_request_alice).await.unwrap();
+
+    let alice_proofs = construct_proofs(
+        swap_response_alice.signatures.clone(),
+        alice_blinding_factors.clone(),
+        alice_secrets.clone(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    ).unwrap();
+
+    println!("Created {} Alice proofs (locked to Alice with SIG_ALL)", alice_proofs.len());
+
+    // Step 4: Mint regular proofs for Bob
+    let bob_input_amount = Amount::from(10);
+    let bob_input_proofs = test_mint.mint_proofs(bob_input_amount).await.unwrap();
+
+    // Step 5: Create Bob's P2PK spending conditions with SIG_ALL (different data!)
+    let bob_spending_conditions = SpendingConditions::new_p2pk(
+        bob_pubkey,
+        Some(Conditions {
+            locktime: None,
+            pubkeys: None,
+            refund_keys: None,
+            num_sigs: None,
+            sig_flag: SigFlag::SigAll,
+            num_sigs_refund: None,
+        })
+    );
+
+    // Step 6: Swap for Bob's P2PK proofs
+    let bob_split_amounts = test_mint.split_amount(bob_input_amount).unwrap();
+    let (bob_outputs, bob_blinding_factors, bob_secrets) = unzip3(
+        bob_split_amounts
+            .iter()
+            .map(|&amt| test_mint.create_blinded_message(amt, &bob_spending_conditions))
+            .collect(),
+    );
+
+    let swap_request_bob = cdk_common::nuts::SwapRequest::new(
+        bob_input_proofs,
+        bob_outputs.clone(),
+    );
+    let swap_response_bob = mint.process_swap_request(swap_request_bob).await.unwrap();
+
+    let bob_proofs = construct_proofs(
+        swap_response_bob.signatures.clone(),
+        bob_blinding_factors.clone(),
+        bob_secrets.clone(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    ).unwrap();
+
+    println!("Created {} Bob proofs (locked to Bob with SIG_ALL)", bob_proofs.len());
+
+    // Step 7: Try to spend Alice's and Bob's proofs together in one transaction (should FAIL!)
+    // This violates NUT-11 requirement that all SIG_ALL proofs must have same data
+    let total_amount = alice_input_amount + bob_input_amount;
+    let (new_outputs, _) = create_test_blinded_messages(mint, total_amount).await.unwrap();
+
+    let mut mixed_proofs = alice_proofs.clone();
+    mixed_proofs.extend(bob_proofs.clone());
+
+    let mut swap_request_mixed = cdk_common::nuts::SwapRequest::new(
+        mixed_proofs,
+        new_outputs.clone(),
+    );
+
+    // Sign with both Alice's and Bob's keys (no client-side validation, so this succeeds)
+    swap_request_mixed.sign_sig_all(alice_secret.clone()).unwrap();
+    swap_request_mixed.sign_sig_all(bob_secret.clone()).unwrap();
+
+    // But the mint should reject it due to mismatched data, even though both signed
+    let result = mint.process_swap_request(swap_request_mixed).await;
+    assert!(result.is_err(), "Should fail - cannot mix proofs with different data in SIG_ALL transaction, even with both signatures");
+
+    let error_msg = format!("{:?}", result.err().unwrap());
+    println!("✓ Mixing Alice and Bob proofs in SIG_ALL transaction failed at mint verification: {}", error_msg);
+
+    // Step 8: Alice should be able to spend her proofs alone (should succeed)
+    let (alice_new_outputs, _) = create_test_blinded_messages(mint, alice_input_amount).await.unwrap();
+    let mut swap_request_alice_only = cdk_common::nuts::SwapRequest::new(
+        alice_proofs.clone(),
+        alice_new_outputs.clone(),
+    );
+    swap_request_alice_only.sign_sig_all(alice_secret.clone()).unwrap();
+
+    let result = mint.process_swap_request(swap_request_alice_only).await;
+    assert!(result.is_ok(), "Should succeed - Alice spending her own proofs: {:?}", result.err());
+    println!("✓ Alice successfully spent her own proofs separately");
+
+    // Step 9: Bob should be able to spend his proofs alone (should succeed)
+    let (bob_new_outputs, _) = create_test_blinded_messages(mint, bob_input_amount).await.unwrap();
+    let mut swap_request_bob_only = cdk_common::nuts::SwapRequest::new(
+        bob_proofs.clone(),
+        bob_new_outputs.clone(),
+    );
+    swap_request_bob_only.sign_sig_all(bob_secret.clone()).unwrap();
+
+    let result = mint.process_swap_request(swap_request_bob_only).await;
+    assert!(result.is_ok(), "Should succeed - Bob spending his own proofs: {:?}", result.err());
+    println!("✓ Bob successfully spent his own proofs separately");
+}
