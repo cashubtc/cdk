@@ -13,7 +13,7 @@ use thiserror::Error;
 use super::nut00::Witness;
 use super::nut10::Secret;
 use super::nut11::valid_signatures;
-use super::{Conditions, Proof, SigFlag};
+use super::{Conditions, Proof};
 use crate::ensure_cdk;
 use crate::util::unix_time;
 

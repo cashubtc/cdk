@@ -10,10 +10,9 @@ use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::DynMintAuthDatabase;
 use cdk_common::database::{self, DynMintDatabase, MintTransaction};
-use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
+use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
-use cdk_common::secret;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::global;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};

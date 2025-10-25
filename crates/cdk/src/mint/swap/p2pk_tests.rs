@@ -245,7 +245,7 @@ async fn test_p2pk_multisig_2of3() {
     // Generate 3 keypairs for the multisig
     let (alice_secret, alice_pubkey) = create_test_keypair();
     let (bob_secret, bob_pubkey) = create_test_keypair();
-    let (carol_secret, carol_pubkey) = create_test_keypair();
+    let (_carol_secret, carol_pubkey) = create_test_keypair();
 
     // Generate 2 wrong keypairs (not in the multisig set)
     let (dave_secret, _dave_pubkey) = create_test_keypair();
@@ -715,7 +715,7 @@ async fn test_p2pk_signed_by_wrong_person() {
     let mint = test_mint.mint();
 
     // Generate keypairs for Alice and Bob
-    let (alice_secret, alice_pubkey) = create_test_keypair();
+    let (_alice_secret, alice_pubkey) = create_test_keypair();
     let (bob_secret, _bob_pubkey) = create_test_keypair();
     println!("Alice pubkey: {}", alice_pubkey);
     println!("Bob will try to spend Alice's proofs");
