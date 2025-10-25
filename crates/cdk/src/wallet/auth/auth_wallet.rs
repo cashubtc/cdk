@@ -192,39 +192,6 @@ impl AuthWallet {
         Ok(keys)
     }
 
-    /// Get blind auth keysets from local database or go online if missing (with transaction)
-    ///
-    /// First checks the local database for cached blind auth keysets. If keysets are not found locally,
-    /// goes online to refresh keysets from the mint and updates the local database.
-    /// This is the main method for getting auth keysets in operations that can work offline
-    /// but will fall back to online if needed.
-    ///
-    /// This version requires a database transaction to be passed in.
-    #[instrument(skip(self, tx))]
-    pub(crate) async fn load_mint_keysets_with_tx(
-        &self,
-        tx: &mut Tx<'_, '_>,
-    ) -> Result<Vec<KeySetInfo>, Error> {
-        match tx.get_mint_keysets(self.mint_url.clone()).await? {
-            Some(keysets_info) => {
-                let auth_keysets: Vec<KeySetInfo> =
-                    keysets_info.unit(CurrencyUnit::Sat).cloned().collect();
-                if auth_keysets.is_empty() {
-                    // If we don't have any auth keysets, fetch them from the mint
-                    let keysets = self.refresh_keysets_with_tx(tx).await?;
-                    Ok(keysets)
-                } else {
-                    Ok(auth_keysets)
-                }
-            }
-            None => {
-                // If we don't have any keysets, fetch them from the mint
-                let keysets = self.refresh_keysets_with_tx(tx).await?;
-                Ok(keysets)
-            }
-        }
-    }
-
     /// Get blind auth keysets from local database or go online if missing
     ///
     /// First checks the local database for cached blind auth keysets. If keysets are not found locally,
@@ -328,23 +295,6 @@ impl AuthWallet {
         }
 
         Ok(auth_keysets)
-    }
-
-    /// Get the first active blind auth keyset - always goes online (with transaction)
-    ///
-    /// This method always goes online to refresh keysets from the mint and then returns
-    /// the first active keyset found. Use this when you need the most up-to-date
-    /// keyset information for blind auth operations.
-    ///
-    /// This version requires a database transaction to be passed in.
-    #[instrument(skip(self, tx))]
-    pub(crate) async fn fetch_active_keyset_with_tx(
-        &self,
-        tx: &mut Tx<'_, '_>,
-    ) -> Result<KeySetInfo, Error> {
-        let auth_keysets = self.refresh_keysets_with_tx(tx).await?;
-        let keyset = auth_keysets.first().ok_or(Error::NoActiveKeyset)?;
-        Ok(keyset.clone())
     }
 
     /// Get the first active blind auth keyset - always goes online
