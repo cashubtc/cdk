@@ -845,6 +845,8 @@ impl Mint {
     /// Verify [`Proof`] meets conditions and is signed
     #[tracing::instrument(skip_all)]
     pub async fn verify_proofs(&self, proofs: Proofs) -> Result<(), Error> {
+        // This ignore P2PK and HTLC, as all NUT-10 spending conditions are
+        // checked elsewhere.
         #[cfg(feature = "prometheus")]
         global::inc_in_flight_requests("verify_proofs");
 

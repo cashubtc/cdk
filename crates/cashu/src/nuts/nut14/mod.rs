@@ -71,12 +71,12 @@ impl Proof {
             .tags()
             .and_then(|c| c.clone().try_into().ok());
 
-        // if let Some(ref conds) = conditions {
-        //     debug_assert!(
-        //         conds.sig_flag != SigFlag::SigAll,
-        //         "verify_htlc called with SIG_ALL proof - this is a bug"
-        //     );
-        // }
+        if let Some(ref conds) = conditions {
+            debug_assert!(
+                conds.sig_flag != super::SigFlag::SigAll,
+                "verify_htlc called with SIG_ALL proof - this is a bug"
+            );
+        }
 
         let htlc_witness = match &self.witness {
             Some(Witness::HTLCWitness(witness)) => witness,
