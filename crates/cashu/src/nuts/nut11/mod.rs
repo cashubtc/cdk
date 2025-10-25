@@ -378,6 +378,8 @@ impl SpendingConditions {
                 let mut pubkeys = vec![*data];
                 if let Some(conditions) = conditions {
                     pubkeys.extend(conditions.pubkeys.clone().unwrap_or_default());
+                    // FIXME: Add refund pubkeys for signing
+                    pubkeys.extend(conditions.refund_keys.clone().unwrap_or_default());
                 }
                 // Remove duplicates
                 let unique_pubkeys: HashSet<_> = pubkeys.into_iter().collect();
