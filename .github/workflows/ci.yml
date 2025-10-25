@@ -105,6 +105,7 @@ jobs:
             -p cdk --no-default-features --features wallet,
             -p cdk --no-default-features --features mint,
             -p cdk --no-default-features --features auth,
+            -p cdk --features npubcash,
             -p cdk-sql-common,
             -p cdk-sql-common --no-default-features --features wallet,
             -p cdk-sql-common --no-default-features --features mint,
@@ -130,6 +131,7 @@ jobs:
             
             -p cdk-signatory,
             -p cdk-mint-rpc,
+            -p cdk-npubcash,
 
             -p cdk-prometheus,
             
