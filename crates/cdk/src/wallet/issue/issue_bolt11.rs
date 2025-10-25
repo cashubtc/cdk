@@ -52,12 +52,13 @@ impl Wallet {
         let mint_url = self.mint_url.clone();
         let unit = self.unit.clone();
 
-        self.refresh_keysets().await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
+        self.refresh_keysets_with_tx(&mut tx).await?;
 
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
-            let settings = self
-                .localstore
+            let settings = tx
                 .get_mint(mint_url.clone())
                 .await?
                 .ok_or(Error::IncorrectMint)?
@@ -94,7 +95,8 @@ impl Wallet {
             Some(secret_key),
         );
 
-        self.localstore.add_mint_quote(quote.clone()).await?;
+        tx.add_mint_quote(quote.clone()).await?;
+        tx.commit().await?;
 
         Ok(quote)
     }
@@ -107,12 +109,15 @@ impl Wallet {
     ) -> Result<MintQuoteBolt11Response<String>, Error> {
         let response = self.client.get_mint_quote_status(quote_id).await?;
 
-        match self.localstore.get_mint_quote(quote_id).await? {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
+        match tx.get_mint_quote(quote_id).await? {
             Some(quote) => {
                 let mut quote = quote;
 
                 quote.state = response.state;
-                self.localstore.add_mint_quote(quote).await?;
+                tx.add_mint_quote(quote).await?;
+                tx.commit().await?;
             }
             None => {
                 tracing::info!("Quote mint {} unknown", quote_id);
@@ -137,7 +142,9 @@ impl Wallet {
                     .await?;
                 total_amount += proofs.total_amount()?;
             } else if mint_quote.expiry.le(&unix_time()) {
-                self.localstore.remove_mint_quote(&mint_quote.id).await?;
+                let mut tx = self.localstore.begin_db_transaction().await?;
+                tx.remove_mint_quote(&mint_quote.id).await?;
+                tx.commit().await?;
             }
         }
         Ok(total_amount)
@@ -196,10 +203,11 @@ impl Wallet {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
-        self.refresh_keysets().await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
 
-        let quote_info = self
-            .localstore
+        self.refresh_keysets_with_tx(&mut tx).await?;
+
+        let quote_info = tx
             .get_mint_quote(quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
@@ -221,9 +229,9 @@ impl Wallet {
             tracing::warn!("Attempting to mint with expired quote.");
         }
 
-        let active_keyset_id = self.fetch_active_keyset().await?.id;
+        let active_keyset_id = self.fetch_active_keyset_with_tx(&mut tx).await?.id;
         let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .get_keyset_fees_and_amounts_by_id_with_tx(&mut tx, active_keyset_id)
             .await?;
 
         let premint_secrets = match &spending_conditions {
@@ -247,8 +255,7 @@ impl Wallet {
                 );
 
                 // Atomically get the counter range we need
-                let new_counter = self
-                    .localstore
+                let new_counter = tx
                     .increment_keyset_counter(&active_keyset_id, num_secrets)
                     .await?;
 
@@ -277,12 +284,16 @@ impl Wallet {
 
         let mint_res = self.client.post_mint(request).await?;
 
-        let keys = self.load_keyset_keys(active_keyset_id).await?;
+        let keys = self
+            .load_keyset_keys_with_tx(&mut tx, active_keyset_id)
+            .await?;
 
         // Verify the signature DLEQ is valid
         {
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
-                let keys = self.load_keyset_keys(sig.keyset_id).await?;
+                let keys = self
+                    .load_keyset_keys_with_tx(&mut tx, sig.keyset_id)
+                    .await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
                 match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
                     Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
@@ -299,7 +310,7 @@ impl Wallet {
         )?;
 
         // Remove filled quote from store
-        self.localstore.remove_mint_quote(&quote_info.id).await?;
+        tx.remove_mint_quote(&quote_info.id).await?;
 
         let proof_infos = proofs
             .iter()
@@ -314,25 +325,26 @@ impl Wallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        self.localstore.update_proofs(proof_infos, vec![]).await?;
+        tx.update_proofs(proof_infos, vec![]).await?;
 
         // Add transaction to store
-        self.localstore
-            .add_transaction(Transaction {
-                mint_url: self.mint_url.clone(),
-                direction: TransactionDirection::Incoming,
-                amount: proofs.total_amount()?,
-                fee: Amount::ZERO,
-                unit: self.unit.clone(),
-                ys: proofs.ys()?,
-                timestamp: unix_time,
-                memo: None,
-                metadata: HashMap::new(),
-                quote_id: Some(quote_id.to_string()),
-                payment_request: Some(quote_info.request),
-                payment_proof: None,
-            })
-            .await?;
+        tx.add_transaction(Transaction {
+            mint_url: self.mint_url.clone(),
+            direction: TransactionDirection::Incoming,
+            amount: proofs.total_amount()?,
+            fee: Amount::ZERO,
+            unit: self.unit.clone(),
+            ys: proofs.ys()?,
+            timestamp: unix_time,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: Some(quote_id.to_string()),
+            payment_request: Some(quote_info.request),
+            payment_proof: None,
+        })
+        .await?;
+
+        tx.commit().await?;
 
         Ok(proofs)
     }

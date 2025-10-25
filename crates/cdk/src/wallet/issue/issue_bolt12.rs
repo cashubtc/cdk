@@ -15,7 +15,7 @@ use crate::nuts::{
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
-use crate::wallet::MintQuote;
+use crate::wallet::{MintQuote, Tx};
 use crate::{Amount, Error, Wallet};
 
 impl Wallet {
@@ -29,7 +29,9 @@ impl Wallet {
         let mint_url = self.mint_url.clone();
         let unit = &self.unit;
 
-        self.refresh_keysets().await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
+        self.refresh_keysets_with_tx(&mut tx).await?;
 
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
@@ -71,7 +73,8 @@ impl Wallet {
             Some(secret_key),
         );
 
-        self.localstore.add_mint_quote(quote.clone()).await?;
+        tx.add_mint_quote(quote.clone()).await?;
+        tx.commit().await?;
 
         Ok(quote)
     }
@@ -85,9 +88,11 @@ impl Wallet {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
-        self.refresh_keysets().await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
 
-        let quote_info = self.localstore.get_mint_quote(quote_id).await?;
+        self.refresh_keysets_with_tx(&mut tx).await?;
+
+        let quote_info = tx.get_mint_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
             if quote.expiry.le(&unix_time()) && quote.expiry.ne(&0) {
@@ -99,9 +104,9 @@ impl Wallet {
             return Err(Error::UnknownQuote);
         };
 
-        let active_keyset_id = self.fetch_active_keyset().await?.id;
+        let active_keyset_id = self.fetch_active_keyset_with_tx(&mut tx).await?.id;
         let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .get_keyset_fees_and_amounts_by_id_with_tx(&mut tx, active_keyset_id)
             .await?;
 
         let amount = match amount {
@@ -109,7 +114,9 @@ impl Wallet {
             None => {
                 // If an amount it not supplied with check the status of the quote
                 // The mint will tell us how much can be minted
-                let state = self.mint_bolt12_quote_state(quote_id).await?;
+                let state = self
+                    .mint_bolt12_quote_state_with_tx(&mut tx, quote_id)
+                    .await?;
 
                 state.amount_paid - state.amount_issued
             }
@@ -140,8 +147,7 @@ impl Wallet {
                 );
 
                 // Atomically get the counter range we need
-                let new_counter = self
-                    .localstore
+                let new_counter = tx
                     .increment_keyset_counter(&active_keyset_id, num_secrets)
                     .await?;
 
@@ -173,12 +179,16 @@ impl Wallet {
 
         let mint_res = self.client.post_mint(request).await?;
 
-        let keys = self.load_keyset_keys(active_keyset_id).await?;
+        let keys = self
+            .load_keyset_keys_with_tx(&mut tx, active_keyset_id)
+            .await?;
 
         // Verify the signature DLEQ is valid
         {
             for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
-                let keys = self.load_keyset_keys(sig.keyset_id).await?;
+                let keys = self
+                    .load_keyset_keys_with_tx(&mut tx, sig.keyset_id)
+                    .await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
                 match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
                     Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
@@ -202,7 +212,7 @@ impl Wallet {
             .ok_or(Error::UnpaidQuote)?;
         quote_info.amount_issued += proofs.total_amount()?;
 
-        self.localstore.add_mint_quote(quote_info.clone()).await?;
+        tx.add_mint_quote(quote_info.clone()).await?;
 
         let proof_infos = proofs
             .iter()
@@ -217,44 +227,59 @@ impl Wallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        self.localstore.update_proofs(proof_infos, vec![]).await?;
+        tx.update_proofs(proof_infos, vec![]).await?;
 
         // Add transaction to store
-        self.localstore
-            .add_transaction(Transaction {
-                mint_url: self.mint_url.clone(),
-                direction: TransactionDirection::Incoming,
-                amount: proofs.total_amount()?,
-                fee: Amount::ZERO,
-                unit: self.unit.clone(),
-                ys: proofs.ys()?,
-                timestamp: unix_time(),
-                memo: None,
-                metadata: HashMap::new(),
-                quote_id: Some(quote_id.to_string()),
-                payment_request: Some(quote_info.request),
-                payment_proof: None,
-            })
-            .await?;
+        tx.add_transaction(Transaction {
+            mint_url: self.mint_url.clone(),
+            direction: TransactionDirection::Incoming,
+            amount: proofs.total_amount()?,
+            fee: Amount::ZERO,
+            unit: self.unit.clone(),
+            ys: proofs.ys()?,
+            timestamp: unix_time(),
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: Some(quote_id.to_string()),
+            payment_request: Some(quote_info.request),
+            payment_proof: None,
+        })
+        .await?;
+
+        tx.commit().await?;
 
         Ok(proofs)
     }
 
     /// Check mint quote status
-    #[instrument(skip(self, quote_id))]
     pub async fn mint_bolt12_quote_state(
         &self,
         quote_id: &str,
     ) -> Result<MintQuoteBolt12Response<String>, Error> {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let result = self
+            .mint_bolt12_quote_state_with_tx(&mut tx, quote_id)
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Check mint quote status with transaction
+    #[instrument(skip(self, tx, quote_id))]
+    pub async fn mint_bolt12_quote_state_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+        quote_id: &str,
+    ) -> Result<MintQuoteBolt12Response<String>, Error> {
         let response = self.client.get_mint_quote_bolt12_status(quote_id).await?;
 
-        match self.localstore.get_mint_quote(quote_id).await? {
+        match tx.get_mint_quote(quote_id).await? {
             Some(quote) => {
                 let mut quote = quote;
                 quote.amount_issued = response.amount_issued;
                 quote.amount_paid = response.amount_paid;
 
-                self.localstore.add_mint_quote(quote).await?;
+                tx.add_mint_quote(quote).await?;
             }
             None => {
                 tracing::info!("Quote mint {} unknown", quote_id);

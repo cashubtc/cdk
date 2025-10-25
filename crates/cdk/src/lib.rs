@@ -9,16 +9,16 @@ compile_error!("The 'tor' feature is not supported on wasm32 targets (browser). 
 
 pub mod cdk_database {
     //! CDK Database
-    pub use cdk_common::database::Error;
     #[cfg(all(feature = "mint", feature = "auth"))]
     pub use cdk_common::database::MintAuthDatabase;
-    #[cfg(feature = "wallet")]
-    pub use cdk_common::database::WalletDatabase;
+    pub use cdk_common::database::{DbTransactionFinalizer, Error};
     #[cfg(feature = "mint")]
     pub use cdk_common::database::{
         MintDatabase, MintKVStore, MintKVStoreDatabase, MintKVStoreTransaction, MintKeysDatabase,
         MintProofsDatabase, MintQuotesDatabase, MintSignaturesDatabase, MintTransaction,
     };
+    #[cfg(feature = "wallet")]
+    pub use cdk_common::database::{WalletDatabase, WalletDatabaseTransaction};
 }
 
 #[cfg(feature = "mint")]
