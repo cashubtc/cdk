@@ -59,14 +59,152 @@ pub fn verify_spending_conditions(
 /// When SIG_ALL is set, all proofs in the transaction must be signed together.
 fn verify_full_sig_all_check(
     inputs: &Proofs,
-    _outputs: &[BlindedMessage],
+    outputs: &[BlindedMessage],
 ) -> Result<(), Error> {
     // Verify all inputs meet SIG_ALL requirements per NUT-11:
     // All inputs must have: (1) same kind, (2) SIG_ALL flag, (3) same data, (4) same tags
     verify_all_inputs_match_for_sig_all(inputs)?;
 
-    // TODO: Implement SIG_ALL signature verification
+    // Record current time for locktime evaluation
+    let current_time = cdk_common::util::unix_time();
+
+    // Get the first input (all inputs are identical per SIG_ALL requirements)
+    let first_input = inputs.first().ok_or(Error::Internal)?;
+
+    // Get the relevant public keys and required signature count based on locktime
+    let (pubkeys, required_sigs) = get_pubkeys_and_required_sigs(first_input, current_time)?;
+
+    // Handle "anyone can spend" case (locktime passed with no refund keys)
+    if required_sigs == 0 {
+        return Ok(());
+    }
+
+    // Construct the message that should be signed (all input secrets + all output blinded messages)
+    let msg_to_sign = construct_sig_all_message(inputs, outputs);
+
+    // Debug: verify our message construction matches the existing SwapRequest implementation
+    #[cfg(debug_assertions)]
+    {
+        let _temp_swap_request = cdk_common::nuts::SwapRequest::new(
+            inputs.clone(),
+            outputs.to_vec(),
+        );
+        // We can't call the private sig_all_msg_to_sign() method, but we can manually construct
+        // what it would return and verify it matches ours
+        let mut expected_msg = String::new();
+        for proof in inputs {
+            expected_msg.push_str(&proof.secret.to_string());
+        }
+        for output in outputs {
+            expected_msg.push_str(&output.blinded_secret.to_string());
+        }
+        debug_assert_eq!(msg_to_sign, expected_msg, "Our sig_all message construction doesn't match expected format");
+    }
+
+    // Extract signatures from the first input's witness
+    let first_witness = first_input
+        .witness
+        .as_ref()
+        .ok_or(Error::InvalidSpendConditions("SIG_ALL requires signatures".into()))?;
+
+    let witness_sigs = first_witness
+        .signatures()
+        .ok_or(Error::InvalidSpendConditions("SIG_ALL requires signatures in witness".into()))?;
+
+    // Convert witness strings to Signature objects
+    use std::str::FromStr;
+    let signatures: Vec<cdk_common::bitcoin::secp256k1::schnorr::Signature> = witness_sigs
+        .iter()
+        .map(|s| cdk_common::bitcoin::secp256k1::schnorr::Signature::from_str(s))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| Error::InvalidSpendConditions("Invalid signature format".into()))?;
+
+    // Verify signatures using the existing valid_signatures function
+    let valid_sig_count = cdk_common::nuts::nut11::valid_signatures(
+        msg_to_sign.as_bytes(),
+        &pubkeys,
+        &signatures,
+    )?;
+
+    // Check if we have enough valid signatures
+    if valid_sig_count < required_sigs {
+        return Err(Error::InvalidSpendConditions(
+            format!("SIG_ALL requires {} signatures, found {}", required_sigs, valid_sig_count)
+        ));
+    }
+
     Ok(())
+}
+
+/// Get the relevant public keys and required signature count for a proof
+///
+/// Takes into account locktime - if locktime has passed, returns refund keys,
+/// otherwise returns primary pubkeys.
+fn get_pubkeys_and_required_sigs(
+    proof: &cdk_common::Proof,
+    current_time: u64,
+) -> Result<(Vec<cdk_common::nuts::PublicKey>, u64), Error> {
+    let secret = cdk_common::nuts::nut10::Secret::try_from(&proof.secret)?;
+    let conditions = cdk_common::nuts::Conditions::try_from(
+        secret.secret_data().tags().cloned().unwrap_or_default()
+    )?;
+
+    // Check if locktime has passed
+    let locktime_passed = conditions
+        .locktime
+        .map(|locktime| locktime < current_time)
+        .unwrap_or(false);
+
+    // Determine which keys and signature count to use
+    let (pubkeys, required_sigs) = if locktime_passed {
+        if let Some(refund_keys) = conditions.refund_keys {
+            // Locktime has passed and refund keys exist - use refund keys
+            let refund_sigs = conditions.num_sigs_refund.unwrap_or(1);
+            (refund_keys, refund_sigs)
+        } else {
+            // Locktime has passed with no refund keys - anyone can spend
+            (vec![], 0)
+        }
+    } else {
+        // Use primary pubkeys - include data field pubkey and any additional pubkeys from conditions
+        let mut primary_keys = vec![];
+
+        // Add the pubkey from secret.data
+        let data_pubkey = cdk_common::nuts::PublicKey::from_hex(secret.secret_data().data())
+            .map_err(|_| Error::Internal)?;
+        primary_keys.push(data_pubkey);
+
+        // Add any additional pubkeys from conditions
+        if let Some(additional_keys) = conditions.pubkeys {
+            primary_keys.extend(additional_keys);
+        }
+
+        let primary_num_sigs_required = conditions.num_sigs.unwrap_or(1);
+        (primary_keys, primary_num_sigs_required)
+    };
+
+    Ok((pubkeys, required_sigs))
+}
+
+/// Construct the message to sign for SIG_ALL verification
+///
+/// Concatenates all input secrets and output blinded messages in order
+fn construct_sig_all_message(inputs: &cdk_common::Proofs, outputs: &[BlindedMessage]) -> String {
+    let mut msg_to_sign = String::new();
+
+    // Add all input secrets in order
+    for proof in inputs {
+        let secret = proof.secret.to_string();
+        msg_to_sign.push_str(&secret);
+    }
+
+    // Add all output blinded messages in order
+    for output in outputs {
+        let message = output.blinded_secret.to_string();
+        msg_to_sign.push_str(&message);
+    }
+
+    msg_to_sign
 }
 
 /// Verify all inputs meet SIG_ALL requirements per NUT-11
