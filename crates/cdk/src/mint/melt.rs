@@ -898,6 +898,10 @@ impl Mint {
             quote.id
         );
 
+        if total_spent < quote.amount {
+            return Err(Error::AmountUndefined);
+        }
+
         let update_proof_states_result = proof_writer
             .update_proofs_states(&mut tx, &input_ys, State::Spent)
             .await;
