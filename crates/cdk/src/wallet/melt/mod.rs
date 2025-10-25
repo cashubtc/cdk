@@ -7,6 +7,8 @@ use tracing::instrument;
 
 use crate::Wallet;
 
+pub use melt_bolt11::MeltProofsOptions;
+
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 mod melt_bip353;
 mod melt_bolt11;
