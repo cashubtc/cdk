@@ -318,19 +318,63 @@ async fn test_p2pk_multisig_locktime() {
     // TODO: Test with Alice + Bob (should fail - locktime expired, only refund keys valid)
 }
 
-/// Test: Invalid signature is rejected
+/// Test: P2PK signed by wrong person is rejected
 ///
-/// Verifies that proofs with invalid signatures are rejected
+/// Creates proofs locked to Alice's public key and verifies that
+/// signing with Bob's key (wrong key) is rejected
 #[tokio::test]
-async fn test_p2pk_invalid_signature() {
-    let mint = create_test_mint().await.unwrap();
+async fn test_p2pk_signed_by_wrong_person() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
 
+    // Generate keypairs for Alice and Bob
     let (alice_secret, alice_pubkey) = create_test_keypair();
-    let (bob_secret, bob_pubkey) = create_test_keypair();
+    let (bob_secret, _bob_pubkey) = create_test_keypair();
+    println!("Alice pubkey: {}", alice_pubkey);
+    println!("Bob will try to spend Alice's proofs");
 
-    // TODO: Create P2PK proofs locked to alice_pubkey
-    // TODO: Sign with bob_secret (wrong key)
-    // TODO: Verify swap fails with signature verification error
+    // Step 1: Mint regular proofs
+    let input_amount = Amount::from(10);
+    let input_proofs = test_mint.mint_proofs(input_amount).await.unwrap();
+
+    // Step 2: Create P2PK blinded messages locked to Alice's pubkey
+    let spending_conditions = SpendingConditions::new_p2pk(alice_pubkey, None);
+    let split_amounts = test_mint.split_amount(input_amount).unwrap();
+    let (p2pk_outputs, blinding_factors, secrets) = unzip3(
+        split_amounts
+            .iter()
+            .map(|&amt| test_mint.create_blinded_message(amt, &spending_conditions))
+            .collect(),
+    );
+
+    // Step 3: Swap for P2PK proofs locked to Alice
+    let swap_request = cdk_common::nuts::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    println!("Created P2PK proofs locked to Alice");
+
+    // Step 4: Construct the P2PK proofs
+    let p2pk_proofs = construct_proofs(
+        swap_response.signatures.clone(),
+        blinding_factors.clone(),
+        secrets.clone(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    ).unwrap();
+
+    // Step 5: Try to spend Alice's proofs by signing with Bob's key (wrong key!)
+    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount).await.unwrap();
+    let mut swap_request_wrong_sig = cdk_common::nuts::SwapRequest::new(
+        p2pk_proofs.clone(),
+        new_outputs.clone(),
+    );
+
+    // Sign with Bob's key instead of Alice's key
+    for proof in swap_request_wrong_sig.inputs_mut() {
+        proof.sign_p2pk(bob_secret.clone()).unwrap();
+    }
+
+    let result = mint.process_swap_request(swap_request_wrong_sig).await;
+    assert!(result.is_err(), "Should fail when signed with wrong key");
+    println!("✓ Spending signed by wrong person failed as expected: {:?}", result.err());
 }
 
 /// Test: Duplicate signatures are rejected
