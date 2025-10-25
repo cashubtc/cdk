@@ -40,6 +40,7 @@ mod issue;
 mod keysets;
 mod ln;
 mod melt;
+mod nut10_spending_conditions;
 mod proof_writer;
 mod start_up_check;
 mod subscription;
