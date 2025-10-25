@@ -2,6 +2,7 @@ use std::env;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use cdk::types::FeeReserve;
@@ -240,16 +241,30 @@ pub async fn start_regtest_end(
     notify: Arc<Notify>,
     ldk_node: Option<Arc<Node>>,
 ) -> anyhow::Result<()> {
+    let total_start = Instant::now();
+    tracing::info!("Starting regtest environment setup");
+
+    let step_start = Instant::now();
     let mut bitcoind = init_bitcoind(work_dir);
     bitcoind.start_bitcoind()?;
+    tracing::info!(
+        "Bitcoind started in {:.2}s",
+        step_start.elapsed().as_secs_f64()
+    );
 
+    let step_start = Instant::now();
     let bitcoin_client = init_bitcoin_client()?;
     bitcoin_client.create_wallet().ok();
     bitcoin_client.load_wallet()?;
 
     let new_add = bitcoin_client.get_new_address()?;
     bitcoin_client.generate_blocks(&new_add, 200).unwrap();
+    tracing::info!(
+        "Bitcoin client initialized and 200 blocks generated in {:.2}s",
+        step_start.elapsed().as_secs_f64()
+    );
 
+    let step_start = Instant::now();
     let cln_one_dir = get_cln_dir(work_dir, "one");
     let mut clnd = Clnd::new(
         get_bitcoin_dir(work_dir),
@@ -265,8 +280,13 @@ pub async fn start_regtest_end(
     cln_client.wait_chain_sync().await.unwrap();
 
     fund_ln(&bitcoin_client, &cln_client).await.unwrap();
+    tracing::info!(
+        "CLN node 1 started and funded in {:.2}s",
+        step_start.elapsed().as_secs_f64()
+    );
 
     // Create second cln
+    let step_start = Instant::now();
     let cln_two_dir = get_cln_dir(work_dir, "two");
     let mut clnd_two = Clnd::new(
         get_bitcoin_dir(work_dir),
@@ -282,9 +302,13 @@ pub async fn start_regtest_end(
     cln_two_client.wait_chain_sync().await.unwrap();
 
     fund_ln(&bitcoin_client, &cln_two_client).await.unwrap();
+    tracing::info!(
+        "CLN node 2 started and funded in {:.2}s",
+        step_start.elapsed().as_secs_f64()
+    );
 
+    let step_start = Instant::now();
     let lnd_dir = get_lnd_dir(work_dir, "one");
-    println!("{}", lnd_dir.display());
 
     let mut lnd = init_lnd(work_dir, lnd_dir.clone(), LND_ADDR, LND_RPC_ADDR).await;
     lnd.start_lnd().unwrap();
@@ -307,8 +331,13 @@ pub async fn start_regtest_end(
     }
 
     fund_ln(&bitcoin_client, &lnd_client).await.unwrap();
+    tracing::info!(
+        "LND node 1 started and funded in {:.2}s",
+        step_start.elapsed().as_secs_f64()
+    );
 
     // create second lnd node
+    let step_start = Instant::now();
     let work_dir = get_temp_dir();
     let lnd_two_dir = get_lnd_dir(&work_dir, "two");
     let mut lnd_two = init_lnd(
@@ -331,9 +360,14 @@ pub async fn start_regtest_end(
     lnd_two_client.wait_chain_sync().await.unwrap();
 
     fund_ln(&bitcoin_client, &lnd_two_client).await.unwrap();
+    tracing::info!(
+        "LND node 2 started and funded in {:.2}s",
+        step_start.elapsed().as_secs_f64()
+    );
 
     // Open channels concurrently
     // Open channels
+    let step_start = Instant::now();
     {
         open_channel(&cln_client, &lnd_client).await.unwrap();
         tracing::info!("Opened channel between cln and lnd one");
@@ -456,8 +490,18 @@ pub async fn start_regtest_end(
             generate_block(&bitcoin_client)?;
         }
     }
+    tracing::info!(
+        "All channels opened and active in {:.2}s",
+        step_start.elapsed().as_secs_f64()
+    );
 
     tracing::info!("Regtest channels active");
+
+    let total_elapsed = total_start.elapsed();
+    tracing::info!(
+        "Total regtest setup completed in {:.2}s",
+        total_elapsed.as_secs_f64()
+    );
 
     // Send notification that regtest set up is complete
     sender.send(()).expect("Could not send oneshot");
