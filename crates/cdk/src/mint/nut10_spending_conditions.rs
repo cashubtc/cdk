@@ -65,12 +65,38 @@ fn verify_full_sig_all_check_swap(
     // All inputs must have: (1) same kind, (2) SIG_ALL flag, (3) same data, (4) same tags
     verify_all_inputs_match_for_sig_all(inputs)?;
 
-    // Record current time for locktime evaluation
-    let current_time = cdk_common::util::unix_time();
+    // Get the first input to determine the kind
+    let first_input = inputs.first().ok_or(Error::Internal)?;
+    let first_secret = cdk_common::nuts::nut10::Secret::try_from(&first_input.secret)?;
 
+    // Dispatch based on secret kind
+    match first_secret.kind() {
+        cdk_common::nuts::Kind::P2PK => {
+            verify_sig_all_swap_p2pk(inputs, outputs)?;
+        }
+        cdk_common::nuts::Kind::HTLC => {
+            // TODO: Implement HTLC SIG_ALL verification
+            return Err(Error::InvalidSpendConditions("HTLC SIG_ALL not yet implemented".into()));
+        }
+    }
+
+    Ok(())
+}
+
+/// Verify P2PK SIG_ALL signatures for swap
+fn verify_sig_all_swap_p2pk(
+    inputs: &Proofs,
+    outputs: &[BlindedMessage],
+) -> Result<(), Error> {
+    // Do NOT call this directly. This is called only from 'verify_sig_all_swap',
+    // which has already done many important SIG_ALL checks. This just does
+    // some checks which are specific to SIG_ALL+P2PK+swap
     // Get the first input, as it's the one with the signatures
     let first_input = inputs.first().ok_or(Error::Internal)?;
     let first_secret = cdk_common::nuts::nut10::Secret::try_from(&first_input.secret)?;
+
+    // Record current time for locktime evaluation
+    let current_time = cdk_common::util::unix_time();
 
     // Get the relevant public keys and required signature count based on locktime
     let (pubkeys, required_sigs) = cdk_common::nuts::nut11::get_pubkeys_and_required_sigs_for_p2pk(&first_secret, current_time)?;
@@ -79,6 +105,8 @@ fn verify_full_sig_all_check_swap(
     if required_sigs == 0 {
         return Ok(());
     }
+
+    let first_input = inputs.first().ok_or(Error::Internal)?;
 
     // Construct the message that should be signed (all input secrets + all output blinded messages)
     let msg_to_sign = construct_sig_all_message_swap(inputs, outputs);
