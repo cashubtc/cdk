@@ -103,62 +103,6 @@ impl P2PKWitness {
     }
 }
 
-/// Get the relevant public keys and required signature count for P2PK verification
-///
-/// Takes into account locktime - if locktime has passed, returns refund keys,
-/// otherwise returns primary pubkeys. Returns (pubkeys, required_sigs).
-pub fn get_pubkeys_and_required_sigs_for_p2pk(
-    secret: &Nut10Secret,
-    current_time: u64,
-) -> Result<(Vec<PublicKey>, u64), Error> {
-    debug_assert!(
-        secret.kind() == Kind::P2PK,
-        "get_pubkeys_and_required_sigs_for_p2pk called with non-P2PK secret - this is a bug"
-    );
-
-    let conditions: Conditions = secret
-        .secret_data()
-        .tags()
-        .cloned()
-        .unwrap_or_default()
-        .try_into()?;
-
-    // Check if locktime has passed
-    let locktime_passed = conditions
-        .locktime
-        .map(|locktime| locktime < current_time)
-        .unwrap_or(false);
-
-    // Determine which keys and signature count to use
-    let (pubkeys, required_sigs) = if locktime_passed {
-        if let Some(refund_keys) = &conditions.refund_keys {
-            // Locktime has passed and refund keys exist - use refund keys
-            let refund_sigs = conditions.num_sigs_refund.unwrap_or(1);
-            (refund_keys.clone(), refund_sigs)
-        } else {
-            // Locktime has passed with no refund keys - anyone can spend
-            (vec![], 0)
-        }
-    } else {
-        // Use primary pubkeys - include data field pubkey and any additional pubkeys from conditions
-        let mut primary_keys = vec![];
-
-        // Add the pubkey from secret.data
-        let data_pubkey = PublicKey::from_str(secret.secret_data().data())?;
-        primary_keys.push(data_pubkey);
-
-        // Add any additional pubkeys from conditions
-        if let Some(additional_keys) = &conditions.pubkeys {
-            primary_keys.extend(additional_keys.clone());
-        }
-
-        let primary_num_sigs_required = conditions.num_sigs.unwrap_or(1);
-        (primary_keys, primary_num_sigs_required)
-    };
-
-    Ok((pubkeys, required_sigs))
-}
-
 impl Proof {
     /// Sign [Proof]
     pub fn sign_p2pk(&mut self, secret_key: SecretKey) -> Result<(), Error> {
@@ -203,7 +147,9 @@ impl Proof {
 
         // Based on the current time, we must identify the relevant keys
         let now = unix_time();
-        let (relevant_pubkeys, relevant_num_sigs_required) = get_pubkeys_and_required_sigs_for_p2pk(&secret, now)?;
+        let (preimage_needed, relevant_pubkeys, relevant_num_sigs_required) = super::nut10::get_pubkeys_and_required_sigs(&secret, now)?;
+
+        debug_assert!(!preimage_needed, "P2PK should never require preimage");
 
         // Handle "anyone can spend" case (locktime passed with no refund keys)
         if relevant_num_sigs_required == 0 {

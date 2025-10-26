@@ -10,6 +10,9 @@ use serde::ser::SerializeTuple;
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
 
+use super::nut01::PublicKey;
+use super::Conditions;
+
 /// NUT13 Error
 #[derive(Debug, Error)]
 pub enum Error {
@@ -102,6 +105,74 @@ impl Secret {
     /// Get the secret data
     pub fn secret_data(&self) -> &SecretData {
         &self.secret_data
+    }
+}
+
+/// Get the relevant public keys and required signature count for P2PK or HTLC verification
+///
+/// Takes into account locktime - if locktime has passed, returns refund keys,
+/// otherwise returns primary pubkeys/hash path. Returns (preimage_needed, pubkeys, required_sigs).
+/// For P2PK, preimage_needed is always false. For HTLC, preimage_needed is true before locktime.
+pub fn get_pubkeys_and_required_sigs(
+    secret: &Secret,
+    current_time: u64,
+) -> Result<(bool, Vec<PublicKey>, u64), super::nut11::Error> {
+    debug_assert!(
+        secret.kind() == Kind::P2PK || secret.kind() == Kind::HTLC,
+        "get_pubkeys_and_required_sigs called with invalid kind - this is a bug"
+    );
+
+    let conditions: Conditions = secret
+        .secret_data()
+        .tags()
+        .cloned()
+        .unwrap_or_default()
+        .try_into()?;
+
+    // Check if locktime has passed
+    let locktime_passed = conditions
+        .locktime
+        .map(|locktime| locktime < current_time)
+        .unwrap_or(false);
+
+    // Determine which keys and signature count to use
+    if locktime_passed {
+        // After locktime: use refund path (no preimage needed)
+        if let Some(refund_keys) = &conditions.refund_keys {
+            // Locktime has passed and refund keys exist - use refund keys
+            let refund_sigs = conditions.num_sigs_refund.unwrap_or(1);
+            Ok((false, refund_keys.clone(), refund_sigs))
+        } else {
+            // Locktime has passed with no refund keys - anyone can spend
+            Ok((false, vec![], 0))
+        }
+    } else {
+        // Before locktime: logic differs between P2PK and HTLC
+        match secret.kind() {
+            Kind::P2PK => {
+                // P2PK: never needs preimage, use primary pubkeys
+                let mut primary_keys = vec![];
+
+                // Add the pubkey from secret.data
+                let data_pubkey = PublicKey::from_str(secret.secret_data().data())?;
+                primary_keys.push(data_pubkey);
+
+                // Add any additional pubkeys from conditions
+                if let Some(additional_keys) = &conditions.pubkeys {
+                    primary_keys.extend(additional_keys.clone());
+                }
+
+                let primary_num_sigs_required = conditions.num_sigs.unwrap_or(1);
+                Ok((false, primary_keys, primary_num_sigs_required))
+            }
+            Kind::HTLC => {
+                // HTLC: needs preimage before locktime, pubkeys from conditions
+                // (data contains hash, not pubkey)
+                let pubkeys = conditions.pubkeys.clone().unwrap_or_default();
+                let required_sigs = conditions.num_sigs.unwrap_or(1);
+                Ok((true, pubkeys, required_sigs))
+            }
+        }
     }
 }
 

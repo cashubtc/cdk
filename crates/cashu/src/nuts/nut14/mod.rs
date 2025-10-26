@@ -61,56 +61,6 @@ pub struct HTLCWitness {
     pub signatures: Option<Vec<String>>,
 }
 
-/// Get the relevant public keys and required signature count for HTLC verification
-///
-/// Takes into account locktime - if locktime has passed, returns refund keys,
-/// otherwise returns primary pubkeys. Returns (preimage_needed, pubkeys, required_sigs).
-pub fn get_pubkeys_and_required_sigs_for_htlc(
-    secret: &Secret,
-    current_time: u64,
-) -> Result<(bool, Vec<super::nut01::PublicKey>, u64), Error> {
-    use super::nut10::Kind;
-
-    debug_assert!(
-        secret.kind() == Kind::HTLC,
-        "get_pubkeys_and_required_sigs_for_htlc called with non-HTLC secret - this is a bug"
-    );
-
-    let conditions: Conditions = secret
-        .secret_data()
-        .tags()
-        .cloned()
-        .unwrap_or_default()
-        .try_into()?;
-
-    // Check if locktime has passed
-    let locktime_passed = conditions
-        .locktime
-        .map(|locktime| locktime < current_time)
-        .unwrap_or(false);
-
-    // Determine spending path based on locktime
-    let (preimage_needed, pubkeys, required_sigs) = if locktime_passed {
-        // After locktime: use refund path (no preimage needed)
-        if let Some(refund_keys) = &conditions.refund_keys {
-            // Locktime has passed and refund keys exist - use refund keys
-            let refund_sigs = conditions.num_sigs_refund.unwrap_or(1);
-            (false, refund_keys.clone(), refund_sigs)
-        } else {
-            // Locktime has passed with no refund keys - anyone can spend
-            (false, vec![], 0)
-        }
-    } else {
-        // Before locktime: use hash path (preimage needed)
-        // Get pubkeys from conditions (for HTLC, data contains hash, not pubkey)
-        let pubkeys = conditions.pubkeys.clone().unwrap_or_default();
-        let required_sigs = conditions.num_sigs.unwrap_or(1);
-        (true, pubkeys, required_sigs)
-    };
-
-    Ok((preimage_needed, pubkeys, required_sigs))
-}
-
 impl Proof {
     /// Verify HTLC
     pub fn verify_htlc(&self) -> Result<(), Error> {
@@ -135,7 +85,8 @@ impl Proof {
         // Get the appropriate spending conditions based on locktime
         let now = unix_time();
         let (preimage_needed, relevant_pubkeys, relevant_num_sigs_required) =
-            get_pubkeys_and_required_sigs_for_htlc(&secret, now)?;
+            super::nut10::get_pubkeys_and_required_sigs(&secret, now)
+                .map_err(|e| Error::NUT11(e))?;
 
         // don't extract the witness until it's needed. Remember a post-locktime
         // zero-refunds proof is acceptable here, and therefore a Witness isn't always

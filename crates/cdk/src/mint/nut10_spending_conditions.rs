@@ -99,7 +99,9 @@ fn verify_sig_all_swap_p2pk(
     let current_time = cdk_common::util::unix_time();
 
     // Get the relevant public keys and required signature count based on locktime
-    let (pubkeys, required_sigs) = cdk_common::nuts::nut11::get_pubkeys_and_required_sigs_for_p2pk(&first_secret, current_time)?;
+    let (preimage_needed, pubkeys, required_sigs) = cdk_common::nuts::nut10::get_pubkeys_and_required_sigs(&first_secret, current_time)?;
+
+    debug_assert!(!preimage_needed, "P2PK should never require preimage");
 
     // Handle "anyone can spend" case (locktime passed with no refund keys)
     if required_sigs == 0 {
@@ -182,7 +184,7 @@ fn verify_sig_all_swap_htlc(
     let current_time = cdk_common::util::unix_time();
 
     // Get the relevant public keys, required signature count, and whether preimage is needed
-    let (preimage_needed, pubkeys, required_sigs) = cdk_common::nuts::nut14::get_pubkeys_and_required_sigs_for_htlc(&first_secret, current_time)?;
+    let (preimage_needed, pubkeys, required_sigs) = cdk_common::nuts::nut10::get_pubkeys_and_required_sigs(&first_secret, current_time)?;
 
     // If preimage is needed (before locktime), verify it
     if preimage_needed {
