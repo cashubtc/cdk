@@ -116,10 +116,6 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
     // Use sign_sig_all to sign the transaction (signature goes on first proof's witness)
     swap_request_with_sig.sign_sig_all(alice_secret.clone()).unwrap();
 
-    // Verify the signatures
-    let verify_result = swap_request_with_sig.verify_sig_all();
-    println!("verify_sig_all result: {:?}", verify_result);
-
     let result = mint.process_swap_request(swap_request_with_sig).await;
     assert!(result.is_ok(), "Should succeed with valid signature: {:?}", result.err());
     println!("✓ Spending WITH ALL signatures (SIG_ALL) succeeded");

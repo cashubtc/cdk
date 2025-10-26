@@ -929,7 +929,12 @@ impl SwapRequest {
     }
 
     /// Validate SIG_ALL conditions and signatures for the swap request
-    /// This is no longer used, and is incorrect as it doesn't take locktime into account
+    ///
+    /// DEPRECATED: Use `verify_spending_conditions()` instead.
+    /// This method does not properly handle locktime or HTLC verification.
+    /// The correct method is `verify_spending_conditions()` which handles all
+    /// spending condition types correctly.
+    #[deprecated(since = "0.4.0", note = "Use verify_spending_conditions() instead")]
     pub fn verify_sig_all(&self) -> Result<(), Error> {
         // Get required signatures and conditions from first input
         let (required_sigs, first_conditions) = self.get_sig_all_required_sigs()?;
@@ -1637,7 +1642,7 @@ mod tests {
 
         let valid_swap: SwapRequest = serde_json::from_str(valid_swap).unwrap();
         assert!(
-            valid_swap.verify_sig_all().is_ok(),
+            valid_swap.verify_spending_conditions().is_ok(),
             "Valid SIG_ALL swap request should verify"
         );
     }
@@ -1668,7 +1673,7 @@ mod tests {
 
         let invalid_swap: SwapRequest = serde_json::from_str(invalid_swap).unwrap();
         assert!(
-            invalid_swap.verify_sig_all().is_err(),
+            invalid_swap.verify_spending_conditions().is_err(),
             "Invalid SIG_ALL swap request should fail verification"
         );
     }
@@ -1680,7 +1685,7 @@ mod tests {
 
         let multisig_swap: SwapRequest = serde_json::from_str(multisig_swap).unwrap();
         assert!(
-            multisig_swap.verify_sig_all().is_ok(),
+            multisig_swap.verify_spending_conditions().is_ok(),
             "Multi-sig SIG_ALL swap request should verify with both signatures"
         );
     }
@@ -1809,7 +1814,7 @@ mod tests {
         // Test basic signing flow
         let mut swap = SwapRequest::new(vec![proof1, proof2], vec![blinded_msg]);
         assert!(
-            swap.verify_sig_all().is_err(),
+            swap.verify_spending_conditions().is_err(),
             "Unsigned swap should fail verification"
         );
 
@@ -1821,7 +1826,7 @@ mod tests {
         println!("{}", serde_json::to_string(&swap).unwrap());
 
         assert!(
-            swap.verify_sig_all().is_ok(),
+            swap.verify_spending_conditions().is_ok(),
             "Signed swap should pass verification"
         );
     }
@@ -1947,7 +1952,7 @@ mod tests {
             "First signature should succeed"
         );
         assert!(
-            swap.verify_sig_all().is_err(),
+            swap.verify_spending_conditions().is_err(),
             "Single signature should not verify when two required"
         );
 
@@ -1958,7 +1963,7 @@ mod tests {
         );
 
         assert!(
-            swap.verify_sig_all().is_ok(),
+            swap.verify_spending_conditions().is_ok(),
             "Both signatures should verify"
         );
     }
