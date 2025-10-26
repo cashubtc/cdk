@@ -146,3 +146,208 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
     assert!(result.is_ok(), "Should succeed with correct preimage and signature: {:?}", result.err());
     println!("✓ HTLC spent successfully with correct preimage AND signature");
 }
+
+/// Test: HTLC with wrong preimage
+///
+/// Verifies that providing an incorrect preimage fails even with correct signature
+#[tokio::test]
+async fn test_htlc_wrong_preimage() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
+
+    let (alice_secret, alice_pubkey) = create_test_keypair();
+    let (hash, _correct_preimage) = create_test_hash_and_preimage();
+
+    // Mint regular proofs and swap for HTLC proofs
+    let input_amount = Amount::from(10);
+    let input_proofs = test_mint.mint_proofs(input_amount).await.unwrap();
+
+    let spending_conditions = SpendingConditions::new_htlc_hash(
+        &hash,
+        Some(Conditions {
+            locktime: None,
+            pubkeys: Some(vec![alice_pubkey]),
+            refund_keys: None,
+            num_sigs: None,
+            sig_flag: SigFlag::default(),
+            num_sigs_refund: None,
+        })
+    ).unwrap();
+
+    let split_amounts = test_mint.split_amount(input_amount).unwrap();
+    let (htlc_outputs, blinding_factors, secrets) = unzip3(
+        split_amounts
+            .iter()
+            .map(|&amt| test_mint.create_blinded_message(amt, &spending_conditions))
+            .collect(),
+    );
+
+    let swap_request = cdk_common::nuts::SwapRequest::new(input_proofs.clone(), htlc_outputs.clone());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+
+    use cdk_common::dhke::construct_proofs;
+    let htlc_proofs = construct_proofs(
+        swap_response.signatures.clone(),
+        blinding_factors.clone(),
+        secrets.clone(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    ).unwrap();
+
+    // Try to spend with WRONG preimage (but correct signature)
+    use crate::test_helpers::mint::create_test_blinded_messages;
+    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount).await.unwrap();
+    let mut swap_request = cdk_common::nuts::SwapRequest::new(htlc_proofs.clone(), new_outputs.clone());
+
+    let wrong_preimage = "this_is_the_wrong_preimage";
+    for proof in swap_request.inputs_mut() {
+        proof.add_preimage(wrong_preimage.to_string());
+        proof.sign_p2pk(alice_secret.clone()).unwrap();
+    }
+
+    let result = mint.process_swap_request(swap_request).await;
+    assert!(result.is_err(), "Should fail with wrong preimage");
+    println!("✓ HTLC with wrong preimage failed as expected: {:?}", result.err());
+}
+
+/// Test: HTLC locktime after expiry (refund path)
+///
+/// Verifies that after locktime expires, refund keys can spend without preimage
+#[tokio::test]
+async fn test_htlc_locktime_after_expiry() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
+
+    let (_alice_secret, alice_pubkey) = create_test_keypair();
+    let (bob_secret, bob_pubkey) = create_test_keypair();
+    let (hash, _preimage) = create_test_hash_and_preimage();
+
+    // Create HTLC with locktime in the PAST (already expired) and Bob as refund key
+    let past_locktime = cdk_common::util::unix_time() - 1000;
+
+    let input_amount = Amount::from(10);
+    let input_proofs = test_mint.mint_proofs(input_amount).await.unwrap();
+
+    let spending_conditions = SpendingConditions::new_htlc_hash(
+        &hash,
+        Some(Conditions {
+            locktime: Some(past_locktime),
+            pubkeys: Some(vec![alice_pubkey]),
+            refund_keys: Some(vec![bob_pubkey]),
+            num_sigs: None,
+            sig_flag: SigFlag::default(),
+            num_sigs_refund: None,
+        })
+    ).unwrap();
+
+    let split_amounts = test_mint.split_amount(input_amount).unwrap();
+    let (htlc_outputs, blinding_factors, secrets) = unzip3(
+        split_amounts
+            .iter()
+            .map(|&amt| test_mint.create_blinded_message(amt, &spending_conditions))
+            .collect(),
+    );
+
+    let swap_request = cdk_common::nuts::SwapRequest::new(input_proofs.clone(), htlc_outputs.clone());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+
+    use cdk_common::dhke::construct_proofs;
+    let htlc_proofs = construct_proofs(
+        swap_response.signatures.clone(),
+        blinding_factors.clone(),
+        secrets.clone(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    ).unwrap();
+
+    // After locktime, Bob (refund key) can spend WITHOUT preimage
+    use crate::test_helpers::mint::create_test_blinded_messages;
+    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount).await.unwrap();
+    let mut swap_request = cdk_common::nuts::SwapRequest::new(htlc_proofs.clone(), new_outputs.clone());
+
+    // Bob signs (no preimage needed after locktime)
+    // Note: Must call add_preimage first (even with empty string) to create HTLC witness,
+    // otherwise sign_p2pk creates P2PK witness instead
+    for proof in swap_request.inputs_mut() {
+        proof.add_preimage(String::new()); // Empty preimage for refund path
+        proof.sign_p2pk(bob_secret.clone()).unwrap();
+    }
+
+    let result = mint.process_swap_request(swap_request).await;
+    assert!(result.is_ok(), "Bob should be able to spend after locktime without preimage: {:?}", result.err());
+    println!("✓ HTLC spent by refund key after locktime (no preimage needed)");
+}
+
+/// Test: HTLC with multisig (preimage + 2-of-3 signatures)
+///
+/// Verifies that HTLC can require preimage AND multiple signatures
+#[tokio::test]
+async fn test_htlc_multisig_2of3() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
+
+    let (alice_secret, alice_pubkey) = create_test_keypair();
+    let (bob_secret, bob_pubkey) = create_test_keypair();
+    let (_charlie_secret, charlie_pubkey) = create_test_keypair();
+    let (hash, preimage) = create_test_hash_and_preimage();
+
+    // Create HTLC requiring preimage + 2-of-3 signatures (Alice, Bob, Charlie)
+    let input_amount = Amount::from(10);
+    let input_proofs = test_mint.mint_proofs(input_amount).await.unwrap();
+
+    let spending_conditions = SpendingConditions::new_htlc_hash(
+        &hash,
+        Some(Conditions {
+            locktime: None,
+            pubkeys: Some(vec![alice_pubkey, bob_pubkey, charlie_pubkey]),
+            refund_keys: None,
+            num_sigs: Some(2), // Require 2 of 3
+            sig_flag: SigFlag::default(),
+            num_sigs_refund: None,
+        })
+    ).unwrap();
+
+    let split_amounts = test_mint.split_amount(input_amount).unwrap();
+    let (htlc_outputs, blinding_factors, secrets) = unzip3(
+        split_amounts
+            .iter()
+            .map(|&amt| test_mint.create_blinded_message(amt, &spending_conditions))
+            .collect(),
+    );
+
+    let swap_request = cdk_common::nuts::SwapRequest::new(input_proofs.clone(), htlc_outputs.clone());
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+
+    use cdk_common::dhke::construct_proofs;
+    let htlc_proofs = construct_proofs(
+        swap_response.signatures.clone(),
+        blinding_factors.clone(),
+        secrets.clone(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    ).unwrap();
+
+    // Try with preimage + only 1 signature (should fail - need 2)
+    use crate::test_helpers::mint::create_test_blinded_messages;
+    let (new_outputs, _) = create_test_blinded_messages(mint, input_amount).await.unwrap();
+    let mut swap_request_one_sig = cdk_common::nuts::SwapRequest::new(htlc_proofs.clone(), new_outputs.clone());
+
+    for proof in swap_request_one_sig.inputs_mut() {
+        proof.add_preimage(preimage.clone());
+        proof.sign_p2pk(alice_secret.clone()).unwrap(); // Only Alice signs
+    }
+
+    let result = mint.process_swap_request(swap_request_one_sig).await;
+    assert!(result.is_err(), "Should fail with only 1 signature (need 2)");
+    println!("✓ HTLC with 1-of-3 signatures failed as expected");
+
+    // Now with preimage + 2 signatures (Alice and Bob) - should succeed
+    let mut swap_request_two_sigs = cdk_common::nuts::SwapRequest::new(htlc_proofs.clone(), new_outputs.clone());
+
+    for proof in swap_request_two_sigs.inputs_mut() {
+        proof.add_preimage(preimage.clone());
+        proof.sign_p2pk(alice_secret.clone()).unwrap();
+        proof.sign_p2pk(bob_secret.clone()).unwrap();
+    }
+
+    let result = mint.process_swap_request(swap_request_two_sigs).await;
+    assert!(result.is_ok(), "Should succeed with preimage + 2-of-3 signatures: {:?}", result.err());
+    println!("✓ HTLC spent with preimage + 2-of-3 signatures");
+}
