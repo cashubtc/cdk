@@ -1117,3 +1117,121 @@ async fn test_p2pk_sig_all_refund_multisig_2of2() {
     assert!(result.is_ok(), "Should succeed - 2-of-2 refund signatures after locktime: {:?}", result.err());
     println!("✓ Spending with 2-of-2 refund signatures (Dave + Eve) AFTER locktime succeeded");
 }
+
+/// Test: SIG_ALL should reject if output amounts are swapped
+///
+/// Creates two P2PK proofs (8+2 sats) with SIG_ALL flag, swaps the output amounts
+/// after signing, and verifies that the mint should reject this (but currently doesn't).
+#[tokio::test]
+async fn test_sig_all_should_reject_if_the_output_amounts_are_swapped() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
+
+    // Generate keypair for Alice
+    let (alice_secret, alice_pubkey) = create_test_keypair();
+    println!("Alice pubkey: {}", alice_pubkey);
+
+    // Step 1: Mint regular proofs (10 sats = 8+2)
+    let input_amount = Amount::from(10);
+    let input_proofs = test_mint.mint_proofs(input_amount).await.unwrap();
+    println!("Minted {} sats", input_amount);
+
+    // Step 2: Create P2PK spending conditions with SIG_ALL
+    let spending_conditions = SpendingConditions::new_p2pk(
+        alice_pubkey,
+        Some(Conditions::new(
+            None, // no locktime
+            None, // no additional pubkeys
+            None, // no refund keys
+            None, // default num_sigs (1)
+            Some(SigFlag::SigAll), // SIG_ALL flag
+            None, // no num_sigs_refund
+        ).unwrap())
+    );
+
+    // Step 3: Swap for P2PK proofs with SIG_ALL
+    let split_amounts = vec![Amount::from(8), Amount::from(2)];
+    let (p2pk_outputs, blinding_factors, secrets) = unzip3(
+        split_amounts
+            .iter()
+            .map(|&amt| test_mint.create_blinded_message(amt, &spending_conditions))
+            .collect(),
+    );
+
+    let swap_request = cdk_common::nuts::SwapRequest::new(input_proofs, p2pk_outputs);
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+
+    // Step 4: Construct the P2PK proofs
+    let p2pk_proofs = construct_proofs(
+        swap_response.signatures,
+        blinding_factors,
+        secrets,
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    ).unwrap();
+
+    println!("Created {} P2PK proofs with SIG_ALL", p2pk_proofs.len());
+    assert_eq!(p2pk_proofs.len(), 2, "Should have 2 proofs (8+2)");
+
+    // Step 5: Create new swap request and sign with SIG_ALL
+    let (new_outputs, pre_mint_secrets) = create_test_blinded_messages(mint, input_amount).await.unwrap();
+    let mut swap_request = cdk_common::nuts::SwapRequest::new(p2pk_proofs, new_outputs);
+
+    // Inspect the outputs
+    println!("Outputs in swap request:");
+    for (i, output) in swap_request.outputs().iter().enumerate() {
+        println!("  Output {}: amount={}, blinded_secret={}",
+            i,
+            output.amount,
+            output.blinded_secret.to_hex()
+        );
+    }
+
+    // Sign the transaction with SIG_ALL
+    swap_request.sign_sig_all(alice_secret).unwrap();
+
+    // Swap the amounts of the two outputs
+    let outputs = swap_request.outputs_mut();
+    let temp_amount = outputs[0].amount;
+    outputs[0].amount = outputs[1].amount;
+    outputs[1].amount = temp_amount;
+
+    // Print outputs after swapping amounts
+    println!("Outputs after swapping amounts:");
+    for (i, output) in swap_request.outputs().iter().enumerate() {
+        println!("  Output {}: amount={}, blinded_secret={}",
+            i,
+            output.amount,
+            output.blinded_secret.to_hex()
+        );
+    }
+
+    // Step 6: Verify and execute the swap
+    let swap_response = mint.process_swap_request(swap_request).await.unwrap();
+    println!("✓ Successfully swapped two P2PK proofs with SIG_ALL signature");
+
+    // Step 7: Construct the new proofs from the swap response
+    let blinding_factors = pre_mint_secrets.rs();
+    let secrets = pre_mint_secrets.secrets();
+
+    let new_proofs = construct_proofs(
+        swap_response.signatures,
+        blinding_factors,
+        secrets,
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    ).unwrap();
+
+    println!("Received {} new proofs:", new_proofs.len());
+    for (i, proof) in new_proofs.iter().enumerate() {
+        println!("  Proof {}: amount={}", i, proof.amount);
+    }
+
+    // Step 8: Try to swap each proof individually to verify the mint accepts them at those amounts
+    for (i, proof) in new_proofs.iter().enumerate() {
+        println!("Attempting to swap proof {} (amount={})...", i, proof.amount);
+        let (test_outputs, _) = create_test_blinded_messages(mint, proof.amount).await.unwrap();
+        let test_swap = cdk_common::nuts::SwapRequest::new(vec![proof.clone()], test_outputs);
+        let result = mint.process_swap_request(test_swap).await;
+        assert!(result.is_ok(), "Proof {} should be valid at amount {}: {:?}", i, proof.amount, result.err());
+        println!("  ✓ Proof {} accepted at amount {}", i, proof.amount);
+    }
+}
