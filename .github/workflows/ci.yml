@@ -113,6 +113,16 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
@@ -122,7 +132,7 @@ jobs:
         with:
           shared-key: "stable"
       - name: Test
-        run: nix develop -i -L .#stable --command cargo test --workspace
+        run: nix develop -i -L .#stable --command cargo test --workspace --exclude cdk-integration-tests --exclude cdk-postgres
 
   fake-mint-itest:
     name: "Integration fake mint tests"
