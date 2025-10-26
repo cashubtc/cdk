@@ -12,16 +12,16 @@ pub mod swap_saga;
 mod test_helpers;
 
 #[cfg(test)]
-mod p2pk_tests;
+mod p2pk_spending_conditions_tests;
 
 #[cfg(test)]
-mod p2pk_sigall_tests;
+mod p2pk_sigall_spending_conditions_tests;
 
 #[cfg(test)]
-mod htlc_tests;
+mod htlc_spending_conditions_tests;
 
 #[cfg(test)]
-mod htlc_sigall_tests;
+mod htlc_sigall_spending_conditions_tests;
 
 impl Mint {
     /// Process Swap
