@@ -49,11 +49,15 @@ impl Lnd {
     }
 
     /// Start lnd using ProcessManager
-    pub async fn start_lnd(&mut self, process_mgr: &ProcessManager, name: &str) -> Result<()> {
+    pub async fn start_lnd(
+        &mut self,
+        process_mgr: &ProcessManager,
+        name: &str,
+    ) -> Result<ProcessHandle> {
         let start = Instant::now();
         tracing::info!("Starting LND node: {}", name);
 
-        let mut cmd = crate::cmd!(
+        let cmd = crate::cmd!(
             "lnd",
             "--bitcoin.active",
             "--bitcoin.regtest",
@@ -80,17 +84,18 @@ impl Lnd {
         let handle = process_mgr
             .spawn_daemon(&format!("lnd-{}", name), cmd)
             .await?;
-        self.process_handle = Some(handle);
+        self.process_handle = Some(handle.clone());
 
-        // Let lnd start up
-        sleep(Duration::from_secs(10)).await;
+        // Minimal sleep to let LND process spawn - RPC readiness is polled in init_lnd_node_async
+        // Reduced from 10s to 1s (just enough for process startup)
+        sleep(Duration::from_secs(1)).await;
 
         tracing::info!(
-            "LND node {} started successfully in {:.2}s",
+            "LND node {} spawned in {:.2}s",
             name,
             start.elapsed().as_secs_f64()
         );
-        Ok(())
+        Ok(handle)
     }
 
     pub fn pid(&self) -> Option<u32> {

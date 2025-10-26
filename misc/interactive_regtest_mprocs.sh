@@ -124,7 +124,8 @@ cargo build -p cdk-integration-tests --bin start_regtest
 cargo build --bin cdk-mintd
 
 echo "Starting regtest network (Bitcoin + Lightning nodes)..."
-cargo run --bin start_regtest -- --enable-logging "$CDK_ITESTS_DIR" &
+# Use --skip-ldk flag so the LDK mint can create its own separate node instance
+cargo run --bin start_regtest -- --enable-logging --skip-ldk "$CDK_ITESTS_DIR" &
 export CDK_REGTEST_PID=$!
 
 # Create named pipe for progress tracking
@@ -262,6 +263,10 @@ export CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE="p2p"
 export CDK_MINTD_LDK_NODE_FEE_PERCENT=0.02
 export CDK_MINTD_LDK_NODE_RESERVE_FEE_MIN=2
 
+# NOTE: In interactive mode, the LDK mint uses a separate node instance from regtest
+# because the processes can't share an LDK node. The mint will need to establish
+# its own channels. For pre-established channels, use start_regtest_mints binary instead.
+
 echo "Starting LDK Node Mint on port 8089..."
 echo "Project root: $PROJECT_ROOT"
 echo "Working directory: \$CDK_MINTD_WORK_DIR"
@@ -343,7 +348,7 @@ procs:
     env:
       CDK_ITESTS_DIR: "$CDK_ITESTS_DIR"
       CDK_MINTD_DATABASE: "$CDK_MINTD_DATABASE"
-  
+
   bitcoind:
     shell: "while [ ! -f $CDK_ITESTS_DIR/bitcoin/regtest/debug.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/bitcoin/regtest/debug.log"
     autostart: true
@@ -380,7 +385,15 @@ settings:
     show_keymap: '?'
 EOF
 
+# Start background task to setup LDK channels after mint is ready
+(
+  echo "🔧 Background: Waiting for LDK mint to be ready before opening channels..."
+  "$PROJECT_ROOT/misc/scripts/setup_ldk_channels.sh" "$CDK_ITESTS_DIR" "$CDK_ITESTS_MINT_PORT_2" > "$CDK_ITESTS_DIR/setup_ldk_channels.log" 2>&1
+  echo "✅ Background: LDK channels setup complete (see $CDK_ITESTS_DIR/setup_ldk_channels.log)"
+) &
+
 # Start mprocs with direct process management
 echo "Starting mprocs..."
+echo "Note: LDK channels will be set up automatically in the background..."
 cd "$CDK_ITESTS_DIR"
 mprocs --config "$MPROCS_CONFIG"

@@ -1,10 +1,9 @@
 //! CLAnd
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::Result;
-use tokio::time::sleep;
 
 use crate::util::{ProcessHandle, ProcessManager};
 
@@ -47,7 +46,7 @@ impl Clnd {
         let start = Instant::now();
         tracing::info!("Starting CLN node: {}", name);
 
-        let mut cmd = crate::cmd!(
+        let cmd = crate::cmd!(
             "lightningd",
             format!("--bitcoin-datadir={}", self.bitcoin_data_dir.display()),
             "--network=regtest",
@@ -64,8 +63,7 @@ impl Clnd {
             .await?;
         self.process_handle = Some(handle.clone());
 
-        // Let clnd start up
-        sleep(Duration::from_secs(5)).await;
+        // No sleep needed - readiness is checked via socket polling in init_cln_node_async
 
         tracing::info!(
             "CLN node {} started successfully in {:.2}s",

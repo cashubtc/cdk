@@ -165,6 +165,84 @@ impl ClnClient {
 
         Ok(offer_response.bolt12)
     }
+
+    /// Wait for wallet to have available UTXOs (confirmed funds)
+    ///
+    /// Uses exponential backoff to reduce unnecessary RPC calls while waiting
+    /// for CLN's wallet to rescan and recognize newly confirmed UTXOs.
+    pub async fn wait_for_funds(&self, min_sats: u64) -> Result<()> {
+        let start = std::time::Instant::now();
+        let max_duration = Duration::from_secs(60);
+
+        // Exponential backoff: 100ms, 200ms, 400ms, 800ms, 1000ms, 1000ms...
+        let mut delay_ms = 100;
+        let max_delay_ms = 1000;
+
+        tracing::info!(
+            "Waiting for CLN wallet to show {} sats available...",
+            min_sats
+        );
+
+        loop {
+            let mut cln_client = self.client.lock().await;
+            let cln_response = cln_client
+                .call(cln_rpc::Request::ListFunds(ListfundsRequest {
+                    spent: Some(false),
+                }))
+                .await?;
+
+            match cln_response {
+                cln_rpc::Response::ListFunds(funds) => {
+                    let available: u64 = funds
+                        .outputs
+                        .iter()
+                        .filter(|o| o.status == ListfundsOutputsStatus::CONFIRMED)
+                        .map(|o| o.amount_msat.msat() / 1000)
+                        .sum();
+
+                    if available >= min_sats {
+                        tracing::info!(
+                            "✓ CLN wallet ready with {} sats (needed {}) after {:.2}s",
+                            available,
+                            min_sats,
+                            start.elapsed().as_secs_f64()
+                        );
+                        return Ok(());
+                    }
+
+                    // Only log every second to reduce spam
+                    if delay_ms >= 1000 {
+                        tracing::debug!(
+                            "CLN has {} sats available, waiting for {} sats ({:.1}s elapsed)",
+                            available,
+                            min_sats,
+                            start.elapsed().as_secs_f64()
+                        );
+                    }
+
+                    drop(cln_client);
+
+                    // Check timeout
+                    if start.elapsed() >= max_duration {
+                        bail!(
+                            "Timeout waiting for CLN to have {} sats available (has {} after {:.1}s)",
+                            min_sats,
+                            available,
+                            start.elapsed().as_secs_f64()
+                        );
+                    }
+
+                    // Sleep with exponential backoff
+                    sleep(Duration::from_millis(delay_ms)).await;
+                    delay_ms = (delay_ms * 2).min(max_delay_ms);
+                }
+
+                _ => {
+                    bail!("Wrong cln response");
+                }
+            };
+        }
+    }
 }
 
 #[async_trait]
@@ -258,7 +336,7 @@ impl LightningClient for ClnClient {
                 amount: AmountOrAll::Amount(Amount::from_sat(amount_sat)),
                 id: PublicKey::from_str(peer_id)?,
                 push_msat: push_amount.map(Amount::from_sat),
-                announce: None,
+                announce: Some(true), // Explicitly announce channels for public routing
                 close_to: None,
                 compact_lease: None,
                 feerate: None,
@@ -406,25 +484,47 @@ impl LightningClient for ClnClient {
     }
 
     async fn wait_chain_sync(&self) -> Result<()> {
-        let mut count = 0;
-        while count < 100 {
+        let start = std::time::Instant::now();
+        let max_duration = Duration::from_secs(60);
+
+        // Exponential backoff: 100ms, 200ms, 400ms, 800ms, 1000ms...
+        let mut delay_ms = 100;
+        let max_delay_ms = 1000;
+
+        loop {
             let info = self.get_info().await?;
 
-            if info.warning_lightningd_sync.is_none() || info.warning_bitcoind_sync.is_none() {
-                tracing::info!("CLN completed chain sync");
+            if info.warning_lightningd_sync.is_none() && info.warning_bitcoind_sync.is_none() {
+                tracing::info!(
+                    "✓ CLN completed chain sync after {:.2}s",
+                    start.elapsed().as_secs_f64()
+                );
                 return Ok(());
             }
-            count += 1;
 
-            sleep(Duration::from_secs(2)).await;
+            // Check timeout
+            if start.elapsed() >= max_duration {
+                bail!(
+                    "Timeout waiting for CLN chain sync after {:.1}s",
+                    start.elapsed().as_secs_f64()
+                );
+            }
+
+            // Sleep with exponential backoff
+            sleep(Duration::from_millis(delay_ms)).await;
+            delay_ms = (delay_ms * 2).min(max_delay_ms);
         }
-
-        bail!("Timeout waiting for pending")
     }
 
     async fn wait_channels_active(&self) -> Result<()> {
-        let mut count = 0;
-        while count < 100 {
+        let start = std::time::Instant::now();
+        let max_duration = Duration::from_secs(60);
+
+        // Exponential backoff: 100ms, 200ms, 400ms, 800ms, 1000ms...
+        let mut delay_ms = 100;
+        let max_delay_ms = 1000;
+
+        loop {
             let mut cln_client = self.client.lock().await;
             let cln_response = cln_client
                 .call(cln_rpc::Request::ListChannels(ListchannelsRequest {
@@ -443,13 +543,27 @@ impl LightningClient for ClnClient {
                         .collect::<Vec<_>>();
 
                     if pending.is_empty() {
-                        tracing::info!("All CLN channels active");
+                        tracing::info!(
+                            "✓ All CLN channels active after {:.2}s",
+                            start.elapsed().as_secs_f64()
+                        );
                         return Ok(());
                     }
 
-                    count += 1;
+                    drop(cln_client);
 
-                    sleep(Duration::from_secs(2)).await;
+                    // Check timeout
+                    if start.elapsed() >= max_duration {
+                        bail!(
+                            "Timeout waiting for CLN channels to become active ({} still pending after {:.1}s)",
+                            pending.len(),
+                            start.elapsed().as_secs_f64()
+                        );
+                    }
+
+                    // Sleep with exponential backoff
+                    sleep(Duration::from_millis(delay_ms)).await;
+                    delay_ms = (delay_ms * 2).min(max_delay_ms);
                 }
 
                 _ => {
@@ -457,8 +571,6 @@ impl LightningClient for ClnClient {
                 }
             };
         }
-
-        bail!("Time out exceeded wait for cln channels")
     }
 
     async fn check_incoming_payment_status(&self, payment_hash: &str) -> Result<InvoiceStatus> {

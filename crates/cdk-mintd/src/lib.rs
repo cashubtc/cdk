@@ -56,6 +56,8 @@ use cli::CLIArgs;
 use config::AuthType;
 use config::{DatabaseEngine, LnBackend};
 use env_vars::ENV_WORK_DIR;
+#[cfg(feature = "ldk-node")]
+use ldk_node::Node;
 use setup::LnBackendSetup;
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
@@ -338,13 +340,25 @@ async fn configure_mint_builder(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     work_dir: &Path,
     kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+    #[cfg(feature = "ldk-node")] existing_ldk_node: Option<Arc<Node>>,
+    #[cfg(not(feature = "ldk-node"))] _existing_ldk_node: (),
 ) -> Result<MintBuilder> {
     // Configure basic mint information
     let mint_builder = configure_basic_info(settings, mint_builder);
 
     // Configure lightning backend
-    let mint_builder =
-        configure_lightning_backend(settings, mint_builder, runtime, work_dir, kv_store).await?;
+    let mint_builder = configure_lightning_backend(
+        settings,
+        mint_builder,
+        runtime,
+        work_dir,
+        kv_store,
+        #[cfg(feature = "ldk-node")]
+        existing_ldk_node,
+        #[cfg(not(feature = "ldk-node"))]
+        _existing_ldk_node,
+    )
+    .await?;
 
     // Configure caching
     let mint_builder = configure_cache(settings, mint_builder);
@@ -409,6 +423,8 @@ async fn configure_lightning_backend(
     _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     work_dir: &Path,
     _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+    #[cfg(feature = "ldk-node")] existing_ldk_node: Option<Arc<Node>>,
+    #[cfg(not(feature = "ldk-node"))] _existing_ldk_node: (),
 ) -> Result<MintBuilder> {
     let mint_melt_limits = MintMeltLimits {
         mint_min: settings.ln.min_mint,
@@ -427,7 +443,17 @@ async fn configure_lightning_backend(
                 .clone()
                 .expect("Config checked at load that cln is some");
             let cln = cln_settings
-                .setup(settings, CurrencyUnit::Msat, None, work_dir, _kv_store)
+                .setup(
+                    settings,
+                    CurrencyUnit::Msat,
+                    None,
+                    work_dir,
+                    _kv_store,
+                    #[cfg(feature = "ldk-node")]
+                    None,
+                    #[cfg(not(feature = "ldk-node"))]
+                    (),
+                )
                 .await?;
             #[cfg(feature = "prometheus")]
             let cln = MetricsMintPayment::new(cln);
@@ -445,7 +471,17 @@ async fn configure_lightning_backend(
         LnBackend::LNbits => {
             let lnbits_settings = settings.clone().lnbits.expect("Checked on config load");
             let lnbits = lnbits_settings
-                .setup(settings, CurrencyUnit::Sat, None, work_dir, None)
+                .setup(
+                    settings,
+                    CurrencyUnit::Sat,
+                    None,
+                    work_dir,
+                    None,
+                    #[cfg(feature = "ldk-node")]
+                    None,
+                    #[cfg(not(feature = "ldk-node"))]
+                    (),
+                )
                 .await?;
             #[cfg(feature = "prometheus")]
             let lnbits = MetricsMintPayment::new(lnbits);
@@ -463,7 +499,17 @@ async fn configure_lightning_backend(
         LnBackend::Lnd => {
             let lnd_settings = settings.clone().lnd.expect("Checked at config load");
             let lnd = lnd_settings
-                .setup(settings, CurrencyUnit::Msat, None, work_dir, _kv_store)
+                .setup(
+                    settings,
+                    CurrencyUnit::Msat,
+                    None,
+                    work_dir,
+                    _kv_store,
+                    #[cfg(feature = "ldk-node")]
+                    None,
+                    #[cfg(not(feature = "ldk-node"))]
+                    (),
+                )
                 .await?;
             #[cfg(feature = "prometheus")]
             let lnd = MetricsMintPayment::new(lnd);
@@ -484,7 +530,17 @@ async fn configure_lightning_backend(
 
             for unit in fake_wallet.clone().supported_units {
                 let fake = fake_wallet
-                    .setup(settings, unit.clone(), None, work_dir, _kv_store.clone())
+                    .setup(
+                        settings,
+                        unit.clone(),
+                        None,
+                        work_dir,
+                        _kv_store.clone(),
+                        #[cfg(feature = "ldk-node")]
+                        None,
+                        #[cfg(not(feature = "ldk-node"))]
+                        (),
+                    )
                     .await?;
                 #[cfg(feature = "prometheus")]
                 let fake = MetricsMintPayment::new(fake);
@@ -515,7 +571,17 @@ async fn configure_lightning_backend(
             for unit in grpc_processor.clone().supported_units {
                 tracing::debug!("Adding unit: {:?}", unit);
                 let processor = grpc_processor
-                    .setup(settings, unit.clone(), None, work_dir, None)
+                    .setup(
+                        settings,
+                        unit.clone(),
+                        None,
+                        work_dir,
+                        None,
+                        #[cfg(feature = "ldk-node")]
+                        None,
+                        #[cfg(not(feature = "ldk-node"))]
+                        (),
+                    )
                     .await?;
                 #[cfg(feature = "prometheus")]
                 let processor = MetricsMintPayment::new(processor);
@@ -535,8 +601,15 @@ async fn configure_lightning_backend(
             let ldk_node_settings = settings.clone().ldk_node.expect("Checked at config load");
             tracing::info!("Using LDK Node backend: {:?}", ldk_node_settings);
 
-            let ldk_node = ldk_node_settings
-                .setup(settings, CurrencyUnit::Sat, _runtime, work_dir, None)
+            let ldk_node_backend = ldk_node_settings
+                .setup(
+                    settings,
+                    CurrencyUnit::Sat,
+                    _runtime,
+                    work_dir,
+                    None,
+                    existing_ldk_node,
+                )
                 .await?;
 
             mint_builder = configure_backend_for_unit(
@@ -544,7 +617,7 @@ async fn configure_lightning_backend(
                 mint_builder,
                 CurrencyUnit::Sat,
                 mint_melt_limits,
-                Arc::new(ldk_node),
+                Arc::new(ldk_node_backend),
             )
             .await?;
         }
@@ -1108,6 +1181,19 @@ pub async fn run_mintd(
         None
     };
 
+    #[cfg(feature = "ldk-node")]
+    let result = run_mintd_with_shutdown(
+        work_dir,
+        settings,
+        shutdown_signal(),
+        db_password,
+        runtime,
+        routers,
+        None,
+    )
+    .await;
+
+    #[cfg(not(feature = "ldk-node"))]
     let result = run_mintd_with_shutdown(
         work_dir,
         settings,
@@ -1132,6 +1218,7 @@ pub async fn run_mintd(
 }
 
 /// Run mintd with a custom shutdown signal
+#[cfg(feature = "ldk-node")]
 pub async fn run_mintd_with_shutdown(
     work_dir: &Path,
     settings: &config::Settings,
@@ -1139,6 +1226,50 @@ pub async fn run_mintd_with_shutdown(
     db_password: Option<String>,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
+    existing_ldk_node: Option<std::sync::Arc<Node>>,
+) -> Result<()> {
+    run_mintd_with_shutdown_internal(
+        work_dir,
+        settings,
+        shutdown_signal,
+        db_password,
+        runtime,
+        routers,
+        Some(existing_ldk_node),
+    )
+    .await
+}
+
+#[cfg(not(feature = "ldk-node"))]
+pub async fn run_mintd_with_shutdown(
+    work_dir: &Path,
+    settings: &config::Settings,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    db_password: Option<String>,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    routers: Vec<Router>,
+) -> Result<()> {
+    run_mintd_with_shutdown_internal(
+        work_dir,
+        settings,
+        shutdown_signal,
+        db_password,
+        runtime,
+        routers,
+        None,
+    )
+    .await
+}
+
+async fn run_mintd_with_shutdown_internal(
+    work_dir: &Path,
+    settings: &config::Settings,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    db_password: Option<String>,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    routers: Vec<Router>,
+    #[cfg(feature = "ldk-node")] existing_ldk_node: Option<Option<std::sync::Arc<Node>>>,
+    #[cfg(not(feature = "ldk-node"))] _existing_ldk_node: Option<()>,
 ) -> Result<()> {
     let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
@@ -1170,8 +1301,18 @@ pub async fn run_mintd_with_shutdown(
         }
     };
 
-    let mint_builder =
-        configure_mint_builder(settings, maybe_mint_builder, runtime, work_dir, Some(kv)).await?;
+    let mint_builder = configure_mint_builder(
+        settings,
+        maybe_mint_builder,
+        runtime,
+        work_dir,
+        Some(kv),
+        #[cfg(feature = "ldk-node")]
+        existing_ldk_node.flatten(),
+        #[cfg(not(feature = "ldk-node"))]
+        _existing_ldk_node.unwrap_or(()),
+    )
+    .await?;
     #[cfg(feature = "auth")]
     let mint_builder = setup_authentication(settings, work_dir, mint_builder, db_password).await?;
 

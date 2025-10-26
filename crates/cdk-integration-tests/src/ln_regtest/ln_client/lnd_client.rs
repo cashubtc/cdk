@@ -256,8 +256,14 @@ impl LightningClient for LndClient {
     }
 
     async fn wait_channels_active(&self) -> Result<()> {
-        let mut count = 0;
-        while count < 100 {
+        let start = std::time::Instant::now();
+        let max_duration = Duration::from_secs(60);
+
+        // Exponential backoff: 100ms, 200ms, 400ms, 800ms, 1000ms...
+        let mut delay_ms = 100;
+        let max_delay_ms = 1000;
+
+        loop {
             let pending = self
                 .client
                 .lock()
@@ -274,33 +280,59 @@ impl LightningClient for LndClient {
                 .into_inner();
 
             if pending.channels.is_empty() {
-                tracing::info!("All LND channels active");
+                tracing::info!(
+                    "✓ All LND channels active after {:.2}s",
+                    start.elapsed().as_secs_f64()
+                );
                 return Ok(());
             }
 
-            count += 1;
+            // Check timeout
+            if start.elapsed() >= max_duration {
+                bail!(
+                    "Timeout waiting for LND channels to become active ({} still pending after {:.1}s)",
+                    pending.channels.len(),
+                    start.elapsed().as_secs_f64()
+                );
+            }
 
-            sleep(Duration::from_secs(2)).await;
+            // Sleep with exponential backoff
+            sleep(Duration::from_millis(delay_ms)).await;
+            delay_ms = (delay_ms * 2).min(max_delay_ms);
         }
-
-        bail!("Timeout waiting for pending")
     }
 
     async fn wait_chain_sync(&self) -> Result<()> {
-        let mut count = 0;
-        while count < 100 {
+        let start = std::time::Instant::now();
+        let max_duration = Duration::from_secs(60);
+
+        // Exponential backoff: 100ms, 200ms, 400ms, 800ms, 1000ms...
+        let mut delay_ms = 100;
+        let max_delay_ms = 1000;
+
+        loop {
             let info = self.get_info().await?;
 
             if info.synced_to_chain {
-                tracing::info!("LND completed chain sync");
+                tracing::info!(
+                    "✓ LND completed chain sync after {:.2}s",
+                    start.elapsed().as_secs_f64()
+                );
                 return Ok(());
             }
-            count += 1;
 
-            sleep(Duration::from_secs(2)).await;
+            // Check timeout
+            if start.elapsed() >= max_duration {
+                bail!(
+                    "Timeout waiting for LND chain sync after {:.1}s",
+                    start.elapsed().as_secs_f64()
+                );
+            }
+
+            // Sleep with exponential backoff
+            sleep(Duration::from_millis(delay_ms)).await;
+            delay_ms = (delay_ms * 2).min(max_delay_ms);
         }
-
-        bail!("Time out exceeded")
     }
 
     async fn check_incoming_payment_status(&self, payment_hash: &str) -> Result<InvoiceStatus> {

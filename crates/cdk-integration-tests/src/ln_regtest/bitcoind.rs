@@ -1,10 +1,9 @@
 //! Bitcoind
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::Result;
-use tokio::time::sleep;
 
 use crate::util::{ProcessHandle, ProcessManager};
 
@@ -46,7 +45,7 @@ impl Bitcoind {
         std::fs::create_dir_all(&self.data_dir)?;
         tracing::debug!("Created bitcoind data dir: {}", self.data_dir.display());
 
-        let mut cmd = crate::cmd!(
+        let cmd = crate::cmd!(
             "bitcoind",
             "-regtest",
             format!("-datadir={}", self.data_dir.display()),
@@ -62,11 +61,11 @@ impl Bitcoind {
         let handle = process_mgr.spawn_daemon("bitcoind", cmd).await?;
         self.process_handle = Some(handle);
 
-        // Let bitcoind start up
-        sleep(Duration::from_secs(5)).await;
+        // No sleep - bitcoind readiness is verified via RPC polling in init_bitcoin_client_async
+        // settings.json is polled before LND initialization
 
         tracing::info!(
-            "Bitcoind started successfully in {:.2}s",
+            "Bitcoind process spawned in {:.2}s",
             start.elapsed().as_secs_f64()
         );
         Ok(())
