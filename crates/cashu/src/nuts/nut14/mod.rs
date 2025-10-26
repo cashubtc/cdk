@@ -86,7 +86,7 @@ impl Proof {
         let now = unix_time();
         let (preimage_needed, relevant_pubkeys, relevant_num_sigs_required) =
             super::nut10::get_pubkeys_and_required_sigs(&secret, now)
-                .map_err(|e| Error::NUT11(e))?;
+                .map_err(Error::NUT11)?;
 
         // don't extract the witness until it's needed. Remember a post-locktime
         // zero-refunds proof is acceptable here, and therefore a Witness isn't always
