@@ -159,19 +159,25 @@ impl<Q: std::fmt::Display> super::nut10::VerificationForSpendingConditions for M
     fn sig_all_msg_to_sign(&self) -> String {
         let mut msg = String::new();
 
-        // Add all input secrets in order
+        // Add all input secrets and C values in order
+        // msg = secret_0 || C_0 || ... || secret_n || C_n
         for proof in &self.inputs {
             msg.push_str(&proof.secret.to_string());
+            msg.push_str(&proof.c.to_hex());
         }
 
-        // Add all output blinded messages in order (if any)
+        // Add all output amount, keyset_id, and B_ values in order (if any)
+        // msg = ... || amount_0 || id_0 || B_0 || ... || amount_m || id_m || B_m
         if let Some(outputs) = &self.outputs {
             for output in outputs {
+                msg.push_str(&output.amount.to_string());
+                msg.push_str(&output.keyset_id.to_string());
                 msg.push_str(&output.blinded_secret.to_hex());
             }
         }
 
         // Add quote ID
+        // msg = ... || quote_id
         msg.push_str(&self.quote.to_string());
 
         msg
