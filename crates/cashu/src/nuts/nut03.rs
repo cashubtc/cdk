@@ -113,58 +113,6 @@ impl super::nut10::VerificationForSpendingConditions for SwapRequest {
     }
 }
 
-impl SwapRequest {
-    /// Verify spending conditions for this swap transaction
-    ///
-    /// This is the main entry point for spending condition verification.
-    /// It checks if any input has SIG_ALL and dispatches to the appropriate verification path.
-    pub fn verify_spending_conditions(&self) -> Result<(), super::nut11::Error> {
-        use super::nut10::VerificationForSpendingConditions;
-
-        // Check if any input has SIG_ALL flag
-        if self.has_at_least_one_sig_all()? {
-            // at least one input has SIG_ALL
-            self.verify_full_sig_all_check()
-        } else {
-            // none of the inputs are SIG_ALL, so we can simply check
-            // each independently and verify any spending conditions
-            // that may - or may not - be there.
-            self.verify_inputs_individually().map_err(|e| match e {
-                super::nut14::Error::NUT11(nut11_err) => nut11_err,
-                _ => super::nut11::Error::SpendConditionsNotMet,
-            })
-        }
-    }
-
-    /// Verify spending conditions when SIG_ALL is present
-    ///
-    /// When SIG_ALL is set, all proofs in the transaction must be signed together.
-    fn verify_full_sig_all_check(&self) -> Result<(), super::nut11::Error> {
-        use super::nut10::VerificationForSpendingConditions;
-
-        // Verify all inputs meet SIG_ALL requirements per NUT-11:
-        // All inputs must have: (1) same kind, (2) SIG_ALL flag, (3) same data, (4) same tags
-        self.verify_all_inputs_match_for_sig_all()?;
-
-        // Get the first input to determine the kind
-        let first_input = self.inputs.first().ok_or(super::nut11::Error::SpendConditionsNotMet)?;
-        let first_secret = super::nut10::Secret::try_from(&first_input.secret)
-            .map_err(|_| super::nut11::Error::IncorrectSecretKind)?;
-
-        // Dispatch based on secret kind
-        match first_secret.kind() {
-            super::Kind::P2PK => {
-                self.verify_sig_all_p2pk()?;
-            }
-            super::Kind::HTLC => {
-                self.verify_sig_all_htlc()?;
-            }
-        }
-
-        Ok(())
-    }
-
-}
 
 /// Split Response [NUT-06]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
