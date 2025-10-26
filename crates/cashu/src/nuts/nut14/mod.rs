@@ -15,7 +15,7 @@ use super::nut10::Secret;
 use super::nut11::valid_signatures;
 use super::{Conditions, Proof};
 use crate::ensure_cdk;
-use crate::util::unix_time;
+use crate::util::{hex, unix_time};
 
 pub mod serde_htlc_witness;
 
@@ -37,6 +37,12 @@ pub enum Error {
     /// Preimage does not match
     #[error("Preimage does not match")]
     Preimage,
+    /// HTLC preimage must be valid hex encoding
+    #[error("Preimage must be valid hex encoding")]
+    InvalidHexPreimage,
+    /// HTLC preimage must be exactly 32 bytes
+    #[error("Preimage must be exactly 32 bytes (64 hex characters)")]
+    PreimageInvalidSize,
     /// Witness Signatures not provided
     #[error("Witness did not provide signatures")]
     SignaturesNotProvided,
@@ -75,6 +81,15 @@ impl Proof {
             Some(Witness::HTLCWitness(witness)) => witness,
             _ => return Err(Error::IncorrectSecretKind),
         };
+
+        const REQUIRED_PREIMAGE_BYTES: usize = 32;
+
+        let preimage_bytes =
+            hex::decode(&htlc_witness.preimage).map_err(|_| Error::InvalidHexPreimage)?;
+
+        if preimage_bytes.len() != REQUIRED_PREIMAGE_BYTES {
+            return Err(Error::PreimageInvalidSize);
+        }
 
         if let Some(conditions) = conditions {
             // Check locktime
@@ -127,7 +142,7 @@ impl Proof {
         let hash_lock =
             Sha256Hash::from_str(secret.secret_data().data()).map_err(|_| Error::InvalidHash)?;
 
-        let preimage_hash = Sha256Hash::hash(htlc_witness.preimage.as_bytes());
+        let preimage_hash = Sha256Hash::hash(&preimage_bytes);
 
         if hash_lock.ne(&preimage_hash) {
             return Err(Error::Preimage);
