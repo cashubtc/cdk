@@ -20,6 +20,9 @@ mod p2pk_sigall_tests;
 #[cfg(test)]
 mod htlc_tests;
 
+#[cfg(test)]
+mod htlc_sigall_tests;
+
 impl Mint {
     /// Process Swap
     #[instrument(skip_all)]
