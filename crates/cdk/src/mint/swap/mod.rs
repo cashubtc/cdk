@@ -9,6 +9,9 @@ use crate::Error;
 pub mod swap_saga;
 
 #[cfg(test)]
+mod test_helpers;
+
+#[cfg(test)]
 mod p2pk_tests;
 
 #[cfg(test)]
