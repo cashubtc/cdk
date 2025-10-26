@@ -3,6 +3,7 @@
 //! This module implements verification logic for spending conditions (NUT-10/NUT-11).
 //! See: https://cashubtc.github.io/nuts/10/
 
+use bitcoin::hashes::Hash;
 use cdk_common::{BlindedMessage, Proofs};
 
 use super::Error;
@@ -75,8 +76,7 @@ fn verify_full_sig_all_check_swap(
             verify_sig_all_swap_p2pk(inputs, outputs)?;
         }
         cdk_common::nuts::Kind::HTLC => {
-            // TODO: Implement HTLC SIG_ALL verification
-            return Err(Error::InvalidSpendConditions("HTLC SIG_ALL not yet implemented".into()));
+            verify_sig_all_swap_htlc(inputs, outputs)?;
         }
     }
 
@@ -129,6 +129,90 @@ fn verify_sig_all_swap_p2pk(
         }
         debug_assert_eq!(msg_to_sign, expected_msg, "Our sig_all message construction doesn't match expected format");
     }
+
+    // Extract signatures from the first input's witness
+    let first_witness = first_input
+        .witness
+        .as_ref()
+        .ok_or(Error::InvalidSpendConditions("SIG_ALL requires signatures".into()))?;
+
+    let witness_sigs = first_witness
+        .signatures()
+        .ok_or(Error::InvalidSpendConditions("SIG_ALL requires signatures in witness".into()))?;
+
+    // Convert witness strings to Signature objects
+    use std::str::FromStr;
+    let signatures: Vec<cdk_common::bitcoin::secp256k1::schnorr::Signature> = witness_sigs
+        .iter()
+        .map(|s| cdk_common::bitcoin::secp256k1::schnorr::Signature::from_str(s))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| Error::InvalidSpendConditions("Invalid signature format".into()))?;
+
+    // Verify signatures using the existing valid_signatures function
+    let valid_sig_count = cdk_common::nuts::nut11::valid_signatures(
+        msg_to_sign.as_bytes(),
+        &pubkeys,
+        &signatures,
+    )?;
+
+    // Check if we have enough valid signatures
+    if valid_sig_count < required_sigs {
+        return Err(Error::InvalidSpendConditions(
+            format!("SIG_ALL requires {} signatures, found {}", required_sigs, valid_sig_count)
+        ));
+    }
+
+    Ok(())
+}
+
+/// Verify HTLC SIG_ALL signatures for swap
+fn verify_sig_all_swap_htlc(
+    inputs: &Proofs,
+    outputs: &[BlindedMessage],
+) -> Result<(), Error> {
+    // Do NOT call this directly. This is called only from 'verify_full_sig_all_check_swap',
+    // which has already done many important SIG_ALL checks. This just does
+    // some checks which are specific to SIG_ALL+HTLC+swap
+
+    // Get the first input, as it's the one with the signatures
+    let first_input = inputs.first().ok_or(Error::Internal)?;
+    let first_secret = cdk_common::nuts::nut10::Secret::try_from(&first_input.secret)?;
+
+    // Record current time for locktime evaluation
+    let current_time = cdk_common::util::unix_time();
+
+    // Get the relevant public keys, required signature count, and whether preimage is needed
+    let (preimage_needed, pubkeys, required_sigs) = cdk_common::nuts::nut14::get_pubkeys_and_required_sigs_for_htlc(&first_secret, current_time)?;
+
+    // If preimage is needed (before locktime), verify it
+    if preimage_needed {
+        let hash_lock = bitcoin::hashes::sha256::Hash::from_str(first_secret.secret_data().data())
+            .map_err(|_| Error::InvalidSpendConditions("Invalid hash in HTLC".into()))?;
+
+        // Extract HTLC witness
+        let first_witness = first_input
+            .witness
+            .as_ref()
+            .ok_or(Error::InvalidSpendConditions("SIG_ALL HTLC requires witness".into()))?;
+
+        let preimage = first_witness
+            .preimage()
+            .ok_or(Error::InvalidSpendConditions("SIG_ALL HTLC requires preimage".into()))?;
+
+        let hash_of_preimage = bitcoin::hashes::sha256::Hash::hash(preimage.as_bytes());
+
+        if hash_lock != hash_of_preimage {
+            return Err(Error::InvalidSpendConditions("HTLC preimage does not match hash".into()));
+        }
+    }
+
+    // Handle "anyone can spend" case (locktime passed with no refund keys)
+    if required_sigs == 0 {
+        return Ok(());
+    }
+
+    // Construct the message that should be signed (all input secrets + all output blinded messages)
+    let msg_to_sign = construct_sig_all_message_swap(inputs, outputs);
 
     // Extract signatures from the first input's witness
     let first_witness = first_input
