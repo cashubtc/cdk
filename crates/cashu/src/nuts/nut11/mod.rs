@@ -835,73 +835,6 @@ impl From<Tag> for Vec<String> {
 }
 
 impl SwapRequest {
-    /// Get required signature count from first input's spending conditions
-    fn get_sig_all_required_sigs(&self) -> Result<(u64, SpendingConditions), Error> {
-        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
-        let first_conditions: SpendingConditions =
-            SpendingConditions::try_from(&first_input.secret)?;
-
-        let required_sigs = match first_conditions.clone() {
-            SpendingConditions::P2PKConditions { conditions, .. } => {
-                let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
-
-                if SigFlag::SigAll != conditions.sig_flag {
-                    return Err(Error::IncorrectSecretKind);
-                }
-
-                conditions.num_sigs.unwrap_or(1)
-            }
-            _ => return Err(Error::IncorrectSecretKind),
-        };
-
-        Ok((required_sigs, first_conditions))
-    }
-
-    /// Verify all inputs have matching secrets and tags
-    ///
-    /// WARNING: This function may be incomplete. According to NUT-11, when SIG_ALL is present,
-    /// all inputs must have: (1) same kind, (2) SIG_ALL flag, (3) same data, (4) same tags.
-    /// This function only checks (3) and (4), but not (1) and (2).
-    fn verify_matching_conditions(&self) -> Result<(), Error> {
-        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
-        let first_nut10: Nut10Secret = (&first_input.secret).try_into()?;
-
-        for proof in self.inputs().iter().skip(1) {
-            let current_secret: Nut10Secret = proof.secret.clone().try_into()?;
-
-            // Check data matches
-            if current_secret.secret_data().data() != first_nut10.secret_data().data() {
-                return Err(Error::SpendConditionsNotMet);
-            }
-
-            // Check tags match
-            if current_secret.secret_data().tags() != first_nut10.secret_data().tags() {
-                return Err(Error::SpendConditionsNotMet);
-            }
-        }
-        Ok(())
-    }
-
-    /// Get validated signatures from first input's witness
-    fn get_valid_witness_signatures(&self) -> Result<Vec<Signature>, Error> {
-        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
-        let first_witness = first_input
-            .witness
-            .as_ref()
-            .ok_or(Error::SignaturesNotProvided)?;
-
-        let witness_sigs = first_witness
-            .signatures()
-            .ok_or(Error::SignaturesNotProvided)?;
-
-        // Convert witness strings to signatures
-        witness_sigs
-            .iter()
-            .map(|s| Signature::from_str(s))
-            .collect::<Result<Vec<Signature>, _>>()
-            .map_err(Error::from)
-    }
-
     /// Sign swap request with SIG_ALL
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
         // Get message to sign
@@ -931,34 +864,10 @@ impl SwapRequest {
     /// Validate SIG_ALL conditions and signatures for the swap request
     ///
     /// DEPRECATED: Use `verify_spending_conditions()` instead.
-    /// This method does not properly handle locktime or HTLC verification.
-    /// The correct method is `verify_spending_conditions()` which handles all
-    /// spending condition types correctly.
-    #[deprecated(since = "0.4.0", note = "Use verify_spending_conditions() instead")]
+    /// The original implementation didn't take locktime or HTLC into account.
+    #[deprecated(since = "0.4.0", note = "Use verify_spending_conditions() instead. The original implementation didn't take locktime or HTLC into account.")]
     pub fn verify_sig_all(&self) -> Result<(), Error> {
-        // Get required signatures and conditions from first input
-        let (required_sigs, first_conditions) = self.get_sig_all_required_sigs()?;
-
-        // Verify all inputs have matching secrets
-        self.verify_matching_conditions()?;
-
-        // Get and validate witness signatures
-        let signatures = self.get_valid_witness_signatures()?;
-
-        // Get signing pubkeys
-        let verifying_pubkeys = first_conditions
-            .pubkeys()
-            .ok_or(Error::P2PKPubkeyRequired)?;
-
-        // Get aggregated message and validate signatures
-        let msg = self.sig_all_msg_to_sign();
-        let valid_sigs = valid_signatures(msg.as_bytes(), &verifying_pubkeys, &signatures)?;
-
-        if valid_sigs >= required_sigs {
-            Ok(())
-        } else {
-            Err(Error::SpendConditionsNotMet)
-        }
+        self.verify_spending_conditions()
     }
 }
 
