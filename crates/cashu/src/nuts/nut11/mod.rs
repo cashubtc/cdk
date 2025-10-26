@@ -1498,14 +1498,16 @@ mod tests {
 
         let mut melt = MeltRequest::new(Uuid::new_v4(), vec![proof], None);
 
-        // Try to sign with unauthorized key
+        // Sign with unauthorized key
         let unauthorized_key =
             SecretKey::from_str("0000000000000000000000000000000000000000000000000000000000000001")
                 .unwrap();
+        melt.sign_sig_all(unauthorized_key).unwrap();
 
+        // Verification should fail (unauthorized signature)
         assert!(
-            melt.sign_sig_all(unauthorized_key).is_err(),
-            "Signing with unauthorized key should fail"
+            melt.verify_sig_all().is_err(),
+            "Verification should fail with unauthorized key signature"
         );
     }
 
@@ -1528,9 +1530,13 @@ mod tests {
 
         let mut melt = MeltRequest::new(Uuid::new_v4(), vec![proof], None);
 
+        // Signing
+        melt.sign_sig_all(secret_key).unwrap();
+
+        // Verification should fail (wrong flag - expected SIG_ALL)
         assert!(
-            melt.sign_sig_all(secret_key).is_err(),
-            "Signing with SIG_INPUTS flag should fail"
+            melt.verify_sig_all().is_err(),
+            "Verification should fail with SIG_INPUTS flag when expecting SIG_ALL"
         );
     }
 
@@ -1595,9 +1601,13 @@ mod tests {
 
         let mut melt = MeltRequest::new(Uuid::new_v4(), vec![proof1, proof2], None);
 
+        // Signing should succeed (no validation during signing)
+        melt.sign_sig_all(secret_key).unwrap();
+
+        // Verification should fail (catches mismatched inputs)
         assert!(
-            melt.sign_sig_all(secret_key).is_err(),
-            "Signing with mismatched input secrets should fail"
+            melt.verify_sig_all().is_err(),
+            "Verification should fail with mismatched input secrets"
         );
     }
 
@@ -1907,9 +1917,14 @@ mod tests {
                 .unwrap();
 
         let mut swap = SwapRequest::new(vec![proof], vec![blinded_msg]);
+
+        // Signing should succeed (no validation)
+        swap.sign_sig_all(unauthorized_key).unwrap();
+
+        // Verification should fail (unauthorized signature)
         assert!(
-            swap.sign_sig_all(unauthorized_key).is_err(),
-            "Signing with unauthorized key should fail"
+            swap.verify_spending_conditions().is_err(),
+            "Verification should fail with unauthorized key signature"
         );
     }
 
@@ -1939,9 +1954,14 @@ mod tests {
         let blinded_msg = create_test_blinded_msg(pubkey);
 
         let mut swap = SwapRequest::new(vec![proof1, proof2], vec![blinded_msg]);
+
+        // Signing should succeed (no validation)
+        swap.sign_sig_all(secret_key).unwrap();
+
+        // Verification should fail (mismatched secrets)
         assert!(
-            swap.sign_sig_all(secret_key).is_err(),
-            "Signing with mismatched secrets should fail"
+            swap.verify_spending_conditions().is_err(),
+            "Verification should fail with mismatched secrets"
         );
     }
 
@@ -1960,9 +1980,14 @@ mod tests {
         let blinded_msg = create_test_blinded_msg(pubkey);
 
         let mut swap = SwapRequest::new(vec![proof], vec![blinded_msg]);
+
+        // Signing should succeed (no validation)
+        swap.sign_sig_all(secret_key).unwrap();
+
+        // Verification should fail (wrong flag - has SIG_INPUTS but sign_sig_all expects SIG_ALL)
         assert!(
-            swap.sign_sig_all(secret_key).is_err(),
-            "Signing with SIG_INPUTS flag should fail"
+            swap.verify_spending_conditions().is_err(),
+            "Verification should fail with SIG_INPUTS flag when sign_sig_all was used"
         );
     }
 
