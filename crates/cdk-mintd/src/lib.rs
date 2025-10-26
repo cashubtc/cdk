@@ -554,10 +554,8 @@ async fn configure_lightning_backend(
             tracing::info!("Using Spark backend: {:?}", spark_settings);
 
             let spark = spark_settings
-                .setup(settings, CurrencyUnit::Sat, _runtime, work_dir, None)
+                .setup(settings, CurrencyUnit::Sat, None, work_dir, _kv_store)
                 .await?;
-            #[cfg(feature = "prometheus")]
-            let spark = MetricsMintPayment::new(spark);
 
             mint_builder = configure_backend_for_unit(
                 settings,

@@ -45,7 +45,7 @@ These are dependencies of `aws-lc-sys` (used by rustls for TLS/crypto).
 
 ```bash
 # In WSL terminal
-cd /mnt/c/Users/JuanPabloGaviria/git/cdk
+cd /path/to/cdk
 cargo build --package cdk-mintd --features spark --release
 
 # Done! Binary at: target/release/cdk-mintd
@@ -146,7 +146,7 @@ Runtime Testing:             ░░░░░░░░░░   0% ⏸️
 ### Immediate (5 minutes)
 ```bash
 # Option A: Use WSL (recommended)
-cd /mnt/c/Users/JuanPabloGaviria/git/cdk
+cd /path/to/cdk
 cargo build --package cdk-mintd --features spark --release
 
 # Option B: Install cmake & NASM on Windows
@@ -253,7 +253,7 @@ All implementation phases finished:
 
 ### If Using WSL (Recommended)
 1. Open WSL terminal
-2. `cd /mnt/c/Users/JuanPabloGaviria/git/cdk`
+2. `cd /path/to/cdk`
 3. `cargo build --package cdk-mintd --features spark --release` (10-15 min)
 4. `./target/release/cdk-mintd --config test-spark-mint.toml`
 5. Test and enjoy! 🎉

@@ -27,8 +27,10 @@ use spark_wallet::{
     DefaultSigner, InvoiceDescription, SparkWallet, SparkWalletConfig, WalletBuilder,
     WalletEvent,
 };
-use std::collections::HashMap;
-use tokio::sync::{broadcast, Mutex, RwLock};
+
+// Re-export Network for external use
+pub use spark_wallet::Network;
+use tokio::sync::{broadcast, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 
@@ -40,27 +42,6 @@ mod tests;
 
 pub use config::SparkConfig;
 pub use error::Error;
-
-// Re-export Network from spark_wallet for convenience
-pub use spark_wallet::Network;
-
-/// Information about a received transfer
-#[derive(Clone, Debug)]
-struct TransferInfo {
-    transfer_id: String,
-    amount_sat: u64,
-    timestamp: u64,
-    paid: bool,
-    preimage: Option<String>,
-}
-
-/// Information about an outgoing payment
-#[derive(Clone, Debug)]
-struct PaymentInfo {
-    preimage: Option<String>,
-    status: MeltQuoteState,
-    amount_spent: u64,
-}
 
 /// CDK Lightning backend using Spark SDK
 ///
@@ -77,11 +58,6 @@ pub struct CdkSpark {
     wait_invoice_is_active: Arc<AtomicBool>,
     sender: broadcast::Sender<WaitPaymentResponse>,
     receiver: Arc<Mutex<broadcast::Receiver<WaitPaymentResponse>>>,
-    // Payment tracking caches
-    incoming_payments: Arc<RwLock<HashMap<String, TransferInfo>>>,
-    outgoing_payments: Arc<RwLock<HashMap<String, PaymentInfo>>>,
-    // Invoice-to-payment-hash mapping
-    invoice_map: Arc<RwLock<HashMap<String, String>>>, // invoice_string -> payment_hash
 }
 
 impl CdkSpark {
@@ -152,9 +128,12 @@ impl CdkSpark {
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             sender,
             receiver: Arc::new(Mutex::new(receiver)),
+<<<<<<< HEAD
             incoming_payments: Arc::new(RwLock::new(HashMap::new())),
             outgoing_payments: Arc::new(RwLock::new(HashMap::new())),
             invoice_map: Arc::new(RwLock::new(HashMap::new())),
+=======
+>>>>>>> feature/spark-lightning-backend
         })
     }
 
@@ -192,10 +171,15 @@ impl CdkSpark {
     /// Start the event listener for incoming payments
     async fn start_event_listener(&self) -> Result<(), Error> {
         let wallet = Arc::clone(&self.inner);
+<<<<<<< HEAD
         let sender = self.sender.clone();
         let cancel_token = self.wait_invoice_cancel_token.clone();
         let incoming_payments = Arc::clone(&self.incoming_payments);
         let invoice_map = Arc::clone(&self.invoice_map);
+=======
+        let _sender = self.sender.clone();
+        let cancel_token = self.wait_invoice_cancel_token.clone();
+>>>>>>> feature/spark-lightning-backend
 
         tokio::spawn(async move {
             let mut event_stream = wallet.subscribe_events();
@@ -210,6 +194,7 @@ impl CdkSpark {
                         match event {
                             WalletEvent::TransferClaimed(transfer) => {
                                 info!("Transfer claimed event: {:?}", transfer.id);
+<<<<<<< HEAD
                                 debug!("Transfer details: sender={}, receiver={}, amount={}", 
                                     transfer.sender_id, transfer.receiver_id, transfer.total_value_sat);
 
@@ -245,6 +230,13 @@ impl CdkSpark {
                                 };
 
                                 let _ = sender.send(payment_response);
+=======
+                                // Note: Lightning payments come through as transfers
+                                // CDK will poll check_incoming_payment_status for payment detection
+                                // This event is for awareness/logging
+                                debug!("Transfer details: sender={}, receiver={}, amount={}", 
+                                    transfer.sender_id, transfer.receiver_id, transfer.total_value_sat);
+>>>>>>> feature/spark-lightning-backend
                             }
                             WalletEvent::Synced => {
                                 debug!("Wallet synced");
@@ -344,6 +336,7 @@ impl MintPayment for CdkSpark {
                     .map_err(|e| Error::InvoiceParse(e.to_string()))?;
 
                 let payment_hash = *invoice.payment_hash().as_ref();
+<<<<<<< HEAD
                 let payment_hash_hex = hex::encode(payment_hash);
 
                 // Store invoice-to-payment-hash mapping
@@ -353,6 +346,10 @@ impl MintPayment for CdkSpark {
                     .insert(payment.invoice.clone(), payment_hash_hex.clone());
 
                 info!("Created invoice with payment hash: {}", payment_hash_hex);
+=======
+
+                info!("Created invoice with payment hash: {}", hex::encode(payment_hash));
+>>>>>>> feature/spark-lightning-backend
 
                 Ok(CreateIncomingPaymentResponse {
                     request_lookup_id: PaymentIdentifier::PaymentHash(payment_hash),
@@ -449,6 +446,7 @@ impl MintPayment for CdkSpark {
                     .map_err(Error::SparkWallet)?;
 
                 let payment_hash = *invoice.payment_hash().as_ref();
+<<<<<<< HEAD
                 let payment_hash_hex = hex::encode(payment_hash);
 
                 // Get total spent (amount + fees)
@@ -459,12 +457,18 @@ impl MintPayment for CdkSpark {
                 } else {
                     result.transfer.total_value_sat
                 };
+=======
+
+                // Get total spent (amount + fees)
+                let total_spent_sat = result.transfer.total_value_sat;
+>>>>>>> feature/spark-lightning-backend
                 let total_spent = Self::sats_to_unit(total_spent_sat, unit)?;
 
                 // Get payment preimage if available
                 let payment_proof = result.lightning_payment
                     .and_then(|p| p.payment_preimage);
 
+<<<<<<< HEAD
                 // Store outgoing payment info in cache
                 self.outgoing_payments.write().await.insert(
                     payment_hash_hex.clone(),
@@ -475,6 +479,8 @@ impl MintPayment for CdkSpark {
                     }
                 );
 
+=======
+>>>>>>> feature/spark-lightning-backend
                 info!("Payment completed successfully");
 
                 Ok(MakePaymentResponse {
@@ -557,6 +563,7 @@ impl MintPayment for CdkSpark {
     ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
         info!("Checking incoming payment status: {:?}", payment_identifier);
 
+<<<<<<< HEAD
         // Query the payment cache
         let cache = self.incoming_payments.read().await;
 
@@ -603,6 +610,10 @@ impl MintPayment for CdkSpark {
         }
 
         // Payment not yet received
+=======
+        // For now, return empty vec as Spark handles this through events
+        // TODO: Query Spark for historical payment status
+>>>>>>> feature/spark-lightning-backend
         Ok(vec![])
     }
 
@@ -614,6 +625,7 @@ impl MintPayment for CdkSpark {
     ) -> Result<MakePaymentResponse, Self::Err> {
         info!("Checking outgoing payment status: {:?}", payment_identifier);
 
+<<<<<<< HEAD
         // Query outgoing payment cache
         let cache = self.outgoing_payments.read().await;
         
@@ -630,6 +642,10 @@ impl MintPayment for CdkSpark {
         }
 
         // Payment not found, return unknown status
+=======
+        // For now, return unknown status
+        // TODO: Query Spark for payment status
+>>>>>>> feature/spark-lightning-backend
         Ok(MakePaymentResponse {
             payment_lookup_id: payment_identifier.clone(),
             payment_proof: None,
