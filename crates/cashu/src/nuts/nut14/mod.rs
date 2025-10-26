@@ -14,7 +14,6 @@ use super::nut00::Witness;
 use super::nut10::Secret;
 use super::nut11::valid_signatures;
 use super::{Conditions, Proof};
-use crate::ensure_cdk;
 use crate::util::unix_time;
 
 pub mod serde_htlc_witness;
@@ -62,85 +61,136 @@ pub struct HTLCWitness {
     pub signatures: Option<Vec<String>>,
 }
 
+/// Get the relevant public keys and required signature count for HTLC verification
+///
+/// Takes into account locktime - if locktime has passed, returns refund keys,
+/// otherwise returns primary pubkeys. Returns (preimage_needed, pubkeys, required_sigs).
+pub fn get_pubkeys_and_required_sigs_for_htlc(
+    secret: &Secret,
+    current_time: u64,
+) -> Result<(bool, Vec<super::nut01::PublicKey>, u64), Error> {
+    use super::nut10::Kind;
+
+    debug_assert!(
+        secret.kind() == Kind::HTLC,
+        "get_pubkeys_and_required_sigs_for_htlc called with non-HTLC secret - this is a bug"
+    );
+
+    let conditions: Conditions = secret
+        .secret_data()
+        .tags()
+        .cloned()
+        .unwrap_or_default()
+        .try_into()?;
+
+    // Check if locktime has passed
+    let locktime_passed = conditions
+        .locktime
+        .map(|locktime| locktime < current_time)
+        .unwrap_or(false);
+
+    // Determine spending path based on locktime
+    let (preimage_needed, pubkeys, required_sigs) = if locktime_passed {
+        // After locktime: use refund path (no preimage needed)
+        if let Some(refund_keys) = &conditions.refund_keys {
+            // Locktime has passed and refund keys exist - use refund keys
+            let refund_sigs = conditions.num_sigs_refund.unwrap_or(1);
+            (false, refund_keys.clone(), refund_sigs)
+        } else {
+            // Locktime has passed with no refund keys - anyone can spend
+            (false, vec![], 0)
+        }
+    } else {
+        // Before locktime: use hash path (preimage needed)
+        // Get pubkeys from conditions (for HTLC, data contains hash, not pubkey)
+        let pubkeys = conditions.pubkeys.clone().unwrap_or_default();
+        let required_sigs = conditions.num_sigs.unwrap_or(1);
+        (true, pubkeys, required_sigs)
+    };
+
+    Ok((preimage_needed, pubkeys, required_sigs))
+}
+
 impl Proof {
     /// Verify HTLC
     pub fn verify_htlc(&self) -> Result<(), Error> {
         let secret: Secret = self.secret.clone().try_into()?;
-        let conditions: Option<Conditions> = secret
+        let spending_conditions: Conditions = secret
             .secret_data()
             .tags()
-            .and_then(|c| c.clone().try_into().ok());
+            .cloned()
+            .unwrap_or_default()
+            .try_into()?;
 
-        if let Some(ref conds) = conditions {
-            debug_assert!(
-                conds.sig_flag != super::SigFlag::SigAll,
-                "verify_htlc called with SIG_ALL proof - this is a bug"
-            );
+        debug_assert!(
+            spending_conditions.sig_flag != super::SigFlag::SigAll,
+            "verify_htlc called with SIG_ALL proof - this is a bug"
+        );
+
+        debug_assert!(
+            secret.kind() == super::Kind::HTLC,
+            "verify_htlc called with non-HTLC secret - this is a bug"
+        );
+
+        // Get the appropriate spending conditions based on locktime
+        let now = unix_time();
+        let (preimage_needed, relevant_pubkeys, relevant_num_sigs_required) =
+            get_pubkeys_and_required_sigs_for_htlc(&secret, now)?;
+
+        // don't extract the witness until it's needed. Remember a post-locktime
+        // zero-refunds proof is acceptable here, and therefore a Witness isn't always
+        // needed
+
+        // If preimage is needed (before locktime), verify it
+        if preimage_needed {
+            let hash_lock =
+                Sha256Hash::from_str(secret.secret_data().data()).map_err(|_| Error::InvalidHash)?;
+            // Extract HTLC witness
+            let htlc_witness = match &self.witness {
+                Some(Witness::HTLCWitness(witness)) => witness,
+                _ => return Err(Error::IncorrectSecretKind),
+            };
+            let hash_of_preimage = Sha256Hash::hash(htlc_witness.preimage.as_bytes());
+
+            if hash_lock.ne(&hash_of_preimage) {
+                return Err(Error::Preimage);
+            }
         }
 
+        if relevant_num_sigs_required == 0 {
+            return Ok(());
+        }
+
+        // if we get here, the preimage check (if it was needed) has been done
+        // and we know that at least one signature is required. So, we extract
+        // the witness.signatures and count them:
+
+        // Extract witness signatures
         let htlc_witness = match &self.witness {
             Some(Witness::HTLCWitness(witness)) => witness,
             _ => return Err(Error::IncorrectSecretKind),
         };
+        let witness_signatures = htlc_witness
+            .signatures
+            .as_ref()
+            .ok_or(Error::SignaturesNotProvided)?;
 
-        if let Some(conditions) = conditions {
-            // Check locktime
-            if let Some(locktime) = conditions.locktime {
-                // If locktime is in passed and no refund keys provided anyone can spend
-                if locktime.lt(&unix_time()) && conditions.refund_keys.is_none() {
-                    return Ok(());
-                }
+        // Convert signatures from strings
+        let signatures: Vec<Signature> = witness_signatures
+            .iter()
+            .map(|s| Signature::from_str(s))
+            .collect::<Result<Vec<_>, _>>()?;
 
-                // If refund keys are provided verify p2pk signatures
-                if let (Some(refund_key), Some(signatures)) =
-                    (conditions.refund_keys, &self.witness)
-                {
-                    let signatures = signatures
-                        .signatures()
-                        .ok_or(Error::SignaturesNotProvided)?
-                        .iter()
-                        .map(|s| Signature::from_str(s))
-                        .collect::<Result<Vec<Signature>, _>>()?;
+        // Count valid signatures using relevant_pubkeys
+        let msg: &[u8] = self.secret.as_bytes();
+        let valid_sig_count = valid_signatures(msg, &relevant_pubkeys, &signatures)?;
 
-                    // If secret includes refund keys check that there is a valid signature
-                    if valid_signatures(self.secret.as_bytes(), &refund_key, &signatures)?.ge(&1) {
-                        return Ok(());
-                    }
-                }
-            }
-            // If pubkeys are present check there is a valid signature
-            if let Some(pubkey) = conditions.pubkeys {
-                let req_sigs = conditions.num_sigs.unwrap_or(1);
-
-                let signatures = htlc_witness
-                    .signatures
-                    .as_ref()
-                    .ok_or(Error::SignaturesNotProvided)?;
-
-                let signatures = signatures
-                    .iter()
-                    .map(|s| Signature::from_str(s))
-                    .collect::<Result<Vec<Signature>, _>>()?;
-
-                let valid_sigs = valid_signatures(self.secret.as_bytes(), &pubkey, &signatures)?;
-                ensure_cdk!(valid_sigs >= req_sigs, Error::IncorrectSecretKind);
-            }
+        // Check if we have enough valid signatures
+        if valid_sig_count >= relevant_num_sigs_required {
+            Ok(())
+        } else {
+            Err(Error::IncorrectSecretKind)
         }
-
-        if secret.kind().ne(&super::Kind::HTLC) {
-            return Err(Error::IncorrectSecretKind);
-        }
-
-        let hash_lock =
-            Sha256Hash::from_str(secret.secret_data().data()).map_err(|_| Error::InvalidHash)?;
-
-        let preimage_hash = Sha256Hash::hash(htlc_witness.preimage.as_bytes());
-
-        if hash_lock.ne(&preimage_hash) {
-            return Err(Error::Preimage);
-        }
-
-        Ok(())
     }
 
     /// Add Preimage
