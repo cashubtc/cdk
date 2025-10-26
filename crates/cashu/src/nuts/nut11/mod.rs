@@ -17,6 +17,7 @@ use thiserror::Error;
 use super::nut00::Witness;
 use super::nut01::PublicKey;
 use super::nut05::MeltRequest;
+use super::nut10::VerificationForSpendingConditions;
 use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
 use crate::nuts::nut00::BlindedMessage;
 use crate::secret::Secret;
@@ -834,26 +835,6 @@ impl From<Tag> for Vec<String> {
 }
 
 impl SwapRequest {
-    /// Generate the message to sign for SIG_ALL validation
-    /// Concatenates all input secrets and output blinded messages in order
-    fn sig_all_msg_to_sign(&self) -> String {
-        let mut msg_to_sign = String::new();
-
-        // Add all input secrets in order
-        for proof in self.inputs() {
-            let secret = proof.secret.to_string();
-            msg_to_sign.push_str(&secret);
-        }
-
-        // Add all output blinded messages in order
-        for output in self.outputs() {
-            let message = output.blinded_secret.to_string();
-            msg_to_sign.push_str(&message);
-        }
-
-        msg_to_sign
-    }
-
     /// Get required signature count from first input's spending conditions
     fn get_sig_all_required_sigs(&self) -> Result<(u64, SpendingConditions), Error> {
         let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;

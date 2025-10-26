@@ -38,10 +38,7 @@ impl Mint {
 
         // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK
         // and HTLC (including SIGALL)
-        super::nut10_spending_conditions::verify_spending_conditions_for_swap(
-            swap_request.inputs(),
-            swap_request.outputs(),
-        )?;
+        swap_request.verify_spending_conditions()?;
 
         // We don't need to check P2PK or HTLC again. It has all been checked above
         // and the code doesn't reach here unless such verifications were satisfactory

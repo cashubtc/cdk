@@ -176,6 +176,137 @@ pub fn get_pubkeys_and_required_sigs(
     }
 }
 
+use super::Proofs;
+
+/// Trait for requests that spend proofs (SwapRequest, MeltRequest)
+pub trait VerificationForSpendingConditions {
+    /// Get the input proofs
+    fn inputs(&self) -> &Proofs;
+
+    /// Construct the message to sign for SIG_ALL verification
+    ///
+    /// This concatenates all relevant transaction data that must be signed.
+    /// For swap: input secrets + output blinded messages
+    /// For melt: input secrets + quote/payment request
+    fn sig_all_msg_to_sign(&self) -> String;
+
+    /// Check if at least one proof in the set has SIG_ALL flag set
+    ///
+    /// SIG_ALL requires all proofs in the transaction to be signed.
+    /// If any proof has this flag, we need to verify signatures on all proofs.
+    fn has_at_least_one_sig_all(&self) -> Result<bool, super::nut11::Error> {
+        for proof in self.inputs() {
+            // Try to extract spending conditions from the proof's secret
+            if let Ok(spending_conditions) = super::SpendingConditions::try_from(&proof.secret) {
+                // Check for SIG_ALL flag in either P2PK or HTLC conditions
+                let has_sig_all = match spending_conditions {
+                    super::SpendingConditions::P2PKConditions { conditions, .. } => {
+                        conditions.map(|c| c.sig_flag == super::SigFlag::SigAll).unwrap_or(false)
+                    }
+                    super::SpendingConditions::HTLCConditions { conditions, .. } => {
+                        conditions.map(|c| c.sig_flag == super::SigFlag::SigAll).unwrap_or(false)
+                    }
+                };
+
+                if has_sig_all {
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Verify all inputs meet SIG_ALL requirements per NUT-11
+    ///
+    /// When any input has SIG_ALL, all inputs must have:
+    /// 1. Same kind (P2PK or HTLC)
+    /// 2. SIG_ALL flag set
+    /// 3. Same Secret.data
+    /// 4. Same Secret.tags
+    fn verify_all_inputs_match_for_sig_all(&self) -> Result<(), super::nut11::Error> {
+        let inputs = self.inputs();
+
+        if inputs.is_empty() {
+            return Err(super::nut11::Error::SpendConditionsNotMet);
+        }
+
+        // Get first input's properties
+        let first_input = inputs.first().unwrap();
+        let first_secret = Secret::try_from(&first_input.secret)
+            .map_err(|_| super::nut11::Error::IncorrectSecretKind)?;
+        let first_kind = first_secret.kind();
+        let first_data = first_secret.secret_data().data();
+        let first_tags = first_secret.secret_data().tags();
+
+        // Get first input's conditions to check SIG_ALL flag
+        let first_conditions = super::Conditions::try_from(
+            first_tags.cloned().unwrap_or_default()
+        )?;
+
+        // Verify first input has SIG_ALL (it should, since we only call this function when SIG_ALL is detected)
+        if first_conditions.sig_flag != super::SigFlag::SigAll {
+            return Err(super::nut11::Error::SpendConditionsNotMet);
+        }
+
+        // Verify all remaining inputs match
+        for proof in inputs.iter().skip(1) {
+            let secret = Secret::try_from(&proof.secret)
+                .map_err(|_| super::nut11::Error::IncorrectSecretKind)?;
+
+            // Check kind matches
+            if secret.kind() != first_kind {
+                return Err(super::nut11::Error::SpendConditionsNotMet);
+            }
+
+            // Check data matches
+            if secret.secret_data().data() != first_data {
+                return Err(super::nut11::Error::SpendConditionsNotMet);
+            }
+
+            // Check tags match (this also ensures SIG_ALL flag matches, since sig_flag is part of tags)
+            if secret.secret_data().tags() != first_tags {
+                return Err(super::nut11::Error::SpendConditionsNotMet);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Verify spending conditions for each input individually
+    ///
+    /// Handles SIG_INPUTS mode, non-NUT-10 secrets, and any other case where inputs
+    /// are verified independently rather than as a group.
+    /// This function will NOT be called if any input has SIG_ALL.
+    fn verify_inputs_individually(&self) -> Result<(), super::nut14::Error> {
+        for proof in self.inputs() {
+            // Check if secret is a nut10 secret with conditions
+            if let Ok(secret) = Secret::try_from(&proof.secret) {
+                // Verify this function isn't being called with SIG_ALL proofs (development check)
+                if let Ok(conditions) = super::Conditions::try_from(
+                    secret.secret_data().tags().cloned().unwrap_or_default()
+                ) {
+                    debug_assert!(
+                        conditions.sig_flag != super::SigFlag::SigAll,
+                        "verify_inputs_individually called with SIG_ALL proof - this is a bug"
+                    );
+                }
+
+                match secret.kind() {
+                    Kind::P2PK => {
+                        proof.verify_p2pk()?;
+                    }
+                    Kind::HTLC => {
+                        proof.verify_htlc()?;
+                    }
+                }
+            }
+            // If not a nut10 secret, skip verification (plain secret)
+        }
+        Ok(())
+    }
+}
+
 impl Serialize for Secret {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

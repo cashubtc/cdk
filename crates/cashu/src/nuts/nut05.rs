@@ -151,6 +151,18 @@ impl<Q: Serialize + DeserializeOwned> MeltRequest<Q> {
     }
 }
 
+impl<Q> super::nut10::VerificationForSpendingConditions for MeltRequest<Q> {
+    fn inputs(&self) -> &Proofs {
+        &self.inputs
+    }
+
+    fn sig_all_msg_to_sign(&self) -> String {
+        // TODO: Implement SIG_ALL for melt requests
+        // This should concatenate: input secrets + quote/payment request
+        panic!("SIG_ALL is not yet supported for melt requests")
+    }
+}
+
 /// Melt Method Settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
