@@ -151,15 +151,30 @@ impl<Q: Serialize + DeserializeOwned> MeltRequest<Q> {
     }
 }
 
-impl<Q> super::nut10::VerificationForSpendingConditions for MeltRequest<Q> {
+impl<Q: std::fmt::Display> super::nut10::VerificationForSpendingConditions for MeltRequest<Q> {
     fn inputs(&self) -> &Proofs {
         &self.inputs
     }
 
     fn sig_all_msg_to_sign(&self) -> String {
-        // TODO: Implement SIG_ALL for melt requests
-        // This should concatenate: input secrets + quote/payment request
-        panic!("SIG_ALL is not yet supported for melt requests")
+        let mut msg = String::new();
+
+        // Add all input secrets in order
+        for proof in &self.inputs {
+            msg.push_str(&proof.secret.to_string());
+        }
+
+        // Add all output blinded messages in order (if any)
+        if let Some(outputs) = &self.outputs {
+            for output in outputs {
+                msg.push_str(&output.blinded_secret.to_hex());
+            }
+        }
+
+        // Add quote ID
+        msg.push_str(&self.quote.to_string());
+
+        msg
     }
 }
 

@@ -305,6 +305,148 @@ pub trait VerificationForSpendingConditions {
         }
         Ok(())
     }
+
+    /// Verify P2PK SIG_ALL signatures
+    ///
+    /// Do NOT call this directly. This is called only from 'verify_full_sig_all_check',
+    /// which has already done many important SIG_ALL checks. This performs the final
+    /// signature verification for SIG_ALL+P2PK transactions.
+    fn verify_sig_all_p2pk(&self) -> Result<(), super::nut11::Error> {
+        // Get the first input, as it's the one with the signatures
+        let first_input = self.inputs().first().ok_or(super::nut11::Error::SpendConditionsNotMet)?;
+        let first_secret = Secret::try_from(&first_input.secret)
+            .map_err(|_| super::nut11::Error::IncorrectSecretKind)?;
+
+        // Record current time for locktime evaluation
+        let current_time = crate::util::unix_time();
+
+        // Get the relevant public keys and required signature count based on locktime
+        let (preimage_needed, pubkeys, required_sigs) = get_pubkeys_and_required_sigs(&first_secret, current_time)?;
+
+        debug_assert!(!preimage_needed, "P2PK should never require preimage");
+
+        // Handle "anyone can spend" case (locktime passed with no refund keys)
+        if required_sigs == 0 {
+            return Ok(());
+        }
+
+        // Construct the message that should be signed
+        let msg_to_sign = self.sig_all_msg_to_sign();
+
+        // Extract signatures from the first input's witness
+        let first_witness = first_input
+            .witness
+            .as_ref()
+            .ok_or(super::nut11::Error::SignaturesNotProvided)?;
+
+        let witness_sigs = first_witness
+            .signatures()
+            .ok_or(super::nut11::Error::SignaturesNotProvided)?;
+
+        // Convert witness strings to Signature objects
+        use std::str::FromStr;
+        let signatures: Vec<bitcoin::secp256k1::schnorr::Signature> = witness_sigs
+            .iter()
+            .map(|s| bitcoin::secp256k1::schnorr::Signature::from_str(s))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| super::nut11::Error::InvalidSignature)?;
+
+        // Verify signatures using the existing valid_signatures function
+        let valid_sig_count = super::nut11::valid_signatures(
+            msg_to_sign.as_bytes(),
+            &pubkeys,
+            &signatures,
+        )?;
+
+        // Check if we have enough valid signatures
+        if valid_sig_count < required_sigs {
+            return Err(super::nut11::Error::SpendConditionsNotMet);
+        }
+
+        Ok(())
+    }
+
+    /// Verify HTLC SIG_ALL signatures
+    ///
+    /// Do NOT call this directly. This is called only from 'verify_full_sig_all_check',
+    /// which has already done many important SIG_ALL checks. This performs the final
+    /// signature verification for SIG_ALL+HTLC transactions.
+    fn verify_sig_all_htlc(&self) -> Result<(), super::nut11::Error> {
+        // Get the first input, as it's the one with the signatures
+        let first_input = self.inputs().first().ok_or(super::nut11::Error::SpendConditionsNotMet)?;
+        let first_secret = Secret::try_from(&first_input.secret)
+            .map_err(|_| super::nut11::Error::IncorrectSecretKind)?;
+
+        // Record current time for locktime evaluation
+        let current_time = crate::util::unix_time();
+
+        // Get the relevant public keys, required signature count, and whether preimage is needed
+        let (preimage_needed, pubkeys, required_sigs) = get_pubkeys_and_required_sigs(&first_secret, current_time)?;
+
+        // If preimage is needed (before locktime), verify it
+        if preimage_needed {
+            use bitcoin::hashes::Hash;
+
+            let hash_lock = bitcoin::hashes::sha256::Hash::from_str(first_secret.secret_data().data())
+                .map_err(|_| super::nut11::Error::InvalidHash)?;
+
+            // Extract HTLC witness
+            let first_witness = first_input
+                .witness
+                .as_ref()
+                .ok_or(super::nut11::Error::SignaturesNotProvided)?;
+
+            let preimage = first_witness
+                .preimage()
+                .ok_or(super::nut11::Error::SpendConditionsNotMet)?;
+
+            let hash_of_preimage = bitcoin::hashes::sha256::Hash::hash(preimage.as_bytes());
+
+            if hash_lock != hash_of_preimage {
+                return Err(super::nut11::Error::SpendConditionsNotMet);
+            }
+        }
+
+        // Handle "anyone can spend" case (locktime passed with no refund keys)
+        if required_sigs == 0 {
+            return Ok(());
+        }
+
+        // Construct the message that should be signed
+        let msg_to_sign = self.sig_all_msg_to_sign();
+
+        // Extract signatures from the first input's witness
+        let first_witness = first_input
+            .witness
+            .as_ref()
+            .ok_or(super::nut11::Error::SignaturesNotProvided)?;
+
+        let witness_sigs = first_witness
+            .signatures()
+            .ok_or(super::nut11::Error::SignaturesNotProvided)?;
+
+        // Convert witness strings to Signature objects
+        use std::str::FromStr;
+        let signatures: Vec<bitcoin::secp256k1::schnorr::Signature> = witness_sigs
+            .iter()
+            .map(|s| bitcoin::secp256k1::schnorr::Signature::from_str(s))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| super::nut11::Error::InvalidSignature)?;
+
+        // Verify signatures using the existing valid_signatures function
+        let valid_sig_count = super::nut11::valid_signatures(
+            msg_to_sign.as_bytes(),
+            &pubkeys,
+            &signatures,
+        )?;
+
+        // Check if we have enough valid signatures
+        if valid_sig_count < required_sigs {
+            return Err(super::nut11::Error::SpendConditionsNotMet);
+        }
+
+        Ok(())
+    }
 }
 
 impl Serialize for Secret {
