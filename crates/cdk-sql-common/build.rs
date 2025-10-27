@@ -23,7 +23,7 @@ fn main() {
             .unwrap_or("default")
             .replace("/", "_")
             .replace("\\", "_");
-        let dest_path = out_dir.join(format!("migrations_{}.rs", migration_name));
+        let dest_path = out_dir.join(format!("migrations_{migration_name}.rs"));
         let mut out_file = File::create(&dest_path).expect("Failed to create migrations.rs");
 
         let skip_name = migration_path.to_str().unwrap_or_default().len();
@@ -115,8 +115,7 @@ fn main() {
             let relative_to_out_dir = relative_path.to_str().unwrap().replace("\\", "/");
             writeln!(
                 out_file,
-                "    (\"{prefix}\", \"{rel_name}\", include_str!(r#\"{}\"#)),",
-                relative_to_out_dir
+                "    (\"{prefix}\", \"{rel_name}\", include_str!(r#\"{relative_to_out_dir}\"#)),"
             )
             .unwrap();
             println!("cargo:rerun-if-changed={}", path.display());
