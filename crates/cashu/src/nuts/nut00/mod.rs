@@ -305,12 +305,7 @@ impl Witness {
     /// Add signatures to [`Witness`]
     pub fn add_signatures(&mut self, signatues: Vec<String>) {
         match self {
-            // P2PKWitness.signatures is Vec<String> (not Option), so extend() works directly.
-            // Note: P2PKWitness::default() creates an empty Vec, ensuring signatures is never uninitialized.
             Self::P2PKWitness(p2pk_witness) => p2pk_witness.signatures.extend(signatues),
-            // HTLCWitness.signatures is Option<Vec<String>> because signatures are optional
-            // (e.g., after locktime with no signature requirement, or when only preimage is set).
-            // Must handle None case: when add_preimage() creates witness without signatures.
             Self::HTLCWitness(htlc_witness) => {
                 match &mut htlc_witness.signatures {
                     Some(sigs) => sigs.extend(signatues),
