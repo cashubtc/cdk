@@ -1062,8 +1062,9 @@ use crate::jit::JitCell;
 /// # Example
 ///
 /// ```no_run
-/// use cdk_integration_tests::init_regtest::RegtestJit;
 /// use std::path::PathBuf;
+///
+/// use cdk_integration_tests::init_regtest::RegtestJit;
 ///
 /// # async fn example() -> anyhow::Result<()> {
 /// let temp_dir = PathBuf::from("/tmp/regtest");
@@ -1321,8 +1322,8 @@ impl RegtestJit {
 
         // Initialize LDK channels (depends on LDK node and CLN/LND clients, but not on channels_opened)
         // This allows LDK channels to open in parallel with standard channels - unless LDK is skipped
-        let ldk_channels_opened = if let Some(ref ldk_node_cell) = ldk_node {
-            Some(JitCell::new_async({
+        let ldk_channels_opened = ldk_node.as_ref().map(|ldk_node_cell| {
+            JitCell::new_async({
                 let bitcoin_client = bitcoin_client.clone();
                 let ldk_node = ldk_node_cell.clone();
                 let cln_one = cln_one.clone();
@@ -1338,10 +1339,8 @@ impl RegtestJit {
                     let lnd2 = lnd_two.get().await?;
                     open_ldk_channels_async(bc, ldk, cln1, cln2, lnd1, lnd2).await
                 }
-            }))
-        } else {
-            None
-        };
+            })
+        });
 
         Ok(Self {
             _process_mgr: process_mgr,

@@ -106,7 +106,7 @@ impl ClnClient {
 
         let cln_response = cln_client
             .call_typed(&FetchinvoiceRequest {
-                amount_msat: amount_msat.map(|a| Amount::from_msat(a)),
+                amount_msat: amount_msat.map(Amount::from_msat),
                 payer_note: None,
                 quantity: None,
                 recurrence_counter: None,
@@ -642,7 +642,7 @@ impl LightningClient for ClnClient {
     }
 
     async fn pay_bolt12_offer(&self, offer: &str, amount_msats: Option<u64>) -> Result<String> {
-        let offer = Offer::from_str(&offer).map_err(|_| anyhow!("Invalid offer"))?;
+        let offer = Offer::from_str(offer).map_err(|_| anyhow!("Invalid offer"))?;
 
         let amount = match amount_msats {
             Some(amount) => Amount::from_msat(amount),

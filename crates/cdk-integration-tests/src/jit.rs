@@ -75,8 +75,8 @@ impl<T> JitCell<T> {
     /// # Example
     ///
     /// ```
-    /// use cdk_integration_tests::jit::JitCell;
     /// use anyhow::Result;
+    /// use cdk_integration_tests::jit::JitCell;
     ///
     /// async fn create_expensive_resource() -> Result<String> {
     ///     // Simulate expensive initialization
@@ -84,9 +84,7 @@ impl<T> JitCell<T> {
     ///     Ok("resource".to_string())
     /// }
     ///
-    /// let cell = JitCell::new_async(|| async {
-    ///     create_expensive_resource().await
-    /// });
+    /// let cell = JitCell::new_async(|| async { create_expensive_resource().await });
     /// ```
     pub fn new_async<F, Fut>(init_fn: F) -> Self
     where
@@ -118,13 +116,11 @@ impl<T> JitCell<T> {
     /// # Example
     ///
     /// ```
-    /// use cdk_integration_tests::jit::JitCell;
     /// use anyhow::Result;
+    /// use cdk_integration_tests::jit::JitCell;
     ///
     /// async fn example() -> Result<()> {
-    ///     let cell = JitCell::new_async(|| async {
-    ///         Ok(vec![1, 2, 3])
-    ///     });
+    ///     let cell = JitCell::new_async(|| async { Ok(vec![1, 2, 3]) });
     ///
     ///     let value = cell.get().await?;
     ///     assert_eq!(value, vec![1, 2, 3]);

@@ -173,11 +173,12 @@ impl LightningClient for LndClient {
     ) -> Result<()> {
         let client = &self.client;
 
-        let mut open_channel_request = OpenChannelRequest::default();
-
-        open_channel_request.node_pubkey = hex::decode(peer_id)?;
-        open_channel_request.push_sat = push_amount.unwrap_or_default() as i64;
-        open_channel_request.local_funding_amount = amount_sat as i64;
+        let open_channel_request = OpenChannelRequest {
+            node_pubkey: hex::decode(peer_id)?,
+            push_sat: push_amount.unwrap_or_default() as i64,
+            local_funding_amount: amount_sat as i64,
+            ..Default::default()
+        };
 
         let _connect_peer = client
             .lock()
