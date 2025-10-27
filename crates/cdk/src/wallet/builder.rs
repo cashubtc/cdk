@@ -6,7 +6,7 @@ use cdk_common::database;
 use cdk_common::parking_lot::RwLock;
 #[cfg(feature = "auth")]
 use cdk_common::AuthToken;
-#[cfg(feature = "auth")]
+#[cfg(any(feature = "auth", feature = "npubcash"))]
 use tokio::sync::RwLock as TokioRwLock;
 
 use crate::cdk_database::WalletDatabase;
@@ -232,6 +232,8 @@ impl WalletBuilder {
             target_proof_count: self.target_proof_count.unwrap_or(3),
             #[cfg(feature = "auth")]
             auth_wallet: Arc::new(TokioRwLock::new(self.auth_wallet)),
+            #[cfg(feature = "npubcash")]
+            npubcash_client: Arc::new(TokioRwLock::new(None)),
             seed,
             client: client.clone(),
             subscription: SubscriptionManager::new(client, self.use_http_subscription),

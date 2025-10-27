@@ -58,6 +58,10 @@ struct Cli {
     /// Currency unit to use for the wallet
     #[arg(short, long, default_value = "sat")]
     unit: String,
+    /// NpubCash API URL
+    #[cfg(feature = "npubcash")]
+    #[arg(long, default_value = "https://npubx.cash")]
+    npubcash_url: String,
     /// Use Tor transport (only when built with --features tor). Defaults to 'on' when feature is enabled.
     #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
     #[arg(long = "tor", value_enum, default_value_t = TorToggle::On)]
@@ -109,6 +113,15 @@ enum Commands {
     CatLogin(sub_commands::cat_login::CatLoginSubCommand),
     /// Cat login with device code flow
     CatDeviceLogin(sub_commands::cat_device_login::CatDeviceLoginSubCommand),
+    /// NpubCash integration commands
+    #[cfg(feature = "npubcash")]
+    NpubCash {
+        /// Mint URL to use for npubcash operations
+        #[arg(short, long)]
+        mint_url: String,
+        #[command(subcommand)]
+        command: sub_commands::npubcash::NpubCashSubCommand,
+    },
 }
 
 #[tokio::main]
@@ -297,6 +310,16 @@ async fn main() -> Result<()> {
                 &multi_mint_wallet,
                 sub_command_args,
                 &work_dir,
+            )
+            .await
+        }
+        #[cfg(feature = "npubcash")]
+        Commands::NpubCash { mint_url, command } => {
+            sub_commands::npubcash::npubcash(
+                &multi_mint_wallet,
+                mint_url,
+                command,
+                Some(args.npubcash_url.clone()),
             )
             .await
         }
