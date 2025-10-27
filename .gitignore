@@ -17,3 +17,20 @@ Cargo.lock
 data/
 test-fake-mint.toml
 mainnet-*.toml
+test-*.toml
+
+# Temporary build and development documentation
+BUILD-*.md
+NEXT-AGENT-INSTRUCTIONS.md
+SPARK-API-FIXES-NEEDED.md
+SPARK-TEST-INSTRUCTIONS.md
+LINUX-BUILD-GUIDE.md
+CONTRIBUTING-SPARK.md
+docs/SPARK-*.md
+
+# Binary artifacts
+*.zip
+*.exe
+vs_buildtools.exe
+rustup-init.exe
+protoc.zip
