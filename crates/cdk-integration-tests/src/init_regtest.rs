@@ -5,12 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use cdk::types::FeeReserve;
-use cdk_cln::Cln as CdkCln;
-use cdk_common::database::mint::DynMintKVStore;
 use cdk_ldk_node::CdkLdkNode;
-use cdk_lnd::Lnd as CdkLnd;
-use cdk_sqlite::mint::memory;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use ldk_node::Node;
 use tokio::sync::oneshot::Sender;
@@ -40,77 +35,16 @@ pub const LND_TWO_RPC_ADDR: &str = "localhost:10010";
 pub const CLN_ADDR: &str = "127.0.0.1:19846";
 pub const CLN_TWO_ADDR: &str = "127.0.0.1:19847";
 
-/// Configuration for regtest environment
-pub struct RegtestConfig {
-    pub mint_addr: String,
-    pub cln_port: u16,
-    pub lnd_port: u16,
-    pub temp_dir: PathBuf,
-}
-
-impl Default for RegtestConfig {
-    fn default() -> Self {
-        Self {
-            mint_addr: "127.0.0.1".to_string(),
-            cln_port: 8085,
-            lnd_port: 8087,
-            temp_dir: std::env::temp_dir().join("cdk-itests-default"),
-        }
-    }
-}
-
-pub fn get_mint_url_with_config(config: &RegtestConfig, which: &str) -> String {
-    let port = match which {
-        "0" => config.cln_port,
-        "1" => config.lnd_port,
-        _ => panic!("Unknown mint identifier: {which}"),
-    };
-    format!("http://{}:{}", config.mint_addr, port)
-}
-
-pub fn get_mint_ws_url_with_config(config: &RegtestConfig, which: &str) -> String {
-    let port = match which {
-        "0" => config.cln_port,
-        "1" => config.lnd_port,
-        _ => panic!("Unknown mint identifier: {which}"),
-    };
-    format!("ws://{}:{}/v1/ws", config.mint_addr, port)
-}
-
 pub fn get_temp_dir() -> PathBuf {
     let dir = env::var("CDK_ITESTS_DIR").expect("Temp dir not set");
     std::fs::create_dir_all(&dir).unwrap();
     dir.parse().expect("Valid path buf")
 }
 
-pub fn get_temp_dir_with_config(config: &RegtestConfig) -> &PathBuf {
-    &config.temp_dir
-}
-
 pub fn get_bitcoin_dir(temp_dir: &Path) -> PathBuf {
     let dir = temp_dir.join(BITCOIN_DIR);
     std::fs::create_dir_all(&dir).unwrap();
     dir
-}
-
-pub fn init_bitcoind(work_dir: &Path) -> Bitcoind {
-    Bitcoind::new(
-        get_bitcoin_dir(work_dir),
-        BITCOIN_RPC_USER.to_string(),
-        BITCOIN_RPC_PASS.to_string(),
-        ZMQ_RAW_BLOCK.to_string(),
-        ZMQ_RAW_TX.to_string(),
-    )
-}
-
-pub fn init_bitcoin_client() -> Result<BitcoinClient> {
-    BitcoinClient::new(
-        "wallet".to_string(),
-        BITCOIND_ADDR.into(),
-        None,
-        Some(BITCOIN_RPC_USER.to_string()),
-        Some(BITCOIN_RPC_PASS.to_string()),
-    )
 }
 
 pub fn get_cln_dir(work_dir: &Path, name: &str) -> PathBuf {
@@ -131,24 +65,6 @@ pub fn get_lnd_cert_file_path(lnd_dir: &Path) -> PathBuf {
 
 pub fn get_lnd_macaroon_path(lnd_dir: &Path) -> PathBuf {
     lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon")
-}
-
-pub async fn init_lnd(
-    work_dir: &Path,
-    lnd_dir: PathBuf,
-    lnd_addr: &str,
-    lnd_rpc_addr: &str,
-) -> Lnd {
-    Lnd::new(
-        get_bitcoin_dir(work_dir),
-        lnd_dir,
-        lnd_addr.parse().unwrap(),
-        lnd_rpc_addr.to_string(),
-        BITCOIN_RPC_USER.to_string(),
-        BITCOIN_RPC_PASS.to_string(),
-        ZMQ_RAW_BLOCK.to_string(),
-        ZMQ_RAW_TX.to_string(),
-    )
 }
 
 // ============================================================================
@@ -905,36 +821,6 @@ pub fn generate_block(bitcoin_client: &BitcoinClient) -> Result<()> {
     Ok(())
 }
 
-pub async fn create_cln_backend(cln_client: &ClnClient) -> Result<CdkCln> {
-    let rpc_path = cln_client.rpc_path.clone();
-
-    let fee_reserve = FeeReserve {
-        min_fee_reserve: 1.into(),
-        percent_fee_reserve: 1.0,
-    };
-
-    let kv_store: DynMintKVStore = Arc::new(memory::empty().await?);
-    Ok(CdkCln::new(rpc_path, fee_reserve, kv_store).await?)
-}
-
-pub async fn create_lnd_backend(lnd_client: &LndClient) -> Result<CdkLnd> {
-    let fee_reserve = FeeReserve {
-        min_fee_reserve: 1.into(),
-        percent_fee_reserve: 1.0,
-    };
-
-    let kv_store: DynMintKVStore = Arc::new(memory::empty().await?);
-
-    Ok(CdkLnd::new(
-        lnd_client.address.clone(),
-        lnd_client.cert_file.clone(),
-        lnd_client.macaroon_file.clone(),
-        fee_reserve,
-        kv_store,
-    )
-    .await?)
-}
-
 pub async fn fund_ln<C>(bitcoin_client: &BitcoinClient, ln_client: &C) -> Result<()>
 where
     C: LightningClient,
@@ -1010,6 +896,14 @@ pub async fn start_regtest_end(
         "Total regtest setup completed in {:.2}s (using parallel JIT initialization)",
         total_elapsed.as_secs_f64()
     );
+
+    // Stop the LDK node if it was initialized (for interactive mode)
+    // This allows the mint to start with the same storage directory and reuse channels
+    if !skip_ldk {
+        tracing::info!("Stopping LDK node to free it for mint reuse...");
+        regtest.stop_ldk_node().await?;
+        tracing::info!("LDK node stopped, channels preserved in storage directory");
+    }
 
     // Send notification that regtest set up is complete
     sender.send(()).expect("Could not send oneshot");

@@ -210,6 +210,12 @@ impl LnBackendSetup for config::GrpcProcessor {
 #[cfg(feature = "ldk-node")]
 #[async_trait]
 impl LnBackendSetup for config::LdkNode {
+    /// Setup LDK node backend
+    ///
+    /// # Arguments
+    /// * `runtime` - Tokio runtime for the LDK node. Only used when creating a NEW node.
+    ///               Ignored when `existing_ldk_node` is provided (node already running).
+    /// * `existing_ldk_node` - Optional pre-existing LDK node to reuse (e.g., from regtest setup)
     async fn setup(
         &self,
         _settings: &Settings,
@@ -232,8 +238,9 @@ impl LnBackendSetup for config::LdkNode {
         // Check if an existing LDK node was provided
         // If so, use it instead of creating a new one
         let mut ldk_node = if let Some(existing_node) = existing_ldk_node {
-            tracing::info!("Using existing LDK node instance");
-            cdk_ldk_node::CdkLdkNode::from_node(existing_node, fee_reserve, runtime)?
+            tracing::info!("Using existing LDK node instance (already running, no runtime needed)");
+            // When using an existing node, it's already running so we don't need a runtime
+            cdk_ldk_node::CdkLdkNode::from_node(existing_node, fee_reserve, None)?
         } else {
             tracing::info!("Creating new LDK node instance");
 

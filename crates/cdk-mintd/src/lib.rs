@@ -333,6 +333,9 @@ async fn setup_sqlite_database(
 /**
  * Configures a `MintBuilder` instance with provided settings and initializes
  * routers for Lightning Network backends.
+ *
+ * Note: `runtime` is only used when creating a new LDK node. When `existing_ldk_node`
+ * is provided, the runtime parameter is ignored since the node is already running.
  */
 async fn configure_mint_builder(
     settings: &config::Settings,
