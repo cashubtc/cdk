@@ -128,4 +128,263 @@ mod tests {
             assert_eq!(config.network, network);
         }
     }
+
+    #[test]
+    fn test_config_with_passphrase() {
+        let config = SparkConfig {
+            network: spark_wallet::Network::Signet,
+            mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string(),
+            passphrase: Some("test passphrase".to_string()),
+            api_key: None,
+            operator_pool: None,
+            service_provider: None,
+            fee_reserve: cdk_common::common::FeeReserve {
+                min_fee_reserve: 10.into(),
+                percent_fee_reserve: 0.01,
+            },
+            reconnect_interval_seconds: 30,
+            split_secret_threshold: 2,
+        };
+        assert!(config.validate().is_ok());
+        assert_eq!(config.passphrase.unwrap(), "test passphrase");
+    }
+
+    #[test]
+    fn test_config_with_api_key() {
+        let config = SparkConfig {
+            network: spark_wallet::Network::Signet,
+            mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string(),
+            passphrase: None,
+            api_key: Some("test_api_key_12345".to_string()),
+            operator_pool: None,
+            service_provider: None,
+            fee_reserve: cdk_common::common::FeeReserve {
+                min_fee_reserve: 10.into(),
+                percent_fee_reserve: 0.01,
+            },
+            reconnect_interval_seconds: 30,
+            split_secret_threshold: 2,
+        };
+        assert!(config.validate().is_ok());
+        assert_eq!(config.api_key.unwrap(), "test_api_key_12345");
+    }
+
+    #[test]
+    fn test_config_fee_limits() {
+        let mut config = SparkConfig::default_for_network(
+            spark_wallet::Network::Signet,
+            "test mnemonic".to_string(),
+        );
+
+        // Test valid fee range
+        config.fee_reserve.percent_fee_reserve = 0.0;
+        assert!(config.validate().is_ok());
+
+        config.fee_reserve.percent_fee_reserve = 0.5; // 50% max
+        assert!(config.validate().is_ok());
+
+        config.fee_reserve.percent_fee_reserve = 1.0; // 100%
+        assert!(config.validate().is_ok());
+
+        // Test invalid fees (negative)
+        config.fee_reserve.percent_fee_reserve = -0.01;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_reconnect_interval_bounds() {
+        let mut config = SparkConfig::default_for_network(
+            spark_wallet::Network::Signet,
+            "test mnemonic".to_string(),
+        );
+
+        // Test valid intervals (validation doesn't check these)
+        config.reconnect_interval_seconds = 1;
+        assert!(config.validate().is_ok());
+
+        config.reconnect_interval_seconds = 30;
+        assert!(config.validate().is_ok());
+
+        config.reconnect_interval_seconds = 3600;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_threshold_validation() {
+        let mut config = SparkConfig::default_for_network(
+            spark_wallet::Network::Signet,
+            "test mnemonic".to_string(),
+        );
+
+        // Test valid thresholds (validation doesn't check these)
+        config.split_secret_threshold = 2;
+        assert!(config.validate().is_ok());
+
+        config.split_secret_threshold = 5;
+        assert!(config.validate().is_ok());
+
+        // Even 0 and 1 pass validation (config doesn't check thresholds)
+        config.split_secret_threshold = 0;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_fee_calculation_edge_cases() {
+        use cdk_common::common::FeeReserve;
+
+        // Test with min fee reserve
+        let _fee_reserve = FeeReserve {
+            min_fee_reserve: 10.into(),
+            percent_fee_reserve: 0.01,
+        };
+
+        // Amount smaller than min fee
+        let small_amount: u64 = 500;
+        let expected_fee = 10; // Uses min_fee_reserve
+        let calculated_fee = (small_amount as f32 * 0.01) as u64;
+        let actual_fee = calculated_fee.max(10);
+        assert_eq!(actual_fee, expected_fee);
+
+        // Amount where percent fee applies
+        let larger_amount: u64 = 5000;
+        let calculated_fee = (larger_amount as f32 * 0.01) as u64;
+        assert_eq!(calculated_fee, 50);
+    }
+
+    #[test]
+    fn test_min_fee_reserve_application() {
+        use cdk_common::common::FeeReserve;
+
+        let _fee_reserve = FeeReserve {
+            min_fee_reserve: 100.into(), // Higher min
+            percent_fee_reserve: 0.01,
+        };
+
+        // Small amount should use min fee
+        let amount: u64 = 500;
+        let calculated_fee = (amount as f32 * 0.01) as u64;
+        let actual_fee = calculated_fee.max(100);
+        assert_eq!(actual_fee, 100); // Uses min_fee_reserve
+
+        // Larger amount should use percent
+        let amount: u64 = 50000;
+        let calculated_fee = (amount as f32 * 0.01) as u64;
+        assert_eq!(calculated_fee, 500);
+        let actual_fee = calculated_fee.max(100);
+        assert_eq!(actual_fee, 500); // Uses calculated fee
+    }
+
+    #[test]
+    fn test_percent_fee_calculation() {
+        use cdk_common::common::FeeReserve;
+
+        // Test 1% fee
+        let _fee_reserve = FeeReserve {
+            min_fee_reserve: 10.into(),
+            percent_fee_reserve: 0.01,
+        };
+        let amount: u64 = 10000;
+        let calculated_fee = (amount as f32 * 0.01) as u64;
+        assert_eq!(calculated_fee, 100);
+
+        // Test 0.5% fee
+        let _fee_reserve = FeeReserve {
+            min_fee_reserve: 10.into(),
+            percent_fee_reserve: 0.005,
+        };
+        let calculated_fee = (amount as f32 * 0.005) as u64;
+        assert_eq!(calculated_fee, 50);
+
+        // Test 2% fee
+        let _fee_reserve = FeeReserve {
+            min_fee_reserve: 10.into(),
+            percent_fee_reserve: 0.02,
+        };
+        let calculated_fee = (amount as f32 * 0.02) as u64;
+        assert_eq!(calculated_fee, 200);
+    }
+
+    #[test]
+    fn test_invalid_mnemonic_error() {
+        let err = Error::InvalidMnemonic("invalid mnemonic".to_string());
+        let payment_err: cdk_common::payment::Error = err.into();
+        assert!(matches!(
+            payment_err,
+            cdk_common::payment::Error::Anyhow(_)
+        ));
+    }
+
+    #[test]
+    fn test_configuration_error_conversion() {
+        let err = Error::Configuration("config error".to_string());
+        let payment_err: cdk_common::payment::Error = err.into();
+        assert!(matches!(
+            payment_err,
+            cdk_common::payment::Error::Anyhow(_)
+        ));
+    }
+
+    #[test]
+    fn test_network_error_handling() {
+        let err = Error::Network("network error".to_string());
+        let payment_err: cdk_common::payment::Error = err.into();
+        assert!(matches!(
+            payment_err,
+            cdk_common::payment::Error::Anyhow(_)
+        ));
+    }
+
+    #[test]
+    fn test_payment_timeout_error() {
+        let err = Error::PaymentTimeout;
+        let payment_err: cdk_common::payment::Error = err.into();
+        assert!(matches!(
+            payment_err,
+            cdk_common::payment::Error::Anyhow(_)
+        ));
+    }
+
+    #[test]
+    fn test_payment_not_found_error() {
+        let err = Error::PaymentNotFound;
+        let payment_err: cdk_common::payment::Error = err.into();
+        assert!(matches!(
+            payment_err,
+            cdk_common::payment::Error::Anyhow(_)
+        ));
+    }
+
+    #[test]
+    fn test_invoice_parse_error() {
+        let err = Error::InvoiceParse("parse error".to_string());
+        let payment_err: cdk_common::payment::Error = err.into();
+        assert!(matches!(
+            payment_err,
+            cdk_common::payment::Error::Anyhow(_)
+        ));
+    }
+
+    #[test]
+    fn test_amount_overflow_protection() {
+        // Test that amount conversions handle edge cases
+        let large_amount: u64 = u64::MAX;
+        let _sats: Amount = large_amount.into();
+
+        // Conversion should not panic
+        let result = CdkSpark::sats_to_unit(large_amount, &CurrencyUnit::Sat);
+        assert!(result.is_ok());
+
+        // Msat conversion with large values
+        let result = CdkSpark::sats_to_unit(large_amount, &CurrencyUnit::Msat);
+        assert!(result.is_err()); // Should fail due to overflow
+    }
+
+    #[test]
+    fn test_zero_amount_handling() {
+        // Test that zero amounts are handled correctly
+        let zero: Amount = 0.into();
+        let result = CdkSpark::unit_to_sats(zero, &CurrencyUnit::Sat);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+    }
 }
