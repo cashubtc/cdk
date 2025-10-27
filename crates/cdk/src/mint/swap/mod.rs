@@ -10,19 +10,7 @@ use cdk_common::VerificationForSpendingConditions;
 pub mod swap_saga;
 
 #[cfg(test)]
-mod test_helpers;
-
-#[cfg(test)]
-mod p2pk_spending_conditions_tests;
-
-#[cfg(test)]
-mod p2pk_sigall_spending_conditions_tests;
-
-#[cfg(test)]
-mod htlc_spending_conditions_tests;
-
-#[cfg(test)]
-mod htlc_sigall_spending_conditions_tests;
+mod spending_conditions;
 
 impl Mint {
     /// Process Swap
