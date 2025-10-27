@@ -108,7 +108,7 @@ pub trait KeysDatabase {
     /// Mint Keys Database Error
     type Err: Into<Error> + From<Error>;
 
-    /// Beings a transaction
+    /// Begins a transaction
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn KeysDatabaseTransaction<'a, Self::Err> + Send + Sync + 'a>, Error>;
@@ -479,7 +479,7 @@ pub trait KVStoreDatabase {
 /// Key-Value Store Database trait
 #[async_trait]
 pub trait KVStore: KVStoreDatabase {
-    /// Beings a KV transaction
+    /// Begins a KV transaction
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn KVStoreTransaction<'a, Self::Err> + Send + Sync + 'a>, Error>;
@@ -497,7 +497,7 @@ pub trait Database<Error>:
     + SignaturesDatabase<Err = Error>
     + SagaDatabase<Err = Error>
 {
-    /// Beings a transaction
+    /// Begins a transaction
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn Transaction<'a, Error> + Send + Sync + 'a>, Error>;
