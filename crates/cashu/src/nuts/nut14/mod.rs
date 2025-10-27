@@ -89,9 +89,14 @@ impl Proof {
             super::nut10::get_pubkeys_and_required_sigs(&secret, now)
                 .map_err(Error::NUT11)?;
 
-        // don't extract the witness until it's needed. Remember a post-locktime
-        // zero-refunds proof is acceptable here, and therefore a Witness isn't always
-        // needed
+        // While a Witness is usually needed in a P2PK or HTLC proof, it's not
+        // always needed. If we are past the locktime, and there are no refund
+        // keys, then the proofs are anyone-can-spend:
+        //     NUT-11: "If the tag locktime is the unix time and the mint's local
+        //              clock is greater than locktime, the Proof becomes spendable
+        //              by anyone, except if [there are no refund keys]"
+        // Therefore, this function should not extract any Witness unless it
+        // is needed to get a preimage or signatures.
 
         // If preimage is needed (before locktime), verify it
         if preimage_needed {
