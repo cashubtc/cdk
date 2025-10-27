@@ -14,6 +14,7 @@ use crate::mint_url::MintUrl;
 use crate::nuts::CurrencyUnit;
 #[cfg(feature = "auth")]
 use crate::wallet::auth::AuthWallet;
+use crate::wallet::key_manager::KeyManager;
 use crate::wallet::{HttpClient, MintConnector, SubscriptionManager, Wallet};
 
 /// Builder for creating a new [`Wallet`]
@@ -28,6 +29,7 @@ pub struct WalletBuilder {
     seed: Option<[u8; 64]>,
     use_http_subscription: bool,
     client: Option<Arc<dyn MintConnector + Send + Sync>>,
+    key_manager: Option<Arc<KeyManager>>,
 }
 
 impl Default for WalletBuilder {
@@ -42,6 +44,7 @@ impl Default for WalletBuilder {
             seed: None,
             client: None,
             use_http_subscription: false,
+            key_manager: None,
         }
     }
 }
@@ -117,13 +120,25 @@ impl WalletBuilder {
         self
     }
 
+    /// Set a shared global KeyManager
+    ///
+    /// This allows multiple wallets to share the same KeyManager instance for
+    /// optimal performance and memory usage. If not provided, a new KeyManager
+    /// will be created for each wallet.
+    pub fn key_manager(mut self, key_manager: Arc<KeyManager>) -> Self {
+        self.key_manager = Some(key_manager);
+        self
+    }
+
     /// Set auth CAT (Clear Auth Token)
     #[cfg(feature = "auth")]
     pub fn set_auth_cat(mut self, cat: String) -> Self {
+        let key_manager = self.key_manager.clone().unwrap_or_else(KeyManager::new);
         self.auth_wallet = Some(AuthWallet::new(
             self.mint_url.clone().expect("Mint URL required"),
             Some(AuthToken::ClearAuth(cat)),
             self.localstore.clone().expect("Localstore required"),
+            key_manager,
             HashMap::new(),
             None,
         ));
@@ -162,10 +177,20 @@ impl WalletBuilder {
             }
         };
 
+        let key_manager = self.key_manager.unwrap_or_else(KeyManager::new);
+        let key_sub_id = key_manager.register_mint(
+            mint_url.clone(),
+            unit.clone(),
+            localstore.clone(),
+            client.clone(),
+        );
+
         Ok(Wallet {
             mint_url,
             unit,
             localstore,
+            key_manager,
+            _key_sub_id: key_sub_id,
             target_proof_count: self.target_proof_count.unwrap_or(3),
             #[cfg(feature = "auth")]
             auth_wallet: Arc::new(RwLock::new(self.auth_wallet)),
