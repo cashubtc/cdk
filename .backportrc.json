@@ -1,0 +1,7 @@
+{
+  "repoOwner": "cashubtc",
+  "repoName": "cdk",
+  "targetBranchChoices": ["v0.10.x", "v0.11.x", "v0.12.x", "v0.13.x"],
+  "autoMerge": false,
+  "autoMergeMethod": "merge"
+}
