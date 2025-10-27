@@ -34,3 +34,4 @@ docs/SPARK-*.md
 vs_buildtools.exe
 rustup-init.exe
 protoc.zip
+protoc/
