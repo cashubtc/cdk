@@ -211,3 +211,106 @@ async fn test_config_from_toml() {
     assert_eq!(config_json["network"], "signet");
     assert_eq!(config_json["fee_percent"], 0.01);
 }
+
+/// Test that Spark config serialization works correctly
+#[tokio::test]
+async fn test_spark_config_serde() {
+    use cdk_spark::SparkConfig;
+    use spark_wallet::Network;
+
+    // Create a test config
+    let config = SparkConfig {
+        network: Network::Signet,
+        mnemonic: "test mnemonic twelve words here".to_string(),
+        passphrase: Some("test passphrase".to_string()),
+        api_key: Some("test_api_key".to_string()),
+        operator_pool: None,
+        service_provider: None,
+        fee_reserve: cdk_common::common::FeeReserve {
+            min_fee_reserve: 10.into(),
+            percent_fee_reserve: 0.01,
+        },
+        reconnect_interval_seconds: 30,
+        split_secret_threshold: 2,
+    };
+
+    // Serialize
+    let json = serde_json::to_string(&config).unwrap();
+    
+    // Verify it contains expected fields
+    assert!(json.contains("signet"));
+    assert!(json.contains("test mnemonic"));
+    assert!(json.contains("test passphrase"));
+    
+    // Deserialize
+    let deserialized: SparkConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(deserialized.network, Network::Signet);
+    assert_eq!(deserialized.reconnect_interval_seconds, 30);
+    assert_eq!(deserialized.split_secret_threshold, 2);
+}
+
+/// Test Spark initialization with different network configurations
+#[tokio::test]
+#[ignore] // Requires actual Spark network connection
+async fn test_spark_multi_network() {
+    use spark_wallet::Network;
+
+    let networks = vec![
+        (Network::Signet, "Signet"),
+        (Network::Testnet, "Testnet"),
+        (Network::Regtest, "Regtest"),
+    ];
+
+    for (network, name) in networks {
+        let config = create_test_config();
+        let mut spark_config = config.clone();
+        spark_config.network = network;
+
+        let spark = CdkSpark::new(spark_config).await;
+        
+        match spark {
+            Ok(_) => println!("{} network configuration accepted", name),
+            Err(e) => println!("{} network failed: {}", name, e),
+        }
+    }
+}
+
+/// Test error handling for invalid configurations
+#[tokio::test]
+async fn test_spark_invalid_config() {
+    // Test with empty mnemonic
+    let mut config = create_test_config();
+    config.mnemonic = "".to_string();
+    
+    // Note: This would fail in real usage but test the validation
+    let result = config.validate();
+    
+    // Validation should catch empty mnemonic
+    assert!(result.is_err());
+}
+
+/// Test fee calculation logic
+#[tokio::test]
+async fn test_spark_fee_calculation_logic() {
+    use cdk_common::common::FeeReserve;
+    
+    let fee_reserve = FeeReserve {
+        min_fee_reserve: 10.into(),
+        percent_fee_reserve: 0.01,
+    };
+
+    // Test various amounts
+    let test_cases = vec![
+        (100, 10),      // Small amount: min fee applies
+        (1000, 10),     // Small amount: min fee applies  
+        (5000, 50),     // Larger amount: percent fee applies
+        (10000, 100),   // Large amount: percent fee applies
+    ];
+
+    for (amount, expected_fee) in test_cases {
+        let calculated_fee = (amount as f32 * fee_reserve.percent_fee_reserve) as u64;
+        let actual_fee = calculated_fee.max(u64::from(fee_reserve.min_fee_reserve));
+        assert_eq!(actual_fee, expected_fee, 
+            "Fee calculation failed for amount: {}", amount);
+    }
+}
