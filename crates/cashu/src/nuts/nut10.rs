@@ -113,7 +113,7 @@ impl Secret {
 /// Takes into account locktime - if locktime has passed, returns refund keys,
 /// otherwise returns primary pubkeys/hash path. Returns (preimage_needed, pubkeys, required_sigs).
 /// For P2PK, preimage_needed is always false. For HTLC, preimage_needed is true before locktime.
-pub fn get_pubkeys_and_required_sigs(
+pub(crate) fn get_pubkeys_and_required_sigs(
     secret: &Secret,
     current_time: u64,
 ) -> Result<(bool, Vec<PublicKey>, u64), super::nut11::Error> {
@@ -179,7 +179,7 @@ pub fn get_pubkeys_and_required_sigs(
 use super::Proofs;
 
 /// Trait for requests that spend proofs (SwapRequest, MeltRequest)
-pub trait VerificationForSpendingConditions {
+pub trait SpendingConditionVerification {
     /// Get the input proofs
     fn inputs(&self) -> &Proofs;
 

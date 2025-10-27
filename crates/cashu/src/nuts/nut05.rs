@@ -151,7 +151,7 @@ impl<Q: Serialize + DeserializeOwned> MeltRequest<Q> {
     }
 }
 
-impl<Q: std::fmt::Display> super::nut10::VerificationForSpendingConditions for MeltRequest<Q> {
+impl<Q: std::fmt::Display> super::nut10::SpendingConditionVerification for MeltRequest<Q> {
     fn inputs(&self) -> &Proofs {
         &self.inputs
     }

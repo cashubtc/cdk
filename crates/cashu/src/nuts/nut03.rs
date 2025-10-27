@@ -91,7 +91,7 @@ impl SwapRequest {
     }
 }
 
-impl super::nut10::VerificationForSpendingConditions for SwapRequest {
+impl super::nut10::SpendingConditionVerification for SwapRequest {
     fn inputs(&self) -> &Proofs {
         &self.inputs
     }

@@ -17,7 +17,7 @@ use thiserror::Error;
 use super::nut00::Witness;
 use super::nut01::PublicKey;
 use super::nut05::MeltRequest;
-use super::nut10::VerificationForSpendingConditions;
+use super::nut10::SpendingConditionVerification;
 use super::{Kind, Nut10Secret, Proof, Proofs, SecretKey};
 use crate::nuts::nut00::BlindedMessage;
 use crate::secret::Secret;

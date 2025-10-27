@@ -5,7 +5,7 @@ use tracing::instrument;
 
 use super::{Mint, SwapRequest, SwapResponse};
 use crate::Error;
-use cdk_common::VerificationForSpendingConditions;
+use cdk_common::SpendingConditionVerification;
 
 pub mod swap_saga;
 
