@@ -182,7 +182,7 @@ mod tests {
             signatures: None,
         };
 
-        let mut proof = Proof {
+        let proof = Proof {
             amount: crate::Amount::from(1),
             keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
             secret,
@@ -222,7 +222,7 @@ mod tests {
             signatures: None,
         };
 
-        let mut proof = Proof {
+        let proof = Proof {
             amount: crate::Amount::from(1),
             keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
             secret,
@@ -264,7 +264,7 @@ mod tests {
             signatures: None,
         };
 
-        let mut proof = Proof {
+        let proof = Proof {
             amount: crate::Amount::from(1),
             keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
             secret,
@@ -300,7 +300,7 @@ mod tests {
         let secret: SecretString = nut10_secret.try_into().unwrap();
 
         // Create proof with wrong witness type (P2PKWitness instead of HTLCWitness)
-        let mut proof = Proof {
+        let proof = Proof {
             amount: crate::Amount::from(1),
             keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
             secret,
