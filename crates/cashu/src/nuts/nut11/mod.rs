@@ -866,15 +866,6 @@ impl SwapRequest {
 
         Ok(())
     }
-
-    /// Validate SIG_ALL conditions and signatures for the swap request
-    ///
-    /// DEPRECATED: Use `verify_spending_conditions()` instead.
-    /// The original implementation didn't take locktime or HTLC into account.
-    #[deprecated(since = "0.4.0", note = "Use verify_spending_conditions() instead. The original implementation didn't take locktime or HTLC into account.")]
-    pub fn verify_sig_all(&self) -> Result<(), Error> {
-        self.verify_spending_conditions()
-    }
 }
 
 impl<Q: std::fmt::Display + Serialize + DeserializeOwned> MeltRequest<Q> {
