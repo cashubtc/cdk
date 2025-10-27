@@ -24,8 +24,7 @@ use futures::Stream;
 use lightning_invoice::Bolt11Invoice;
 use serde_json::Value;
 use spark_wallet::{
-    DefaultSigner, InvoiceDescription, SparkWallet, SparkWalletConfig, WalletBuilder,
-    WalletEvent,
+    DefaultSigner, InvoiceDescription, SparkWallet, SparkWalletConfig, WalletBuilder, WalletEvent,
 };
 
 // Re-export Network for external use
@@ -99,13 +98,14 @@ impl CdkSpark {
         // Build SparkWalletConfig
         let wallet_config = SparkWalletConfig {
             network: config.network,
-            operator_pool: config.operator_pool.clone().unwrap_or_else(|| 
-                SparkWalletConfig::default_operator_pool_config(config.network)
-            ),
+            operator_pool: config
+                .operator_pool
+                .clone()
+                .unwrap_or_else(|| SparkWalletConfig::default_operator_pool_config(config.network)),
             reconnect_interval_seconds: config.reconnect_interval_seconds,
-            service_provider_config: config.service_provider.clone().unwrap_or_else(|| 
+            service_provider_config: config.service_provider.clone().unwrap_or_else(|| {
                 SparkWalletConfig::default_config(config.network).service_provider_config
-            ),
+            }),
             split_secret_threshold: config.split_secret_threshold,
             tokens_config: SparkWalletConfig::default_tokens_config(),
         };
@@ -114,7 +114,7 @@ impl CdkSpark {
         let wallet = WalletBuilder::new(wallet_config, signer)
             .build()
             .await
-            .map_err(|e| Error::SparkWallet(e))?;
+            .map_err(Error::SparkWallet)?;
 
         info!("Spark wallet initialized successfully");
 
@@ -184,7 +184,7 @@ impl CdkSpark {
                                 // Note: Lightning payments come through as transfers
                                 // CDK will poll check_incoming_payment_status for payment detection
                                 // This event is for awareness/logging
-                                debug!("Transfer details: sender={}, receiver={}, amount={}", 
+                                debug!("Transfer details: sender={}, receiver={}, amount={}",
                                     transfer.sender_id, transfer.receiver_id, transfer.total_value_sat);
                             }
                             WalletEvent::Synced => {
@@ -221,7 +221,7 @@ impl MintPayment for CdkSpark {
         // Start event listener for incoming payments
         self.start_event_listener()
             .await
-            .map_err(|e| payment::Error::from(e))?;
+            .map_err(payment::Error::from)?;
 
         info!("Spark payment processor started successfully");
         Ok(())
@@ -271,7 +271,7 @@ impl MintPayment for CdkSpark {
                 info!("Creating Lightning invoice for {} sats", amount_sat);
 
                 // Create invoice description
-                let invoice_desc = description.map(|d| InvoiceDescription::Memo(d));
+                let invoice_desc = description.map(InvoiceDescription::Memo);
 
                 // Create Lightning invoice using Spark wallet
                 let payment = self
@@ -286,7 +286,10 @@ impl MintPayment for CdkSpark {
 
                 let payment_hash = *invoice.payment_hash().as_ref();
 
-                info!("Created invoice with payment hash: {}", hex::encode(payment_hash));
+                info!(
+                    "Created invoice with payment hash: {}",
+                    hex::encode(payment_hash)
+                );
 
                 Ok(CreateIncomingPaymentResponse {
                     request_lookup_id: PaymentIdentifier::PaymentHash(payment_hash),
@@ -294,9 +297,7 @@ impl MintPayment for CdkSpark {
                     expiry,
                 })
             }
-            IncomingPaymentOptions::Bolt12(_) => {
-                Err(Error::Bolt12NotSupported.into())
-            }
+            IncomingPaymentOptions::Bolt12(_) => Err(Error::Bolt12NotSupported.into()),
         }
     }
 
@@ -324,7 +325,8 @@ impl MintPayment for CdkSpark {
                 info!("Getting payment quote for {} sats", amount_sat);
 
                 // Calculate fees using config
-                let relative_fee = (self.config.fee_reserve.percent_fee_reserve * amount_sat as f32) as u64;
+                let relative_fee =
+                    (self.config.fee_reserve.percent_fee_reserve * amount_sat as f32) as u64;
                 let min_fee: u64 = self.config.fee_reserve.min_fee_reserve.into();
                 let fee_sat = relative_fee.max(min_fee);
 
@@ -341,9 +343,7 @@ impl MintPayment for CdkSpark {
                     unit: unit.clone(),
                 })
             }
-            OutgoingPaymentOptions::Bolt12(_) => {
-                Err(Error::Bolt12NotSupported.into())
-            }
+            OutgoingPaymentOptions::Bolt12(_) => Err(Error::Bolt12NotSupported.into()),
         }
     }
 
@@ -376,7 +376,7 @@ impl MintPayment for CdkSpark {
                     .pay_lightning_invoice(
                         &invoice_str,
                         amount_to_send,
-                        None, // max_fee_sat
+                        None,                                    // max_fee_sat
                         self.config.network == Network::Mainnet, // prefer_spark
                     )
                     .await
@@ -389,8 +389,7 @@ impl MintPayment for CdkSpark {
                 let total_spent = Self::sats_to_unit(total_spent_sat, unit)?;
 
                 // Get payment preimage if available
-                let payment_proof = result.lightning_payment
-                    .and_then(|p| p.payment_preimage);
+                let payment_proof = result.lightning_payment.and_then(|p| p.payment_preimage);
 
                 info!("Payment completed successfully");
 
@@ -402,9 +401,7 @@ impl MintPayment for CdkSpark {
                     unit: unit.clone(),
                 })
             }
-            OutgoingPaymentOptions::Bolt12(_) => {
-                Err(Error::Bolt12NotSupported.into())
-            }
+            OutgoingPaymentOptions::Bolt12(_) => Err(Error::Bolt12NotSupported.into()),
         }
     }
 
@@ -498,4 +495,3 @@ impl MintPayment for CdkSpark {
         })
     }
 }
-
