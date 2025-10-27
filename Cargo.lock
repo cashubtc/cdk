@@ -1164,6 +1164,7 @@ dependencies = [
  "cbor-diag",
  "cdk-common",
  "cdk-fake-wallet",
+ "cdk-npubcash",
  "cdk-prometheus",
  "cdk-signatory",
  "cdk-sqlite",
@@ -1513,6 +1514,29 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "utoipa-swagger-ui",
+]
+
+[[package]]
+name = "cdk-npubcash"
+version = "0.14.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "cashu",
+ "cdk",
+ "cdk-common",
+ "cdk-sqlite",
+ "chrono",
+ "nostr-sdk",
+ "reqwest",
+ "rustls 0.23.35",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
