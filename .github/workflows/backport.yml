@@ -4,9 +4,9 @@ on:
     # Run on merge (close) or if label is added after merging
     types: [closed, labeled]
 
-# Set concurrency limit to a single backport workflow per branch
+# Set concurrency limit to a single backport workflow per PR
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
