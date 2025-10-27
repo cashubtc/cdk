@@ -5,6 +5,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+
+// ============================================================================
+// Timing Tracking for Performance Monitoring
+// ============================================================================
+
+/// Tracks timing for regtest initialization
+/// Individual component timings are logged via tracing during initialization
+#[derive(Debug, Default)]
+struct SimpleTimings {
+    pub ldk_stop: Option<Duration>,
+    pub total: Duration,
+}
 use cdk_ldk_node::CdkLdkNode;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use ldk_node::Node;
@@ -885,25 +897,51 @@ pub async fn start_regtest_end(
     let total_start = Instant::now();
     tracing::info!("Starting regtest environment setup using RegtestJit");
 
+    // Track phase timings for summary
+    let mut timings = SimpleTimings::default();
+
     // Create JIT-initialized regtest environment
     let regtest = RegtestJit::new(work_dir.to_path_buf(), skip_ldk)?;
 
     // Initialize all components (bitcoind, LN nodes, and conditionally LDK node + channels)
+    // Note: Individual phase timings are tracked via tracing logs during initialization
     regtest.finalize().await?;
 
-    let total_elapsed = total_start.elapsed();
-    tracing::info!(
-        "Total regtest setup completed in {:.2}s (using parallel JIT initialization)",
-        total_elapsed.as_secs_f64()
-    );
-
-    // Stop the LDK node if it was initialized (for interactive mode)
-    // This allows the mint to start with the same storage directory and reuse channels
+    // Phase 8: Stop LDK if needed
+    let ldk_stop_start = Instant::now();
     if !skip_ldk {
         tracing::info!("Stopping LDK node to free it for mint reuse...");
         regtest.stop_ldk_node().await?;
         tracing::info!("LDK node stopped, channels preserved in storage directory");
+        timings.ldk_stop = Some(ldk_stop_start.elapsed());
     }
+
+    // Calculate total time
+    timings.total = total_start.elapsed();
+
+    // Log the traditional message
+    tracing::info!(
+        "Total regtest setup completed in {:.2}s (using parallel JIT initialization)",
+        timings.total.as_secs_f64()
+    );
+
+    // Print basic timing summary
+    // Note: For detailed per-component timings, check the tracing logs above
+    println!("\n╔══════════════════════════════════════════════════════════════════════╗");
+    println!("║           REGTEST ENVIRONMENT SETUP - TIMING SUMMARY                ║");
+    println!("╠══════════════════════════════════════════════════════════════════════╣");
+    println!(
+        "║ Total Setup Time:        {:8.2}s                                  ║",
+        timings.total.as_secs_f64()
+    );
+    if let Some(ldk_stop) = timings.ldk_stop {
+        println!(
+            "║ LDK Stop Time:           {:8.2}s                                  ║",
+            ldk_stop.as_secs_f64()
+        );
+    }
+    println!("╚══════════════════════════════════════════════════════════════════════╝");
+    println!("\n💡 For detailed component timings, see the tracing logs above.\n");
 
     // Send notification that regtest set up is complete
     sender.send(()).expect("Could not send oneshot");
