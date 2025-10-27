@@ -59,6 +59,9 @@ pub enum Error {
     /// HTLC hash invalid
     #[error("Invalid hash")]
     InvalidHash,
+    /// HTLC preimage too large
+    #[error("Preimage exceeds maximum size of 32 bytes (64 hex characters)")]
+    PreimageTooLarge,
     /// Witness Signatures not provided
     #[error("Witness signatures not provided")]
     SignaturesNotProvided,
@@ -294,7 +297,15 @@ pub enum SpendingConditions {
 impl SpendingConditions {
     /// New HTLC [SpendingConditions]
     pub fn new_htlc(preimage: String, conditions: Option<Conditions>) -> Result<Self, Error> {
-        let htlc = Sha256Hash::hash(&hex::decode(preimage)?);
+        const MAX_PREIMAGE_BYTES: usize = 32;
+
+        let preimage_bytes = hex::decode(preimage)?;
+
+        if preimage_bytes.len() != MAX_PREIMAGE_BYTES {
+            return Err(Error::PreimageTooLarge);
+        }
+
+        let htlc = Sha256Hash::hash(&preimage_bytes);
 
         Ok(Self::HTLCConditions {
             data: htlc,
@@ -1786,4 +1797,4 @@ mod tests {
             "Both signatures should verify"
         );
     }
-} // End of tests module
+}
