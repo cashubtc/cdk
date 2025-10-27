@@ -896,73 +896,6 @@ impl<Q: std::fmt::Display + Serialize + DeserializeOwned> MeltRequest<Q> {
         msg_to_sign
     }
 
-    /// Get required signature count from first input's spending conditions
-    fn get_sig_all_required_sigs(&self) -> Result<(u64, SpendingConditions), Error> {
-        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
-        let first_conditions: SpendingConditions =
-            SpendingConditions::try_from(&first_input.secret)?;
-
-        let required_sigs = match first_conditions.clone() {
-            SpendingConditions::P2PKConditions { conditions, .. } => {
-                let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
-
-                if SigFlag::SigAll != conditions.sig_flag {
-                    return Err(Error::IncorrectSecretKind);
-                }
-
-                conditions.num_sigs.unwrap_or(1)
-            }
-            _ => return Err(Error::IncorrectSecretKind),
-        };
-
-        Ok((required_sigs, first_conditions))
-    }
-
-    /// Verify all inputs have matching secrets and tags
-    ///
-    /// WARNING: This function may be incomplete. According to NUT-11, when SIG_ALL is present,
-    /// all inputs must have: (1) same kind, (2) SIG_ALL flag, (3) same data, (4) same tags.
-    /// This function only checks (3) and (4), but not (1) and (2).
-    fn verify_matching_conditions(&self) -> Result<(), Error> {
-        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
-        let first_nut10: Nut10Secret = (&first_input.secret).try_into()?;
-
-        for proof in self.inputs().iter().skip(1) {
-            let current_secret: Nut10Secret = proof.secret.clone().try_into()?;
-
-            // Check data matches
-            if current_secret.secret_data().data() != first_nut10.secret_data().data() {
-                return Err(Error::SpendConditionsNotMet);
-            }
-
-            // Check tags match
-            if current_secret.secret_data().tags() != first_nut10.secret_data().tags() {
-                return Err(Error::SpendConditionsNotMet);
-            }
-        }
-        Ok(())
-    }
-
-    /// Get validated signatures from first input's witness
-    fn get_valid_witness_signatures(&self) -> Result<Vec<Signature>, Error> {
-        let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
-        let first_witness = first_input
-            .witness
-            .as_ref()
-            .ok_or(Error::SignaturesNotProvided)?;
-
-        let witness_sigs = first_witness
-            .signatures()
-            .ok_or(Error::SignaturesNotProvided)?;
-
-        // Convert witness strings to signatures
-        witness_sigs
-            .iter()
-            .map(|s| Signature::from_str(s))
-            .collect::<Result<Vec<Signature>, _>>()
-            .map_err(Error::from)
-    }
-
     /// Sign melt request with SIG_ALL
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
         // Get message to sign
@@ -987,33 +920,6 @@ impl<Q: std::fmt::Display + Serialize + DeserializeOwned> MeltRequest<Q> {
         };
 
         Ok(())
-    }
-
-    /// Validate SIG_ALL conditions and signatures for the melt request
-    pub fn verify_sig_all(&self) -> Result<(), Error> {
-        // Get required signatures and conditions from first input
-        let (required_sigs, first_conditions) = self.get_sig_all_required_sigs()?;
-
-        // Verify all inputs have matching secrets
-        self.verify_matching_conditions()?;
-
-        // Get and validate witness signatures
-        let signatures = self.get_valid_witness_signatures()?;
-
-        // Get signing pubkeys
-        let verifying_pubkeys = first_conditions
-            .pubkeys()
-            .ok_or(Error::P2PKPubkeyRequired)?;
-
-        // Get aggregated message and validate signatures
-        let msg = self.sig_all_msg_to_sign();
-        let valid_sigs = valid_signatures(msg.as_bytes(), &verifying_pubkeys, &signatures)?;
-
-        if valid_sigs >= required_sigs {
-            Ok(())
-        } else {
-            Err(Error::SpendConditionsNotMet)
-        }
     }
 }
 
@@ -1347,7 +1253,7 @@ mod tests {
 
         // Verification should fail (unauthorized signature)
         assert!(
-            melt.verify_sig_all().is_err(),
+            melt.verify_spending_conditions().is_err(),
             "Verification should fail with unauthorized key signature"
         );
     }
@@ -1376,7 +1282,7 @@ mod tests {
 
         // Verification should fail (wrong flag - expected SIG_ALL)
         assert!(
-            melt.verify_sig_all().is_err(),
+            melt.verify_spending_conditions().is_err(),
             "Verification should fail with SIG_INPUTS flag when expecting SIG_ALL"
         );
     }
@@ -1391,7 +1297,6 @@ mod tests {
         // Create conditions
         let conditions = Conditions {
             sig_flag: SigFlag::SigAll,
-            pubkeys: Some(vec![pubkey]),
             ..Default::default()
         };
 
@@ -1409,7 +1314,7 @@ mod tests {
             "Signing with multiple matching inputs should succeed"
         );
         assert!(
-            melt.verify_sig_all().is_ok(),
+            melt.verify_spending_conditions().is_ok(),
             "Verification should succeed with multiple matching inputs"
         );
     }
@@ -1447,7 +1352,7 @@ mod tests {
 
         // Verification should fail (catches mismatched inputs)
         assert!(
-            melt.verify_sig_all().is_err(),
+            melt.verify_spending_conditions().is_err(),
             "Verification should fail with mismatched input secrets"
         );
     }
@@ -1468,7 +1373,7 @@ mod tests {
         let conditions = Conditions {
             sig_flag: SigFlag::SigAll,
             num_sigs: Some(2),
-            pubkeys: Some(vec![pubkey1, pubkey2]),
+            pubkeys: Some(vec![pubkey2]),
             ..Default::default()
         };
 
@@ -1489,7 +1394,7 @@ mod tests {
             "First signature should succeed"
         );
         assert!(
-            melt.verify_sig_all().is_err(),
+            melt.verify_spending_conditions().is_err(),
             "Single signature should not verify when two required"
         );
 
@@ -1500,7 +1405,7 @@ mod tests {
         );
 
         assert!(
-            melt.verify_sig_all().is_ok(),
+            melt.verify_spending_conditions().is_ok(),
             "Both signatures should verify successfully"
         );
     }
@@ -1626,7 +1531,7 @@ mod tests {
 
         let valid_melt: MeltRequest<String> = serde_json::from_str(valid_melt).unwrap();
         assert!(
-            valid_melt.verify_sig_all().is_ok(),
+            valid_melt.verify_spending_conditions().is_ok(),
             "Valid SIG_ALL melt request should verify"
         );
     }
@@ -1648,7 +1553,7 @@ mod tests {
 
         let invalid_melt: MeltRequest<String> = serde_json::from_str(invalid_melt).unwrap();
         assert!(
-            invalid_melt.verify_sig_all().is_err(),
+            invalid_melt.verify_spending_conditions().is_err(),
             "Invalid SIG_ALL melt request should fail verification"
         );
     }
@@ -1676,7 +1581,7 @@ mod tests {
 
         let multisig_melt: MeltRequest<String> = serde_json::from_str(multisig_melt).unwrap();
         assert!(
-            multisig_melt.verify_sig_all().is_ok(),
+            multisig_melt.verify_spending_conditions().is_ok(),
             "Multi-sig SIG_ALL melt request should verify with both signatures"
         );
 
@@ -1696,7 +1601,7 @@ mod tests {
         let insufficient_sigs_melt: MeltRequest<String> =
             serde_json::from_str(insufficient_sigs_melt).unwrap();
         assert!(
-            insufficient_sigs_melt.verify_sig_all().is_err(),
+            insufficient_sigs_melt.verify_spending_conditions().is_err(),
             "Multi-sig SIG_ALL melt request should fail with insufficient signatures"
         );
     }
