@@ -2,9 +2,9 @@
 
 use cdk_common::common::FeeReserve;
 use serde::{Deserialize, Serialize};
-use spark_wallet::Network;
 use spark::operator::OperatorPoolConfig;
 use spark::ssp::ServiceProviderConfig;
+use spark_wallet::Network;
 
 /// Configuration for the Spark Lightning backend
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,4 +89,3 @@ impl SparkConfig {
         }
     }
 }
-

@@ -362,7 +362,7 @@ impl LnBackendSetup for config::Spark {
             mnemonic: self.mnemonic.clone(),
             passphrase: self.passphrase.clone(),
             api_key: self.api_key.clone(),
-            operator_pool: None, // Use default operators
+            operator_pool: None,    // Use default operators
             service_provider: None, // Use default service provider
             fee_reserve,
             reconnect_interval_seconds: self.reconnect_interval_seconds,

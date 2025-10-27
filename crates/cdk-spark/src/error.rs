@@ -105,4 +105,3 @@ impl From<Error> for payment::Error {
         }
     }
 }
-

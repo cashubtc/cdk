@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CdkSpark, SparkConfig, Error};
+    use crate::{CdkSpark, Error, SparkConfig};
     use cdk_common::nuts::CurrencyUnit;
     use cdk_common::Amount;
 
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn test_network_variants() {
         use spark_wallet::Network;
-        
+
         // Ensure all network types are covered
         let networks = vec![
             Network::Mainnet,
@@ -124,12 +124,8 @@ mod tests {
         ];
 
         for network in networks {
-            let config = SparkConfig::default_for_network(
-                network,
-                "test".to_string(),
-            );
+            let config = SparkConfig::default_for_network(network, "test".to_string());
             assert_eq!(config.network, network);
         }
     }
 }
-
