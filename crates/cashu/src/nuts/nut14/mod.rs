@@ -39,6 +39,9 @@ pub enum Error {
     /// Witness Signatures not provided
     #[error("Witness did not provide signatures")]
     SignaturesNotProvided,
+    /// SIG_ALL not supported in this context
+    #[error("SIG_ALL proofs must be verified using a different method")]
+    SigAllNotSupportedHere,
     /// Secp256k1 error
     #[error(transparent)]
     Secp256k1(#[from] bitcoin::secp256k1::Error),
@@ -72,15 +75,13 @@ impl Proof {
             .unwrap_or_default()
             .try_into()?;
 
-        debug_assert!(
-            spending_conditions.sig_flag != super::SigFlag::SigAll,
-            "verify_htlc called with SIG_ALL proof - this is a bug"
-        );
+        if spending_conditions.sig_flag == super::SigFlag::SigAll {
+            return Err(Error::SigAllNotSupportedHere);
+        }
 
-        debug_assert!(
-            secret.kind() == super::Kind::HTLC,
-            "verify_htlc called with non-HTLC secret - this is a bug"
-        );
+        if secret.kind() != super::Kind::HTLC {
+            return Err(Error::IncorrectSecretKind);
+        }
 
         // Get the appropriate spending conditions based on locktime
         let now = unix_time();
