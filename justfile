@@ -194,7 +194,18 @@ goose-changelog-commits *COMMITS="5":
 itest db:
   #!/usr/bin/env bash
   set -euo pipefail
+
+  echo "Starting itest timing..."
+  START_TIME=$(date +%s.%N)
+
   ./misc/itests.sh "{{db}}"
+
+  END_TIME=$(date +%s.%N)
+  ELAPSED=$(awk "BEGIN {printf \"%.2f\", $END_TIME - $START_TIME}")
+
+  echo ""
+  echo "Integration tests completed!"
+  echo "Total time: ${ELAPSED}s"
 
 fake-mint-itest db:
   #!/usr/bin/env bash
