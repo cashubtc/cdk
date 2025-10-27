@@ -6,14 +6,12 @@
 //!
 //! - HTTP client for fetching quotes with auto-pagination
 //! - NIP-98 and JWT authentication
-//! - Polling for quote updates
 //! - User settings management
 //!
 //! ## Quick Start
 //!
 //! ```no_run
 //! use std::sync::Arc;
-//! use std::time::Duration;
 //!
 //! use cdk_npubcash::{JwtAuthProvider, NpubCashClient};
 //! use nostr_sdk::Keys;
@@ -32,15 +30,9 @@
 //!     let quotes = client.get_quotes(None).await?;
 //!     println!("Found {} quotes", quotes.len());
 //!
-//!     // Poll for new quotes every 5 seconds
-//!     client
-//!         .poll_quotes_with_callback(Duration::from_secs(5), |quotes| {
-//!             println!("Found {} new quotes", quotes.len());
-//!             for quote in quotes {
-//!                 println!("  - Quote {}: {} {}", quote.id, quote.amount, quote.unit);
-//!             }
-//!         })
-//!         .await?;
+//!     // Fetch quotes since a specific timestamp
+//!     let recent_quotes = client.get_quotes(Some(1234567890)).await?;
+//!     println!("Found {} recent quotes", recent_quotes.len());
 //!
 //!     // Update mint URL setting
 //!     client.set_mint_url("https://example-mint.tld").await?;
@@ -75,33 +67,6 @@
 //! # }
 //! ```
 //!
-//! ## Polling for Updates
-//!
-//! ```no_run
-//! # use cdk_npubcash::{NpubCashClient, JwtAuthProvider};
-//! # use nostr_sdk::Keys;
-//! # use std::sync::Arc;
-//! # use std::time::Duration;
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! # let base_url = "https://npubx.cash".to_string();
-//! # let keys = Keys::generate();
-//! # let auth_provider = Arc::new(JwtAuthProvider::new(base_url.clone(), keys));
-//! # let client = NpubCashClient::new(base_url, auth_provider);
-//! // Poll for new quotes every 10 seconds
-//! let handle = client
-//!     .poll_quotes_with_callback(Duration::from_secs(10), |quotes| {
-//!         for quote in quotes {
-//!             println!("New quote: {}", quote.id);
-//!         }
-//!     })
-//!     .await?;
-//!
-//! // The polling continues until the handle is dropped
-//! // drop(handle); to stop polling
-//! # Ok(())
-//! # }
-//! ```
-//!
 //! ## Managing Settings
 //!
 //! ```no_run
@@ -114,7 +79,7 @@
 //! # let auth_provider = Arc::new(JwtAuthProvider::new(base_url.clone(), keys));
 //! # let client = NpubCashClient::new(base_url, auth_provider);
 //! // Set mint URL
-//! let response = client.settings.set_mint_url("https://my-mint.com").await?;
+//! let response = client.set_mint_url("https://my-mint.com").await?;
 //! println!("Mint URL: {:?}", response.data.mint_url);
 //! println!("Lock quotes: {}", response.data.lock_quotes);
 //! # Ok(())
