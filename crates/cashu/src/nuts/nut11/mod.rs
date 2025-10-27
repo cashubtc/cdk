@@ -65,6 +65,12 @@ pub enum Error {
     /// Duplicate signature from same pubkey
     #[error("Duplicate signature from the same pubkey detected")]
     DuplicateSignature,
+    /// Preimage not supported in P2PK
+    #[error("P2PK does not support preimage requirements")]
+    PreimageNotSupportedInP2PK,
+    /// SIG_ALL not supported in this context
+    #[error("SIG_ALL proofs must be verified using a different method")]
+    SigAllNotSupportedHere,
     /// Parse Url Error
     #[error(transparent)]
     UrlParseError(#[from] url::ParseError),
@@ -136,21 +142,21 @@ impl Proof {
             .unwrap_or_default()
             .try_into()?;
 
-        debug_assert!(
-            spending_conditions.sig_flag != SigFlag::SigAll,
-            "verify_p2pk called with SIG_ALL proof - this is a bug"
-        );
+        if spending_conditions.sig_flag == SigFlag::SigAll {
+            return Err(Error::SigAllNotSupportedHere);
+        }
 
-        debug_assert!(
-            secret.kind() == Kind::P2PK,
-            "verify_p2pk called with non-P2PK secret - this is a bug"
-        );
+        if secret.kind() != Kind::P2PK {
+            return Err(Error::IncorrectSecretKind);
+        }
 
         // Based on the current time, we must identify the relevant keys
         let now = unix_time();
         let (preimage_needed, relevant_pubkeys, relevant_num_sigs_required) = super::nut10::get_pubkeys_and_required_sigs(&secret, now)?;
 
-        debug_assert!(!preimage_needed, "P2PK should never require preimage");
+        if preimage_needed {
+            return Err(Error::PreimageNotSupportedInP2PK);
+        }
 
         // Handle "anyone can spend" case (locktime passed with no refund keys)
         if relevant_num_sigs_required == 0 {
