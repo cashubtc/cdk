@@ -12,7 +12,7 @@ use cdk_common::payment::{
     OutgoingPaymentOptions, PaymentIdentifier,
 };
 use cdk_common::quote_id::QuoteId;
-use cdk_common::{MeltOptions, MeltQuoteBolt12Request};
+use cdk_common::{MeltOptions, MeltQuoteBolt12Request, VerificationForSpendingConditions};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use lightning::offers::offer::Offer;
@@ -26,8 +26,6 @@ use crate::amount::to_unit;
 use crate::cdk_payment::MakePaymentResponse;
 use crate::mint::proof_writer::ProofWriter;
 use crate::mint::verification::Verification;
-use crate::mint::SigFlag;
-use crate::nuts::nut11::{enforce_sig_flag, EnforceSigFlag};
 use crate::nuts::MeltQuoteState;
 use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
@@ -564,11 +562,8 @@ impl Mint {
             ));
         }
 
-        let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(melt_request.inputs().clone());
-
-        if sig_flag == SigFlag::SigAll {
-            melt_request.verify_sig_all()?;
-        }
+        // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK and HTLC
+        melt_request.verify_spending_conditions()?;
 
         if let Some(outputs) = &melt_request.outputs() {
             if !outputs.is_empty() {
