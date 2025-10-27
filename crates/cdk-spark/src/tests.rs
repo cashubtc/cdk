@@ -308,60 +308,42 @@ mod tests {
     fn test_invalid_mnemonic_error() {
         let err = Error::InvalidMnemonic("invalid mnemonic".to_string());
         let payment_err: cdk_common::payment::Error = err.into();
-        assert!(matches!(
-            payment_err,
-            cdk_common::payment::Error::Anyhow(_)
-        ));
+        assert!(matches!(payment_err, cdk_common::payment::Error::Anyhow(_)));
     }
 
     #[test]
     fn test_configuration_error_conversion() {
         let err = Error::Configuration("config error".to_string());
         let payment_err: cdk_common::payment::Error = err.into();
-        assert!(matches!(
-            payment_err,
-            cdk_common::payment::Error::Anyhow(_)
-        ));
+        assert!(matches!(payment_err, cdk_common::payment::Error::Anyhow(_)));
     }
 
     #[test]
     fn test_network_error_handling() {
         let err = Error::Network("network error".to_string());
         let payment_err: cdk_common::payment::Error = err.into();
-        assert!(matches!(
-            payment_err,
-            cdk_common::payment::Error::Anyhow(_)
-        ));
+        assert!(matches!(payment_err, cdk_common::payment::Error::Anyhow(_)));
     }
 
     #[test]
     fn test_payment_timeout_error() {
         let err = Error::PaymentTimeout;
         let payment_err: cdk_common::payment::Error = err.into();
-        assert!(matches!(
-            payment_err,
-            cdk_common::payment::Error::Anyhow(_)
-        ));
+        assert!(matches!(payment_err, cdk_common::payment::Error::Anyhow(_)));
     }
 
     #[test]
     fn test_payment_not_found_error() {
         let err = Error::PaymentNotFound;
         let payment_err: cdk_common::payment::Error = err.into();
-        assert!(matches!(
-            payment_err,
-            cdk_common::payment::Error::Anyhow(_)
-        ));
+        assert!(matches!(payment_err, cdk_common::payment::Error::Anyhow(_)));
     }
 
     #[test]
     fn test_invoice_parse_error() {
         let err = Error::InvoiceParse("parse error".to_string());
         let payment_err: cdk_common::payment::Error = err.into();
-        assert!(matches!(
-            payment_err,
-            cdk_common::payment::Error::Anyhow(_)
-        ));
+        assert!(matches!(payment_err, cdk_common::payment::Error::Anyhow(_)));
     }
 
     #[test]
