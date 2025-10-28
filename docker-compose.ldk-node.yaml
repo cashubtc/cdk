@@ -70,7 +70,7 @@ services:
       - CDK_MINTD_LDK_NODE_NETWORK=testnet
       - CDK_MINTD_LDK_NODE_ESPLORA_URL=https://blockstream.info/testnet/api
       - CDK_MINTD_LDK_NODE_LISTENING_ADDRESSES=0.0.0.0:9735
-      # LDK Admin dashboard config
+      # LDK admin dashboard config
       - CDK_MINTD_LDK_NODE_WEBSERVER_HOST=0.0.0.0
       # - CDK_MINTD_LDK_NODE_WEBSERVER_PORT=
     volumes:
