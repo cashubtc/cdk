@@ -46,6 +46,7 @@ services:
     container_name: mint-ldk-node
     ports:
       - "8085:8085"
+      - "8091:8091" # LDK admin dashboard
     environment:
       - CDK_MINTD_URL=https://example.com
       - CDK_MINTD_LN_BACKEND=ldk-node
@@ -69,6 +70,9 @@ services:
       - CDK_MINTD_LDK_NODE_NETWORK=testnet
       - CDK_MINTD_LDK_NODE_ESPLORA_URL=https://blockstream.info/testnet/api
       - CDK_MINTD_LDK_NODE_LISTENING_ADDRESSES=0.0.0.0:9735
+      # LDK Admin dashboard config
+      - CDK_MINTD_LDK_NODE_WEBSERVER_HOST=0.0.0.0
+      # - CDK_MINTD_LDK_NODE_WEBSERVER_PORT=
     volumes:
       # Persist LDK node data
       - ldk_node_data:/usr/src/app/ldk_node_data
