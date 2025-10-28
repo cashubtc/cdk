@@ -6,7 +6,7 @@ on:
   pull_request:
     branches:
       - main
-      - 'v[0-9]+.[0-9]+.x'  # Match version branches like v0.13.x, v1.0.x, etc.
+      - 'v[0-9]*.[0-9]*.x'  # Match version branches like v0.13.x, v1.0.x, etc.
   release:
     types: [created]
 
