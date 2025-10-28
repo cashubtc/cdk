@@ -307,11 +307,13 @@ impl Witness {
         match self {
             Self::P2PKWitness(p2pk_witness) => p2pk_witness.signatures.extend(signatues),
             Self::HTLCWitness(htlc_witness) => {
-                htlc_witness.signatures = htlc_witness.signatures.clone().map(|sigs| {
-                    let mut sigs = sigs;
-                    sigs.extend(signatues);
-                    sigs
-                });
+                match htlc_witness.signatures.clone() {
+                    Some(mut signatures) => {
+                        signatures.extend(signatues);
+                        htlc_witness.signatures = Some(signatures);
+                    }
+                    None => htlc_witness.signatures = Some(signatues),
+                }
             }
         }
     }

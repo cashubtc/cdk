@@ -948,7 +948,15 @@ impl SwapRequest {
 
                 conditions.num_sigs.unwrap_or(1)
             }
-            _ => return Err(Error::IncorrectSecretKind),
+            SpendingConditions::HTLCConditions { conditions, .. } => {
+                let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
+
+                if SigFlag::SigAll != conditions.sig_flag {
+                    return Err(Error::IncorrectSecretKind);
+                }
+
+                conditions.num_sigs.unwrap_or(1)
+            }
         };
 
         Ok((required_sigs, first_conditions))
@@ -1014,7 +1022,13 @@ impl SwapRequest {
                 }
                 conditions
             }
-            _ => return Err(Error::IncorrectSecretKind),
+            SpendingConditions::HTLCConditions { conditions, .. } => {
+                let conditions = conditions.ok_or(Error::IncorrectSecretKind)?;
+                if conditions.sig_flag != SigFlag::SigAll {
+                    return Err(Error::IncorrectSecretKind);
+                }
+                conditions
+            }
         };
 
         // Get authorized keys and verify secret_key matches one
@@ -1034,7 +1048,7 @@ impl SwapRequest {
     /// Sign swap request with SIG_ALL if conditions are met
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
         // Verify we can sign and get conditions
-        let (_first_conditions, _) = self.can_sign_sig_all(&secret_key)?;
+        let (first_conditions, _) = self.can_sign_sig_all(&secret_key)?;
 
         // Verify all inputs have matching conditions
         self.verify_matching_conditions()?;
@@ -1053,11 +1067,18 @@ impl SwapRequest {
             Some(witness) => {
                 witness.add_signatures(vec![signature.to_string()]);
             }
-            None => {
-                let mut p2pk_witness = Witness::P2PKWitness(P2PKWitness::default());
-                p2pk_witness.add_signatures(vec![signature.to_string()]);
-                first_input.witness = Some(p2pk_witness);
-            }
+            None => match first_conditions.kind() {
+                Kind::P2PK => {
+                    let mut p2pk_witness = Witness::P2PKWitness(P2PKWitness::default());
+                    p2pk_witness.add_signatures(vec![signature.to_string()]);
+                    first_input.witness = Some(p2pk_witness);
+                }
+                Kind::HTLC => {
+                    let mut htlc_witness = Witness::HTLCWitness(crate::HTLCWitness::default());
+                    htlc_witness.add_signatures(vec![signature.to_string()]);
+                    first_input.witness = Some(htlc_witness);
+                }
+            },
         };
 
         Ok(())
