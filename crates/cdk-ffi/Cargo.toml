@@ -32,9 +32,11 @@ uuid = { workspace = true, features = ["v4"] }
 
 
 [features]
-default = ["postgres"]
-# Enable Postgres-backed wallet database support in FFI
-postgres = ["cdk-postgres"]
+default = ["async-trait", "postgres"]
+# Enable async trait exports for custom database implementations in foreign languages
+async-trait = []
+# Enable Postgres-backed wallet database support in FFI (requires async-trait)
+postgres = ["cdk-postgres", "async-trait"]
 
 [dev-dependencies]
 
