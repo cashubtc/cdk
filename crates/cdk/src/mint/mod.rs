@@ -34,7 +34,6 @@ use crate::{cdk_database, Amount};
 
 #[cfg(feature = "auth")]
 pub(crate) mod auth;
-mod blinded_message_writer;
 mod builder;
 mod check_spendable;
 mod issue;
@@ -239,6 +238,15 @@ impl Mint {
     /// - Payment processor initialization and startup
     /// - Invoice payment monitoring across all configured payment processors
     pub async fn start(&self) -> Result<(), Error> {
+        // Checks the status of all pending melt quotes
+        // Pending melt quotes where the payment has gone through inputs are burnt
+        // Pending melt quotes where the payment has **failed** inputs are reset to unspent
+        self.check_pending_melt_quotes().await?;
+
+        // Recover from incomplete swap sagas
+        // This cleans up incomplete swap operations using persisted saga state
+        self.recover_from_incomplete_sagas().await?;
+
         let mut task_state = self.task_state.lock().await;
 
         // Prevent starting if already running
@@ -813,6 +821,13 @@ impl Mint {
         &self,
         blinded_message: Vec<BlindedMessage>,
     ) -> Result<Vec<BlindSignature>, Error> {
+        #[cfg(test)]
+        {
+            if crate::test_helpers::mint::should_fail_in_test() {
+                return Err(Error::SignatureMissingOrInvalid);
+            }
+        }
+
         #[cfg(feature = "prometheus")]
         global::inc_in_flight_requests("blind_sign");
 

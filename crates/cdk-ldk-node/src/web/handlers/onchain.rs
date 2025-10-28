@@ -33,33 +33,6 @@ pub struct ConfirmOnchainForm {
     confirmed: Option<String>,
 }
 
-fn quick_actions_section() -> maud::Markup {
-    html! {
-        div class="card" style="margin-bottom: 2rem;" {
-            h2 { "Quick Actions" }
-            div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-top: 1.5rem;" {
-                // Receive Bitcoin Card
-                div class="quick-action-card" {
-                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Receive Bitcoin" }
-                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Generate a new Bitcoin address to receive on-chain payments from other users or services." }
-                    a href="/onchain?action=receive" style="text-decoration: none;" {
-                        button class="button-outline" { "Receive Bitcoin" }
-                    }
-                }
-
-                // Send Bitcoin Card
-                div class="quick-action-card" {
-                    h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--text-primary);" { "Send Bitcoin" }
-                    p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;" { "Send Bitcoin to another address on the blockchain. Standard on-chain transactions." }
-                    a href="/onchain?action=send" style="text-decoration: none;" {
-                        button class="button-outline" { "Send Bitcoin" }
-                    }
-                }
-            }
-        }
-    }
-}
-
 pub async fn get_new_address(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let address_result = state.node.inner.onchain_payment().new_address();
 
@@ -67,8 +40,8 @@ pub async fn get_new_address(State(state): State<AppState>) -> Result<Html<Strin
         Ok(address) => {
             html! {
                 div class="card" {
-                    h2 { "Bitcoin Address" }
-                    div class="address-display" {
+                    h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Bitcoin Address" }
+                    div class="address-display" style="margin-top: 1.5rem;" {
                         div class="address-container" {
                             span class="address-text" { (address.to_string()) }
                         }
@@ -113,13 +86,20 @@ pub async fn onchain_page(
     let mut content = html! {
         h2 style="text-align: center; margin-bottom: 3rem;" { "On-chain" }
 
-        // Quick Actions section - only show on overview
-        (quick_actions_section())
-
-        // On-chain Balance as metric cards
+        // On-chain Balance with action buttons in header
         div class="card" {
-            h2 { "On-chain Balance" }
-            div class="metrics-container" {
+            div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" {
+                h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; margin: 0;" { "On-chain Balance" }
+                div style="display: flex; gap: 0.5rem;" {
+                    a href="/onchain?action=send" style="text-decoration: none;" {
+                        button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Send" }
+                    }
+                    a href="/onchain?action=receive" style="text-decoration: none;" {
+                        button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Receive" }
+                    }
+                }
+            }
+            div class="metrics-container" style="margin-top: 1.5rem;" {
                 div class="metric-card" {
                     div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
                     div class="metric-label" { "Total Balance" }
@@ -162,10 +142,20 @@ pub async fn onchain_page(
                     }
                 ))
 
-                // On-chain Balance as metric cards
+                // On-chain Balance with action buttons in header
                 div class="card" {
-                    h2 { "On-chain Balance" }
-                    div class="metrics-container" {
+                    div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" {
+                        h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; margin: 0;" { "On-chain Balance" }
+                        div style="display: flex; gap: 0.5rem;" {
+                            a href="/onchain?action=send" style="text-decoration: none;" {
+                                button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Send" }
+                            }
+                            a href="/onchain?action=receive" style="text-decoration: none;" {
+                                button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Receive" }
+                            }
+                        }
+                    }
+                    div class="metrics-container" style="margin-top: 1.5rem;" {
                         div class="metric-card" {
                             div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
                             div class="metric-label" { "Total Balance" }
@@ -196,10 +186,20 @@ pub async fn onchain_page(
                     }
                 ))
 
-                // On-chain Balance as metric cards
+                // On-chain Balance with action buttons in header
                 div class="card" {
-                    h2 { "On-chain Balance" }
-                    div class="metrics-container" {
+                    div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" {
+                        h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; margin: 0;" { "On-chain Balance" }
+                        div style="display: flex; gap: 0.5rem;" {
+                            a href="/onchain?action=send" style="text-decoration: none;" {
+                                button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Send" }
+                            }
+                            a href="/onchain?action=receive" style="text-decoration: none;" {
+                                button class="button-outline" style="padding: 0.5rem 1rem; font-size: 0.875rem;" { "Receive" }
+                            }
+                        }
+                    }
+                    div class="metrics-container" style="margin-top: 1.5rem;" {
                         div class="metric-card" {
                             div class="metric-value" { (format_sats_as_btc(balances.total_onchain_balance_sats)) }
                             div class="metric-label" { "Total Balance" }
@@ -324,8 +324,8 @@ pub async fn onchain_confirm_page(
 
         // Transaction Details Card
         div class="card" {
-            h2 { "Transaction Details" }
-            div class="transaction-details" {
+            h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Transaction Details" }
+            div class="transaction-details" style="margin-top: 1.5rem;" {
                 div class="detail-row" {
                     span class="detail-label" { "Recipient Address:" }
                     span class="detail-value" { (form.address.clone()) }

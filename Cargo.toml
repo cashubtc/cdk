@@ -66,6 +66,7 @@ clap = { version = "4.5.31", features = ["derive"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"
 config = { version = "0.15.11", features = ["toml"] }
+criterion = "0.6.0"
 futures = { version = "0.3.28", default-features = false, features = ["async-await"] }
 lightning-invoice = { version = "0.33.0", features = ["serde", "std"] }
 lightning = { version = "0.1.2", default-features = false, features = ["std"]}
@@ -111,6 +112,11 @@ strum = "0.27.1"
 strum_macros = "0.27.1"
 rustls = { version = "0.23.27", default-features = false, features = ["ring"] }
 prometheus = { version = "0.13.4", features = ["process"], default-features = false }
+nostr-sdk = { version = "0.43.0", default-features = false, features = [
+    "nip04",
+    "nip44",
+    "nip59"
+]}
 
 
 

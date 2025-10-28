@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use cdk_common::database::{self, DynMintDatabase, MintTransaction};
+use cdk_common::mint::Operation;
 use cdk_common::{Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
 
 use super::subscription::PubSubManager;
@@ -49,6 +50,7 @@ impl ProofWriter {
         tx: &mut Tx<'_, '_>,
         proofs: &Proofs,
         quote_id: Option<QuoteId>,
+        operation_id: &Operation,
     ) -> Result<Vec<PublicKey>, Error> {
         let proof_states = if let Some(proofs) = self.proof_original_states.as_mut() {
             proofs
@@ -56,7 +58,11 @@ impl ProofWriter {
             return Err(Error::Internal);
         };
 
-        if let Some(err) = tx.add_proofs(proofs.clone(), quote_id).await.err() {
+        if let Some(err) = tx
+            .add_proofs(proofs.clone(), quote_id, operation_id)
+            .await
+            .err()
+        {
             return match err {
                 cdk_common::database::Error::Duplicate => Err(Error::TokenPending),
                 cdk_common::database::Error::AttemptUpdateSpentProof => {

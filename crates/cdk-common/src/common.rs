@@ -41,10 +41,16 @@ impl Melted {
             None => Amount::ZERO,
         };
 
+        tracing::info!(
+            "Proofs amount: {} Amount: {} Change: {}",
+            proofs_amount,
+            amount,
+            change_amount
+        );
+
         let fee_paid = proofs_amount
             .checked_sub(amount + change_amount)
-            .ok_or(Error::AmountOverflow)
-            .unwrap();
+            .ok_or(Error::AmountOverflow)?;
 
         Ok(Self {
             state,

@@ -251,7 +251,7 @@ For complete configuration options, see the [example configuration file](./examp
 ## Documentation
 
 - **[Configuration Examples](./example.config.toml)** - Complete configuration reference
-- **[PostgreSQL Setup Guide](../../POSTGRES.md)** - Database setup instructions
+- **[PostgreSQL Setup Guide](../../docker-compose.postgres.yaml)** - Database setup with Docker Compose
 - **[Development Guide](../../DEVELOPMENT.md)** - Contributing and development setup
 
 ## License

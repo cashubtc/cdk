@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 
 use cdk_common::database::{self, MintDatabase, MintKeysDatabase};
-use cdk_common::mint::{self, MintKeySetInfo, MintQuote};
+use cdk_common::mint::{self, MintKeySetInfo, MintQuote, Operation};
 use cdk_common::nuts::{CurrencyUnit, Id, Proofs};
 use cdk_common::MintInfo;
 
@@ -56,8 +56,10 @@ pub async fn new_with_state(
         tx.add_melt_quote(quote).await?;
     }
 
-    tx.add_proofs(pending_proofs, None).await?;
-    tx.add_proofs(spent_proofs, None).await?;
+    tx.add_proofs(pending_proofs, None, &Operation::new_swap())
+        .await?;
+    tx.add_proofs(spent_proofs, None, &Operation::new_swap())
+        .await?;
     let mint_info_bytes = serde_json::to_vec(&mint_info)?;
     tx.kv_write(
         CDK_MINT_PRIMARY_NAMESPACE,

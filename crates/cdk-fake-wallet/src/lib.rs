@@ -327,7 +327,7 @@ pub struct FakeWallet {
     fee_reserve: FeeReserve,
     sender: tokio::sync::mpsc::Sender<WaitPaymentResponse>,
     receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<WaitPaymentResponse>>>>,
-    payment_states: Arc<Mutex<HashMap<String, MeltQuoteState>>>,
+    payment_states: Arc<Mutex<HashMap<String, (MeltQuoteState, Amount)>>>,
     failed_payment_check: Arc<Mutex<HashSet<String>>>,
     payment_delay: u64,
     wait_invoice_cancel_token: CancellationToken,
@@ -342,7 +342,7 @@ impl FakeWallet {
     /// Create new [`FakeWallet`]
     pub fn new(
         fee_reserve: FeeReserve,
-        payment_states: HashMap<String, MeltQuoteState>,
+        payment_states: HashMap<String, (MeltQuoteState, Amount)>,
         fail_payment_check: HashSet<String>,
         payment_delay: u64,
         unit: CurrencyUnit,
@@ -360,7 +360,7 @@ impl FakeWallet {
     /// Create new [`FakeWallet`] with custom secondary repayment queue size
     pub fn new_with_repay_queue_size(
         fee_reserve: FeeReserve,
-        payment_states: HashMap<String, MeltQuoteState>,
+        payment_states: HashMap<String, (MeltQuoteState, Amount)>,
         fail_payment_check: HashSet<String>,
         payment_delay: u64,
         unit: CurrencyUnit,
@@ -563,7 +563,22 @@ impl MintPayment for FakeWallet {
                     .map(|s| s.check_payment_state)
                     .unwrap_or(MeltQuoteState::Paid);
 
-                payment_states.insert(payment_hash.clone(), checkout_going_status);
+                let amount_msat: u64 = if let Some(melt_options) = bolt11_options.melt_options {
+                    melt_options.amount_msat().into()
+                } else {
+                    // Fall back to invoice amount
+                    bolt11
+                        .amount_milli_satoshis()
+                        .ok_or(Error::UnknownInvoiceAmount)?
+                };
+
+                let amount_spent = if checkout_going_status == MeltQuoteState::Paid {
+                    amount_msat.into()
+                } else {
+                    Amount::ZERO
+                };
+
+                payment_states.insert(payment_hash.clone(), (checkout_going_status, amount_spent));
 
                 if let Some(description) = status {
                     if description.check_err {
@@ -573,15 +588,6 @@ impl MintPayment for FakeWallet {
 
                     ensure_cdk!(!description.pay_err, Error::UnknownInvoice.into());
                 }
-
-                let amount_msat: u64 = if let Some(melt_options) = bolt11_options.melt_options {
-                    melt_options.amount_msat().into()
-                } else {
-                    // Fall back to invoice amount
-                    bolt11
-                        .amount_milli_satoshis()
-                        .ok_or(Error::UnknownInvoiceAmount)?
-                };
 
                 let total_spent = convert_currency_amount(
                     amount_msat,
@@ -784,7 +790,7 @@ impl MintPayment for FakeWallet {
         let states = self.payment_states.lock().await;
         let status = states.get(&request_lookup_id.to_string()).cloned();
 
-        let status = status.unwrap_or(MeltQuoteState::Paid);
+        let (status, total_spent) = status.unwrap_or((MeltQuoteState::Unknown, Amount::default()));
 
         let fail_payments = self.failed_payment_check.lock().await;
 
@@ -796,7 +802,7 @@ impl MintPayment for FakeWallet {
             payment_proof: Some("".to_string()),
             payment_lookup_id: request_lookup_id.clone(),
             status,
-            total_spent: Amount::ZERO,
+            total_spent,
             unit: CurrencyUnit::Msat,
         })
     }

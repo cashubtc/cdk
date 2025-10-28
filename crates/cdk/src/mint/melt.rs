@@ -5,7 +5,7 @@ use cdk_common::amount::amount_for_offer;
 use cdk_common::database::mint::MeltRequestInfo;
 use cdk_common::database::{self, MintTransaction};
 use cdk_common::melt::MeltQuoteRequest;
-use cdk_common::mint::MeltPaymentRequest;
+use cdk_common::mint::{MeltPaymentRequest, Operation};
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::{
     Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, DynMintPayment,
@@ -506,6 +506,7 @@ impl Mint {
         tx: &mut Box<dyn MintTransaction<'_, database::Error> + Send + Sync + '_>,
         input_verification: Verification,
         melt_request: &MeltRequest<QuoteId>,
+        operation: &Operation,
     ) -> Result<(ProofWriter, MeltQuote), Error> {
         let Verification {
             amount: input_amount,
@@ -520,6 +521,7 @@ impl Mint {
                 tx,
                 melt_request.inputs(),
                 Some(melt_request.quote_id().to_owned()),
+                operation,
             )
             .await?;
 
@@ -613,10 +615,11 @@ impl Mint {
 
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
+        let melt_operation = Operation::new_melt();
         let mut tx = self.localstore.begin_transaction().await?;
 
         let (proof_writer, quote) = match self
-            .verify_melt_request(&mut tx, verification, melt_request)
+            .verify_melt_request(&mut tx, verification, melt_request, &melt_operation)
             .await
         {
             Ok(result) => result,
@@ -646,6 +649,7 @@ impl Mint {
         tx.add_blinded_messages(
             Some(melt_request.quote_id()),
             melt_request.outputs().as_ref().unwrap_or(&Vec::new()),
+            &melt_operation,
         )
         .await?;
 
@@ -893,6 +897,10 @@ impl Mint {
             input_ys.len(),
             quote.id
         );
+
+        if total_spent < quote.amount {
+            return Err(Error::AmountUndefined);
+        }
 
         let update_proof_states_result = proof_writer
             .update_proofs_states(&mut tx, &input_ys, State::Spent)
