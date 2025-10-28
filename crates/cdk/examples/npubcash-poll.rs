@@ -13,21 +13,17 @@
 
 use std::sync::Arc;
 
-use cdk::amount::SplitTarget;
+use cdk::amount::{Amount, SplitTarget};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::Wallet;
+use cdk_common::wallet::MintQuote;
 use cdk_common::MintQuoteState;
 use cdk_sqlite::wallet::memory;
 use nostr_sdk::{Keys, ToBech32};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if rustls::crypto::CryptoProvider::get_default().is_none() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    }
-
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .init();
@@ -102,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wallet_clone = wallet.clone();
 
     tokio::select! {
-        result = wallet.subscribe_npubcash_updates(move |quotes| {
+        result = wallet.subscribe_npubcash_updates(move |quotes: Vec<MintQuote>| {
             let wallet = wallet_clone.clone();
 
             println!("Received {} new quote(s)", quotes.len());
@@ -110,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             for quote in quotes {
                 let amount_str = quote
                     .amount
-                    .map_or("unknown".to_string(), |a| a.to_string());
+                    .map_or("unknown".to_string(), |a: Amount| a.to_string());
                 println!("  ├─ Quote ID: {}", quote.id);
                 println!("  ├─ Amount: {} {}", amount_str, quote.unit);
                 println!("  ├─ State: {:?}", quote.state);

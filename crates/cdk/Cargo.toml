@@ -140,6 +140,10 @@ required-features = ["wallet"]
 name = "mint-token-bolt12"
 required-features = ["wallet"]
 
+[[example]]
+name = "npubcash-poll"
+required-features = ["npubcash"]
+
 [dev-dependencies]
 rand.workspace = true
 cdk-sqlite.workspace = true
