@@ -9,6 +9,22 @@
 ### Fixed
 - cashu: Fix HTLC witness deserialization by adding prior signatures if they exist ([stefanbitcr]).
 
+## [0.13.2](https://github.com/cashubtc/cdk/releases/tag/v0.13.2)
+
+### Added
+- cashu: Add spending-condition inspection helpers and token_secrets() ([lollerfirst]).
+
+### Changed
+- cdk: Make sorting Transactions a stable sort ([benthecarman]).
+- Updated stable Rust to 1.85.0 ([thesimplekid]).
+
+### Fixed
+- cdk-lnbits: Add websocket reconnection with exponential backoff ([thesimplekid]).
+- cdk: Add parent directory validation before database creation ([thesimplekid]).
+- cashu: Skip serializing empty NUT15 settings in mint info ([lollerfirst]).
+- cdk: Improve Melted error handling and add debug logging ([thesimplekid]).
+- cdk: Read the latest mint quote status in a transaction to avoid race conditions ([crodas]).
+
 ## [0.13.1](https://github.com/cashubtc/cdk/releases/tag/v0.13.1)
 
 ### Fixed
