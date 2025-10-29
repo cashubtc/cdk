@@ -132,26 +132,14 @@ impl Proof {
 
         // If preimage is needed (before locktime), verify it
         if preimage_needed {
-            let hash_lock =
-                Sha256Hash::from_str(secret.secret_data().data()).map_err(|_| Error::InvalidHash)?;
             // Extract HTLC witness
             let htlc_witness = match &self.witness {
                 Some(Witness::HTLCWitness(witness)) => witness,
                 _ => return Err(Error::IncorrectSecretKind),
             };
 
-            const REQUIRED_PREIMAGE_BYTES: usize = 32;
-
-            //let preimage_bytes = htlc_witness.preimage.tobytes();
-            let preimage_hash = Sha256Hash::hash(htlc_witness.preimage.as_bytes());
-            //if preimage_bytes.len() != REQUIRED_PREIMAGE_BYTES {
-                //return Err(Error::PreimageInvalidSize);
-            //}
-            //let preimage_hash = Sha256Hash::hash(&preimage_bytes);
-
-            if hash_lock.ne(&preimage_hash) {
-                return Err(Error::Preimage);
-            }
+            // Verify preimage using shared function
+            super::nut10::verify_htlc_preimage(htlc_witness, &secret)?;
         }
 
         if relevant_num_sigs_required == 0 {

@@ -3,20 +3,10 @@
 //!
 //! These tests verify that the mint correctly enforces SIG_ALL flag behavior for HTLC
 
-use bitcoin::hashes::sha256::Hash as Sha256Hash;
-use bitcoin::hashes::Hash;
 use cdk_common::nuts::{SpendingConditions, Conditions, SigFlag};
 use cdk_common::Amount;
 
-use super::test_helpers::{TestMintHelper, create_test_keypair, unzip3};
-
-/// Helper: Create a hash and preimage for testing
-/// Returns (hash_hex_string, preimage_string)
-fn create_test_hash_and_preimage() -> (String, String) {
-    let preimage = "secret_preimage_for_testing";
-    let hash = Sha256Hash::hash(preimage.as_bytes());
-    (hash.to_string(), preimage.to_string())
-}
+use super::test_helpers::{TestMintHelper, create_test_keypair, create_test_hash_and_preimage, unzip3};
 
 /// Test: HTLC SIG_ALL requiring preimage and one signature
 ///

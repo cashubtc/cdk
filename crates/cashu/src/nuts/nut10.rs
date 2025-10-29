@@ -457,26 +457,15 @@ pub trait SpendingConditionVerification {
 
         // If preimage is needed (before locktime), verify it
         if preimage_needed {
-            use bitcoin::hashes::Hash;
-
-            let hash_lock = bitcoin::hashes::sha256::Hash::from_str(first_secret.secret_data().data())
-                .map_err(|_| super::nut11::Error::InvalidHash)?;
-
             // Extract HTLC witness
-            let first_witness = first_input
-                .witness
-                .as_ref()
-                .ok_or(super::nut11::Error::SignaturesNotProvided)?;
+            let htlc_witness = match first_input.witness.as_ref() {
+                Some(super::Witness::HTLCWitness(witness)) => witness,
+                _ => return Err(super::nut11::Error::SignaturesNotProvided),
+            };
 
-            let preimage = first_witness
-                .preimage()
-                .ok_or(super::nut11::Error::SpendConditionsNotMet)?;
-
-            let hash_of_preimage = bitcoin::hashes::sha256::Hash::hash(preimage.as_bytes());
-
-            if hash_lock != hash_of_preimage {
-                return Err(super::nut11::Error::SpendConditionsNotMet);
-            }
+            // Verify the preimage matches the hash in the secret
+            verify_htlc_preimage(htlc_witness, &first_secret)
+                .map_err(|_| super::nut11::Error::SpendConditionsNotMet)?;
         }
 
         // Handle "anyone can spend" case (locktime passed with no refund keys)
