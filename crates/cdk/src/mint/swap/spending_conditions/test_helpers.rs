@@ -110,6 +110,19 @@ pub fn create_test_keypair() -> (SecretKey, PublicKey) {
     (secret, pubkey)
 }
 
+/// Helper: Create a hash and preimage for testing
+/// Returns (hash_hex_string, preimage_hex_string)
+pub fn create_test_hash_and_preimage() -> (String, String) {
+    use bitcoin::hashes::sha256::Hash as Sha256Hash;
+    use bitcoin::hashes::Hash;
+
+    // Create a 32-byte preimage
+    let preimage_bytes = [0x42u8; 32];
+    let hash = Sha256Hash::hash(&preimage_bytes);
+    // Return hex-encoded hash and hex-encoded preimage
+    (hash.to_string(), crate::util::hex::encode(preimage_bytes))
+}
+
 /// Helper: Unzip a vector of 3-tuples into 3 separate vectors
 pub fn unzip3<A, B, C>(vec: Vec<(A, B, C)>) -> (Vec<A>, Vec<B>, Vec<C>) {
     let mut vec_a = Vec::new();
