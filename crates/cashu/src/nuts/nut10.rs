@@ -178,6 +178,32 @@ pub(crate) fn get_pubkeys_and_required_sigs(
 
 use super::Proofs;
 
+/// Verify that a preimage matches the hash in the secret data
+///
+/// The preimage should be a 64-character hex string representing 32 bytes.
+/// We decode it from hex, hash it with SHA256, and compare to the hash in secret.data
+pub fn verify_htlc_preimage(witness: &super::nut14::HTLCWitness, secret: &Secret) -> Result<(), super::nut14::Error> {
+    use bitcoin::hashes::sha256::Hash as Sha256Hash;
+    use bitcoin::hashes::Hash;
+
+    // Get the hash lock from the secret data
+    let hash_lock = Sha256Hash::from_str(secret.secret_data().data())
+        .map_err(|_| super::nut14::Error::InvalidHash)?;
+
+    // Decode and validate the preimage (returns [u8; 32])
+    let preimage_bytes = witness.preimage_data()?;
+
+    // Hash the 32-byte preimage
+    let preimage_hash = Sha256Hash::hash(&preimage_bytes);
+
+    // Compare with the hash lock
+    if hash_lock.ne(&preimage_hash) {
+        return Err(super::nut14::Error::Preimage);
+    }
+
+    Ok(())
+}
+
 /// Trait for requests that spend proofs (SwapRequest, MeltRequest)
 pub trait SpendingConditionVerification {
     /// Get the input proofs

@@ -71,6 +71,31 @@ pub struct HTLCWitness {
     pub signatures: Option<Vec<String>>,
 }
 
+impl HTLCWitness {
+    /// Decode the preimage from hex and verify it's exactly 32 bytes
+    ///
+    /// Returns the 32-byte preimage data if valid, or an error if:
+    /// - The hex decoding fails
+    /// - The decoded data is not exactly 32 bytes
+    pub fn preimage_data(&self) -> Result<[u8; 32], Error> {
+        const REQUIRED_PREIMAGE_BYTES: usize = 32;
+
+        // Decode the 64-character hex string to bytes
+        let preimage_bytes = hex::decode(&self.preimage)
+            .map_err(|_| Error::InvalidHexPreimage)?;
+
+        // Verify the preimage is exactly 32 bytes
+        if preimage_bytes.len() != REQUIRED_PREIMAGE_BYTES {
+            return Err(Error::PreimageInvalidSize);
+        }
+
+        // Convert to fixed-size array
+        let mut array = [0u8; 32];
+        array.copy_from_slice(&preimage_bytes);
+        Ok(array)
+    }
+}
+
 impl Proof {
     /// Verify HTLC
     pub fn verify_htlc(&self) -> Result<(), Error> {
