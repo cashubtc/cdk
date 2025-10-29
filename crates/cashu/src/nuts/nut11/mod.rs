@@ -1497,25 +1497,39 @@ mod tests {
     fn test_sig_all_swap_mismatched_inputs() {
         // Invalid SwapRequest - mismatched inputs with SIG_ALL
         let invalid_swap = r#"{
-            "inputs": [{
-                "amount": 1,
-                "secret": "[\"P2PK\",{\"nonce\":\"859d4935c4907062a6297cf4e663e2835d90d97ecdd510745d32f6816323a41f\",\"data\":\"0249098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]",
-                "C": "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
-                "id": "009a1f293253e41e",
-                "witness": "{\"signatures\":[\"60f3c9b766770b46caac1d27e1ae6b77c8866ebaeba0b9489fe6a15a837eaa6fcd6eaa825499c72ac342983983fd3ba3a8a41f56677cc99ffd73da68b59e1383\"]}"
-            }, {
-                "amount": 1,
-                "secret": "[\"P2PK\",{\"nonce\":\"859d4935c4907062a6297cf4e663e2835d90d97ecdd510745d32f6816323a41f\",\"data\":\"02a60c27104cf6023581e790970fc33994a320abe36e7ceed16771b0f8d76f0666\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]",
-                "C": "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
-                "id": "009a1f293253e41f",
-                "witness": "{\"signatures\":[\"60f3c9b766770b46caac1d27e1ae6b77c8866ebaeba0b9489fe6a15a837eaa6fcd6eaa825499c72ac342983983fd3ba3a8a41f56677cc99ffd73da68b59e1383\"]}"
-            }],
-            "outputs": [{
-                "amount": 2,
-                "B_": "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
-                "id": "009a1f293253e41e"
-            }]
-        }"#;
+            "inputs": [
+        {
+          "amount": 1,
+          "id": "00bfa73302d12ffd",
+          "secret": "[\"P2PK\",{\"nonce\":\"e2a221fe361f19d95c5c3312ccff3ffa075b4fe37beec99de85a6ee70568385b\",\"data\":\"03dad7f9c588f4cbb55c2e1b7b802fa2bbc63a614d9e9ecdf56a8e7ee8ca65be86\",\"tags\":[[\"pubkeys\",\"025f2af63fd65ca97c3bde4070549683e72769d28def2f1cd3d63576cd9c2ffa6c\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
+          "C": "02a79c09b0605f4e7a21976b511cc7be01cdaeac54b29645258c84f2e74bff13f6",
+          "witness": "{\"signatures\":[\"b42c7af7e98ca4e3bba8b73702120970286196340b340c21299676dbc7b10cafaa7baeb243affc01afce3218616cf8b3f6b4baaf4414fedb31b0c6653912f769\",\"17781910e2d806cae464f8a692929ee31124c0cd7eaf1e0d94292c6cbc122da09076b649080b8de9201f87d83b99fe04e33d701817eb287d1cdd9c4d0410e625\"]}"
+        },
+        {
+          "amount": 2,
+          "id": "00bfa73302d12ffd",
+          "secret": "[\"P2PK\",{\"nonce\":\"973c78b5e84c0986209dc14ba57682baf38fa4c1ea60c4c5f6834779a1a13e6d\",\"data\":\"02685df03c777837bc7155bd2d0d8e98eede7e956a4cd8a9edac84532584e68e0f\",\"tags\":[[\"pubkeys\",\"025f2af63fd65ca97c3bde4070549683e72769d28def2f1cd3d63576cd9c2ffa6c\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
+          "C": "02be48c564cf6a7b4d09fbaf3a78a153a79f687ac4623e48ce1788effc3fb1e024"
+        }
+      ],
+      "outputs": [
+        {
+          "amount": 1,
+          "id": "00bfa73302d12ffd",
+          "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+        },
+        {
+          "amount": 1,
+          "id": "00bfa73302d12ffd",
+          "B_": "03afe7c87e32d436f0957f1d70a2bca025822a84a8623e3a33aed0a167016e0ca5"
+        },
+        {
+          "amount": 1,
+          "id": "00bfa73302d12ffd",
+          "B_": "02c0d4fce02a7a0f09e3f1bca952db910b17e81a7ebcbce62cd8dcfb127d21e37b"
+        }
+      ]
+    }"#;
 
         let invalid_swap: SwapRequest = serde_json::from_str(invalid_swap).unwrap();
         assert!(
