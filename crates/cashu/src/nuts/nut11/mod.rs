@@ -1689,6 +1689,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_sig_all_htlc_with_pubkey() {
+        // `SwapRequest` with an HTLC also locked to a public key
+        let locktime_sig_all_swap = r#"{
+  "inputs": [
+    {
+      "amount": 2,
+      "id": "00bfa73302d12ffd",
+      "secret": "[\"HTLC\",{\"nonce\":\"247864413ecc86739078f8ab56deb8006f9c304fc270f20eb30340beca173088\",\"data\":\"ec4916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5\",\"tags\":[[\"pubkeys\",\"03f2a205a6468f29af3948f036e8e35e0010832d8d0b43b0903331263a45f93f31\"],[\"sigflag\",\"SIG_ALL\"]]}]",
+      "C": "0394ffcb2ec2a96fd58c1b935784a7709c62954f7f11f1e684de471f808ccfb0bf",
+      "witness": "{\"preimage\":\"0000000000000000000000000000000000000000000000000000000000000001\",\"signatures\":[\"fa820534d75faac577eb5b42e9929a9f648baaaf28876cbcb7c10c6047cf97f6197d1cbf4907d94c1e77decf4b1acf0c85816a30524ee1b546181a19b838b535\"]}"
+    }
+  ],
+  "outputs": [
+    {
+      "amount": 2,
+      "id": "00bfa73302d12ffd",
+      "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+    }
+  ]
+}"#;
+
+        let valid_swap: SwapRequest = serde_json::from_str(locktime_sig_all_swap).unwrap();
+        assert!(
+            valid_swap.verify_spending_conditions().is_ok(),
+            "valid SIG_ALL swap request should pass verification"
+        );
+    }
 
     #[test]
     #[ignore]
