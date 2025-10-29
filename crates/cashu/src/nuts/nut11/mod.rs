@@ -1622,6 +1622,42 @@ mod tests {
     }
 
     #[test]
+    fn test_sig_all_multisig_locktime_passed() {
+        // Swap request with locktime already passed and the needed refund signatures
+        let locktime_sig_all_swap = r#"{
+  "inputs": [
+    {
+      "amount": 2,
+      "id": "00bfa73302d12ffd",
+      "secret": "[\"P2PK\",{\"nonce\":\"3ab4fe4969edd99ee9f3d40d2f382157ae5f382ba280ee5ff2d87360e315951b\",\"data\":\"032d3eecd23c9e50972d2964aaae2d302ffdb8717018469f05b051502191c398b1\",\"tags\":[[\"locktime\",\"1\"],[\"n_sigs\",\"1\"],[\"refund\",\"02d3edfb9e9ffdcd4845ba1d3f4cfc65503937c5c9d653ce49f315e76b608a8683\",\"03068b44ca2edca02b6e0832a9e014e409a5e44501e07d7227877efdf10aedf19d\"],[\"n_sigs_refund\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
+      "C": "0244bb030c94f79092eb66bc84937ab920360fec3c333f424248592113fcc96cd6",
+      "witness": "{\"signatures\":[\"83c45281c4a4dbbaab82c795ff435468f8c22506dc75debe34e5e07d1a889693e89ab1d621575039a1470bea1bf9a73dcf57f9902bff32afb52c4c403c852e46\",\"071570a852228cb16368807024fd6d7c53b1c3b1a574f206fd2cb6fd61235ad894be111a49a42133c786c366d0a96bfc108b45f6bcfa5496701e0d5cc2e4d86a\"]}"
+    }
+  ],
+  "outputs": [
+    {
+      "amount": 1,
+      "id": "00bfa73302d12ffd",
+      "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+    },
+    {
+      "amount": 1,
+      "id": "00bfa73302d12ffd",
+      "B_": "03afe7c87e32d436f0957f1d70a2bca025822a84a8623e3a33aed0a167016e0ca5"
+    }
+  ]
+}"#;
+
+        let valid_swap: SwapRequest = serde_json::from_str(locktime_sig_all_swap).unwrap();
+        assert!(
+            valid_swap.verify_spending_conditions().is_ok(),
+            "valid SIG_ALL swap request should fail verification"
+        );
+    }
+
+
+
+    #[test]
     #[ignore]
     fn test_sig_all_melt() {
         // MeltRequest with valid SIG_ALL signature
