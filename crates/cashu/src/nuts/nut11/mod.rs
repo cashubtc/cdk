@@ -1584,10 +1584,26 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_sig_all_swap_msg_to_sign() {
         // SwapRequest with multi-sig SIG_ALL requiring 2 signatures
-        let multisig_swap = r#"{"inputs":[{"amount":0,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"c537ea76c1ac9cfa44d15dac91a63315903a3b4afa8e4e20f868f87f65ff2d16\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"pubkeys\",\"03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","witness":"{\"signatures\":[\"c38cf7943f59206dc22734d39c17e342674a4025e6d3b424eb79d445a57257d57b45dd94fcd1b8dd8013e9240a4133bdef6523f64cd7288d890f3bbb8e3c6453\",\"f766dbb80e5c27de9a4770486e11e1bac0b1c4f782bf807a5189ea9c3e294559a3de4e217d3dfceafd4d9e8dcbfe4e9a188052d6dab9df07df7844224292de36\"]}"}],"outputs":[{"amount":0,"id":"009a1f293253e41e","B_":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a"}]}"#;
+                let multisig_swap = r#"{
+              "inputs": [
+                {
+                  "amount": 1,
+                  "id": "00bfa73302d12ffd",
+                  "secret": "[\"P2PK\",{\"nonce\":\"741391687d73ee334e80b3978252d8b4d1b4c2877b03e9350a41d48f9fa32215\",\"data\":\"03d732118ebbb5594c3d2c4ec216fc4ed95ecef96203a27bf8797e0e1fc4dfb47f\",\"tags\":[[\"pubkeys\",\"036698d3c69f5eec5ac85a4b6a16445d7fa7356ef99b038f2f7ef2b0163e1a2028\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
+                  "C": "021e7b4c29ff17f1f36c12bfa3b7bc76118fc79102c675012145511abfbb989bec",
+                  "witness": "{\"signatures\":[\"3834641aad79054b73c1384990486f2f2af9ef30288e0a13ee4e009ad781aad74eaa2bff0abc420c4e3bbd1f1484d3a28cb3380af7a0f84f1a6eab991ff47661\",\"fefd0725c508ed05c5f14ee8ef3cb859fe8b9c070c23c797d0b712dc3966063a1faa083a32eb8edc1a88a823fcc4784f64a32f604c0012833d25b630b7664b3a\"]}"
+                }
+              ],
+              "outputs": [
+                {
+                  "amount": 1,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                }
+              ]
+            }"#;
 
         let multisig_swap: SwapRequest = serde_json::from_str(multisig_swap).unwrap();
 
@@ -1597,8 +1613,12 @@ mod tests {
 
         assert_eq!(
             msg_to_sign,
-            r#"["P2PK",{"nonce":"c537ea76c1ac9cfa44d15dac91a63315903a3b4afa8e4e20f868f87f65ff2d16","data":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","tags":[["pubkeys","03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9"],["n_sigs","2"],["sigflag","SIG_ALL"]]}]026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a"#
-        )
+            r#"["P2PK",{"nonce":"741391687d73ee334e80b3978252d8b4d1b4c2877b03e9350a41d48f9fa32215","data":"03d732118ebbb5594c3d2c4ec216fc4ed95ecef96203a27bf8797e0e1fc4dfb47f","tags":[["pubkeys","036698d3c69f5eec5ac85a4b6a16445d7fa7356ef99b038f2f7ef2b0163e1a2028"],["n_sigs","2"],["sigflag","SIG_ALL"]]}]021e7b4c29ff17f1f36c12bfa3b7bc76118fc79102c675012145511abfbb989bec100bfa73302d12ffd038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"#
+        );
+        assert!(
+              multisig_swap.verify_spending_conditions().is_ok(),
+              "Multi-sig swap should verify successfully"
+        );
     }
 
     #[test]
