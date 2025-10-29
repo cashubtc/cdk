@@ -1,9 +1,13 @@
+//! Postgres database backend for FFI wallet
+//! This module is only available with both the "postgres" and "async-trait" features enabled.
+
+#![cfg(all(feature = "postgres", feature = "async-trait"))]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
 // Bring the CDK wallet database trait into scope so trait methods resolve on the inner DB
 use cdk::cdk_database::WalletDatabase as CdkWalletDatabase;
-#[cfg(feature = "postgres")]
 use cdk_postgres::WalletPgDatabase as CdkWalletPgDatabase;
 
 use crate::{
@@ -20,11 +24,9 @@ pub struct WalletPostgresDatabase {
 // Keep a long-lived Tokio runtime for Postgres-created resources so that
 // background tasks (e.g., tokio-postgres connection drivers spawned during
 // construction) are not tied to a short-lived, ad-hoc runtime.
-#[cfg(feature = "postgres")]
 static PG_RUNTIME: once_cell::sync::OnceCell<tokio::runtime::Runtime> =
     once_cell::sync::OnceCell::new();
 
-#[cfg(feature = "postgres")]
 fn pg_runtime() -> &'static tokio::runtime::Runtime {
     PG_RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -385,10 +387,9 @@ impl WalletDatabase for WalletPostgresDatabase {
 #[uniffi::export]
 impl WalletPostgresDatabase {
     /// Create a new Postgres-backed wallet database
-    /// Requires cdk-ffi to be built with feature "postgres".
+    /// Requires cdk-ffi to be built with features "postgres" and "async-trait".
     /// Example URL:
     ///  "host=localhost user=test password=test dbname=testdb port=5433 schema=wallet sslmode=prefer"
-    #[cfg(feature = "postgres")]
     #[uniffi::constructor]
     pub fn new(url: String) -> Result<Arc<Self>, FfiError> {
         let inner = match tokio::runtime::Handle::try_current() {

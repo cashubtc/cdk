@@ -21,7 +21,9 @@ pub struct MultiMintWallet {
     inner: Arc<CdkMultiMintWallet>,
 }
 
-#[uniffi::export(async_runtime = "tokio")]
+// Conditional constructor implementations - async-trait enabled
+#[cfg(feature = "async-trait")]
+#[uniffi::export]
 impl MultiMintWallet {
     /// Create a new MultiMintWallet from mnemonic using WalletDatabase trait
     #[uniffi::constructor]
@@ -105,6 +107,101 @@ impl MultiMintWallet {
             inner: Arc::new(wallet),
         })
     }
+}
+
+// Conditional constructor implementations - async-trait disabled
+#[cfg(not(feature = "async-trait"))]
+#[uniffi::export]
+impl MultiMintWallet {
+    /// Create a new MultiMintWallet from mnemonic using WalletSqliteDatabase
+    #[uniffi::constructor]
+    pub fn new(
+        unit: CurrencyUnit,
+        mnemonic: String,
+        db: Arc<crate::sqlite::WalletSqliteDatabase>,
+    ) -> Result<Self, FfiError> {
+        // Parse mnemonic and generate seed without passphrase
+        let m = Mnemonic::parse(&mnemonic)
+            .map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+        let seed = m.to_seed_normalized("");
+
+        // Convert the SQLite database to a CDK database implementation
+        let localstore: Arc<dyn cdk::cdk_database::WalletDatabase<Err = cdk::cdk_database::Error> + Send + Sync> =
+            db.inner.clone() as Arc<dyn cdk::cdk_database::WalletDatabase<Err = cdk::cdk_database::Error> + Send + Sync>;
+
+        let wallet = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle.block_on(async move {
+                    CdkMultiMintWallet::new(localstore, seed, unit.into()).await
+                })
+            }),
+            Err(_) => {
+                // No current runtime, create a new one
+                tokio::runtime::Runtime::new()
+                    .map_err(|e| FfiError::Database {
+                        msg: format!("Failed to create runtime: {}", e),
+                    })?
+                    .block_on(async move {
+                        CdkMultiMintWallet::new(localstore, seed, unit.into()).await
+                    })
+            }
+        }?;
+
+        Ok(Self {
+            inner: Arc::new(wallet),
+        })
+    }
+
+    /// Create a new MultiMintWallet with proxy configuration using WalletSqliteDatabase
+    #[uniffi::constructor]
+    pub fn new_with_proxy(
+        unit: CurrencyUnit,
+        mnemonic: String,
+        db: Arc<crate::sqlite::WalletSqliteDatabase>,
+        proxy_url: String,
+    ) -> Result<Self, FfiError> {
+        // Parse mnemonic and generate seed without passphrase
+        let m = Mnemonic::parse(&mnemonic)
+            .map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+        let seed = m.to_seed_normalized("");
+
+        // Convert the SQLite database to a CDK database implementation
+        let localstore: Arc<dyn cdk::cdk_database::WalletDatabase<Err = cdk::cdk_database::Error> + Send + Sync> =
+            db.inner.clone() as Arc<dyn cdk::cdk_database::WalletDatabase<Err = cdk::cdk_database::Error> + Send + Sync>;
+
+        // Parse proxy URL
+        let proxy_url =
+            url::Url::parse(&proxy_url).map_err(|e| FfiError::InvalidUrl { msg: e.to_string() })?;
+
+        let wallet = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle.block_on(async move {
+                    CdkMultiMintWallet::new_with_proxy(localstore, seed, unit.into(), proxy_url)
+                        .await
+                })
+            }),
+            Err(_) => {
+                // No current runtime, create a new one
+                tokio::runtime::Runtime::new()
+                    .map_err(|e| FfiError::Database {
+                        msg: format!("Failed to create runtime: {}", e),
+                    })?
+                    .block_on(async move {
+                        CdkMultiMintWallet::new_with_proxy(localstore, seed, unit.into(), proxy_url)
+                            .await
+                    })
+            }
+        }?;
+
+        Ok(Self {
+            inner: Arc::new(wallet),
+        })
+    }
+}
+
+// Methods impl block (shared between both feature configurations)
+#[uniffi::export(async_runtime = "tokio")]
+impl MultiMintWallet {
 
     /// Get the currency unit for this wallet
     pub fn unit(&self) -> CurrencyUnit {

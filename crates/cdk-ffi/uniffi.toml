@@ -1,3 +1,7 @@
+[bindings.dart]
+package_name = "cashu_dev_kit"
+cdylib_name = "cdk_ffi"
+
 [bindings.kotlin]
 package_name = "org.cashudevkit"
 cdylib_name = "cdk_ffi"
