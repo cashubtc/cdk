@@ -1460,10 +1460,31 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_sig_all_swap_single_sig() {
         // Valid SwapRequest with SIG_ALL signature
-        let valid_swap = r#"{"inputs":[{"amount":0,"id":"009a1f293253e41e","secret":"[\"P2PK\",{\"nonce\":\"fc14ca312b7442d05231239d0e3cdcb6b2335250defcb8bec7d2efe9e26c90a6\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a","witness":"{\"signatures\":[\"aa6f3b3f112ec3e834aded446ea67a90cdb26b43e08cfed259e0bbd953395c4af11117c58ec0ec3de404f31076692426cde40d2c1602d9dd067a872cb11ac3c0\"]}"},{"amount":0,"id":"009a1f293253e41f","secret":"[\"P2PK\",{\"nonce\":\"fc14ca312b7442d05231239d0e3cdcb6b2335250defcb8bec7d2efe9e26c90a6\",\"data\":\"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]","C":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a"}],"outputs":[{"amount":0,"id":"009a1f293253e41e","B_":"026f6a2b1d709dbca78124a9f30a742985f7eddd894e72f637f7085bf69b997b9a"}]}"#;
+        let valid_swap = r#"{
+  "inputs": [
+    {
+      "amount": 2,
+      "id": "00bfa73302d12ffd",
+      "secret": "[\"P2PK\",{\"nonce\":\"15295d2e313321acc65266c95060f99da5825a0ea00ac01142cf57b1fd397ddd\",\"data\":\"02dc2ecca00f924dd7028bc92793d7bb9230bac43ff690148c33e2c010f44f154c\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]",
+      "C": "0255d4584468bd226fd290ab454ef61ba0f85a7f19c8b55a383cfa9c87bb37c2b3",
+      "witness": "{\"signatures\":[\"74a737275b0e0e3b2598242abbe9c791526fd4e30b5b04fd53a02795775613889d1bc7843301cfe1b91b16687698d8e26fa7b2f5ce42c5043d483f0e9d15e061\"]}"
+    }
+  ],
+  "outputs": [
+    {
+      "amount": 1,
+      "id": "00bfa73302d12ffd",
+      "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+    },
+    {
+      "amount": 1,
+      "id": "00bfa73302d12ffd",
+      "B_": "03afe7c87e32d436f0957f1d70a2bca025822a84a8623e3a33aed0a167016e0ca5"
+    }
+  ]
+}"#;
 
         let valid_swap: SwapRequest = serde_json::from_str(valid_swap).unwrap();
         assert!(
