@@ -116,6 +116,7 @@ impl Proof {
                     }
                 }
             }
+            //
             // If pubkeys are present check there is a valid signature
             if let Some(pubkey) = conditions.pubkeys {
                 let req_sigs = conditions.num_sigs.unwrap_or(1);
@@ -131,7 +132,7 @@ impl Proof {
                     .collect::<Result<Vec<Signature>, _>>()?;
 
                 let valid_sigs = valid_signatures(self.secret.as_bytes(), &pubkey, &signatures)?;
-                ensure_cdk!(valid_sigs >= req_sigs, Error::IncorrectSecretKind);
+                ensure_cdk!(valid_sigs >= req_sigs, Error::SignaturesNotProvided);
             }
         }
 
