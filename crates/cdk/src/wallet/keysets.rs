@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use cdk_common::amount::{FeeAndAmounts, KeysetFeeAndAmounts};
 use cdk_common::nut02::{KeySetInfos, KeySetInfosMethods};
+use cdk_common::CurrencyUnit;
 use tracing::instrument;
 
 use crate::nuts::{Id, KeySetInfo, Keys};
@@ -39,7 +40,19 @@ impl Wallet {
     /// offline and rely on previously cached keyset data.
     #[instrument(skip(self))]
     pub async fn get_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
-        self.key_manager.get_keysets(&self.mint_url).await
+        let keysets = self
+            .key_manager
+            .get_keysets(&self.mint_url)
+            .await?
+            .into_iter()
+            .filter(|k| k.unit != CurrencyUnit::Auth)
+            .collect::<Vec<_>>();
+
+        if !keysets.is_empty() {
+            Ok(keysets)
+        } else {
+            Err(Error::UnknownKeySet)
+        }
     }
 
     /// Refresh keysets by fetching the latest from mint - always goes online
@@ -51,7 +64,19 @@ impl Wallet {
     pub async fn refresh_keysets(&self) -> Result<KeySetInfos, Error> {
         tracing::debug!("Refreshing keysets via KeyManager");
 
-        self.key_manager.refresh(&self.mint_url).await
+        let keysets = self
+            .key_manager
+            .refresh(&self.mint_url)
+            .await?
+            .into_iter()
+            .filter(|k| self.unit == k.unit && k.active)
+            .collect::<Vec<_>>();
+
+        if !keysets.is_empty() {
+            Ok(keysets)
+        } else {
+            Err(Error::UnknownKeySet)
+        }
     }
 
     /// Get the active keyset with the lowest fees - always goes online
@@ -76,7 +101,7 @@ impl Wallet {
     /// returns an error. Use this for offline operations or when you want to avoid network calls.
     #[instrument(skip(self))]
     pub async fn get_active_keyset(&self) -> Result<KeySetInfo, Error> {
-        let active_keysets = self.key_manager.get_active_keysets(&self.mint_url);
+        let active_keysets = self.key_manager.get_active_keysets(&self.mint_url).await?;
 
         active_keysets
             .into_iter()

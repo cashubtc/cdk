@@ -12,6 +12,7 @@ use tokio::time::{sleep, Instant};
 
 use super::subscriber::{ActiveSubscription, SubscriptionRequest};
 use super::{Error, Event, Pubsub, Spec};
+use crate::task::spawn;
 
 const STREAM_CONNECTION_BACKOFF: Duration = Duration::from_millis(2_000);
 
@@ -20,9 +21,6 @@ const STREAM_CONNECTION_MAX_BACKOFF: Duration = Duration::from_millis(30_000);
 const INTERNAL_POLL_SIZE: usize = 1_000;
 
 const POLL_SLEEP: Duration = Duration::from_millis(2_000);
-
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen_futures;
 
 struct UniqueSubscription<S>
 where
@@ -157,11 +155,7 @@ where
             still_running: true.into(),
         });
 
-        #[cfg(not(target_arch = "wasm32"))]
-        tokio::spawn(Self::stream(this.clone()));
-
-        #[cfg(target_arch = "wasm32")]
-        wasm_bindgen_futures::spawn_local(Self::stream(this.clone()));
+        spawn(Self::stream(this.clone()));
 
         this
     }
