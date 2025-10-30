@@ -13,8 +13,8 @@ use cdk_common::mint_url::MintUrl;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
 use cdk_common::{
-    database, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions,
-    State,
+    database, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PaymentMethod, PublicKey,
+    SpendingConditions, State,
 };
 use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
 use tracing::instrument;
@@ -511,7 +511,7 @@ impl WalletDatabase for WalletRedbDatabase {
             .collect())
     }
 
-    async fn get_pending_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+    async fn get_unpaid_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn
             .open_table(MINT_QUOTES_TABLE)
@@ -525,7 +525,7 @@ impl WalletDatabase for WalletRedbDatabase {
             .filter(|quote| {
                 // Return quotes with pending balance OR bolt12 quotes
                 (quote.amount_paid > quote.amount_issued && u64::from(quote.amount_paid) > 0)
-                    || quote.payment_method.to_string() == "bolt12"
+                    || quote.payment_method == PaymentMethod::Bolt12
             })
             .collect())
     }

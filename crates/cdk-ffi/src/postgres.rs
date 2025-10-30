@@ -157,10 +157,10 @@ impl WalletDatabase for WalletPostgresDatabase {
         Ok(result.into_iter().map(|q| q.into()).collect())
     }
 
-    async fn get_pending_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
+    async fn get_unpaid_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
         let result = self
             .inner
-            .get_pending_mint_quotes()
+            .get_unpaid_mint_quotes()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })?;
         Ok(result.into_iter().map(|q| q.into()).collect())

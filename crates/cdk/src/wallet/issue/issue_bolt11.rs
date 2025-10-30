@@ -157,12 +157,12 @@ impl Wallet {
 
     /// Get pending mint quotes
     /// Returns mint quotes that have mintable balance or are bolt12 quotes (reusable).
-    /// Filters out expired quotes and quotes from other mints.
+    /// Filters out quotes from other mints. Does not filter by expiry time to allow
+    /// checking with the mint if expired quotes can still be minted.
     #[instrument(skip(self))]
-    pub async fn get_pending_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
-        let mut pending_quotes = self.localstore.get_pending_mint_quotes().await?;
-        let unix_time = unix_time();
-        pending_quotes.retain(|quote| quote.mint_url == self.mint_url && quote.expiry > unix_time);
+    pub async fn get_unpaid_mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
+        let mut pending_quotes = self.localstore.get_unpaid_mint_quotes().await?;
+        pending_quotes.retain(|quote| quote.mint_url == self.mint_url);
         Ok(pending_quotes)
     }
 
