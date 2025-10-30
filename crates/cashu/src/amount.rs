@@ -753,4 +753,213 @@ mod tests {
 
         assert!(converted.is_err());
     }
+
+    /// Tests that the subtraction operator correctly computes the difference between amounts.
+    ///
+    /// This test verifies that the `-` operator for Amount produces the expected result.
+    /// It's particularly important because the subtraction operation is used in critical
+    /// code paths like `split_targeted`, where incorrect subtraction could lead to
+    /// infinite loops or wrong calculations.
+    ///
+    /// Mutant testing: Catches mutations that replace the subtraction implementation
+    /// with `Default::default()` (returning Amount::ZERO), which would cause infinite
+    /// loops in `split_targeted` at line 138 where `*self - parts_total` is computed.
+    #[test]
+    fn test_amount_sub_operator() {
+        let amount1 = Amount::from(100);
+        let amount2 = Amount::from(30);
+
+        let result = amount1 - amount2;
+        assert_eq!(result, Amount::from(70));
+
+        let amount1 = Amount::from(1000);
+        let amount2 = Amount::from(1);
+
+        let result = amount1 - amount2;
+        assert_eq!(result, Amount::from(999));
+
+        let amount1 = Amount::from(255);
+        let amount2 = Amount::from(128);
+
+        let result = amount1 - amount2;
+        assert_eq!(result, Amount::from(127));
+    }
+
+    /// Tests that the subtraction operator panics when attempting to subtract
+    /// a larger amount from a smaller amount (underflow).
+    ///
+    /// This test verifies the safety property that Amount subtraction will panic
+    /// rather than wrap around on underflow. This is critical for preventing
+    /// bugs where negative amounts could be interpreted as very large positive amounts.
+    ///
+    /// Mutant testing: Catches mutations that remove the panic behavior or return
+    /// default values instead of properly handling underflow.
+    #[test]
+    #[should_panic(expected = "Subtraction underflow")]
+    fn test_amount_sub_underflow() {
+        let amount1 = Amount::from(30);
+        let amount2 = Amount::from(100);
+
+        let _result = amount1 - amount2;
+    }
+
+    /// Tests that checked_add correctly computes the sum and returns the actual value.
+    ///
+    /// This is critical because checked_add is used in recursive functions like
+    /// split_with_fee. If it returns Some(Amount::ZERO) instead of the actual sum,
+    /// the recursion would never terminate.
+    ///
+    /// Mutant testing: Kills mutations that replace the implementation with
+    /// `Some(Default::default())`, which would cause infinite loops in split_with_fee
+    /// at line 198 where it recursively calls itself with incremented amounts.
+    #[test]
+    fn test_checked_add_returns_correct_value() {
+        let amount1 = Amount::from(100);
+        let amount2 = Amount::from(50);
+
+        let result = amount1.checked_add(amount2);
+        assert_eq!(result, Some(Amount::from(150)));
+
+        let amount1 = Amount::from(1);
+        let amount2 = Amount::from(1);
+
+        let result = amount1.checked_add(amount2);
+        assert_eq!(result, Some(Amount::from(2)));
+        assert_ne!(result, Some(Amount::ZERO));
+
+        let amount1 = Amount::from(1000);
+        let amount2 = Amount::from(337);
+
+        let result = amount1.checked_add(amount2);
+        assert_eq!(result, Some(Amount::from(1337)));
+    }
+
+    /// Tests that checked_add returns None on overflow.
+    #[test]
+    fn test_checked_add_overflow() {
+        let amount1 = Amount::from(u64::MAX);
+        let amount2 = Amount::from(1);
+
+        let result = amount1.checked_add(amount2);
+        assert!(result.is_none());
+    }
+
+    /// Tests that try_sum correctly computes the total sum of amounts.
+    ///
+    /// This is critical because try_sum is used in loops like split_targeted at line 130
+    /// to track progress. If it returns Ok(Amount::ZERO) instead of the actual sum,
+    /// the loop condition `parts_total.eq(self)` would never be true, causing an infinite loop.
+    ///
+    /// Mutant testing: Kills mutations that replace the implementation with
+    /// `Ok(Default::default())`, which would cause infinite loops.
+    #[test]
+    fn test_try_sum_returns_correct_value() {
+        let amounts = vec![Amount::from(10), Amount::from(20), Amount::from(30)];
+        let result = Amount::try_sum(amounts).unwrap();
+        assert_eq!(result, Amount::from(60));
+        assert_ne!(result, Amount::ZERO);
+
+        let amounts = vec![Amount::from(1), Amount::from(1), Amount::from(1)];
+        let result = Amount::try_sum(amounts).unwrap();
+        assert_eq!(result, Amount::from(3));
+
+        let amounts = vec![Amount::from(100)];
+        let result = Amount::try_sum(amounts).unwrap();
+        assert_eq!(result, Amount::from(100));
+
+        let empty: Vec<Amount> = vec![];
+        let result = Amount::try_sum(empty).unwrap();
+        assert_eq!(result, Amount::ZERO);
+    }
+
+    /// Tests that try_sum returns error on overflow.
+    #[test]
+    fn test_try_sum_overflow() {
+        let amounts = vec![Amount::from(u64::MAX), Amount::from(1)];
+        let result = Amount::try_sum(amounts);
+        assert!(result.is_err());
+    }
+
+    /// Tests that split returns a non-empty vec with actual values, not defaults.
+    ///
+    /// The split function is used in split_targeted's while loop (line 122).
+    /// If split returns an empty vec or vec with Amount::ZERO when it shouldn't,
+    /// the loop that extends parts with split results would never make progress,
+    /// causing an infinite loop.
+    ///
+    /// Mutant testing: Kills mutations that replace split with `vec![]` or
+    /// `vec![Default::default()]` which would cause infinite loops.
+    #[test]
+    fn test_split_returns_correct_values() {
+        let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
+
+        let amount = Amount::from(11);
+        let result = amount.split(&fee_and_amounts);
+        assert!(!result.is_empty());
+        assert_eq!(Amount::try_sum(result.iter().copied()).unwrap(), amount);
+
+        let amount = Amount::from(255);
+        let result = amount.split(&fee_and_amounts);
+        assert!(!result.is_empty());
+        assert_eq!(Amount::try_sum(result.iter().copied()).unwrap(), amount);
+
+        let amount = Amount::from(7);
+        let result = amount.split(&fee_and_amounts);
+        assert_eq!(
+            result,
+            vec![Amount::from(4), Amount::from(2), Amount::from(1)]
+        );
+        for r in &result {
+            assert_ne!(*r, Amount::ZERO);
+        }
+    }
+
+    /// Tests that the modulo operation in split works correctly.
+    ///
+    /// At line 108, split uses modulo (%) to compute the remainder.
+    /// If this is mutated to division (/), it would produce wrong results
+    /// that could cause infinite loops in code that depends on split.
+    ///
+    /// Mutant testing: Kills mutations that replace `%` with `/`.
+    #[test]
+    fn test_split_modulo_operation() {
+        let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
+
+        let amount = Amount::from(15);
+        let result = amount.split(&fee_and_amounts);
+
+        assert_eq!(
+            result,
+            vec![
+                Amount::from(8),
+                Amount::from(4),
+                Amount::from(2),
+                Amount::from(1)
+            ]
+        );
+
+        let total = Amount::try_sum(result.iter().copied()).unwrap();
+        assert_eq!(total, amount);
+    }
+
+    /// Tests that From<u64> correctly converts values to Amount.
+    ///
+    /// This conversion is used throughout the codebase including in loops and split operations.
+    /// If it returns Default::default() (Amount::ZERO) instead of the actual value,
+    /// it can cause infinite loops where amounts are being accumulated or compared.
+    ///
+    /// Mutant testing: Kills mutations that replace From<u64> with `Default::default()`.
+    #[test]
+    fn test_from_u64_returns_correct_value() {
+        let amount = Amount::from(100u64);
+        assert_eq!(amount, Amount(100));
+        assert_ne!(amount, Amount::ZERO);
+
+        let amount = Amount::from(1u64);
+        assert_eq!(amount, Amount(1));
+        assert_eq!(amount, Amount::ONE);
+
+        let amount = Amount::from(1337u64);
+        assert_eq!(amount.to_u64(), 1337);
+    }
 }
