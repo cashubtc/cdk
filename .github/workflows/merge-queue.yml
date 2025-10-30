@@ -1,18 +1,7 @@
-name: CI
+name: Merge Queue
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches:
-      - main
-      - 'v[0-9]*.[0-9]*.x'  # Match version branches like v0.13.x, v1.0.x, etc.
-  release:
-    types: [created]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  merge_group:
 
 env:
   CARGO_TERM_COLOR: always
@@ -49,39 +38,6 @@ jobs:
       - name: typos
         run: nix develop -i -L .#nightly --command typos
 
-  examples:
-    name: "Run examples"
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    strategy:
-      fail-fast: true
-      matrix:
-        build-args:
-          [
-            mint-token,
-            melt-token
-          ]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
-      - name: Run example
-        run: nix develop -i -L .#stable --command cargo r --example ${{ matrix.build-args }}
-
   clippy:
     name: "Workspace clippy"
     runs-on: ubuntu-latest
@@ -115,26 +71,72 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v17
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "stable"
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Test
-        run: nix develop -i -L .#stable --command cargo test --workspace --exclude cdk-integration-tests --exclude cdk-postgres
+        run: nix develop -i -L .#stable --command cargo test --workspace
+
+  msrv-build:
+    name: "MSRV workspace build"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "msrv-${{ steps.flake-hash.outputs.hash }}"
+      - name: Build workspace
+        run: nix develop -i -L .#msrv --command cargo build --workspace
+
+  check-wasm:
+    name: Check WASM
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
+      - name: Build cdk for WASM
+        run: nix develop -i -L .#stable --command cargo build -p cdk --target wasm32-unknown-unknown
 
   fake-mint-itest:
     name: "Integration fake mint tests"
@@ -179,54 +181,3 @@ jobs:
         run: nix develop -i -L .#stable --command cargo clippy -- -D warnings
       - name: Test fake mint
         run: nix develop -i -L .#stable --command just fake-mint-itest ${{ matrix.database }}
-
-  msrv-build:
-    name: "MSRV workspace build"
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "msrv-${{ steps.flake-hash.outputs.hash }}"
-      - name: Build workspace
-        run: nix develop -i -L .#msrv --command cargo build --workspace
-
-
-  check-wasm:
-    name: Check WASM
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
-      - name: Build cdk for WASM
-        run: nix develop -i -L .#stable --command cargo build -p cdk --target wasm32-unknown-unknown
