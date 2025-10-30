@@ -1,4 +1,3 @@
-#[cfg(feature = "auth")]
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -18,7 +17,6 @@ use crate::wallet::key_manager::KeyManager;
 use crate::wallet::{HttpClient, MintConnector, SubscriptionManager, Wallet};
 
 /// Builder for creating a new [`Wallet`]
-#[derive(Debug)]
 pub struct WalletBuilder {
     mint_url: Option<MintUrl>,
     unit: Option<CurrencyUnit>,
@@ -30,6 +28,7 @@ pub struct WalletBuilder {
     use_http_subscription: bool,
     client: Option<Arc<dyn MintConnector + Send + Sync>>,
     key_manager: Option<Arc<KeyManager>>,
+    key_managers: HashMap<MintUrl, Arc<KeyManager>>,
 }
 
 impl Default for WalletBuilder {
@@ -45,6 +44,7 @@ impl Default for WalletBuilder {
             client: None,
             use_http_subscription: false,
             key_manager: None,
+            key_managers: HashMap::new(),
         }
     }
 }
@@ -120,7 +120,7 @@ impl WalletBuilder {
         self
     }
 
-    /// Set a shared global KeyManager
+    /// Set a shared KeyManager
     ///
     /// This allows multiple wallets to share the same KeyManager instance for
     /// optimal performance and memory usage. If not provided, a new KeyManager
@@ -130,14 +130,39 @@ impl WalletBuilder {
         self
     }
 
+    /// Set a HashMap of KeyManagers for reusing across multiple wallets
+    ///
+    /// This allows the builder to reuse existing KeyManager instances or create new ones.
+    /// Useful when creating multiple wallets that share KeyManagers.
+    pub fn key_managers(mut self, key_managers: HashMap<MintUrl, Arc<KeyManager>>) -> Self {
+        self.key_managers = key_managers;
+        self
+    }
+
     /// Set auth CAT (Clear Auth Token)
     #[cfg(feature = "auth")]
     pub fn set_auth_cat(mut self, cat: String) -> Self {
-        let key_manager = self.key_manager.clone().unwrap_or_else(KeyManager::new);
+        let mint_url = self.mint_url.clone().expect("Mint URL required");
+        let localstore = self.localstore.clone().expect("Localstore required");
+
+        let key_manager = self.key_manager.clone().unwrap_or_else(|| {
+            // Check if we already have a KeyManager for this mint in the HashMap
+            if let Some(km) = self.key_managers.get(&mint_url) {
+                km.clone()
+            } else {
+                // Create a new one
+                Arc::new(KeyManager::new(
+                    mint_url.clone(),
+                    localstore.clone(),
+                    Arc::new(HttpClient::new(mint_url.clone(), None)),
+                ))
+            }
+        });
+
         self.auth_wallet = Some(AuthWallet::new(
-            self.mint_url.clone().expect("Mint URL required"),
+            mint_url,
             Some(AuthToken::ClearAuth(cat)),
-            self.localstore.clone().expect("Localstore required"),
+            localstore,
             key_manager,
             HashMap::new(),
             None,
@@ -177,16 +202,25 @@ impl WalletBuilder {
             }
         };
 
-        let key_manager = self.key_manager.unwrap_or_else(KeyManager::new);
-        let key_sub_id =
-            key_manager.register_mint(mint_url.clone(), localstore.clone(), client.clone());
+        let key_manager = self.key_manager.unwrap_or_else(|| {
+            // Check if we already have a KeyManager for this mint in the HashMap
+            if let Some(km) = self.key_managers.get(&mint_url) {
+                km.clone()
+            } else {
+                // Create a new one
+                Arc::new(KeyManager::new(
+                    mint_url.clone(),
+                    localstore.clone(),
+                    client.clone(),
+                ))
+            }
+        });
 
         Ok(Wallet {
             mint_url,
             unit,
             localstore,
             key_manager,
-            _key_sub_id: key_sub_id,
             target_proof_count: self.target_proof_count.unwrap_or(3),
             #[cfg(feature = "auth")]
             auth_wallet: Arc::new(RwLock::new(self.auth_wallet)),

@@ -178,11 +178,7 @@ impl AuthWallet {
     /// If keys are not cached, triggers a refresh and waits briefly before checking again.
     #[instrument(skip(self))]
     pub async fn load_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
-        Ok((*self
-            .key_manager
-            .get_keys(&self.mint_url, &keyset_id)
-            .await?)
-            .clone())
+        Ok((*self.key_manager.get_keys(&keyset_id).await?).clone())
     }
 
     /// Get blind auth keysets from KeyManager cache or trigger refresh if missing
@@ -193,7 +189,7 @@ impl AuthWallet {
     /// but will fall back to online if needed.
     #[instrument(skip(self))]
     pub async fn load_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
-        if let Ok(keysets) = self.key_manager.get_keysets(&self.mint_url).await {
+        if let Ok(keysets) = self.key_manager.get_keysets().await {
             let auth_keysets: Vec<KeySetInfo> = keysets
                 .into_iter()
                 .filter(|k| k.unit == CurrencyUnit::Auth)
@@ -218,7 +214,7 @@ impl AuthWallet {
 
         let auth_keysets = self
             .key_manager
-            .refresh(&self.mint_url)
+            .refresh()
             .await?
             .into_iter()
             .filter(|k| k.unit == CurrencyUnit::Auth && k.active)
