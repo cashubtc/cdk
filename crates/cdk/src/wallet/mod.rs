@@ -9,7 +9,6 @@ use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::subscription::WalletParams;
 use getrandom::getrandom;
-use key_manager::KeySubscription;
 use subscription::{ActiveSubscription, SubscriptionManager};
 #[cfg(feature = "auth")]
 use tokio::sync::RwLock;
@@ -88,11 +87,10 @@ pub struct Wallet {
     pub unit: CurrencyUnit,
     /// Storage backend
     pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
-    /// Centralized key manager (lock-free cached key access)
+    /// Key manager for this mint (lock-free cached key access)
     pub key_manager: Arc<key_manager::KeyManager>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
-    _key_sub_id: Arc<KeySubscription>,
     #[cfg(feature = "auth")]
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
     seed: [u8; 64],
@@ -224,10 +222,7 @@ impl Wallet {
         let mut fee_per_keyset = HashMap::new();
 
         for keyset_id in proofs_per_keyset.keys() {
-            let mint_keyset_info = self
-                .key_manager
-                .get_keyset_by_id(&self.mint_url, keyset_id)
-                .await?;
+            let mint_keyset_info = self.key_manager.get_keyset_by_id(keyset_id).await?;
             fee_per_keyset.insert(*keyset_id, mint_keyset_info.input_fee_ppk);
         }
 
@@ -241,7 +236,7 @@ impl Wallet {
     pub async fn get_keyset_count_fee(&self, keyset_id: &Id, count: u64) -> Result<Amount, Error> {
         let input_fee_ppk = self
             .key_manager
-            .get_keyset_by_id(&self.mint_url, keyset_id)
+            .get_keyset_by_id(keyset_id)
             .await?
             .input_fee_ppk;
 

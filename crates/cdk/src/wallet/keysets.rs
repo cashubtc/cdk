@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use cdk_common::amount::{FeeAndAmounts, KeysetFeeAndAmounts};
 use cdk_common::nut02::{KeySetInfos, KeySetInfosMethods};
-use cdk_common::CurrencyUnit;
 use tracing::instrument;
 
 use crate::nuts::{Id, KeySetInfo, Keys};
@@ -15,11 +14,7 @@ impl Wallet {
     /// If keys are not cached, triggers a refresh and waits briefly before checking again.
     #[instrument(skip(self))]
     pub async fn load_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
-        Ok((*self
-            .key_manager
-            .get_keys(&self.mint_url, &keyset_id)
-            .await?)
-            .clone())
+        Ok((*self.key_manager.get_keys(&keyset_id).await?).clone())
     }
 
     /// Get keysets from KeyManager cache or trigger refresh if missing
@@ -30,7 +25,13 @@ impl Wallet {
     /// but will fall back to online if needed.
     #[instrument(skip(self))]
     pub async fn load_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
-        self.key_manager.get_keysets(&self.mint_url).await
+        Ok(self
+            .key_manager
+            .get_keysets()
+            .await?
+            .into_iter()
+            .filter(|x| x.unit == self.unit && x.active)
+            .collect::<Vec<_>>())
     }
 
     /// Get keysets from KeyManager cache only - pure offline operation
@@ -42,10 +43,10 @@ impl Wallet {
     pub async fn get_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
         let keysets = self
             .key_manager
-            .get_keysets(&self.mint_url)
+            .get_keysets()
             .await?
             .into_iter()
-            .filter(|k| k.unit != CurrencyUnit::Auth)
+            .filter(|k| k.unit == self.unit && k.active)
             .collect::<Vec<_>>();
 
         if !keysets.is_empty() {
@@ -66,10 +67,10 @@ impl Wallet {
 
         let keysets = self
             .key_manager
-            .refresh(&self.mint_url)
+            .refresh()
             .await?
             .into_iter()
-            .filter(|k| self.unit == k.unit && k.active)
+            .filter(|k| k.unit == self.unit && k.active)
             .collect::<Vec<_>>();
 
         if !keysets.is_empty() {
@@ -101,7 +102,7 @@ impl Wallet {
     /// returns an error. Use this for offline operations or when you want to avoid network calls.
     #[instrument(skip(self))]
     pub async fn get_active_keyset(&self) -> Result<KeySetInfo, Error> {
-        let active_keysets = self.key_manager.get_active_keysets(&self.mint_url).await?;
+        let active_keysets = self.key_manager.get_active_keysets().await?;
 
         active_keysets
             .into_iter()
@@ -116,7 +117,7 @@ impl Wallet {
     /// from the KeyManager cache. This is an offline operation that does not contact the mint.
     /// If no keysets are cached, returns an error.
     pub async fn get_keyset_fees_and_amounts(&self) -> Result<KeysetFeeAndAmounts, Error> {
-        let keysets = self.key_manager.get_keysets(&self.mint_url).await?;
+        let keysets = self.key_manager.get_keysets().await?;
 
         let mut fees = HashMap::new();
         for keyset in keysets {
