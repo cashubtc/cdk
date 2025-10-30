@@ -216,7 +216,19 @@ impl AuthWallet {
     pub async fn refresh_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
         tracing::debug!("Refreshing auth keysets via KeyManager");
 
-        self.key_manager.refresh(&self.mint_url).await
+        let auth_keysets = self
+            .key_manager
+            .refresh(&self.mint_url)
+            .await?
+            .into_iter()
+            .filter(|k| k.unit == CurrencyUnit::Auth && k.active)
+            .collect::<Vec<_>>();
+
+        if !auth_keysets.is_empty() {
+            Ok(auth_keysets)
+        } else {
+            Err(Error::UnknownKeySet)
+        }
     }
 
     /// Get the first active blind auth keyset - always goes online

@@ -178,12 +178,8 @@ impl WalletBuilder {
         };
 
         let key_manager = self.key_manager.unwrap_or_else(KeyManager::new);
-        let key_sub_id = key_manager.register_mint(
-            mint_url.clone(),
-            unit.clone(),
-            localstore.clone(),
-            client.clone(),
-        );
+        let key_sub_id =
+            key_manager.register_mint(mint_url.clone(), localstore.clone(), client.clone());
 
         Ok(Wallet {
             mint_url,

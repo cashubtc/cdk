@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 
 use super::subscriber::{ActiveSubscription, SubscriptionRequest};
 use super::{Error, Event, Spec, Subscriber};
+use crate::task::spawn;
 
 /// Default channel size for subscription buffering
 pub const DEFAULT_CHANNEL_SIZE: usize = 10_000;
@@ -92,13 +93,7 @@ where
         let topics = self.listeners_topics.clone();
         let event = event.into();
 
-        #[cfg(not(target_arch = "wasm32"))]
-        tokio::spawn(async move {
-            let _ = Self::publish_internal(event, &topics);
-        });
-
-        #[cfg(target_arch = "wasm32")]
-        wasm_bindgen_futures::spawn_local(async move {
+        spawn(async move {
             let _ = Self::publish_internal(event, &topics);
         });
     }
@@ -150,14 +145,8 @@ where
         let inner = self.inner.clone();
         let subscribed_to_for_spawn = subscribed_to.clone();
 
-        #[cfg(not(target_arch = "wasm32"))]
-        tokio::spawn(async move {
+        spawn(async move {
             // TODO: Ignore topics broadcasted from fetch_events _if_ any real time has been broadcasted already.
-            inner.fetch_events(subscribed_to_for_spawn, sender).await;
-        });
-
-        #[cfg(target_arch = "wasm32")]
-        wasm_bindgen_futures::spawn_local(async move {
             inner.fetch_events(subscribed_to_for_spawn, sender).await;
         });
 
