@@ -123,7 +123,8 @@ echo "Building binaries..."
 cargo build -p cdk-integration-tests --bin start_regtest
 cargo build --bin cdk-mintd
 
-echo "Starting regtest network (Bitcoin + Lightning nodes)..."
+echo "Starting regtest network (Bitcoin + Lightning nodes + LDK node with channels)..."
+# LDK node will be created with channels, then stopped so the mint can reuse the same storage
 cargo run --bin start_regtest -- --enable-logging "$CDK_ITESTS_DIR" &
 export CDK_REGTEST_PID=$!
 
@@ -155,6 +156,19 @@ if [ ! -f "$CDK_ITESTS_DIR/signal_received" ]; then
     echo "❌ Timeout waiting for regtest network"
     exit 1
 fi
+
+# Wait for LDK node to fully stop (port 8092 should be free)
+echo "⏳ Waiting for LDK node port 8092 to be available..."
+for ((i=0; i<30; i++)); do
+    if ! lsof -i :8092 > /dev/null 2>&1; then
+        echo "✓ Port 8092 is available"
+        break
+    fi
+    if [ $i -eq 29 ]; then
+        echo "⚠️  Warning: Port 8092 still in use after 30s, continuing anyway..."
+    fi
+    sleep 1
+done
 
 # Create work directories for mints
 mkdir -p "$CDK_ITESTS_DIR/cln_mint"
@@ -255,12 +269,16 @@ export CDK_MINTD_LDK_NODE_BITCOIND_RPC_HOST="127.0.0.1"
 export CDK_MINTD_LDK_NODE_BITCOIND_RPC_PORT=18443
 export CDK_MINTD_LDK_NODE_BITCOIND_RPC_USER="testuser"
 export CDK_MINTD_LDK_NODE_BITCOIND_RPC_PASSWORD="testpass"
-export CDK_MINTD_LDK_NODE_STORAGE_DIR_PATH="$CDK_ITESTS_DIR/ldk_mint"
+export CDK_MINTD_LDK_NODE_STORAGE_DIR_PATH="$CDK_ITESTS_DIR/ldk"
 export CDK_MINTD_LDK_NODE_LDK_NODE_HOST="127.0.0.1"
-export CDK_MINTD_LDK_NODE_LDK_NODE_PORT=8090
+export CDK_MINTD_LDK_NODE_LDK_NODE_PORT=8092
 export CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE="p2p"
 export CDK_MINTD_LDK_NODE_FEE_PERCENT=0.02
 export CDK_MINTD_LDK_NODE_RESERVE_FEE_MIN=2
+
+# NOTE: In interactive mode, the LDK mint reuses the same storage directory as the
+# regtest LDK node. The regtest creates channels and stops the node, then the mint
+# starts with the same directory and automatically loads the existing channels.
 
 echo "Starting LDK Node Mint on port 8089..."
 echo "Project root: $PROJECT_ROOT"
@@ -343,7 +361,7 @@ procs:
     env:
       CDK_ITESTS_DIR: "$CDK_ITESTS_DIR"
       CDK_MINTD_DATABASE: "$CDK_MINTD_DATABASE"
-  
+
   bitcoind:
     shell: "while [ ! -f $CDK_ITESTS_DIR/bitcoin/regtest/debug.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/bitcoin/regtest/debug.log"
     autostart: true
@@ -380,7 +398,20 @@ settings:
     show_keymap: '?'
 EOF
 
+# NOTE: Background channel setup is no longer needed!
+# The regtest environment now creates the LDK node with channels, stops it cleanly,
+# and the mint reuses the same storage directory to access the existing channels.
+# This approach is more reliable than trying to coordinate channel setup across processes.
+#
+# # Start background task to setup LDK channels after mint is ready
+# (
+#   echo "🔧 Background: Waiting for LDK mint to be ready before opening channels..."
+#   "$PROJECT_ROOT/misc/scripts/setup_ldk_channels.sh" "$CDK_ITESTS_DIR" "$CDK_ITESTS_MINT_PORT_2" > "$CDK_ITESTS_DIR/setup_ldk_channels.log" 2>&1
+#   echo "✅ Background: LDK channels setup complete (see $CDK_ITESTS_DIR/setup_ldk_channels.log)"
+# ) &
+
 # Start mprocs with direct process management
 echo "Starting mprocs..."
+echo "Note: LDK mint will reuse channels created during regtest initialization..."
 cd "$CDK_ITESTS_DIR"
 mprocs --config "$MPROCS_CONFIG"
