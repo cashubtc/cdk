@@ -2570,6 +2570,7 @@ fn sql_row_to_proof(row: Vec<Column>) -> Result<Proof, Error> {
         c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
         witness: column_as_nullable_string!(witness).and_then(|w| serde_json::from_str(&w).ok()),
         dleq: None,
+        p2pk_e: None,
     })
 }
 
@@ -2606,6 +2607,7 @@ fn sql_row_to_proof_with_state(row: Vec<Column>) -> Result<(Proof, Option<State>
             witness: column_as_nullable_string!(witness)
                 .and_then(|w| serde_json::from_str(&w).ok()),
             dleq: None,
+            p2pk_e: None,
         },
         state,
     ))

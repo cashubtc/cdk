@@ -542,6 +542,7 @@ impl MultiMintWallet {
             description: params.description,
             transports,
             nut10,
+            nut26: Some(true),
         };
 
         Ok((req, nostr_info))
@@ -609,6 +610,7 @@ impl MultiMintWallet {
             description: params.description,
             transports,
             nut10,
+            nut26: Some(true),
         };
 
         Ok(req)

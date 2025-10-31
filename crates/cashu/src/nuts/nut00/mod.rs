@@ -24,6 +24,8 @@ use crate::amount::SplitTarget;
 #[cfg(feature = "wallet")]
 use crate::dhke::blind_message;
 use crate::dhke::hash_to_curve;
+#[cfg(feature = "wallet")]
+use crate::nut26::{blind_public_key, ecdh_kdf};
 use crate::nuts::nut01::PublicKey;
 #[cfg(feature = "wallet")]
 use crate::nuts::nut01::SecretKey;
@@ -33,6 +35,8 @@ use crate::nuts::nut14::{serde_htlc_witness, HTLCWitness};
 use crate::nuts::{Id, ProofDleq};
 use crate::secret::Secret;
 use crate::Amount;
+#[cfg(feature = "wallet")]
+use crate::Conditions;
 
 pub mod token;
 pub use token::{Token, TokenV3, TokenV4};
@@ -56,6 +60,9 @@ pub trait ProofsMethods {
 
     /// Create a copy of proofs without dleqs
     fn without_dleqs(&self) -> Proofs;
+
+    /// Create a copy of the proofs without P2BK nonce
+    fn without_p2pk_e(&self) -> Proofs;
 }
 
 impl ProofsMethods for Proofs {
@@ -84,6 +91,16 @@ impl ProofsMethods for Proofs {
             })
             .collect()
     }
+
+    fn without_p2pk_e(&self) -> Proofs {
+        self.iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.p2pk_e = None;
+                p
+            })
+            .collect()
+    }
 }
 
 impl ProofsMethods for HashSet<Proof> {
@@ -108,6 +125,16 @@ impl ProofsMethods for HashSet<Proof> {
             .map(|p| {
                 let mut p = p.clone();
                 p.dleq = None;
+                p
+            })
+            .collect()
+    }
+
+    fn without_p2pk_e(&self) -> Proofs {
+        self.iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.p2pk_e = None;
                 p
             })
             .collect()
@@ -156,6 +183,9 @@ pub enum Error {
     /// Duplicate proofs in token
     #[error("Duplicate proofs in token")]
     DuplicateProofs,
+    /// No P2PK witness for P2BK extension
+    #[error("non-P2PK spending conditions provided to P2BK extension")]
+    NoP2PK,
     /// Serde Json error
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
@@ -189,6 +219,9 @@ pub enum Error {
     /// Short keyset id -> id error
     #[error(transparent)]
     NUT02(#[from] crate::nuts::nut02::Error),
+    /// NUT-26 error
+    #[error(transparent)]
+    NUT26(#[from] crate::nuts::nut26::Error),
 }
 
 /// Blinded Message (also called `output`)
@@ -331,7 +364,7 @@ impl Witness {
 }
 
 /// Proofs
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct Proof {
     /// Amount
@@ -353,6 +386,9 @@ pub struct Proof {
     /// DLEQ Proof
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
+    /// P2BK Public Key for ECDH-handshake (NUT-26)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p2pk_e: Option<PublicKey>,
 }
 
 impl Proof {
@@ -365,6 +401,7 @@ impl Proof {
             c,
             witness: None,
             dleq: None,
+            p2pk_e: None,
         }
     }
 
@@ -421,6 +458,16 @@ pub struct ProofV4 {
     /// DLEQ Proof
     #[serde(rename = "d")]
     pub dleq: Option<ProofDleq>,
+    /// P2BK blinding scalars (NUT-26)
+    ///
+    /// 33-byte public key.
+    #[serde(default)]
+    #[serde(rename = "pe", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        deserialize_with = "deserialize_optional_v4_pubkey",
+        serialize_with = "serialize_optional_v4_pubkey"
+    )]
+    pub p2pk_e: Option<PublicKey>,
 }
 
 impl ProofV4 {
@@ -433,6 +480,7 @@ impl ProofV4 {
             c: self.c,
             witness: self.witness.clone(),
             dleq: self.dleq.clone(),
+            p2pk_e: self.p2pk_e,
         }
     }
 }
@@ -451,6 +499,7 @@ impl From<Proof> for ProofV4 {
             c,
             witness,
             dleq,
+            p2pk_e,
             ..
         } = proof;
         ProofV4 {
@@ -459,6 +508,7 @@ impl From<Proof> for ProofV4 {
             c,
             witness,
             dleq,
+            p2pk_e,
         }
     }
 }
@@ -471,6 +521,7 @@ impl From<ProofV3> for ProofV4 {
             c: proof.c,
             witness: proof.witness,
             dleq: proof.dleq,
+            p2pk_e: proof.p2pk_e,
         }
     }
 }
@@ -494,6 +545,9 @@ pub struct ProofV3 {
     /// DLEQ Proof
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
+    /// P2BK Public Key for ECDH (NUT-26)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p2pk_e: Option<PublicKey>,
 }
 
 impl ProofV3 {
@@ -506,6 +560,7 @@ impl ProofV3 {
             c: self.c,
             witness: self.witness.clone(),
             dleq: self.dleq.clone(),
+            p2pk_e: self.p2pk_e,
         }
     }
 }
@@ -519,6 +574,7 @@ impl From<Proof> for ProofV3 {
             c,
             witness,
             dleq,
+            p2pk_e,
         } = proof;
         ProofV3 {
             amount,
@@ -527,6 +583,7 @@ impl From<Proof> for ProofV3 {
             witness,
             dleq,
             keyset_id: keyset_id.into(),
+            p2pk_e,
         }
     }
 }
@@ -550,6 +607,32 @@ where
 {
     let bytes = Vec::<u8>::deserialize(deserializer)?;
     PublicKey::from_slice(&bytes).map_err(serde::de::Error::custom)
+}
+
+fn serialize_optional_v4_pubkey<S>(
+    key: &Option<PublicKey>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match key {
+        None => serializer.serialize_none(),
+        Some(pk) => serializer.serialize_bytes(&pk.to_bytes()),
+    }
+}
+
+fn deserialize_optional_v4_pubkey<'de, D>(deserializer: D) -> Result<Option<PublicKey>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<Vec<u8>> = Option::<Vec<u8>>::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(bytes) => PublicKey::from_slice(&bytes)
+            .map(Some)
+            .map_err(de::Error::custom),
+    }
 }
 
 /// Currency Unit
@@ -704,6 +787,8 @@ pub struct PreMint {
     pub r: SecretKey,
     /// Amount
     pub amount: Amount,
+    /// p2pk_e (NUT-26)
+    pub p2pk_e: Option<PublicKey>,
 }
 
 #[cfg(feature = "wallet")]
@@ -762,6 +847,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount,
+                p2pk_e: None,
             });
         }
 
@@ -789,6 +875,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount,
+                p2pk_e: None,
             });
         }
 
@@ -815,6 +902,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount: Amount::ZERO,
+                p2pk_e: None,
             })
         }
 
@@ -824,6 +912,140 @@ impl PreMintSecrets {
         })
     }
 
+    /// Apply P2BK (Pay-to-Blinded-Key) blinding to proofs
+    ///
+    /// Applies blinding to P2PK pubkeys according to NUT-26 specification.
+    /// This prevents the mint from learning the true public keys by blinding them with ephemeral keys.
+    ///
+    /// # Arguments
+    /// * `conditions` - The P2PK or HTLC conditions containing additional pubkeys and refund keys
+    ///
+    /// # Returns
+    /// * `Result<(Option<PublicKey>, SpendingConditions), Error>` - Success or error during blinding operation
+    pub fn apply_p2bk(
+        conditions: SpendingConditions,
+        keyset_id: Id,
+        unique_e: Option<SecretKey>,
+    ) -> Result<(Option<PublicKey>, SpendingConditions), Error> {
+        let ephemeral_key = match unique_e {
+            Some(unique_e) => unique_e,
+            None => SecretKey::generate(),
+        };
+
+        let ephemeral_pubkey = ephemeral_key.public_key();
+
+        // Extract data from conditions and potentially blind it
+        let blinded_data = match &conditions {
+            SpendingConditions::P2PKConditions {
+                data,
+                conditions: _,
+            } => {
+                // Derive the blinding scalar for the primary pubkey
+                let blinding_scalar = ecdh_kdf(&ephemeral_key, data, keyset_id, 0_u8)?;
+                Some(blind_public_key(data, &blinding_scalar)?)
+            }
+            SpendingConditions::HTLCConditions { .. } => {
+                // For HTLC conditions, we don't blind the hash
+                None
+            }
+        };
+
+        let (SpendingConditions::P2PKConditions {
+            data: _,
+            conditions: inner_conditions,
+        }
+        | SpendingConditions::HTLCConditions {
+            data: _,
+            conditions: inner_conditions,
+        }) = conditions.clone();
+
+        // Process additional pubkeys with slots 1 to N
+        let blinded_conditions: Option<Conditions> = match inner_conditions {
+            Some(conditions) => {
+                let mut blinded_conditions = conditions.clone();
+
+                let mut current_idx = match blinded_data {
+                    Some(_) => 1,
+                    None => 0,
+                };
+
+                if let Some(pubkeys) = conditions.pubkeys {
+                    let mut blinded_pubkeys: Vec<PublicKey> = Vec::with_capacity(pubkeys.len());
+
+                    // Blind each additional pubkey using slots 1 through N
+                    for (idx, pubkey) in pubkeys.iter().enumerate() {
+                        let slot = (idx + current_idx) as u8;
+                        if slot > 10 {
+                            tracing::warn!(
+                                "Too many pubkeys to blind (max 10 slots), skipping rest"
+                            );
+                            break;
+                        }
+
+                        // Derive blinding scalar for this pubkey
+                        let add_blinding_scalar =
+                            ecdh_kdf(&ephemeral_key, pubkey, keyset_id, slot)?;
+
+                        // Blind the additional pubkey
+                        let blinded_pubkey = blind_public_key(pubkey, &add_blinding_scalar)?;
+                        blinded_pubkeys.push(blinded_pubkey);
+                    }
+
+                    current_idx += blinded_pubkeys.len();
+                    blinded_conditions.pubkeys = Some(blinded_pubkeys);
+                }
+
+                if let Some(refund_keys) = conditions.refund_keys {
+                    let mut blinded_refund_keys: Vec<PublicKey> =
+                        Vec::with_capacity(refund_keys.len());
+
+                    // Blind each refund key
+                    for (idx, refund_key) in refund_keys.iter().enumerate() {
+                        let slot = (current_idx + idx) as u8;
+                        if slot > 10 {
+                            tracing::warn!("Too many total keys to blind (max 10 slots), skipping rest of refund keys");
+                            break;
+                        }
+
+                        // Derive blinding scalar for this refund key
+                        let refund_blinding_scalar =
+                            ecdh_kdf(&ephemeral_key, refund_key, keyset_id, slot)?;
+
+                        // Blind the refund key
+                        let blinded_refund_key =
+                            blind_public_key(refund_key, &refund_blinding_scalar)?;
+                        blinded_refund_keys.push(blinded_refund_key);
+                    }
+
+                    blinded_conditions.refund_keys = Some(blinded_refund_keys);
+                }
+
+                Some(blinded_conditions)
+            }
+            None => None,
+        };
+
+        Ok((
+            Some(ephemeral_pubkey),
+            match (&conditions, blinded_data) {
+                (SpendingConditions::P2PKConditions { .. }, Some(blinded_data)) => {
+                    SpendingConditions::P2PKConditions {
+                        data: blinded_data,
+                        conditions: blinded_conditions,
+                    }
+                }
+                (SpendingConditions::HTLCConditions { data, .. }, None) => {
+                    SpendingConditions::HTLCConditions {
+                        data: *data,
+                        conditions: blinded_conditions,
+                    }
+                }
+                // This should not happen because we match the same input conditions
+                _ => conditions,
+            },
+        ))
+    }
+
     /// Outputs with specific spending conditions
     pub fn with_conditions(
         keyset_id: Id,
@@ -831,13 +1053,40 @@ impl PreMintSecrets {
         amount_split_target: &SplitTarget,
         conditions: &SpendingConditions,
         fee_and_amounts: &FeeAndAmounts,
+        use_p2bk: bool,
     ) -> Result<Self, Error> {
         let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
 
         let mut output = Vec::with_capacity(amount_split.len());
 
+        // If we have SIG_ALL conditions, `p2pk_e` must be the same for each output
+        let ephemeral_seckey = match conditions {
+            SpendingConditions::P2PKConditions {
+                data: _,
+                conditions: Some(conditions),
+            }
+            | SpendingConditions::HTLCConditions {
+                data: _,
+                conditions: Some(conditions),
+            } => {
+                if conditions.sig_flag == crate::SigFlag::SigAll {
+                    Some(SecretKey::generate())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
         for amount in amount_split {
-            let secret: nut10::Secret = conditions.clone().into();
+            let (p2pk_e, secret): (Option<PublicKey>, nut10::Secret) = match use_p2bk {
+                false => (None, conditions.clone().into()),
+                true => {
+                    let (p2pk_e, cond) =
+                        Self::apply_p2bk(conditions.clone(), keyset_id, ephemeral_seckey.clone())?;
+                    (p2pk_e, cond.into())
+                }
+            };
 
             let secret: Secret = secret.try_into()?;
             let (blinded, r) = blind_message(&secret.to_bytes(), None)?;
@@ -849,6 +1098,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount,
+                p2pk_e,
             });
         }
 

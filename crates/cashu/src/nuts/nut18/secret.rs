@@ -52,12 +52,16 @@ impl From<Nut10SecretRequest> for Nut10Secret {
 impl From<SpendingConditions> for Nut10SecretRequest {
     fn from(conditions: SpendingConditions) -> Self {
         match conditions {
-            SpendingConditions::P2PKConditions { data, conditions } => {
-                Self::new(Kind::P2PK, data.to_hex(), conditions)
-            }
-            SpendingConditions::HTLCConditions { data, conditions } => {
-                Self::new(Kind::HTLC, data.to_string(), conditions)
-            }
+            SpendingConditions::P2PKConditions { data, conditions } => Self {
+                kind: Kind::P2PK,
+                data: data.to_hex(),
+                tags: conditions.map(|c| c.into()),
+            },
+            SpendingConditions::HTLCConditions { data, conditions } => Self {
+                kind: Kind::HTLC,
+                data: data.to_string(),
+                tags: conditions.map(|c| c.into()),
+            },
         }
     }
 }

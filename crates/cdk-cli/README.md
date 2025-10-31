@@ -151,6 +151,9 @@ cdk-cli send \
 # Send with P2PK lock
 cdk-cli send --pubkey <public_key> --required-sigs 1
 
+# Send with P2PK lock and P2BK privacy enhancement
+cdk-cli send --pubkey <public_key> --use-p2bk
+
 # Send with HTLC (Hash Time Locked Contract)
 cdk-cli send --hash <hash> --locktime <unix_timestamp>
 
@@ -276,6 +279,18 @@ cdk-cli restore <MINT_URL>
 ```
 
 ### Advanced Features
+
+#### Pay-to-Blinded-Key (P2BK)
+
+P2BK enhances privacy for P2PK tokens by blinding the receiver's public keys. This prevents the mint from learning the true public keys used in transactions.
+
+```bash
+# Send tokens with P2BK privacy enhancement
+cdk-cli send --pubkey <recipient_pubkey> --use-p2bk
+
+# This works with multiple pubkeys too
+cdk-cli send --pubkey <pubkey1> --pubkey <pubkey2> --required-sigs 1 --use-p2bk
+```
 
 #### Blind Authentication (NUT-14)
 

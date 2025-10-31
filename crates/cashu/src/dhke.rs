@@ -149,6 +149,7 @@ pub fn construct_proofs(
             c: unblinded_signature,
             witness: None,
             dleq,
+            p2pk_e: None,
         };
 
         proofs.push(proof);

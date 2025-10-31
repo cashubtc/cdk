@@ -4,6 +4,7 @@ use core::str::FromStr;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
+use bitcoin::key::Parity;
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{self, Message, XOnlyPublicKey};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -85,6 +86,12 @@ impl PublicKey {
     #[inline]
     pub fn x_only_public_key(&self) -> XOnlyPublicKey {
         self.inner.x_only_public_key().0
+    }
+
+    /// To [`Parity`]
+    #[inline]
+    pub fn parity(&self) -> Parity {
+        self.inner.x_only_public_key().1
     }
 
     /// Get public key as `hex` string
