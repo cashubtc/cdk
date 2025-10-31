@@ -513,6 +513,7 @@ impl Wallet {
                         split_result.proofs_to_swap,
                         None,
                         false, // fees already accounted for in inputs_total_needed
+                        false,
                     ),
                 )
                 .await?

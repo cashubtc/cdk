@@ -189,6 +189,7 @@ impl TryInto<cdk_common::Proof> for Proof {
                 .map_err(|e| Status::from_error(Box::new(e)))?,
             witness: None,
             dleq: None,
+            p2pk_e: None,
         })
     }
 }
