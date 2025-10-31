@@ -8,7 +8,6 @@
 config.toml
 .pre-commit-config.yaml
 result
-Cargo.lock
 .aider*
 **/postgres_data/
 **/.env
