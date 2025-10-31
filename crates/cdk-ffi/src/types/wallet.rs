@@ -314,7 +314,7 @@ impl From<cdk::wallet::PreparedSend> for PreparedSend {
             .proofs()
             .iter()
             .cloned()
-            .map(|p| std::sync::Arc::new(p.into()))
+            .map(|p| p.into())
             .collect();
         Self {
             inner: Mutex::new(Some(prepared)),
@@ -421,12 +421,9 @@ impl From<cdk::types::Melted> for Melted {
         Self {
             state: melted.state.into(),
             preimage: melted.preimage,
-            change: melted.change.map(|proofs| {
-                proofs
-                    .into_iter()
-                    .map(|p| std::sync::Arc::new(p.into()))
-                    .collect()
-            }),
+            change: melted
+                .change
+                .map(|proofs| proofs.into_iter().map(|p| p.into()).collect()),
             amount: melted.amount.into(),
             fee_paid: melted.fee_paid.into(),
         }

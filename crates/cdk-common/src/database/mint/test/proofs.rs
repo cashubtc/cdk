@@ -7,6 +7,7 @@ use cashu::{Amount, Id, SecretKey};
 
 use crate::database::mint::test::setup_keyset;
 use crate::database::mint::{Database, Error, KeysDatabase, Proof, QuoteId};
+use crate::mint::Operation;
 
 /// Test get proofs by keyset id
 pub async fn get_proofs_by_keyset_id<DB>(db: DB)
@@ -36,7 +37,9 @@ where
 
     // Add proofs to database
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs, Some(quote_id)).await.unwrap();
+    tx.add_proofs(proofs, Some(quote_id), &Operation::new_swap())
+        .await
+        .unwrap();
     assert!(tx.commit().await.is_ok());
 
     let (proofs, states) = db.get_proofs_by_keyset_id(&keyset_id).await.unwrap();
@@ -88,9 +91,13 @@ where
 
     // Add proofs to database
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs.clone(), Some(quote_id.clone()))
-        .await
-        .unwrap();
+    tx.add_proofs(
+        proofs.clone(),
+        Some(quote_id.clone()),
+        &Operation::new_swap(),
+    )
+    .await
+    .unwrap();
     assert!(tx.commit().await.is_ok());
 
     let proofs_from_db = db.get_proofs_by_ys(&[proofs[0].c, proofs[1].c]).await;
@@ -132,13 +139,23 @@ where
 
     // Add proofs to database
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_proofs(proofs.clone(), Some(quote_id.clone()))
-        .await
-        .unwrap();
+    tx.add_proofs(
+        proofs.clone(),
+        Some(quote_id.clone()),
+        &Operation::new_swap(),
+    )
+    .await
+    .unwrap();
     assert!(tx.commit().await.is_ok());
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let result = tx.add_proofs(proofs.clone(), Some(quote_id.clone())).await;
+    let result = tx
+        .add_proofs(
+            proofs.clone(),
+            Some(quote_id.clone()),
+            &Operation::new_swap(),
+        )
+        .await;
 
     assert!(
         matches!(result.unwrap_err(), Error::Duplicate),

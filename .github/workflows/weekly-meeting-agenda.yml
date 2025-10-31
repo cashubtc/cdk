@@ -1,0 +1,62 @@
+name: Weekly Meeting Agenda
+
+on:
+  schedule:
+    # Run every Wednesday at 12:00 UTC (3 hours before the 15:00 UTC meeting)
+    - cron: '0 12 * * 3'
+  workflow_dispatch:  # Allow manual triggering for testing
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
+jobs:
+  generate-agenda:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate meeting agenda
+        id: generate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          OUTPUT_TO_FILE: "true"
+          CREATE_DISCUSSION: "false"
+          DAYS_BACK: "7"
+        run: |
+          bash .github/scripts/generate-agenda.sh
+
+      - name: Create Pull Request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          MEETING_DATE=$(date -u +"%Y-%m-%d")
+          BRANCH_NAME="meeting-agenda-${MEETING_DATE}"
+
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+          # Create and switch to new branch
+          git checkout -b "$BRANCH_NAME"
+
+          # Add and commit the agenda file
+          git add meetings/*.md
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m "chore: add weekly meeting agenda for ${MEETING_DATE}"
+
+          # Push the branch
+          git push origin "$BRANCH_NAME"
+
+          # Create pull request
+          gh pr create \
+            --title "Weekly Meeting Agenda - ${MEETING_DATE}" \
+            --body "Automated weekly meeting agenda for CDK Development Meeting on ${MEETING_DATE}." \
+            --base main \
+            --head "$BRANCH_NAME"

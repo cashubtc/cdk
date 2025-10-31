@@ -139,13 +139,9 @@ pub enum NotificationPayload {
     /// Proof state update
     ProofState { proof_states: Vec<ProofStateUpdate> },
     /// Mint quote update
-    MintQuoteUpdate {
-        quote: std::sync::Arc<MintQuoteBolt11Response>,
-    },
+    MintQuoteUpdate { quote: MintQuoteBolt11Response },
     /// Melt quote update
-    MeltQuoteUpdate {
-        quote: std::sync::Arc<MeltQuoteBolt11Response>,
-    },
+    MeltQuoteUpdate { quote: MeltQuoteBolt11Response },
 }
 
 impl From<MintEvent<String>> for NotificationPayload {
@@ -156,12 +152,12 @@ impl From<MintEvent<String>> for NotificationPayload {
             },
             cdk::nuts::NotificationPayload::MintQuoteBolt11Response(quote_resp) => {
                 NotificationPayload::MintQuoteUpdate {
-                    quote: std::sync::Arc::new(quote_resp.into()),
+                    quote: quote_resp.into(),
                 }
             }
             cdk::nuts::NotificationPayload::MeltQuoteBolt11Response(quote_resp) => {
                 NotificationPayload::MeltQuoteUpdate {
-                    quote: std::sync::Arc::new(quote_resp.into()),
+                    quote: quote_resp.into(),
                 }
             }
             _ => {

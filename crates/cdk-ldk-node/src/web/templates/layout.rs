@@ -39,7 +39,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         --border: 214.3 31.8% 91.4%;
                         --input: 214.3 31.8% 91.4%;
                         --ring: 222.2 84% 4.9%;
-                        --radius: 0.5rem;
+                        --radius: 0;
 
                         /* Typography scale */
                         --fs-title: 1.25rem;
@@ -148,11 +148,16 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         }
 
                         .detail-label {
-                            color: var(--text-muted) !important;
+                            color: hsl(var(--foreground)) !important;
+                            opacity: 0.5 !important;
                         }
 
                         .detail-value, .detail-value-amount {
-                            color: var(--text-secondary) !important;
+                            color: hsl(var(--foreground)) !important;
+                        }
+
+                        .info-value {
+                            color: var(--text-primary) !important;
                         }
 
                         .metric-label, .balance-label {
@@ -177,7 +182,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         .quick-action-card {
                             background-color: rgba(255, 255, 255, 0.03) !important;
                             border: none !important;
-                            border-radius: 0.75rem !important;
+                            border-radius: 0 !important;
                             padding: 1.5rem !important;
                         }
 
@@ -219,7 +224,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         flex-shrink: 0;
                         background-color: hsl(var(--muted) / 0.3);
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 0.75rem;
                         display: flex;
                         align-items: center;
@@ -231,7 +236,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     .header-avatar-image {
                         width: 48px;
                         height: 48px;
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         object-fit: cover;
                         display: block;
                     }
@@ -282,9 +287,11 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .node-subtitle {
-                        font-size: 0.875rem;
-                        color: var(--header-subtitle);
+                        font-size: 0.75rem;
+                        color: var(--text-muted);
                         font-weight: 500;
+                        letter-spacing: 0.05em;
+                        text-transform: uppercase;
                     }
 
                     .header-right {
@@ -340,7 +347,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         }
 
                         .node-subtitle {
-                            font-size: 0.8125rem;
+                            font-size: 0.6875rem;
                             text-align: center;
                         }
 
@@ -436,10 +443,12 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     /* Hero section styling */
                     header {
                         position: relative;
-                        background-image: url('/static/images/bg.jpg?v=3');
-                        background-size: cover;
-                        background-position: center;
-                        background-repeat: no-repeat;
+                        background-color: hsl(var(--background));
+                        background-image:
+                            linear-gradient(hsl(var(--border)) 1px, transparent 1px),
+                            linear-gradient(90deg, hsl(var(--border)) 1px, transparent 1px);
+                        background-size: 40px 40px;
+                        background-position: -1px -1px;
                         border-bottom: 1px solid hsl(var(--border));
                         margin-bottom: 2rem;
                         text-align: left;
@@ -450,10 +459,34 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         justify-content: flex-start;
                     }
 
-                    /* Dark mode header background - using different image */
+                    /* Subtle diamond gradient fade on edges */
+                    header::before {
+                        content: '';
+                        position: absolute;
+                        top: 0;
+                        left: 0;
+                        right: 0;
+                        bottom: 0;
+                        background:
+                            linear-gradient(90deg, hsl(var(--background)) 0%, transparent 15%, transparent 85%, hsl(var(--background)) 100%),
+                            linear-gradient(180deg, hsl(var(--background)) 0%, transparent 15%, transparent 85%, hsl(var(--background)) 100%);
+                        pointer-events: none;
+                        z-index: 1;
+                    }
+
+                    /* Dark mode header background - subtle grid with darker theme */
                     @media (prefers-color-scheme: dark) {
                         header {
-                            background-image: url('/static/images/bg-dark.jpg?v=3');
+                            background-color: rgb(18, 19, 21);
+                            background-image:
+                                linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                                linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+                        }
+
+                        header::before {
+                            background:
+                                linear-gradient(90deg, rgb(18, 19, 21) 0%, transparent 15%, transparent 85%, rgb(18, 19, 21) 100%),
+                                linear-gradient(180deg, rgb(18, 19, 21) 0%, transparent 15%, transparent 85%, rgb(18, 19, 21) 100%);
                         }
                     }
 
@@ -501,6 +534,37 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         animation: fade-in 0.3s ease-out;
                     }
 
+                    /* Corner embellishments for angular design */
+                    .card::before,
+                    .card::after {
+                        content: '';
+                        position: absolute;
+                        width: 16px;
+                        height: 16px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .card::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .card::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    @media (prefers-color-scheme: dark) {
+                        .card::before,
+                        .card::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
+                    }
+
                     /* Modern Navigation Bar Styling */
                     nav {
                         background-color: hsl(var(--card));
@@ -544,7 +608,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         font-weight: 600;
                         color: hsl(var(--muted-foreground));
                         padding: 1rem 1.5rem;
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
                         position: relative;
                         min-height: 3rem;
@@ -575,12 +639,13 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .card {
+                        position: relative;
                         background-color: hsl(var(--card));
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 1.5rem;
                         margin-bottom: 1.5rem;
-                        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+                        box-shadow: none;
                     }
 
                     /* Metric cards styling - matching balance-item style */
@@ -592,13 +657,44 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .metric-card {
+                        position: relative;
                         flex: 1;
                         min-width: 200px;
                         text-align: center;
                         padding: 1rem;
                         background-color: hsl(var(--muted) / 0.3);
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         border: 1px solid hsl(var(--border));
+                    }
+
+                    .metric-card::before,
+                    .metric-card::after {
+                        content: '';
+                        position: absolute;
+                        width: 12px;
+                        height: 12px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .metric-card::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .metric-card::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    @media (prefers-color-scheme: dark) {
+                        .metric-card::before,
+                        .metric-card::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
                     }
 
                     .metric-value {
@@ -651,7 +747,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         flex: 1;
                         background-color: hsl(var(--background));
                         border: 1px solid hsl(var(--input));
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         padding: 0.5rem 0.75rem;
                         font-size: 0.875rem;
                         line-height: 1.25;
@@ -671,6 +767,10 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         input:focus, textarea:focus, select:focus {
                             background-color: hsl(0 0% 10%);
                             border-color: hsl(var(--ring));
+                        }
+
+                        textarea {
+                            color: var(--text-primary) !important;
                         }
                     }
 
@@ -707,7 +807,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     .per-page-selector select {
                         background-color: transparent;
                         border: 1px solid hsl(var(--muted));
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         padding: 0.25rem 0.5rem;
                         font-size: 0.875rem;
                         color: hsl(var(--muted-foreground));
@@ -759,7 +859,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         align-items: center;
                         justify-content: center;
                         white-space: nowrap;
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         font-size: 0.875rem;
                         font-weight: 600;
                         transition: all 150ms ease-in-out;
@@ -820,14 +920,14 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
 
                     .button-sm {
                         height: 2rem;
-                        border-radius: calc(var(--radius) - 4px);
+                        border-radius: 0;
                         padding: 0 0.75rem;
                         font-size: 0.75rem;
                     }
 
                     .button-lg {
                         height: 2.75rem;
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 0 2rem;
                         font-size: 1rem;
                     }
@@ -932,7 +1032,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         background-color: hsl(var(--secondary));
                         color: hsl(var(--secondary-foreground));
                         border: 1px solid hsl(var(--border));
-                        border-radius: calc(var(--radius) - 4px);
+                        border-radius: 0;
                         padding: 0.25rem 0.5rem;
                         cursor: pointer;
                         font-size: 0.75rem;
@@ -947,6 +1047,186 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     .copy-button:hover {
                         background-color: hsl(var(--secondary) / 0.8);
                         border-color: hsl(var(--border));
+                    }
+
+                    /* Invoice details section */
+                    .invoice-details-section {
+                        margin-bottom: 1.5rem;
+                        padding-bottom: 1.5rem;
+                        border-bottom: 1px solid hsl(var(--border));
+                    }
+
+                    /* Invoice amount section - prominent display */
+                    .invoice-amount-section {
+                        text-align: center;
+                        margin-bottom: 2rem;
+                        padding: 1.5rem;
+                        background-color: hsl(var(--muted) / 0.3);
+                        border: 1px solid hsl(var(--border));
+                        position: relative;
+                    }
+
+                    .invoice-amount-section::before,
+                    .invoice-amount-section::after {
+                        content: '';
+                        position: absolute;
+                        width: 16px;
+                        height: 16px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .invoice-amount-section::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .invoice-amount-section::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    .invoice-amount-label {
+                        font-size: 0.875rem;
+                        font-weight: 500;
+                        color: hsl(var(--muted-foreground));
+                        margin-bottom: 0.5rem;
+                        text-transform: uppercase;
+                        letter-spacing: 0.05em;
+                    }
+
+                    .invoice-amount-value {
+                        font-size: 2rem;
+                        font-weight: 700;
+                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
+                        color: hsl(var(--foreground));
+                        line-height: 1.2;
+                    }
+
+                    /* Invoice display section */
+                    .invoice-display-section {
+                        margin-top: 1rem;
+                    }
+
+                    .invoice-label {
+                        font-size: 0.875rem;
+                        font-weight: 600;
+                        color: hsl(var(--foreground));
+                        text-transform: uppercase;
+                        letter-spacing: 0.05em;
+                        margin-bottom: 0.75rem;
+                    }
+
+                    .invoice-display-container {
+                        background-color: hsl(var(--muted) / 0.3);
+                        border: 1px solid hsl(var(--border));
+                        border-radius: 0;
+                        padding: 1rem;
+                        position: relative;
+                    }
+
+                    .invoice-display-container::before,
+                    .invoice-display-container::after {
+                        content: '';
+                        position: absolute;
+                        width: 12px;
+                        height: 12px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .invoice-display-container::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .invoice-display-container::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    .invoice-textarea {
+                        width: 100%;
+                        background-color: transparent !important;
+                        border: none !important;
+                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace !important;
+                        font-size: 0.875rem !important;
+                        color: var(--fg-primary) !important;
+                        padding: 0 !important;
+                        margin: 0 !important;
+                        outline: none !important;
+                        word-break: break-all;
+                        overflow-wrap: break-word;
+                        hyphens: auto;
+                        line-height: 1.5;
+                        text-align: left;
+                        resize: none;
+                        min-height: 100px;
+                        height: auto;
+                        overflow: visible;
+                    }
+
+                    .invoice-textarea:focus {
+                        box-shadow: none !important;
+                        border: none !important;
+                    }
+
+                    /* Dark mode invoice display styling */
+                    @media (prefers-color-scheme: dark) {
+                        .invoice-amount-section {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+
+                        .invoice-amount-section::before,
+                        .invoice-amount-section::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
+
+                        .invoice-amount-label {
+                            color: var(--text-muted) !important;
+                        }
+
+                        .invoice-amount-value {
+                            color: var(--text-primary) !important;
+                        }
+
+                        .invoice-label {
+                            color: var(--text-primary) !important;
+                        }
+
+                        .invoice-display-container {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+
+                        .invoice-display-container::before,
+                        .invoice-display-container::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
+
+                        .invoice-textarea {
+                            color: var(--text-primary) !important;
+                        }
+                    }
+
+                    /* Responsive invoice display */
+                    @media (max-width: 640px) {
+                        .invoice-amount-value {
+                            font-size: 1.5rem;
+                        }
+
+                        .invoice-textarea {
+                            font-size: 0.75rem !important;
+                            line-height: 1.4;
+                            min-height: 80px;
+                        }
                     }
 
                     .balance-item,
@@ -998,7 +1278,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
 
                     .alert {
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 1rem;
                         margin-bottom: 1rem;
                     }
@@ -1027,7 +1307,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         background-color: hsl(142.1 70.6% 45.3% / 0.1);
                         color: hsl(142.1 76.2% 36.3%);
                         border: 1px solid hsl(142.1 76.2% 36.3%);
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 1rem;
                         margin-bottom: 1rem;
                     }
@@ -1037,7 +1317,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         background-color: hsl(var(--destructive) / 0.1);
                         color: hsl(var(--destructive));
                         border: 1px solid hsl(var(--destructive));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 1rem;
                         margin-bottom: 1rem;
                     }
@@ -1110,11 +1390,42 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .channel-box {
+                        position: relative;
                         background-color: hsl(var(--card));
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 1.5rem;
                         margin-bottom: 1.5rem;
+                    }
+
+                    .channel-box::before,
+                    .channel-box::after {
+                        content: '';
+                        position: absolute;
+                        width: 16px;
+                        height: 16px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .channel-box::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .channel-box::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    @media (prefers-color-scheme: dark) {
+                        .channel-box::before,
+                        .channel-box::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
                     }
 
                     .section-header {
@@ -1139,9 +1450,10 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
 
                     .detail-row {
                         display: flex;
-                        align-items: baseline;
-                        margin-bottom: 0.75rem;
-                        gap: 1rem;
+                        align-items: center;
+                        margin-bottom: 1rem;
+                        gap: 1.5rem;
+                        padding: 0.75rem 0;
                     }
 
                     .detail-row:last-child {
@@ -1150,27 +1462,36 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
 
                     .detail-label {
                         font-weight: 500;
-                        color: hsl(var(--muted-foreground));
-                        font-size: 0.875rem;
-                        min-width: 120px;
+                        color: hsl(var(--foreground));
+                        opacity: 0.5;
+                        font-size: 0.8125rem;
+                        min-width: 140px;
                         flex-shrink: 0;
+                        letter-spacing: 0.025em;
+                        text-transform: uppercase;
+                        text-align: right;
                     }
 
                     .detail-value {
                         color: hsl(var(--foreground));
                         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
                         font-size: 0.875rem;
+                        font-weight: 400;
                         word-break: break-all;
                         flex: 1;
                         min-width: 0;
+                        letter-spacing: -0.01em;
+                        line-height: 1.5;
                     }
 
                     .detail-value-amount {
                         color: hsl(var(--foreground));
-                        font-size: 0.875rem;
+                        font-size: 0.9375rem;
+                        font-weight: 500;
                         word-break: break-all;
                         flex: 1;
                         min-width: 0;
+                        letter-spacing: 0;
                     }
 
                     .channel-actions {
@@ -1212,11 +1533,42 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .balance-item {
+                        position: relative;
                         text-align: center;
                         padding: 1rem;
                         background-color: hsl(var(--muted) / 0.3);
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         border: 1px solid hsl(var(--border));
+                    }
+
+                    .balance-item::before,
+                    .balance-item::after {
+                        content: '';
+                        position: absolute;
+                        width: 12px;
+                        height: 12px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .balance-item::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .balance-item::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    @media (prefers-color-scheme: dark) {
+                        .balance-item::before,
+                        .balance-item::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
                     }
 
                     .balance-amount {
@@ -1230,11 +1582,42 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
 
 
                     .payment-item {
+                        position: relative;
                         background-color: hsl(var(--card));
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 1.5rem;
                         margin-bottom: 1.5rem;
+                    }
+
+                    .payment-item::before,
+                    .payment-item::after {
+                        content: '';
+                        position: absolute;
+                        width: 16px;
+                        height: 16px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .payment-item::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .payment-item::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    @media (prefers-color-scheme: dark) {
+                        .payment-item::before,
+                        .payment-item::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
                     }
 
                     /* Dark mode payment card improvements - match other cards */
@@ -1307,18 +1690,23 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .payment-label {
-                        font-weight: 500;
-                        color: hsl(var(--muted-foreground));
-                        font-size: 0.875rem;
+                        font-weight: 400;
+                        color: var(--text-muted);
+                        font-size: 0.75rem;
                         flex-shrink: 0;
+                        letter-spacing: 0.05em;
+                        text-transform: uppercase;
                     }
 
                     .payment-value {
-                        color: hsl(var(--foreground));
+                        color: var(--text-tertiary);
                         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
-                        font-size: 0.875rem;
+                        font-size: 0.8125rem;
+                        font-weight: 300;
                         word-break: break-all;
                         min-width: 0;
+                        letter-spacing: -0.02em;
+                        line-height: 1.7;
                     }
 
                     .payment-list-header {
@@ -1353,7 +1741,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         padding: 0.5rem 1rem;
                         border: 1px solid hsl(var(--border));
                         background-color: hsl(var(--background));
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         text-decoration: none;
                         color: hsl(var(--muted-foreground));
                         font-size: 0.875rem;
@@ -1500,7 +1888,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         align-items: center;
                         justify-content: center;
                         white-space: nowrap;
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         font-size: 0.875rem;
                         font-weight: 600;
                         transition: all 150ms ease-in-out;
@@ -1613,16 +2001,47 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .node-info-main-container {
+                        position: relative;
                         flex: 1;
                         display: flex;
                         flex-direction: column;
                         gap: 1rem;
                         background-color: hsl(var(--card));
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 1.5rem;
-                        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+                        box-shadow: none;
                         height: 100%;
+                    }
+
+                    .node-info-main-container::before,
+                    .node-info-main-container::after {
+                        content: '';
+                        position: absolute;
+                        width: 16px;
+                        height: 16px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .node-info-main-container::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .node-info-main-container::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    @media (prefers-color-scheme: dark) {
+                        .node-info-main-container::before,
+                        .node-info-main-container::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
                     }
 
                     .node-info-left {
@@ -1636,7 +2055,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         flex-shrink: 0;
                         background-color: hsl(var(--muted) / 0.3);
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         padding: 0.75rem;
                         display: flex;
                         align-items: center;
@@ -1648,7 +2067,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     .avatar-image {
                         width: 48px;
                         height: 48px;
-                        border-radius: calc(var(--radius) - 2px);
+                        border-radius: 0;
                         object-fit: cover;
                         display: block;
                     }
@@ -1670,8 +2089,11 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .node-address {
-                        font-size: 0.875rem;
-                        color: var(--fg-muted);
+                        font-size: 0.75rem;
+                        color: var(--text-muted);
+                        font-weight: 500;
+                        letter-spacing: 0.05em;
+                        text-transform: uppercase;
                         margin: 0;
                         line-height: var(--lh-normal);
                     }
@@ -1679,7 +2101,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     .node-content-box {
                         background-color: hsl(var(--muted) / 0.3);
                         border: 1px solid hsl(var(--border));
-                        border-radius: var(--radius);
+                        border-radius: 0;
                         min-height: 200px;
                         padding: 1rem;
                         display: flex;
@@ -1807,6 +2229,167 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                         }
                     }
 
+                    /* Activity Grid Layout - Side by Side */
+                    .activity-grid {
+                        display: grid;
+                        grid-template-columns: 1fr 1fr;
+                        gap: 0;
+                        margin-top: 1.5rem;
+                    }
+
+                    .activity-section {
+                        padding: 2rem 1.5rem;
+                        border-right: 1px solid hsl(var(--border));
+                        border-top: 1px solid hsl(var(--border));
+                    }
+
+                    .activity-section:last-child {
+                        border-right: none;
+                    }
+
+                    .activity-header {
+                        display: flex;
+                        align-items: center;
+                        gap: 0.75rem;
+                        margin-bottom: 2rem;
+                        padding-bottom: 0;
+                        border-bottom: none;
+                    }
+
+                    .activity-icon-box {
+                        flex-shrink: 0;
+                        background-color: hsl(var(--muted) / 0.3);
+                        border: 1px solid hsl(var(--border));
+                        border-radius: 0;
+                        padding: 0.5rem;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        width: 36px;
+                        height: 36px;
+                    }
+
+                    .activity-icon-box svg {
+                        color: hsl(var(--foreground));
+                    }
+
+                    .activity-title {
+                        font-size: 1rem;
+                        font-weight: 400;
+                        color: hsl(var(--foreground));
+                        margin: 0;
+                        text-transform: none;
+                        letter-spacing: normal;
+                    }
+
+                    .activity-metrics {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 1rem;
+                    }
+
+                    .activity-metric-card {
+                        position: relative;
+                        text-align: left;
+                        padding: 1rem;
+                        background-color: hsl(var(--muted) / 0.3);
+                        border-radius: 0;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .activity-metric-card::before,
+                    .activity-metric-card::after {
+                        content: '';
+                        position: absolute;
+                        width: 12px;
+                        height: 12px;
+                        border: 1px solid hsl(var(--border));
+                    }
+
+                    .activity-metric-card::before {
+                        top: -1px;
+                        left: -1px;
+                        border-right: none;
+                        border-bottom: none;
+                    }
+
+                    .activity-metric-card::after {
+                        bottom: -1px;
+                        right: -1px;
+                        border-left: none;
+                        border-top: none;
+                    }
+
+                    .activity-metric-label {
+                        display: block;
+                        margin-bottom: 0.5rem;
+                        font-size: 0.875rem;
+                        font-weight: 400;
+                        color: hsl(var(--muted-foreground));
+                        text-transform: none;
+                        letter-spacing: normal;
+                    }
+
+                    .activity-metric-value {
+                        display: block;
+                        font-size: 1.5rem;
+                        font-weight: 600;
+                        color: hsl(var(--foreground));
+                        font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
+                        line-height: 1.2;
+                    }
+
+                    /* Dark mode activity styling */
+                    @media (prefers-color-scheme: dark) {
+                        .activity-icon-box {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+
+                        .activity-icon-box svg {
+                            color: var(--text-primary);
+                        }
+
+                        .activity-title {
+                            color: var(--text-primary);
+                        }
+
+                        .activity-metric-card {
+                            background-color: rgba(255, 255, 255, 0.03) !important;
+                            border: none !important;
+                        }
+
+                        .activity-metric-card::before,
+                        .activity-metric-card::after {
+                            border-color: rgba(255, 255, 255, 0.2);
+                        }
+
+                        .activity-metric-label {
+                            color: var(--text-muted) !important;
+                        }
+
+                        .activity-metric-value {
+                            color: var(--text-primary) !important;
+                        }
+                    }
+
+                    /* Responsive activity grid */
+                    @media (max-width: 768px) {
+                        .activity-grid {
+                            grid-template-columns: 1fr;
+                        }
+
+                        .activity-section {
+                            border-right: none;
+                            border-bottom: 1px solid hsl(var(--border));
+                            padding: 1.5rem 1rem;
+                        }
+
+                        .activity-section:last-child {
+                            border-bottom: none;
+                        }
+                    }
+
                     /* Responsive typography adjustments */
                     @media (max-width: 640px) {
                         :root {
@@ -1815,6 +2398,87 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
 
                         .node-name {
                             font-size: 0.875rem;
+                        }
+
+                        .activity-metric-value {
+                            font-size: 1.25rem;
+                        }
+                    }
+
+                    /* Payment tabs styling */
+                    .payment-tabs {
+                        display: flex;
+                        gap: 0.5rem;
+                        margin-bottom: 1.5rem;
+                        border-bottom: 1px solid hsl(var(--border));
+                    }
+
+                    .payment-tab {
+                        display: inline-flex;
+                        align-items: center;
+                        justify-content: center;
+                        white-space: nowrap;
+                        padding: 0.75rem 1.5rem;
+                        border: none;
+                        border-bottom: 2px solid transparent;
+                        background-color: transparent;
+                        border-radius: 0;
+                        text-decoration: none;
+                        color: hsl(var(--muted-foreground));
+                        font-size: 0.9375rem;
+                        font-weight: 600;
+                        transition: all 200ms ease;
+                        cursor: pointer;
+                        position: relative;
+                        margin-bottom: -1px;
+                    }
+
+                    .payment-tab:hover {
+                        color: hsl(var(--foreground));
+                        background-color: hsl(var(--muted) / 0.5);
+                    }
+
+                    .payment-tab.active {
+                        color: hsl(var(--foreground));
+                        border-bottom-color: hsl(var(--foreground));
+                        background-color: transparent;
+                    }
+
+                    /* Dark mode tab styling */
+                    @media (prefers-color-scheme: dark) {
+                        .payment-tab {
+                            color: var(--text-muted);
+                        }
+
+                        .payment-tab:hover {
+                            color: var(--text-secondary);
+                            background-color: rgba(255, 255, 255, 0.05);
+                        }
+
+                        .payment-tab.active {
+                            color: var(--text-primary);
+                            border-bottom-color: var(--text-primary);
+                        }
+                    }
+
+                    /* Tab content */
+                    .tab-content {
+                        display: none;
+                        animation: fade-in 0.2s ease-out;
+                    }
+
+                    .tab-content.active {
+                        display: block;
+                    }
+
+                    @keyframes fade-in {
+                        from {
+                            opacity: 0;
+                            transform: translateY(4px);
+                        }
+                        to {
+                            opacity: 1;
+                            transform: translateY(0);
                         }
                     }
 
@@ -1893,27 +2557,33 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                     }
 
                     .transaction-details .detail-label {
-                        font-weight: 500;
-                        color: hsl(var(--muted-foreground));
-                        font-size: 0.875rem;
+                        font-weight: 400;
+                        color: var(--text-muted);
+                        font-size: 0.75rem;
                         min-width: 180px;
                         flex-shrink: 0;
+                        letter-spacing: 0.05em;
+                        text-transform: uppercase;
                     }
 
                     .transaction-details .detail-value {
-                        color: hsl(var(--foreground));
+                        color: var(--text-tertiary);
                         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
-                        font-size: 0.875rem;
+                        font-size: 0.8125rem;
+                        font-weight: 300;
                         word-break: break-all;
                         flex: 1;
                         min-width: 0;
+                        letter-spacing: -0.02em;
+                        line-height: 1.7;
                     }
 
                     .transaction-details .detail-value-amount {
-                        color: hsl(var(--foreground));
+                        color: var(--text-secondary);
                         font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Courier New', monospace;
                         font-size: 1rem;
                         font-weight: 600;
+                        letter-spacing: 0;
                         flex: 1;
                         min-width: 0;
                     }
@@ -2054,6 +2724,7 @@ pub fn layout_with_status(title: &str, content: Markup, is_running: bool) -> Mar
                 main class="container" {
                     (content)
                 }
+
 
 
             }

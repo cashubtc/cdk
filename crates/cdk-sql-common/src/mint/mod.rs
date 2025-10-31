@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::database::mint::validate_kvstore_params;
+use cdk_common::database::mint::{validate_kvstore_params, SagaDatabase, SagaTransaction};
 use cdk_common::database::{
     self, ConversionError, Error, MintDatabase, MintDbWriterFinalizer, MintKeyDatabaseTransaction,
     MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase, MintQuotesTransaction,
@@ -23,12 +23,13 @@ use cdk_common::database::{
 };
 use cdk_common::mint::{
     self, IncomingPayment, Issuance, MeltPaymentRequest, MeltQuote, MintKeySetInfo, MintQuote,
+    Operation,
 };
 use cdk_common::nut00::ProofsMethods;
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::quote_id::QuoteId;
 use cdk_common::secret::Secret;
-use cdk_common::state::check_state_transition;
+use cdk_common::state::{check_melt_quote_state_transition, check_state_transition};
 use cdk_common::util::unix_time;
 use cdk_common::{
     Amount, BlindSignature, BlindSignatureDleq, BlindedMessage, CurrencyUnit, Id, MeltQuoteState,
@@ -138,6 +139,7 @@ where
         &mut self,
         proofs: Proofs,
         quote_id: Option<QuoteId>,
+        operation: &Operation,
     ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
@@ -165,9 +167,9 @@ where
             query(
                 r#"
                   INSERT INTO proof
-                  (y, amount, keyset_id, secret, c, witness, state, quote_id, created_time)
+                  (y, amount, keyset_id, secret, c, witness, state, quote_id, created_time, operation_kind, operation_id)
                   VALUES
-                  (:y, :amount, :keyset_id, :secret, :c, :witness, :state, :quote_id, :created_time)
+                  (:y, :amount, :keyset_id, :secret, :c, :witness, :state, :quote_id, :created_time, :operation_kind, :operation_id)
                   "#,
             )?
             .bind("y", proof.y()?.to_bytes().to_vec())
@@ -182,6 +184,8 @@ where
             .bind("state", "UNSPENT".to_string())
             .bind("quote_id", quote_id.clone().map(|q| q.to_string()))
             .bind("created_time", current_time as i64)
+            .bind("operation_kind", operation.kind())
+            .bind("operation_id", operation.id().to_string())
             .execute(&self.inner)
             .await?;
         }
@@ -574,6 +578,7 @@ where
         &mut self,
         quote_id: Option<&QuoteId>,
         blinded_messages: &[BlindedMessage],
+        operation: &Operation,
     ) -> Result<(), Self::Err> {
         let current_time = unix_time();
 
@@ -583,9 +588,9 @@ where
             match query(
                 r#"
                 INSERT INTO blind_signature
-                (blinded_message, amount, keyset_id, c, quote_id, created_time)
+                (blinded_message, amount, keyset_id, c, quote_id, created_time, operation_kind, operation_id)
                 VALUES
-                (:blinded_message, :amount, :keyset_id, NULL, :quote_id, :created_time)
+                (:blinded_message, :amount, :keyset_id, NULL, :quote_id, :created_time, :operation_kind, :operation_id)
                 "#,
             )?
             .bind(
@@ -596,6 +601,8 @@ where
             .bind("keyset_id", message.keyset_id.to_string())
             .bind("quote_id", quote_id.map(|q| q.to_string()))
             .bind("created_time", current_time as i64)
+            .bind("operation_kind", operation.kind())
+            .bind("operation_id", operation.id().to_string())
             .execute(&self.inner)
             .await
             {
@@ -1042,6 +1049,8 @@ VALUES (:quote_id, :amount, :timestamp);
         .map(sql_row_to_melt_quote)
         .transpose()?
         .ok_or(Error::QuoteNotFound)?;
+
+        check_melt_quote_state_transition(quote.state, state)?;
 
         let rec = if state == MeltQuoteState::Paid {
             let current_time = unix_time();
@@ -2119,6 +2128,147 @@ where
 }
 
 #[async_trait]
+impl<RM> SagaTransaction<'_> for SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = Error;
+
+    async fn get_saga(
+        &mut self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Option<mint::Saga>, Self::Err> {
+        Ok(query(
+            r#"
+            SELECT
+                operation_id,
+                operation_kind,
+                state,
+                blinded_secrets,
+                input_ys,
+                created_at,
+                updated_at
+            FROM
+                saga_state
+            WHERE
+                operation_id = :operation_id
+            FOR UPDATE
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .fetch_one(&self.inner)
+        .await?
+        .map(sql_row_to_saga)
+        .transpose()?)
+    }
+
+    async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err> {
+        let current_time = unix_time();
+
+        let blinded_secrets_json = serde_json::to_string(&saga.blinded_secrets)
+            .map_err(|e| Error::Internal(format!("Failed to serialize blinded_secrets: {}", e)))?;
+
+        let input_ys_json = serde_json::to_string(&saga.input_ys)
+            .map_err(|e| Error::Internal(format!("Failed to serialize input_ys: {}", e)))?;
+
+        query(
+            r#"
+            INSERT INTO saga_state
+            (operation_id, operation_kind, state, blinded_secrets, input_ys, created_at, updated_at)
+            VALUES
+            (:operation_id, :operation_kind, :state, :blinded_secrets, :input_ys, :created_at, :updated_at)
+            "#,
+        )?
+        .bind("operation_id", saga.operation_id.to_string())
+        .bind("operation_kind", saga.operation_kind.to_string())
+        .bind("state", saga.state.state())
+        .bind("blinded_secrets", blinded_secrets_json)
+        .bind("input_ys", input_ys_json)
+        .bind("created_at", saga.created_at as i64)
+        .bind("updated_at", current_time as i64)
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn update_saga(
+        &mut self,
+        operation_id: &uuid::Uuid,
+        new_state: mint::SagaStateEnum,
+    ) -> Result<(), Self::Err> {
+        let current_time = unix_time();
+
+        query(
+            r#"
+            UPDATE saga_state
+            SET state = :state, updated_at = :updated_at
+            WHERE operation_id = :operation_id
+            "#,
+        )?
+        .bind("state", new_state.state())
+        .bind("updated_at", current_time as i64)
+        .bind("operation_id", operation_id.to_string())
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn delete_saga(&mut self, operation_id: &uuid::Uuid) -> Result<(), Self::Err> {
+        query(
+            r#"
+            DELETE FROM saga_state
+            WHERE operation_id = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<RM> SagaDatabase for SQLMintDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = Error;
+
+    async fn get_incomplete_sagas(
+        &self,
+        operation_kind: mint::OperationKind,
+    ) -> Result<Vec<mint::Saga>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT
+                operation_id,
+                operation_kind,
+                state,
+                blinded_secrets,
+                input_ys,
+                created_at,
+                updated_at
+            FROM
+                saga_state
+            WHERE
+                operation_kind = :operation_kind
+            ORDER BY created_at ASC
+            "#,
+        )?
+        .bind("operation_kind", operation_kind.to_string())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_saga)
+        .collect::<Result<Vec<_>, _>>()?)
+    }
+}
+
+#[async_trait]
 impl<RM> MintDatabase<Error> for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
@@ -2378,6 +2528,53 @@ fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Error>
         keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
         c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
         dleq,
+    })
+}
+
+fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
+    unpack_into!(
+        let (
+            operation_id,
+            operation_kind,
+            state,
+            blinded_secrets,
+            input_ys,
+            created_at,
+            updated_at
+        ) = row
+    );
+
+    let operation_id_str = column_as_string!(&operation_id);
+    let operation_id = uuid::Uuid::parse_str(&operation_id_str)
+        .map_err(|e| Error::Internal(format!("Invalid operation_id UUID: {}", e)))?;
+
+    let operation_kind_str = column_as_string!(&operation_kind);
+    let operation_kind = mint::OperationKind::from_str(&operation_kind_str)
+        .map_err(|e| Error::Internal(format!("Invalid operation kind: {}", e)))?;
+
+    let state_str = column_as_string!(&state);
+    let state = mint::SagaStateEnum::new(operation_kind, &state_str)
+        .map_err(|e| Error::Internal(format!("Invalid saga state: {}", e)))?;
+
+    let blinded_secrets_str = column_as_string!(&blinded_secrets);
+    let blinded_secrets: Vec<PublicKey> = serde_json::from_str(&blinded_secrets_str)
+        .map_err(|e| Error::Internal(format!("Failed to deserialize blinded_secrets: {}", e)))?;
+
+    let input_ys_str = column_as_string!(&input_ys);
+    let input_ys: Vec<PublicKey> = serde_json::from_str(&input_ys_str)
+        .map_err(|e| Error::Internal(format!("Failed to deserialize input_ys: {}", e)))?;
+
+    let created_at: u64 = column_as_number!(created_at);
+    let updated_at: u64 = column_as_number!(updated_at);
+
+    Ok(mint::Saga {
+        operation_id,
+        operation_kind,
+        state,
+        blinded_secrets,
+        input_ys,
+        created_at,
+        updated_at,
     })
 }
 
