@@ -148,7 +148,7 @@ pub trait Signatory {
         blinded_messages: Vec<BlindedMessage>,
     ) -> Result<Vec<BlindSignature>, Error>;
 
-    /// Verify [`Proof`] meets conditions and is signed
+    /// Verify [`Proof`] meets conditions and is signed by the mint (ignores P2PK/HTLC signatures"
     async fn verify_proofs(&self, proofs: Vec<Proof>) -> Result<(), Error>;
 
     /// Retrieve the list of all mint keysets
