@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cdk_common::amount::{to_unit, Amount};
+use cdk_common::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk_common::common::FeeReserve;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
@@ -244,7 +244,8 @@ impl MintPayment for LNbits {
                 let relative_fee_reserve =
                     (self.fee_reserve.percent_fee_reserve * u64::from(amount_msat) as f32) as u64;
 
-                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
+                let absolute_fee_reserve: u64 =
+                    u64::from(self.fee_reserve.min_fee_reserve) * MSAT_IN_SAT;
 
                 let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
@@ -253,7 +254,7 @@ impl MintPayment for LNbits {
                         *bolt11_options.bolt11.payment_hash().as_ref(),
                     )),
                     amount: to_unit(amount_msat, &CurrencyUnit::Msat, unit)?,
-                    fee: fee.into(),
+                    fee: to_unit(fee, &CurrencyUnit::Msat, unit)?,
                     state: MeltQuoteState::Unpaid,
                     unit: unit.clone(),
                 })
