@@ -253,7 +253,7 @@ impl MintPayment for LNbits {
                         *bolt11_options.bolt11.payment_hash().as_ref(),
                     )),
                     amount: to_unit(amount_msat, &CurrencyUnit::Msat, unit)?,
-                    fee: fee.into(),
+                    fee: to_unit(fee, &CurrencyUnit::Msat, unit)?,
                     state: MeltQuoteState::Unpaid,
                     unit: unit.clone(),
                 })
