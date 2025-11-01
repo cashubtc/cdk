@@ -6,8 +6,10 @@
 
 ## [Unreleased]
 
+## [0.13.3](https://github.com/cashubtc/cdk/releases/tag/v0.13.3)
+
 ### Fixed
-- cashu: Fix HTLC witness deserialization by adding prior signatures if they exist ([stefanbitcr]).
+- cdk-lnbits: Fix lnbits fee calc ([thesimplekid]).
 
 ## [0.13.2](https://github.com/cashubtc/cdk/releases/tag/v0.13.2)
 
