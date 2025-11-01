@@ -8,6 +8,7 @@ use cdk_common::util::unix_time;
 use cdk_common::wallet::{Transaction, TransactionDirection};
 use tracing::instrument;
 
+use super::Tx;
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
@@ -19,20 +20,36 @@ use crate::{ensure_cdk, Amount, Error, Wallet, SECP256K1};
 
 impl Wallet {
     /// Receive proofs
-    #[instrument(skip_all)]
     pub async fn receive_proofs(
         &self,
         proofs: Proofs,
         opts: ReceiveOptions,
         memo: Option<String>,
     ) -> Result<Amount, Error> {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let result = self
+            .receive_proofs_with_tx(&mut tx, proofs, opts, memo)
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Receive proofs with transaction
+    #[instrument(skip_all)]
+    pub(super) async fn receive_proofs_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+        proofs: Proofs,
+        opts: ReceiveOptions,
+        memo: Option<String>,
+    ) -> Result<Amount, Error> {
         let mint_url = &self.mint_url;
 
-        self.refresh_keysets().await?;
+        self.refresh_keysets_with_tx(tx).await?;
 
-        let active_keyset_id = self.fetch_active_keyset().await?.id;
+        let active_keyset_id = self.fetch_active_keyset_with_tx(tx).await?.id;
 
-        let keys = self.load_keyset_keys(active_keyset_id).await?;
+        let keys = self.load_keyset_keys_with_tx(tx, active_keyset_id).await?;
 
         let mut proofs = proofs;
 
@@ -60,7 +77,7 @@ impl Wallet {
         for proof in &mut proofs {
             // Verify that proof DLEQ is valid
             if proof.dleq.is_some() {
-                let keys = self.load_keyset_keys(proof.keyset_id).await?;
+                let keys = self.load_keyset_keys_with_tx(tx, proof.keyset_id).await?;
                 let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
                 proof.verify_dleq(key)?;
             }
@@ -112,12 +129,10 @@ impl Wallet {
             .into_iter()
             .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Pending, self.unit.clone()))
             .collect::<Result<Vec<ProofInfo>, _>>()?;
-        self.localstore
-            .update_proofs(proofs_info.clone(), vec![])
-            .await?;
+        tx.update_proofs(proofs_info.clone(), vec![]).await?;
 
         let mut pre_swap = self
-            .create_swap(None, opts.amount_split_target, proofs, None, false)
+            .create_swap_with_tx(tx, None, opts.amount_split_target, proofs, None, false)
             .await?;
 
         if sig_flag.eq(&SigFlag::SigAll) {
@@ -138,8 +153,7 @@ impl Wallet {
             &keys,
         )?;
 
-        self.localstore
-            .increment_keyset_counter(&active_keyset_id, recv_proofs.len() as u32)
+        tx.increment_keyset_counter(&active_keyset_id, recv_proofs.len() as u32)
             .await?;
 
         let total_amount = recv_proofs.total_amount()?;
@@ -148,30 +162,29 @@ impl Wallet {
             .into_iter()
             .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, self.unit.clone()))
             .collect::<Result<Vec<ProofInfo>, _>>()?;
-        self.localstore
-            .update_proofs(
-                recv_proof_infos,
-                proofs_info.into_iter().map(|p| p.y).collect(),
-            )
-            .await?;
+
+        tx.update_proofs(
+            recv_proof_infos,
+            proofs_info.into_iter().map(|p| p.y).collect(),
+        )
+        .await?;
 
         // Add transaction to store
-        self.localstore
-            .add_transaction(Transaction {
-                mint_url: self.mint_url.clone(),
-                direction: TransactionDirection::Incoming,
-                amount: total_amount,
-                fee: proofs_amount - total_amount,
-                unit: self.unit.clone(),
-                ys: proofs_ys,
-                timestamp: unix_time(),
-                memo,
-                metadata: opts.metadata,
-                quote_id: None,
-                payment_request: None,
-                payment_proof: None,
-            })
-            .await?;
+        tx.add_transaction(Transaction {
+            mint_url: self.mint_url.clone(),
+            direction: TransactionDirection::Incoming,
+            amount: total_amount,
+            fee: proofs_amount - total_amount,
+            unit: self.unit.clone(),
+            ys: proofs_ys,
+            timestamp: unix_time(),
+            memo,
+            metadata: opts.metadata,
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+        })
+        .await?;
 
         Ok(total_amount)
     }
@@ -221,9 +234,13 @@ impl Wallet {
 
         ensure_cdk!(self.mint_url == token.mint_url()?, Error::IncorrectMint);
 
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
         let amount = self
-            .receive_proofs(proofs, opts, token.memo().clone())
+            .receive_proofs_with_tx(&mut tx, proofs, opts, token.memo().clone())
             .await?;
+
+        tx.commit().await?;
 
         Ok(amount)
     }

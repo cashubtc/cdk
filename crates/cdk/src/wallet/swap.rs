@@ -1,6 +1,7 @@
 use cdk_common::nut02::KeySetInfosMethods;
 use tracing::instrument;
 
+use super::Tx;
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
@@ -11,24 +12,24 @@ use crate::types::ProofInfo;
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
 impl Wallet {
-    /// Swap
-    #[instrument(skip(self, input_proofs))]
-    pub async fn swap(
+    async fn swap_inner(
         &self,
+        tx: &mut Tx<'_, '_>,
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
         input_proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<Option<Proofs>, Error> {
-        self.refresh_keysets().await?;
+        self.refresh_keysets_with_tx(tx).await?;
 
         tracing::info!("Swapping");
         let mint_url = &self.mint_url;
         let unit = &self.unit;
 
         let pre_swap = self
-            .create_swap(
+            .create_swap_with_tx(
+                tx,
                 amount,
                 amount_split_target.clone(),
                 input_proofs.clone(),
@@ -41,11 +42,10 @@ impl Wallet {
 
         let active_keyset_id = pre_swap.pre_mint_secrets.keyset_id;
         let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .get_keyset_fees_and_amounts_by_id_with_tx(tx, active_keyset_id)
             .await?;
 
-        let active_keys = self
-            .localstore
+        let active_keys = tx
             .get_keys(&active_keyset_id)
             .await?
             .ok_or(Error::NoActiveKeyset)?;
@@ -134,10 +134,57 @@ impl Wallet {
             .map(|proof| proof.y())
             .collect::<Result<Vec<PublicKey>, _>>()?;
 
-        self.localstore
-            .update_proofs(added_proofs, deleted_ys)
-            .await?;
+        tx.update_proofs(added_proofs, deleted_ys).await?;
+
         Ok(send_proofs)
+    }
+
+    /// Swap
+    pub async fn swap(
+        &self,
+        amount: Option<Amount>,
+        amount_split_target: SplitTarget,
+        input_proofs: Proofs,
+        spending_conditions: Option<SpendingConditions>,
+        include_fees: bool,
+    ) -> Result<Option<Proofs>, Error> {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let ret = self
+            .swap_with_tx(
+                &mut tx,
+                amount,
+                amount_split_target,
+                input_proofs,
+                spending_conditions,
+                include_fees,
+            )
+            .await?;
+
+        tx.commit().await?;
+
+        Ok(ret)
+    }
+
+    /// Swap with transaction
+    #[instrument(skip(self, tx, input_proofs))]
+    pub(super) async fn swap_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+        amount: Option<Amount>,
+        amount_split_target: SplitTarget,
+        input_proofs: Proofs,
+        spending_conditions: Option<SpendingConditions>,
+        include_fees: bool,
+    ) -> Result<Option<Proofs>, Error> {
+        self.swap_inner(
+            tx,
+            amount,
+            amount_split_target,
+            input_proofs,
+            spending_conditions,
+            include_fees,
+        )
+        .await
     }
 
     /// Swap from unspent proofs in db
@@ -148,8 +195,8 @@ impl Wallet {
         conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<Proofs, Error> {
-        let available_proofs = self
-            .localstore
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let available_proofs = tx
             .get_proofs(
                 Some(self.mint_url.clone()),
                 Some(self.unit.clone()),
@@ -170,13 +217,13 @@ impl Wallet {
         ensure_cdk!(proofs_sum >= amount, Error::InsufficientFunds);
 
         let active_keyset_ids = self
-            .refresh_keysets()
+            .refresh_keysets_with_tx(&mut tx)
             .await?
             .active()
             .map(|k| k.id)
             .collect();
 
-        let keyset_fees = self.get_keyset_fees_and_amounts().await?;
+        let keyset_fees = self.get_keyset_fees_and_amounts_with_tx(&mut tx).await?;
         let proofs = Wallet::select_proofs(
             amount,
             available_proofs,
@@ -185,19 +232,24 @@ impl Wallet {
             true,
         )?;
 
-        self.swap(
-            Some(amount),
-            SplitTarget::default(),
-            proofs,
-            conditions,
-            include_fees,
-        )
-        .await?
-        .ok_or(Error::InsufficientFunds)
+        let to_return = self
+            .swap_with_tx(
+                &mut tx,
+                Some(amount),
+                SplitTarget::default(),
+                proofs,
+                conditions,
+                include_fees,
+            )
+            .await?
+            .ok_or(Error::InsufficientFunds)?;
+
+        tx.commit().await?;
+
+        Ok(to_return)
     }
 
     /// Create Swap Payload
-    #[instrument(skip(self, proofs))]
     pub async fn create_swap(
         &self,
         amount: Option<Amount>,
@@ -206,18 +258,42 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<PreSwap, Error> {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let result = self
+            .create_swap_with_tx(
+                &mut tx,
+                amount,
+                amount_split_target,
+                proofs,
+                spending_conditions,
+                include_fees,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Create Swap Payload with transaction
+    #[instrument(skip(self, tx, proofs))]
+    pub(super) async fn create_swap_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+        amount: Option<Amount>,
+        amount_split_target: SplitTarget,
+        proofs: Proofs,
+        spending_conditions: Option<SpendingConditions>,
+        include_fees: bool,
+    ) -> Result<PreSwap, Error> {
         tracing::info!("Creating swap");
-        let active_keyset_id = self.fetch_active_keyset().await?.id;
+        let active_keyset_id = self.fetch_active_keyset_with_tx(tx).await?.id;
 
         // Desired amount is either amount passed or value of all proof
         let proofs_total = proofs.total_amount()?;
 
         let ys: Vec<PublicKey> = proofs.ys()?;
-        self.localstore
-            .update_proofs_state(ys, State::Reserved)
-            .await?;
+        tx.update_proofs_state(ys, State::Reserved).await?;
 
-        let fee = self.get_proofs_fee(&proofs).await?;
+        let fee = self.get_proofs_fee_with_tx(tx, &proofs).await?;
 
         let total_to_subtract = amount
             .unwrap_or(Amount::ZERO)
@@ -229,7 +305,7 @@ impl Wallet {
             .ok_or(Error::InsufficientFunds)?;
 
         let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .get_keyset_fees_and_amounts_by_id_with_tx(tx, active_keyset_id)
             .await?;
 
         let (send_amount, change_amount) = match include_fees {
@@ -260,7 +336,7 @@ impl Wallet {
         // else use state refill
         let change_split_target = match amount_split_target {
             SplitTarget::None => {
-                self.determine_split_target_values(change_amount, &fee_and_amounts)
+                self.determine_split_target_values(tx, change_amount, &fee_and_amounts)
                     .await?
             }
             s => s,
@@ -297,8 +373,7 @@ impl Wallet {
                 total_secrets_needed
             );
 
-            let new_counter = self
-                .localstore
+            let new_counter = tx
                 .increment_keyset_counter(&active_keyset_id, total_secrets_needed)
                 .await?;
 
