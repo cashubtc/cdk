@@ -8,6 +8,8 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
+pub mod task;
+
 pub mod common;
 pub mod database;
 pub mod error;
@@ -24,6 +26,7 @@ pub mod subscription;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 pub mod ws;
+
 // re-exporting external crates
 pub use bitcoin;
 pub use cashu::amount::{self, Amount};

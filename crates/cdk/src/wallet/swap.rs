@@ -44,11 +44,7 @@ impl Wallet {
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
 
-        let active_keys = self
-            .localstore
-            .get_keys(&active_keyset_id)
-            .await?
-            .ok_or(Error::NoActiveKeyset)?;
+        let active_keys = self.key_manager.get_keys(&active_keyset_id).await?;
 
         let post_swap_proofs = construct_proofs(
             swap_response.signatures,

@@ -38,6 +38,7 @@ pub use mint_connector::TorHttpClient;
 mod balance;
 mod builder;
 mod issue;
+mod key_manager;
 mod keysets;
 mod melt;
 mod mint_connector;
@@ -84,6 +85,8 @@ pub struct Wallet {
     pub unit: CurrencyUnit,
     /// Storage backend
     pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+    /// Key manager for this mint (lock-free cached key access)
+    pub key_manager: Arc<key_manager::KeyManager>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
     #[cfg(feature = "auth")]
@@ -216,11 +219,7 @@ impl Wallet {
         let mut fee_per_keyset = HashMap::new();
 
         for keyset_id in proofs_per_keyset.keys() {
-            let mint_keyset_info = self
-                .localstore
-                .get_keyset_by_id(keyset_id)
-                .await?
-                .ok_or(Error::UnknownKeySet)?;
+            let mint_keyset_info = self.key_manager.get_keyset_by_id(keyset_id).await?;
             fee_per_keyset.insert(*keyset_id, mint_keyset_info.input_fee_ppk);
         }
 
@@ -233,10 +232,9 @@ impl Wallet {
     #[instrument(skip_all)]
     pub async fn get_keyset_count_fee(&self, keyset_id: &Id, count: u64) -> Result<Amount, Error> {
         let input_fee_ppk = self
-            .localstore
+            .key_manager
             .get_keyset_by_id(keyset_id)
             .await?
-            .ok_or(Error::UnknownKeySet)?
             .input_fee_ppk;
 
         let fee = (input_fee_ppk * count).div_ceil(1000);
@@ -304,6 +302,7 @@ impl Wallet {
                                 self.mint_url.clone(),
                                 None,
                                 self.localstore.clone(),
+                                self.key_manager.clone(),
                                 mint_info.protected_endpoints(),
                                 oidc_client,
                             );
