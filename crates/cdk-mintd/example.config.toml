@@ -101,6 +101,9 @@ reserve_fee_min = 4
 # admin_api_key = ""
 # invoice_api_key = ""
 # lnbits_api = ""
+# fee_percent = 0.04
+# # Fee in sats
+# reserve_fee_min = 4
 # Note: Only LNBits v1 API is supported (websocket-based)
 
 # [lnd]
