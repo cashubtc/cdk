@@ -27,7 +27,7 @@ pub struct MintPubSubSpec {
 }
 
 impl MintPubSubSpec {
-    /// Similar to Mint::check_mint_quote_paid, but copied to avoid
+    /// Call Mint::check_mint_quote_payments to update the quote pinging the payment backend
     async fn get_mint_quote(
         &self,
         quote_id: &QuoteId,
