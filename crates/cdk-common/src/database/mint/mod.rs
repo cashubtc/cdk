@@ -304,11 +304,15 @@ pub trait ProofsDatabase {
     ) -> Result<Vec<PublicKey>, Self::Err>;
     /// Get [`Proofs`] state
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
+
     /// Get [`Proofs`] by state
     async fn get_proofs_by_keyset_id(
         &self,
         keyset_id: &Id,
     ) -> Result<(Proofs, Vec<Option<State>>), Self::Err>;
+
+    /// Get total proofs redeemed by keyset id
+    async fn get_total_redeemed(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
 }
 
 #[async_trait]
@@ -343,16 +347,21 @@ pub trait SignaturesDatabase {
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err>;
+
     /// Get [`BlindSignature`]s for keyset_id
     async fn get_blind_signatures_for_keyset(
         &self,
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
+
     /// Get [`BlindSignature`]s for quote
     async fn get_blind_signatures_for_quote(
         &self,
         quote_id: &QuoteId,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
+
+    /// Get total amount issued by keyset id
+    async fn get_total_issued(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
 }
 
 #[async_trait]

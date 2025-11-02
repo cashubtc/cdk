@@ -18,6 +18,7 @@ use cashu::{CurrencyUnit, Id, PreMintSecrets, SecretKey, SpendingConditions, Sta
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::Amount;
+use cdk_common::database::mint::{ProofsDatabase, SignaturesDatabase};
 use cdk_integration_tests::init_pure_tests::*;
 
 /// Helper to get the active keyset ID from a mint
@@ -58,6 +59,29 @@ async fn test_swap_happy_path() {
         .expect("Could not get proofs");
 
     let keyset_id = get_keyset_id(&mint).await;
+
+    // Check initial amounts after minting
+    let total_issued = mint.total_issued().await.unwrap();
+    let total_redeemed = mint.total_redeemed().await.unwrap();
+    let initial_issued = total_issued
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let initial_redeemed = total_redeemed
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    assert_eq!(
+        initial_issued,
+        Amount::from(100),
+        "Should have issued 100 sats"
+    );
+    assert_eq!(
+        initial_redeemed,
+        Amount::ZERO,
+        "Should have redeemed 0 sats initially"
+    );
+
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     // Create swap request for same amount (100 sats)
@@ -116,6 +140,29 @@ async fn test_swap_happy_path() {
         saved_signatures.len(),
         swap_response.signatures.len(),
         "All signatures should be saved"
+    );
+
+    // Check keyset amounts after swap
+    // Swap redeems old proofs (100 sats) and issues new proofs (100 sats)
+    let total_issued = mint.total_issued().await.unwrap();
+    let total_redeemed = mint.total_redeemed().await.unwrap();
+    let after_issued = total_issued
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let after_redeemed = total_redeemed
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    assert_eq!(
+        after_issued,
+        Amount::from(200),
+        "Should have issued 200 sats total (initial 100 + swap 100)"
+    );
+    assert_eq!(
+        after_redeemed,
+        Amount::from(100),
+        "Should have redeemed 100 sats from the swap"
     );
 }
 

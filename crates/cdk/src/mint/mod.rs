@@ -952,18 +952,9 @@ impl Mint {
 
         let result = async {
             let keysets = self.keysets().keysets;
-
-            let mut total_issued = HashMap::new();
-
-            for keyset in keysets {
-                let blinded = self
-                    .localstore
-                    .get_blind_signatures_for_keyset(&keyset.id)
-                    .await?;
-
-                let total = Amount::try_sum(blinded.iter().map(|b| b.amount))?;
-
-                total_issued.insert(keyset.id, total);
+            let mut total_issued = self.localstore.get_total_issued().await?;
+            for keyset in keysets.into_iter().filter(|x| x.unit != CurrencyUnit::Auth) {
+                let _ = total_issued.entry(keyset.id).or_default();
             }
 
             Ok(total_issued)
@@ -986,21 +977,14 @@ impl Mint {
         global::inc_in_flight_requests("total_redeemed");
 
         let keysets = self.signatory.keysets().await?;
+        let mut total_redeemed = self.localstore.get_total_redeemed().await?;
 
-        let mut total_redeemed = HashMap::new();
-
-        for keyset in keysets.keysets {
-            let (proofs, state) = self.localstore.get_proofs_by_keyset_id(&keyset.id).await?;
-
-            let total_spent =
-                Amount::try_sum(proofs.iter().zip(state).filter_map(|(p, s)| {
-                    match s == Some(State::Spent) {
-                        true => Some(p.amount),
-                        false => None,
-                    }
-                }))?;
-
-            total_redeemed.insert(keyset.id, total_spent);
+        for keyset in keysets
+            .keysets
+            .into_iter()
+            .filter(|x| x.unit != CurrencyUnit::Auth)
+        {
+            let _ = total_redeemed.entry(keyset.id).or_default();
         }
 
         #[cfg(feature = "prometheus")]
