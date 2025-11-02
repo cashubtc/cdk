@@ -51,6 +51,7 @@ mod streams;
 pub mod subscription;
 mod swap;
 mod transactions;
+mod try_proof_operation;
 pub mod util;
 
 #[cfg(feature = "auth")]
