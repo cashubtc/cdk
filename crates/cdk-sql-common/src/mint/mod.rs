@@ -2144,6 +2144,7 @@ where
                 state,
                 blinded_secrets,
                 input_ys,
+                quote_id,
                 created_at,
                 updated_at
             FROM
@@ -2172,9 +2173,9 @@ where
         query(
             r#"
             INSERT INTO saga_state
-            (operation_id, operation_kind, state, blinded_secrets, input_ys, created_at, updated_at)
+            (operation_id, operation_kind, state, blinded_secrets, input_ys, quote_id, created_at, updated_at)
             VALUES
-            (:operation_id, :operation_kind, :state, :blinded_secrets, :input_ys, :created_at, :updated_at)
+            (:operation_id, :operation_kind, :state, :blinded_secrets, :input_ys, :quote_id, :created_at, :updated_at)
             "#,
         )?
         .bind("operation_id", saga.operation_id.to_string())
@@ -2182,6 +2183,7 @@ where
         .bind("state", saga.state.state())
         .bind("blinded_secrets", blinded_secrets_json)
         .bind("input_ys", input_ys_json)
+        .bind("quote_id", saga.quote_id.as_deref())
         .bind("created_at", saga.created_at as i64)
         .bind("updated_at", current_time as i64)
         .execute(&self.inner)
@@ -2248,6 +2250,7 @@ where
                 state,
                 blinded_secrets,
                 input_ys,
+                quote_id,
                 created_at,
                 updated_at
             FROM
@@ -2537,6 +2540,7 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
             state,
             blinded_secrets,
             input_ys,
+            quote_id,
             created_at,
             updated_at
         ) = row
@@ -2562,6 +2566,18 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
     let input_ys: Vec<PublicKey> = serde_json::from_str(&input_ys_str)
         .map_err(|e| Error::Internal(format!("Failed to deserialize input_ys: {}", e)))?;
 
+    let quote_id = match &quote_id {
+        Column::Text(s) => {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.clone())
+            }
+        }
+        Column::Null => None,
+        _ => None,
+    };
+
     let created_at: u64 = column_as_number!(created_at);
     let updated_at: u64 = column_as_number!(updated_at);
 
@@ -2571,6 +2587,7 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
         state,
         blinded_secrets,
         input_ys,
+        quote_id,
         created_at,
         updated_at,
     })
