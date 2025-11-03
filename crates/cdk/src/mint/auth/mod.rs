@@ -14,7 +14,7 @@ impl Mint {
         method: &ProtectedEndpoint,
     ) -> Result<Option<AuthRequired>, Error> {
         if let Some(auth_db) = self.auth_localstore.as_ref() {
-            Ok(auth_db.get_auth_for_endpoint(*method).await?)
+            Ok(auth_db.get_auth_for_endpoint(method.clone()).await?)
         } else {
             Ok(None)
         }

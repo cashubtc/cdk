@@ -167,6 +167,12 @@ max_delay_time = 3
 # port = 50051
 # tls_dir = "/path/to/tls"
 
+# [custom_payment_methods]
+# Configure custom payment methods (requires grpc_processor)
+# This creates dedicated routes like /v1/mint/quote/paypal, /v1/mint/paypal, etc.
+# enabled = ["paypal", "venmo", "cashapp"]
+# Note: Your gRPC payment processor must implement support for these custom methods
+
 # [auth]
 # Set to true to enable authentication features (defaults to false)
 # auth_enabled = false

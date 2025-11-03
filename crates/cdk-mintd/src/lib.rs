@@ -357,10 +357,14 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
     // Add contact information
     let mut contacts = Vec::new();
     if let Some(nostr_key) = &settings.mint_info.contact_nostr_public_key {
-        contacts.push(ContactInfo::new("nostr".to_string(), nostr_key.to_string()));
+        if !nostr_key.is_empty() {
+            contacts.push(ContactInfo::new("nostr".to_string(), nostr_key.to_string()));
+        }
     }
     if let Some(email) = &settings.mint_info.contact_email {
-        contacts.push(ContactInfo::new("email".to_string(), email.to_string()));
+        if !email.is_empty() {
+            contacts.push(ContactInfo::new("email".to_string(), email.to_string()));
+        }
     }
 
     // Add version information
@@ -370,14 +374,23 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
     );
 
     // Configure mint builder with basic info
-    let mut builder = mint_builder
-        .with_name(settings.mint_info.name.clone())
-        .with_version(mint_version)
-        .with_description(settings.mint_info.description.clone());
+    let mut builder = mint_builder.with_version(mint_version);
+
+    // Only set name if it's not empty
+    if !settings.mint_info.name.is_empty() {
+        builder = builder.with_name(settings.mint_info.name.clone());
+    }
+
+    // Only set description if it's not empty
+    if !settings.mint_info.description.is_empty() {
+        builder = builder.with_description(settings.mint_info.description.clone());
+    }
 
     // Add optional information
     if let Some(long_description) = &settings.mint_info.description_long {
-        builder = builder.with_long_description(long_description.to_string());
+        if !long_description.is_empty() {
+            builder = builder.with_long_description(long_description.to_string());
+        }
     }
 
     for contact in contacts {
@@ -389,15 +402,21 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
     }
 
     if let Some(icon_url) = &settings.mint_info.icon_url {
-        builder = builder.with_icon_url(icon_url.to_string());
+        if !icon_url.is_empty() {
+            builder = builder.with_icon_url(icon_url.to_string());
+        }
     }
 
     if let Some(motd) = &settings.mint_info.motd {
-        builder = builder.with_motd(motd.to_string());
+        if !motd.is_empty() {
+            builder = builder.with_motd(motd.to_string());
+        }
     }
 
     if let Some(tos_url) = &settings.mint_info.tos_url {
-        builder = builder.with_tos_url(tos_url.to_string());
+        if !tos_url.is_empty() {
+            builder = builder.with_tos_url(tos_url.to_string());
+        }
     }
 
     builder
@@ -585,14 +604,15 @@ async fn configure_backend_for_unit(
             mint_builder = mint_builder.with_supported_websockets(nut17_supported);
         }
     }
+    let mut method = PaymentMethod::Bolt11;
+    if let Some(custom) = payment_settings.get("custom") {
+        if !custom.as_str().unwrap_or_default().is_empty() {
+            method = PaymentMethod::Custom(custom.as_str().unwrap().to_string());
+        }
+    }
 
     mint_builder
-        .add_payment_processor(
-            unit.clone(),
-            PaymentMethod::Bolt11,
-            mint_melt_limits,
-            backend,
-        )
+        .add_payment_processor(unit.clone(), method, mint_melt_limits, backend)
         .await?;
 
     if let Some(input_fee) = settings.info.input_fee_ppk {
@@ -701,7 +721,7 @@ async fn setup_authentication(
         let mint_blind_auth_endpoint =
             ProtectedEndpoint::new(Method::Post, RoutePath::MintBlindAuth);
 
-        protected_endpoints.insert(mint_blind_auth_endpoint, AuthRequired::Clear);
+        protected_endpoints.insert(mint_blind_auth_endpoint.clone(), AuthRequired::Clear);
 
         clear_auth_endpoints.push(mint_blind_auth_endpoint);
 
@@ -709,11 +729,11 @@ async fn setup_authentication(
         let mut add_endpoint = |endpoint: ProtectedEndpoint, auth_type: &AuthType| {
             match auth_type {
                 AuthType::Blind => {
-                    protected_endpoints.insert(endpoint, AuthRequired::Blind);
+                    protected_endpoints.insert(endpoint.clone(), AuthRequired::Blind);
                     blind_auth_endpoints.push(endpoint);
                 }
                 AuthType::Clear => {
-                    protected_endpoints.insert(endpoint, AuthRequired::Clear);
+                    protected_endpoints.insert(endpoint.clone(), AuthRequired::Clear);
                     clear_auth_endpoints.push(endpoint);
                 }
                 AuthType::None => {
@@ -947,9 +967,20 @@ async fn start_services_with_shutdown(
     let bolt12_supported = nut04_methods.contains(&&PaymentMethod::Bolt12)
         || nut05_methods.contains(&&PaymentMethod::Bolt12);
 
-    let v1_service =
-        cdk_axum::create_mint_router_with_custom_cache(Arc::clone(&mint), cache, bolt12_supported)
-            .await?;
+    // Get custom payment methods from configuration
+    let custom_methods = settings
+        .custom_payment_methods
+        .as_ref()
+        .map(|c| c.enabled.clone())
+        .unwrap_or_default();
+
+    let v1_service = cdk_axum::create_mint_router_with_custom_cache(
+        Arc::clone(&mint),
+        cache,
+        bolt12_supported,
+        custom_methods,
+    )
+    .await?;
 
     let mut mint_service = Router::new()
         .merge(v1_service)

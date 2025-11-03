@@ -305,7 +305,7 @@ mod tests {
         let paths = settings
             .protected_endpoints
             .iter()
-            .map(|ep| (ep.method, ep.path))
+            .map(|ep| (ep.method, ep.path.clone()))
             .collect::<Vec<_>>();
         assert!(paths.contains(&(Method::Get, RoutePath::MintBolt11)));
         assert!(paths.contains(&(Method::Post, RoutePath::Swap)));
@@ -376,7 +376,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(
             settings.protected_endpoints.len(),
-            RoutePath::iter().count()
+            RoutePath::static_paths().len()
         );
     }
 }

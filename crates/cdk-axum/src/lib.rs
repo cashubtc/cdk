@@ -23,6 +23,8 @@ mod metrics;
 mod auth;
 mod bolt12_router;
 pub mod cache;
+mod custom_handlers;
+mod custom_router;
 mod router_handlers;
 mod ws;
 
@@ -226,8 +228,13 @@ define_api_doc! {
 }
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
-pub async fn create_mint_router(mint: Arc<Mint>, include_bolt12: bool) -> Result<Router> {
-    create_mint_router_with_custom_cache(mint, Default::default(), include_bolt12).await
+pub async fn create_mint_router(
+    mint: Arc<Mint>,
+    include_bolt12: bool,
+    custom_methods: Vec<String>,
+) -> Result<Router> {
+    create_mint_router_with_custom_cache(mint, Default::default(), include_bolt12, custom_methods)
+        .await
 }
 
 async fn cors_middleware(
@@ -280,6 +287,7 @@ pub async fn create_mint_router_with_custom_cache(
     mint: Arc<Mint>,
     cache: HttpCache,
     include_bolt12: bool,
+    custom_methods: Vec<String>,
 ) -> Result<Router> {
     let state = MintState {
         mint,
@@ -320,6 +328,24 @@ pub async fn create_mint_router_with_custom_cache(
     let mint_router = if include_bolt12 {
         let bolt12_router = create_bolt12_router(state.clone());
         mint_router.nest("/v1", bolt12_router)
+    } else {
+        mint_router
+    };
+
+    // Create and merge custom payment method routers
+    let mint_router = if !custom_methods.is_empty() {
+        // Validate custom method names
+        custom_router::validate_custom_method_names(&custom_methods)
+            .map_err(|e| anyhow::anyhow!("Invalid custom method names: {}", e))?;
+
+        tracing::info!(
+            "Creating routes for {} custom payment methods: {:?}",
+            custom_methods.len(),
+            custom_methods
+        );
+
+        let custom_router = custom_router::create_custom_routers(state.clone(), custom_methods);
+        mint_router.nest("/v1", custom_router)
     } else {
         mint_router
     };

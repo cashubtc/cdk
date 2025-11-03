@@ -23,7 +23,11 @@ message Bolt11IncomingPaymentOptions {
   uint64 amount = 2;
   optional uint64 unix_expiry = 3;
 }
-
+message CustomIncomingPaymentOptions {
+  optional string description = 1;
+  optional uint64 amount = 2;
+  optional uint64 unix_expiry = 3;
+}
 message Bolt12IncomingPaymentOptions {
   optional string description = 1;
   optional uint64 amount = 2;
@@ -33,11 +37,13 @@ message Bolt12IncomingPaymentOptions {
 enum PaymentMethodType {
   BOLT11 = 0;
   BOLT12 = 1;
+  PAYMENT_METHOD_TYPE_CUSTOM = 2;
 }
 
 enum OutgoingPaymentRequestType {
   BOLT11_INVOICE = 0;
   BOLT12_OFFER = 1;
+  OUTGOING_PAYMENT_REQUEST_TYPE_CUSTOM = 2;
 }
 
 enum PaymentIdentifierType {
@@ -61,6 +67,7 @@ message IncomingPaymentOptions {
   oneof options {
     Bolt11IncomingPaymentOptions bolt11 = 1;
     Bolt12IncomingPaymentOptions bolt12 = 2;
+    CustomIncomingPaymentOptions custom = 3;
   }
 }
 
@@ -128,16 +135,24 @@ message Bolt12OutgoingPaymentOptions {
   optional uint64 timeout_secs = 3;
   optional MeltOptions melt_options = 5;
 }
+message CustomOutgoingPaymentOptions {
+  string offer = 1;
+  optional uint64 max_fee_amount = 2;
+  optional uint64 timeout_secs = 3;
+  optional MeltOptions melt_options = 5;
+}
 
 enum OutgoingPaymentOptionsType {
   OUTGOING_BOLT11 = 0;
   OUTGOING_BOLT12 = 1;
+  OUTGOING_PAYMENT_OPTIONS_TYPE_CUSTOM = 2;
 }
 
 message OutgoingPaymentVariant {
   oneof options {
     Bolt11OutgoingPaymentOptions bolt11 = 1;
     Bolt12OutgoingPaymentOptions bolt12 = 2;
+    CustomOutgoingPaymentOptions custom = 3;
   }
 }
 

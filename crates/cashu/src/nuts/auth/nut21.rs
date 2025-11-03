@@ -5,8 +5,6 @@ use std::str::FromStr;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use strum::IntoEnumIterator;
-use strum_macros::EnumIter;
 use thiserror::Error;
 
 /// NUT21 Error
@@ -93,7 +91,7 @@ impl<'de> Deserialize<'de> for Settings {
 }
 
 /// List of the methods and paths that are protected
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct ProtectedEndpoint {
     /// HTTP Method
@@ -121,70 +119,125 @@ pub enum Method {
 }
 
 /// Route path
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
-#[serde(rename_all = "snake_case")]
 pub enum RoutePath {
     /// Bolt11 Mint Quote
-    #[serde(rename = "/v1/mint/quote/bolt11")]
     MintQuoteBolt11,
     /// Bolt11 Mint
-    #[serde(rename = "/v1/mint/bolt11")]
     MintBolt11,
     /// Bolt11 Melt Quote
-    #[serde(rename = "/v1/melt/quote/bolt11")]
     MeltQuoteBolt11,
     /// Bolt11 Melt
-    #[serde(rename = "/v1/melt/bolt11")]
     MeltBolt11,
     /// Swap
-    #[serde(rename = "/v1/swap")]
     Swap,
     /// Checkstate
-    #[serde(rename = "/v1/checkstate")]
     Checkstate,
     /// Restore
-    #[serde(rename = "/v1/restore")]
     Restore,
     /// Mint Blind Auth
-    #[serde(rename = "/v1/auth/blind/mint")]
     MintBlindAuth,
     /// Bolt12 Mint Quote
-    #[serde(rename = "/v1/mint/quote/bolt12")]
     MintQuoteBolt12,
     /// Bolt12 Mint
-    #[serde(rename = "/v1/mint/bolt12")]
     MintBolt12,
     /// Bolt12 Melt Quote
-    #[serde(rename = "/v1/melt/quote/bolt12")]
     MeltQuoteBolt12,
     /// Bolt12 Quote
-    #[serde(rename = "/v1/melt/bolt12")]
     MeltBolt12,
 
     /// WebSocket
-    #[serde(rename = "/v1/ws")]
     Ws,
+
+    /// Custom payment method route (dynamic)
+    /// This variant is not part of EnumIter since it's dynamic
+    Custom(String),
+}
+
+impl Serialize for RoutePath {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for RoutePath {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "/v1/mint/quote/bolt11" => Ok(RoutePath::MintQuoteBolt11),
+            "/v1/mint/bolt11" => Ok(RoutePath::MintBolt11),
+            "/v1/melt/quote/bolt11" => Ok(RoutePath::MeltQuoteBolt11),
+            "/v1/melt/bolt11" => Ok(RoutePath::MeltBolt11),
+            "/v1/swap" => Ok(RoutePath::Swap),
+            "/v1/checkstate" => Ok(RoutePath::Checkstate),
+            "/v1/restore" => Ok(RoutePath::Restore),
+            "/v1/auth/blind/mint" => Ok(RoutePath::MintBlindAuth),
+            "/v1/mint/quote/bolt12" => Ok(RoutePath::MintQuoteBolt12),
+            "/v1/mint/bolt12" => Ok(RoutePath::MintBolt12),
+            "/v1/melt/quote/bolt12" => Ok(RoutePath::MeltQuoteBolt12),
+            "/v1/melt/bolt12" => Ok(RoutePath::MeltBolt12),
+            "/v1/ws" => Ok(RoutePath::Ws),
+            _ => Ok(RoutePath::Custom(s)),
+        }
+    }
+}
+
+impl RoutePath {
+    /// Get all static (non-Custom) route paths
+    pub fn static_paths() -> Vec<RoutePath> {
+        vec![
+            RoutePath::MintQuoteBolt11,
+            RoutePath::MintBolt11,
+            RoutePath::MeltQuoteBolt11,
+            RoutePath::MeltBolt11,
+            RoutePath::Swap,
+            RoutePath::Checkstate,
+            RoutePath::Restore,
+            RoutePath::MintBlindAuth,
+            RoutePath::MintQuoteBolt12,
+            RoutePath::MintBolt12,
+            RoutePath::MeltQuoteBolt12,
+            RoutePath::MeltBolt12,
+            RoutePath::Ws,
+        ]
+    }
 }
 
 /// Returns [`RoutePath`]s that match regex
 pub fn matching_route_paths(pattern: &str) -> Result<Vec<RoutePath>, Error> {
     let regex = Regex::from_str(pattern)?;
 
-    Ok(RoutePath::iter()
+    Ok(RoutePath::static_paths()
+        .into_iter()
         .filter(|path| regex.is_match(&path.to_string()))
         .collect())
 }
 
 impl std::fmt::Display for RoutePath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Use serde to serialize to a JSON string, then extract the value without quotes
-        let json_str = match serde_json::to_string(self) {
-            Ok(s) => s,
-            Err(_) => return write!(f, "<error>"),
+        let path = match self {
+            RoutePath::MintQuoteBolt11 => "/v1/mint/quote/bolt11",
+            RoutePath::MintBolt11 => "/v1/mint/bolt11",
+            RoutePath::MeltQuoteBolt11 => "/v1/melt/quote/bolt11",
+            RoutePath::MeltBolt11 => "/v1/melt/bolt11",
+            RoutePath::Swap => "/v1/swap",
+            RoutePath::Checkstate => "/v1/checkstate",
+            RoutePath::Restore => "/v1/restore",
+            RoutePath::MintBlindAuth => "/v1/auth/blind/mint",
+            RoutePath::MintQuoteBolt12 => "/v1/mint/quote/bolt12",
+            RoutePath::MintBolt12 => "/v1/mint/bolt12",
+            RoutePath::MeltQuoteBolt12 => "/v1/melt/quote/bolt12",
+            RoutePath::MeltBolt12 => "/v1/melt/bolt12",
+            RoutePath::Ws => "/v1/ws",
+            RoutePath::Custom(s) => s,
         };
-        // Remove the quotes from the JSON string
-        let path = json_str.trim_matches('"');
         write!(f, "{path}")
     }
 }
@@ -199,8 +252,8 @@ mod tests {
         // Regex that matches all paths
         let paths = matching_route_paths(".*").unwrap();
 
-        // Should match all variants
-        assert_eq!(paths.len(), RoutePath::iter().count());
+        // Should match all static variants
+        assert_eq!(paths.len(), RoutePath::static_paths().len());
 
         // Verify all variants are included
         assert!(paths.contains(&RoutePath::MintQuoteBolt11));
@@ -298,6 +351,35 @@ mod tests {
         assert_eq!(RoutePath::Checkstate.to_string(), "/v1/checkstate");
         assert_eq!(RoutePath::Restore.to_string(), "/v1/restore");
         assert_eq!(RoutePath::MintBlindAuth.to_string(), "/v1/auth/blind/mint");
+        assert_eq!(
+            RoutePath::Custom("paypal".to_string()).to_string(),
+            "paypal"
+        );
+    }
+
+    #[test]
+    fn test_route_path_serialization() {
+        // Test serialization of static paths
+        let json = serde_json::to_string(&RoutePath::MintBolt11).unwrap();
+        assert_eq!(json, "\"/v1/mint/bolt11\"");
+
+        // Test serialization of custom paths
+        let json = serde_json::to_string(&RoutePath::Custom("paypal".to_string())).unwrap();
+        assert_eq!(json, "\"paypal\"");
+
+        // Test deserialization of static paths
+        let path: RoutePath = serde_json::from_str("\"/v1/mint/bolt11\"").unwrap();
+        assert_eq!(path, RoutePath::MintBolt11);
+
+        // Test deserialization of custom paths
+        let path: RoutePath = serde_json::from_str("\"paypal\"").unwrap();
+        assert_eq!(path, RoutePath::Custom("paypal".to_string()));
+
+        // Test round-trip serialization
+        let original = RoutePath::Custom("venmo".to_string());
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: RoutePath = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, deserialized);
     }
 
     #[test]
@@ -330,7 +412,7 @@ mod tests {
         let paths = settings
             .protected_endpoints
             .iter()
-            .map(|ep| (ep.method, ep.path))
+            .map(|ep| (ep.method, ep.path.clone()))
             .collect::<Vec<_>>();
         assert!(paths.contains(&(Method::Get, RoutePath::MintBolt11)));
         assert!(paths.contains(&(Method::Post, RoutePath::Swap)));
@@ -430,7 +512,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(
             settings.protected_endpoints.len(),
-            RoutePath::iter().count()
+            RoutePath::static_paths().len()
         );
     }
 }

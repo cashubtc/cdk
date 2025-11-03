@@ -21,8 +21,8 @@ use cdk_common::common::FeeReserve;
 use cdk_common::database::mint::DynMintKVStore;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
-    MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
+    self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
+    MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentProcessorSettings,
     PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk_common::util::hex;
@@ -60,7 +60,7 @@ pub struct Lnd {
     kv_store: DynMintKVStore,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
-    settings: Bolt11Settings,
+    settings: PaymentProcessorSettings,
 }
 
 impl Lnd {
@@ -116,12 +116,13 @@ impl Lnd {
             kv_store,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
-            settings: Bolt11Settings {
+            settings: PaymentProcessorSettings {
                 mpp: true,
                 unit: CurrencyUnit::Msat,
                 invoice_description: true,
                 amountless: true,
                 bolt12: false,
+                custom: "".to_string(),
             },
         })
     }
@@ -381,6 +382,9 @@ impl MintPayment for Lnd {
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
             }
+            OutgoingPaymentOptions::Custom(_) => {
+                Err(payment::Error::UnsupportedPaymentOption.into())
+            }
         }
     }
 
@@ -579,6 +583,9 @@ impl MintPayment for Lnd {
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
             }
+            OutgoingPaymentOptions::Custom(_) => {
+                Err(payment::Error::UnsupportedPaymentOption.into())
+            }
         }
     }
 
@@ -624,6 +631,9 @@ impl MintPayment for Lnd {
             }
             IncomingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
+            }
+            IncomingPaymentOptions::Custom(_) => {
+                Err(payment::Error::UnsupportedPaymentOption.into())
             }
         }
     }

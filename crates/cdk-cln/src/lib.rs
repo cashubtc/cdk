@@ -19,9 +19,10 @@ use cdk_common::common::FeeReserve;
 use cdk_common::database::mint::DynMintKVStore;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11IncomingPaymentOptions, Bolt11Settings, Bolt12IncomingPaymentOptions,
+    self, Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions,
     CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse, MintPayment,
-    OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, WaitPaymentResponse,
+    OutgoingPaymentOptions, PaymentIdentifier, PaymentProcessorSettings, PaymentQuoteResponse,
+    WaitPaymentResponse,
 };
 use cdk_common::util::{hex, unix_time};
 use cdk_common::Bolt11Invoice;
@@ -81,12 +82,13 @@ impl MintPayment for Cln {
     type Err = payment::Error;
 
     async fn get_settings(&self) -> Result<Value, Self::Err> {
-        Ok(serde_json::to_value(Bolt11Settings {
+        Ok(serde_json::to_value(PaymentProcessorSettings {
             mpp: true,
             unit: CurrencyUnit::Msat,
             invoice_description: true,
             amountless: true,
             bolt12: true,
+            custom: "".to_string(),
         })?)
     }
 
@@ -302,6 +304,9 @@ impl MintPayment for Cln {
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         match options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption.into())
+            }
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 // If we have specific amount options, use those
                 let amount_msat: Amount = if let Some(melt_options) = bolt11_options.melt_options {
@@ -469,8 +474,14 @@ impl MintPayment for Cln {
 
                 cln_response.invoice
             }
+            _ => {
+                max_fee_msat = None;
+                "".to_string()
+            }
         };
-
+        if invoice.is_empty() {
+            return Err(Error::UnknownInvoice.into());
+        }
         let cln_response = cln_client
             .call_typed(&PayRequest {
                 bolt11: invoice,
@@ -498,6 +509,9 @@ impl MintPayment for Cln {
                 };
 
                 let payment_identifier = match options {
+                    cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
+                        PaymentIdentifier::PaymentHash(*pay_response.payment_hash.as_ref())
+                    }
                     OutgoingPaymentOptions::Bolt11(_) => {
                         PaymentIdentifier::PaymentHash(*pay_response.payment_hash.as_ref())
                     }
@@ -534,6 +548,9 @@ impl MintPayment for Cln {
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         match options {
+            cdk_common::payment::IncomingPaymentOptions::Custom(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption.into())
+            }
             IncomingPaymentOptions::Bolt11(Bolt11IncomingPaymentOptions {
                 description,
                 amount,

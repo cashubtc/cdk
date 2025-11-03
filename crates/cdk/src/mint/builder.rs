@@ -8,7 +8,7 @@ use cdk_common::database::{DynMintDatabase, MintKeysDatabase};
 use cdk_common::error::Error;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
-use cdk_common::payment::{Bolt11Settings, DynMintPayment};
+use cdk_common::payment::{DynMintPayment, PaymentProcessorSettings};
 #[cfg(feature = "auth")]
 use cdk_common::{database::DynMintAuthDatabase, nut21, nut22};
 use cdk_signatory::signatory::Signatory;
@@ -249,7 +249,7 @@ impl MintBuilder {
 
         let settings = payment_processor.get_settings().await?;
 
-        let settings: Bolt11Settings = settings.try_into()?;
+        let settings: PaymentProcessorSettings = settings.try_into()?;
 
         if settings.mpp {
             let mpp_settings = MppMethodSettings {

@@ -226,13 +226,13 @@ impl MintInfo {
 
         if let Some(nut21_settings) = &self.nuts.nut21 {
             for endpoint in nut21_settings.protected_endpoints.iter() {
-                protected_endpoints.insert(*endpoint, AuthRequired::Clear);
+                protected_endpoints.insert(endpoint.clone(), AuthRequired::Clear);
             }
         }
 
         if let Some(nut22_settings) = &self.nuts.nut22 {
             for endpoint in nut22_settings.protected_endpoints.iter() {
-                protected_endpoints.insert(*endpoint, AuthRequired::Blind);
+                protected_endpoints.insert(endpoint.clone(), AuthRequired::Blind);
             }
         }
         protected_endpoints

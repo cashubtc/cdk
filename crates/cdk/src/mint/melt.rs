@@ -8,11 +8,11 @@ use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::{
-    Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, DynMintPayment,
-    OutgoingPaymentOptions, PaymentIdentifier,
+    Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, CustomOutgoingPaymentOptions,
+    DynMintPayment, OutgoingPaymentOptions, PaymentIdentifier,
 };
 use cdk_common::quote_id::QuoteId;
-use cdk_common::{MeltOptions, MeltQuoteBolt12Request};
+use cdk_common::{MeltOptions, MeltQuoteBolt12Request, MeltQuoteCustomRequest};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use lightning::offers::offer::Offer;
@@ -108,7 +108,7 @@ impl Mint {
         }
     }
 
-    /// Get melt quote for either BOLT11 or BOLT12
+    /// Get melt quote for BOLT11, BOLT12, or Custom payment methods
     ///
     /// This function accepts a `MeltQuoteRequest` enum and delegates to the
     /// appropriate handler based on the request type.
@@ -123,6 +123,9 @@ impl Mint {
             }
             MeltQuoteRequest::Bolt12(bolt12_request) => {
                 self.get_melt_bolt12_quote_impl(&bolt12_request).await
+            }
+            MeltQuoteRequest::Custom { method, request } => {
+                self.get_melt_custom_quote_impl(&method, &request).await
             }
         }
     }
@@ -340,6 +343,118 @@ impl Mint {
         Ok(quote.into())
     }
 
+    /// Implementation of get_melt_custom_quote
+    #[instrument(skip_all)]
+    async fn get_melt_custom_quote_impl(
+        &self,
+        method: &str,
+        melt_request: &MeltQuoteCustomRequest,
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("get_melt_custom_quote");
+
+        let MeltQuoteCustomRequest {
+            request,
+            unit,
+            data,
+            method,
+        } = melt_request;
+
+        let ln = self
+            .payment_processors
+            .get(&PaymentProcessorKey::new(
+                unit.clone(),
+                PaymentMethod::Custom(method.to_string()),
+            ))
+            .ok_or_else(|| {
+                tracing::info!("Could not get payment processor for {}, {} ", unit, method);
+                Error::UnsupportedUnit
+            })?;
+
+        let custom_options =
+            OutgoingPaymentOptions::Custom(Box::new(CustomOutgoingPaymentOptions {
+                method: method.to_string(),
+                request: request.clone(),
+                max_fee_amount: None,
+                timeout_secs: None,
+                data: data.clone(),
+                melt_options: None,
+            }));
+
+        let payment_quote = ln
+            .get_payment_quote(&melt_request.unit, custom_options)
+            .await
+            .map_err(|err| {
+                tracing::error!(
+                    "Could not get payment quote for melt quote, {} {}, {}",
+                    unit,
+                    method,
+                    err
+                );
+
+                #[cfg(feature = "prometheus")]
+                {
+                    METRICS.dec_in_flight_requests("get_melt_custom_quote");
+                    METRICS.record_mint_operation("get_melt_custom_quote", false);
+                    METRICS.record_error();
+                }
+                Error::UnsupportedUnit
+            })?;
+
+        if &payment_quote.unit != unit {
+            return Err(Error::UnitMismatch);
+        }
+
+        // For custom methods, we don't validate amount limits upfront since
+        // the payment processor handles method-specific validation
+        self.check_melt_request_acceptable(
+            payment_quote.amount,
+            unit.clone(),
+            PaymentMethod::Custom(method.to_string()),
+            request.clone(),
+            None, // Custom methods don't use options
+        )
+        .await?;
+
+        let melt_ttl = self.quote_ttl().await?.melt_ttl;
+
+        let quote = MeltQuote::new(
+            MeltPaymentRequest::Custom {
+                method: method.to_string(),
+                request: request.clone(),
+                data: data.clone(),
+            },
+            unit.clone(),
+            payment_quote.amount,
+            payment_quote.fee,
+            unix_time() + melt_ttl,
+            payment_quote.request_lookup_id.clone(),
+            None, // Custom methods don't use options
+            PaymentMethod::Custom(method.to_string()),
+        );
+
+        tracing::debug!(
+            "New {} melt quote {} for {} {} with request id {:?}",
+            method,
+            quote.id,
+            payment_quote.amount,
+            unit,
+            payment_quote.request_lookup_id
+        );
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.add_melt_quote(quote.clone()).await?;
+        tx.commit().await?;
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("get_melt_custom_quote");
+            METRICS.record_mint_operation("get_melt_custom_quote", true);
+        }
+
+        Ok(quote.into())
+    }
+
     /// Check melt quote status
     #[instrument(skip(self))]
     pub async fn check_melt_quote(
@@ -459,6 +574,11 @@ impl Mint {
                     .ok_or(Error::InvoiceAmountUndefined)?
                     .amount_msat(),
             },
+            MeltPaymentRequest::Custom { .. } => {
+                // For custom payment methods, the amount is determined by the payment processor
+                // and should match the quote amount
+                quote_msats
+            }
         };
 
         let partial_amount = match invoice_amount_msats > quote_msats {

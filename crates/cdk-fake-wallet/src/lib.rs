@@ -28,8 +28,8 @@ use cdk_common::common::FeeReserve;
 use cdk_common::ensure_cdk;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
-    MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
+    self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
+    MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentProcessorSettings,
     PaymentQuoteResponse, WaitPaymentResponse,
 };
 use error::Error;
@@ -419,12 +419,13 @@ impl MintPayment for FakeWallet {
 
     #[instrument(skip_all)]
     async fn get_settings(&self) -> Result<Value, Self::Err> {
-        Ok(serde_json::to_value(Bolt11Settings {
+        Ok(serde_json::to_value(PaymentProcessorSettings {
             mpp: true,
             unit: self.unit.clone(),
             invoice_description: true,
             amountless: false,
             bolt12: true,
+            custom: "".to_string(),
         })?)
     }
 
@@ -509,6 +510,10 @@ impl MintPayment for FakeWallet {
                     }
                 };
                 (amount_msat, None)
+            }
+            OutgoingPaymentOptions::Custom(_) => {
+                // Custom payment methods are not supported by fake wallet
+                return Err(cdk_common::payment::Error::UnsupportedPaymentOption.into());
             }
         };
 
@@ -636,6 +641,10 @@ impl MintPayment for FakeWallet {
                     unit: unit.clone(),
                 })
             }
+            OutgoingPaymentOptions::Custom(_) => {
+                // Custom payment methods are not supported by fake wallet
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption.into())
+            }
         }
     }
 
@@ -703,6 +712,10 @@ impl MintPayment for FakeWallet {
                     amount,
                     expiry,
                 )
+            }
+            IncomingPaymentOptions::Custom(_) => {
+                // Custom payment methods are not supported by fake wallet
+                return Err(cdk_common::payment::Error::UnsupportedPaymentOption.into());
             }
         };
 

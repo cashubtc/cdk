@@ -249,6 +249,8 @@ pub enum MintMethodOptions {
         /// Mint supports setting bolt11 description
         description: bool,
     },
+    // Custom Options
+    Custom {},
 }
 
 /// Mint Settings

@@ -15,8 +15,8 @@ use cdk_common::amount::{to_unit, Amount};
 use cdk_common::common::FeeReserve;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
-    MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
+    self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
+    MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentProcessorSettings,
     PaymentQuoteResponse, WaitPaymentResponse,
 };
 use cdk_common::util::{hex, unix_time};
@@ -37,7 +37,7 @@ pub struct LNbits {
     fee_reserve: FeeReserve,
     wait_invoice_cancel_token: CancellationToken,
     wait_invoice_is_active: Arc<AtomicBool>,
-    settings: Bolt11Settings,
+    settings: PaymentProcessorSettings,
 }
 
 impl LNbits {
@@ -56,12 +56,13 @@ impl LNbits {
             fee_reserve,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
-            settings: Bolt11Settings {
+            settings: PaymentProcessorSettings {
                 mpp: false,
                 unit: CurrencyUnit::Sat,
                 invoice_description: true,
                 amountless: false,
                 bolt12: false,
+                custom: "".to_string(),
             },
         })
     }
@@ -227,6 +228,9 @@ impl MintPayment for LNbits {
             OutgoingPaymentOptions::Bolt12(_bolt12_options) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
             }
+            OutgoingPaymentOptions::Custom(_) => {
+                Err(payment::Error::UnsupportedPaymentOption.into())
+            }
         }
     }
 
@@ -288,6 +292,9 @@ impl MintPayment for LNbits {
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
             }
+            OutgoingPaymentOptions::Custom(_) => {
+                Err(payment::Error::UnsupportedPaymentOption.into())
+            }
         }
     }
 
@@ -338,6 +345,9 @@ impl MintPayment for LNbits {
             }
             IncomingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LNbits")))
+            }
+            IncomingPaymentOptions::Custom(_) => {
+                Err(payment::Error::UnsupportedPaymentOption.into())
             }
         }
     }
