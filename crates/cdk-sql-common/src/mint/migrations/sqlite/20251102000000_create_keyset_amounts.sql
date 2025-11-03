@@ -1,24 +1,30 @@
--- Create keyset_amounts table
+-- Create keyset_amounts table with total_issued and total_redeemed columns
 CREATE TABLE IF NOT EXISTS keyset_amounts (
-    keyset_id TEXT NOT NULL,
-    type TEXT NOT NULL,
-    amount INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (keyset_id, type)
+    keyset_id TEXT PRIMARY KEY NOT NULL,
+    total_issued INTEGER NOT NULL DEFAULT 0,
+    total_redeemed INTEGER NOT NULL DEFAULT 0
 );
 
--- Create index for faster lookups
-CREATE INDEX IF NOT EXISTS idx_keyset_amounts_type ON keyset_amounts(type);
-
--- Prefill with issued amounts (sum from blind_signature where c IS NOT NULL)
-INSERT INTO keyset_amounts (keyset_id, type, amount)
-SELECT keyset_id, 'issued', COALESCE(SUM(amount), 0)
+-- Prefill with issued amounts
+INSERT OR IGNORE INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+SELECT keyset_id, SUM(amount) as total_issued, 0 as total_redeemed
 FROM blind_signature
 WHERE c IS NOT NULL
 GROUP BY keyset_id;
 
--- Prefill with redeemed amounts (sum from proof where state = 'SPENT')
-INSERT INTO keyset_amounts (keyset_id, type, amount)
-SELECT keyset_id, 'redeemed', COALESCE(SUM(amount), 0)
+-- Update with redeemed amounts
+UPDATE keyset_amounts
+SET total_redeemed = (
+    SELECT COALESCE(SUM(amount), 0)
+    FROM proof
+    WHERE proof.keyset_id = keyset_amounts.keyset_id
+    AND proof.state = 'SPENT'
+);
+
+-- Insert keysets that only have redeemed amounts (no issued)
+INSERT OR IGNORE INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+SELECT keyset_id, 0 as total_issued, SUM(amount) as total_redeemed
 FROM proof
 WHERE state = 'SPENT'
+AND keyset_id NOT IN (SELECT keyset_id FROM keyset_amounts)
 GROUP BY keyset_id;

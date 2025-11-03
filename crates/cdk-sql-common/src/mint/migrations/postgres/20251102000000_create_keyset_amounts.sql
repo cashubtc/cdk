@@ -1,24 +1,25 @@
--- Create keyset_amounts table
+-- Create keyset_amounts table with total_issued and total_redeemed columns
 CREATE TABLE IF NOT EXISTS keyset_amounts (
-    keyset_id TEXT NOT NULL,
-    type TEXT NOT NULL,
-    amount BIGINT NOT NULL DEFAULT 0,
-    PRIMARY KEY (keyset_id, type)
+    keyset_id TEXT PRIMARY KEY NOT NULL,
+    total_issued BIGINT NOT NULL DEFAULT 0,
+    total_redeemed BIGINT NOT NULL DEFAULT 0
 );
 
--- Create index for faster lookups
-CREATE INDEX IF NOT EXISTS idx_keyset_amounts_type ON keyset_amounts(type);
-
--- Prefill with issued amounts (sum from blind_signature where c IS NOT NULL)
-INSERT INTO keyset_amounts (keyset_id, type, amount)
-SELECT keyset_id, 'issued', COALESCE(SUM(amount), 0)
-FROM blind_signature
-WHERE c IS NOT NULL
-GROUP BY keyset_id;
-
--- Prefill with redeemed amounts (sum from proof where state = 'SPENT')
-INSERT INTO keyset_amounts (keyset_id, type, amount)
-SELECT keyset_id, 'redeemed', COALESCE(SUM(amount), 0)
-FROM proof
-WHERE state = 'SPENT'
-GROUP BY keyset_id;
+-- Prefill with issued and redeemed amounts using FULL OUTER JOIN
+INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+SELECT
+    COALESCE(bs.keyset_id, p.keyset_id) as keyset_id,
+    COALESCE(bs.total_issued, 0) as total_issued,
+    COALESCE(p.total_redeemed, 0) as total_redeemed
+FROM (
+    SELECT keyset_id, SUM(amount) as total_issued
+    FROM blind_signature
+    WHERE c IS NOT NULL
+    GROUP BY keyset_id
+) bs
+FULL OUTER JOIN (
+    SELECT keyset_id, SUM(amount) as total_redeemed
+    FROM proof
+    WHERE state = 'SPENT'
+    GROUP BY keyset_id
+) p ON bs.keyset_id = p.keyset_id;

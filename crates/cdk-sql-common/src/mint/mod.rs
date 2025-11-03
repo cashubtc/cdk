@@ -221,20 +221,39 @@ where
 
         if new_state == State::Spent {
             // Update keyset_amounts table for redeemed amounts
-            query(
+            // First, try UPDATE (most common case)
+            let updated = query(
                 r#"
-                INSERT INTO keyset_amounts (keyset_id, type, amount)
-                SELECT keyset_id, 'redeemed', COALESCE(SUM(amount), 0)
-                FROM proof
-                WHERE y IN (:ys)
-                GROUP BY keyset_id
-                ON CONFLICT (keyset_id, type)
-                DO UPDATE SET amount = keyset_amounts.amount + EXCLUDED.amount
+                UPDATE keyset_amounts
+                SET total_redeemed = total_redeemed + amounts.total
+                FROM (
+                    SELECT keyset_id, COALESCE(SUM(amount), 0) as total
+                    FROM proof
+                    WHERE y IN (:ys)
+                    GROUP BY keyset_id
+                ) amounts
+                WHERE keyset_amounts.keyset_id = amounts.keyset_id
                 "#,
             )?
             .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
             .execute(&self.inner)
             .await?;
+
+            // If no rows were updated, INSERT new rows (rare case - first time seeing this keyset)
+            if updated == 0 {
+                query(
+                    r#"
+                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+                    SELECT keyset_id, 0, COALESCE(SUM(amount), 0)
+                    FROM proof
+                    WHERE y IN (:ys)
+                    GROUP BY keyset_id
+                    "#,
+                )?
+                .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+                .execute(&self.inner)
+                .await?;
+            }
         }
 
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
@@ -1644,10 +1663,9 @@ where
             r#"
             SELECT
                 keyset_id,
-                amount
+                total_redeemed as amount
             FROM
                 keyset_amounts
-            WHERE type = 'redeemed'
         "#,
         )?
         .fetch_all(&*conn)
@@ -1737,18 +1755,32 @@ where
                     .execute(&self.inner)
                     .await?;
 
-                    query(
+                    // Update total_issued (most common case)
+                    let updated = query(
                         r#"
-                        INSERT INTO keyset_amounts (keyset_id, type, amount)
-                        VALUES (:keyset_id, 'issued', :amount)
-                        ON CONFLICT (keyset_id, type)
-                        DO UPDATE SET amount = keyset_amounts.amount + :amount
+                        UPDATE keyset_amounts
+                        SET total_issued = total_issued + :amount
+                        WHERE keyset_id = :keyset_id
                         "#,
                     )?
                     .bind("amount", u64::from(signature.amount) as i64)
                     .bind("keyset_id", signature.keyset_id.to_string())
                     .execute(&self.inner)
                     .await?;
+
+                    // If no rows updated, INSERT (rare case - first issuance for this keyset)
+                    if updated == 0 {
+                        query(
+                            r#"
+                            INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+                            VALUES (:keyset_id, :amount, 0)
+                            "#,
+                        )?
+                        .bind("amount", u64::from(signature.amount) as i64)
+                        .bind("keyset_id", signature.keyset_id.to_string())
+                        .execute(&self.inner)
+                        .await?;
+                    }
                 }
                 Some((c, _dleq_e, _dleq_s)) => {
                     // Blind message exists: check if c is NULL
@@ -1777,18 +1809,32 @@ where
                             .execute(&self.inner)
                             .await?;
 
-                            query(
+                            // Update total_issued (most common case)
+                            let updated = query(
                                 r#"
-                                INSERT INTO keyset_amounts (keyset_id, type, amount)
-                                VALUES (:keyset_id, 'issued', :amount)
-                                ON CONFLICT (keyset_id, type)
-                                DO UPDATE SET amount = keyset_amounts.amount + :amount
+                                UPDATE keyset_amounts
+                                SET total_issued = total_issued + :amount
+                                WHERE keyset_id = :keyset_id
                                 "#,
                             )?
                             .bind("amount", u64::from(signature.amount) as i64)
                             .bind("keyset_id", signature.keyset_id.to_string())
                             .execute(&self.inner)
                             .await?;
+
+                            // If no rows updated, INSERT (rare case - first issuance for this keyset)
+                            if updated == 0 {
+                                query(
+                                    r#"
+                                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+                                    VALUES (:keyset_id, :amount, 0)
+                                    "#,
+                                )?
+                                .bind("amount", u64::from(signature.amount) as i64)
+                                .bind("keyset_id", signature.keyset_id.to_string())
+                                .execute(&self.inner)
+                                .await?;
+                            }
                         }
                         _ => {
                             // Blind message already has c: Error
@@ -1979,10 +2025,9 @@ where
             r#"
             SELECT
                 keyset_id,
-                amount
+                total_issued as amount
             FROM
                 keyset_amounts
-            WHERE type = 'issued'
         "#,
         )?
         .fetch_all(&*conn)
