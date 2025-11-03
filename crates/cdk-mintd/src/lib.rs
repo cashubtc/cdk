@@ -818,6 +818,32 @@ async fn setup_authentication(
             add_endpoint(ws_protected_endpoint, &auth_settings.websocket_auth);
         }
 
+        // Add custom payment method endpoints
+        // Note: Currently all POST operations (mint quote, mint, melt quote, melt) share the same auth
+        // and all GET operations (check mint quote, check melt quote) share the same auth for each custom method.
+        // This is a limitation of using RoutePath::Custom(method) for all operations.
+        // The path displayed in /info will show just the method name (e.g., "stripe") rather than full paths.
+        if let Some(ref custom_methods_config) = settings.custom_payment_methods {
+            for method_name in &custom_methods_config.enabled {
+                tracing::debug!(
+                    "Adding auth endpoints for custom payment method: {}",
+                    method_name
+                );
+
+                // POST operations (mint quote, mint, melt quote, melt) - use mint auth by default
+                add_endpoint(
+                    ProtectedEndpoint::new(Method::Post, RoutePath::Custom(method_name.clone())),
+                    &auth_settings.mint,
+                );
+
+                // GET operations (check mint quote, check melt quote) - use check_mint_quote auth by default
+                add_endpoint(
+                    ProtectedEndpoint::new(Method::Get, RoutePath::Custom(method_name.clone())),
+                    &auth_settings.check_mint_quote,
+                );
+            }
+        }
+
         mint_builder = mint_builder.with_auth(
             auth_localstore.clone(),
             auth_settings.openid_discovery,

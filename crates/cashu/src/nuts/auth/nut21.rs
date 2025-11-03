@@ -219,7 +219,16 @@ pub fn matching_route_paths(pattern: &str) -> Result<Vec<RoutePath>, Error> {
         .filter(|path| regex.is_match(&path.to_string()))
         .collect())
 }
+fn transform_custom(input: &str) -> String {
+    // Replace '_' with '/' and then ensure the string ends with "v1/"
+    let mut s = input.replace('_', "/");
 
+    if !s.starts_with("/v1/") {
+        s.insert_str(0, "/v1/");
+    }
+
+    s
+}
 impl std::fmt::Display for RoutePath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let path = match self {
@@ -236,7 +245,7 @@ impl std::fmt::Display for RoutePath {
             RoutePath::MeltQuoteBolt12 => "/v1/melt/quote/bolt12",
             RoutePath::MeltBolt12 => "/v1/melt/bolt12",
             RoutePath::Ws => "/v1/ws",
-            RoutePath::Custom(s) => s,
+            RoutePath::Custom(s) => &transform_custom(s),
         };
         write!(f, "{path}")
     }
