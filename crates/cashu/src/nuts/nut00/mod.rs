@@ -930,7 +930,10 @@ impl Iterator for PreMintSecrets {
 
     fn next(&mut self) -> Option<Self::Item> {
         // Use the iterator of the vector
-        self.secrets.pop()
+        if self.secrets.is_empty() {
+            return None;
+        }
+        Some(self.secrets.remove(0))
     }
 }
 

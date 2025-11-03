@@ -226,6 +226,85 @@ just final-check
 4. Submit a pull request
 5. Wait for review and address feedback
 
+## Backporting Changes
+
+CDK uses an automated backport bot to help maintain stable release branches. This section explains how the backport process works.
+
+### How the Backport Bot Works
+
+The backport bot creates pull requests to backport merged changes from `main` to stable release branches. **You control which branches to backport to by adding labels to your PR.**
+
+**Available Target Branches:**
+- `v0.10.x`
+- `v0.11.x`
+- `v0.12.x`
+- `v0.13.x`
+
+### Using Backport Labels
+
+To backport a PR to specific stable branches, add labels to your PR **before or after merging**:
+
+**Label Format:**
+- `backport v0.13.x` - backports to v0.13.x branch
+- `backport v0.12.x` - backports to v0.12.x branch
+- Add multiple labels to backport to multiple branches
+
+**Example Workflow:**
+1. Create and merge your PR to `main`
+2. Add label `backport v0.13.x` to the PR
+3. The bot automatically creates a backport PR for the v0.13.x branch
+4. Review and merge the backport PR
+5. Repeat for other branches as needed
+
+**When to Add Labels:**
+- Add labels before merging - backport PRs are created automatically on merge
+- Add labels after merging - backport PRs are created when you add the label
+- You can add multiple backport labels at once
+
+### When Backports Fail
+
+Sometimes the backport bot cannot automatically create a backport PR due to merge conflicts or other issues. When this happens:
+
+1. The bot automatically creates a GitHub issue labeled with `backport`
+2. The issue will contain details about the original PR and which branch(es) failed
+3. You'll need to manually create the backport PR for the failed branch
+
+**Manual Backporting Process:**
+```bash
+# Checkout the target stable branch
+git checkout v0.13.x
+git pull origin v0.13.x
+
+# Create a new branch for the backport
+git checkout -b backport-pr-NUMBER-to-v0.13.x
+
+# Cherry-pick the commits from the original PR
+git cherry-pick COMMIT_HASH
+
+# Resolve any conflicts if they occur
+# Then push and create a PR
+git push origin backport-pr-NUMBER-to-v0.13.x
+```
+
+### Best Practices for Backporting
+
+1. **Label Appropriately:** Only add backport labels for changes that should be in stable branches
+2. **Keep PRs Focused:** Smaller, focused PRs are easier to backport automatically
+3. **Review Backport PRs:** Always review automatically created backport PRs to ensure they're appropriate
+4. **Test Backports:** Run tests on backport PRs just like regular PRs
+5. **Address Conflicts Promptly:** If a backport fails, address it promptly or close the issue with an explanation
+
+### When NOT to Backport
+
+Not all changes should be backported to stable branches. **Don't add backport labels** for:
+- Breaking API changes
+- New features that aren't needed in older versions
+- Changes that don't apply to older version branches
+- Large refactorings
+- Experimental or unstable features
+
+If a backport isn't appropriate, simply don't add the backport label to the PR.
+
 ## Additional Resources
 
 - [Nix Documentation](https://nixos.org/manual/nix/stable/)
