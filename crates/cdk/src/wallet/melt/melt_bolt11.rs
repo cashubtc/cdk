@@ -199,30 +199,21 @@ impl Wallet {
 
         let melt_response = match quote_info.payment_method {
             cdk_common::PaymentMethod::Bolt11 => {
-                self.try_proof_operation(request.inputs().clone(), self.client.post_melt(request))
-                    .await
+                self.try_proof_operation_or_reclaim(
+                    request.inputs().clone(),
+                    self.client.post_melt(request),
+                )
+                .await?
             }
             cdk_common::PaymentMethod::Bolt12 => {
-                self.try_proof_operation(
+                self.try_proof_operation_or_reclaim(
                     request.inputs().clone(),
                     self.client.post_melt_bolt12(request),
                 )
-                .await
+                .await?
             }
             cdk_common::PaymentMethod::Custom(_) => {
                 return Err(Error::UnsupportedPaymentMethod);
-            }
-        };
-
-        let melt_response = match melt_response {
-            Ok(melt_response) => melt_response,
-            Err(err) => {
-                tracing::error!("Could not melt: {}", err);
-                tracing::info!("Checking status of input proofs.");
-
-                self.reclaim_unspent(proofs).await?;
-
-                return Err(err);
             }
         };
 

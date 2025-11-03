@@ -38,7 +38,7 @@ impl Wallet {
             .await?;
 
         let swap_response = self
-            .try_proof_operation(
+            .try_proof_operation_or_reclaim(
                 pre_swap.swap_request.inputs().clone(),
                 self.client.post_swap(pre_swap.swap_request),
             )
