@@ -1,11 +1,14 @@
 //! Specific Subscription for the cdk crate
 
+use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::MintQuote;
 use cdk_common::nut17::NotificationId;
+use cdk_common::payment::DynMintPayment;
 use cdk_common::pub_sub::{Pubsub, Spec, Subscriber};
 use cdk_common::subscription::SubId;
 use cdk_common::{
@@ -13,15 +16,39 @@ use cdk_common::{
     MintQuoteBolt12Response, MintQuoteState, PaymentMethod, ProofState, PublicKey, QuoteId,
 };
 
+use super::Mint;
 use crate::event::MintEvent;
 
 /// Mint subtopics
 #[derive(Clone)]
 pub struct MintPubSubSpec {
     db: DynMintDatabase,
+    payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
 }
 
 impl MintPubSubSpec {
+    /// Call Mint::check_mint_quote_payments to update the quote pinging the payment backend
+    async fn get_mint_quote(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<MintQuote>, cdk_common::Error> {
+        let mut quote = if let Some(quote) = self.db.get_mint_quote(quote_id).await? {
+            quote
+        } else {
+            return Ok(None);
+        };
+
+        Mint::check_mint_quote_payments(
+            self.db.clone(),
+            self.payment_processors.clone(),
+            None,
+            &mut quote,
+        )
+        .await?;
+
+        Ok(Some(quote))
+    }
+
     async fn get_events_from_db(
         &self,
         request: &[NotificationId<QuoteId>],
@@ -38,10 +65,10 @@ impl MintPubSubSpec {
                     melt_queries.push(self.db.get_melt_quote(uuid))
                 }
                 NotificationId::MintQuoteBolt11(uuid) => {
-                    mint_queries.push(self.db.get_mint_quote(uuid))
+                    mint_queries.push(self.get_mint_quote(uuid))
                 }
                 NotificationId::MintQuoteBolt12(uuid) => {
-                    mint_queries.push(self.db.get_mint_quote(uuid))
+                    mint_queries.push(self.get_mint_quote(uuid))
                 }
                 NotificationId::MeltQuoteBolt12(uuid) => {
                     melt_queries.push(self.db.get_melt_quote(uuid))
@@ -72,12 +99,13 @@ impl MintPubSubSpec {
                         quotes
                             .into_iter()
                             .filter_map(|quote| {
-                                quote.and_then(|x| match x.payment_method {
+                                quote.and_then(|mint_quotes| match mint_quotes.payment_method {
                                     PaymentMethod::Bolt11 => {
-                                        let response: MintQuoteBolt11Response<QuoteId> = x.into();
+                                        let response: MintQuoteBolt11Response<QuoteId> =
+                                            mint_quotes.into();
                                         Some(response.into())
                                     }
-                                    PaymentMethod::Bolt12 => match x.try_into() {
+                                    PaymentMethod::Bolt12 => match mint_quotes.try_into() {
                                         Ok(response) => {
                                             let response: MintQuoteBolt12Response<QuoteId> =
                                                 response;
@@ -119,10 +147,16 @@ impl Spec for MintPubSubSpec {
 
     type Event = MintEvent<QuoteId>;
 
-    type Context = DynMintDatabase;
+    type Context = (
+        DynMintDatabase,
+        Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+    );
 
     fn new_instance(context: Self::Context) -> Arc<Self> {
-        Arc::new(Self { db: context })
+        Arc::new(Self {
+            db: context.0,
+            payment_processors: context.1,
+        })
     }
 
     async fn fetch_events(self: &Arc<Self>, topics: Vec<Self::Topic>, reply_to: Subscriber<Self>) {
@@ -142,8 +176,13 @@ pub struct PubSubManager(Pubsub<MintPubSubSpec>);
 
 impl PubSubManager {
     /// Create a new instance
-    pub fn new(db: DynMintDatabase) -> Arc<Self> {
-        Arc::new(Self(Pubsub::new(MintPubSubSpec::new_instance(db))))
+    pub fn new(
+        context: (
+            DynMintDatabase,
+            Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+        ),
+    ) -> Arc<Self> {
+        Arc::new(Self(Pubsub::new(MintPubSubSpec::new_instance(context))))
     }
 
     /// Helper function to emit a ProofState status
