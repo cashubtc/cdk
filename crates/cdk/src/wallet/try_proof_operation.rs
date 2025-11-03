@@ -1,10 +1,23 @@
 use std::future::Future;
 
-use futures::future::BoxFuture;
-
 use crate::amount::SplitTarget;
 use crate::nuts::{Proofs, State};
 use crate::{Error, Wallet};
+
+#[cfg(not(target_arch = "wasm32"))]
+type MaybeBoxFuture<'a, T> = futures::future::BoxFuture<'a, T>;
+#[cfg(target_arch = "wasm32")]
+type MaybeBoxFuture<'a, T> = futures::future::LocalBoxFuture<'a, T>;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSend: Send {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSend {}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: ?Sized + Send> MaybeSend for T {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> MaybeSend for T {}
 
 /// Size of proofs to send to avoid hitting the mint limit.
 const BATCH_PROOF_SIZE: usize = 100;
@@ -18,10 +31,10 @@ impl Wallet {
         &'a self,
         inputs: Proofs,
         f: F,
-    ) -> BoxFuture<'a, F::Output>
+    ) -> MaybeBoxFuture<'a, F::Output>
     where
-        F: Future<Output = Result<R, Error>> + Send + 'a,
-        R: Send + Sync,
+        F: Future<Output = Result<R, Error>> + MaybeSend + 'a,
+        R: MaybeSend + Sync + 'a,
     {
         Box::pin(async move {
             match f.await {
