@@ -199,8 +199,8 @@ itest db:
 fake-mint-itest db:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/fake_itests.sh "{{db}}" external_signatory
   ./misc/fake_itests.sh "{{db}}"
+  ./misc/fake_itests.sh "{{db}}" external_signatory
 
 itest-payment-processor ln:
   #!/usr/bin/env bash
