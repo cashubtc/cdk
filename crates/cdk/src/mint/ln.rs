@@ -1,5 +1,6 @@
 use cdk_common::amount::to_unit;
 use cdk_common::common::PaymentProcessorKey;
+use cdk_common::database;
 use cdk_common::mint::MintQuote;
 use cdk_common::util::unix_time;
 use cdk_common::{Amount, MintQuoteState, PaymentMethod};
@@ -72,14 +73,29 @@ impl Mint {
 
                 let amount_paid = to_unit(payment.payment_amount, &payment.unit, &quote.unit)?;
 
-                quote.increment_amount_paid(amount_paid)?;
-                quote.add_payment(amount_paid, payment.payment_id.clone(), unix_time())?;
-
-                let total_paid = tx
-                    .increment_mint_quote_amount_paid(&quote.id, amount_paid, payment.payment_id)
-                    .await?;
-
-                self.pubsub_manager.mint_quote_payment(quote, total_paid);
+                match tx
+                    .increment_mint_quote_amount_paid(
+                        &quote.id,
+                        amount_paid,
+                        payment.payment_id.clone(),
+                    )
+                    .await
+                {
+                    Ok(total_paid) => {
+                        quote.increment_amount_paid(amount_paid)?;
+                        quote.add_payment(amount_paid, payment.payment_id.clone(), unix_time())?;
+                        self.pubsub_manager.mint_quote_payment(quote, total_paid);
+                    }
+                    Err(database::Error::Duplicate) => {
+                        tracing::debug!(
+                            "Payment ID {} already processed (caught race condition in check_mint_quote_paid)",
+                            payment.payment_id
+                        );
+                        // This is fine - another concurrent request already processed this payment
+                        // The in-memory check at line 49 can miss this due to stale data
+                    }
+                    Err(e) => return Err(e.into()),
+                }
             }
         }
 

@@ -748,25 +748,8 @@ where
             return Err(Error::Duplicate);
         }
 
-        // Check if payment_id already exists in mint_quote_payments
-        let exists = query(
-            r#"
-            SELECT payment_id
-            FROM mint_quote_payments
-            WHERE payment_id = :payment_id
-            FOR UPDATE
-            "#,
-        )?
-        .bind("payment_id", payment_id.clone())
-        .fetch_one(&self.inner)
-        .await?;
-
-        if exists.is_some() {
-            tracing::error!("Payment ID already exists: {}", payment_id);
-            return Err(database::Error::Duplicate);
-        }
-
-        // Get current amount_paid from quote
+        // Step 1: Lock the mint_quote row FIRST to prevent deadlocks
+        // This establishes a consistent lock ordering across all transactions
         let current_amount = query(
             r#"
             SELECT amount_paid
@@ -779,7 +762,7 @@ where
         .fetch_one(&self.inner)
         .await
         .inspect_err(|err| {
-            tracing::error!("SQLite could not get mint quote amount_paid: {}", err);
+            tracing::error!("Could not get mint quote amount_paid: {}", err);
         })?;
 
         let current_amount_paid = if let Some(current_amount) = current_amount {
@@ -789,7 +772,41 @@ where
             Amount::ZERO
         };
 
-        // Calculate new amount_paid with overflow check
+        // Step 2: Try to insert payment_id - this will fail fast if it's a duplicate
+        // The UNIQUE constraint on payment_id will prevent duplicate insertions atomically
+        let insert_result = query(
+            r#"
+            INSERT INTO mint_quote_payments
+            (quote_id, payment_id, amount, timestamp)
+            VALUES (:quote_id, :payment_id, :amount, :timestamp)
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .bind("payment_id", payment_id.clone())
+        .bind("amount", amount_paid.to_i64())
+        .bind("timestamp", unix_time() as i64)
+        .execute(&self.inner)
+        .await;
+
+        // Check if insert failed due to duplicate payment_id
+        match insert_result {
+            Ok(_) => {
+                // Insert succeeded - now safe to update the amount
+            }
+            Err(err) => {
+                // Check if error is due to UNIQUE constraint violation
+                let err_msg = err.to_string().to_lowercase();
+                if err_msg.contains("unique") || err_msg.contains("duplicate") {
+                    tracing::debug!("Payment ID already processed: {}", payment_id);
+                    return Err(database::Error::Duplicate);
+                } else {
+                    tracing::error!("Could not insert payment ID: {}", err);
+                    return Err(err);
+                }
+            }
+        }
+
+        // Step 3: Calculate new amount_paid with overflow check
         let new_amount_paid = current_amount_paid
             .checked_add(amount_paid)
             .ok_or_else(|| database::Error::AmountOverflow)?;
@@ -801,7 +818,7 @@ where
             new_amount_paid
         );
 
-        // Update the amount_paid
+        // Step 4: Update the amount_paid
         query(
             r#"
             UPDATE mint_quote
@@ -814,26 +831,7 @@ where
         .execute(&self.inner)
         .await
         .inspect_err(|err| {
-            tracing::error!("SQLite could not update mint quote amount_paid: {}", err);
-        })?;
-
-        // Add payment_id to mint_quote_payments table
-        query(
-            r#"
-            INSERT INTO mint_quote_payments
-            (quote_id, payment_id, amount, timestamp)
-            VALUES (:quote_id, :payment_id, :amount, :timestamp)
-            "#,
-        )?
-        .bind("quote_id", quote_id.to_string())
-        .bind("payment_id", payment_id)
-        .bind("amount", amount_paid.to_i64())
-        .bind("timestamp", unix_time() as i64)
-        .execute(&self.inner)
-        .await
-        .map_err(|err| {
-            tracing::error!("SQLite could not insert payment ID: {}", err);
-            err
+            tracing::error!("Could not update mint quote amount_paid: {}", err);
         })?;
 
         Ok(new_amount_paid)
