@@ -226,6 +226,10 @@ async fn test_p2pk_sig_all_multisig_2of3() {
     swap_request_valid_sigs.sign_sig_all(alice_secret.clone()).unwrap();
     swap_request_valid_sigs.sign_sig_all(bob_secret.clone()).unwrap();
 
+    // print the json serializiation of this final swap. It should succeed
+    // as it has sufficient signatures
+    println!("{}", serde_json::to_string_pretty(&swap_request_valid_sigs.clone()).unwrap());
+
     let result = mint.process_swap_request(swap_request_valid_sigs).await;
     assert!(result.is_ok(), "Should succeed with 2 valid signatures: {:?}", result.err());
     println!("✓ Spending with 2 VALID signatures (Alice + Bob) succeeded");
