@@ -179,6 +179,7 @@ pub fn create_fake_wallet_settings(
     fake_wallet_config: Option<cdk_mintd::config::FakeWallet>,
 ) -> cdk_mintd::config::Settings {
     cdk_mintd::config::Settings {
+        custom_payment_methods: None,
         info: cdk_mintd::config::Info {
             url: format!("http://127.0.0.1:{port}"),
             quote_ttl: None,
@@ -234,6 +235,7 @@ pub fn create_cln_settings(
     cln_config: cdk_mintd::config::Cln,
 ) -> cdk_mintd::config::Settings {
     cdk_mintd::config::Settings {
+        custom_payment_methods: None,
         info: cdk_mintd::config::Info {
             url: format!("http://127.0.0.1:{port}"),
             quote_ttl: None,
@@ -283,6 +285,7 @@ pub fn create_lnd_settings(
     mnemonic: String,
 ) -> cdk_mintd::config::Settings {
     cdk_mintd::config::Settings {
+        custom_payment_methods: None,
         info: cdk_mintd::config::Info {
             quote_ttl: None,
             url: format!("http://127.0.0.1:{port}"),
