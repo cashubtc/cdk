@@ -97,6 +97,7 @@ impl From<MintQuoteCustomResponse<QuoteId>> for MintQuoteCustomResponse<String> 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltQuoteCustomRequest {
+    /// Custom payment method name
     pub method: String,
     /// Payment request string (method-specific format)
     pub request: String,
