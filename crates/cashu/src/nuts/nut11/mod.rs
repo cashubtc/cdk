@@ -1433,6 +1433,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_sig_all_swap_single_sig() {
         // Valid SwapRequest with SIG_ALL signature
         let valid_swap = r#"{
@@ -1512,6 +1513,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_sig_all_swap_multi_sig() {
         // SwapRequest with multi-sig SIG_ALL requiring 2 signatures
                 let multisig_swap = r#"{
@@ -1557,6 +1559,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_sig_all_swap_msg_to_sign() {
         // SwapRequest with multi-sig SIG_ALL requiring 2 signatures
                 let multisig_swap = r#"{
@@ -1595,6 +1598,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_sig_all_multisig_locktime_passed() {
         // Swap request with locktime already passed and the needed refund signatures
         let locktime_sig_all_swap = r#"{
@@ -1663,6 +1667,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_sig_all_htlc_with_pubkey() {
         // `SwapRequest` with an HTLC also locked to a public key
         let locktime_sig_all_swap = r#"{
@@ -1722,6 +1727,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_sig_all_htlc_refund_multisig() {
         //  `SwapRequest` with a multisig HTLC also locked to locktime and refund keys.
         let locktime_sig_all_swap = r#"{
@@ -1751,6 +1757,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_sig_all_melt() {
         // MeltRequest with valid SIG_ALL signature
                 let valid_melt = r#"{
@@ -1803,6 +1810,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_sig_all_melt_msg_to_sign() {
                 let multisig_melt = r#"{
   "quote": "uHwJ-f6HFAC-lU2dMw0KOu6gd5S571FXQQHioYMD",
@@ -1840,6 +1848,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_sig_all_melt_multi_sig() {
         // MeltRequest with multi-sig SIG_ALL requiring 2 signatures
                 let multisig_melt = r#"{

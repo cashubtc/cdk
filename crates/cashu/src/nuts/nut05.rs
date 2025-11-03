@@ -171,7 +171,6 @@ impl<Q: std::fmt::Display> super::nut10::SpendingConditionVerification for MeltR
         if let Some(outputs) = &self.outputs {
             for output in outputs {
                 msg.push_str(&output.amount.to_string());
-                msg.push_str(&output.keyset_id.to_string());
                 msg.push_str(&output.blinded_secret.to_hex());
             }
         }

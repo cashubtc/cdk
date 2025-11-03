@@ -110,7 +110,6 @@ impl super::nut10::SpendingConditionVerification for SwapRequest {
         // msg = ... || amount_0 || id_0 || B_0 || ... || amount_m || id_m || B_m
         for output in &self.outputs {
             msg.push_str(&output.amount.to_string());
-            msg.push_str(&output.keyset_id.to_string());
             msg.push_str(&output.blinded_secret.to_hex());
         }
 
