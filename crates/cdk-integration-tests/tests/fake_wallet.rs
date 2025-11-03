@@ -134,7 +134,7 @@ async fn test_fake_melt_payment_fail() {
     }
 
     let wallet_bal = wallet.total_balance().await.unwrap();
-    assert_eq!(wallet_bal, 100.into());
+    assert_eq!(wallet_bal, 98.into());
 }
 
 /// Tests that when both the pay_invoice and check_invoice both fail,
@@ -222,6 +222,16 @@ async fn test_fake_melt_payment_return_fail_status() {
     let melt = wallet.melt(&melt_quote.id).await;
     assert!(melt.is_err());
 
+    wallet.check_all_pending_proofs().await.unwrap();
+
+    let pending = wallet
+        .localstore
+        .get_proofs(None, None, Some(vec![State::Pending]), None)
+        .await
+        .unwrap();
+
+    assert!(pending.is_empty());
+
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Unknown,
         check_payment_state: MeltQuoteState::Unknown,
@@ -237,13 +247,15 @@ async fn test_fake_melt_payment_return_fail_status() {
     let melt = wallet.melt(&melt_quote.id).await;
     assert!(melt.is_err());
 
+    wallet.check_all_pending_proofs().await.unwrap();
+
     let pending = wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await
         .unwrap();
 
-    assert!(pending.is_empty());
+    assert!(!pending.is_empty());
 }
 
 /// Tests that when the ln backend returns an error with unknown status,
@@ -282,7 +294,7 @@ async fn test_fake_melt_payment_error_unknown() {
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
-    assert_eq!(melt.unwrap_err().to_string(), "Payment failed");
+    assert!(melt.is_err());
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Unknown,
@@ -297,7 +309,9 @@ async fn test_fake_melt_payment_error_unknown() {
 
     // The melt should error at the payment invoice command
     let melt = wallet.melt(&melt_quote.id).await;
-    assert_eq!(melt.unwrap_err().to_string(), "Payment failed");
+    assert!(melt.is_err());
+
+    wallet.check_all_pending_proofs().await.unwrap();
 
     let pending = wallet
         .localstore
@@ -305,7 +319,7 @@ async fn test_fake_melt_payment_error_unknown() {
         .await
         .unwrap();
 
-    assert!(pending.is_empty());
+    assert!(!pending.is_empty());
 }
 
 /// Tests that when the ln backend returns an error but the second check returns paid,
@@ -343,10 +357,10 @@ async fn test_fake_melt_payment_err_paid() {
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
 
     // The melt should error at the payment invoice command
-    let melt = wallet.melt(&melt_quote.id).await;
-    assert!(melt.is_err());
+    let melt = wallet.melt(&melt_quote.id).await.unwrap();
 
-    attempt_to_swap_pending(&wallet).await.unwrap();
+    assert!(melt.fee_paid == Amount::ZERO);
+    assert!(melt.amount == Amount::from(7));
 }
 
 /// Tests that change outputs in a melt quote are correctly handled

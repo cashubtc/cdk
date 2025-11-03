@@ -85,16 +85,47 @@ impl FromStr for SwapSagaState {
     }
 }
 
+/// States specific to melt saga
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeltSagaState {
+    /// Setup complete (proofs reserved, quote verified)
+    SetupComplete,
+    /// Payment sent to Lightning network
+    PaymentSent,
+}
+
+impl fmt::Display for MeltSagaState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MeltSagaState::SetupComplete => write!(f, "setup_complete"),
+            MeltSagaState::PaymentSent => write!(f, "payment_sent"),
+        }
+    }
+}
+
+impl FromStr for MeltSagaState {
+    type Err = Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let value = value.to_lowercase();
+        match value.as_str() {
+            "setup_complete" => Ok(MeltSagaState::SetupComplete),
+            "payment_sent" => Ok(MeltSagaState::PaymentSent),
+            _ => Err(Error::Custom(format!("Invalid melt saga state: {}", value))),
+        }
+    }
+}
+
 /// Saga state for different operation types
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SagaStateEnum {
     /// Swap saga states
     Swap(SwapSagaState),
+    /// Melt saga states
+    Melt(MeltSagaState),
     // Future: Mint saga states
     // Mint(MintSagaState),
-    // Future: Melt saga states
-    // Melt(MeltSagaState),
 }
 
 impl SagaStateEnum {
@@ -102,8 +133,8 @@ impl SagaStateEnum {
     pub fn new(operation_kind: OperationKind, s: &str) -> Result<Self, Error> {
         match operation_kind {
             OperationKind::Swap => Ok(SagaStateEnum::Swap(SwapSagaState::from_str(s)?)),
+            OperationKind::Melt => Ok(SagaStateEnum::Melt(MeltSagaState::from_str(s)?)),
             OperationKind::Mint => Err(Error::Custom("Mint saga not implemented yet".to_string())),
-            OperationKind::Melt => Err(Error::Custom("Melt saga not implemented yet".to_string())),
         }
     }
 
@@ -113,6 +144,10 @@ impl SagaStateEnum {
             SagaStateEnum::Swap(state) => match state {
                 SwapSagaState::SetupComplete => "setup_complete",
                 SwapSagaState::Signed => "signed",
+            },
+            SagaStateEnum::Melt(state) => match state {
+                MeltSagaState::SetupComplete => "setup_complete",
+                MeltSagaState::PaymentSent => "payment_sent",
             },
         }
     }
@@ -131,6 +166,9 @@ pub struct Saga {
     pub blinded_secrets: Vec<PublicKey>,
     /// Y values (public keys) from input proofs
     pub input_ys: Vec<PublicKey>,
+    /// Quote ID for melt operations (used for payment status lookup during recovery)
+    /// None for swap operations
+    pub quote_id: Option<String>,
     /// Unix timestamp when saga was created
     pub created_at: u64,
     /// Unix timestamp when saga was last updated
@@ -152,6 +190,7 @@ impl Saga {
             state: SagaStateEnum::Swap(state),
             blinded_secrets,
             input_ys,
+            quote_id: None,
             created_at: now,
             updated_at: now,
         }
@@ -160,6 +199,33 @@ impl Saga {
     /// Update swap saga state
     pub fn update_swap_state(&mut self, new_state: SwapSagaState) {
         self.state = SagaStateEnum::Swap(new_state);
+        self.updated_at = unix_time();
+    }
+
+    /// Create new melt saga
+    pub fn new_melt(
+        operation_id: Uuid,
+        state: MeltSagaState,
+        input_ys: Vec<PublicKey>,
+        blinded_secrets: Vec<PublicKey>,
+        quote_id: String,
+    ) -> Self {
+        let now = unix_time();
+        Self {
+            operation_id,
+            operation_kind: OperationKind::Melt,
+            state: SagaStateEnum::Melt(state),
+            blinded_secrets,
+            input_ys,
+            quote_id: Some(quote_id),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Update melt saga state
+    pub fn update_melt_state(&mut self, new_state: MeltSagaState) {
+        self.state = SagaStateEnum::Melt(new_state);
         self.updated_at = unix_time();
     }
 }
