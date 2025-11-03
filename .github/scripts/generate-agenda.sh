@@ -9,7 +9,7 @@ OUTPUT_DIR="meetings"
 
 # Calculate date range (last 7 days)
 SINCE_DATE=$(date -d "$DAYS_BACK days ago" -u +"%Y-%m-%dT%H:%M:%SZ")
-MEETING_DATE=$(date -u +"%b %d %Y %H:%M UTC")
+MEETING_DATE=$(date -u +"%b %d %Y 15:00 UTC")
 FILE_DATE=$(date -u +"%Y-%m-%d")
 
 echo "Generating meeting agenda for $MEETING_DATE"
