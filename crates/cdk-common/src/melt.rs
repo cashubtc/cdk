@@ -12,12 +12,7 @@ pub enum MeltQuoteRequest {
     /// Lightning Network BOLT12 offer request
     Bolt12(MeltQuoteBolt12Request),
     /// Custom payment method request
-    Custom {
-        /// Payment method name (e.g., "paypal", "venmo")
-        method: String,
-        /// Generic request data
-        request: MeltQuoteCustomRequest,
-    },
+    Custom(MeltQuoteCustomRequest),
 }
 
 impl From<MeltQuoteBolt11Request> for MeltQuoteRequest {
@@ -34,9 +29,6 @@ impl From<MeltQuoteBolt12Request> for MeltQuoteRequest {
 
 impl From<MeltQuoteCustomRequest> for MeltQuoteRequest {
     fn from(request: MeltQuoteCustomRequest) -> Self {
-        MeltQuoteRequest::Custom {
-            method: request.clone().method,
-            request: request.into(),
-        }
+        MeltQuoteRequest::Custom(request)
     }
 }

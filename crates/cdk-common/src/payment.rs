@@ -459,7 +459,7 @@ pub struct PaymentProcessorSettings {
     pub amountless: bool,
     /// Bolt12 supported
     pub bolt12: bool,
-    // is custom payment method supported
+    /// Custom payment method supported
     pub custom: String,
 }
 

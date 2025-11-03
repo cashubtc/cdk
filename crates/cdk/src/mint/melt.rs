@@ -124,9 +124,7 @@ impl Mint {
             MeltQuoteRequest::Bolt12(bolt12_request) => {
                 self.get_melt_bolt12_quote_impl(&bolt12_request).await
             }
-            MeltQuoteRequest::Custom { method, request } => {
-                self.get_melt_custom_quote_impl(&method, &request).await
-            }
+            MeltQuoteRequest::Custom(request) => self.get_melt_custom_quote_impl(&request).await,
         }
     }
 
@@ -347,7 +345,6 @@ impl Mint {
     #[instrument(skip_all)]
     async fn get_melt_custom_quote_impl(
         &self,
-        method: &str,
         melt_request: &MeltQuoteCustomRequest,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
