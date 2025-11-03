@@ -122,3 +122,11 @@ impl From<serde_json::Error> for FfiError {
         }
     }
 }
+
+impl From<cdk::cdk_database::Error> for FfiError {
+    fn from(err: cdk::cdk_database::Error) -> Self {
+        FfiError::Database {
+            msg: err.to_string(),
+        }
+    }
+}

@@ -28,7 +28,6 @@ use cdk::wallet::types::TransactionDirection;
 use cdk::wallet::{HttpClient, MintConnector, Wallet};
 use cdk::StreamExt;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
-use cdk_integration_tests::attempt_to_swap_pending;
 use cdk_sqlite::wallet::memory;
 
 const MINT_URL: &str = "http://127.0.0.1:8086";
@@ -70,7 +69,15 @@ async fn test_fake_tokens_pending() {
 
     assert!(melt.is_err());
 
-    attempt_to_swap_pending(&wallet).await.unwrap();
+    assert!(
+        wallet
+            .localstore
+            .get_proofs(None, None, Some(vec![State::Pending]), None)
+            .await
+            .expect("no an error")
+            .is_empty(),
+        "Database rollback removes all pending proofs"
+    );
 }
 
 /// Tests that if the pay error fails and the check returns unknown or failed,
@@ -175,13 +182,15 @@ async fn test_fake_melt_payment_fail_and_check() {
     let melt = wallet.melt(&melt_quote.id).await;
     assert!(melt.is_err());
 
-    let pending = wallet
-        .localstore
-        .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await
-        .unwrap();
-
-    assert!(!pending.is_empty());
+    assert!(
+        wallet
+            .localstore
+            .get_proofs(None, None, Some(vec![State::Pending]), None)
+            .await
+            .expect("no an error")
+            .is_empty(),
+        "Database rollback removes all pending proofs"
+    );
 }
 
 /// Tests that when the ln backend returns a failed status but does not error,
@@ -346,7 +355,15 @@ async fn test_fake_melt_payment_err_paid() {
     let melt = wallet.melt(&melt_quote.id).await;
     assert!(melt.is_err());
 
-    attempt_to_swap_pending(&wallet).await.unwrap();
+    assert!(
+        wallet
+            .localstore
+            .get_proofs(None, None, Some(vec![State::Pending]), None)
+            .await
+            .expect("no an error")
+            .is_empty(),
+        "Database rollback removes all pending proofs"
+    );
 }
 
 /// Tests that change outputs in a melt quote are correctly handled

@@ -4,6 +4,7 @@ use cdk_common::amount::{FeeAndAmounts, KeysetFeeAndAmounts};
 use cdk_common::nut02::{KeySetInfos, KeySetInfosMethods};
 use tracing::instrument;
 
+use super::Tx;
 use crate::nuts::{Id, KeySetInfo, Keys};
 use crate::{Error, Wallet};
 
@@ -14,8 +15,8 @@ impl Wallet {
     /// If keys are not found locally, goes online to query the mint for the keyset and stores the [`Keys`] in local database.
     #[instrument(skip(self))]
     pub async fn load_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
-        let keys = if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
-            keys
+        if let Some(keys) = self.localstore.get_keys(&keyset_id).await? {
+            Ok(keys)
         } else {
             tracing::debug!(
                 "Keyset {} not in db fetching from mint {}",
@@ -26,13 +27,35 @@ impl Wallet {
             let keys = self.client.get_mint_keyset(keyset_id).await?;
 
             keys.verify_id()?;
+            let mut tx = self.localstore.begin_db_transaction().await?;
+            tx.add_keys(keys.clone()).await?;
+            tx.commit().await?;
+            Ok(keys.keys)
+        }
+    }
 
-            self.localstore.add_keys(keys.clone()).await?;
+    /// Load keyset keys with transaction
+    #[instrument(skip(self, tx))]
+    pub(super) async fn load_keyset_keys_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+        keyset_id: Id,
+    ) -> Result<Keys, Error> {
+        if let Some(keys) = tx.get_keys(&keyset_id).await? {
+            Ok(keys)
+        } else {
+            tracing::debug!(
+                "Keyset {} not in db fetching from mint {}",
+                keyset_id,
+                self.mint_url
+            );
 
-            keys.keys
-        };
+            let keys = self.client.get_mint_keyset(keyset_id).await?;
 
-        Ok(keys)
+            keys.verify_id()?;
+            tx.add_keys(keys.clone()).await?;
+            Ok(keys.keys)
+        }
     }
 
     /// Get keysets from local database or go online if missing
@@ -76,22 +99,36 @@ impl Wallet {
 
     /// Refresh keysets by fetching the latest from mint - always goes online
     ///
+    /// Refresh keysets from mint
+    ///
     /// This method always goes online to fetch the latest keyset information from the mint.
     /// It updates the local database with the fetched keysets and ensures we have keys
     /// for all active keysets. This is used when operations need the most up-to-date
     /// keyset information and are willing to go online.
     #[instrument(skip(self))]
     pub async fn refresh_keysets(&self) -> Result<KeySetInfos, Error> {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let result = self.refresh_keysets_with_tx(&mut tx).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Refresh keysets from mint with transaction
+    #[instrument(skip(self, tx))]
+    pub(super) async fn refresh_keysets_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+    ) -> Result<KeySetInfos, Error> {
         tracing::debug!("Refreshing keysets and ensuring we have keys");
-        let _ = self.fetch_mint_info().await?;
+
+        let _ = self.fetch_mint_info_with_tx(tx).await?;
 
         // Fetch all current keysets from mint
         let keysets_response = self.client.get_mint_keysets().await?;
         let all_keysets = keysets_response.keysets;
 
         // Update local storage with keyset info
-        self.localstore
-            .add_mint_keysets(self.mint_url.clone(), all_keysets.clone())
+        tx.add_mint_keysets(self.mint_url.clone(), all_keysets.clone())
             .await?;
 
         // Filter for active keysets matching our unit
@@ -99,7 +136,7 @@ impl Wallet {
 
         // Ensure we have keys for all active keysets
         for keyset in &keysets {
-            self.load_keyset_keys(keyset.id).await?;
+            self.load_keyset_keys_with_tx(tx, keyset.id).await?;
         }
 
         Ok(keysets)
@@ -113,6 +150,20 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn fetch_active_keyset(&self) -> Result<KeySetInfo, Error> {
         self.refresh_keysets()
+            .await?
+            .active()
+            .min_by_key(|k| k.input_fee_ppk)
+            .cloned()
+            .ok_or(Error::NoActiveKeyset)
+    }
+
+    /// Get the active keyset with the lowest fees with transaction - always goes online
+    #[instrument(skip(self, tx))]
+    pub(super) async fn fetch_active_keyset_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+    ) -> Result<KeySetInfo, Error> {
+        self.refresh_keysets_with_tx(tx)
             .await?
             .active()
             .min_by_key(|k| k.input_fee_ppk)
@@ -171,6 +222,35 @@ impl Wallet {
         Ok(fees)
     }
 
+    /// Get keyset fees and amounts for mint with transaction
+    pub(super) async fn get_keyset_fees_and_amounts_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+    ) -> Result<KeysetFeeAndAmounts, Error> {
+        let keysets = tx
+            .get_mint_keysets(self.mint_url.clone())
+            .await?
+            .ok_or(Error::UnknownKeySet)?;
+
+        let mut fees = HashMap::new();
+        for keyset in keysets {
+            fees.insert(
+                keyset.id,
+                (
+                    keyset.input_fee_ppk,
+                    self.load_keyset_keys_with_tx(tx, keyset.id)
+                        .await?
+                        .iter()
+                        .map(|(amount, _)| amount.to_u64())
+                        .collect::<Vec<_>>(),
+                )
+                    .into(),
+            );
+        }
+
+        Ok(fees)
+    }
+
     /// Get keyset fees and amounts for mint by keyset id from local database only - offline operation
     ///
     /// Returns the input fee rate (per-proof-per-thousand) for a specific keyset ID from
@@ -181,6 +261,19 @@ impl Wallet {
         keyset_id: Id,
     ) -> Result<FeeAndAmounts, Error> {
         self.get_keyset_fees_and_amounts()
+            .await?
+            .get(&keyset_id)
+            .cloned()
+            .ok_or(Error::UnknownKeySet)
+    }
+
+    /// Get keyset fees and amounts for mint by keyset id with transaction
+    pub(super) async fn get_keyset_fees_and_amounts_by_id_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+        keyset_id: Id,
+    ) -> Result<FeeAndAmounts, Error> {
+        self.get_keyset_fees_and_amounts_with_tx(tx)
             .await?
             .get(&keyset_id)
             .cloned()

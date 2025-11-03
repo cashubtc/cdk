@@ -19,6 +19,7 @@ use crate::nuts::{
 };
 use crate::types::ProofInfo;
 use crate::wallet::mint_connector::AuthHttpClient;
+use crate::wallet::Tx;
 use crate::{Amount, Error, OidcClient};
 
 /// JWT Claims structure for decoding tokens
@@ -181,7 +182,9 @@ impl AuthWallet {
 
             keys.verify_id()?;
 
-            self.localstore.add_keys(keys.clone()).await?;
+            let mut tx = self.localstore.begin_db_transaction().await?;
+            tx.add_keys(keys.clone()).await?;
+            tx.commit().await?;
 
             keys.keys
         };
@@ -221,6 +224,44 @@ impl AuthWallet {
         }
     }
 
+    /// Refresh blind auth keysets by fetching the latest from mint - always goes online (with transaction)
+    ///
+    /// This method always goes online to fetch the latest blind auth keyset information from the mint.
+    /// It updates the local database with the fetched keysets and ensures we have keys for all keysets.
+    /// Returns only the keysets with Auth currency unit. This is used when operations need the most
+    /// up-to-date keyset information and are willing to go online.
+    ///
+    /// This version requires a database transaction to be passed in.
+    #[instrument(skip(self, tx))]
+    pub(crate) async fn refresh_keysets_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+    ) -> Result<Vec<KeySetInfo>, Error> {
+        let keysets_response = self.client.get_mint_blind_auth_keysets().await?;
+        let keysets = keysets_response.keysets;
+
+        // Update local store with keysets
+        tx.add_mint_keysets(self.mint_url.clone(), keysets.clone())
+            .await?;
+
+        // Filter for auth keysets
+        let auth_keysets = keysets
+            .clone()
+            .into_iter()
+            .filter(|k| k.unit == CurrencyUnit::Auth)
+            .collect::<Vec<KeySetInfo>>();
+
+        // Ensure we have keys for all auth keysets
+        for keyset in &auth_keysets {
+            if self.localstore.get_keys(&keyset.id).await?.is_none() {
+                tracing::debug!("Fetching missing keys for auth keyset {}", keyset.id);
+                self.load_keyset_keys(keyset.id).await?;
+            }
+        }
+
+        Ok(auth_keysets)
+    }
+
     /// Refresh blind auth keysets by fetching the latest from mint - always goes online
     ///
     /// This method always goes online to fetch the latest blind auth keyset information from the mint.
@@ -233,9 +274,10 @@ impl AuthWallet {
         let keysets = keysets_response.keysets;
 
         // Update local store with keysets
-        self.localstore
-            .add_mint_keysets(self.mint_url.clone(), keysets.clone())
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        tx.add_mint_keysets(self.mint_url.clone(), keysets.clone())
             .await?;
+        tx.commit().await?;
 
         // Filter for auth keysets
         let auth_keysets = keysets
@@ -265,6 +307,31 @@ impl AuthWallet {
         let auth_keysets = self.refresh_keysets().await?;
         let keyset = auth_keysets.first().ok_or(Error::NoActiveKeyset)?;
         Ok(keyset.clone())
+    }
+
+    /// Get unspent auth proofs from local database only - offline operation (with transaction)
+    ///
+    /// Returns auth proofs from the local database that are in the Unspent state.
+    /// This is an offline operation that does not contact the mint.
+    ///
+    /// This version requires a database transaction to be passed in.
+    /// The selected proofs are locked for update within this DBTransaction.
+    #[instrument(skip(self, tx))]
+    pub(crate) async fn get_unspent_auth_proofs_with_tx(
+        &self,
+        tx: &mut Tx<'_, '_>,
+    ) -> Result<Vec<AuthProof>, Error> {
+        Ok(tx
+            .get_proofs(
+                Some(self.mint_url.clone()),
+                Some(CurrencyUnit::Auth),
+                Some(vec![State::Unspent]),
+                None,
+            )
+            .await?
+            .into_iter()
+            .map(|p| p.proof.try_into())
+            .collect::<Result<Vec<AuthProof>, _>>()?)
     }
 
     /// Get unspent auth proofs from local database only - offline operation
@@ -298,17 +365,19 @@ impl AuthWallet {
     /// Get Auth Token
     #[instrument(skip(self))]
     pub async fn get_blind_auth_token(&self) -> Result<Option<BlindAuthToken>, Error> {
-        let unspent = self.get_unspent_auth_proofs().await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
+        let unspent = self.get_unspent_auth_proofs_with_tx(&mut tx).await?;
 
         let auth_proof = match unspent.first() {
             Some(proof) => {
-                self.localstore
-                    .update_proofs(vec![], vec![proof.y()?])
-                    .await?;
+                tx.update_proofs(vec![], vec![proof.y()?]).await?;
                 proof
             }
             None => return Ok(None),
         };
+
+        tx.commit().await?;
 
         Ok(Some(BlindAuthToken {
             auth_proof: auth_proof.clone(),
@@ -467,7 +536,9 @@ impl AuthWallet {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
         // Add new proofs to store
-        self.localstore.update_proofs(proof_infos, vec![]).await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        tx.update_proofs(proof_infos, vec![]).await?;
+        tx.commit().await?;
 
         Ok(proofs)
     }

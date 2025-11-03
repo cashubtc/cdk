@@ -766,7 +766,7 @@ async fn test_mint_change_with_fee_melt() {
         .unwrap();
 
     let w = wallet_alice
-        .melt_proofs(&melt_quote.id, proofs)
+        .melt_proofs_with_metadata(&melt_quote.id, proofs, HashMap::new())
         .await
         .unwrap();
 
