@@ -69,7 +69,7 @@ pub struct Mint {
     #[cfg(feature = "auth")]
     auth_localstore: Option<DynMintAuthDatabase>,
     /// Payment processors for mint
-    payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+    payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
     /// Subscription manager
     pubsub_manager: Arc<PubSubManager>,
     #[cfg(feature = "auth")]
@@ -203,9 +203,11 @@ impl Mint {
             }
         }
 
+        let payment_processors = Arc::new(payment_processors);
+
         Ok(Self {
             signatory,
-            pubsub_manager: PubSubManager::new(localstore.clone()),
+            pubsub_manager: PubSubManager::new((localstore.clone(), payment_processors.clone())),
             localstore,
             #[cfg(feature = "auth")]
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
@@ -257,7 +259,7 @@ impl Mint {
         // Start all payment processors first
         tracing::info!("Starting payment processors...");
         let mut seen_processors = Vec::new();
-        for (key, processor) in &self.payment_processors {
+        for (key, processor) in self.payment_processors.iter() {
             // Skip if we've already spawned a task for this processor instance
             if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
                 continue;
@@ -369,7 +371,7 @@ impl Mint {
         tracing::info!("Stopping payment processors...");
         let mut seen_processors = Vec::new();
 
-        for (key, processor) in &self.payment_processors {
+        for (key, processor) in self.payment_processors.iter() {
             // Skip if we've already spawned a task for this processor instance
             if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
                 continue;

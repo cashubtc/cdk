@@ -1,17 +1,28 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use cdk_common::amount::to_unit;
 use cdk_common::common::PaymentProcessorKey;
+use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::MintQuote;
+use cdk_common::payment::DynMintPayment;
 use cdk_common::util::unix_time;
 use cdk_common::{Amount, MintQuoteState, PaymentMethod};
 use tracing::instrument;
 
+use super::subscription::PubSubManager;
 use super::Mint;
 use crate::Error;
 
 impl Mint {
-    /// Check the status of an ln payment for a quote
-    #[instrument(skip_all)]
-    pub async fn check_mint_quote_paid(&self, quote: &mut MintQuote) -> Result<(), Error> {
+    /// Static implementation of check_mint_quote_paid to avoid circular dependency to the Mint
+    #[inline(always)]
+    pub(crate) async fn check_mint_quote_payments(
+        localstore: DynMintDatabase,
+        payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+        pubsub_manager: Option<Arc<PubSubManager>>,
+        quote: &mut MintQuote,
+    ) -> Result<(), Error> {
         let state = quote.state();
 
         // We can just return here and do not need to check with ln node.
@@ -23,7 +34,7 @@ impl Mint {
             return Ok(());
         }
 
-        let ln = match self.payment_processors.get(&PaymentProcessorKey::new(
+        let ln = match payment_processors.get(&PaymentProcessorKey::new(
             quote.unit.clone(),
             quote.payment_method.clone(),
         )) {
@@ -43,7 +54,7 @@ impl Mint {
             return Ok(());
         }
 
-        let mut tx = self.localstore.begin_transaction().await?;
+        let mut tx = localstore.begin_transaction().await?;
 
         // reload the quote, as it state may have changed
         *quote = tx
@@ -79,12 +90,26 @@ impl Mint {
                     .increment_mint_quote_amount_paid(&quote.id, amount_paid, payment.payment_id)
                     .await?;
 
-                self.pubsub_manager.mint_quote_payment(quote, total_paid);
+                if let Some(pubsub_manager) = pubsub_manager.as_ref() {
+                    pubsub_manager.mint_quote_payment(quote, total_paid);
+                }
             }
         }
 
         tx.commit().await?;
 
         Ok(())
+    }
+
+    /// Check the status of an ln payment for a quote
+    #[instrument(skip_all)]
+    pub async fn check_mint_quote_paid(&self, quote: &mut MintQuote) -> Result<(), Error> {
+        Self::check_mint_quote_payments(
+            self.localstore.clone(),
+            self.payment_processors.clone(),
+            Some(self.pubsub_manager.clone()),
+            quote,
+        )
+        .await
     }
 }
