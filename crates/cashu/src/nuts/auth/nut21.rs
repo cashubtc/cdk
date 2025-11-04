@@ -362,7 +362,7 @@ mod tests {
         assert_eq!(RoutePath::MintBlindAuth.to_string(), "/v1/auth/blind/mint");
         assert_eq!(
             RoutePath::Custom("paypal".to_string()).to_string(),
-            "paypal"
+            "/v1/paypal"
         );
     }
 
@@ -374,18 +374,18 @@ mod tests {
 
         // Test serialization of custom paths
         let json = serde_json::to_string(&RoutePath::Custom("paypal".to_string())).unwrap();
-        assert_eq!(json, "\"paypal\"");
+        assert_eq!(json, "\"/v1/paypal\"");
 
         // Test deserialization of static paths
         let path: RoutePath = serde_json::from_str("\"/v1/mint/bolt11\"").unwrap();
         assert_eq!(path, RoutePath::MintBolt11);
 
         // Test deserialization of custom paths
-        let path: RoutePath = serde_json::from_str("\"paypal\"").unwrap();
-        assert_eq!(path, RoutePath::Custom("paypal".to_string()));
+        let path: RoutePath = serde_json::from_str("\"mint/paypal\"").unwrap();
+        assert_eq!(path, RoutePath::Custom("mint/paypal".to_string()));
 
         // Test round-trip serialization
-        let original = RoutePath::Custom("venmo".to_string());
+        let original = RoutePath::Custom("/v1/venmo".to_string());
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: RoutePath = serde_json::from_str(&json).unwrap();
         assert_eq!(original, deserialized);
