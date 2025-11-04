@@ -207,23 +207,9 @@ impl Wallet {
         opts: ReceiveOptions,
     ) -> Result<Amount, Error> {
         let token = Token::from_str(encoded_token)?;
-        println!("receiving token {:?}", token);
         let unit = token.unit().unwrap_or_default();
-        println!("receiving unit {:?}", unit);
-        println!("self unit {:?}", self.unit);
-        // Diagnostic logging for unit mismatch
-        if unit != self.unit {
-            tracing::error!(
-                "Unit mismatch detected - Token unit: {:?}, Wallet unit: {:?}",
-                unit,
-                self.unit
-            );
-            tracing::debug!("Token data: {:?}", token);
-            tracing::debug!("Encoded token: {}", encoded_token);
-        }
 
         ensure_cdk!(unit == self.unit, Error::UnsupportedUnit);
-        println!("units passed");
 
         let keysets_info = self.load_mint_keysets().await?;
         let proofs = token.proofs(&keysets_info)?;
