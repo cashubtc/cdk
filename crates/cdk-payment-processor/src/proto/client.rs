@@ -175,7 +175,7 @@ impl MintPayment for PaymentProcessorClient {
 
         let request_type = match &options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
-                OutgoingPaymentRequestType::Bolt11Invoice
+                OutgoingPaymentRequestType::Custom
             }
             cdk_common::payment::OutgoingPaymentOptions::Bolt11(_) => {
                 OutgoingPaymentRequestType::Bolt11Invoice
