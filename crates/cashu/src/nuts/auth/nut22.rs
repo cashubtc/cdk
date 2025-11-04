@@ -275,8 +275,6 @@ impl MintAuthRequest {
 mod tests {
     use std::collections::HashSet;
 
-    use strum::IntoEnumIterator;
-
     use super::super::nut21::{Method, RoutePath};
     use super::*;
 

@@ -604,16 +604,31 @@ async fn configure_backend_for_unit(
             mint_builder = mint_builder.with_supported_websockets(nut17_supported);
         }
     }
-    let mut method = PaymentMethod::Bolt11;
-    if let Some(custom) = payment_settings.get("custom") {
-        if !custom.as_str().unwrap_or_default().is_empty() {
-            method = PaymentMethod::Custom(custom.as_str().unwrap().to_string());
+    let mut methods = Vec::new();
+
+    // Default to Bolt11
+    methods.push(PaymentMethod::Bolt11);
+
+    // Add Bolt12 if supported in payment settings
+    if let Some(bolt12) = payment_settings.get("bolt12") {
+        if bolt12.as_bool().unwrap_or_default() {
+            methods.push(PaymentMethod::Bolt12);
         }
     }
 
-    mint_builder
-        .add_payment_processor(unit.clone(), method, mint_melt_limits, backend)
-        .await?;
+    // Add custom methods from payment settings
+    if let Some(custom) = payment_settings.get("custom") {
+        if let Some(custom_array) = custom.as_array() {
+            for method in custom_array {
+                methods.push(PaymentMethod::Custom(method.to_string()));
+            }
+        }
+    }
+    for method in methods {
+        mint_builder
+            .add_payment_processor(unit.clone(), method, mint_melt_limits, backend.clone())
+            .await?;
+    }
 
     if let Some(input_fee) = settings.info.input_fee_ppk {
         mint_builder.set_unit_fee(&unit, input_fee)?;
@@ -653,7 +668,10 @@ async fn setup_authentication(
     _work_dir: &Path,
     mut mint_builder: MintBuilder,
     _password: Option<String>,
-) -> Result<MintBuilder> {
+) -> Result<(
+    MintBuilder,
+    Option<cdk_common::database::DynMintAuthDatabase>,
+)> {
     if let Some(auth_settings) = settings.auth.clone() {
         use cdk_common::database::DynMintAuthDatabase;
 
@@ -818,31 +836,10 @@ async fn setup_authentication(
             add_endpoint(ws_protected_endpoint, &auth_settings.websocket_auth);
         }
 
-        // Add custom payment method endpoints
-        // Note: Currently all POST operations (mint quote, mint, melt quote, melt) share the same auth
-        // and all GET operations (check mint quote, check melt quote) share the same auth for each custom method.
-        // This is a limitation of using RoutePath::Custom(method) for all operations.
-        // The path displayed in /info will show just the method name (e.g., "stripe") rather than full paths.
-        if let Some(ref custom_methods_config) = settings.custom_payment_methods {
-            for method_name in &custom_methods_config.enabled {
-                tracing::debug!(
-                    "Adding auth endpoints for custom payment method: {}",
-                    method_name
-                );
-
-                // POST operations (mint quote, mint, melt quote, melt) - use mint auth by default
-                add_endpoint(
-                    ProtectedEndpoint::new(Method::Post, RoutePath::Custom(method_name.clone())),
-                    &auth_settings.mint,
-                );
-
-                // GET operations (check mint quote, check melt quote) - use check_mint_quote auth by default
-                add_endpoint(
-                    ProtectedEndpoint::new(Method::Get, RoutePath::Custom(method_name.clone())),
-                    &auth_settings.check_mint_quote,
-                );
-            }
-        }
+        // Custom payment method endpoints will be added dynamically after the mint is built
+        // and we can query the payment processors for their supported methods.
+        // For now, we don't add any custom endpoints here - they'll be added in the
+        // start_server function after we have access to the mint instance.
 
         mint_builder = mint_builder.with_auth(
             auth_localstore.clone(),
@@ -858,8 +855,11 @@ async fn setup_authentication(
         tx.remove_protected_endpoints(unprotected_endpoints).await?;
         tx.add_protected_endpoints(protected_endpoints).await?;
         tx.commit().await?;
+
+        Ok((mint_builder, Some(auth_localstore)))
+    } else {
+        Ok((mint_builder, None))
     }
-    Ok(mint_builder)
 }
 
 /// Build mints with the configured the signing method (remote signatory or local seed)
@@ -909,6 +909,7 @@ async fn start_services_with_shutdown(
     mint_builder_info: cdk::nuts::MintInfo,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     routers: Vec<Router>,
+    #[cfg(feature = "auth")] auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
 ) -> Result<()> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
@@ -993,12 +994,71 @@ async fn start_services_with_shutdown(
     let bolt12_supported = nut04_methods.contains(&&PaymentMethod::Bolt12)
         || nut05_methods.contains(&&PaymentMethod::Bolt12);
 
-    // Get custom payment methods from configuration
-    let custom_methods = settings
-        .custom_payment_methods
-        .as_ref()
-        .map(|c| c.enabled.clone())
-        .unwrap_or_default();
+    // Get custom payment methods from payment processors
+    let custom_methods = mint.get_custom_payment_methods().await?;
+
+    tracing::info!(
+        "Custom payment methods from processors: {:?}",
+        custom_methods
+    );
+
+    // Configure auth for custom payment methods if auth is enabled
+    #[cfg(feature = "auth")]
+    if let (Some(ref auth_settings), Some(auth_db)) = (&settings.auth, &auth_localstore) {
+        if auth_settings.auth_enabled && !custom_methods.is_empty() {
+            use std::collections::HashMap;
+
+            use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
+            use cdk::nuts::AuthRequired;
+
+            use crate::config::AuthType;
+
+            let mut protected_endpoints = HashMap::new();
+
+            for method_name in &custom_methods {
+                tracing::debug!(
+                    "Adding auth endpoints for custom payment method: {}",
+                    method_name
+                );
+
+                // POST operations (mint quote, mint, melt quote, melt) - use mint auth by default
+                let post_endpoint =
+                    ProtectedEndpoint::new(Method::Post, RoutePath::Custom(method_name.clone()));
+
+                // GET operations (check mint quote, check melt quote) - use check_mint_quote auth by default
+                let get_endpoint =
+                    ProtectedEndpoint::new(Method::Get, RoutePath::Custom(method_name.clone()));
+
+                // Determine auth type based on settings
+                let post_auth = match auth_settings.mint {
+                    AuthType::Clear => Some(AuthRequired::Clear),
+                    AuthType::Blind => Some(AuthRequired::Blind),
+                    AuthType::None => None,
+                };
+
+                let get_auth = match auth_settings.check_mint_quote {
+                    AuthType::Clear => Some(AuthRequired::Clear),
+                    AuthType::Blind => Some(AuthRequired::Blind),
+                    AuthType::None => None,
+                };
+
+                // Collect endpoints to add
+                if let Some(auth) = post_auth {
+                    protected_endpoints.insert(post_endpoint, auth);
+                }
+                if let Some(auth) = get_auth {
+                    protected_endpoints.insert(get_endpoint, auth);
+                }
+            }
+
+            // Add all custom endpoints in one transaction
+            if !protected_endpoints.is_empty() {
+                let mut tx = auth_db.begin_transaction().await?;
+                tx.add_protected_endpoints(protected_endpoints).await?;
+                tx.commit().await?;
+            }
+        }
+    }
 
     let v1_service = cdk_axum::create_mint_router_with_custom_cache(
         Arc::clone(&mint),
@@ -1230,7 +1290,8 @@ pub async fn run_mintd_with_shutdown(
     let mint_builder =
         configure_mint_builder(settings, maybe_mint_builder, runtime, work_dir, Some(kv)).await?;
     #[cfg(feature = "auth")]
-    let mint_builder = setup_authentication(settings, work_dir, mint_builder, db_password).await?;
+    let (mint_builder, auth_localstore) =
+        setup_authentication(settings, work_dir, mint_builder, db_password).await?;
 
     let config_mint_info = mint_builder.current_mint_info();
 
@@ -1247,6 +1308,8 @@ pub async fn run_mintd_with_shutdown(
         config_mint_info,
         shutdown_signal,
         routers,
+        #[cfg(feature = "auth")]
+        auth_localstore,
     )
     .await
 }

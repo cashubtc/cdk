@@ -62,7 +62,7 @@ impl LNbits {
                 invoice_description: true,
                 amountless: false,
                 bolt12: false,
-                custom: "".to_string(),
+                custom: vec![],
             },
         })
     }

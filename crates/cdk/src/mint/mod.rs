@@ -400,6 +400,42 @@ impl Mint {
         Ok(())
     }
 
+    /// Get all custom payment methods supported by registered payment processors
+    ///
+    /// This queries all payment processors for their supported custom methods
+    /// and returns a deduplicated list.
+    pub async fn get_custom_payment_methods(&self) -> Result<Vec<String>, Error> {
+        use std::collections::HashSet;
+        let mut custom_methods = HashSet::new();
+        let mut seen_processors = Vec::new();
+
+        for processor in self.payment_processors.values() {
+            // Skip if we've already queried this processor instance
+            if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
+                continue;
+            }
+            seen_processors.push(Arc::clone(processor));
+
+            match processor.get_settings().await {
+                Ok(settings) => {
+                    if let Ok(settings) = serde_json::from_value::<
+                        cdk_common::payment::PaymentProcessorSettings,
+                    >(settings)
+                    {
+                        for method in settings.custom {
+                            custom_methods.insert(method);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to get settings from payment processor: {}", e);
+                }
+            }
+        }
+
+        Ok(custom_methods.into_iter().collect())
+    }
+
     /// Get the payment processor for the given unit and payment method
     pub fn get_payment_processor(
         &self,

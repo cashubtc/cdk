@@ -88,7 +88,7 @@ impl MintPayment for Cln {
             invoice_description: true,
             amountless: true,
             bolt12: true,
-            custom: "".to_string(),
+            custom: vec![],
         })?)
     }
 
@@ -305,7 +305,7 @@ impl MintPayment for Cln {
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         match options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
-                Err(cdk_common::payment::Error::UnsupportedPaymentOption.into())
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 // If we have specific amount options, use those
@@ -549,7 +549,7 @@ impl MintPayment for Cln {
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
         match options {
             cdk_common::payment::IncomingPaymentOptions::Custom(_) => {
-                Err(cdk_common::payment::Error::UnsupportedPaymentOption.into())
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
             IncomingPaymentOptions::Bolt11(Bolt11IncomingPaymentOptions {
                 description,

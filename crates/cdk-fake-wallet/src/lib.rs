@@ -425,7 +425,7 @@ impl MintPayment for FakeWallet {
             invoice_description: true,
             amountless: false,
             bolt12: true,
-            custom: "".to_string(),
+            custom: vec![],
         })?)
     }
 
@@ -513,7 +513,7 @@ impl MintPayment for FakeWallet {
             }
             OutgoingPaymentOptions::Custom(_) => {
                 // Custom payment methods are not supported by fake wallet
-                return Err(cdk_common::payment::Error::UnsupportedPaymentOption.into());
+                return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
             }
         };
 
@@ -643,7 +643,7 @@ impl MintPayment for FakeWallet {
             }
             OutgoingPaymentOptions::Custom(_) => {
                 // Custom payment methods are not supported by fake wallet
-                Err(cdk_common::payment::Error::UnsupportedPaymentOption.into())
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
         }
     }
@@ -715,7 +715,7 @@ impl MintPayment for FakeWallet {
             }
             IncomingPaymentOptions::Custom(_) => {
                 // Custom payment methods are not supported by fake wallet
-                return Err(cdk_common::payment::Error::UnsupportedPaymentOption.into());
+                return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
             }
         };
 

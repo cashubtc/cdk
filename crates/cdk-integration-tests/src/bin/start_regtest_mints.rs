@@ -265,7 +265,6 @@ fn create_ldk_settings(
     mnemonic: String,
 ) -> cdk_mintd::config::Settings {
     cdk_mintd::config::Settings {
-        custom_payment_methods: None,
         info: cdk_mintd::config::Info {
             quote_ttl: None,
             url: format!("http://127.0.0.1:{port}"),

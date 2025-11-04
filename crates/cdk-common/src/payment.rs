@@ -459,8 +459,9 @@ pub struct PaymentProcessorSettings {
     pub amountless: bool,
     /// Bolt12 supported
     pub bolt12: bool,
-    /// Custom payment method supported
-    pub custom: String,
+    /// Custom payment methods supported (list of method names)
+    #[serde(default)]
+    pub custom: Vec<String>,
 }
 
 impl TryFrom<PaymentProcessorSettings> for Value {

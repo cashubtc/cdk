@@ -474,7 +474,7 @@ impl MintPayment for CdkLdkNode {
             invoice_description: true,
             amountless: true,
             bolt12: true,
-            custom: "".to_string(),
+            custom: vec![],
         };
         Ok(serde_json::to_value(settings)?)
     }
@@ -556,7 +556,7 @@ impl MintPayment for CdkLdkNode {
                 })
             }
             cdk_common::payment::IncomingPaymentOptions::Custom(_) => {
-                Err(cdk_common::payment::Error::UnsupportedPaymentOption.into())
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
         }
     }
@@ -571,7 +571,7 @@ impl MintPayment for CdkLdkNode {
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         match options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
-                Err(cdk_common::payment::Error::UnsupportedPaymentOption.into())
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let bolt11 = bolt11_options.bolt11;
@@ -657,7 +657,7 @@ impl MintPayment for CdkLdkNode {
     ) -> Result<MakePaymentResponse, Self::Err> {
         match options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
-                Err(cdk_common::payment::Error::UnsupportedPaymentOption.into())
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
             }
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let bolt11 = bolt11_options.bolt11;

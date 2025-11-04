@@ -483,7 +483,6 @@ pub struct Settings {
     #[cfg(feature = "fakewallet")]
     pub fake_wallet: Option<FakeWallet>,
     pub grpc_processor: Option<GrpcProcessor>,
-    pub custom_payment_methods: Option<CustomPaymentMethods>,
     pub database: Database,
     #[cfg(feature = "auth")]
     pub auth_database: Option<AuthDatabase>,
@@ -492,16 +491,6 @@ pub struct Settings {
     pub auth: Option<Auth>,
     #[cfg(feature = "prometheus")]
     pub prometheus: Option<Prometheus>,
-}
-
-/// Custom payment methods configuration
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CustomPaymentMethods {
-    /// List of enabled custom payment method names
-    /// e.g., ["paypal", "venmo", "cashapp"]
-    /// These methods must be supported by the configured payment processor (typically gRPC)
-    #[serde(default)]
-    pub enabled: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

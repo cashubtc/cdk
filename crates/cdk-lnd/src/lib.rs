@@ -122,7 +122,7 @@ impl Lnd {
                 invoice_description: true,
                 amountless: true,
                 bolt12: false,
-                custom: "".to_string(),
+                custom: vec![],
             },
         })
     }
