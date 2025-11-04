@@ -418,13 +418,8 @@ impl Mint {
 
             match processor.get_settings().await {
                 Ok(settings) => {
-                    if let Ok(settings) = serde_json::from_value::<
-                        cdk_common::payment::PaymentProcessorSettings,
-                    >(settings)
-                    {
-                        for method in settings.custom {
-                            custom_methods.insert(method);
-                        }
+                    for method in settings.custom {
+                        custom_methods.insert(method);
                     }
                 }
                 Err(e) => {

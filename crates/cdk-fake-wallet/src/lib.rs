@@ -29,8 +29,8 @@ use cdk_common::ensure_cdk;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
     self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
-    MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentProcessorSettings,
-    PaymentQuoteResponse, WaitPaymentResponse,
+    MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, SettingsResponse,
+    WaitPaymentResponse,
 };
 use error::Error;
 use futures::stream::StreamExt;
@@ -38,7 +38,6 @@ use futures::Stream;
 use lightning::offers::offer::OfferBuilder;
 use lightning_invoice::{Bolt11Invoice, Currency, InvoiceBuilder, PaymentSecret};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time;
 use tokio_stream::wrappers::ReceiverStream;
@@ -418,15 +417,16 @@ impl MintPayment for FakeWallet {
     type Err = payment::Error;
 
     #[instrument(skip_all)]
-    async fn get_settings(&self) -> Result<Value, Self::Err> {
-        Ok(serde_json::to_value(PaymentProcessorSettings {
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        Ok(SettingsResponse {
+            bolt11: true,
             mpp: true,
-            unit: self.unit.clone(),
+            unit: self.unit.to_string(),
             invoice_description: true,
             amountless: false,
             bolt12: true,
             custom: vec![],
-        })?)
+        })
     }
 
     #[instrument(skip_all)]

@@ -21,7 +21,7 @@ use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
     self, Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions,
     CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse, MintPayment,
-    OutgoingPaymentOptions, PaymentIdentifier, PaymentProcessorSettings, PaymentQuoteResponse,
+    OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, SettingsResponse,
     WaitPaymentResponse,
 };
 use cdk_common::util::{hex, unix_time};
@@ -38,7 +38,6 @@ use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny, Sha256};
 use cln_rpc::ClnRpc;
 use error::Error;
 use futures::{Stream, StreamExt};
-use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 use uuid::Uuid;
@@ -81,15 +80,16 @@ impl Cln {
 impl MintPayment for Cln {
     type Err = payment::Error;
 
-    async fn get_settings(&self) -> Result<Value, Self::Err> {
-        Ok(serde_json::to_value(PaymentProcessorSettings {
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        Ok(SettingsResponse {
+            bolt11: true,
             mpp: true,
-            unit: CurrencyUnit::Msat,
+            unit: CurrencyUnit::Msat.to_string(),
             invoice_description: true,
             amountless: true,
             bolt12: true,
             custom: vec![],
-        })?)
+        })
     }
 
     /// Is wait invoice active

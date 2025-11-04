@@ -467,16 +467,17 @@ impl MintPayment for CdkLdkNode {
     }
 
     /// Base Settings
-    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err> {
-        let settings = PaymentProcessorSettings {
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        let settings = SettingsResponse {
+            bolt11: true,
             mpp: false,
-            unit: CurrencyUnit::Msat,
+            unit: CurrencyUnit::Msat.to_string(),
             invoice_description: true,
             amountless: true,
             bolt12: true,
             custom: vec![],
         };
-        Ok(serde_json::to_value(settings)?)
+        Ok(settings)
     }
 
     /// Create a new invoice

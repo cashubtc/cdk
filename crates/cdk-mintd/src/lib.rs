@@ -589,20 +589,18 @@ async fn configure_backend_for_unit(
 ) -> Result<MintBuilder> {
     let payment_settings = backend.get_settings().await?;
 
-    if let Some(bolt12) = payment_settings.get("bolt12") {
-        if bolt12.as_bool().unwrap_or_default() {
-            mint_builder
-                .add_payment_processor(
-                    unit.clone(),
-                    PaymentMethod::Bolt12,
-                    mint_melt_limits,
-                    Arc::clone(&backend),
-                )
-                .await?;
+    if payment_settings.bolt12 {
+        mint_builder
+            .add_payment_processor(
+                unit.clone(),
+                PaymentMethod::Bolt12,
+                mint_melt_limits,
+                Arc::clone(&backend),
+            )
+            .await?;
 
-            let nut17_supported = SupportedMethods::default_bolt12(unit.clone());
-            mint_builder = mint_builder.with_supported_websockets(nut17_supported);
-        }
+        let nut17_supported = SupportedMethods::default_bolt12(unit.clone());
+        mint_builder = mint_builder.with_supported_websockets(nut17_supported);
     }
     let mut methods = Vec::new();
 
@@ -610,19 +608,13 @@ async fn configure_backend_for_unit(
     methods.push(PaymentMethod::Bolt11);
 
     // Add Bolt12 if supported in payment settings
-    if let Some(bolt12) = payment_settings.get("bolt12") {
-        if bolt12.as_bool().unwrap_or_default() {
-            methods.push(PaymentMethod::Bolt12);
-        }
+    if payment_settings.bolt12 {
+        methods.push(PaymentMethod::Bolt12);
     }
 
     // Add custom methods from payment settings
-    if let Some(custom) = payment_settings.get("custom") {
-        if let Some(custom_array) = custom.as_array() {
-            for method in custom_array {
-                methods.push(PaymentMethod::Custom(method.to_string()));
-            }
-        }
+    for custom_method in &payment_settings.custom {
+        methods.push(PaymentMethod::Custom(custom_method.clone()));
     }
     for method in methods {
         mint_builder

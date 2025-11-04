@@ -15,7 +15,13 @@ service CdkPaymentProcessor {
 message EmptyRequest {}
 
 message SettingsResponse {
-  string inner = 1;
+  bool bolt11 = 1;
+  repeated string custom = 2;
+  bool mpp = 3;
+  string unit = 4;
+  bool invoice_description = 5;
+  bool bolt12 = 6;
+  bool amountless = 7;
 }
 
 message Bolt11IncomingPaymentOptions {

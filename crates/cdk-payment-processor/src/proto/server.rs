@@ -167,14 +167,20 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
         &self,
         _request: Request<EmptyRequest>,
     ) -> Result<Response<SettingsResponse>, Status> {
-        let settings: Value = self
+        let settings = self
             .inner
             .get_settings()
             .await
             .map_err(|_| Status::internal("Could not get settings"))?;
 
         Ok(Response::new(SettingsResponse {
-            inner: settings.to_string(),
+            bolt11: settings.bolt11,
+            custom: settings.custom,
+            mpp: settings.mpp,
+            unit: settings.unit,
+            invoice_description: settings.invoice_description,
+            bolt12: settings.bolt12,
+            amountless: settings.amountless,
         }))
     }
 

@@ -321,7 +321,7 @@ pub trait MintPayment {
     }
 
     /// Base Settings
-    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err>;
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err>;
 
     /// Create a new invoice
     async fn create_incoming_payment_request(
@@ -446,33 +446,34 @@ pub struct PaymentQuoteResponse {
     pub state: MeltQuoteState,
 }
 
-/// Ln backend settings
+/// Payment processor settings response
+/// Mirrors the proto SettingsResponse structure
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaymentProcessorSettings {
-    /// MPP supported
-    pub mpp: bool,
-    /// Base unit of backend
-    pub unit: CurrencyUnit,
-    /// Invoice Description supported
-    pub invoice_description: bool,
-    /// Paying amountless invoices supported
-    pub amountless: bool,
-    /// Bolt12 supported
-    pub bolt12: bool,
+pub struct SettingsResponse {
+    /// BOLT11 payment method supported
+    pub bolt11: bool,
     /// Custom payment methods supported (list of method names)
     #[serde(default)]
     pub custom: Vec<String>,
+    /// Multi-part payment (MPP) supported
+    pub mpp: bool,
+    /// Base unit of backend
+    pub unit: String,
+    /// Invoice description supported
+    pub invoice_description: bool,
+    /// BOLT12 payment method supported
+    pub bolt12: bool,
+    /// Amountless invoice support
+    pub amountless: bool,
 }
 
-impl TryFrom<PaymentProcessorSettings> for Value {
-    type Error = crate::error::Error;
-
-    fn try_from(value: PaymentProcessorSettings) -> Result<Self, Self::Error> {
-        serde_json::to_value(value).map_err(|err| err.into())
+impl From<SettingsResponse> for Value {
+    fn from(value: SettingsResponse) -> Self {
+        serde_json::to_value(value).unwrap_or(Value::Null)
     }
 }
 
-impl TryFrom<Value> for PaymentProcessorSettings {
+impl TryFrom<Value> for SettingsResponse {
     type Error = crate::error::Error;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
@@ -519,7 +520,7 @@ where
 {
     type Err = T::Err;
 
-    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err> {
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
         let start = std::time::Instant::now();
         METRICS.inc_in_flight_requests("get_settings");
 

@@ -1,7 +1,7 @@
 use cdk_common::mint::{MintQuote, Operation};
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
-    IncomingPaymentOptions, PaymentProcessorSettings, WaitPaymentResponse,
+    IncomingPaymentOptions, WaitPaymentResponse,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
@@ -278,7 +278,6 @@ impl Mint {
                     let quote_expiry = unix_time() + mint_ttl;
 
                     let settings = ln.get_settings().await?;
-                    let settings: PaymentProcessorSettings = serde_json::from_value(settings)?;
 
                     let description = bolt11_request.description;
 
