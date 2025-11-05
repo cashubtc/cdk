@@ -23,7 +23,6 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Result};
 use cashu::Bolt11Invoice;
 use cdk::amount::{Amount, SplitTarget};
-use cdk::nuts::State;
 use cdk::{StreamExt, Wallet};
 use cdk_fake_wallet::create_fake_invoice;
 use init_regtest::{get_lnd_dir, LND_RPC_ADDR};
@@ -63,43 +62,6 @@ pub fn get_second_mint_url_from_env() -> String {
         Ok(url) => url,
         Err(_) => panic!("Mint url not set"),
     }
-}
-
-// Get all pending from wallet and attempt to swap
-// Will panic if there are no pending
-// Will return Ok if swap fails as expected
-pub async fn attempt_to_swap_pending(wallet: &Wallet) -> Result<()> {
-    let pending = wallet
-        .localstore
-        .get_proofs(None, None, Some(vec![State::Pending]), None)
-        .await?;
-
-    assert!(!pending.is_empty());
-
-    let swap = wallet
-        .swap(
-            None,
-            SplitTarget::None,
-            pending.into_iter().map(|p| p.proof).collect(),
-            None,
-            false,
-        )
-        .await;
-
-    match swap {
-        Ok(_swap) => {
-            bail!("These proofs should be pending")
-        }
-        Err(err) => match err {
-            cdk::error::Error::TokenPending => (),
-            _ => {
-                println!("{err:?}");
-                bail!("Wrong error")
-            }
-        },
-    }
-
-    Ok(())
 }
 
 // This is the ln wallet we use to send/receive ln payements as the wallet

@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use cdk_common::amount::FeeAndAmounts;
@@ -45,6 +46,7 @@ pub mod multi_mint_wallet;
 pub mod payment_request;
 mod proofs;
 mod receive;
+mod reclaim;
 mod send;
 #[cfg(not(target_arch = "wasm32"))]
 mod streams;
@@ -91,6 +93,7 @@ pub struct Wallet {
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
+    in_error_swap_reverted_proofs: Arc<AtomicBool>,
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
