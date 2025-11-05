@@ -10,43 +10,62 @@ use crate::{Error, Wallet};
 impl Wallet {
     /// Load keys for mint keyset
     ///
-    /// Returns keys from KeyManager cache if available.
-    /// If keys are not cached, triggers a refresh and waits briefly before checking again.
+    /// Returns keys from metadata cache if available.
+    /// If keys are not cached, fetches from mint server.
     #[instrument(skip(self))]
     pub async fn load_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
-        Ok((*self.key_manager.get_keys(&keyset_id).await?).clone())
+        self.metadata_cache
+            .load(&self.localstore, &self.client)
+            .await?
+            .keys
+            .get(&keyset_id)
+            .map(|x| (*x.clone()).clone())
+            .ok_or(Error::UnknownKeySet)
     }
 
-    /// Get keysets from KeyManager cache or trigger refresh if missing
+    /// Get keysets from metadata cache or fetch if missing
     ///
-    /// First checks the KeyManager cache for keysets. If keysets are not cached,
-    /// triggers a refresh from the mint and waits briefly before checking again.
+    /// First checks the metadata cache for keysets. If keysets are not cached,
+    /// fetches from the mint server and updates the cache.
     /// This is the main method for getting keysets in token operations that can work offline
     /// but will fall back to online if needed.
     #[instrument(skip(self))]
     pub async fn load_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
         Ok(self
-            .key_manager
-            .get_keysets()
+            .metadata_cache
+            .load(&self.localstore, &self.client)
             .await?
-            .into_iter()
-            .filter(|x| x.unit == self.unit && x.active)
+            .keysets
+            .iter()
+            .filter_map(|(_, keyset)| {
+                if keyset.unit == self.unit && keyset.active {
+                    Some((*keyset.clone()).clone())
+                } else {
+                    None
+                }
+            })
             .collect::<Vec<_>>())
     }
 
-    /// Get keysets from KeyManager cache only - pure offline operation
+    /// Get keysets from metadata cache (may fetch if not populated)
     ///
-    /// Only checks the KeyManager cache for keysets. If keysets are not cached,
-    /// returns an error without going online. This is used for operations that must remain
-    /// offline and rely on previously cached keyset data.
+    /// Checks the metadata cache for keysets. If cache is not populated,
+    /// fetches from mint and updates cache. Returns error if no active keysets found.
     #[instrument(skip(self))]
     pub async fn get_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
         let keysets = self
-            .key_manager
-            .get_keysets()
+            .metadata_cache
+            .load(&self.localstore, &self.client)
             .await?
-            .into_iter()
-            .filter(|k| k.unit == self.unit && k.active)
+            .keysets
+            .iter()
+            .filter_map(|(_, keyset)| {
+                if keyset.unit == self.unit && keyset.active {
+                    Some((*keyset.clone()).clone())
+                } else {
+                    None
+                }
+            })
             .collect::<Vec<_>>();
 
         if !keysets.is_empty() {
@@ -56,21 +75,28 @@ impl Wallet {
         }
     }
 
-    /// Refresh keysets by fetching the latest from mint - always goes online
+    /// Refresh keysets by fetching the latest from mint - always fetches fresh data
     ///
-    /// This method triggers a KeyManager refresh which fetches the latest keyset
-    /// information from the mint. The KeyManager handles updating the cache and database.
-    /// This is used when operations need the most up-to-date keyset information.
+    /// Forces a fresh fetch of keyset information from the mint server,
+    /// updating the metadata cache and database. Use this when you need
+    /// the most up-to-date keyset information.
     #[instrument(skip(self))]
     pub async fn refresh_keysets(&self) -> Result<KeySetInfos, Error> {
-        tracing::debug!("Refreshing keysets via KeyManager");
+        tracing::debug!("Refreshing keysets from mint");
 
         let keysets = self
-            .key_manager
-            .refresh()
+            .metadata_cache
+            .load_from_mint(&self.localstore, &self.client)
             .await?
-            .into_iter()
-            .filter(|k| k.unit == self.unit && k.active)
+            .keysets
+            .iter()
+            .filter_map(|(_, keyset)| {
+                if keyset.unit == self.unit && keyset.active {
+                    Some((*keyset.clone()).clone())
+                } else {
+                    None
+                }
+            })
             .collect::<Vec<_>>();
 
         if !keysets.is_empty() {
@@ -80,11 +106,11 @@ impl Wallet {
         }
     }
 
-    /// Get the active keyset with the lowest fees - always goes online
+    /// Get the active keyset with the lowest fees - fetches fresh data from mint
     ///
-    /// This method always goes online to refresh keysets from the mint and then returns
-    /// the active keyset with the minimum input fees. Use this when you need the most
-    /// up-to-date keyset information for operations.
+    /// Forces a fresh fetch of keysets from the mint and returns the active keyset
+    /// with the minimum input fees. Use this when you need the most up-to-date
+    /// keyset information for operations.
     #[instrument(skip(self))]
     pub async fn fetch_active_keyset(&self) -> Result<KeySetInfo, Error> {
         self.refresh_keysets()
@@ -95,32 +121,34 @@ impl Wallet {
             .ok_or(Error::NoActiveKeyset)
     }
 
-    /// Get the active keyset with the lowest fees from KeyManager cache - offline operation
+    /// Get the active keyset with the lowest fees from cache
     ///
-    /// Returns the active keyset with minimum input fees from the KeyManager cache.
-    /// This is an offline operation that does not contact the mint. If no keysets are cached,
-    /// returns an error. Use this for offline operations or when you want to avoid network calls.
+    /// Returns the active keyset with minimum input fees from the metadata cache.
+    /// Uses cached data if available, fetches from mint if cache not populated.
     #[instrument(skip(self))]
     pub async fn get_active_keyset(&self) -> Result<KeySetInfo, Error> {
-        let active_keysets = self.key_manager.get_active_keysets().await?;
-
-        active_keysets
-            .into_iter()
+        self.metadata_cache
+            .load(&self.localstore, &self.client)
+            .await?
+            .active_keysets
+            .iter()
             .min_by_key(|k| k.input_fee_ppk)
-            .map(|ks| (*ks).clone())
+            .map(|ks| (**ks).clone())
             .ok_or(Error::NoActiveKeyset)
     }
 
-    /// Get keyset fees and amounts for mint from KeyManager cache - offline operation
+    /// Get keyset fees and amounts for all keysets from metadata cache
     ///
     /// Returns a HashMap of keyset IDs to their input fee rates (per-proof-per-thousand)
-    /// from the KeyManager cache. This is an offline operation that does not contact the mint.
-    /// If no keysets are cached, returns an error.
+    /// and available amounts. Uses cached data if available, fetches from mint if not.
     pub async fn get_keyset_fees_and_amounts(&self) -> Result<KeysetFeeAndAmounts, Error> {
-        let keysets = self.key_manager.get_keysets().await?;
+        let metadata = self
+            .metadata_cache
+            .load(&self.localstore, &self.client)
+            .await?;
 
         let mut fees = HashMap::new();
-        for keyset in keysets {
+        for keyset in metadata.keysets.values() {
             let keys = self.load_keyset_keys(keyset.id).await?;
             fees.insert(
                 keyset.id,
@@ -137,11 +165,10 @@ impl Wallet {
         Ok(fees)
     }
 
-    /// Get keyset fees and amounts for mint by keyset id from local database only - offline operation
+    /// Get keyset fees and amounts for a specific keyset ID
     ///
-    /// Returns the input fee rate (per-proof-per-thousand) for a specific keyset ID from
-    /// cached keysets in the local database. This is an offline operation that does not
-    /// contact the mint. If the keyset is not found locally, returns an error.
+    /// Returns the input fee rate (per-proof-per-thousand) and available amounts
+    /// for a specific keyset. Uses cached data if available, fetches from mint if not.
     pub async fn get_keyset_fees_and_amounts_by_id(
         &self,
         keyset_id: Id,

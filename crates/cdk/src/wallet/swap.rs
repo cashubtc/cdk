@@ -49,7 +49,14 @@ impl Wallet {
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
 
-        let active_keys = self.key_manager.get_keys(&active_keyset_id).await?;
+        let active_keys = self
+            .metadata_cache
+            .load(&self.localstore, &self.client)
+            .await?
+            .keys
+            .get(&active_keyset_id)
+            .ok_or(Error::UnknownKeySet)?
+            .clone();
 
         let post_swap_proofs = construct_proofs(
             swap_response.signatures,

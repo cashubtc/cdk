@@ -13,7 +13,7 @@ use crate::mint_url::MintUrl;
 use crate::nuts::CurrencyUnit;
 #[cfg(feature = "auth")]
 use crate::wallet::auth::AuthWallet;
-use crate::wallet::key_manager::KeyManager;
+use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::{HttpClient, MintConnector, SubscriptionManager, Wallet};
 
 /// Builder for creating a new [`Wallet`]
@@ -27,8 +27,8 @@ pub struct WalletBuilder {
     seed: Option<[u8; 64]>,
     use_http_subscription: bool,
     client: Option<Arc<dyn MintConnector + Send + Sync>>,
-    key_manager: Option<Arc<KeyManager>>,
-    key_managers: HashMap<MintUrl, Arc<KeyManager>>,
+    metadata_cache: Option<Arc<MintMetadataCache>>,
+    metadata_caches: HashMap<MintUrl, Arc<MintMetadataCache>>,
 }
 
 impl Default for WalletBuilder {
@@ -43,8 +43,8 @@ impl Default for WalletBuilder {
             seed: None,
             client: None,
             use_http_subscription: false,
-            key_manager: None,
-            key_managers: HashMap::new(),
+            metadata_cache: None,
+            metadata_caches: HashMap::new(),
         }
     }
 }
@@ -120,22 +120,25 @@ impl WalletBuilder {
         self
     }
 
-    /// Set a shared KeyManager
+    /// Set a shared MintMetadataCache
     ///
-    /// This allows multiple wallets to share the same KeyManager instance for
-    /// optimal performance and memory usage. If not provided, a new KeyManager
+    /// This allows multiple wallets to share the same metadata cache instance for
+    /// optimal performance and memory usage. If not provided, a new cache
     /// will be created for each wallet.
-    pub fn key_manager(mut self, key_manager: Arc<KeyManager>) -> Self {
-        self.key_manager = Some(key_manager);
+    pub fn metadata_cache(mut self, metadata_cache: Arc<MintMetadataCache>) -> Self {
+        self.metadata_cache = Some(metadata_cache);
         self
     }
 
-    /// Set a HashMap of KeyManagers for reusing across multiple wallets
+    /// Set a HashMap of MintMetadataCaches for reusing across multiple wallets
     ///
-    /// This allows the builder to reuse existing KeyManager instances or create new ones.
-    /// Useful when creating multiple wallets that share KeyManagers.
-    pub fn key_managers(mut self, key_managers: HashMap<MintUrl, Arc<KeyManager>>) -> Self {
-        self.key_managers = key_managers;
+    /// This allows the builder to reuse existing cache instances or create new ones.
+    /// Useful when creating multiple wallets that share metadata caches.
+    pub fn metadata_caches(
+        mut self,
+        metadata_caches: HashMap<MintUrl, Arc<MintMetadataCache>>,
+    ) -> Self {
+        self.metadata_caches = metadata_caches;
         self
     }
 
@@ -145,17 +148,13 @@ impl WalletBuilder {
         let mint_url = self.mint_url.clone().expect("Mint URL required");
         let localstore = self.localstore.clone().expect("Localstore required");
 
-        let key_manager = self.key_manager.clone().unwrap_or_else(|| {
-            // Check if we already have a KeyManager for this mint in the HashMap
-            if let Some(km) = self.key_managers.get(&mint_url) {
-                km.clone()
+        let metadata_cache = self.metadata_cache.clone().unwrap_or_else(|| {
+            // Check if we already have a cache for this mint in the HashMap
+            if let Some(cache) = self.metadata_caches.get(&mint_url) {
+                cache.clone()
             } else {
                 // Create a new one
-                Arc::new(KeyManager::new(
-                    mint_url.clone(),
-                    localstore.clone(),
-                    Arc::new(HttpClient::new(mint_url.clone(), None)),
-                ))
+                Arc::new(MintMetadataCache::new(mint_url.clone()))
             }
         });
 
@@ -163,7 +162,7 @@ impl WalletBuilder {
             mint_url,
             Some(AuthToken::ClearAuth(cat)),
             localstore,
-            key_manager,
+            metadata_cache,
             HashMap::new(),
             None,
         ));
@@ -202,17 +201,13 @@ impl WalletBuilder {
             }
         };
 
-        let key_manager = self.key_manager.unwrap_or_else(|| {
-            // Check if we already have a KeyManager for this mint in the HashMap
-            if let Some(km) = self.key_managers.get(&mint_url) {
-                km.clone()
+        let metadata_cache = self.metadata_cache.unwrap_or_else(|| {
+            // Check if we already have a cache for this mint in the HashMap
+            if let Some(cache) = self.metadata_caches.get(&mint_url) {
+                cache.clone()
             } else {
                 // Create a new one
-                Arc::new(KeyManager::new(
-                    mint_url.clone(),
-                    localstore.clone(),
-                    client.clone(),
-                ))
+                Arc::new(MintMetadataCache::new(mint_url.clone()))
             }
         });
 
@@ -220,7 +215,7 @@ impl WalletBuilder {
             mint_url,
             unit,
             localstore,
-            key_manager,
+            metadata_cache,
             target_proof_count: self.target_proof_count.unwrap_or(3),
             #[cfg(feature = "auth")]
             auth_wallet: Arc::new(RwLock::new(self.auth_wallet)),
