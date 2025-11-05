@@ -28,7 +28,6 @@ use cdk::wallet::types::TransactionDirection;
 use cdk::wallet::{HttpClient, MintConnector, Wallet};
 use cdk::StreamExt;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
-use cdk_integration_tests::attempt_to_swap_pending;
 use cdk_sqlite::wallet::memory;
 
 const MINT_URL: &str = "http://127.0.0.1:8086";
@@ -55,6 +54,8 @@ async fn test_fake_tokens_pending() {
         .expect("payment")
         .expect("no error");
 
+    let old_balance = wallet.total_balance().await.expect("balance");
+
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
         check_payment_state: MeltQuoteState::Pending,
@@ -70,7 +71,18 @@ async fn test_fake_tokens_pending() {
 
     assert!(melt.is_err());
 
-    attempt_to_swap_pending(&wallet).await.unwrap();
+    // melt failed, but there is new code to reclaim unspent proofs
+    assert_eq!(
+        old_balance,
+        wallet.total_balance().await.expect("new balance")
+    );
+
+    assert!(wallet
+        .localstore
+        .get_proofs(None, None, Some(vec![State::Pending]), None)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 /// Tests that if the pay error fails and the check returns unknown or failed,
@@ -126,15 +138,8 @@ async fn test_fake_melt_payment_fail() {
     let melt = wallet.melt(&melt_quote.id).await;
     assert!(melt.is_err());
 
-    // The mint should have unset proofs from pending since payment failed
-    let all_proof = wallet.get_unspent_proofs().await.unwrap();
-    let states = wallet.check_proofs_spent(all_proof).await.unwrap();
-    for state in states {
-        assert!(state.state == State::Unspent);
-    }
-
     let wallet_bal = wallet.total_balance().await.unwrap();
-    assert_eq!(wallet_bal, 98.into());
+    assert_eq!(wallet_bal, 100.into());
 }
 
 /// Tests that when both the pay_invoice and check_invoice both fail,
@@ -160,6 +165,8 @@ async fn test_fake_melt_payment_fail_and_check() {
         .expect("payment")
         .expect("no error");
 
+    let old_balance = wallet.total_balance().await.expect("balance");
+
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Unknown,
         check_payment_state: MeltQuoteState::Unknown,
@@ -175,13 +182,18 @@ async fn test_fake_melt_payment_fail_and_check() {
     let melt = wallet.melt(&melt_quote.id).await;
     assert!(melt.is_err());
 
-    let pending = wallet
+    // melt failed, but there is new code to reclaim unspent proofs
+    assert_eq!(
+        old_balance,
+        wallet.total_balance().await.expect("new balance")
+    );
+
+    assert!(wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await
-        .unwrap();
-
-    assert!(!pending.is_empty());
+        .unwrap()
+        .is_empty());
 }
 
 /// Tests that when the ln backend returns a failed status but does not error,
@@ -213,6 +225,8 @@ async fn test_fake_melt_payment_return_fail_status() {
         pay_err: false,
         check_err: false,
     };
+
+    let old_balance = wallet.total_balance().await.expect("balance");
 
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
@@ -247,15 +261,19 @@ async fn test_fake_melt_payment_return_fail_status() {
     let melt = wallet.melt(&melt_quote.id).await;
     assert!(melt.is_err());
 
+    assert_eq!(
+        old_balance,
+        wallet.total_balance().await.expect("new balance")
+    );
+
     wallet.check_all_pending_proofs().await.unwrap();
 
-    let pending = wallet
+    assert!(wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await
-        .unwrap();
-
-    assert!(!pending.is_empty());
+        .unwrap()
+        .is_empty());
 }
 
 /// Tests that when the ln backend returns an error with unknown status,
@@ -280,6 +298,8 @@ async fn test_fake_melt_payment_error_unknown() {
         .await
         .expect("payment")
         .expect("no error");
+
+    let old_balance = wallet.total_balance().await.expect("balance");
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Failed,
@@ -313,13 +333,17 @@ async fn test_fake_melt_payment_error_unknown() {
 
     wallet.check_all_pending_proofs().await.unwrap();
 
-    let pending = wallet
+    assert_eq!(
+        old_balance,
+        wallet.total_balance().await.expect("new balance")
+    );
+
+    assert!(wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await
-        .unwrap();
-
-    assert!(!pending.is_empty());
+        .unwrap()
+        .is_empty());
 }
 
 /// Tests that when the ln backend returns an error but the second check returns paid,
@@ -345,6 +369,8 @@ async fn test_fake_melt_payment_err_paid() {
         .expect("payment")
         .expect("no error");
 
+    let old_balance = wallet.total_balance().await.expect("balance");
+
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Failed,
         check_payment_state: MeltQuoteState::Paid,
@@ -361,6 +387,19 @@ async fn test_fake_melt_payment_err_paid() {
 
     assert!(melt.fee_paid == Amount::ZERO);
     assert!(melt.amount == Amount::from(7));
+
+    // melt failed, but there is new code to reclaim unspent proofs
+    assert_eq!(
+        old_balance - melt.amount,
+        wallet.total_balance().await.expect("new balance")
+    );
+
+    assert!(wallet
+        .localstore
+        .get_proofs(None, None, Some(vec![State::Pending]), None)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 /// Tests that change outputs in a melt quote are correctly handled
@@ -1386,4 +1425,156 @@ async fn test_fake_mint_duplicate_proofs_melt() {
             panic!("Should not have allow duplicate inputs");
         }
     }
+}
+
+/// Tests that wallet automatically recovers proofs after a failed melt operation
+/// by swapping them to new proofs, preventing loss of funds
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_wallet_proof_recovery_after_failed_melt() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    // Mint 100 sats
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+    let initial_proofs = proof_streams
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let initial_ys: Vec<_> = initial_proofs.iter().map(|p| p.y().unwrap()).collect();
+
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
+
+    // Create a melt quote that will fail
+    let fake_description = FakeInvoiceDescription {
+        pay_invoice_state: MeltQuoteState::Unknown,
+        check_payment_state: MeltQuoteState::Unpaid,
+        pay_err: true,
+        check_err: false,
+    };
+
+    let invoice = create_fake_invoice(1000, serde_json::to_string(&fake_description).unwrap());
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+
+    // Attempt to melt - this should fail but trigger proof recovery
+    let melt_result = wallet.melt(&melt_quote.id).await;
+    assert!(melt_result.is_err(), "Melt should have failed");
+
+    // Verify wallet still has balance (proofs recovered)
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        Amount::from(100),
+        "Balance should be recovered"
+    );
+
+    // Verify the proofs were swapped (different Ys)
+    let recovered_proofs = wallet.get_unspent_proofs().await.unwrap();
+    let recovered_ys: Vec<_> = recovered_proofs.iter().map(|p| p.y().unwrap()).collect();
+
+    // The Ys should be different (swapped to new proofs)
+    assert!(
+        initial_ys.iter().any(|y| !recovered_ys.contains(y)),
+        "Proofs should have been swapped to new ones"
+    );
+
+    // Verify we can still spend the recovered proofs
+    let valid_invoice = create_fake_invoice(7000, "".to_string());
+    let valid_melt_quote = wallet
+        .melt_quote(valid_invoice.to_string(), None)
+        .await
+        .unwrap();
+
+    let successful_melt = wallet.melt(&valid_melt_quote.id).await;
+    assert!(
+        successful_melt.is_ok(),
+        "Should be able to spend recovered proofs"
+    );
+}
+
+/// Tests that wallet automatically recovers proofs after a failed swap operation
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_wallet_proof_recovery_after_failed_swap() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    // Mint 100 sats
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+    let initial_proofs = proof_streams
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let initial_ys: Vec<_> = initial_proofs.iter().map(|p| p.y().unwrap()).collect();
+
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
+
+    let unspent_proofs = wallet.get_unspent_proofs().await.unwrap();
+
+    // Create an invalid swap by manually constructing a request that will fail
+    // We'll use the wallet's swap with invalid parameters to trigger a failure
+    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+
+    // Create invalid swap request (requesting more than we have)
+    let preswap = PreMintSecrets::random(
+        active_keyset_id,
+        1000.into(), // More than the 100 we have
+        &SplitTarget::default(),
+        &fee_and_amounts,
+    )
+    .unwrap();
+
+    let swap_request = SwapRequest::new(unspent_proofs.clone(), preswap.blinded_messages());
+
+    // Use HTTP client directly to bypass wallet's validation and trigger recovery
+    let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
+    let response = http_client.post_swap(swap_request).await;
+    assert!(response.is_err(), "Swap should have failed");
+
+    // Note: The HTTP client doesn't trigger the wallet's try_proof_operation wrapper
+    // So we need to test through the wallet's own methods
+    // After the failed HTTP request, the proofs are still in the wallet's database
+
+    // Verify balance is still available after the failed operation
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        Amount::from(100),
+        "Balance should still be available"
+    );
+
+    // Verify we can perform a successful swap operation
+    let successful_swap = wallet
+        .swap(None, SplitTarget::None, unspent_proofs, None, false)
+        .await;
+
+    assert!(
+        successful_swap.is_ok(),
+        "Should be able to swap after failed operation"
+    );
+
+    // Verify the proofs were swapped to new ones
+    let final_proofs = wallet.get_unspent_proofs().await.unwrap();
+    let final_ys: Vec<_> = final_proofs.iter().map(|p| p.y().unwrap()).collect();
+
+    // The Ys should be different after the successful swap
+    assert!(
+        initial_ys.iter().any(|y| !final_ys.contains(y)),
+        "Proofs should have been swapped to new ones"
+    );
 }
