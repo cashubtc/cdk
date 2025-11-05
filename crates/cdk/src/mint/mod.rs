@@ -418,7 +418,7 @@ impl Mint {
 
             match processor.get_settings().await {
                 Ok(settings) => {
-                    for method in settings.custom {
+                    for (method, _) in settings.custom {
                         custom_methods.insert(method);
                     }
                 }
@@ -760,7 +760,7 @@ impl Mint {
             .payment_ids()
             .contains(&&wait_payment_response.payment_id)
         {
-            if mint_quote.payment_method == PaymentMethod::Bolt11
+            if mint_quote.payment_method == "bolt11"
                 && (quote_state == MintQuoteState::Issued || quote_state == MintQuoteState::Paid)
             {
                 tracing::info!("Received payment notification for already issued quote.");

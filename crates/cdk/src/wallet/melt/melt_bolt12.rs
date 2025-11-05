@@ -58,7 +58,7 @@ impl Wallet {
             state: quote_res.state,
             expiry: quote_res.expiry,
             payment_preimage: quote_res.payment_preimage,
-            payment_method: PaymentMethod::Bolt12,
+            payment_method: PaymentMethod::from("bolt12"),
         };
 
         self.localstore.add_melt_quote(quote.clone()).await?;

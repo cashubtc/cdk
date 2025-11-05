@@ -51,7 +51,7 @@ async fn test_correct_keyset() {
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
-            PaymentMethod::Bolt11,
+            "bolt11",
             MintMeltLimits::new(1, 5_000),
             Arc::new(fake_wallet),
         )

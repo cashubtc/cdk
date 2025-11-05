@@ -258,7 +258,7 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
-            PaymentMethod::Bolt11,
+            PaymentMethod::from("bolt11"),
             MintMeltLimits::new(1, 10_000),
             Arc::new(ln_fake_backend),
         )

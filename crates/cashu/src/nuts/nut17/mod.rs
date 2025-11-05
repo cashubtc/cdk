@@ -63,7 +63,7 @@ impl SupportedMethods {
         ];
 
         Self {
-            method: PaymentMethod::Bolt11,
+            method: PaymentMethod::from("bolt11"),
             unit,
             commands,
         }
@@ -78,7 +78,7 @@ impl SupportedMethods {
         ];
 
         Self {
-            method: PaymentMethod::Bolt12,
+            method: PaymentMethod::from("bolt12"),
             unit,
             commands,
         }

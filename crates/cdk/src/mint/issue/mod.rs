@@ -78,9 +78,9 @@ impl MintQuoteRequest {
     /// Get the payment method for the mint quote request
     pub fn payment_method(&self) -> PaymentMethod {
         match self {
-            MintQuoteRequest::Bolt11(_) => PaymentMethod::Bolt11,
-            MintQuoteRequest::Bolt12(_) => PaymentMethod::Bolt12,
-            MintQuoteRequest::Custom { method, .. } => PaymentMethod::Custom(method.clone()),
+            MintQuoteRequest::Bolt11(_) => PaymentMethod::from("bolt11"),
+            MintQuoteRequest::Bolt12(_) => PaymentMethod::from("bolt12"),
+            MintQuoteRequest::Custom { method, .. } => PaymentMethod::from(method.clone()),
         }
     }
 
@@ -143,22 +143,19 @@ impl TryFrom<MintQuote> for MintQuoteResponse {
     type Error = Error;
 
     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
-        match quote.payment_method.clone() {
-            PaymentMethod::Bolt11 => {
-                let bolt11_response: MintQuoteBolt11Response<QuoteId> = quote.into();
-                Ok(MintQuoteResponse::Bolt11(bolt11_response))
-            }
-            PaymentMethod::Bolt12 => {
-                let bolt12_response = MintQuoteBolt12Response::try_from(quote)?;
-                Ok(MintQuoteResponse::Bolt12(bolt12_response))
-            }
-            PaymentMethod::Custom(method) => {
-                let custom_response = MintQuoteCustomResponse::try_from(quote)?;
-                Ok(MintQuoteResponse::Custom {
-                    method,
-                    response: custom_response,
-                })
-            }
+        if quote.payment_method == "bolt11" {
+            let bolt11_response: MintQuoteBolt11Response<QuoteId> = quote.into();
+            Ok(MintQuoteResponse::Bolt11(bolt11_response))
+        } else if quote.payment_method == "bolt12" {
+            let bolt12_response = MintQuoteBolt12Response::try_from(quote)?;
+            Ok(MintQuoteResponse::Bolt12(bolt12_response))
+        } else {
+            let method = quote.payment_method.to_string();
+            let custom_response = MintQuoteCustomResponse::try_from(quote)?;
+            Ok(MintQuoteResponse::Custom {
+                method,
+                response: custom_response,
+            })
         }
     }
 }
@@ -281,9 +278,11 @@ impl Mint {
 
                     let description = bolt11_request.description;
 
-                    if description.is_some() && !settings.invoice_description {
-                        tracing::error!("Backend does not support invoice description");
-                        return Err(Error::InvoiceDescriptionUnsupported);
+                    if let Some(ref bolt11_settings) = settings.bolt11 {
+                        if description.is_some() && !bolt11_settings.invoice_description {
+                            tracing::error!("Backend does not support invoice description");
+                            return Err(Error::InvoiceDescriptionUnsupported);
+                        }
                     }
 
                     let bolt11_options = Bolt11IncomingPaymentOptions {
@@ -358,18 +357,18 @@ impl Mint {
             tx.add_mint_quote(quote.clone()).await?;
             tx.commit().await?;
 
-            match payment_method {
-                PaymentMethod::Bolt11 => {
+            match payment_method.as_str() {
+                "bolt11" => {
                     let res: MintQuoteBolt11Response<QuoteId> = quote.clone().into();
                     self.pubsub_manager
                         .publish(NotificationPayload::MintQuoteBolt11Response(res));
                 }
-                PaymentMethod::Bolt12 => {
+                "bolt12" => {
                     let res: MintQuoteBolt12Response<QuoteId> = quote.clone().try_into()?;
                     self.pubsub_manager
                         .publish(NotificationPayload::MintQuoteBolt12Response(res));
                 }
-                PaymentMethod::Custom(_) => {}
+                _ => {}
             }
 
             quote.try_into()
@@ -543,7 +542,7 @@ impl Mint {
                 .await?
                 .ok_or(Error::UnknownQuote)?;
 
-            if quote.payment_method == PaymentMethod::Bolt11 {
+            if quote.payment_method == "bolt11" {
                 self.check_mint_quote_paid(&mut quote).await?;
             }
 
@@ -593,7 +592,7 @@ impl Mint {
                 .await?
                 .ok_or(Error::UnknownQuote)?;
 
-            if mint_quote.payment_method == PaymentMethod::Bolt11 {
+            if mint_quote.payment_method == "bolt11" {
                 self.check_mint_quote_paid(&mut mint_quote).await?;
             }
         // get the blind signatures before having starting the db transaction, if there are any
@@ -614,7 +613,7 @@ impl Mint {
                 return Err(Error::UnpaidQuote);
             }
             MintQuoteState::Issued => {
-                if mint_quote.payment_method == PaymentMethod::Bolt12
+                if mint_quote.payment_method == "bolt12"
                     && mint_quote.amount_paid() > mint_quote.amount_issued()
                 {
                     tracing::warn!("Mint quote should state should have been set to issued upon new payment. Something isn't right. Stopping mint");
@@ -625,13 +624,13 @@ impl Mint {
             MintQuoteState::Paid => (),
         }
 
-        if mint_quote.payment_method == PaymentMethod::Bolt12 && mint_quote.pubkey.is_none() {
+        if mint_quote.payment_method == "bolt12" && mint_quote.pubkey.is_none() {
             tracing::warn!("Bolt12 mint quote created without pubkey");
             return Err(Error::SignatureMissingOrInvalid);
         }
 
-        let mint_amount = match mint_quote.payment_method {
-            PaymentMethod::Bolt11 => {
+        let mint_amount = match mint_quote.payment_method.as_str() {
+            "bolt11" => {
                 let quote_amount = mint_quote.amount.ok_or(Error::AmountUndefined)?;
 
                 if quote_amount != mint_quote.amount_mintable() {
@@ -641,7 +640,7 @@ impl Mint {
 
                 quote_amount
             },
-            PaymentMethod::Bolt12 => {
+            "bolt12" => {
                 if mint_quote.amount_mintable() == Amount::ZERO{
                     tracing::error!(
                             "Quote state should not be issued if issued {} is => paid {}.",
@@ -674,7 +673,7 @@ impl Mint {
             }
         };
 
-        if mint_quote.payment_method == PaymentMethod::Bolt11 {
+        if mint_quote.payment_method == "bolt11" {
             // For bolt11 we enforce that mint amount == quote amount
             if outputs_amount != mint_amount {
                 return Err(Error::TransactionUnbalanced(

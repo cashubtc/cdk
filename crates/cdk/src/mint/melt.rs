@@ -71,7 +71,7 @@ impl Mint {
                 amount
             }
             Some(MeltOptions::Amountless { amountless: _ }) => {
-                if method == PaymentMethod::Bolt11
+                if method == "bolt11"
                     && !matches!(
                         settings.options,
                         Some(MeltMethodOptions::Bolt11 { amountless: true })
@@ -144,7 +144,7 @@ impl Mint {
             .payment_processors
             .get(&PaymentProcessorKey::new(
                 unit.clone(),
-                PaymentMethod::Bolt11,
+                PaymentMethod::from("bolt11"),
             ))
             .ok_or_else(|| {
                 tracing::info!("Could not get ln backend for {}, bolt11 ", unit);
@@ -189,7 +189,7 @@ impl Mint {
         self.check_melt_request_acceptable(
             payment_quote.amount,
             unit.clone(),
-            PaymentMethod::Bolt11,
+            PaymentMethod::from("bolt11"),
             request.to_string(),
             *options,
         )
@@ -207,7 +207,7 @@ impl Mint {
             unix_time() + melt_ttl,
             payment_quote.request_lookup_id.clone(),
             *options,
-            PaymentMethod::Bolt11,
+            PaymentMethod::from("bolt11"),
         );
 
         tracing::debug!(
@@ -254,7 +254,7 @@ impl Mint {
             .payment_processors
             .get(&PaymentProcessorKey::new(
                 unit.clone(),
-                PaymentMethod::Bolt12,
+                PaymentMethod::from("bolt12"),
             ))
             .ok_or_else(|| {
                 tracing::info!("Could not get ln backend for {}, bolt12 ", unit);
@@ -295,7 +295,7 @@ impl Mint {
         self.check_melt_request_acceptable(
             payment_quote.amount,
             unit.clone(),
-            PaymentMethod::Bolt12,
+            PaymentMethod::from("bolt12"),
             request.clone(),
             *options,
         )
@@ -313,7 +313,7 @@ impl Mint {
             unix_time() + self.quote_ttl().await?.melt_ttl,
             payment_quote.request_lookup_id.clone(),
             *options,
-            PaymentMethod::Bolt12,
+            PaymentMethod::from("bolt12"),
         );
 
         tracing::debug!(
@@ -358,7 +358,7 @@ impl Mint {
             .payment_processors
             .get(&PaymentProcessorKey::new(
                 unit.clone(),
-                PaymentMethod::Custom(method.to_string()),
+                PaymentMethod::from(method.as_str()),
             ))
             .ok_or_else(|| {
                 tracing::info!("Could not get payment processor for {}, {} ", unit, method);
@@ -404,7 +404,7 @@ impl Mint {
         self.check_melt_request_acceptable(
             payment_quote.amount,
             unit.clone(),
-            PaymentMethod::Custom(method.to_string()),
+            PaymentMethod::from(method.as_str()),
             request.clone(),
             None, // Custom methods don't use options
         )
@@ -424,7 +424,7 @@ impl Mint {
             unix_time() + melt_ttl,
             payment_quote.request_lookup_id.clone(),
             None, // Custom methods don't use options
-            PaymentMethod::Custom(method.to_string()),
+            PaymentMethod::from(method.as_str()),
         );
 
         tracing::debug!(

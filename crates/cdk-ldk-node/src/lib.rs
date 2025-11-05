@@ -469,13 +469,14 @@ impl MintPayment for CdkLdkNode {
     /// Base Settings
     async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
         let settings = SettingsResponse {
-            bolt11: true,
-            mpp: false,
             unit: CurrencyUnit::Msat.to_string(),
-            invoice_description: true,
-            amountless: true,
-            bolt12: true,
-            custom: vec![],
+            bolt11: Some(payment::Bolt11Settings {
+                mpp: false,
+                amountless: true,
+                invoice_description: true,
+            }),
+            bolt12: Some(payment::Bolt12Settings { amountless: true }),
+            custom: std::collections::HashMap::new(),
         };
         Ok(settings)
     }

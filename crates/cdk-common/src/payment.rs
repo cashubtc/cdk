@@ -446,25 +446,37 @@ pub struct PaymentQuoteResponse {
     pub state: MeltQuoteState,
 }
 
-/// Payment processor settings response
-/// Mirrors the proto SettingsResponse structure
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SettingsResponse {
-    /// BOLT11 payment method supported
-    pub bolt11: bool,
-    /// Custom payment methods supported (list of method names)
-    #[serde(default)]
-    pub custom: Vec<String>,
+/// BOLT11 settings
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Bolt11Settings {
     /// Multi-part payment (MPP) supported
     pub mpp: bool,
-    /// Base unit of backend
-    pub unit: String,
-    /// Invoice description supported
-    pub invoice_description: bool,
-    /// BOLT12 payment method supported
-    pub bolt12: bool,
     /// Amountless invoice support
     pub amountless: bool,
+    /// Invoice description supported
+    pub invoice_description: bool,
+}
+
+/// BOLT12 settings
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Bolt12Settings {
+    /// Amountless offer support
+    pub amountless: bool,
+}
+
+/// Payment processor settings response
+/// Mirrors the proto SettingsResponse structure
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingsResponse {
+    /// Base unit of backend
+    pub unit: String,
+    /// BOLT11 settings (None if not supported)
+    pub bolt11: Option<Bolt11Settings>,
+    /// BOLT12 settings (None if not supported)
+    pub bolt12: Option<Bolt12Settings>,
+    /// Custom payment methods settings (method name -> settings data)
+    #[serde(default)]
+    pub custom: std::collections::HashMap<String, String>,
 }
 
 impl From<SettingsResponse> for Value {

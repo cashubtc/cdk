@@ -56,13 +56,14 @@ impl LNbits {
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             settings: SettingsResponse {
-                bolt11: true,
-                mpp: false,
                 unit: CurrencyUnit::Sat.to_string(),
-                invoice_description: true,
-                amountless: false,
-                bolt12: false,
-                custom: vec![],
+                bolt11: Some(payment::Bolt11Settings {
+                    mpp: false,
+                    amountless: false,
+                    invoice_description: true,
+                }),
+                bolt12: None,
+                custom: std::collections::HashMap::new(),
             },
         })
     }

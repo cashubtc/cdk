@@ -419,13 +419,14 @@ impl MintPayment for FakeWallet {
     #[instrument(skip_all)]
     async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
         Ok(SettingsResponse {
-            bolt11: true,
-            mpp: true,
             unit: self.unit.to_string(),
-            invoice_description: true,
-            amountless: false,
-            bolt12: true,
-            custom: vec![],
+            bolt11: Some(payment::Bolt11Settings {
+                mpp: true,
+                amountless: false,
+                invoice_description: true,
+            }),
+            bolt12: Some(payment::Bolt12Settings { amountless: false }),
+            custom: std::collections::HashMap::new(),
         })
     }
 

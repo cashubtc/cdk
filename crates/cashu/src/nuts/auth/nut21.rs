@@ -122,14 +122,14 @@ pub enum Method {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum RoutePath {
-    /// Bolt11 Mint Quote
-    MintQuoteBolt11,
-    /// Bolt11 Mint
-    MintBolt11,
-    /// Bolt11 Melt Quote
-    MeltQuoteBolt11,
-    /// Bolt11 Melt
-    MeltBolt11,
+    /// Mint Quote for a specific payment method
+    MintQuote(String),
+    /// Mint for a specific payment method
+    Mint(String),
+    /// Melt Quote for a specific payment method
+    MeltQuote(String),
+    /// Melt for a specific payment method
+    Melt(String),
     /// Swap
     Swap,
     /// Checkstate
@@ -138,21 +138,8 @@ pub enum RoutePath {
     Restore,
     /// Mint Blind Auth
     MintBlindAuth,
-    /// Bolt12 Mint Quote
-    MintQuoteBolt12,
-    /// Bolt12 Mint
-    MintBolt12,
-    /// Bolt12 Melt Quote
-    MeltQuoteBolt12,
-    /// Bolt12 Quote
-    MeltBolt12,
-
     /// WebSocket
     Ws,
-
-    /// Custom payment method route (dynamic)
-    /// This variant is not part of EnumIter since it's dynamic
-    Custom(String),
 }
 
 impl Serialize for RoutePath {
@@ -170,84 +157,97 @@ impl<'de> Deserialize<'de> for RoutePath {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
+
+        // Try to parse as a known static path first
         match s.as_str() {
-            "/v1/mint/quote/bolt11" => Ok(RoutePath::MintQuoteBolt11),
-            "/v1/mint/bolt11" => Ok(RoutePath::MintBolt11),
-            "/v1/melt/quote/bolt11" => Ok(RoutePath::MeltQuoteBolt11),
-            "/v1/melt/bolt11" => Ok(RoutePath::MeltBolt11),
             "/v1/swap" => Ok(RoutePath::Swap),
             "/v1/checkstate" => Ok(RoutePath::Checkstate),
             "/v1/restore" => Ok(RoutePath::Restore),
             "/v1/auth/blind/mint" => Ok(RoutePath::MintBlindAuth),
-            "/v1/mint/quote/bolt12" => Ok(RoutePath::MintQuoteBolt12),
-            "/v1/mint/bolt12" => Ok(RoutePath::MintBolt12),
-            "/v1/melt/quote/bolt12" => Ok(RoutePath::MeltQuoteBolt12),
-            "/v1/melt/bolt12" => Ok(RoutePath::MeltBolt12),
             "/v1/ws" => Ok(RoutePath::Ws),
-            _ => Ok(RoutePath::Custom(s)),
+            _ => {
+                // Try to parse as a payment method route
+                if let Some(method) = s.strip_prefix("/v1/mint/quote/") {
+                    Ok(RoutePath::MintQuote(method.to_string()))
+                } else if let Some(method) = s.strip_prefix("/v1/mint/") {
+                    Ok(RoutePath::Mint(method.to_string()))
+                } else if let Some(method) = s.strip_prefix("/v1/melt/quote/") {
+                    Ok(RoutePath::MeltQuote(method.to_string()))
+                } else if let Some(method) = s.strip_prefix("/v1/melt/") {
+                    Ok(RoutePath::Melt(method.to_string()))
+                } else {
+                    // Unknown path - this might be an old database value or config
+                    // Provide a helpful error message
+                    Err(serde::de::Error::custom(format!(
+                        "Unknown route path: {}. Valid paths are: /v1/mint/quote/{{method}}, /v1/mint/{{method}}, /v1/melt/quote/{{method}}, /v1/melt/{{method}}, /v1/swap, /v1/checkstate, /v1/restore, /v1/auth/blind/mint, /v1/ws",
+                        s
+                    )))
+                }
+            }
         }
     }
 }
 
 impl RoutePath {
-    /// Get all static (non-Custom) route paths
+    /// Get all non-payment-method route paths
+    /// These are routes that don't depend on payment methods
     pub fn static_paths() -> Vec<RoutePath> {
         vec![
-            RoutePath::MintQuoteBolt11,
-            RoutePath::MintBolt11,
-            RoutePath::MeltQuoteBolt11,
-            RoutePath::MeltBolt11,
             RoutePath::Swap,
             RoutePath::Checkstate,
             RoutePath::Restore,
             RoutePath::MintBlindAuth,
-            RoutePath::MintQuoteBolt12,
-            RoutePath::MintBolt12,
-            RoutePath::MeltQuoteBolt12,
-            RoutePath::MeltBolt12,
             RoutePath::Ws,
         ]
+    }
+
+    /// Get all route paths for common payment methods (bolt11, bolt12)
+    /// This is used for regex matching in configuration
+    pub fn common_payment_method_paths() -> Vec<RoutePath> {
+        let methods = vec!["bolt11", "bolt12"];
+        let mut paths = Vec::new();
+
+        for method in methods {
+            paths.push(RoutePath::MintQuote(method.to_string()));
+            paths.push(RoutePath::Mint(method.to_string()));
+            paths.push(RoutePath::MeltQuote(method.to_string()));
+            paths.push(RoutePath::Melt(method.to_string()));
+        }
+
+        paths
+    }
+
+    /// Get all paths for regex matching (static + common payment methods)
+    pub fn all_known_paths() -> Vec<RoutePath> {
+        let mut paths = Self::static_paths();
+        paths.extend(Self::common_payment_method_paths());
+        paths
     }
 }
 
 /// Returns [`RoutePath`]s that match regex
+/// Matches against all known static paths and common payment methods (bolt11, bolt12)
 pub fn matching_route_paths(pattern: &str) -> Result<Vec<RoutePath>, Error> {
     let regex = Regex::from_str(pattern)?;
 
-    Ok(RoutePath::static_paths()
+    Ok(RoutePath::all_known_paths()
         .into_iter()
         .filter(|path| regex.is_match(&path.to_string()))
         .collect())
 }
-fn transform_custom(input: &str) -> String {
-    // Replace '_' with '/' and then ensure the string ends with "v1/"
-    let mut s = input.replace('_', "/");
-
-    if !s.starts_with("/v1/") {
-        s.insert_str(0, "/v1/");
-    }
-
-    s
-}
 impl std::fmt::Display for RoutePath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let path = match self {
-            RoutePath::MintQuoteBolt11 => "/v1/mint/quote/bolt11",
-            RoutePath::MintBolt11 => "/v1/mint/bolt11",
-            RoutePath::MeltQuoteBolt11 => "/v1/melt/quote/bolt11",
-            RoutePath::MeltBolt11 => "/v1/melt/bolt11",
-            RoutePath::Swap => "/v1/swap",
-            RoutePath::Checkstate => "/v1/checkstate",
-            RoutePath::Restore => "/v1/restore",
-            RoutePath::MintBlindAuth => "/v1/auth/blind/mint",
-            RoutePath::MintQuoteBolt12 => "/v1/mint/quote/bolt12",
-            RoutePath::MintBolt12 => "/v1/mint/bolt12",
-            RoutePath::MeltQuoteBolt12 => "/v1/melt/quote/bolt12",
-            RoutePath::MeltBolt12 => "/v1/melt/bolt12",
-            RoutePath::Ws => "/v1/ws",
-            RoutePath::Custom(s) => &transform_custom(s),
-        };
-        write!(f, "{path}")
+        match self {
+            RoutePath::MintQuote(method) => write!(f, "/v1/mint/quote/{}", method),
+            RoutePath::Mint(method) => write!(f, "/v1/mint/{}", method),
+            RoutePath::MeltQuote(method) => write!(f, "/v1/melt/quote/{}", method),
+            RoutePath::Melt(method) => write!(f, "/v1/melt/{}", method),
+            RoutePath::Swap => write!(f, "/v1/swap"),
+            RoutePath::Checkstate => write!(f, "/v1/checkstate"),
+            RoutePath::Restore => write!(f, "/v1/restore"),
+            RoutePath::MintBlindAuth => write!(f, "/v1/auth/blind/mint"),
+            RoutePath::Ws => write!(f, "/v1/ws"),
+        }
     }
 }
 
@@ -261,20 +261,20 @@ mod tests {
         // Regex that matches all paths
         let paths = matching_route_paths(".*").unwrap();
 
-        // Should match all static variants
-        assert_eq!(paths.len(), RoutePath::static_paths().len());
+        // Should match all known variants
+        assert_eq!(paths.len(), RoutePath::all_known_paths().len());
 
         // Verify all variants are included
-        assert!(paths.contains(&RoutePath::MintQuoteBolt11));
-        assert!(paths.contains(&RoutePath::MintBolt11));
-        assert!(paths.contains(&RoutePath::MeltQuoteBolt11));
-        assert!(paths.contains(&RoutePath::MeltBolt11));
+        assert!(paths.contains(&RoutePath::MintQuote("bolt11".to_string())));
+        assert!(paths.contains(&RoutePath::Mint("bolt11".to_string())));
+        assert!(paths.contains(&RoutePath::MeltQuote("bolt11".to_string())));
+        assert!(paths.contains(&RoutePath::Melt("bolt11".to_string())));
+        assert!(paths.contains(&RoutePath::MintQuote("bolt12".to_string())));
+        assert!(paths.contains(&RoutePath::Mint("bolt12".to_string())));
         assert!(paths.contains(&RoutePath::Swap));
         assert!(paths.contains(&RoutePath::Checkstate));
         assert!(paths.contains(&RoutePath::Restore));
         assert!(paths.contains(&RoutePath::MintBlindAuth));
-        assert!(paths.contains(&RoutePath::MintQuoteBolt12));
-        assert!(paths.contains(&RoutePath::MintBolt12));
     }
 
     #[test]
@@ -282,18 +282,18 @@ mod tests {
         // Regex that matches only mint paths
         let paths = matching_route_paths("^/v1/mint/.*").unwrap();
 
-        // Should match only mint paths
+        // Should match only mint paths (4 paths: mint quote and mint for bolt11 and bolt12)
         assert_eq!(paths.len(), 4);
-        assert!(paths.contains(&RoutePath::MintQuoteBolt11));
-        assert!(paths.contains(&RoutePath::MintBolt11));
-        assert!(paths.contains(&RoutePath::MintQuoteBolt12));
-        assert!(paths.contains(&RoutePath::MintBolt12));
+        assert!(paths.contains(&RoutePath::MintQuote("bolt11".to_string())));
+        assert!(paths.contains(&RoutePath::Mint("bolt11".to_string())));
+        assert!(paths.contains(&RoutePath::MintQuote("bolt12".to_string())));
+        assert!(paths.contains(&RoutePath::Mint("bolt12".to_string())));
 
         // Should not match other paths
-        assert!(!paths.contains(&RoutePath::MeltQuoteBolt11));
-        assert!(!paths.contains(&RoutePath::MeltBolt11));
-        assert!(!paths.contains(&RoutePath::MeltQuoteBolt12));
-        assert!(!paths.contains(&RoutePath::MeltBolt12));
+        assert!(!paths.contains(&RoutePath::MeltQuote("bolt11".to_string())));
+        assert!(!paths.contains(&RoutePath::Melt("bolt11".to_string())));
+        assert!(!paths.contains(&RoutePath::MeltQuote("bolt12".to_string())));
+        assert!(!paths.contains(&RoutePath::Melt("bolt12".to_string())));
         assert!(!paths.contains(&RoutePath::Swap));
     }
 
@@ -302,16 +302,16 @@ mod tests {
         // Regex that matches only quote paths
         let paths = matching_route_paths(".*/quote/.*").unwrap();
 
-        // Should match only quote paths
+        // Should match only quote paths (4 paths: mint quote and melt quote for bolt11 and bolt12)
         assert_eq!(paths.len(), 4);
-        assert!(paths.contains(&RoutePath::MintQuoteBolt11));
-        assert!(paths.contains(&RoutePath::MeltQuoteBolt11));
-        assert!(paths.contains(&RoutePath::MintQuoteBolt12));
-        assert!(paths.contains(&RoutePath::MeltQuoteBolt12));
+        assert!(paths.contains(&RoutePath::MintQuote("bolt11".to_string())));
+        assert!(paths.contains(&RoutePath::MeltQuote("bolt11".to_string())));
+        assert!(paths.contains(&RoutePath::MintQuote("bolt12".to_string())));
+        assert!(paths.contains(&RoutePath::MeltQuote("bolt12".to_string())));
 
         // Should not match non-quote paths
-        assert!(!paths.contains(&RoutePath::MintBolt11));
-        assert!(!paths.contains(&RoutePath::MeltBolt11));
+        assert!(!paths.contains(&RoutePath::Mint("bolt11".to_string())));
+        assert!(!paths.contains(&RoutePath::Melt("bolt11".to_string())));
     }
 
     #[test]
@@ -325,12 +325,12 @@ mod tests {
 
     #[test]
     fn test_matching_route_paths_quote_bolt11_only() {
-        // Regex that matches only quote paths
+        // Regex that matches only mint quote bolt11 path
         let paths = matching_route_paths("/v1/mint/quote/bolt11").unwrap();
 
-        // Should match only quote paths
+        // Should match only this specific path
         assert_eq!(paths.len(), 1);
-        assert!(paths.contains(&RoutePath::MintQuoteBolt11));
+        assert!(paths.contains(&RoutePath::MintQuote("bolt11".to_string())));
     }
 
     #[test]
@@ -347,45 +347,49 @@ mod tests {
     fn test_route_path_to_string() {
         // Test that to_string() returns the correct path strings
         assert_eq!(
-            RoutePath::MintQuoteBolt11.to_string(),
+            RoutePath::MintQuote("bolt11".to_string()).to_string(),
             "/v1/mint/quote/bolt11"
         );
-        assert_eq!(RoutePath::MintBolt11.to_string(), "/v1/mint/bolt11");
         assert_eq!(
-            RoutePath::MeltQuoteBolt11.to_string(),
+            RoutePath::Mint("bolt11".to_string()).to_string(),
+            "/v1/mint/bolt11"
+        );
+        assert_eq!(
+            RoutePath::MeltQuote("bolt11".to_string()).to_string(),
             "/v1/melt/quote/bolt11"
         );
-        assert_eq!(RoutePath::MeltBolt11.to_string(), "/v1/melt/bolt11");
+        assert_eq!(
+            RoutePath::Melt("bolt11".to_string()).to_string(),
+            "/v1/melt/bolt11"
+        );
+        assert_eq!(
+            RoutePath::MintQuote("paypal".to_string()).to_string(),
+            "/v1/mint/quote/paypal"
+        );
         assert_eq!(RoutePath::Swap.to_string(), "/v1/swap");
         assert_eq!(RoutePath::Checkstate.to_string(), "/v1/checkstate");
         assert_eq!(RoutePath::Restore.to_string(), "/v1/restore");
         assert_eq!(RoutePath::MintBlindAuth.to_string(), "/v1/auth/blind/mint");
-        assert_eq!(
-            RoutePath::Custom("paypal".to_string()).to_string(),
-            "/v1/paypal"
-        );
     }
 
     #[test]
     fn test_route_path_serialization() {
-        // Test serialization of static paths
-        let json = serde_json::to_string(&RoutePath::MintBolt11).unwrap();
+        // Test serialization of payment method paths
+        let json = serde_json::to_string(&RoutePath::Mint("bolt11".to_string())).unwrap();
         assert_eq!(json, "\"/v1/mint/bolt11\"");
 
-        // Test serialization of custom paths
-        let json = serde_json::to_string(&RoutePath::Custom("paypal".to_string())).unwrap();
-        assert_eq!(json, "\"/v1/paypal\"");
+        let json = serde_json::to_string(&RoutePath::MintQuote("paypal".to_string())).unwrap();
+        assert_eq!(json, "\"/v1/mint/quote/paypal\"");
 
-        // Test deserialization of static paths
+        // Test deserialization of payment method paths
         let path: RoutePath = serde_json::from_str("\"/v1/mint/bolt11\"").unwrap();
-        assert_eq!(path, RoutePath::MintBolt11);
+        assert_eq!(path, RoutePath::Mint("bolt11".to_string()));
 
-        // Test deserialization of custom paths
-        let path: RoutePath = serde_json::from_str("\"mint/paypal\"").unwrap();
-        assert_eq!(path, RoutePath::Custom("mint/paypal".to_string()));
+        let path: RoutePath = serde_json::from_str("\"/v1/melt/quote/venmo\"").unwrap();
+        assert_eq!(path, RoutePath::MeltQuote("venmo".to_string()));
 
         // Test round-trip serialization
-        let original = RoutePath::Custom("/v1/venmo".to_string());
+        let original = RoutePath::Melt("bolt12".to_string());
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: RoutePath = serde_json::from_str(&json).unwrap();
         assert_eq!(original, deserialized);
@@ -423,7 +427,7 @@ mod tests {
             .iter()
             .map(|ep| (ep.method, ep.path.clone()))
             .collect::<Vec<_>>();
-        assert!(paths.contains(&(Method::Get, RoutePath::MintBolt11)));
+        assert!(paths.contains(&(Method::Get, RoutePath::Mint("bolt11".to_string()))));
         assert!(paths.contains(&(Method::Post, RoutePath::Swap)));
     }
 
@@ -451,14 +455,14 @@ mod tests {
             "https://example.com/.well-known/openid-configuration"
         );
         assert_eq!(settings.client_id, "client123");
-        assert_eq!(settings.protected_endpoints.len(), 5); // 3 mint paths + 1 swap path
+        assert_eq!(settings.protected_endpoints.len(), 5); // 4 mint paths (bolt11+bolt12 quote+mint) + 1 swap path
 
         let expected_protected: HashSet<ProtectedEndpoint> = HashSet::from_iter(vec![
             ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintBolt11),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt12),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintBolt12),
+            ProtectedEndpoint::new(Method::Get, RoutePath::Mint("bolt11".to_string())),
+            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuote("bolt11".to_string())),
+            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuote("bolt12".to_string())),
+            ProtectedEndpoint::new(Method::Get, RoutePath::Mint("bolt12".to_string())),
         ]);
 
         let deserlized_protected = settings.protected_endpoints.into_iter().collect();
@@ -501,7 +505,7 @@ mod tests {
         assert_eq!(settings.protected_endpoints[0].method, Method::Get);
         assert_eq!(
             settings.protected_endpoints[0].path,
-            RoutePath::MintQuoteBolt11
+            RoutePath::MintQuote("bolt11".to_string())
         );
     }
 
@@ -521,7 +525,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(
             settings.protected_endpoints.len(),
-            RoutePath::static_paths().len()
+            RoutePath::all_known_paths().len()
         );
     }
 }

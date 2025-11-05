@@ -249,43 +249,45 @@ impl MintBuilder {
 
         let settings = payment_processor.get_settings().await?;
 
-        if settings.mpp {
-            let mpp_settings = MppMethodSettings {
+        if let Some(ref bolt11_settings) = settings.bolt11 {
+            if bolt11_settings.mpp {
+                let mpp_settings = MppMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                };
+
+                let mut mpp = self.mint_info.nuts.nut15.clone();
+
+                mpp.methods.push(mpp_settings);
+
+                self.mint_info.nuts.nut15 = mpp;
+            }
+
+            let mint_method_settings = MintMethodSettings {
                 method: method.clone(),
                 unit: unit.clone(),
+                min_amount: Some(limits.mint_min),
+                max_amount: Some(limits.mint_max),
+                options: Some(MintMethodOptions::Bolt11 {
+                    description: bolt11_settings.invoice_description,
+                }),
             };
 
-            let mut mpp = self.mint_info.nuts.nut15.clone();
+            self.mint_info.nuts.nut04.methods.push(mint_method_settings);
+            self.mint_info.nuts.nut04.disabled = false;
 
-            mpp.methods.push(mpp_settings);
-
-            self.mint_info.nuts.nut15 = mpp;
+            let melt_method_settings = MeltMethodSettings {
+                method,
+                unit,
+                min_amount: Some(limits.melt_min),
+                max_amount: Some(limits.melt_max),
+                options: Some(MeltMethodOptions::Bolt11 {
+                    amountless: bolt11_settings.amountless,
+                }),
+            };
+            self.mint_info.nuts.nut05.methods.push(melt_method_settings);
+            self.mint_info.nuts.nut05.disabled = false;
         }
-
-        let mint_method_settings = MintMethodSettings {
-            method: method.clone(),
-            unit: unit.clone(),
-            min_amount: Some(limits.mint_min),
-            max_amount: Some(limits.mint_max),
-            options: Some(MintMethodOptions::Bolt11 {
-                description: settings.invoice_description,
-            }),
-        };
-
-        self.mint_info.nuts.nut04.methods.push(mint_method_settings);
-        self.mint_info.nuts.nut04.disabled = false;
-
-        let melt_method_settings = MeltMethodSettings {
-            method,
-            unit,
-            min_amount: Some(limits.melt_min),
-            max_amount: Some(limits.melt_max),
-            options: Some(MeltMethodOptions::Bolt11 {
-                amountless: settings.amountless,
-            }),
-        };
-        self.mint_info.nuts.nut05.methods.push(melt_method_settings);
-        self.mint_info.nuts.nut05.disabled = false;
 
         let mut supported_units = self.supported_units.clone();
 

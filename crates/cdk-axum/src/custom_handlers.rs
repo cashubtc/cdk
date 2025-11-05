@@ -2,16 +2,23 @@
 //!
 //! These handlers work for ANY custom payment method without requiring
 //! method-specific validation or request parsing.
+//!
+//! Special handling for bolt11 and bolt12:
+//! When the method parameter is "bolt11" or "bolt12", these handlers use the
+//! specific Bolt11/Bolt12 request/response types instead of the generic custom types.
 
 use axum::extract::{Json, Path, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use cdk::mint::QuoteId;
 #[cfg(feature = "auth")]
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
-    MeltQuoteBolt11Response, MeltQuoteCustomRequest, MintQuoteCustomRequest,
-    MintQuoteCustomResponse, MintRequest, MintResponse,
+    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteBolt12Request,
+    MeltQuoteCustomRequest, MintQuoteBolt11Request, MintQuoteBolt11Response,
+    MintQuoteBolt12Request, MintQuoteBolt12Response, MintQuoteCustomRequest, MintRequest,
+    MintResponse,
 };
+use serde_json::Value;
 use tracing::instrument;
 
 #[cfg(feature = "auth")]
@@ -21,41 +28,88 @@ use crate::MintState;
 
 /// Generic handler for custom payment method mint quotes
 ///
-/// This handler works for ANY custom payment method (e.g., paypal, venmo, cashapp).
-/// It passes the request data directly to the payment processor without validation.
-#[instrument(skip_all, fields(method = ?method, amount = ?payload.amount))]
+/// This handler works for ANY custom payment method (e.g., paypal, venmo, cashapp, bolt11, bolt12).
+/// For bolt11/bolt12, it handles the specific request/response types.
+/// For other methods, it passes the request data directly to the payment processor.
+#[instrument(skip_all, fields(method = ?method))]
 pub async fn post_mint_custom_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Path(method): Path<String>,
-    Json(payload): Json<MintQuoteCustomRequest>,
-) -> Result<Json<MintQuoteCustomResponse<QuoteId>>, Response> {
+    Json(payload): Json<Value>,
+) -> Result<Response, Response> {
     #[cfg(feature = "auth")]
     {
         state
             .mint
             .verify_auth(
                 auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::Custom(method.clone())),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MintQuote(method.clone())),
             )
             .await
             .map_err(into_response)?;
     }
 
-    let quote_request = cdk::mint::MintQuoteRequest::Custom {
-        method,
-        request: payload,
-    };
+    match method.as_str() {
+        "bolt11" => {
+            let bolt11_request: MintQuoteBolt11Request =
+                serde_json::from_value(payload).map_err(|e| {
+                    tracing::error!("Failed to parse bolt11 request: {}", e);
+                    into_response(cdk::Error::InvalidPaymentMethod)
+                })?;
 
-    let response = state
-        .mint
-        .get_mint_quote(quote_request)
-        .await
-        .map_err(into_response)?;
+            let quote = state
+                .mint
+                .get_mint_quote(bolt11_request.into())
+                .await
+                .map_err(into_response)?;
 
-    match response {
-        cdk::mint::MintQuoteResponse::Custom { response, .. } => Ok(Json(response)),
-        _ => Err(into_response(cdk::Error::InvalidPaymentMethod)),
+            let response: MintQuoteBolt11Response<QuoteId> =
+                quote.try_into().map_err(into_response)?;
+            Ok(Json(response).into_response())
+        }
+        "bolt12" => {
+            let bolt12_request: MintQuoteBolt12Request =
+                serde_json::from_value(payload).map_err(|e| {
+                    tracing::error!("Failed to parse bolt12 request: {}", e);
+                    into_response(cdk::Error::InvalidPaymentMethod)
+                })?;
+
+            let quote = state
+                .mint
+                .get_mint_quote(bolt12_request.into())
+                .await
+                .map_err(into_response)?;
+
+            let response: MintQuoteBolt12Response<QuoteId> =
+                quote.try_into().map_err(into_response)?;
+            Ok(Json(response).into_response())
+        }
+        _ => {
+            let custom_request: MintQuoteCustomRequest =
+                serde_json::from_value(payload).map_err(|e| {
+                    tracing::error!("Failed to parse custom request: {}", e);
+                    into_response(cdk::Error::InvalidPaymentMethod)
+                })?;
+
+            let quote_request = cdk::mint::MintQuoteRequest::Custom {
+                method,
+                request: custom_request,
+            };
+
+            let response = state
+                .mint
+                .get_mint_quote(quote_request)
+                .await
+                .map_err(into_response)?;
+
+            match response {
+                cdk::mint::MintQuoteResponse::Custom { response, .. } => {
+                    Ok(Json(response).into_response())
+                }
+                _ => Err(into_response(cdk::Error::InvalidPaymentMethod)),
+            }
+        }
     }
 }
 
@@ -65,14 +119,14 @@ pub async fn get_check_mint_custom_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Path((method, quote_id)): Path<(String, QuoteId)>,
-) -> Result<Json<MintQuoteCustomResponse<QuoteId>>, Response> {
+) -> Result<Response, Response> {
     #[cfg(feature = "auth")]
     {
         state
             .mint
             .verify_auth(
                 auth.into(),
-                &ProtectedEndpoint::new(Method::Get, RoutePath::Custom(method.clone())),
+                &ProtectedEndpoint::new(Method::Get, RoutePath::MintQuote(method.clone())),
             )
             .await
             .map_err(into_response)?;
@@ -84,18 +138,32 @@ pub async fn get_check_mint_custom_quote(
         .await
         .map_err(into_response)?;
 
-    // Extract and verify it's a Custom payment method
-    match quote_response {
-        cdk::mint::MintQuoteResponse::Custom {
-            method: quote_method,
-            response,
-        } => {
-            if quote_method != method {
-                return Err(into_response(cdk::Error::InvalidPaymentMethod));
-            }
-            Ok(Json(response))
+    match method.as_str() {
+        "bolt11" => {
+            let response: MintQuoteBolt11Response<QuoteId> =
+                quote_response.try_into().map_err(into_response)?;
+            Ok(Json(response).into_response())
         }
-        _ => Err(into_response(cdk::Error::InvalidPaymentMethod)),
+        "bolt12" => {
+            let response: MintQuoteBolt12Response<QuoteId> =
+                quote_response.try_into().map_err(into_response)?;
+            Ok(Json(response).into_response())
+        }
+        _ => {
+            // Extract and verify it's a Custom payment method
+            match quote_response {
+                cdk::mint::MintQuoteResponse::Custom {
+                    method: quote_method,
+                    response,
+                } => {
+                    if quote_method != method {
+                        return Err(into_response(cdk::Error::InvalidPaymentMethod));
+                    }
+                    Ok(Json(response).into_response())
+                }
+                _ => Err(into_response(cdk::Error::InvalidPaymentMethod)),
+            }
+        }
     }
 }
 
@@ -113,7 +181,7 @@ pub async fn post_mint_custom(
             .mint
             .verify_auth(
                 auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::Custom(method.clone())),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::Mint(method.clone())),
             )
             .await
             .map_err(into_response)?;
@@ -136,7 +204,7 @@ pub async fn post_melt_custom_quote(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
     Path(method): Path<String>,
-    Json(payload): Json<MeltQuoteCustomRequest>,
+    Json(payload): Json<Value>,
 ) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
     #[cfg(feature = "auth")]
     {
@@ -144,17 +212,53 @@ pub async fn post_melt_custom_quote(
             .mint
             .verify_auth(
                 auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::Custom(method.clone())),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuote(method.clone())),
             )
             .await
             .map_err(into_response)?;
     }
 
-    let response = state
-        .mint
-        .get_melt_quote(payload.into())
-        .await
-        .map_err(into_response)?;
+    let response = match method.as_str() {
+        "bolt11" => {
+            let bolt11_request: MeltQuoteBolt11Request =
+                serde_json::from_value(payload).map_err(|e| {
+                    tracing::error!("Failed to parse bolt11 melt request: {}", e);
+                    into_response(cdk::Error::InvalidPaymentMethod)
+                })?;
+
+            state
+                .mint
+                .get_melt_quote(bolt11_request.into())
+                .await
+                .map_err(into_response)?
+        }
+        "bolt12" => {
+            let bolt12_request: MeltQuoteBolt12Request =
+                serde_json::from_value(payload).map_err(|e| {
+                    tracing::error!("Failed to parse bolt12 melt request: {}", e);
+                    into_response(cdk::Error::InvalidPaymentMethod)
+                })?;
+
+            state
+                .mint
+                .get_melt_quote(bolt12_request.into())
+                .await
+                .map_err(into_response)?
+        }
+        _ => {
+            let custom_request: MeltQuoteCustomRequest =
+                serde_json::from_value(payload).map_err(|e| {
+                    tracing::error!("Failed to parse custom melt request: {}", e);
+                    into_response(cdk::Error::InvalidPaymentMethod)
+                })?;
+
+            state
+                .mint
+                .get_melt_quote(custom_request.into())
+                .await
+                .map_err(into_response)?
+        }
+    };
 
     Ok(Json(response))
 }
@@ -172,7 +276,7 @@ pub async fn get_check_melt_custom_quote(
             .mint
             .verify_auth(
                 auth.into(),
-                &ProtectedEndpoint::new(Method::Get, RoutePath::Custom(method.clone())),
+                &ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuote(method.clone())),
             )
             .await
             .map_err(into_response)?;
@@ -203,7 +307,7 @@ pub async fn post_melt_custom(
             .mint
             .verify_auth(
                 auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::Custom(method.clone())),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::Melt(method.clone())),
             )
             .await
             .map_err(into_response)?;

@@ -47,22 +47,12 @@ pub fn create_custom_routers(state: MintState, custom_methods: Vec<String>) -> R
         .with_state(state)
 }
 
-/// Validates that custom method names don't conflict with reserved names
+/// Validates that custom method names are valid
 ///
-/// Reserved names are payment methods already handled by dedicated code:
-/// - "bolt11" - Lightning BOLT11 invoices
-/// - "bolt12" - Lightning BOLT12 offers
+/// Previously, bolt11 and bolt12 were reserved, but now they can be handled
+/// through the custom router if the payment processor supports them.
 pub fn validate_custom_method_names(methods: &[String]) -> Result<(), String> {
-    const RESERVED_METHODS: &[&str] = &["bolt11", "bolt12"];
-
     for method in methods {
-        if RESERVED_METHODS.contains(&method.as_str()) {
-            return Err(format!(
-                "Custom payment method name '{}' is reserved. Please use a different name.",
-                method
-            ));
-        }
-
         // Validate method name contains only URL-safe characters
         if !method
             .chars()
@@ -99,11 +89,12 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_custom_method_names_reserved() {
-        assert!(validate_custom_method_names(&["bolt11".to_string()]).is_err());
-        assert!(validate_custom_method_names(&["bolt12".to_string()]).is_err());
+    fn test_validate_custom_method_names_bolt11_bolt12_allowed() {
+        // bolt11 and bolt12 are now allowed as custom methods
+        assert!(validate_custom_method_names(&["bolt11".to_string()]).is_ok());
+        assert!(validate_custom_method_names(&["bolt12".to_string()]).is_ok());
         assert!(
-            validate_custom_method_names(&["paypal".to_string(), "bolt11".to_string()]).is_err()
+            validate_custom_method_names(&["paypal".to_string(), "bolt11".to_string()]).is_ok()
         );
     }
 

@@ -148,11 +148,7 @@ mod tests {
 
         // Test PaymentMethod variants
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
-        let payment_methods = [
-            PaymentMethod::Bolt11,
-            PaymentMethod::Bolt12,
-            PaymentMethod::Custom("custom".to_string()),
-        ];
+        let payment_methods = ["bolt11", "bolt12", PaymentMethod::from("custom")];
 
         for (i, payment_method) in payment_methods.iter().enumerate() {
             let quote = MintQuote {

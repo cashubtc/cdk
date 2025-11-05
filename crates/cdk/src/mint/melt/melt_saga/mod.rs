@@ -436,7 +436,7 @@ impl MeltSaga<SetupComplete> {
         // Mint quote has already been settled
         if (mint_quote.state() == cdk_common::nuts::MintQuoteState::Issued
             || mint_quote.state() == cdk_common::nuts::MintQuoteState::Paid)
-            && mint_quote.payment_method == crate::mint::PaymentMethod::Bolt11
+            && mint_quote.payment_method == crate::mint::PaymentMethod::from("bolt11")
         {
             tx.rollback().await?;
             self.compensate_all().await?;

@@ -258,7 +258,7 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintQuoteBolt11)
+            .get_auth_token(Method::Post, RoutePath::MintQuote("bolt11".to_string()))
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -279,7 +279,7 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MintQuoteBolt11)
+            .get_auth_token(Method::Get, RoutePath::MintQuote("bolt11".to_string()))
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -292,7 +292,7 @@ where
     async fn post_mint(&self, request: MintRequest<String>) -> Result<MintResponse, Error> {
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintBolt11)
+            .get_auth_token(Method::Post, RoutePath::Mint("bolt11".to_string()))
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -317,7 +317,7 @@ where
             .join_paths(&["v1", "melt", "quote", "bolt11"])?;
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MeltQuoteBolt11)
+            .get_auth_token(Method::Post, RoutePath::MeltQuote("bolt11".to_string()))
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -337,7 +337,7 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MeltQuoteBolt11)
+            .get_auth_token(Method::Get, RoutePath::MeltQuote("bolt11".to_string()))
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -354,7 +354,7 @@ where
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MeltBolt11)
+            .get_auth_token(Method::Post, RoutePath::Melt("bolt11".to_string()))
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -462,7 +462,7 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintQuoteBolt12)
+            .get_auth_token(Method::Post, RoutePath::MintQuote("bolt12".to_string()))
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -483,7 +483,7 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MintQuoteBolt12)
+            .get_auth_token(Method::Get, RoutePath::MintQuote("bolt12".to_string()))
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -502,7 +502,7 @@ where
             .join_paths(&["v1", "melt", "quote", "bolt12"])?;
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MeltQuoteBolt12)
+            .get_auth_token(Method::Post, RoutePath::MeltQuote("bolt12".to_string()))
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -522,7 +522,7 @@ where
 
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Get, RoutePath::MeltQuoteBolt12)
+            .get_auth_token(Method::Get, RoutePath::MeltQuote("bolt12".to_string()))
             .await?;
 
         #[cfg(not(feature = "auth"))]
@@ -538,7 +538,7 @@ where
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         #[cfg(feature = "auth")]
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MeltBolt12)
+            .get_auth_token(Method::Post, RoutePath::Melt("bolt12".to_string()))
             .await?;
 
         #[cfg(not(feature = "auth"))]

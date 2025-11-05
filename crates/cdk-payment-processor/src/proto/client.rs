@@ -99,13 +99,20 @@ impl MintPayment for PaymentProcessorClient {
         let settings = response.into_inner();
 
         Ok(cdk_common::payment::SettingsResponse {
-            bolt11: settings.bolt11,
-            custom: settings.custom,
-            mpp: settings.mpp,
             unit: settings.unit,
-            invoice_description: settings.invoice_description,
-            bolt12: settings.bolt12,
-            amountless: settings.amountless,
+            bolt11: settings
+                .bolt11
+                .map(|b| cdk_common::payment::Bolt11Settings {
+                    mpp: b.mpp,
+                    amountless: b.amountless,
+                    invoice_description: b.invoice_description,
+                }),
+            bolt12: settings
+                .bolt12
+                .map(|b| cdk_common::payment::Bolt12Settings {
+                    amountless: b.amountless,
+                }),
+            custom: settings.custom,
         })
     }
 

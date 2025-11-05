@@ -88,7 +88,7 @@ impl Wallet {
             state: quote_res.state,
             expiry: quote_res.expiry,
             payment_preimage: quote_res.payment_preimage,
-            payment_method: PaymentMethod::Bolt11,
+            payment_method: PaymentMethod::from("bolt11"),
         };
 
         self.localstore.add_melt_quote(quote.clone()).await?;
@@ -197,10 +197,10 @@ impl Wallet {
             Some(premint_secrets.blinded_messages()),
         );
 
-        let melt_response = match quote_info.payment_method {
-            cdk_common::PaymentMethod::Bolt11 => self.client.post_melt(request).await,
-            cdk_common::PaymentMethod::Bolt12 => self.client.post_melt_bolt12(request).await,
-            cdk_common::PaymentMethod::Custom(_) => {
+        let melt_response = match quote_info.payment_method.as_str() {
+            "bolt11" => self.client.post_melt(request).await,
+            "bolt12" => self.client.post_melt_bolt12(request).await,
+            _ => {
                 return Err(Error::UnsupportedPaymentMethod);
             }
         };

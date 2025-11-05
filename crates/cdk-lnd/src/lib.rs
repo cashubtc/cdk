@@ -119,13 +119,14 @@ impl Lnd {
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
             settings: SettingsResponse {
-                bolt11: true,
-                mpp: true,
                 unit: unit.to_string(),
-                invoice_description: true,
-                amountless: true,
-                bolt12: false,
-                custom: vec![],
+                bolt11: Some(payment::Bolt11Settings {
+                    mpp: true,
+                    amountless: true,
+                    invoice_description: true,
+                }),
+                bolt12: None,
+                custom: std::collections::HashMap::new(),
             },
             unit,
         })
