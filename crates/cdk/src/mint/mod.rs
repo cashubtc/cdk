@@ -831,11 +831,17 @@ impl Mint {
     pub async fn verify_proofs(&self, proofs: Proofs) -> Result<(), Error> {
         #[cfg(feature = "prometheus")]
         global::inc_in_flight_requests("verify_proofs");
+        /// Maximum allowed secret size in characters (DOS mitigation)
+        const MAX_SECRET_SIZE: usize = 1024;
 
         let result = async {
             proofs
                 .iter()
                 .map(|proof| {
+                    if proof.secret.as_bytes().len() > MAX_SECRET_SIZE {
+                        tracing::debug!("Proof rejected: secret exceeds maximum size");
+                        return Err(Error::Internal);
+                    }
                     // Check if secret is a nut10 secret with conditions
                     if let Ok(secret) =
                         <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
