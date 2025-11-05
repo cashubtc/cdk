@@ -673,6 +673,7 @@ impl TryFrom<crate::mint::MintQuote> for crate::nuts::MintQuoteCustomResponse<Qu
         use serde_json::Value;
 
         Ok(crate::nuts::MintQuoteCustomResponse {
+            state: mint_quote.state(),
             quote: mint_quote.id.clone(),
             request: mint_quote.request,
             expiry: Some(mint_quote.expiry),

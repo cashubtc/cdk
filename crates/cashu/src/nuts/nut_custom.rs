@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{CurrencyUnit, PublicKey};
+use crate::nut23::QuoteState;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
 use crate::Amount;
@@ -50,6 +51,7 @@ pub struct MintQuoteCustomResponse<Q> {
     pub amount: Option<Amount>,
     /// Currency unit
     pub unit: Option<CurrencyUnit>,
+    pub state: QuoteState,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
     /// NUT-19 Pubkey
@@ -68,6 +70,7 @@ impl<Q: ToString> MintQuoteCustomResponse<Q> {
             quote: self.quote.to_string(),
             request: self.request.clone(),
             amount: self.amount,
+            state: self.state,
             unit: self.unit.clone(),
             expiry: self.expiry,
             pubkey: self.pubkey,
@@ -85,6 +88,7 @@ impl From<MintQuoteCustomResponse<QuoteId>> for MintQuoteCustomResponse<String> 
             amount: value.amount,
             unit: value.unit,
             expiry: value.expiry,
+            state: value.state,
             pubkey: value.pubkey,
             data: value.data,
         }

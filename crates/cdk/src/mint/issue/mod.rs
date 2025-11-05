@@ -542,9 +542,8 @@ impl Mint {
                 .await?
                 .ok_or(Error::UnknownQuote)?;
 
-            if quote.payment_method == "bolt11" {
-                self.check_mint_quote_paid(&mut quote).await?;
-            }
+
+            self.check_mint_quote_paid(&mut quote).await?;
 
             quote.try_into()
         }
@@ -591,10 +590,9 @@ impl Mint {
                 .get_mint_quote(&mint_request.quote)
                 .await?
                 .ok_or(Error::UnknownQuote)?;
+            self.check_mint_quote_paid(&mut mint_quote).await?;
 
-            if mint_quote.payment_method == "bolt11" {
-                self.check_mint_quote_paid(&mut mint_quote).await?;
-            }
+
         // get the blind signatures before having starting the db transaction, if there are any
         // rollbacks this blind_signatures will be lost, and the signature is stateless. It is not a
         // good idea to call an external service (which is really a trait, it could be anything
@@ -652,7 +650,9 @@ impl Mint {
 
                 mint_quote.amount_mintable()
             }
-            _ => return Err(Error::UnsupportedPaymentMethod),
+            _ => {
+                mint_quote.amount_mintable()
+            }
         };
 
         // If the there is a public key provoided in mint quote request

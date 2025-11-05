@@ -248,49 +248,105 @@ impl MintBuilder {
         };
 
         let settings = payment_processor.get_settings().await?;
+        let method_str = method.to_string();
 
-        if let Some(ref bolt11_settings) = settings.bolt11 {
-            if bolt11_settings.mpp {
-                let mpp_settings = MppMethodSettings {
+        // Handle bolt11 methods
+        if method_str == "bolt11" {
+            if let Some(ref bolt11_settings) = settings.bolt11 {
+                // Add MPP support if available
+                if bolt11_settings.mpp {
+                    let mpp_settings = MppMethodSettings {
+                        method: method.clone(),
+                        unit: unit.clone(),
+                    };
+
+                    let mut mpp = self.mint_info.nuts.nut15.clone();
+                    mpp.methods.push(mpp_settings);
+                    self.mint_info.nuts.nut15 = mpp;
+                }
+
+                // Add to NUT04 (mint)
+                let mint_method_settings = MintMethodSettings {
                     method: method.clone(),
                     unit: unit.clone(),
+                    min_amount: Some(limits.mint_min),
+                    max_amount: Some(limits.mint_max),
+                    options: Some(MintMethodOptions::Bolt11 {
+                        description: bolt11_settings.invoice_description,
+                    }),
                 };
+                self.mint_info.nuts.nut04.methods.push(mint_method_settings);
+                self.mint_info.nuts.nut04.disabled = false;
 
-                let mut mpp = self.mint_info.nuts.nut15.clone();
-
-                mpp.methods.push(mpp_settings);
-
-                self.mint_info.nuts.nut15 = mpp;
+                // Add to NUT05 (melt)
+                let melt_method_settings = MeltMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    min_amount: Some(limits.melt_min),
+                    max_amount: Some(limits.melt_max),
+                    options: Some(MeltMethodOptions::Bolt11 {
+                        amountless: bolt11_settings.amountless,
+                    }),
+                };
+                self.mint_info.nuts.nut05.methods.push(melt_method_settings);
+                self.mint_info.nuts.nut05.disabled = false;
             }
+        }
+        // Handle bolt12 methods
+        else if method_str == "bolt12" {
+            if settings.bolt12.is_some() {
+                // Add to NUT04 (mint) - bolt12 doesn't have specific options yet
+                let mint_method_settings = MintMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    min_amount: Some(limits.mint_min),
+                    max_amount: Some(limits.mint_max),
+                    options: None, // No bolt12-specific options in NUT04 yet
+                };
+                self.mint_info.nuts.nut04.methods.push(mint_method_settings);
+                self.mint_info.nuts.nut04.disabled = false;
 
-            let mint_method_settings = MintMethodSettings {
-                method: method.clone(),
-                unit: unit.clone(),
-                min_amount: Some(limits.mint_min),
-                max_amount: Some(limits.mint_max),
-                options: Some(MintMethodOptions::Bolt11 {
-                    description: bolt11_settings.invoice_description,
-                }),
-            };
+                // Add to NUT05 (melt) - bolt12 doesn't have specific options in MeltMethodOptions yet
+                let melt_method_settings = MeltMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    min_amount: Some(limits.melt_min),
+                    max_amount: Some(limits.melt_max),
+                    options: None, // No bolt12-specific options in NUT05 yet
+                };
+                self.mint_info.nuts.nut05.methods.push(melt_method_settings);
+                self.mint_info.nuts.nut05.disabled = false;
+            }
+        }
+        // Handle custom methods
+        else {
+            // Check if this custom method is supported by the payment processor
+            if settings.custom.contains_key(&method_str) {
+                // Add to NUT04 (mint)
+                let mint_method_settings = MintMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    min_amount: Some(limits.mint_min),
+                    max_amount: Some(limits.mint_max),
+                    options: Some(MintMethodOptions::Custom {}),
+                };
+                self.mint_info.nuts.nut04.methods.push(mint_method_settings);
+                self.mint_info.nuts.nut04.disabled = false;
 
-            self.mint_info.nuts.nut04.methods.push(mint_method_settings);
-            self.mint_info.nuts.nut04.disabled = false;
-
-            let melt_method_settings = MeltMethodSettings {
-                method,
-                unit,
-                min_amount: Some(limits.melt_min),
-                max_amount: Some(limits.melt_max),
-                options: Some(MeltMethodOptions::Bolt11 {
-                    amountless: bolt11_settings.amountless,
-                }),
-            };
-            self.mint_info.nuts.nut05.methods.push(melt_method_settings);
-            self.mint_info.nuts.nut05.disabled = false;
+                // Add to NUT05 (melt)
+                let melt_method_settings = MeltMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    min_amount: Some(limits.melt_min),
+                    max_amount: Some(limits.melt_max),
+                    options: None, // No custom-specific options in NUT05 yet
+                };
+                self.mint_info.nuts.nut05.methods.push(melt_method_settings);
+                self.mint_info.nuts.nut05.disabled = false;
+            }
         }
 
         let mut supported_units = self.supported_units.clone();
-
         supported_units.insert(key.unit.clone(), (0, 32));
         self.supported_units = supported_units;
 
