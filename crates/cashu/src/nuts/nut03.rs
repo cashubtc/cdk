@@ -2,6 +2,7 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/03.md>
 
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -20,6 +21,9 @@ pub enum Error {
     /// Amount Error
     #[error(transparent)]
     Amount(#[from] crate::amount::Error),
+    /// Too many inputs
+    #[error("Too many inputs: {0}")]
+    TooManyInputs(usize),
 }
 
 /// Preswap information
@@ -36,12 +40,27 @@ pub struct PreSwap {
     pub fee: Amount,
 }
 
+fn deserialize_limited_proofs<'de, D>(deserializer: D) -> Result<Proofs, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let proofs = Proofs::deserialize(deserializer)?;
+    if proofs.len() > 1_000 {
+        return Err(de::Error::custom(format!(
+            "Too many inputs: {}",
+            proofs.len()
+        )));
+    }
+    Ok(proofs)
+}
+
 /// Swap Request [NUT-03]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct SwapRequest {
     /// Proofs that are to be spent in a `Swap`
-    #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>))]
+    #[serde(deserialize_with = "deserialize_limited_proofs")]
+    #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>, max_items = 1_000))]
     inputs: Proofs,
     /// Blinded Messages for Mint to sign
     outputs: Vec<BlindedMessage>,

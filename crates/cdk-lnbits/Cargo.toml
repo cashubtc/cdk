@@ -20,6 +20,6 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
-lnbits-rs = "0.9.1"
+lnbits-rs = "0.9.2"
 serde_json.workspace = true
 rustls.workspace = true

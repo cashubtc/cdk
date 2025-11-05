@@ -12,6 +12,20 @@ use thiserror::Error;
 
 use super::nut00::{BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::ProofsMethods;
+
+fn deserialize_limited_proofs<'de, D>(deserializer: D) -> Result<Proofs, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let proofs = Proofs::deserialize(deserializer)?;
+    if proofs.len() > 1_000 {
+        return Err(de::Error::custom(format!(
+            "Too many inputs: {}",
+            proofs.len()
+        )));
+    }
+    Ok(proofs)
+}
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
 use crate::Amount;
@@ -31,6 +45,9 @@ pub enum Error {
     /// Invalid quote id
     #[error("Invalid quote id")]
     InvalidQuote,
+    /// Too many inputs
+    #[error("Too many inputs: {0}")]
+    TooManyInputs(usize),
 }
 
 /// Possible states of a quote
@@ -86,7 +103,8 @@ pub struct MeltRequest<Q> {
     /// Quote ID
     quote: Q,
     /// Proofs
-    #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>))]
+    #[serde(deserialize_with = "deserialize_limited_proofs")]
+    #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>, max_items = 1_000))]
     inputs: Proofs,
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount field of BlindedMessages `SHOULD` be set to zero

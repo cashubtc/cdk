@@ -2,15 +2,32 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/09.md>
 
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
 use super::nut00::{BlindSignature, BlindedMessage};
+
+fn deserialize_limited_outputs<'de, D>(deserializer: D) -> Result<Vec<BlindedMessage>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let outputs = Vec::<BlindedMessage>::deserialize(deserializer)?;
+    if outputs.len() > 1_000 {
+        return Err(de::Error::custom(format!(
+            "Too many outputs: {}",
+            outputs.len()
+        )));
+    }
+    Ok(outputs)
+}
 
 /// Restore Request [NUT-09]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct RestoreRequest {
     /// Outputs
+    #[serde(deserialize_with = "deserialize_limited_outputs")]
+    #[cfg_attr(feature = "swagger", schema(max_items = 1_000))]
     pub outputs: Vec<BlindedMessage>,
 }
 
