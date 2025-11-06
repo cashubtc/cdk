@@ -220,9 +220,21 @@ where
             .await?;
 
         if new_state == State::Spent {
-            // Update keyset_amounts table for redeemed amounts
-            // First, try UPDATE (most common case)
-            let updated = query(
+            query(
+                r#"
+                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+                SELECT keyset_id, 0, 0
+                FROM proof
+                WHERE y IN (:ys)
+                GROUP BY keyset_id
+                ON CONFLICT (keyset_id) DO NOTHING
+            "#,
+            )?
+            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+            .execute(&self.inner)
+            .await?;
+
+            query(
                 r#"
                 UPDATE keyset_amounts
                 SET total_redeemed = total_redeemed + amounts.total
@@ -238,22 +250,6 @@ where
             .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
             .execute(&self.inner)
             .await?;
-
-            // If no rows were updated, INSERT new rows (rare case - first time seeing this keyset)
-            if updated == 0 {
-                query(
-                    r#"
-                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                    SELECT keyset_id, 0, COALESCE(SUM(amount), 0)
-                    FROM proof
-                    WHERE y IN (:ys)
-                    GROUP BY keyset_id
-                    "#,
-                )?
-                .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
-                .execute(&self.inner)
-                .await?;
-            }
         }
 
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
@@ -1724,6 +1720,26 @@ where
         })
         .collect::<Result<HashMap<_, _>, Error>>()?;
 
+        query(
+            r#"
+        INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+        SELECT keyset_id, 0, 0
+        FROM blind_signature
+        WHERE c IN (:c)
+        GROUP BY keyset_id
+        ON CONFLICT (keyset_id) DO NOTHING
+        "#,
+        )?
+        .bind_vec(
+            "c",
+            blind_signatures
+                .iter()
+                .map(|c| c.c.to_bytes().to_vec())
+                .collect(),
+        )
+        .execute(&self.inner)
+        .await?;
+
         // Iterate over the provided blinded messages and signatures
         for (message, signature) in blinded_messages.iter().zip(blind_signatures) {
             match existing_rows.remove(message) {
@@ -1755,8 +1771,7 @@ where
                     .execute(&self.inner)
                     .await?;
 
-                    // Update total_issued (most common case)
-                    let updated = query(
+                    query(
                         r#"
                         UPDATE keyset_amounts
                         SET total_issued = total_issued + :amount
@@ -1767,20 +1782,6 @@ where
                     .bind("keyset_id", signature.keyset_id.to_string())
                     .execute(&self.inner)
                     .await?;
-
-                    // If no rows updated, INSERT (rare case - first issuance for this keyset)
-                    if updated == 0 {
-                        query(
-                            r#"
-                            INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                            VALUES (:keyset_id, :amount, 0)
-                            "#,
-                        )?
-                        .bind("amount", u64::from(signature.amount) as i64)
-                        .bind("keyset_id", signature.keyset_id.to_string())
-                        .execute(&self.inner)
-                        .await?;
-                    }
                 }
                 Some((c, _dleq_e, _dleq_s)) => {
                     // Blind message exists: check if c is NULL
@@ -1809,8 +1810,7 @@ where
                             .execute(&self.inner)
                             .await?;
 
-                            // Update total_issued (most common case)
-                            let updated = query(
+                            query(
                                 r#"
                                 UPDATE keyset_amounts
                                 SET total_issued = total_issued + :amount
@@ -1823,18 +1823,6 @@ where
                             .await?;
 
                             // If no rows updated, INSERT (rare case - first issuance for this keyset)
-                            if updated == 0 {
-                                query(
-                                    r#"
-                                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                                    VALUES (:keyset_id, :amount, 0)
-                                    "#,
-                                )?
-                                .bind("amount", u64::from(signature.amount) as i64)
-                                .bind("keyset_id", signature.keyset_id.to_string())
-                                .execute(&self.inner)
-                                .await?;
-                            }
                         }
                         _ => {
                             // Blind message already has c: Error
