@@ -95,7 +95,7 @@ impl Wallet {
                 Ok(r) => Ok(r),
                 Err(err) => {
                     println!(
-                        "Http operation failed with \"{}\", revering  {} proofs states to UNSPENT",
+                        "Http operation failed with \"{}\", reverting  {} proofs states to UNSPENT",
                         err,
                         inputs.len()
                     );
