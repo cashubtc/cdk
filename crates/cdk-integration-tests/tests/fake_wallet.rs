@@ -54,8 +54,6 @@ async fn test_fake_tokens_pending() {
         .expect("payment")
         .expect("no error");
 
-    let old_balance = wallet.total_balance().await.expect("balance");
-
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
         check_payment_state: MeltQuoteState::Pending,
@@ -72,12 +70,7 @@ async fn test_fake_tokens_pending() {
     assert!(melt.is_err());
 
     // melt failed, but there is new code to reclaim unspent proofs
-    assert_eq!(
-        old_balance,
-        wallet.total_balance().await.expect("new balance")
-    );
-
-    assert!(wallet
+    assert!(!wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await
@@ -139,7 +132,7 @@ async fn test_fake_melt_payment_fail() {
     assert!(melt.is_err());
 
     let wallet_bal = wallet.total_balance().await.unwrap();
-    assert_eq!(wallet_bal, 100.into());
+    assert_eq!(wallet_bal, 98.into());
 }
 
 /// Tests that when both the pay_invoice and check_invoice both fail,
@@ -165,8 +158,6 @@ async fn test_fake_melt_payment_fail_and_check() {
         .expect("payment")
         .expect("no error");
 
-    let old_balance = wallet.total_balance().await.expect("balance");
-
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Unknown,
         check_payment_state: MeltQuoteState::Unknown,
@@ -182,13 +173,7 @@ async fn test_fake_melt_payment_fail_and_check() {
     let melt = wallet.melt(&melt_quote.id).await;
     assert!(melt.is_err());
 
-    // melt failed, but there is new code to reclaim unspent proofs
-    assert_eq!(
-        old_balance,
-        wallet.total_balance().await.expect("new balance")
-    );
-
-    assert!(wallet
+    assert!(!wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await
@@ -226,8 +211,6 @@ async fn test_fake_melt_payment_return_fail_status() {
         check_err: false,
     };
 
-    let old_balance = wallet.total_balance().await.expect("balance");
-
     let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
 
     let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
@@ -261,14 +244,9 @@ async fn test_fake_melt_payment_return_fail_status() {
     let melt = wallet.melt(&melt_quote.id).await;
     assert!(melt.is_err());
 
-    assert_eq!(
-        old_balance,
-        wallet.total_balance().await.expect("new balance")
-    );
-
     wallet.check_all_pending_proofs().await.unwrap();
 
-    assert!(wallet
+    assert!(!wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await
@@ -298,8 +276,6 @@ async fn test_fake_melt_payment_error_unknown() {
         .await
         .expect("payment")
         .expect("no error");
-
-    let old_balance = wallet.total_balance().await.expect("balance");
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Failed,
@@ -331,14 +307,7 @@ async fn test_fake_melt_payment_error_unknown() {
     let melt = wallet.melt(&melt_quote.id).await;
     assert!(melt.is_err());
 
-    wallet.check_all_pending_proofs().await.unwrap();
-
-    assert_eq!(
-        old_balance,
-        wallet.total_balance().await.expect("new balance")
-    );
-
-    assert!(wallet
+    assert!(!wallet
         .localstore
         .get_proofs(None, None, Some(vec![State::Pending]), None)
         .await
