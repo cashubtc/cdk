@@ -40,7 +40,6 @@ cdk-common.workspace = true
 cbor-diag.workspace = true
 async-trait.workspace = true
 anyhow.workspace = true
-once_cell = "1.20.2"
 bitcoin.workspace = true
 ciborium.workspace = true
 lightning.workspace = true
