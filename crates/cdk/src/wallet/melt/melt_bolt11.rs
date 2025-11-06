@@ -205,18 +205,6 @@ impl Wallet {
             }
         };
 
-        let melt_response = match melt_response {
-            Ok(melt_response) => melt_response,
-            Err(err) => {
-                tracing::error!("Could not melt: {}", err);
-                tracing::info!("Checking status of input proofs.");
-
-                self.reclaim_unspent(proofs).await?;
-
-                return Err(err);
-            }
-        };
-
         let active_keys = self
             .localstore
             .get_keys(&active_keyset_id)
