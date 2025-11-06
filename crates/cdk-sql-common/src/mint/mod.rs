@@ -8,7 +8,7 @@
 //! The trait expects an asynchronous interaction, but it also provides tools to spawn blocking
 //! clients in a pool and expose them to an asynchronous environment, making them compatible with
 //! Mint.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -223,11 +223,17 @@ where
             query(
                 r#"
                 INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                SELECT keyset_id, 0, 0
-                FROM proof
-                WHERE y IN (:ys)
-                GROUP BY keyset_id
-                ON CONFLICT (keyset_id) DO NOTHING
+                SELECT p.keyset_id, 0, 0
+                FROM (
+                  SELECT DISTINCT keyset_id
+                  FROM proof
+                  WHERE y IN (:ys)
+                ) AS p
+                WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM keyset_amounts ka
+                  WHERE ka.keyset_id = p.keyset_id
+                )
             "#,
             )?
             .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
@@ -1720,25 +1726,36 @@ where
         })
         .collect::<Result<HashMap<_, _>, Error>>()?;
 
-        query(
-            r#"
-        INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-        SELECT keyset_id, 0, 0
-        FROM blind_signature
-        WHERE c IN (:c)
-        GROUP BY keyset_id
-        ON CONFLICT (keyset_id) DO NOTHING
-        "#,
-        )?
-        .bind_vec(
-            "c",
-            blind_signatures
-                .iter()
-                .map(|c| c.c.to_bytes().to_vec())
-                .collect(),
-        )
-        .execute(&self.inner)
-        .await?;
+        let mut keysets = query("SELECT keyset_id FROM keyset_amounts")?
+            .fetch_all(&self.inner)
+            .await?
+            .into_iter()
+            .map(|mut row| {
+                Ok(column_as_string!(
+                    &row.remove(0),
+                    Id::from_str,
+                    Id::from_bytes
+                ))
+            })
+            .collect::<Result<HashSet<_>, Error>>()?;
+
+        for s in blind_signatures.iter() {
+            if keysets.contains(&s.keyset_id) {
+                continue;
+            }
+
+            keysets.insert(s.keyset_id);
+
+            query(
+                r#"
+                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+                VALUES (:keyset, 0, 0)
+            "#,
+            )?
+            .bind("keyset", s.keyset_id.to_string())
+            .execute(&self.inner)
+            .await?;
+        }
 
         // Iterate over the provided blinded messages and signatures
         for (message, signature) in blinded_messages.iter().zip(blind_signatures) {
@@ -1821,8 +1838,6 @@ where
                             .bind("keyset_id", signature.keyset_id.to_string())
                             .execute(&self.inner)
                             .await?;
-
-                            // If no rows updated, INSERT (rare case - first issuance for this keyset)
                         }
                         _ => {
                             // Blind message already has c: Error
