@@ -1,5 +1,9 @@
 use std::future::Future;
 
+use cdk_common::wallet::TransactionId;
+use cdk_common::{CheckStateRequest, ProofsMethods};
+use tracing::instrument;
+
 use crate::nuts::{Proofs, State};
 use crate::{Error, Wallet};
 
@@ -30,6 +34,48 @@ impl<T: ?Sized> MaybeSend for T {}
 const BATCH_PROOF_SIZE: usize = 100;
 
 impl Wallet {
+    /// Reclaim unspent proofs from the local database
+    ///
+    /// Checks the stats of [`Proofs`] updating in their status in the wallet's database if unspent
+    ///
+    #[instrument(skip(self, proofs))]
+    pub async fn update_proofs_state(&self, proofs: Proofs) -> Result<(), Error> {
+        let proof_ys = proofs.ys()?;
+
+        let transaction_id = TransactionId::new(proof_ys.clone());
+
+        let spendable = self
+            .client
+            .post_check_state(CheckStateRequest { ys: proof_ys })
+            .await?
+            .states;
+
+        let unspent: Proofs = proofs
+            .into_iter()
+            .zip(spendable)
+            .filter_map(|(p, s)| (s.state == State::Unspent).then_some(p))
+            .collect();
+
+        self.localstore
+            .update_proofs_state(
+                unspent
+                    .iter()
+                    .map(|x| x.y())
+                    .collect::<Result<Vec<_>, _>>()?,
+                State::Unspent,
+            )
+            .await?;
+
+        match self.localstore.remove_transaction(transaction_id).await {
+            Ok(_) => (),
+            Err(e) => {
+                tracing::warn!("Failed to remove transaction: {:?}", e);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Perform an async task, which is assumed to be a foreign mint call that can fail. If fails,
     /// the proofs used in the request are set as unspent, then they are swapped, as they are
     /// believed to be already shown to the mint
@@ -69,10 +115,9 @@ impl Wallet {
                             inputs.len()
                         );
                         for proofs in inputs.chunks(BATCH_PROOF_SIZE) {
-                            if let Err(inner_err) = self.reclaim_unspent(proofs.to_owned()).await {
-                                println!(
-                                    "Failed to swap exposed proofs ({}), updating local database instead", inner_err
-                                );
+                            if let Err(inner_err) =
+                                self.update_proofs_state(proofs.to_owned()).await
+                            {
                                 tracing::warn!(
                                     "Failed to swap exposed proofs ({}), updating local database instead", inner_err
                                 );
