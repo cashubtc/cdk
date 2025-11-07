@@ -7,8 +7,8 @@ use axum::routing::{get, post};
 use axum::Router;
 
 use crate::custom_handlers::{
-    get_check_melt_custom_quote, get_check_mint_custom_quote, post_melt_custom,
-    post_melt_custom_quote, post_mint_custom, post_mint_custom_quote,
+    cache_post_melt_custom, cache_post_mint_custom, get_check_melt_custom_quote,
+    get_check_mint_custom_quote, post_melt_custom_quote, post_mint_custom_quote,
 };
 use crate::MintState;
 
@@ -31,19 +31,20 @@ pub fn create_custom_routers(state: MintState, custom_methods: Vec<String>) -> R
     );
 
     // Create a single router with parameterized routes that handle all custom methods
+    // Use cached versions for mint/melt to support NUT-19 caching
     Router::new()
         .route("/mint/quote/{method}", post(post_mint_custom_quote))
         .route(
             "/mint/quote/{method}/{quote_id}",
             get(get_check_mint_custom_quote),
         )
-        .route("/mint/{method}", post(post_mint_custom))
+        .route("/mint/{method}", post(cache_post_mint_custom))
         .route("/melt/quote/{method}", post(post_melt_custom_quote))
         .route(
             "/melt/quote/{method}/{quote_id}",
             get(get_check_melt_custom_quote),
         )
-        .route("/melt/{method}", post(post_melt_custom))
+        .route("/melt/{method}", post(cache_post_melt_custom))
         .with_state(state)
 }
 
