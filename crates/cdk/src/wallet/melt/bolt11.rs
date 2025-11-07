@@ -255,10 +255,11 @@ impl Wallet {
         };
 
         let payment_preimage = melt_response.payment_preimage.clone();
+        let state = melt_response.state;
 
         let melted = Melted::from_proofs(
-            melt_response.state,
-            melt_response.payment_preimage,
+            state,
+            payment_preimage.clone(),
             quote_info.amount,
             proofs.clone(),
             change_proofs.clone(),
