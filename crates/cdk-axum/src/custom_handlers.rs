@@ -332,10 +332,10 @@ pub async fn cache_post_mint_custom(
     payload: Json<MintRequest<QuoteId>>,
 ) -> Result<Json<MintResponse>, Response> {
     use std::ops::Deref;
-    
+
     let State(mint_state) = state.clone();
     let json_extracted_payload = payload.deref();
-    
+
     let cache_key = match mint_state.cache.calculate_key(json_extracted_payload) {
         Some(key) => key,
         None => {
@@ -346,19 +346,19 @@ pub async fn cache_post_mint_custom(
             return post_mint_custom(state, method, payload).await;
         }
     };
-    
+
     if let Some(cached_response) = mint_state.cache.get::<MintResponse>(&cache_key).await {
         return Ok(Json(cached_response));
     }
-    
+
     #[cfg(feature = "auth")]
     let result = post_mint_custom(auth, state, method, payload).await?;
     #[cfg(not(feature = "auth"))]
     let result = post_mint_custom(state, method, payload).await?;
-    
+
     // Cache the response
     mint_state.cache.set(cache_key, result.deref()).await;
-    
+
     Ok(result)
 }
 
@@ -371,10 +371,10 @@ pub async fn cache_post_melt_custom(
     payload: Json<cdk::nuts::MeltRequest<QuoteId>>,
 ) -> Result<Json<MeltQuoteBolt11Response<QuoteId>>, Response> {
     use std::ops::Deref;
-    
+
     let State(mint_state) = state.clone();
     let json_extracted_payload = payload.deref();
-    
+
     let cache_key = match mint_state.cache.calculate_key(json_extracted_payload) {
         Some(key) => key,
         None => {
@@ -385,18 +385,22 @@ pub async fn cache_post_melt_custom(
             return post_melt_custom(state, method, payload).await;
         }
     };
-    
-    if let Some(cached_response) = mint_state.cache.get::<MeltQuoteBolt11Response<QuoteId>>(&cache_key).await {
+
+    if let Some(cached_response) = mint_state
+        .cache
+        .get::<MeltQuoteBolt11Response<QuoteId>>(&cache_key)
+        .await
+    {
         return Ok(Json(cached_response));
     }
-    
+
     #[cfg(feature = "auth")]
     let result = post_melt_custom(auth, state, method, payload).await?;
     #[cfg(not(feature = "auth"))]
     let result = post_melt_custom(state, method, payload).await?;
-    
+
     // Cache the response
     mint_state.cache.set(cache_key, result.deref()).await;
-    
+
     Ok(result)
 }
