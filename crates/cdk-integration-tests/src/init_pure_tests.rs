@@ -9,16 +9,16 @@ use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cashu::quote_id::QuoteId;
-use cashu::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
+use cashu::{MeltQuoteBolt12Request, MeltQuoteCustomRequest, MintQuoteBolt12Request, MintQuoteBolt12Response, MintQuoteCustomRequest, MintQuoteCustomResponse};
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
-    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
-    RestoreResponse, SwapRequest, SwapResponse,
+    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, 
+    MintQuoteBolt11Request, MintQuoteBolt11Response, MintRequest, MintResponse, 
+    PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
@@ -203,6 +203,24 @@ impl MintConnector for DirectMintConnection {
         _request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         // Implementation to be added later
+        Err(Error::UnsupportedPaymentMethod)
+    }
+
+    /// Mint Quote for Custom Payment Method
+    async fn post_mint_custom_quote(
+        &self,
+        _request: MintQuoteCustomRequest,
+    ) -> Result<MintQuoteCustomResponse<String>, Error> {
+        // Custom payment methods not implemented in test mock
+        Err(Error::UnsupportedPaymentMethod)
+    }
+
+    /// Melt Quote for Custom Payment Method
+    async fn post_melt_custom_quote(
+        &self,
+        _request: MeltQuoteCustomRequest,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        // Custom payment methods not implemented in test mock
         Err(Error::UnsupportedPaymentMethod)
     }
 }
