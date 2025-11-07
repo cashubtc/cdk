@@ -40,8 +40,6 @@ impl Wallet {
     pub async fn sync_proofs_state(&self, proofs: Proofs) -> Result<(), Error> {
         let proof_ys = proofs.ys()?;
 
-        let transaction_id = TransactionId::new(proof_ys.clone());
-
         let statuses = self
             .client
             .post_check_state(CheckStateRequest { ys: proof_ys })
@@ -68,13 +66,6 @@ impl Wallet {
                 .await?;
         }
 
-        match self.localstore.remove_transaction(transaction_id).await {
-            Ok(_) => (),
-            Err(e) => {
-                tracing::warn!("Failed to remove transaction: {:?}", e);
-            }
-        }
-
         Ok(())
     }
 
@@ -94,11 +85,6 @@ impl Wallet {
             match f.await {
                 Ok(r) => Ok(r),
                 Err(err) => {
-                    println!(
-                        "Http operation failed with \"{}\", revering  {} proofs states to UNSPENT",
-                        err,
-                        inputs.len()
-                    );
                     tracing::error!(
                         "Http operation failed with \"{}\", revering  {} proofs states to UNSPENT",
                         err,
