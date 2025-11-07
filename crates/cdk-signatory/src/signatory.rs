@@ -46,6 +46,8 @@ pub struct RotateKeyArguments {
     pub amounts: Vec<u64>,
     /// Input fee
     pub input_fee_ppk: u64,
+    /// Expiration of keyset
+    pub final_expiry: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +79,8 @@ pub struct SignatoryKeySet {
     pub input_fee_ppk: u64,
     /// Final expiry of the keyset (unix timestamp in the future)
     pub final_expiry: Option<u64>,
+    /// Version is the derivation_path_index
+    pub version: u32,
 }
 
 impl From<&SignatoryKeySet> for KeySet {
@@ -128,6 +132,7 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
             input_fee_ppk: info.input_fee_ppk,
             amounts: info.amounts.clone(),
             keys: key.keys.clone().into(),
+            version: info.derivation_path_index.unwrap_or(1),
             final_expiry: key.final_expiry,
         }
     }
