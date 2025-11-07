@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
 
-use cdk_common::wallet::TransactionId;
 use cdk_common::{CheckStateRequest, ProofsMethods};
 use tracing::instrument;
 
