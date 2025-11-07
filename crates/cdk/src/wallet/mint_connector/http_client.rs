@@ -21,8 +21,8 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
-    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
+    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteCustomRequest, MeltRequest, MintInfo, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
     SwapRequest, SwapResponse,
 };
 #[cfg(feature = "auth")]
@@ -550,6 +550,53 @@ where
             &request,
         )
         .await
+    }
+    
+    /// Mint Quote for Custom Payment Method
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn post_mint_custom_quote(
+        &self,
+        request: MintQuoteCustomRequest,
+    ) -> Result<MintQuoteCustomResponse<String>, Error> {
+        // Extract method from request data
+        let method = request.data.get("method")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| Error::Custom("Missing method in custom quote request".to_string()))?;
+            
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", method])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MintQuote(method.to_string()))
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+
+        self.transport.http_post(url, auth_token, &request).await
+    }
+    
+    /// Melt Quote for Custom Payment Method
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_melt_custom_quote(
+        &self,
+        request: MeltQuoteCustomRequest,
+    ) -> Result<MeltQuoteBolt11Response<String>, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "melt", "quote", &request.method])?;
+            
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MeltQuote(request.method.clone()))
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        
+        self.transport.http_post(url, auth_token, &request).await
     }
 }
 
