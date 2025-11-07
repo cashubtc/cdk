@@ -710,11 +710,6 @@ impl PaymentMethod {
         }
     }
 
-    /// Convert to owned String
-    pub fn to_string(&self) -> String {
-        self.as_str().to_string()
-    }
-
     /// Check if this is a known method
     pub fn is_known(&self) -> bool {
         matches!(self, Self::Known(_))
@@ -822,7 +817,7 @@ impl<'de> Deserialize<'de> for PaymentMethod {
         D: Deserializer<'de>,
     {
         let payment_method: String = String::deserialize(deserializer)?;
-        Ok(Self::from_str(&payment_method).unwrap_or_else(|_| Self::Custom(payment_method)))
+        Ok(Self::from_str(&payment_method).unwrap_or(Self::Custom(payment_method)))
     }
 }
 

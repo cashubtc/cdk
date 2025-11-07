@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use cdk_common::nut00::KnownMethod;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::wallet::{MintQuote, Transaction, TransactionDirection};
 use cdk_common::PaymentMethod;
@@ -204,7 +205,7 @@ impl Wallet {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        if quote_info.payment_method != PaymentMethod::from("bolt11") {
+        if quote_info.payment_method != PaymentMethod::Known(KnownMethod::Bolt11) {
             return Err(Error::UnsupportedPaymentMethod);
         }
 

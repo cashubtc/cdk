@@ -606,7 +606,7 @@ async fn configure_backend_for_unit(
     }
 
     // Add custom methods from payment settings
-    for (method_name, _) in &payment_settings.custom {
+    for method_name in payment_settings.custom.keys() {
         methods.push(PaymentMethod::from(method_name.as_str()));
     }
 
