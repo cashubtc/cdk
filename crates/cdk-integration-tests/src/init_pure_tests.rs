@@ -9,16 +9,19 @@ use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cashu::quote_id::QuoteId;
-use cashu::{MeltQuoteBolt12Request, MeltQuoteCustomRequest, MintQuoteBolt12Request, MintQuoteBolt12Response, MintQuoteCustomRequest, MintQuoteCustomResponse};
+use cashu::{
+    MeltQuoteBolt12Request, MeltQuoteCustomRequest, MintQuoteBolt12Request,
+    MintQuoteBolt12Response, MintQuoteCustomRequest, MintQuoteCustomResponse,
+};
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, Id, KeySet, KeysetResponse,
-    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, 
-    MintQuoteBolt11Request, MintQuoteBolt11Response, MintRequest, MintResponse, 
-    PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
