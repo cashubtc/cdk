@@ -129,6 +129,48 @@ where
 }
 
 #[async_trait]
+impl<RM> database::MintKeysTransaction<'_> for SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    /// Database Error
+    type Err = Error;
+
+    /// Function to call everytime the signatory pushes information towards the mint
+    async fn set_signatory_keysets(
+        &mut self,
+        _pubkey: &PublicKey,
+        keysets: &[MintKeySetInfo],
+    ) -> Result<(), Self::Err> {
+        let known_keysets = query("SELECT keyset_id FROM keyset_amounts")?
+            .fetch_all(&self.inner)
+            .await?
+            .into_iter()
+            .map(|mut row| {
+                Ok(column_as_string!(
+                    row.remove(0),
+                    Id::from_str,
+                    Id::from_bytes
+                ))
+            })
+            .collect::<Result<HashSet<_>, Error>>()?;
+
+        for keyset in keysets {
+            if known_keysets.contains(&keyset.id) || keyset.unit == CurrencyUnit::Auth {
+                continue;
+            }
+
+            query(r#"INSERT INTO keyset_amounts VALUES(:keyset_id, 0, 0)"#)?
+                .bind("keyset_id", keyset.id.to_string())
+                .execute(&self.inner)
+                .await?;
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl<RM> database::MintProofsTransaction<'_> for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
@@ -220,26 +262,6 @@ where
             .await?;
 
         if new_state == State::Spent {
-            query(
-                r#"
-                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                SELECT p.keyset_id, 0, 0
-                FROM (
-                  SELECT DISTINCT keyset_id
-                  FROM proof
-                  WHERE y IN (:ys)
-                ) AS p
-                WHERE NOT EXISTS (
-                  SELECT 1
-                  FROM keyset_amounts ka
-                  WHERE ka.keyset_id = p.keyset_id
-                )
-            "#,
-            )?
-            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
-            .execute(&self.inner)
-            .await?;
-
             query(
                 r#"
                 UPDATE keyset_amounts
@@ -1725,37 +1747,6 @@ where
             ))
         })
         .collect::<Result<HashMap<_, _>, Error>>()?;
-
-        let mut keysets = query("SELECT keyset_id FROM keyset_amounts")?
-            .fetch_all(&self.inner)
-            .await?
-            .into_iter()
-            .map(|mut row| {
-                Ok(column_as_string!(
-                    &row.remove(0),
-                    Id::from_str,
-                    Id::from_bytes
-                ))
-            })
-            .collect::<Result<HashSet<_>, Error>>()?;
-
-        for s in blind_signatures.iter() {
-            if keysets.contains(&s.keyset_id) {
-                continue;
-            }
-
-            keysets.insert(s.keyset_id);
-
-            query(
-                r#"
-                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                VALUES (:keyset, 0, 0)
-            "#,
-            )?
-            .bind("keyset", s.keyset_id.to_string())
-            .execute(&self.inner)
-            .await?;
-        }
 
         // Iterate over the provided blinded messages and signatures
         for (message, signature) in blinded_messages.iter().zip(blind_signatures) {

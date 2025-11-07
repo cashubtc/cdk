@@ -364,6 +364,23 @@ pub trait SignaturesDatabase {
     async fn get_total_issued(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
 }
 
+/// Mint Keys transaction
+///
+/// This trait is used to call everytime the mint has new information from the Signatory, so the
+/// mint can prepare their database for the known keysets
+#[async_trait]
+pub trait MintKeysTransaction<'a> {
+    /// Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Function to call everytime the signatory pushes information towards the mint
+    async fn set_signatory_keysets(
+        &mut self,
+        pubkey: &PublicKey,
+        keysets: &[MintKeySetInfo],
+    ) -> Result<(), Self::Err>;
+}
+
 #[async_trait]
 /// Saga Transaction trait
 pub trait SagaTransaction<'a> {
@@ -460,6 +477,7 @@ pub trait Transaction<'a, Error>:
     + ProofsTransaction<'a, Err = Error>
     + KVStoreTransaction<'a, Error>
     + SagaTransaction<'a, Err = Error>
+    + MintKeysTransaction<'a, Err = Error>
 {
 }
 

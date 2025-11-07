@@ -144,6 +144,14 @@ impl Mint {
             return Err(Error::NoActiveKeyset);
         }
 
+        let mut tx = localstore.begin_transaction().await?;
+        tx.set_signatory_keysets(
+            &keysets.pubkey,
+            &keysets.keysets.iter().map(|x| x.into()).collect::<Vec<_>>(),
+        )
+        .await?;
+        tx.commit().await?;
+
         tracing::info!(
             "Using Signatory {} with {} active keys",
             signatory.name(),
@@ -950,16 +958,7 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         global::inc_in_flight_requests("total_issued");
 
-        let result = async {
-            let keysets = self.keysets().keysets;
-            let mut total_issued = self.localstore.get_total_issued().await?;
-            for keyset in keysets.into_iter().filter(|x| x.unit != CurrencyUnit::Auth) {
-                let _ = total_issued.entry(keyset.id).or_default();
-            }
-
-            Ok(total_issued)
-        }
-        .await;
+        let result = async { Ok(self.localstore.get_total_issued().await?) }.await;
 
         #[cfg(feature = "prometheus")]
         {
@@ -976,21 +975,12 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         global::inc_in_flight_requests("total_redeemed");
 
-        let keysets = self.signatory.keysets().await?;
-        let mut total_redeemed = self.localstore.get_total_redeemed().await?;
-
-        for keyset in keysets
-            .keysets
-            .into_iter()
-            .filter(|x| x.unit != CurrencyUnit::Auth)
-        {
-            let _ = total_redeemed.entry(keyset.id).or_default();
-        }
+        let total_redeemed = async { Ok(self.localstore.get_total_redeemed().await?) }.await;
 
         #[cfg(feature = "prometheus")]
         global::dec_in_flight_requests("total_redeemed");
 
-        Ok(total_redeemed)
+        total_redeemed
     }
 }
 
@@ -1056,6 +1046,8 @@ mod tests {
             ..Default::default()
         };
         let mint = create_mint(config).await;
+
+        println!("{:?}", mint.total_issued().await);
 
         assert_eq!(
             mint.total_issued()
