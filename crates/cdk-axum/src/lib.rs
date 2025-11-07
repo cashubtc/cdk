@@ -85,12 +85,6 @@ macro_rules! define_api_doc {
                 get_keyset_pubkeys,
                 get_keysets,
                 get_mint_info,
-                post_mint_bolt11_quote,
-                get_check_mint_bolt11_quote,
-                post_mint_bolt11,
-                post_melt_bolt11_quote,
-                get_check_melt_bolt11_quote,
-                post_melt_bolt11,
                 post_swap,
                 post_check,
                 post_restore
