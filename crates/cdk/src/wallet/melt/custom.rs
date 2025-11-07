@@ -25,7 +25,7 @@ impl Wallet {
         // For now, we'll use the bolt11 quote endpoint until custom endpoints are added
         // This is a temporary workaround - will be replaced in Phase 3
         // let quote_res = self.client.post_melt_custom_quote(quote_request).await?;
-        
+
         // TODO: Once custom HTTP client methods are implemented, use them instead
         // For now, return an error indicating custom methods need HTTP support
         return Err(Error::UnsupportedPaymentMethod);

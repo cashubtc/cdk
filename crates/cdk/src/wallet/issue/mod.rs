@@ -3,10 +3,12 @@ mod bolt12;
 mod custom;
 
 use cdk_common::PaymentMethod;
+
 use crate::amount::SplitTarget;
-use crate::nuts::{nut00::KnownMethod, Proofs, SpendingConditions};
-use crate::{Amount, Error, Wallet};
+use crate::nuts::nut00::KnownMethod;
+use crate::nuts::{Proofs, SpendingConditions};
 use crate::wallet::MintQuote;
+use crate::{Amount, Error, Wallet};
 
 impl Wallet {
     /// Unified mint quote method for all payment methods
@@ -29,7 +31,8 @@ impl Wallet {
                 self.mint_bolt12_quote(amount, description).await
             }
             PaymentMethod::Custom(custom_method) => {
-                self.mint_quote_custom(amount, &custom_method, request, description).await
+                self.mint_quote_custom(amount, &custom_method, request, description)
+                    .await
             }
         }
     }
@@ -53,13 +56,16 @@ impl Wallet {
         match quote_info.payment_method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
                 // Bolt11 doesn't need amount parameter
-                self.mint(quote_id, amount_split_target, spending_conditions).await
+                self.mint(quote_id, amount_split_target, spending_conditions)
+                    .await
             }
             PaymentMethod::Known(KnownMethod::Bolt12) => {
-                self.mint_bolt12(quote_id, amount, amount_split_target, spending_conditions).await
+                self.mint_bolt12(quote_id, amount, amount_split_target, spending_conditions)
+                    .await
             }
             PaymentMethod::Custom(_) => {
-                self.mint_custom(quote_id, amount_split_target, spending_conditions).await
+                self.mint_custom(quote_id, amount_split_target, spending_conditions)
+                    .await
             }
         }
     }

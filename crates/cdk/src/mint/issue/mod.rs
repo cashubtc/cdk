@@ -542,7 +542,6 @@ impl Mint {
                 .await?
                 .ok_or(Error::UnknownQuote)?;
 
-
             self.check_mint_quote_paid(&mut quote).await?;
 
             quote.try_into()

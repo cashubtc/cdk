@@ -5,14 +5,15 @@ use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection};
 use cdk_common::{Error, MeltQuoteBolt11Response, MeltQuoteState, PaymentMethod, ProofsMethods};
 use tracing::instrument;
 
-use crate::nuts::{nut00::KnownMethod, MeltOptions};
+use crate::nuts::nut00::KnownMethod;
+use crate::nuts::MeltOptions;
 use crate::Wallet;
 
-#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-mod melt_bip353;
 mod bolt11;
 mod bolt12;
 mod custom;
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+mod melt_bip353;
 
 impl Wallet {
     /// Check pending melt quotes
@@ -96,14 +97,13 @@ impl Wallet {
         options: Option<MeltOptions>,
     ) -> Result<MeltQuote, Error> {
         match method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => {
-                self.melt_quote(request, options).await
-            }
+            PaymentMethod::Known(KnownMethod::Bolt11) => self.melt_quote(request, options).await,
             PaymentMethod::Known(KnownMethod::Bolt12) => {
                 self.melt_bolt12_quote(request, options).await
             }
             PaymentMethod::Custom(custom_method) => {
-                self.melt_quote_custom(&custom_method, request, options).await
+                self.melt_quote_custom(&custom_method, request, options)
+                    .await
             }
         }
     }

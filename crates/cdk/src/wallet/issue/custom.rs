@@ -8,7 +8,10 @@ use tracing::instrument;
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::{nut12, MintQuoteCustomRequest, MintRequest, PaymentMethod, PreMintSecrets, SpendingConditions, State};
+use crate::nuts::{
+    nut12, MintQuoteCustomRequest, MintRequest, PaymentMethod, PreMintSecrets, SpendingConditions,
+    State,
+};
 use crate::types::ProofInfo;
 use crate::util::unix_time;
 use crate::{Amount, Error, Wallet};
