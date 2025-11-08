@@ -166,10 +166,6 @@ where
         let transport = self.transport.clone();
         loop {
             let url = match &path {
-                nut19::Path::MintBolt11 => self.mint_url.join_paths(&["v1", "mint", "bolt11"])?,
-                nut19::Path::MeltBolt11 => self.mint_url.join_paths(&["v1", "melt", "bolt11"])?,
-                nut19::Path::MintBolt12 => self.mint_url.join_paths(&["v1", "mint", "bolt12"])?,
-                nut19::Path::MeltBolt12 => self.mint_url.join_paths(&["v1", "melt", "bolt12"])?,
                 nut19::Path::Swap => self.mint_url.join_paths(&["v1", "swap"])?,
                 nut19::Path::Custom(custom_path) => {
                     // Custom paths should be in the format "/v1/mint/{method}" or "/v1/melt/{method}"
@@ -306,7 +302,7 @@ where
         let auth_token = None;
         self.retriable_http_request(
             nut19::Method::Post,
-            nut19::Path::MintBolt11,
+            nut19::Path::Custom("/v1/mint/bolt11".to_string()),
             auth_token,
             &request,
         )
@@ -369,7 +365,7 @@ where
 
         self.retriable_http_request(
             nut19::Method::Post,
-            nut19::Path::MeltBolt11,
+            nut19::Path::Custom("/v1/melt/bolt11".to_string()),
             auth_token,
             &request,
         )
@@ -552,7 +548,7 @@ where
         let auth_token = None;
         self.retriable_http_request(
             nut19::Method::Post,
-            nut19::Path::MeltBolt12,
+            nut19::Path::Custom("/v1/melt/bolt12".to_string()),
             auth_token,
             &request,
         )

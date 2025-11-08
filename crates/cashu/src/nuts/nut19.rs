@@ -58,17 +58,9 @@ pub enum Method {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum Path {
-    /// Bolt11 Mint
-    MintBolt11,
-    /// Bolt11 Melt
-    MeltBolt11,
     /// Swap
     Swap,
-    /// Bolt12 Mint
-    MintBolt12,
-    /// Bolt12 Melt
-    MeltBolt12,
-    /// Custom payment method path
+    /// Custom payment method path (including bolt11, bolt12, and other methods)
     Custom(String),
 }
 
@@ -78,11 +70,7 @@ impl Serialize for Path {
         S: serde::Serializer,
     {
         let s = match self {
-            Path::MintBolt11 => "/v1/mint/bolt11",
-            Path::MeltBolt11 => "/v1/melt/bolt11",
             Path::Swap => "/v1/swap",
-            Path::MintBolt12 => "/v1/mint/bolt12",
-            Path::MeltBolt12 => "/v1/melt/bolt12",
             Path::Custom(custom) => custom.as_str(),
         };
         serializer.serialize_str(s)
@@ -96,11 +84,7 @@ impl<'de> Deserialize<'de> for Path {
     {
         let s = String::deserialize(deserializer)?;
         Ok(match s.as_str() {
-            "/v1/mint/bolt11" => Path::MintBolt11,
-            "/v1/melt/bolt11" => Path::MeltBolt11,
             "/v1/swap" => Path::Swap,
-            "/v1/mint/bolt12" => Path::MintBolt12,
-            "/v1/melt/bolt12" => Path::MeltBolt12,
             custom => Path::Custom(custom.to_string()),
         })
     }

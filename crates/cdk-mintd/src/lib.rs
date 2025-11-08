@@ -659,39 +659,15 @@ fn configure_cache(
 
     // Add cache endpoints for each configured payment method
     for method in payment_methods {
-        match method.as_str() {
-            "bolt11" => {
-                cached_endpoints.push(CachedEndpoint::new(
-                    NUT19Method::Post,
-                    NUT19Path::MintBolt11,
-                ));
-                cached_endpoints.push(CachedEndpoint::new(
-                    NUT19Method::Post,
-                    NUT19Path::MeltBolt11,
-                ));
-            }
-            "bolt12" => {
-                cached_endpoints.push(CachedEndpoint::new(
-                    NUT19Method::Post,
-                    NUT19Path::MintBolt12,
-                ));
-                cached_endpoints.push(CachedEndpoint::new(
-                    NUT19Method::Post,
-                    NUT19Path::MeltBolt12,
-                ));
-            }
-            custom => {
-                // Add custom payment method endpoints
-                cached_endpoints.push(CachedEndpoint::new(
-                    NUT19Method::Post,
-                    NUT19Path::custom_mint(custom),
-                ));
-                cached_endpoints.push(CachedEndpoint::new(
-                    NUT19Method::Post,
-                    NUT19Path::custom_melt(custom),
-                ));
-            }
-        }
+        // All payment methods (including bolt11, bolt12) use custom paths now
+        cached_endpoints.push(CachedEndpoint::new(
+            NUT19Method::Post,
+            NUT19Path::custom_mint(method),
+        ));
+        cached_endpoints.push(CachedEndpoint::new(
+            NUT19Method::Post,
+            NUT19Path::custom_melt(method),
+        ));
     }
 
     let cache: HttpCache = settings.info.http_cache.clone().into();
