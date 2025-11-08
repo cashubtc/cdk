@@ -9,6 +9,7 @@
 use cdk_common::nuts::{SpendingConditions, Conditions, SigFlag};
 use cdk_common::Amount;
 use cdk_common::dhke::construct_proofs;
+use cdk_common::melt::MeltQuoteRequest;
 
 use crate::mint::swap::spending_conditions::test_helpers::{TestMintHelper, create_test_keypair, create_test_hash_and_preimage, unzip3};
 
@@ -33,8 +34,9 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
     println!("Hash: {}", hash);
     println!("Preimage: {}", preimage);
 
-    // Step 1: Mint regular proofs
-    let input_amount = Amount::from(10);
+    // Step 1: Mint regular proofs (enough to cover the invoice amount + fees)
+    // Invoice is 10 sats, fee reserve is 100% (10 sats), so we need 20 sats total
+    let input_amount = Amount::from(20);
     let input_proofs = test_mint.mint_proofs(input_amount).await.unwrap();
 
     // Step 2: Create HTLC spending conditions (hash locked to Alice's key)
@@ -86,12 +88,22 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
     let proof_amounts: Vec<String> = htlc_proofs.iter().map(|p| p.amount.to_string()).collect();
     println!("Constructed {} HTLC proof(s) [{}]", htlc_proofs.len(), proof_amounts.join("+"));
 
-    // Step 6: Try to melt with only preimage (should fail - signature required)
-    use cdk_common::quote_id::QuoteId;
+    // Step 6: Create a real melt quote that we'll use for all tests
     use cdk_common::SpendingConditionVerification;
-    use uuid::Uuid;
+    use std::str::FromStr;
+    let bolt11_str = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq";
+    let bolt11 = cdk_common::Bolt11Invoice::from_str(bolt11_str).unwrap();
 
-    let fake_quote_id = QuoteId::UUID(Uuid::new_v4());
+    let melt_quote_request = cdk_common::MeltQuoteBolt11Request {
+        request: bolt11,
+        unit: cdk_common::CurrencyUnit::Sat,
+        options: None,
+    };
+
+    let melt_quote = mint.get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request)).await.unwrap();
+    println!("Created melt quote: {}", melt_quote.quote);
+
+    // Step 7: Try to melt with only preimage (should fail - signature required)
 
     let mut proofs_preimage_only = htlc_proofs.clone();
 
@@ -101,16 +113,21 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
     }
 
     let melt_request_preimage_only = cdk_common::MeltRequest::new(
-        fake_quote_id.clone(),
+        melt_quote.quote.clone(),
         proofs_preimage_only.into(),
         None,
     );
 
     let result = melt_request_preimage_only.verify_spending_conditions();
     assert!(result.is_err(), "Should fail with only preimage (no signature)");
-    println!("✓ Melting with ONLY preimage failed as expected");
+    println!("✓ Melting with ONLY preimage failed verification as expected");
 
-    // Step 7: Try to melt with only signature (should fail - preimage required)
+    // Also verify the actual melt fails
+    let melt_result = mint.melt(&melt_request_preimage_only).await;
+    assert!(melt_result.is_err(), "Actual melt should also fail with only preimage");
+    println!("✓ Actual melt with ONLY preimage also failed as expected");
+
+    // Step 8: Try to melt with only signature (should fail - preimage required)
     let mut proofs_signature_only = htlc_proofs.clone();
 
     // Add only signature (no preimage)
@@ -119,16 +136,21 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
     }
 
     let melt_request_signature_only = cdk_common::MeltRequest::new(
-        fake_quote_id.clone(),
+        melt_quote.quote.clone(),
         proofs_signature_only.into(),
         None,
     );
 
     let result = melt_request_signature_only.verify_spending_conditions();
     assert!(result.is_err(), "Should fail with only signature (no preimage)");
-    println!("✓ Melting with ONLY signature failed as expected");
+    println!("✓ Melting with ONLY signature failed verification as expected");
 
-    // Step 8: Now try to melt the HTLC proofs with correct preimage + signature
+    // Also verify the actual melt fails
+    let melt_result = mint.melt(&melt_request_signature_only).await;
+    assert!(melt_result.is_err(), "Actual melt should also fail with only signature");
+    println!("✓ Actual melt with ONLY signature also failed as expected");
+
+    // Step 9: Now melt with correct preimage + signature
     let mut proofs_both = htlc_proofs.clone();
 
     // Add preimage and sign all proofs
@@ -137,12 +159,19 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
         proof.sign_p2pk(alice_secret.clone()).unwrap();
     }
 
-    let melt_request_both = cdk_common::MeltRequest::new(
-        fake_quote_id,
+    let melt_request = cdk_common::MeltRequest::new(
+        melt_quote.quote.clone(),
         proofs_both.into(),
         None,
     );
 
-    melt_request_both.verify_spending_conditions().unwrap();
-    println!("✓ HTLC melt verified successfully with correct preimage AND signature");
+    // Verify spending conditions pass
+    melt_request.verify_spending_conditions().unwrap();
+    println!("✓ HTLC spending conditions verified successfully");
+
+    // Perform the actual melt - this also verifies spending conditions internally
+    let melt_response = mint.melt(&melt_request).await.unwrap();
+    println!("✓ Melt operation completed successfully!");
+    println!("  Quote state: {:?}", melt_response.state);
+    assert_eq!(melt_response.quote, melt_quote.quote);
 }
