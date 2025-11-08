@@ -346,8 +346,18 @@ async fn configure_mint_builder(
     let mint_builder =
         configure_lightning_backend(settings, mint_builder, runtime, work_dir, kv_store).await?;
 
-    // Configure caching
-    let mint_builder = configure_cache(settings, mint_builder);
+    // Extract configured payment methods from mint_builder
+    let mint_info = mint_builder.current_mint_info();
+    let payment_methods: Vec<String> = mint_info
+        .nuts
+        .nut04
+        .methods
+        .iter()
+        .map(|m| m.method.to_string())
+        .collect();
+
+    // Configure caching with payment methods
+    let mint_builder = configure_cache(settings, mint_builder, &payment_methods);
 
     Ok(mint_builder)
 }
@@ -599,10 +609,6 @@ async fn configure_backend_for_unit(
     // Add bolt12 if supported by payment processor
     if payment_settings.bolt12.is_some() {
         methods.push(PaymentMethod::from("bolt12"));
-
-        // Configure websocket support for bolt12
-        let nut17_supported = SupportedMethods::default_bolt12(unit.clone());
-        mint_builder = mint_builder.with_supported_websockets(nut17_supported);
     }
 
     // Add custom methods from payment settings
@@ -611,39 +617,82 @@ async fn configure_backend_for_unit(
     }
 
     // Add all supported payment methods to the mint builder
-    for method in methods {
+    for method in &methods {
         mint_builder
-            .add_payment_processor(unit.clone(), method, mint_melt_limits, backend.clone())
+            .add_payment_processor(
+                unit.clone(),
+                method.clone(),
+                mint_melt_limits,
+                backend.clone(),
+            )
             .await?;
+    }
+
+    // Configure NUT17 (WebSocket support) for all payment methods
+    for method in &methods {
+        let method_str = method.to_string();
+        let nut17_supported = match method_str.as_str() {
+            "bolt11" => SupportedMethods::default_bolt11(unit.clone()),
+            "bolt12" => SupportedMethods::default_bolt12(unit.clone()),
+            _ => SupportedMethods::default_custom(method.clone(), unit.clone()),
+        };
+        mint_builder = mint_builder.with_supported_websockets(nut17_supported);
     }
 
     if let Some(input_fee) = settings.info.input_fee_ppk {
         mint_builder.set_unit_fee(&unit, input_fee)?;
     }
 
-    #[cfg(any(
-        feature = "cln",
-        feature = "lnbits",
-        feature = "lnd",
-        feature = "fakewallet",
-        feature = "grpc-processor",
-        feature = "ldk-node"
-    ))]
-    {
-        let nut17_supported = SupportedMethods::default_bolt11(unit);
-        mint_builder = mint_builder.with_supported_websockets(nut17_supported);
-    }
-
     Ok(mint_builder)
 }
 
-/// Configures cache settings
-fn configure_cache(settings: &config::Settings, mint_builder: MintBuilder) -> MintBuilder {
-    let cached_endpoints = vec![
-        CachedEndpoint::new(NUT19Method::Post, NUT19Path::MintBolt11),
-        CachedEndpoint::new(NUT19Method::Post, NUT19Path::MeltBolt11),
+/// Configures cache settings with support for custom payment methods
+fn configure_cache(
+    settings: &config::Settings,
+    mint_builder: MintBuilder,
+    payment_methods: &[String],
+) -> MintBuilder {
+    let mut cached_endpoints = vec![
+        // Always include swap endpoint
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::Swap),
     ];
+
+    // Add cache endpoints for each configured payment method
+    for method in payment_methods {
+        match method.as_str() {
+            "bolt11" => {
+                cached_endpoints.push(CachedEndpoint::new(
+                    NUT19Method::Post,
+                    NUT19Path::MintBolt11,
+                ));
+                cached_endpoints.push(CachedEndpoint::new(
+                    NUT19Method::Post,
+                    NUT19Path::MeltBolt11,
+                ));
+            }
+            "bolt12" => {
+                cached_endpoints.push(CachedEndpoint::new(
+                    NUT19Method::Post,
+                    NUT19Path::MintBolt12,
+                ));
+                cached_endpoints.push(CachedEndpoint::new(
+                    NUT19Method::Post,
+                    NUT19Path::MeltBolt12,
+                ));
+            }
+            custom => {
+                // Add custom payment method endpoints
+                cached_endpoints.push(CachedEndpoint::new(
+                    NUT19Method::Post,
+                    NUT19Path::custom_mint(custom),
+                ));
+                cached_endpoints.push(CachedEndpoint::new(
+                    NUT19Method::Post,
+                    NUT19Path::custom_melt(custom),
+                ));
+            }
+        }
+    }
 
     let cache: HttpCache = settings.info.http_cache.clone().into();
     mint_builder.with_cache(Some(cache.ttl.as_secs()), cached_endpoints)
@@ -957,7 +1006,7 @@ async fn start_services_with_shutdown(
     // Configure auth for custom payment methods if auth is enabled
     #[cfg(feature = "auth")]
     if let (Some(ref auth_settings), Some(auth_db)) = (&settings.auth, &auth_localstore) {
-        if auth_settings.auth_enabled && !custom_methods.is_empty() {
+        if auth_settings.auth_enabled {
             use std::collections::HashMap;
 
             use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
@@ -965,104 +1014,141 @@ async fn start_services_with_shutdown(
 
             use crate::config::AuthType;
 
-            let mut protected_endpoints = HashMap::new();
+            // First, remove all existing payment-method-related endpoints from the database
+            // to ensure old payment methods don't persist when configuration changes
+            let existing_endpoints = auth_db.get_auth_for_endpoints().await?;
+            let payment_method_endpoints_to_remove: Vec<ProtectedEndpoint> = existing_endpoints
+                .keys()
+                .filter(|endpoint| {
+                    matches!(
+                        endpoint.path,
+                        RoutePath::MintQuote(_)
+                            | RoutePath::Mint(_)
+                            | RoutePath::MeltQuote(_)
+                            | RoutePath::Melt(_)
+                    )
+                })
+                .cloned()
+                .collect();
 
-            for method_name in &custom_methods {
-                tracing::debug!("Adding auth endpoints for payment method: {}", method_name);
-
-                // Determine auth type based on settings
-                let mint_quote_auth = match auth_settings.get_mint_quote {
-                    AuthType::Clear => Some(AuthRequired::Clear),
-                    AuthType::Blind => Some(AuthRequired::Blind),
-                    AuthType::None => None,
-                };
-
-                let check_mint_quote_auth = match auth_settings.check_mint_quote {
-                    AuthType::Clear => Some(AuthRequired::Clear),
-                    AuthType::Blind => Some(AuthRequired::Blind),
-                    AuthType::None => None,
-                };
-
-                let mint_auth = match auth_settings.mint {
-                    AuthType::Clear => Some(AuthRequired::Clear),
-                    AuthType::Blind => Some(AuthRequired::Blind),
-                    AuthType::None => None,
-                };
-
-                let melt_quote_auth = match auth_settings.get_melt_quote {
-                    AuthType::Clear => Some(AuthRequired::Clear),
-                    AuthType::Blind => Some(AuthRequired::Blind),
-                    AuthType::None => None,
-                };
-
-                let check_melt_quote_auth = match auth_settings.check_melt_quote {
-                    AuthType::Clear => Some(AuthRequired::Clear),
-                    AuthType::Blind => Some(AuthRequired::Blind),
-                    AuthType::None => None,
-                };
-
-                let melt_auth = match auth_settings.melt {
-                    AuthType::Clear => Some(AuthRequired::Clear),
-                    AuthType::Blind => Some(AuthRequired::Blind),
-                    AuthType::None => None,
-                };
-
-                // Create endpoints for each payment method operation
-                if let Some(auth) = mint_quote_auth {
-                    protected_endpoints.insert(
-                        ProtectedEndpoint::new(
-                            Method::Post,
-                            RoutePath::MintQuote(method_name.clone()),
-                        ),
-                        auth,
-                    );
-                }
-                if let Some(auth) = check_mint_quote_auth {
-                    protected_endpoints.insert(
-                        ProtectedEndpoint::new(
-                            Method::Get,
-                            RoutePath::MintQuote(method_name.clone()),
-                        ),
-                        auth,
-                    );
-                }
-                if let Some(auth) = mint_auth {
-                    protected_endpoints.insert(
-                        ProtectedEndpoint::new(Method::Post, RoutePath::Mint(method_name.clone())),
-                        auth,
-                    );
-                }
-                if let Some(auth) = melt_quote_auth {
-                    protected_endpoints.insert(
-                        ProtectedEndpoint::new(
-                            Method::Post,
-                            RoutePath::MeltQuote(method_name.clone()),
-                        ),
-                        auth,
-                    );
-                }
-                if let Some(auth) = check_melt_quote_auth {
-                    protected_endpoints.insert(
-                        ProtectedEndpoint::new(
-                            Method::Get,
-                            RoutePath::MeltQuote(method_name.clone()),
-                        ),
-                        auth,
-                    );
-                }
-                if let Some(auth) = melt_auth {
-                    protected_endpoints.insert(
-                        ProtectedEndpoint::new(Method::Post, RoutePath::Melt(method_name.clone())),
-                        auth,
-                    );
-                }
+            if !payment_method_endpoints_to_remove.is_empty() {
+                tracing::debug!(
+                    "Removing {} old payment method endpoints from database",
+                    payment_method_endpoints_to_remove.len()
+                );
+                let mut tx = auth_db.begin_transaction().await?;
+                tx.remove_protected_endpoints(payment_method_endpoints_to_remove)
+                    .await?;
+                tx.commit().await?;
             }
 
-            // Add all custom endpoints in one transaction
-            if !protected_endpoints.is_empty() {
-                let mut tx = auth_db.begin_transaction().await?;
-                tx.add_protected_endpoints(protected_endpoints).await?;
-                tx.commit().await?;
+            // Now add endpoints for current payment methods
+            if !custom_methods.is_empty() {
+                let mut protected_endpoints = HashMap::new();
+
+                for method_name in &custom_methods {
+                    tracing::debug!("Adding auth endpoints for payment method: {}", method_name);
+
+                    // Determine auth type based on settings
+                    let mint_quote_auth = match auth_settings.get_mint_quote {
+                        AuthType::Clear => Some(AuthRequired::Clear),
+                        AuthType::Blind => Some(AuthRequired::Blind),
+                        AuthType::None => None,
+                    };
+
+                    let check_mint_quote_auth = match auth_settings.check_mint_quote {
+                        AuthType::Clear => Some(AuthRequired::Clear),
+                        AuthType::Blind => Some(AuthRequired::Blind),
+                        AuthType::None => None,
+                    };
+
+                    let mint_auth = match auth_settings.mint {
+                        AuthType::Clear => Some(AuthRequired::Clear),
+                        AuthType::Blind => Some(AuthRequired::Blind),
+                        AuthType::None => None,
+                    };
+
+                    let melt_quote_auth = match auth_settings.get_melt_quote {
+                        AuthType::Clear => Some(AuthRequired::Clear),
+                        AuthType::Blind => Some(AuthRequired::Blind),
+                        AuthType::None => None,
+                    };
+
+                    let check_melt_quote_auth = match auth_settings.check_melt_quote {
+                        AuthType::Clear => Some(AuthRequired::Clear),
+                        AuthType::Blind => Some(AuthRequired::Blind),
+                        AuthType::None => None,
+                    };
+
+                    let melt_auth = match auth_settings.melt {
+                        AuthType::Clear => Some(AuthRequired::Clear),
+                        AuthType::Blind => Some(AuthRequired::Blind),
+                        AuthType::None => None,
+                    };
+
+                    // Create endpoints for each payment method operation
+                    if let Some(auth) = mint_quote_auth {
+                        protected_endpoints.insert(
+                            ProtectedEndpoint::new(
+                                Method::Post,
+                                RoutePath::MintQuote(method_name.clone()),
+                            ),
+                            auth,
+                        );
+                    }
+                    if let Some(auth) = check_mint_quote_auth {
+                        protected_endpoints.insert(
+                            ProtectedEndpoint::new(
+                                Method::Get,
+                                RoutePath::MintQuote(method_name.clone()),
+                            ),
+                            auth,
+                        );
+                    }
+                    if let Some(auth) = mint_auth {
+                        protected_endpoints.insert(
+                            ProtectedEndpoint::new(
+                                Method::Post,
+                                RoutePath::Mint(method_name.clone()),
+                            ),
+                            auth,
+                        );
+                    }
+                    if let Some(auth) = melt_quote_auth {
+                        protected_endpoints.insert(
+                            ProtectedEndpoint::new(
+                                Method::Post,
+                                RoutePath::MeltQuote(method_name.clone()),
+                            ),
+                            auth,
+                        );
+                    }
+                    if let Some(auth) = check_melt_quote_auth {
+                        protected_endpoints.insert(
+                            ProtectedEndpoint::new(
+                                Method::Get,
+                                RoutePath::MeltQuote(method_name.clone()),
+                            ),
+                            auth,
+                        );
+                    }
+                    if let Some(auth) = melt_auth {
+                        protected_endpoints.insert(
+                            ProtectedEndpoint::new(
+                                Method::Post,
+                                RoutePath::Melt(method_name.clone()),
+                            ),
+                            auth,
+                        );
+                    }
+                }
+
+                // Add all custom endpoints in one transaction
+                if !protected_endpoints.is_empty() {
+                    let mut tx = auth_db.begin_transaction().await?;
+                    tx.add_protected_endpoints(protected_endpoints).await?;
+                    tx.commit().await?;
+                }
             }
         }
     }

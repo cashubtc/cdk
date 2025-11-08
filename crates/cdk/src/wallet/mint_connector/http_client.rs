@@ -156,7 +156,7 @@ where
             .map(|cache_support| {
                 cache_support
                     .1
-                    .get(&(method, path))
+                    .get(&(method, path.clone()))
                     .map(|_| cache_support.0)
             })
             .unwrap_or_default()
@@ -165,14 +165,20 @@ where
 
         let transport = self.transport.clone();
         loop {
-            let url = self.mint_url.join_paths(&match path {
-                nut19::Path::MintBolt11 => vec!["v1", "mint", "bolt11"],
-                nut19::Path::MeltBolt11 => vec!["v1", "melt", "bolt11"],
-                nut19::Path::MintBolt12 => vec!["v1", "mint", "bolt12"],
-
-                nut19::Path::MeltBolt12 => vec!["v1", "melt", "bolt12"],
-                nut19::Path::Swap => vec!["v1", "swap"],
-            })?;
+            let url = match &path {
+                nut19::Path::MintBolt11 => self.mint_url.join_paths(&["v1", "mint", "bolt11"])?,
+                nut19::Path::MeltBolt11 => self.mint_url.join_paths(&["v1", "melt", "bolt11"])?,
+                nut19::Path::MintBolt12 => self.mint_url.join_paths(&["v1", "mint", "bolt12"])?,
+                nut19::Path::MeltBolt12 => self.mint_url.join_paths(&["v1", "melt", "bolt12"])?,
+                nut19::Path::Swap => self.mint_url.join_paths(&["v1", "swap"])?,
+                nut19::Path::Custom(custom_path) => {
+                    // Custom paths should be in the format "/v1/mint/{method}" or "/v1/melt/{method}"
+                    // Remove leading slash if present
+                    let path_str = custom_path.trim_start_matches('/');
+                    let parts: Vec<&str> = path_str.split('/').collect();
+                    self.mint_url.join_paths(&parts)?
+                }
+            };
 
             let result = match method {
                 nut19::Method::Get => transport.http_get(url, auth_token.clone()).await,
