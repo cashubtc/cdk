@@ -199,27 +199,27 @@ impl Wallet {
 
         let melt_response = match &quote_info.payment_method {
             cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
-                self.client.post_melt(request).await
+                self.try_proof_operation_or_reclaim(
+                    request.inputs().clone(),
+                    self.client.post_melt(request),
+                )
+                .await?
             }
             cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
-                self.client.post_melt_bolt12(request).await
+                self.try_proof_operation_or_reclaim(
+                    request.inputs().clone(),
+                    self.client.post_melt_bolt12(request),
+                )
+                .await?
             }
             cdk_common::PaymentMethod::Custom(_method) => {
                 // For now, custom methods will use the same post_melt endpoint
                 // This will be enhanced when custom HTTP client methods are added
-                self.client.post_melt(request).await
-            }
-        };
-
-        let melt_response = match melt_response {
-            Ok(melt_response) => melt_response,
-            Err(err) => {
-                tracing::error!("Could not melt: {}", err);
-                tracing::info!("Checking status of input proofs.");
-
-                self.reclaim_unspent(proofs).await?;
-
-                return Err(err);
+                self.try_proof_operation_or_reclaim(
+                    request.inputs().clone(),
+                    self.client.post_melt(request),
+                )
+                .await?
             }
         };
 
