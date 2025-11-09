@@ -19,8 +19,6 @@ use super::{
     PaymentMethod,
 };
 use crate::amount::to_unit;
-use crate::cdk_payment::MakePaymentResponse;
-use crate::mint::verification::Verification;
 use crate::nuts::MeltQuoteState;
 use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;

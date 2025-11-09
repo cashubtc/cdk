@@ -4,8 +4,6 @@
 
 use std::str::FromStr;
 
-use bitcoin::hashes::sha256::Hash as Sha256Hash;
-use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -14,7 +12,6 @@ use super::nut00::Witness;
 use super::nut10::Secret;
 use super::nut11::valid_signatures;
 use super::{Conditions, Proof};
-use crate::ensure_cdk;
 use crate::util::{hex, unix_time};
 
 pub mod serde_htlc_witness;
