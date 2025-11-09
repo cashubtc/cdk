@@ -109,10 +109,19 @@ impl Secret {
 }
 
 /// Get the relevant public keys and required signature count for P2PK or HTLC verification
+/// This is for NUT-11(P2PK) and NUT-14(HTLC)
 ///
 /// Takes into account locktime - if locktime has passed, returns refund keys,
-/// otherwise returns primary pubkeys/hash path. Returns (preimage_needed, pubkeys, required_sigs).
-/// For P2PK, preimage_needed is always false. For HTLC, preimage_needed is true before locktime.
+/// otherwise returns primary pubkeys/hash path.
+/// From NUT-11: "If the tag locktime is the unix time and the mint's local clock is greater than
+/// locktime, the Proof becomes spendable by anyone, except [... if refund keys are specified]"
+///
+/// Returns (preimage_needed, pubkeys, required_sigs).
+/// For P2PK, preimage_needed is always false.
+/// For HTLC, preimage_needed is true before locktime; From NUT-14: "if the current system time
+/// is later than Secret.tag.locktime, the Proof can be spent if Proof.witness includes
+/// a signature from the key in Secret.tags.refund."
+
 pub(crate) fn get_pubkeys_and_required_sigs(
     secret: &Secret,
     current_time: u64,
