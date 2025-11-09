@@ -334,6 +334,10 @@ pub trait SpendingConditionVerification {
     ///
     /// When SIG_ALL is set, all proofs in the transaction must be signed together.
     fn verify_full_sig_all_check(&self) -> Result<(), super::nut11::Error> {
+        debug_assert!(
+            self.has_at_least_one_sig_all()? == true,
+            "verify_full_sig_all_check() called on proofs without SIG_ALL. This shouldn't happen"
+        );
         // Verify all inputs meet SIG_ALL requirements per NUT-11:
         // All inputs must have: (1) same kind, (2) SIG_ALL flag, (3) same data, (4) same tags
         self.verify_all_inputs_match_for_sig_all()?;
@@ -365,6 +369,10 @@ pub trait SpendingConditionVerification {
     /// are verified independently rather than as a group.
     /// This function will NOT be called if any input has SIG_ALL.
     fn verify_inputs_individually(&self) -> Result<(), super::nut14::Error> {
+        debug_assert!(
+            self.has_at_least_one_sig_all()? == false,
+            "verify_inputs_individually() called on SIG_ALL. This shouldn't happen"
+        );
         for proof in self.inputs() {
             // Check if secret is a nut10 secret with conditions
             if let Ok(secret) = Secret::try_from(&proof.secret) {
