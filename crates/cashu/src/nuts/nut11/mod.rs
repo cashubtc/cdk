@@ -1752,16 +1752,6 @@ mod tests {
         );
     }
 
-
-
-
-
-
-
-
-
-
-
     #[test]
     fn test_sig_all_swap_mismatched_inputs() {
         // Invalid SwapRequest - mismatched inputs with SIG_ALL
@@ -1806,7 +1796,6 @@ mod tests {
             "Invalid SIG_ALL swap request should fail verification"
         );
     }
-
 
     #[test]
     fn test_sig_all_mixed_pubkeys_and_refund_pubkeys() {
@@ -1950,7 +1939,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn test_sig_all_valid_multisig_melt() {
         // The following is a valid multi-sig SIG_ALL MeltRequest.
@@ -1981,11 +1969,6 @@ mod tests {
             "Valid SIG_ALL melt request should verify"
         );
     }
-
-
-
-
-
 
     #[test]
     fn test_sig_all_melt_wrong_sig() {

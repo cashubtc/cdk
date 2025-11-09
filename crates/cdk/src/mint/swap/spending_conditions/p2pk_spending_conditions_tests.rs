@@ -14,7 +14,9 @@ use cdk_common::dhke::construct_proofs;
 use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
 use cdk_common::Amount;
 
-use crate::mint::test_helpers_for_nut10_spending_conditions::{create_test_keypair, unzip3, TestMintHelper};
+use crate::mint::test_helpers_for_nut10_spending_conditions::{
+    create_test_keypair, unzip3, TestMintHelper,
+};
 use crate::test_helpers::mint::create_test_blinded_messages;
 
 /// Test: P2PK with single pubkey requires all proofs signed
