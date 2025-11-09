@@ -1440,40 +1440,327 @@ mod tests {
         );
     }
 
+    // "SIG_ALL Test Vectors", starting with swaps : https://github.com/cashubtc/nuts/blob/5b050c7960607cca0481c28517cab5cc091b5d2e/tests/11-test.md#sig_all-test-vectors
     #[test]
-    #[ignore]
     fn test_sig_all_swap_single_sig() {
         // Valid SwapRequest with SIG_ALL signature
         let valid_swap = r#"{
-  "inputs": [
-    {
-      "amount": 2,
-      "id": "00bfa73302d12ffd",
-      "secret": "[\"P2PK\",{\"nonce\":\"15295d2e313321acc65266c95060f99da5825a0ea00ac01142cf57b1fd397ddd\",\"data\":\"02dc2ecca00f924dd7028bc92793d7bb9230bac43ff690148c33e2c010f44f154c\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]",
-      "C": "0255d4584468bd226fd290ab454ef61ba0f85a7f19c8b55a383cfa9c87bb37c2b3",
-      "witness": "{\"signatures\":[\"74a737275b0e0e3b2598242abbe9c791526fd4e30b5b04fd53a02795775613889d1bc7843301cfe1b91b16687698d8e26fa7b2f5ce42c5043d483f0e9d15e061\"]}"
-    }
-  ],
-  "outputs": [
-    {
-      "amount": 1,
-      "id": "00bfa73302d12ffd",
-      "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
-    },
-    {
-      "amount": 1,
-      "id": "00bfa73302d12ffd",
-      "B_": "03afe7c87e32d436f0957f1d70a2bca025822a84a8623e3a33aed0a167016e0ca5"
-    }
-  ]
+          "inputs": [
+            {
+              "amount": 2,
+              "id": "00bfa73302d12ffd",
+              "secret": "[\"P2PK\",{\"nonce\":\"c7f280eb55c1e8564e03db06973e94bc9b666d9e1ca42ad278408fe625950303\",\"data\":\"030d8acedfe072c9fa449a1efe0817157403fbec460d8e79f957966056e5dd76c1\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]",
+              "C": "02c97ee3d1db41cf0a3ddb601724be8711a032950811bf326f8219c50c4808d3cd",
+              "witness": "{\"signatures\":[\"ce017ca25b1b97df2f72e4b49f69ac26a240ce14b3690a8fe619d41ccc42d3c1282e073f85acd36dc50011638906f35b56615f24e4d03e8effe8257f6a808538\"]}"
+            }
+          ],
+          "outputs": [
+            {
+              "amount": 2,
+              "id": "00bfa73302d12ffd",
+              "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+            }
+          ]
 }"#;
 
         let valid_swap: SwapRequest = serde_json::from_str(valid_swap).unwrap();
+
+        // Verify the message format
+        let msg_to_sign = valid_swap.sig_all_msg_to_sign();
+        assert_eq!(
+            msg_to_sign,
+            "[\"P2PK\",{\"nonce\":\"c7f280eb55c1e8564e03db06973e94bc9b666d9e1ca42ad278408fe625950303\",\"data\":\"030d8acedfe072c9fa449a1efe0817157403fbec460d8e79f957966056e5dd76c1\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]02c97ee3d1db41cf0a3ddb601724be8711a032950811bf326f8219c50c4808d3cd2038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+        );
+
+        // Verify the SHA256 hash of the message
+        use bitcoin::hashes::{sha256, Hash};
+        let msg_hash = sha256::Hash::hash(msg_to_sign.as_bytes());
+        assert_eq!(
+            msg_hash.to_string(),
+            "de7f9e3ca0fcc5ed3258fcf83dbf1be7fa78a5ed6da7bf2aa60d61e9dc6eb09a"
+        );
+
         assert!(
             valid_swap.verify_spending_conditions().is_ok(),
             "Valid SIG_ALL swap request should verify"
         );
     }
+
+    #[test]
+    fn test_sig_all_swap_single_sig_2() {
+        // The following is a SwapRequest with a valid sig_all signature.
+        let valid_swap = r#"{
+              "inputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "secret": "[\"P2PK\",{\"nonce\":\"c7f280eb55c1e8564e03db06973e94bc9b666d9e1ca42ad278408fe625950303\",\"data\":\"030d8acedfe072c9fa449a1efe0817157403fbec460d8e79f957966056e5dd76c1\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]",
+                  "C": "02c97ee3d1db41cf0a3ddb601724be8711a032950811bf326f8219c50c4808d3cd",
+                  "witness": "{\"signatures\":[\"ce017ca25b1b97df2f72e4b49f69ac26a240ce14b3690a8fe619d41ccc42d3c1282e073f85acd36dc50011638906f35b56615f24e4d03e8effe8257f6a808538\"]}"
+                }
+              ],
+              "outputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                }
+              ]
+}"#;
+
+        let valid_swap: SwapRequest = serde_json::from_str(valid_swap).unwrap();
+
+        assert!(
+            valid_swap.verify_spending_conditions().is_ok(),
+            "Valid SIG_ALL swap request should verify"
+        );
+    }
+
+    #[test]
+    fn test_sig_all_multiple_secrets() {
+        // The following is a SwapRequest that is invalid as there are multiple secrets.
+        let invalid_swap = r#"{
+                  "inputs": [
+                {
+                  "amount": 1,
+                  "id": "00bfa73302d12ffd",
+                  "secret": "[\"P2PK\",{\"nonce\":\"fa6dd3fac9086c153878dec90b9e37163d38ff2ecf8b37db6470e9d185abbbae\",\"data\":\"033b42b04e659fed13b669f8b16cdaffc3ee5738608810cf97a7631d09bd01399d\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]",
+                  "C": "024d232312bab25af2e73f41d56864d378edca9109ae8f76e1030e02e585847786",
+                  "witness": "{\"signatures\":[\"27b4d260a1186e3b62a26c0d14ffeab3b9f7c3889e78707b8fd3836b473a00601afbd53a2288ad20a624a8bbe3344453215ea075fc0ce479dd8666fd3d9162cc\"]}"
+                },
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "secret": "[\"P2PK\",{\"nonce\":\"4007b21fc5f5b1d4920bc0a08b158d98fd0fb2b0b0262b57ff53c6c5d6c2ae8c\",\"data\":\"033b42b04e659fed13b669f8b16cdaffc3ee5738608810cf97a7631d09bd01399d\",\"tags\":[[\"locktime\",\"122222222222222\"],[\"sigflag\",\"SIG_ALL\"]]}]",
+                  "C": "02417400f2af09772219c831501afcbab4efb3b2e75175635d5474069608deb641"
+                }
+              ],
+              "outputs": [
+                {
+                  "amount": 1,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                },
+                {
+                  "amount": 1,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "03afe7c87e32d436f0957f1d70a2bca025822a84a8623e3a33aed0a167016e0ca5"
+                },
+                {
+                  "amount": 1,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "02c0d4fce02a7a0f09e3f1bca952db910b17e81a7ebcbce62cd8dcfb127d21e37b"
+                }
+              ]
+}"#;
+
+        let invalid_swap: SwapRequest = serde_json::from_str(invalid_swap).unwrap();
+
+        assert!(
+            invalid_swap.verify_spending_conditions().is_err(),
+            "Invalid swap with multiple secrets shouldn't be accepted"
+        );
+    }
+
+    #[test]
+    fn test_sig_all_multiple_signatures_provided() {
+        // The following is a SwapRequest multiple valid signatures are provided and required.
+        let valid_swap = r#"{
+              "inputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "secret": "[\"P2PK\",{\"nonce\":\"04bfd885fc982d553711092d037fdceb7320fd8f96b0d4fd6d31a65b83b94272\",\"data\":\"0275e78025b558dbe6cb8fdd032a2e7613ca14fda5c1f4c4e3427f5077a7bd90e4\",\"tags\":[[\"pubkeys\",\"035163650bbd5ed4be7693f40f340346ba548b941074e9138b67ef6c42755f3449\",\"02817d22a8edc44c4141e192995a7976647c335092199f9e076a170c7336e2f5cc\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
+                  "C": "03866a09946562482c576ca989d06371e412b221890804c7da8887d321380755be",
+                  "witness": "{\"signatures\":[\"be1d72c5ca16a93c5a34f25ec63ce632ddc3176787dac363321af3fd0f55d1927e07451bc451ffe5c682d76688ea9925d7977dffbb15bd79763b527f474734b0\",\"669d6d10d7ed35395009f222f6c7bdc28a378a1ebb72ee43117be5754648501da3bedf2fd6ff0c7849ac92683538c60af0af504102e40f2d8daca8e08b1ca16b\"]}"
+                }
+              ],
+              "outputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                }
+              ]
+}"#;
+
+        let valid_swap: SwapRequest = serde_json::from_str(valid_swap).unwrap();
+
+        assert!(
+            valid_swap.verify_spending_conditions().is_ok(),
+            "Valid swap with multiple signatures should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_sig_all_mixed_pubkeys_and_refund() {
+        // The following is an invalid SwapRequest with pubkeys and refund mixed.
+        let invalid_swap = r#"{
+                      "inputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "secret": "[\"P2PK\",{\"nonce\":\"3e9253419a11f0a541dd6baeddecf8356fc864b5d061f12f05632bc3aee6b5c4\",\"data\":\"0343cca0e48ce9e3fdcddba4637ff8cdbf6f5ed9cfdf1873e63827e760f0ed4db5\",\"tags\":[[\"pubkeys\",\"0235e0a719f8b046cee90f55a59b1cdd6ca75ce23e49cbcd82c9e5b7310e21ebcd\",\"020443f98b356e021bae82bdfc05ff433cab21e27fca9ab7b0995aedb2e7aabc43\"],[\"locktime\",\"100\"],[\"n_sigs\",\"2\"],[\"refund\",\"026b432e62b041bf9cdae534203739c73fa506c9a2d6aa58a52bc601a1dec421e1\",\"02e3494a2e07e7f6e7d4567e0da7a563592bff1e121df2383667f15b83e9168a9e\"],[\"n_sigs_refund\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
+                  "C": "026c12ee3bffa5c617debcf823bf1af6a9b47145b699f2737bba3394f0893eb869",
+                  "witness": "{\"signatures\":[\"bfe884145ce6512331324321c3946dfd812428a53656b108b59d26559a186ba2ab45e5be9ce94e2dff0d09078e25ccb82d06a8b3a63cd3dc67065b8f77292776\",\"236e5cc9c30f85a893a29a4302e41e6f2015caef4229f28fa65e2f5c9d55515cc9a1852093a81a5095055d85fd55bf4da124e55354b56e0a39e83b58b0afc197\"]}"
+                }
+              ],
+              "outputs": [
+                {
+                  "amount": 1,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                },
+                {
+                  "amount": 1,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "03afe7c87e32d436f0957f1d70a2bca025822a84a8623e3a33aed0a167016e0ca5"
+                }
+              ]
+}"#;
+
+        let invalid_swap: SwapRequest = serde_json::from_str(invalid_swap).unwrap();
+
+        assert!(
+            invalid_swap.verify_spending_conditions().is_err(),
+            "Invalid swap with mixed refunds and pubkeys shouldn't be accepted"
+        );
+    }
+
+    #[test]
+    fn test_sig_all_locktime_passed_with_valid_refund_key_sigs() {
+        // The following is a SwapRequest with locktime passed and refund keys signatures are valid
+        let valid_swap = r#"{
+                      "inputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "secret": "[\"P2PK\",{\"nonce\":\"9ea35553beb18d553d0a53120d0175a0991ca6109370338406eed007b26eacd1\",\"data\":\"02af21e09300af92e7b48c48afdb12e22933738cfb9bba67b27c00c679aae3ec25\",\"tags\":[[\"locktime\",\"1\"],[\"refund\",\"02637c19143c58b2c58bd378400a7b82bdc91d6dedaeb803b28640ef7d28a887ac\",\"0345c7fdf7ec7c8e746cca264bf27509eb4edb9ac421f8fbfab1dec64945a4d797\"],[\"n_sigs_refund\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
+                  "C": "03dd83536fbbcbb74ccb3c87147df26753fd499cc2c095f74367fff0fb459c312e",
+                  "witness": "{\"signatures\":[\"23b58ef28cd22f3dff421121240ddd621deee83a3bc229fd67019c2e338d91e2c61577e081e1375dbab369307bba265e887857110ca3b4bd949211a0a298805f\",\"7e75948ef1513564fdcecfcbd389deac67c730f7004f8631ba90c0844d3e8c0cf470b656306877df5141f65fd3b7e85445a8452c3323ab273e6d0d44843817ed\"]}"
+                }
+              ],
+              "outputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                }
+              ]
+}"#;
+
+        let valid_swap: SwapRequest = serde_json::from_str(valid_swap).unwrap();
+
+        assert!(
+            valid_swap.verify_spending_conditions().is_ok(),
+            "Valid post-locktime swap with refund keys should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_sig_all_htlc_and_pubkey() {
+        // The following is a valid `SwapRequest` with an HTLC also locked to a public key
+        let valid_swap = r#"{
+                      "inputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "secret": "[\"HTLC\",{\"nonce\":\"d730dd70cd7ec6e687829857de8e70aab2b970712f4dbe288343eca20e63c28c\",\"data\":\"ec4916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5\",\"tags\":[[\"pubkeys\",\"0350cda8a1d5257dbd6ba8401a9a27384b9ab699e636e986101172167799469b14\"],[\"sigflag\",\"SIG_ALL\"]]}]",
+                  "C": "03ff6567e2e6c31db5cb7189dab2b5121930086791c93899e4eff3dda61cb57273",
+                  "witness": "{\"preimage\":\"0000000000000000000000000000000000000000000000000000000000000001\",\"signatures\":[\"a4c00a9ad07f9936e404494fda99a9b935c82d7c053173b304b8663124c81d4b00f64a225f5acf41043ca52b06382722bd04ded0fbeb0fcc404eed3b24778b88\"]}"
+                }
+              ],
+              "outputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                }
+              ]
+}"#;
+
+        let valid_swap: SwapRequest = serde_json::from_str(valid_swap).unwrap();
+
+        assert!(
+            valid_swap.verify_spending_conditions().is_ok(),
+            "Valid swap with htlc and pubkey should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_sig_all_enforce_locktime_with_only_refund_signed() {
+        // The following is an invalid SwapRequest with an HTLC also locked to a public key, locktime and refund key. locktime is not expired but proof is signed with refund key.
+        let invalid_swap = r#"{
+              "inputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "secret": "[\"HTLC\",{\"nonce\":\"512c4045f12fdfd6f55059669c189e040c37c1ce2f8be104ed6aec296acce4e9\",\"data\":\"ec4916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5\",\"tags\":[[\"pubkeys\",\"03ba83defd31c63f8841d188f0d41b5bb3af1bb3c08d0ba46f8f1d26a4d45e8cad\"],[\"locktime\",\"4854185133\"],[\"refund\",\"032f1008a79c722e93a1b4b853f85f38283f9ef74ee4c5c91293eb1cc3c5e46e34\"],[\"sigflag\",\"SIG_ALL\"]]}]",
+                  "C": "02207abeff828146f1fc3909c74613d5605bd057f16791994b3c91f045b39a6939",
+                  "witness": "{\"preimage\":\"0000000000000000000000000000000000000000000000000000000000000001\",\"signatures\":[\"7816d57871bde5be2e4281065dbe5b15f641d8f1ed9437a3ae556464d6f9b8a0a2e6660337a915f2c26dce1453a416daf682b8fb593b67a0750fce071e0759b9\"]}"
+                }
+              ],
+              "outputs": [
+                {
+                  "amount": 1,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                },
+                {
+                  "amount": 1,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "03afe7c87e32d436f0957f1d70a2bca025822a84a8623e3a33aed0a167016e0ca5"
+                }
+              ]
+}"#;
+
+        let invalid_swap: SwapRequest = serde_json::from_str(invalid_swap).unwrap();
+
+        assert!(
+            invalid_swap.verify_spending_conditions().is_err(),
+            "Invalid swap with pre-locktime conditions not met shouldn't be accepted"
+        );
+    }
+
+    #[test]
+    fn test_sig_all_htlc_post_locktime() {
+        // The following is a valid SwapRequest with a multisig HTLC also locked to locktime and refund keys.
+        let valid_swap = r#"{
+              "inputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "secret": "[\"HTLC\",{\"nonce\":\"c9b0fabb8007c0db4bef64d5d128cdcf3c79e8bb780c3294adf4c88e96c32647\",\"data\":\"ec4916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5\",\"tags\":[[\"pubkeys\",\"039e6ec7e922abb4162235b3a42965eb11510b07b7461f6b1a17478b1c9c64d100\"],[\"locktime\",\"1\"],[\"refund\",\"02ce1bbd2c9a4be8029c9a6435ad601c45677f5cde81f8a7f0ed535e0039d0eb6c\",\"03c43c00ff57f63cfa9e732f0520c342123e21331d0121139f1b636921eeec095f\"],[\"n_sigs_refund\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
+                  "C": "0344b6f1471cf18a8cbae0e624018c816be5e3a9b04dcb7689f64173c1ae90a3a5",
+                  "witness": "{\"preimage\":\"0000000000000000000000000000000000000000000000000000000000000001\",\"signatures\":[\"98e21672d409cc782c720f203d8284f0af0c8713f18167499f9f101b7050c3e657fb0e57478ebd8bd561c31aa6c30f4cd20ec38c73f5755b7b4ddee693bca5a5\",\"693f40129dbf905ed9c8008081c694f72a36de354f9f4fa7a61b389cf781f62a0ae0586612fb2eb504faaf897fefb6742309186117f4743bcebcb8e350e975e2\"]}"
+                }
+              ],
+              "outputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                }
+              ]
+}"#;
+
+        let valid_swap: SwapRequest = serde_json::from_str(valid_swap).unwrap();
+
+        assert!(
+            valid_swap.verify_spending_conditions().is_ok(),
+            "Valid post-locktime swap with htlc should be accepted"
+        );
+    }
+
+
+
+
+
+
+
+
+
+
 
     #[test]
     fn test_sig_all_swap_mismatched_inputs() {
@@ -1520,125 +1807,6 @@ mod tests {
         );
     }
 
-    #[test]
-    #[ignore]
-    fn test_sig_all_swap_multi_sig() {
-        // SwapRequest with multi-sig SIG_ALL requiring 2 signatures
-        let multisig_swap = r#"{
-          "inputs": [
-            {
-              "amount": 1,
-              "id": "00bfa73302d12ffd",
-              "secret": "[\"P2PK\",{\"nonce\":\"6507be98667717777e8a7b4f390f0ce3015ae55ab3d704515a58279dd29b0837\",\"data\":\"02340815f0b7e6aab8309359f2ebd23ecc3a77f391ad0f42429dea4a57726aabd5\",\"tags\":[[\"pubkeys\",\"02caa73a36330cd4dd1c35a601fccc5caf9ba0af9aaa32ff6fd997f8016958012e\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
-              "C": "03800d22be5fc78ba23fb2c7a98c04ac4df18d5a347830492f8861123266128594",
-              "witness": "{\"signatures\":[\"0517134f98154091ea9e9ff2b89124f7ea9f33808de6533ca4658f0cf71019d461305ee4029c7cd4f23eac8c6b8d19c0717a57250aa55c62a97cb5fecb62492e\",\"c129e6fdc3b90ad5de688551310aa8c8efc74d485ab699477e7dbb9e71d096b19535ae7ed8178e78016dad816fe83213693892e64e94b53caf63a6e1fb7fd90f\"]}"
-            },
-            {
-              "amount": 2,
-              "id": "00bfa73302d12ffd",
-              "secret": "[\"P2PK\",{\"nonce\":\"ec17595b7841d3f755a0511904d475406db0b55d87192f1249e8cba9c1af82d7\",\"data\":\"02340815f0b7e6aab8309359f2ebd23ecc3a77f391ad0f42429dea4a57726aabd5\",\"tags\":[[\"pubkeys\",\"02caa73a36330cd4dd1c35a601fccc5caf9ba0af9aaa32ff6fd997f8016958012e\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
-              "C": "025a0739fbff052ea7776ff84667d2f496073366b245bc1ed43ea51babba2ae83e"
-            }
-          ],
-          "outputs": [
-            {
-              "amount": 1,
-              "id": "00bfa73302d12ffd",
-              "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
-            },
-            {
-              "amount": 1,
-              "id": "00bfa73302d12ffd",
-              "B_": "03afe7c87e32d436f0957f1d70a2bca025822a84a8623e3a33aed0a167016e0ca5"
-            },
-            {
-              "amount": 1,
-              "id": "00bfa73302d12ffd",
-              "B_": "02c0d4fce02a7a0f09e3f1bca952db910b17e81a7ebcbce62cd8dcfb127d21e37b"
-            }
-          ]
-        }"#;
-
-        let multisig_swap: SwapRequest = serde_json::from_str(multisig_swap).unwrap();
-        assert!(
-            multisig_swap.verify_spending_conditions().is_ok(),
-            "Multi-sig SIG_ALL swap request should verify with both signatures"
-        );
-    }
-
-    #[test]
-    #[ignore]
-    fn test_sig_all_swap_msg_to_sign() {
-        // SwapRequest with multi-sig SIG_ALL requiring 2 signatures
-        let multisig_swap = r#"{
-              "inputs": [
-                {
-                  "amount": 1,
-                  "id": "00bfa73302d12ffd",
-                  "secret": "[\"P2PK\",{\"nonce\":\"741391687d73ee334e80b3978252d8b4d1b4c2877b03e9350a41d48f9fa32215\",\"data\":\"03d732118ebbb5594c3d2c4ec216fc4ed95ecef96203a27bf8797e0e1fc4dfb47f\",\"tags\":[[\"pubkeys\",\"036698d3c69f5eec5ac85a4b6a16445d7fa7356ef99b038f2f7ef2b0163e1a2028\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
-                  "C": "021e7b4c29ff17f1f36c12bfa3b7bc76118fc79102c675012145511abfbb989bec",
-                  "witness": "{\"signatures\":[\"3834641aad79054b73c1384990486f2f2af9ef30288e0a13ee4e009ad781aad74eaa2bff0abc420c4e3bbd1f1484d3a28cb3380af7a0f84f1a6eab991ff47661\",\"fefd0725c508ed05c5f14ee8ef3cb859fe8b9c070c23c797d0b712dc3966063a1faa083a32eb8edc1a88a823fcc4784f64a32f604c0012833d25b630b7664b3a\"]}"
-                }
-              ],
-              "outputs": [
-                {
-                  "amount": 1,
-                  "id": "00bfa73302d12ffd",
-                  "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
-                }
-              ]
-            }"#;
-
-        let multisig_swap: SwapRequest = serde_json::from_str(multisig_swap).unwrap();
-
-        let msg_to_sign = multisig_swap.sig_all_msg_to_sign();
-
-        println!("{}", msg_to_sign);
-
-        assert_eq!(
-            msg_to_sign,
-            r#"["P2PK",{"nonce":"741391687d73ee334e80b3978252d8b4d1b4c2877b03e9350a41d48f9fa32215","data":"03d732118ebbb5594c3d2c4ec216fc4ed95ecef96203a27bf8797e0e1fc4dfb47f","tags":[["pubkeys","036698d3c69f5eec5ac85a4b6a16445d7fa7356ef99b038f2f7ef2b0163e1a2028"],["n_sigs","2"],["sigflag","SIG_ALL"]]}]021e7b4c29ff17f1f36c12bfa3b7bc76118fc79102c675012145511abfbb989bec100bfa73302d12ffd038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"#
-        );
-        assert!(
-            multisig_swap.verify_spending_conditions().is_ok(),
-            "Multi-sig swap should verify successfully"
-        );
-    }
-
-    #[test]
-    #[ignore]
-    fn test_sig_all_multisig_locktime_passed() {
-        // Swap request with locktime already passed and the needed refund signatures
-        let locktime_sig_all_swap = r#"{
-  "inputs": [
-    {
-      "amount": 2,
-      "id": "00bfa73302d12ffd",
-      "secret": "[\"P2PK\",{\"nonce\":\"3ab4fe4969edd99ee9f3d40d2f382157ae5f382ba280ee5ff2d87360e315951b\",\"data\":\"032d3eecd23c9e50972d2964aaae2d302ffdb8717018469f05b051502191c398b1\",\"tags\":[[\"locktime\",\"1\"],[\"n_sigs\",\"1\"],[\"refund\",\"02d3edfb9e9ffdcd4845ba1d3f4cfc65503937c5c9d653ce49f315e76b608a8683\",\"03068b44ca2edca02b6e0832a9e014e409a5e44501e07d7227877efdf10aedf19d\"],[\"n_sigs_refund\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
-      "C": "0244bb030c94f79092eb66bc84937ab920360fec3c333f424248592113fcc96cd6",
-      "witness": "{\"signatures\":[\"83c45281c4a4dbbaab82c795ff435468f8c22506dc75debe34e5e07d1a889693e89ab1d621575039a1470bea1bf9a73dcf57f9902bff32afb52c4c403c852e46\",\"071570a852228cb16368807024fd6d7c53b1c3b1a574f206fd2cb6fd61235ad894be111a49a42133c786c366d0a96bfc108b45f6bcfa5496701e0d5cc2e4d86a\"]}"
-    }
-  ],
-  "outputs": [
-    {
-      "amount": 1,
-      "id": "00bfa73302d12ffd",
-      "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
-    },
-    {
-      "amount": 1,
-      "id": "00bfa73302d12ffd",
-      "B_": "03afe7c87e32d436f0957f1d70a2bca025822a84a8623e3a33aed0a167016e0ca5"
-    }
-  ]
-}"#;
-
-        let valid_swap: SwapRequest = serde_json::from_str(locktime_sig_all_swap).unwrap();
-        assert!(
-            valid_swap.verify_spending_conditions().is_ok(),
-            "valid SIG_ALL swap request should fail verification"
-        );
-    }
 
     #[test]
     fn test_sig_all_mixed_pubkeys_and_refund_pubkeys() {
@@ -1675,36 +1843,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn test_sig_all_htlc_with_pubkey() {
-        // `SwapRequest` with an HTLC also locked to a public key
-        let locktime_sig_all_swap = r#"{
-  "inputs": [
-    {
-      "amount": 2,
-      "id": "00bfa73302d12ffd",
-      "secret": "[\"HTLC\",{\"nonce\":\"247864413ecc86739078f8ab56deb8006f9c304fc270f20eb30340beca173088\",\"data\":\"ec4916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5\",\"tags\":[[\"pubkeys\",\"03f2a205a6468f29af3948f036e8e35e0010832d8d0b43b0903331263a45f93f31\"],[\"sigflag\",\"SIG_ALL\"]]}]",
-      "C": "0394ffcb2ec2a96fd58c1b935784a7709c62954f7f11f1e684de471f808ccfb0bf",
-      "witness": "{\"preimage\":\"0000000000000000000000000000000000000000000000000000000000000001\",\"signatures\":[\"fa820534d75faac577eb5b42e9929a9f648baaaf28876cbcb7c10c6047cf97f6197d1cbf4907d94c1e77decf4b1acf0c85816a30524ee1b546181a19b838b535\"]}"
-    }
-  ],
-  "outputs": [
-    {
-      "amount": 2,
-      "id": "00bfa73302d12ffd",
-      "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
-    }
-  ]
-}"#;
-
-        let valid_swap: SwapRequest = serde_json::from_str(locktime_sig_all_swap).unwrap();
-        assert!(
-            valid_swap.verify_spending_conditions().is_ok(),
-            "valid SIG_ALL swap request should pass verification"
-        );
-    }
-
-    #[test]
     fn test_sig_all_htlc_unexpired_timelock_refund_signature() {
         // SwapRequest signed with refund_pubkey without expiration
         let invalidsig_all_swap = r#"{
@@ -1733,66 +1871,121 @@ mod tests {
         );
     }
 
+    // Now the Melt examples at the end of 11-test.md
     #[test]
-    #[ignore]
-    fn test_sig_all_htlc_refund_multisig() {
-        //  `SwapRequest` with a multisig HTLC also locked to locktime and refund keys.
-        let locktime_sig_all_swap = r#"{
-  "inputs": [
-    {
-      "amount": 2,
-      "id": "00bfa73302d12ffd",
-      "secret": "[\"HTLC\",{\"nonce\":\"d4e089a466a5dd15031a406a3733adecf6f82aa76eee31d6bc8eaff3d78f6daa\",\"data\":\"ec4916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5\",\"tags\":[[\"pubkeys\",\"0367ec6c26c688ddd6162907298726c6d5ad669f99cf27b3ac6240c64fa7c5036f\"],[\"locktime\",\"1\"],[\"refund\",\"0302208be01ac255b9845e88a571120d2ce2df3f877414a430e17b5c0d993b66de\",\"0275a814c7a891f3241aca84097253cd173b933d012009b1335a981599bec3cb3f\"],[\"n_sigs_refund\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
-      "C": "0374419050d909ba80122ed5e1e8ae6cc569c269fdff257fc5eae32945ca6076fe",
-      "witness": "{\"preimage\":\"0000000000000000000000000000000000000000000000000000000000000001\",\"signatures\":[\"4c7d55d6447c6d950fe2d2629441e8e69368be6e0f576bc4f343e830bcdc1e2296ddce74cb5a64245639464814ca98b129b06461b0897b0d1b94133050f233bd\",\"bb7fd77512ac69a47462e91c5e47e20b5ad1466d28ea71ffbdf5d0ae40d2865b90ffc34fc3202f3b775b9428667c9aa54d778af2055a530946db3a0311a28493\"]}"
-    }
-  ],
-  "outputs": [
-    {
-      "amount": 2,
-      "id": "00bfa73302d12ffd",
-      "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
-    }
-  ]
-}"#;
-
-        let valid_swap: SwapRequest = serde_json::from_str(locktime_sig_all_swap).unwrap();
-        assert!(
-            valid_swap.verify_spending_conditions().is_ok(),
-            "valid SIG_ALL swap request should fail verification"
-        );
-    }
-
-    #[test]
-    #[ignore]
     fn test_sig_all_melt() {
-        // MeltRequest with valid SIG_ALL signature
+        // Valid MeltRequest with SIG_ALL signature
+        // Example MeltRequest:
         let valid_melt = r#"{
-  "quote": "uHwJ-f6HFAC-lU2dMw0KOu6gd5S571FXQQHioYMD",
-  "inputs": [
-    {
-      "amount": 4,
-      "id": "00bfa73302d12ffd",
-      "secret": "[\"P2PK\",{\"nonce\":\"f5c26c928fb4433131780105eac330338bb9c0af2b2fd29fad9e4f18c4a96d84\",\"data\":\"03c4840e19277822bfeecf104dcd3f38d95b33249983ac6fed755869f23484fb2a\",\"tags\":[[\"pubkeys\",\"0256dcc53d9330e0bc6e9b3d47c26287695aba9fe55cafdde6f46ef56e09582bfb\"],[\"n_sigs\",\"1\"],[\"sigflag\",\"SIG_ALL\"]]}]",
-      "C": "02174667f98114abeb741f4964bdc88a3b86efde0afa38f791094c1e07e5df3beb",
-      "witness": "{\"signatures\":[\"abeeceba92bc7d1c514844ddb354d1e88a9776dfb55d3cdc5c289240386e401c3d983b68371ce5530e86c8fc4ff90195982a262f83fa8a5335b43e75af5f5fc7\"]}"
-    }
-  ],
-  "outputs": [
-    {
-      "amount": 0,
-      "id": "00bfa73302d12ffd",
-      "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
-    }
-  ]
+              "quote": "cF8911fzT88aEi1d-6boZZkq5lYxbUSVs-HbJxK0",
+              "inputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "secret": "[\"P2PK\",{\"nonce\":\"bbf9edf441d17097e39f5095a3313ba24d3055ab8a32f758ff41c10d45c4f3de\",\"data\":\"029116d32e7da635c8feeb9f1f4559eb3d9b42d400f9d22a64834d89cde0eb6835\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]",
+                  "C": "02a9d461ff36448469dccf828fa143833ae71c689886ac51b62c8d61ddaa10028b",
+                  "witness": "{\"signatures\":[\"478224fbe715e34f78cb33451db6fcf8ab948afb8bd04ff1a952c92e562ac0f7c1cb5e61809410635be0aa94d0448f7f7959bd5762cc3802b0a00ff58b2da747\"]}"
+                }
+              ],
+              "outputs": [
+                {
+                  "amount": 0,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                }
+              ]
 }"#;
 
         let valid_melt: MeltRequest<String> = serde_json::from_str(valid_melt).unwrap();
+
+        // Verify the message format
+        let msg_to_sign = valid_melt.sig_all_msg_to_sign();
+        assert_eq!(
+            msg_to_sign,
+            r#"["P2PK",{"nonce":"bbf9edf441d17097e39f5095a3313ba24d3055ab8a32f758ff41c10d45c4f3de","data":"029116d32e7da635c8feeb9f1f4559eb3d9b42d400f9d22a64834d89cde0eb6835","tags":[["sigflag","SIG_ALL"]]}]02a9d461ff36448469dccf828fa143833ae71c689886ac51b62c8d61ddaa10028b0038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39cF8911fzT88aEi1d-6boZZkq5lYxbUSVs-HbJxK0"#
+        );
+
+        // Verify the SHA256 hash of the message
+        use bitcoin::hashes::{sha256, Hash};
+        let msg_hash = sha256::Hash::hash(msg_to_sign.as_bytes());
+        assert_eq!(
+            msg_hash.to_string(),
+            "9efa1067cc7dc870f4074f695115829c3cd817a6866c3b84e9814adf3c3cf262"
+        );
+
         assert!(
             valid_melt.verify_spending_conditions().is_ok(),
             "Valid SIG_ALL melt request should verify"
         );
     }
+
+    #[test]
+    fn test_sig_all_valid_melt() {
+        // The following is a valid SIG_ALL MeltRequest.
+        let valid_melt = r#"{
+              "quote": "cF8911fzT88aEi1d-6boZZkq5lYxbUSVs-HbJxK0",
+              "inputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "secret": "[\"P2PK\",{\"nonce\":\"bbf9edf441d17097e39f5095a3313ba24d3055ab8a32f758ff41c10d45c4f3de\",\"data\":\"029116d32e7da635c8feeb9f1f4559eb3d9b42d400f9d22a64834d89cde0eb6835\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]",
+                  "C": "02a9d461ff36448469dccf828fa143833ae71c689886ac51b62c8d61ddaa10028b",
+                  "witness": "{\"signatures\":[\"478224fbe715e34f78cb33451db6fcf8ab948afb8bd04ff1a952c92e562ac0f7c1cb5e61809410635be0aa94d0448f7f7959bd5762cc3802b0a00ff58b2da747\"]}"
+                }
+              ],
+              "outputs": [
+                {
+                  "amount": 0,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                }
+              ]
+}"#;
+
+        let valid_melt: MeltRequest<String> = serde_json::from_str(valid_melt).unwrap();
+
+        assert!(
+            valid_melt.verify_spending_conditions().is_ok(),
+            "Valid SIG_ALL melt request should verify"
+        );
+    }
+
+
+    #[test]
+    fn test_sig_all_valid_multisig_melt() {
+        // The following is a valid multi-sig SIG_ALL MeltRequest.
+        let valid_melt = r#"{
+              "quote": "Db3qEMVwFN2tf_1JxbZp29aL5cVXpSMIwpYfyOVF",
+              "inputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "secret": "[\"P2PK\",{\"nonce\":\"68d7822538740e4f9c9ebf5183ef6c4501c7a9bca4e509ce2e41e1d62e7b8a99\",\"data\":\"0394e841bd59aeadce16380df6174cb29c9fea83b0b65b226575e6d73cc5a1bd59\",\"tags\":[[\"pubkeys\",\"033d892d7ad2a7d53708b7a5a2af101cbcef69522bd368eacf55fcb4f1b0494058\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
+                  "C": "03a70c42ec9d7192422c7f7a3ad017deda309fb4a2453fcf9357795ea706cc87a9",
+                  "witness": "{\"signatures\":[\"ed739970d003f703da2f101a51767b63858f4894468cc334be04aa3befab1617a81e3eef093441afb499974152d279e59d9582a31dc68adbc17ffc22a2516086\",\"f9efe1c70eb61e7ad8bd615c50ff850410a4135ea73ba5fd8e12a734743ad045e575e9e76ea5c52c8e7908d3ad5c0eaae93337e5c11109e52848dc328d6757a2\"]}"
+                }
+              ],
+              "outputs": [
+                {
+                  "amount": 0,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                }
+              ]
+}"#;
+
+        let valid_melt: MeltRequest<String> = serde_json::from_str(valid_melt).unwrap();
+
+        assert!(
+            valid_melt.verify_spending_conditions().is_ok(),
+            "Valid SIG_ALL melt request should verify"
+        );
+    }
+
+
+
+
+
 
     #[test]
     fn test_sig_all_melt_wrong_sig() {
