@@ -9,7 +9,8 @@ use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::string::FromUtf8Error;
 
-use bitcoin::hashes::{sha256, Hash as BitcoinHash};
+#[cfg(feature = "wallet")]
+use bitcoin::hashes::Hash as BitcoinHash;
 use serde::{de, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
