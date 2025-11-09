@@ -4,14 +4,16 @@
 //! These tests verify that the mint correctly enforces SIG_ALL flag behavior for HTLC
 //! during melt operations.
 
-use cdk_common::nuts::{SpendingConditions, Conditions, SigFlag};
-use cdk_common::Amount;
 use cdk_common::dhke::construct_proofs;
 use cdk_common::melt::MeltQuoteRequest;
+use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
+use cdk_common::Amount;
 use cdk_common::SpendingConditionVerification;
 use std::str::FromStr;
 
-use crate::mint::swap::spending_conditions::test_helpers::{TestMintHelper, create_test_keypair, create_test_hash_and_preimage, unzip3};
+use crate::mint::swap::spending_conditions::test_helpers::{
+    create_test_hash_and_preimage, create_test_keypair, unzip3, TestMintHelper,
+};
 
 /// Test: HTLC SIG_ALL requiring preimage and one signature
 ///
@@ -45,11 +47,12 @@ async fn test_htlc_sig_all_requiring_preimage_and_one_signature() {
             locktime: None,
             pubkeys: Some(vec![alice_pubkey]),
             refund_keys: None,
-            num_sigs: None, // Default (1)
+            num_sigs: None,            // Default (1)
             sig_flag: SigFlag::SigAll, // <-- SIG_ALL flag
             num_sigs_refund: None,
-        })
-    ).unwrap();
+        }),
+    )
+    .unwrap();
     println!("Created HTLC spending conditions with SIG_ALL flag");
 
     // Step 3: Create HTLC blinded messages (outputs)
@@ -63,13 +66,13 @@ async fn test_htlc_sig_all_requiring_preimage_and_one_signature() {
             .map(|&amt| test_mint.create_blinded_message(amt, &spending_conditions))
             .collect(),
     );
-    println!("Created {} HTLC outputs locked to alice with hash", htlc_outputs.len());
+    println!(
+        "Created {} HTLC outputs locked to alice with hash",
+        htlc_outputs.len()
+    );
 
     // Step 4: Swap regular proofs for HTLC proofs (no signature needed on inputs)
-    let swap_request = cdk_common::SwapRequest::new(
-        input_proofs.clone(),
-        htlc_outputs.clone(),
-    );
+    let swap_request = cdk_common::SwapRequest::new(input_proofs.clone(), htlc_outputs.clone());
     let swap_response = mint
         .process_swap_request(swap_request)
         .await
@@ -82,10 +85,15 @@ async fn test_htlc_sig_all_requiring_preimage_and_one_signature() {
         blinding_factors.clone(),
         secrets.clone(),
         &test_mint.public_keys_of_the_active_sat_keyset,
-    ).unwrap();
+    )
+    .unwrap();
 
     let proof_amounts: Vec<String> = htlc_proofs.iter().map(|p| p.amount.to_string()).collect();
-    println!("Constructed {} HTLC proof(s) [{}]", htlc_proofs.len(), proof_amounts.join("+"));
+    println!(
+        "Constructed {} HTLC proof(s) [{}]",
+        htlc_proofs.len(),
+        proof_amounts.join("+")
+    );
 
     // Step 6: Create a real melt quote that we'll use for all tests
     let bolt11_str = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq";
@@ -97,7 +105,10 @@ async fn test_htlc_sig_all_requiring_preimage_and_one_signature() {
         options: None,
     };
 
-    let melt_quote = mint.get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request)).await.unwrap();
+    let melt_quote = mint
+        .get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request))
+        .await
+        .unwrap();
     println!("Created melt quote: {}", melt_quote.quote);
 
     // Step 7: Try to melt with only preimage (should fail - signature required)
@@ -105,26 +116,26 @@ async fn test_htlc_sig_all_requiring_preimage_and_one_signature() {
     // Add only preimage to first proof (no signature)
     proofs_preimage_only[0].add_preimage(preimage.clone());
 
-    let melt_request_preimage_only = cdk_common::MeltRequest::new(
-        melt_quote.quote.clone(),
-        proofs_preimage_only.into(),
-        None,
-    );
+    let melt_request_preimage_only =
+        cdk_common::MeltRequest::new(melt_quote.quote.clone(), proofs_preimage_only.into(), None);
 
     let result = melt_request_preimage_only.verify_spending_conditions();
-    assert!(result.is_err(), "Should fail with only preimage (no signature)");
+    assert!(
+        result.is_err(),
+        "Should fail with only preimage (no signature)"
+    );
     println!("✓ Melting with ONLY preimage failed verification as expected");
 
     let melt_result = mint.melt(&melt_request_preimage_only).await;
-    assert!(melt_result.is_err(), "Actual melt should also fail with only preimage");
+    assert!(
+        melt_result.is_err(),
+        "Actual melt should also fail with only preimage"
+    );
     println!("✓ Actual melt with ONLY preimage also failed as expected");
 
     // Step 8: Try to melt with SIG_INPUTS signatures (should fail - SIG_ALL required)
-    let mut melt_request_sig_inputs = cdk_common::MeltRequest::new(
-        melt_quote.quote.clone(),
-        htlc_proofs.clone().into(),
-        None,
-    );
+    let mut melt_request_sig_inputs =
+        cdk_common::MeltRequest::new(melt_quote.quote.clone(), htlc_proofs.clone().into(), None);
 
     // Add preimage to first proof
     melt_request_sig_inputs.inputs_mut()[0].add_preimage(preimage.clone());
@@ -135,19 +146,22 @@ async fn test_htlc_sig_all_requiring_preimage_and_one_signature() {
     }
 
     let result = melt_request_sig_inputs.verify_spending_conditions();
-    assert!(result.is_err(), "Should fail - SIG_INPUTS signatures not valid for SIG_ALL");
+    assert!(
+        result.is_err(),
+        "Should fail - SIG_INPUTS signatures not valid for SIG_ALL"
+    );
     println!("✓ Melting with SIG_INPUTS signatures failed verification as expected");
 
     let melt_result = mint.melt(&melt_request_sig_inputs).await;
-    assert!(melt_result.is_err(), "Actual melt should also fail with SIG_INPUTS signatures");
+    assert!(
+        melt_result.is_err(),
+        "Actual melt should also fail with SIG_INPUTS signatures"
+    );
     println!("✓ Actual melt with SIG_INPUTS signatures also failed as expected");
 
     // Step 9: Now melt with correct preimage + SIG_ALL signature
-    let mut melt_request = cdk_common::MeltRequest::new(
-        melt_quote.quote.clone(),
-        htlc_proofs.clone().into(),
-        None,
-    );
+    let mut melt_request =
+        cdk_common::MeltRequest::new(melt_quote.quote.clone(), htlc_proofs.clone().into(), None);
 
     // Add preimage to first proof
     melt_request.inputs_mut()[0].add_preimage(preimage.clone());

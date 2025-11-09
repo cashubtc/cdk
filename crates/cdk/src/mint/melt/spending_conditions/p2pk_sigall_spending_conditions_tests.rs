@@ -4,12 +4,14 @@
 //! These tests verify that the mint correctly enforces SIG_ALL flag behavior
 //! during melt operations.
 
-use cdk_common::nuts::{SpendingConditions, Conditions, SigFlag};
-use cdk_common::Amount;
 use cdk_common::dhke::construct_proofs;
 use cdk_common::melt::MeltQuoteRequest;
+use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
+use cdk_common::Amount;
 
-use crate::mint::swap::spending_conditions::test_helpers::{TestMintHelper, create_test_keypair, unzip3};
+use crate::mint::swap::spending_conditions::test_helpers::{
+    create_test_keypair, unzip3, TestMintHelper,
+};
 
 /// Test: P2PK with SIG_ALL flag requires transaction signature
 ///
@@ -34,14 +36,17 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
     // Step 2: Create P2PK blinded messages (outputs locked to alice_pubkey) with SIG_ALL
     let spending_conditions = SpendingConditions::new_p2pk(
         alice_pubkey,
-        Some(Conditions::new(
-            None, // no locktime
-            None, // no additional pubkeys
-            None, // no refund keys
-            None, // default num_sigs (1)
-            Some(SigFlag::SigAll), // SIG_ALL flag
-            None, // no num_sigs_refund
-        ).unwrap())
+        Some(
+            Conditions::new(
+                None,                  // no locktime
+                None,                  // no additional pubkeys
+                None,                  // no refund keys
+                None,                  // default num_sigs (1)
+                Some(SigFlag::SigAll), // SIG_ALL flag
+                None,                  // no num_sigs_refund
+            )
+            .unwrap(),
+        ),
     );
     println!("Created P2PK spending conditions with SIG_ALL flag");
 
@@ -58,13 +63,13 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
             .collect(),
     );
 
-    println!("Created {} P2PK outputs locked to alice", p2pk_outputs.len());
+    println!(
+        "Created {} P2PK outputs locked to alice",
+        p2pk_outputs.len()
+    );
 
     // Step 3: Swap regular proofs for P2PK proofs (no signature needed on inputs)
-    let swap_request = cdk_common::SwapRequest::new(
-        input_proofs.clone(),
-        p2pk_outputs.clone(),
-    );
+    let swap_request = cdk_common::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
     let swap_response = mint
         .process_swap_request(swap_request)
         .await
@@ -77,10 +82,15 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
         blinding_factors.clone(),
         secrets.clone(),
         &test_mint.public_keys_of_the_active_sat_keyset,
-    ).unwrap();
+    )
+    .unwrap();
 
     let proof_amounts: Vec<String> = p2pk_proofs.iter().map(|p| p.amount.to_string()).collect();
-    println!("Constructed {} P2PK proof(s) [{}]", p2pk_proofs.len(), proof_amounts.join("+"));
+    println!(
+        "Constructed {} P2PK proof(s) [{}]",
+        p2pk_proofs.len(),
+        proof_amounts.join("+")
+    );
 
     // Step 5: Create a real melt quote that we'll use for all tests
     use cdk_common::SpendingConditionVerification;
@@ -94,16 +104,16 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
         options: None,
     };
 
-    let melt_quote = mint.get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request)).await.unwrap();
+    let melt_quote = mint
+        .get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request))
+        .await
+        .unwrap();
     println!("Created melt quote: {}", melt_quote.quote);
 
     // Step 6: Try to melt P2PK proof WITHOUT signature (should fail)
 
-    let melt_request_no_sig = cdk_common::MeltRequest::new(
-        melt_quote.quote.clone(),
-        p2pk_proofs.clone().into(),
-        None,
-    );
+    let melt_request_no_sig =
+        cdk_common::MeltRequest::new(melt_quote.quote.clone(), p2pk_proofs.clone().into(), None);
 
     let result = melt_request_no_sig.verify_spending_conditions();
     assert!(result.is_err(), "Should fail without signature");
@@ -111,15 +121,15 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
 
     // Also verify the actual melt fails
     let melt_result = mint.melt(&melt_request_no_sig).await;
-    assert!(melt_result.is_err(), "Actual melt should also fail without signature");
+    assert!(
+        melt_result.is_err(),
+        "Actual melt should also fail without signature"
+    );
     println!("✓ Actual melt WITHOUT signature also failed as expected");
 
     // Step 7: Sign all proofs individually (SIG_INPUTS way) - should fail for SIG_ALL
-    let mut melt_request_sig_inputs = cdk_common::MeltRequest::new(
-        melt_quote.quote.clone(),
-        p2pk_proofs.clone().into(),
-        None,
-    );
+    let mut melt_request_sig_inputs =
+        cdk_common::MeltRequest::new(melt_quote.quote.clone(), p2pk_proofs.clone().into(), None);
 
     // Sign each proof individually (SIG_INPUTS mode)
     for proof in melt_request_sig_inputs.inputs_mut() {
@@ -127,20 +137,23 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
     }
 
     let result = melt_request_sig_inputs.verify_spending_conditions();
-    assert!(result.is_err(), "Should fail - SIG_INPUTS signatures not valid for SIG_ALL");
+    assert!(
+        result.is_err(),
+        "Should fail - SIG_INPUTS signatures not valid for SIG_ALL"
+    );
     println!("✓ Melting with SIG_INPUTS signatures failed verification as expected");
 
     // Also verify the actual melt fails
     let melt_result = mint.melt(&melt_request_sig_inputs).await;
-    assert!(melt_result.is_err(), "Actual melt should also fail with SIG_INPUTS signatures");
+    assert!(
+        melt_result.is_err(),
+        "Actual melt should also fail with SIG_INPUTS signatures"
+    );
     println!("✓ Actual melt with SIG_INPUTS signatures also failed as expected");
 
     // Step 8: Sign the transaction with SIG_ALL and perform the melt
-    let mut melt_request = cdk_common::MeltRequest::new(
-        melt_quote.quote.clone(),
-        p2pk_proofs.clone().into(),
-        None,
-    );
+    let mut melt_request =
+        cdk_common::MeltRequest::new(melt_quote.quote.clone(), p2pk_proofs.clone().into(), None);
 
     // Use sign_sig_all to sign the transaction (signature goes on first proof's witness)
     melt_request.sign_sig_all(alice_secret.clone()).unwrap();

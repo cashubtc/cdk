@@ -1,13 +1,15 @@
 #![cfg(test)]
 //! Shared test helpers for spending condition tests (P2PK, HTLC, etc.)
 
-use cdk_common::nuts::{SecretKey, PublicKey, SpendingConditions, BlindedMessage, Id, CurrencyUnit, Keys};
-use cdk_common::nuts::nut10::Secret as Nut10Secret;
-use cdk_common::Amount;
-use cdk_common::dhke::blind_message;
-use crate::secret::Secret;
 use crate::mint::Mint;
+use crate::secret::Secret;
 use crate::Error;
+use cdk_common::dhke::blind_message;
+use cdk_common::nuts::nut10::Secret as Nut10Secret;
+use cdk_common::nuts::{
+    BlindedMessage, CurrencyUnit, Id, Keys, PublicKey, SecretKey, SpendingConditions,
+};
+use cdk_common::Amount;
 
 use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
 
@@ -34,11 +36,17 @@ impl TestMintHelper {
         // Get the active SAT keyset keys
         let lookup_by_that_id = mint.keyset_pubkeys(&active_sat_keyset_id)?;
         let active_sat_keyset = lookup_by_that_id.keysets.first().ok_or(Error::Internal)?;
-        assert_eq!(active_sat_keyset.id, active_sat_keyset_id, "Keyset ID mismatch");
+        assert_eq!(
+            active_sat_keyset.id, active_sat_keyset_id,
+            "Keyset ID mismatch"
+        );
         let public_keys_of_the_active_sat_keyset = active_sat_keyset.keys.clone();
 
         // Get the available denominations from the keyset, sorted largest first
-        let mut available_amounts_sorted: Vec<u64> = public_keys_of_the_active_sat_keyset.iter().map(|(amt, _)| amt.to_u64()).collect();
+        let mut available_amounts_sorted: Vec<u64> = public_keys_of_the_active_sat_keyset
+            .iter()
+            .map(|(amt, _)| amt.to_u64())
+            .collect();
         available_amounts_sorted.sort_by(|a, b| b.cmp(a)); // Sort descending (largest first)
 
         Ok(TestMintHelper {

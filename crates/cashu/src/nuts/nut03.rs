@@ -117,7 +117,6 @@ impl super::nut10::SpendingConditionVerification for SwapRequest {
     }
 }
 
-
 /// Split Response [NUT-06]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]

@@ -81,8 +81,7 @@ impl HTLCWitness {
         const REQUIRED_PREIMAGE_BYTES: usize = 32;
 
         // Decode the 64-character hex string to bytes
-        let preimage_bytes = hex::decode(&self.preimage)
-            .map_err(|_| Error::InvalidHexPreimage)?;
+        let preimage_bytes = hex::decode(&self.preimage).map_err(|_| Error::InvalidHexPreimage)?;
 
         // Verify the preimage is exactly 32 bytes
         if preimage_bytes.len() != REQUIRED_PREIMAGE_BYTES {
@@ -118,8 +117,7 @@ impl Proof {
         // Get the appropriate spending conditions based on locktime
         let now = unix_time();
         let (preimage_needed, relevant_pubkeys, relevant_num_sigs_required) =
-            super::nut10::get_pubkeys_and_required_sigs(&secret, now)
-                .map_err(Error::NUT11)?;
+            super::nut10::get_pubkeys_and_required_sigs(&secret, now).map_err(Error::NUT11)?;
 
         // While a Witness is usually needed in a P2PK or HTLC proof, it's not
         // always needed. If we are past the locktime, and there are no refund

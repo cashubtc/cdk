@@ -4,14 +4,16 @@
 //! These tests verify that the mint correctly validates basic P2PK spending conditions
 //! during melt operations.
 
-use cdk_common::nuts::SpendingConditions;
-use cdk_common::Amount;
 use cdk_common::dhke::construct_proofs;
 use cdk_common::melt::MeltQuoteRequest;
+use cdk_common::nuts::SpendingConditions;
+use cdk_common::Amount;
 use cdk_common::SpendingConditionVerification;
 use std::str::FromStr;
 
-use crate::mint::swap::spending_conditions::test_helpers::{TestMintHelper, create_test_keypair, unzip3};
+use crate::mint::swap::spending_conditions::test_helpers::{
+    create_test_keypair, unzip3, TestMintHelper,
+};
 
 /// Test: Basic P2PK with SIG_INPUTS (default mode)
 ///
@@ -51,13 +53,13 @@ async fn test_p2pk_basic_sig_inputs() {
             .collect(),
     );
 
-    println!("Created {} P2PK outputs locked to alice", p2pk_outputs.len());
+    println!(
+        "Created {} P2PK outputs locked to alice",
+        p2pk_outputs.len()
+    );
 
     // Step 3: Swap regular proofs for P2PK proofs (no signature needed on inputs)
-    let swap_request = cdk_common::SwapRequest::new(
-        input_proofs.clone(),
-        p2pk_outputs.clone(),
-    );
+    let swap_request = cdk_common::SwapRequest::new(input_proofs.clone(), p2pk_outputs.clone());
     let swap_response = mint
         .process_swap_request(swap_request)
         .await
@@ -70,10 +72,15 @@ async fn test_p2pk_basic_sig_inputs() {
         blinding_factors.clone(),
         secrets.clone(),
         &test_mint.public_keys_of_the_active_sat_keyset,
-    ).unwrap();
+    )
+    .unwrap();
 
     let proof_amounts: Vec<String> = p2pk_proofs.iter().map(|p| p.amount.to_string()).collect();
-    println!("Constructed {} P2PK proof(s) [{}]", p2pk_proofs.len(), proof_amounts.join("+"));
+    println!(
+        "Constructed {} P2PK proof(s) [{}]",
+        p2pk_proofs.len(),
+        proof_amounts.join("+")
+    );
 
     // Step 5: Create a real melt quote that we'll use for all tests
     let bolt11_str = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq";
@@ -85,15 +92,15 @@ async fn test_p2pk_basic_sig_inputs() {
         options: None,
     };
 
-    let melt_quote = mint.get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request)).await.unwrap();
+    let melt_quote = mint
+        .get_melt_quote(MeltQuoteRequest::Bolt11(melt_quote_request))
+        .await
+        .unwrap();
     println!("Created melt quote: {}", melt_quote.quote);
 
     // Step 6: Try to melt P2PK proof WITHOUT signature (should fail)
-    let melt_request_no_sig = cdk_common::MeltRequest::new(
-        melt_quote.quote.clone(),
-        p2pk_proofs.clone().into(),
-        None,
-    );
+    let melt_request_no_sig =
+        cdk_common::MeltRequest::new(melt_quote.quote.clone(), p2pk_proofs.clone().into(), None);
 
     let result = melt_request_no_sig.verify_spending_conditions();
     assert!(result.is_err(), "Should fail without signature");
@@ -101,7 +108,10 @@ async fn test_p2pk_basic_sig_inputs() {
 
     // Also verify the actual melt fails
     let melt_result = mint.melt(&melt_request_no_sig).await;
-    assert!(melt_result.is_err(), "Actual melt should also fail without signature");
+    assert!(
+        melt_result.is_err(),
+        "Actual melt should also fail without signature"
+    );
     println!("✓ Actual melt WITHOUT signature also failed as expected");
 
     // Step 7: Sign all proofs individually (SIG_INPUTS mode) and perform the melt
@@ -112,11 +122,8 @@ async fn test_p2pk_basic_sig_inputs() {
         proof.sign_p2pk(alice_secret.clone()).unwrap();
     }
 
-    let melt_request = cdk_common::MeltRequest::new(
-        melt_quote.quote.clone(),
-        proofs_signed.into(),
-        None,
-    );
+    let melt_request =
+        cdk_common::MeltRequest::new(melt_quote.quote.clone(), proofs_signed.into(), None);
 
     // Verify spending conditions pass
     melt_request.verify_spending_conditions().unwrap();

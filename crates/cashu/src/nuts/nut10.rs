@@ -182,7 +182,10 @@ use super::Proofs;
 ///
 /// The preimage should be a 64-character hex string representing 32 bytes.
 /// We decode it from hex, hash it with SHA256, and compare to the hash in secret.data
-pub fn verify_htlc_preimage(witness: &super::nut14::HTLCWitness, secret: &Secret) -> Result<(), super::nut14::Error> {
+pub fn verify_htlc_preimage(
+    witness: &super::nut14::HTLCWitness,
+    secret: &Secret,
+) -> Result<(), super::nut14::Error> {
     use bitcoin::hashes::sha256::Hash as Sha256Hash;
     use bitcoin::hashes::Hash;
 
@@ -226,12 +229,12 @@ pub trait SpendingConditionVerification {
             if let Ok(spending_conditions) = super::SpendingConditions::try_from(&proof.secret) {
                 // Check for SIG_ALL flag in either P2PK or HTLC conditions
                 let has_sig_all = match spending_conditions {
-                    super::SpendingConditions::P2PKConditions { conditions, .. } => {
-                        conditions.map(|c| c.sig_flag == super::SigFlag::SigAll).unwrap_or(false)
-                    }
-                    super::SpendingConditions::HTLCConditions { conditions, .. } => {
-                        conditions.map(|c| c.sig_flag == super::SigFlag::SigAll).unwrap_or(false)
-                    }
+                    super::SpendingConditions::P2PKConditions { conditions, .. } => conditions
+                        .map(|c| c.sig_flag == super::SigFlag::SigAll)
+                        .unwrap_or(false),
+                    super::SpendingConditions::HTLCConditions { conditions, .. } => conditions
+                        .map(|c| c.sig_flag == super::SigFlag::SigAll)
+                        .unwrap_or(false),
                 };
 
                 if has_sig_all {
@@ -266,9 +269,8 @@ pub trait SpendingConditionVerification {
         let first_tags = first_secret.secret_data().tags();
 
         // Get first input's conditions to check SIG_ALL flag
-        let first_conditions = super::Conditions::try_from(
-            first_tags.cloned().unwrap_or_default()
-        )?;
+        let first_conditions =
+            super::Conditions::try_from(first_tags.cloned().unwrap_or_default())?;
 
         // Verify first input has SIG_ALL (it should, since we only call this function when SIG_ALL is detected)
         if first_conditions.sig_flag != super::SigFlag::SigAll {
@@ -328,7 +330,10 @@ pub trait SpendingConditionVerification {
         self.verify_all_inputs_match_for_sig_all()?;
 
         // Get the first input to determine the kind
-        let first_input = self.inputs().first().ok_or(super::nut11::Error::SpendConditionsNotMet)?;
+        let first_input = self
+            .inputs()
+            .first()
+            .ok_or(super::nut11::Error::SpendConditionsNotMet)?;
         let first_secret = Secret::try_from(&first_input.secret)
             .map_err(|_| super::nut11::Error::IncorrectSecretKind)?;
 
@@ -356,7 +361,7 @@ pub trait SpendingConditionVerification {
             if let Ok(secret) = Secret::try_from(&proof.secret) {
                 // Verify this function isn't being called with SIG_ALL proofs (development check)
                 if let Ok(conditions) = super::Conditions::try_from(
-                    secret.secret_data().tags().cloned().unwrap_or_default()
+                    secret.secret_data().tags().cloned().unwrap_or_default(),
                 ) {
                     debug_assert!(
                         conditions.sig_flag != super::SigFlag::SigAll,
@@ -385,7 +390,10 @@ pub trait SpendingConditionVerification {
     /// signature verification for SIG_ALL+P2PK transactions.
     fn verify_sig_all_p2pk(&self) -> Result<(), super::nut11::Error> {
         // Get the first input, as it's the one with the signatures
-        let first_input = self.inputs().first().ok_or(super::nut11::Error::SpendConditionsNotMet)?;
+        let first_input = self
+            .inputs()
+            .first()
+            .ok_or(super::nut11::Error::SpendConditionsNotMet)?;
         let first_secret = Secret::try_from(&first_input.secret)
             .map_err(|_| super::nut11::Error::IncorrectSecretKind)?;
 
@@ -393,7 +401,8 @@ pub trait SpendingConditionVerification {
         let current_time = crate::util::unix_time();
 
         // Get the relevant public keys and required signature count based on locktime
-        let (preimage_needed, pubkeys, required_sigs) = get_pubkeys_and_required_sigs(&first_secret, current_time)?;
+        let (preimage_needed, pubkeys, required_sigs) =
+            get_pubkeys_and_required_sigs(&first_secret, current_time)?;
 
         debug_assert!(!preimage_needed, "P2PK should never require preimage");
 
@@ -424,11 +433,8 @@ pub trait SpendingConditionVerification {
             .map_err(|_| super::nut11::Error::InvalidSignature)?;
 
         // Verify signatures using the existing valid_signatures function
-        let valid_sig_count = super::nut11::valid_signatures(
-            msg_to_sign.as_bytes(),
-            &pubkeys,
-            &signatures,
-        )?;
+        let valid_sig_count =
+            super::nut11::valid_signatures(msg_to_sign.as_bytes(), &pubkeys, &signatures)?;
 
         // Check if we have enough valid signatures
         if valid_sig_count < required_sigs {
@@ -445,7 +451,10 @@ pub trait SpendingConditionVerification {
     /// signature verification for SIG_ALL+HTLC transactions.
     fn verify_sig_all_htlc(&self) -> Result<(), super::nut11::Error> {
         // Get the first input, as it's the one with the signatures
-        let first_input = self.inputs().first().ok_or(super::nut11::Error::SpendConditionsNotMet)?;
+        let first_input = self
+            .inputs()
+            .first()
+            .ok_or(super::nut11::Error::SpendConditionsNotMet)?;
         let first_secret = Secret::try_from(&first_input.secret)
             .map_err(|_| super::nut11::Error::IncorrectSecretKind)?;
 
@@ -453,7 +462,8 @@ pub trait SpendingConditionVerification {
         let current_time = crate::util::unix_time();
 
         // Get the relevant public keys, required signature count, and whether preimage is needed
-        let (preimage_needed, pubkeys, required_sigs) = get_pubkeys_and_required_sigs(&first_secret, current_time)?;
+        let (preimage_needed, pubkeys, required_sigs) =
+            get_pubkeys_and_required_sigs(&first_secret, current_time)?;
 
         // If preimage is needed (before locktime), verify it
         if preimage_needed {
@@ -495,11 +505,8 @@ pub trait SpendingConditionVerification {
             .map_err(|_| super::nut11::Error::InvalidSignature)?;
 
         // Verify signatures using the existing valid_signatures function
-        let valid_sig_count = super::nut11::valid_signatures(
-            msg_to_sign.as_bytes(),
-            &pubkeys,
-            &signatures,
-        )?;
+        let valid_sig_count =
+            super::nut11::valid_signatures(msg_to_sign.as_bytes(), &pubkeys, &signatures)?;
 
         // Check if we have enough valid signatures
         if valid_sig_count < required_sigs {

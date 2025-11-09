@@ -155,7 +155,8 @@ impl Proof {
 
         // Based on the current time, we must identify the relevant keys
         let now = unix_time();
-        let (preimage_needed, relevant_pubkeys, relevant_num_sigs_required) = super::nut10::get_pubkeys_and_required_sigs(&secret, now)?;
+        let (preimage_needed, relevant_pubkeys, relevant_num_sigs_required) =
+            super::nut10::get_pubkeys_and_required_sigs(&secret, now)?;
 
         if preimage_needed {
             return Err(Error::PreimageNotSupportedInP2PK);
@@ -175,7 +176,14 @@ impl Proof {
 
         // Count valid signatures using relevant_pubkeys
         let msg: &[u8] = self.secret.as_bytes();
-        let valid_sig_count = valid_signatures(msg, &relevant_pubkeys, &witness_signatures.iter().map(|s| Signature::from_str(s)).collect::<Result<Vec<_>, _>>()?)?;
+        let valid_sig_count = valid_signatures(
+            msg,
+            &relevant_pubkeys,
+            &witness_signatures
+                .iter()
+                .map(|s| Signature::from_str(s))
+                .collect::<Result<Vec<_>, _>>()?,
+        )?;
 
         // Check if we have enough valid signatures
         if valid_sig_count >= relevant_num_sigs_required {
@@ -1516,7 +1524,7 @@ mod tests {
     #[ignore]
     fn test_sig_all_swap_multi_sig() {
         // SwapRequest with multi-sig SIG_ALL requiring 2 signatures
-                let multisig_swap = r#"{
+        let multisig_swap = r#"{
           "inputs": [
             {
               "amount": 1,
@@ -1562,7 +1570,7 @@ mod tests {
     #[ignore]
     fn test_sig_all_swap_msg_to_sign() {
         // SwapRequest with multi-sig SIG_ALL requiring 2 signatures
-                let multisig_swap = r#"{
+        let multisig_swap = r#"{
               "inputs": [
                 {
                   "amount": 1,
@@ -1592,8 +1600,8 @@ mod tests {
             r#"["P2PK",{"nonce":"741391687d73ee334e80b3978252d8b4d1b4c2877b03e9350a41d48f9fa32215","data":"03d732118ebbb5594c3d2c4ec216fc4ed95ecef96203a27bf8797e0e1fc4dfb47f","tags":[["pubkeys","036698d3c69f5eec5ac85a4b6a16445d7fa7356ef99b038f2f7ef2b0163e1a2028"],["n_sigs","2"],["sigflag","SIG_ALL"]]}]021e7b4c29ff17f1f36c12bfa3b7bc76118fc79102c675012145511abfbb989bec100bfa73302d12ffd038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"#
         );
         assert!(
-              multisig_swap.verify_spending_conditions().is_ok(),
-              "Multi-sig swap should verify successfully"
+            multisig_swap.verify_spending_conditions().is_ok(),
+            "Multi-sig swap should verify successfully"
         );
     }
 
@@ -1632,7 +1640,7 @@ mod tests {
         );
     }
 
-#[test]
+    #[test]
     fn test_sig_all_mixed_pubkeys_and_refund_pubkeys() {
         // SwapRequest with mixed up signatures from pubkey and refund_pubkeys
         let invalidsig_all_swap = r#"{
@@ -1695,7 +1703,6 @@ mod tests {
             "valid SIG_ALL swap request should pass verification"
         );
     }
-
 
     #[test]
     fn test_sig_all_htlc_unexpired_timelock_refund_signature() {
@@ -1760,7 +1767,7 @@ mod tests {
     #[ignore]
     fn test_sig_all_melt() {
         // MeltRequest with valid SIG_ALL signature
-                let valid_melt = r#"{
+        let valid_melt = r#"{
   "quote": "uHwJ-f6HFAC-lU2dMw0KOu6gd5S571FXQQHioYMD",
   "inputs": [
     {
@@ -1812,7 +1819,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_sig_all_melt_msg_to_sign() {
-                let multisig_melt = r#"{
+        let multisig_melt = r#"{
   "quote": "uHwJ-f6HFAC-lU2dMw0KOu6gd5S571FXQQHioYMD",
   "inputs": [
     {
@@ -1851,7 +1858,7 @@ mod tests {
     #[ignore]
     fn test_sig_all_melt_multi_sig() {
         // MeltRequest with multi-sig SIG_ALL requiring 2 signatures
-                let multisig_melt = r#"{
+        let multisig_melt = r#"{
   "quote": "wYHbJm5S1GTL28tDHoUAwcvb-31vu5kfDhnLxV9D",
   "inputs": [
     {
