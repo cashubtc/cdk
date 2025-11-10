@@ -154,7 +154,7 @@ impl WalletBuilder {
                 cache.clone()
             } else {
                 // Create a new one
-                Arc::new(MintMetadataCache::new(mint_url.clone()))
+                Arc::new(MintMetadataCache::new(mint_url.clone(), None))
             }
         });
 
@@ -207,7 +207,7 @@ impl WalletBuilder {
                 cache.clone()
             } else {
                 // Create a new one
-                Arc::new(MintMetadataCache::new(mint_url.clone()))
+                Arc::new(MintMetadataCache::new(mint_url.clone(), None))
             }
         });
 

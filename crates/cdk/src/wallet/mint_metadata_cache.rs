@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use cdk_common::database::{self, WalletDatabase};
@@ -43,6 +43,9 @@ use crate::wallet::AuthMintConnector;
 use crate::wallet::MintConnector;
 use crate::Error;
 
+/// Default TTL
+pub const DEFAULT_TTL: Duration = Duration::from_secs(300);
+
 /// Metadata freshness and versioning information
 ///
 /// Tracks when data was last fetched and which version is currently cached.
@@ -52,8 +55,8 @@ struct FreshnessStatus {
     /// Whether this data has been successfully fetched at least once
     is_populated: bool,
 
-    /// When this data was last fetched from the mint
-    last_fetched_at: Instant,
+    /// A future time when the cache would be considered as staled.
+    valid_until: Instant,
 
     /// Monotonically increasing version number (for database sync tracking)
     version: usize,
@@ -63,7 +66,7 @@ impl Default for FreshnessStatus {
     fn default() -> Self {
         Self {
             is_populated: false,
-            last_fetched_at: Instant::now(),
+            valid_until: Instant::now() + DEFAULT_TTL,
             version: 0,
         }
     }
@@ -117,6 +120,8 @@ pub struct MintMetadataCache {
     /// The mint server URL this cache manages
     mint_url: MintUrl,
 
+    default_ttl: Duration,
+
     /// Atomically-updated metadata snapshot (lock-free reads)
     metadata: Arc<ArcSwap<MintMetadata>>,
 
@@ -156,12 +161,13 @@ impl MintMetadataCache {
     /// # Example
     ///
     /// ```ignore
-    /// let cache = MintMetadataCache::new(mint_url);
+    /// let cache = MintMetadataCache::new(mint_url, None);
     /// // No data loaded yet - call load() to fetch
     /// ```
-    pub fn new(mint_url: MintUrl) -> Self {
+    pub fn new(mint_url: MintUrl, default_ttl: Option<Duration>) -> Self {
         Self {
             mint_url,
+            default_ttl: default_ttl.unwrap_or(DEFAULT_TTL),
             metadata: Arc::new(ArcSwap::default()),
             db_sync_versions: Arc::new(Default::default()),
         }
@@ -210,7 +216,7 @@ impl MintMetadataCache {
 
     /// Load metadata from cache or fetch if not available
     ///
-    /// Returns cached metadata if available, otherwise fetches from the mint.
+    /// Returns cached metadata if available and it is still valid, otherwise fetches from the mint.
     /// If cache is stale relative to the database, spawns a background sync task.
     ///
     /// This is the primary method for normal operations - it balances freshness
@@ -248,7 +254,9 @@ impl MintMetadataCache {
             .cloned()
             .unwrap_or_default();
 
-        if cached_metadata.status.is_populated {
+        if cached_metadata.status.is_populated
+            && cached_metadata.status.valid_until > Instant::now()
+        {
             // Cache is ready - check if database needs updating
             if db_synced_version != cached_metadata.status.version {
                 // Database is stale - sync in background
@@ -293,7 +301,9 @@ impl MintMetadataCache {
             .unwrap_or_default();
 
         // Check if auth data is populated in cache
-        if cached_metadata.auth_status.is_populated {
+        if cached_metadata.auth_status.is_populated
+            && cached_metadata.auth_status.valid_until > Instant::now()
+        {
             if db_synced_version != cached_metadata.status.version {
                 // Database needs updating - spawn background sync
                 self.spawn_database_sync(storage.clone(), cached_metadata.clone());
@@ -509,14 +519,14 @@ impl MintMetadataCache {
         // Update freshness status based on what was fetched
         if client.is_some() {
             new_metadata.status.is_populated = true;
-            new_metadata.status.last_fetched_at = Instant::now();
+            new_metadata.status.valid_until = Instant::now() + self.default_ttl;
             new_metadata.status.version += 1;
         }
 
         #[cfg(feature = "auth")]
         if auth_client.is_some() {
             new_metadata.auth_status.is_populated = true;
-            new_metadata.auth_status.last_fetched_at = Instant::now();
+            new_metadata.auth_status.valid_until = Instant::now() + self.default_ttl;
             new_metadata.auth_status.version += 1;
         }
 

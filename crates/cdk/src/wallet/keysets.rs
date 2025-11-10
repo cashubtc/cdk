@@ -23,28 +23,10 @@ impl Wallet {
             .ok_or(Error::UnknownKeySet)
     }
 
-    /// Get keysets from metadata cache or fetch if missing
-    ///
-    /// First checks the metadata cache for keysets. If keysets are not cached,
-    /// fetches from the mint server and updates the cache.
-    /// This is the main method for getting keysets in token operations that can work offline
-    /// but will fall back to online if needed.
+    /// Alias of get_mint_keysets, kept for backwards compatibility reasons
     #[instrument(skip(self))]
     pub async fn load_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
-        Ok(self
-            .metadata_cache
-            .load(&self.localstore, &self.client)
-            .await?
-            .keysets
-            .iter()
-            .filter_map(|(_, keyset)| {
-                if keyset.unit == self.unit && keyset.active {
-                    Some((*keyset.clone()).clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>())
+        self.get_mint_keysets().await
     }
 
     /// Get keysets from metadata cache (may fetch if not populated)
@@ -52,6 +34,7 @@ impl Wallet {
     /// Checks the metadata cache for keysets. If cache is not populated,
     /// fetches from mint and updates cache. Returns error if no active keysets found.
     #[instrument(skip(self))]
+    #[inline(always)]
     pub async fn get_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
         let keysets = self
             .metadata_cache
@@ -113,7 +96,7 @@ impl Wallet {
     /// keyset information for operations.
     #[instrument(skip(self))]
     pub async fn fetch_active_keyset(&self) -> Result<KeySetInfo, Error> {
-        self.refresh_keysets()
+        self.get_mint_keysets()
             .await?
             .active()
             .min_by_key(|k| k.input_fee_ppk)

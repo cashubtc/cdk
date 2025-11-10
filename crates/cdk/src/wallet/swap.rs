@@ -21,8 +21,6 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<Option<Proofs>, Error> {
-        self.refresh_keysets().await?;
-
         tracing::info!("Swapping");
         let mint_url = &self.mint_url;
         let unit = &self.unit;
@@ -178,7 +176,7 @@ impl Wallet {
         ensure_cdk!(proofs_sum >= amount, Error::InsufficientFunds);
 
         let active_keyset_ids = self
-            .refresh_keysets()
+            .get_mint_keysets()
             .await?
             .active()
             .map(|k| k.id)

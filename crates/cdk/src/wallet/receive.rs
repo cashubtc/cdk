@@ -28,8 +28,6 @@ impl Wallet {
     ) -> Result<Amount, Error> {
         let mint_url = &self.mint_url;
 
-        self.refresh_keysets().await?;
-
         let active_keyset_id = self.fetch_active_keyset().await?.id;
 
         let keys = self.load_keyset_keys(active_keyset_id).await?;
