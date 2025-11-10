@@ -196,6 +196,7 @@ impl TryFrom<MintMethodSettings> for cdk::nuts::nut04::MintMethodSettings {
             PaymentMethod::Bolt11 => s
                 .description
                 .map(|description| cdk::nuts::nut04::MintMethodOptions::Bolt11 { description }),
+            PaymentMethod::Custom { .. } => Some(cdk::nuts::nut04::MintMethodOptions::Custom {}),
             _ => None,
         };
         Ok(Self {
