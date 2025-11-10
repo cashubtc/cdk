@@ -1740,7 +1740,7 @@ where
                         INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
                         VALUES (:keyset_id, :amount, 0)
                         ON CONFLICT (keyset_id)
-                        DO UPDATE SET total_issued = keyset_amounts.total_issued + :amount
+                        DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
                         "#,
                     )?
                     .bind("amount", u64::from(signature.amount) as i64)
@@ -1780,7 +1780,7 @@ where
                                 INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
                                 VALUES (:keyset_id, :amount, 0)
                                 ON CONFLICT (keyset_id)
-                                DO UPDATE SET total_issued = keyset_amounts.total_issued + :amount
+                                DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
                                 "#,
                             )?
                             .bind("amount", u64::from(signature.amount) as i64)

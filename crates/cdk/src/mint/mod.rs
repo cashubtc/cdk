@@ -950,7 +950,14 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         global::inc_in_flight_requests("total_issued");
 
-        let result = async { Ok(self.localstore.get_total_issued().await?) }.await;
+        let result = async {
+            let mut total_issued = self.localstore.get_total_issued().await?;
+            for keyset in self.keysets().keysets {
+                total_issued.entry(keyset.id).or_default();
+            }
+            Ok(total_issued)
+        }
+        .await;
 
         #[cfg(feature = "prometheus")]
         {
@@ -967,7 +974,14 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         global::inc_in_flight_requests("total_redeemed");
 
-        let total_redeemed = async { Ok(self.localstore.get_total_redeemed().await?) }.await;
+        let total_redeemed = async {
+            let mut total_redeemed = self.localstore.get_total_redeemed().await?;
+            for keyset in self.keysets().keysets {
+                total_redeemed.entry(keyset.id).or_default();
+            }
+            Ok(total_redeemed)
+        }
+        .await;
 
         #[cfg(feature = "prometheus")]
         global::dec_in_flight_requests("total_redeemed");
@@ -1038,8 +1052,6 @@ mod tests {
             ..Default::default()
         };
         let mint = create_mint(config).await;
-
-        println!("{:?}", mint.total_issued().await);
 
         assert_eq!(
             mint.total_issued()
