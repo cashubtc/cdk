@@ -36,6 +36,7 @@ use cdk_common::nuts::{KeySetInfo, Keys};
 use cdk_common::parking_lot::RwLock;
 use cdk_common::task::spawn;
 use cdk_common::{KeySet, MintInfo};
+use tokio::sync::Mutex;
 
 use crate::nuts::Id;
 #[cfg(feature = "auth")]
@@ -110,7 +111,8 @@ pub struct MintMetadata {
 /// # Thread Safety
 ///
 /// All methods are safe to call concurrently. The cache uses `ArcSwap` for
-/// lock-free reads and atomic updates.
+/// lock-free reads and atomic updates. A `Mutex` ensures only one fetch
+/// operation runs at a time, with other callers waiting and re-reading cache.
 ///
 /// # Cloning
 ///
@@ -128,6 +130,10 @@ pub struct MintMetadataCache {
     /// Tracks which database instances have been synced to which cache version.
     /// Key: pointer identity of storage Arc, Value: last synced cache version
     db_sync_versions: Arc<RwLock<HashMap<usize, usize>>>,
+
+    /// Mutex to ensure only one fetch operation runs at a time
+    /// Other callers wait for the lock, then re-read the updated cache
+    fetch_lock: Arc<Mutex<()>>,
 }
 
 impl std::fmt::Debug for MintMetadataCache {
@@ -170,6 +176,7 @@ impl MintMetadataCache {
             default_ttl: default_ttl.unwrap_or(DEFAULT_TTL),
             metadata: Arc::new(ArcSwap::default()),
             db_sync_versions: Arc::new(Default::default()),
+            fetch_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -178,6 +185,10 @@ impl MintMetadataCache {
     /// Always performs an HTTP fetch from the mint server to get fresh data.
     /// Updates the in-memory cache and spawns a background task to persist
     /// to the database.
+    ///
+    /// Uses a mutex to ensure only one fetch runs at a time. If multiple
+    /// callers request a fetch simultaneously, only one performs the HTTP
+    /// request while others wait for the lock, then return the updated cache.
     ///
     /// Use this when you need guaranteed fresh data from the mint.
     ///
@@ -202,6 +213,24 @@ impl MintMetadataCache {
         storage: &Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
         client: &Arc<dyn MintConnector + Send + Sync>,
     ) -> Result<Arc<MintMetadata>, Error> {
+        // Acquire lock to ensure only one fetch at a time
+        let current_version = self.metadata.load().status.version;
+        let _guard = self.fetch_lock.lock().await;
+
+        // Check if another caller already updated the cache while we waited
+        let current_metadata = self.metadata.load().clone();
+        if current_metadata.status.is_populated
+            && current_metadata.status.valid_until > Instant::now()
+            && current_metadata.status.version > current_version
+        {
+            // Cache was just updated by another caller - return it
+            tracing::debug!(
+                "Cache was updated while waiting for fetch lock, returning cached data"
+            );
+            return Ok(current_metadata);
+        }
+
+        // Perform the fetch
         #[cfg(feature = "auth")]
         let metadata = self.fetch_from_http(Some(client), None).await?;
 
@@ -309,6 +338,20 @@ impl MintMetadataCache {
                 self.spawn_database_sync(storage.clone(), cached_metadata.clone());
             }
             return Ok(cached_metadata);
+        }
+
+        // Acquire fetch lock to ensure only one auth fetch at a time
+        let _guard = self.fetch_lock.lock().await;
+
+        // Re-check if auth data was updated while waiting for lock
+        let current_metadata = self.metadata.load().clone();
+        if current_metadata.auth_status.is_populated
+            && current_metadata.auth_status.valid_until > Instant::now()
+        {
+            tracing::debug!(
+                "Auth cache was updated while waiting for fetch lock, returning cached data"
+            );
+            return Ok(current_metadata);
         }
 
         // Auth data not in cache - fetch from mint
