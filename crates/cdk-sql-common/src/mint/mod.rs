@@ -8,7 +8,7 @@
 //! The trait expects an asynchronous interaction, but it also provides tools to spawn blocking
 //! clients in a pool and expose them to an asynchronous environment, making them compatible with
 //! Mint.
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -129,48 +129,6 @@ where
 }
 
 #[async_trait]
-impl<RM> database::MintKeysTransaction<'_> for SQLTransaction<RM>
-where
-    RM: DatabasePool + 'static,
-{
-    /// Database Error
-    type Err = Error;
-
-    /// Function to call everytime the signatory pushes information towards the mint
-    async fn set_signatory_keysets(
-        &mut self,
-        _pubkey: &PublicKey,
-        keysets: &[MintKeySetInfo],
-    ) -> Result<(), Self::Err> {
-        let known_keysets = query("SELECT keyset_id FROM keyset_amounts")?
-            .fetch_all(&self.inner)
-            .await?
-            .into_iter()
-            .map(|mut row| {
-                Ok(column_as_string!(
-                    row.remove(0),
-                    Id::from_str,
-                    Id::from_bytes
-                ))
-            })
-            .collect::<Result<HashSet<_>, Error>>()?;
-
-        for keyset in keysets {
-            if known_keysets.contains(&keyset.id) || keyset.unit == CurrencyUnit::Auth {
-                continue;
-            }
-
-            query(r#"INSERT INTO keyset_amounts VALUES(:keyset_id, 0, 0)"#)?
-                .bind("keyset_id", keyset.id.to_string())
-                .execute(&self.inner)
-                .await?;
-        }
-
-        Ok(())
-    }
-}
-
-#[async_trait]
 impl<RM> database::MintProofsTransaction<'_> for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
@@ -264,15 +222,13 @@ where
         if new_state == State::Spent {
             query(
                 r#"
-                UPDATE keyset_amounts
-                SET total_redeemed = total_redeemed + amounts.total
-                FROM (
-                    SELECT keyset_id, COALESCE(SUM(amount), 0) as total
-                    FROM proof
-                    WHERE y IN (:ys)
-                    GROUP BY keyset_id
-                ) amounts
-                WHERE keyset_amounts.keyset_id = amounts.keyset_id
+                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+                SELECT keyset_id, 0, COALESCE(SUM(amount), 0)
+                FROM proof
+                WHERE y IN (:ys)
+                GROUP BY keyset_id
+                ON CONFLICT (keyset_id)
+                DO UPDATE SET total_redeemed = keyset_amounts.total_redeemed + EXCLUDED.total_redeemed
                 "#,
             )?
             .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
@@ -1781,9 +1737,10 @@ where
 
                     query(
                         r#"
-                        UPDATE keyset_amounts
-                        SET total_issued = total_issued + :amount
-                        WHERE keyset_id = :keyset_id
+                        INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+                        VALUES (:keyset_id, :amount, 0)
+                        ON CONFLICT (keyset_id)
+                        DO UPDATE SET total_issued = keyset_amounts.total_issued + :amount
                         "#,
                     )?
                     .bind("amount", u64::from(signature.amount) as i64)
@@ -1820,9 +1777,10 @@ where
 
                             query(
                                 r#"
-                                UPDATE keyset_amounts
-                                SET total_issued = total_issued + :amount
-                                WHERE keyset_id = :keyset_id
+                                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+                                VALUES (:keyset_id, :amount, 0)
+                                ON CONFLICT (keyset_id)
+                                DO UPDATE SET total_issued = keyset_amounts.total_issued + :amount
                                 "#,
                             )?
                             .bind("amount", u64::from(signature.amount) as i64)

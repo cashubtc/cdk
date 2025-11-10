@@ -88,19 +88,7 @@ impl Mint {
             .await?;
 
         let new_keyset = self.signatory.keysets().await?;
-        self.keysets.store(new_keyset.keysets.clone().into());
-
-        let mut tx = self.localstore.begin_transaction().await?;
-        tx.set_signatory_keysets(
-            &new_keyset.pubkey,
-            &new_keyset
-                .keysets
-                .iter()
-                .map(|x| x.into())
-                .collect::<Vec<_>>(),
-        )
-        .await?;
-        tx.commit().await?;
+        self.keysets.store(new_keyset.keysets.into());
 
         Ok(result.into())
     }

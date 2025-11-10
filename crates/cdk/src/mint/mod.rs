@@ -144,14 +144,6 @@ impl Mint {
             return Err(Error::NoActiveKeyset);
         }
 
-        let mut tx = localstore.begin_transaction().await?;
-        tx.set_signatory_keysets(
-            &keysets.pubkey,
-            &keysets.keysets.iter().map(|x| x.into()).collect::<Vec<_>>(),
-        )
-        .await?;
-        tx.commit().await?;
-
         tracing::info!(
             "Using Signatory {} with {} active keys",
             signatory.name(),
