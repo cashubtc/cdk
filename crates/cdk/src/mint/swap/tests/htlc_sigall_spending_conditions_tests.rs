@@ -5,7 +5,7 @@
 use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
 use cdk_common::Amount;
 
-use crate::mint::test_helpers_for_nut10_spending_conditions::{
+use crate::test_helpers::nut10::{
     create_test_hash_and_preimage, create_test_keypair, unzip3, TestMintHelper,
 };
 

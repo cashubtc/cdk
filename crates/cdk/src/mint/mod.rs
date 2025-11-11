@@ -42,8 +42,6 @@ mod melt;
 mod start_up_check;
 mod subscription;
 mod swap;
-#[cfg(test)]
-pub(crate) mod test_helpers_for_nut10_spending_conditions;
 mod verification;
 
 pub use builder::{MintBuilder, MintMeltLimits};

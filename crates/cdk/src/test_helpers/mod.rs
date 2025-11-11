@@ -8,3 +8,4 @@
 
 #[cfg(feature = "mint")]
 pub mod mint;
+pub mod nut10;
