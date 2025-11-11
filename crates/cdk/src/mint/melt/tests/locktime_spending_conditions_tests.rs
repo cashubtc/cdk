@@ -11,9 +11,7 @@ use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
 use cdk_common::Amount;
 use cdk_common::SpendingConditionVerification;
 
-use crate::test_helpers::nut10::{
-    create_test_keypair, unzip3, TestMintHelper,
-};
+use crate::test_helpers::nut10::{create_test_keypair, unzip3, TestMintHelper};
 use crate::util::unix_time;
 
 /// Test: P2PK with locktime - spending after expiry

@@ -11,9 +11,7 @@ use cdk_common::nuts::SpendingConditions;
 use cdk_common::Amount;
 use cdk_common::SpendingConditionVerification;
 
-use crate::test_helpers::nut10::{
-    create_test_keypair, unzip3, TestMintHelper,
-};
+use crate::test_helpers::nut10::{create_test_keypair, unzip3, TestMintHelper};
 
 /// Test: Basic P2PK with SIG_INPUTS (default mode)
 ///
