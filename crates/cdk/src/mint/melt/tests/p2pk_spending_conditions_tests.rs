@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! Basic P2PK tests for melt functionality (SIG_INPUTS mode)
 //!
 //! These tests verify that the mint correctly validates basic P2PK spending conditions

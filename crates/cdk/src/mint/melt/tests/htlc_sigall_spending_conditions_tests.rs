@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! HTLC SIG_ALL tests for melt functionality
 //!
 //! These tests verify that the mint correctly enforces SIG_ALL flag behavior for HTLC

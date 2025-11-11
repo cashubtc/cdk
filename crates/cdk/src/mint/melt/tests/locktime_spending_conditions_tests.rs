@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! Locktime tests for melt functionality
 //!
 //! These tests verify that the mint correctly validates locktime spending conditions
