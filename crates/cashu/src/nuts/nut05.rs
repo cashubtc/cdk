@@ -166,7 +166,7 @@ impl<Q: std::fmt::Display> super::nut10::SpendingConditionVerification for MeltR
             msg.push_str(&proof.c.to_hex());
         }
 
-        // Add all output amount, keyset_id, and B_ values in order (if any)
+        // Add all output amount, and B_ values in order (if any)
         // msg = ... || amount_0 || id_0 || B_0 || ... || amount_m || id_m || B_m
         if let Some(outputs) = &self.outputs {
             for output in outputs {
