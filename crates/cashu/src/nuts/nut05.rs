@@ -129,7 +129,10 @@ impl<Q> MeltRequest<Q> {
     }
 }
 
-impl<Q: Serialize + DeserializeOwned> MeltRequest<Q> {
+impl<Q> MeltRequest<Q>
+where
+    Q: Serialize + DeserializeOwned,
+{
     /// Create new [`MeltRequest`]
     pub fn new(quote: Q, inputs: Proofs, outputs: Option<Vec<BlindedMessage>>) -> Self {
         Self {
@@ -151,7 +154,10 @@ impl<Q: Serialize + DeserializeOwned> MeltRequest<Q> {
     }
 }
 
-impl<Q: std::fmt::Display> super::nut10::SpendingConditionVerification for MeltRequest<Q> {
+impl<Q> super::nut10::SpendingConditionVerification for MeltRequest<Q>
+where
+    Q: std::fmt::Display,
+{
     fn inputs(&self) -> &Proofs {
         &self.inputs
     }

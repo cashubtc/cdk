@@ -887,7 +887,10 @@ impl SwapRequest {
     }
 }
 
-impl<Q: std::fmt::Display + Serialize + DeserializeOwned> MeltRequest<Q> {
+impl<Q> MeltRequest<Q>
+where
+    Q: std::fmt::Display + Serialize + DeserializeOwned,
+{
     /// Sign melt request with SIG_ALL
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
         // Get message to sign
