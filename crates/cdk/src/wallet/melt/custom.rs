@@ -1,8 +1,9 @@
-use crate::nuts::{MeltOptions, MeltQuoteCustomRequest};
-use crate::{Error, Wallet};
 use cdk_common::wallet::MeltQuote;
 use cdk_common::PaymentMethod;
 use tracing::instrument;
+
+use crate::nuts::{MeltOptions, MeltQuoteCustomRequest};
+use crate::{Error, Wallet};
 
 impl Wallet {
     /// Melt Quote for Custom Payment Method
