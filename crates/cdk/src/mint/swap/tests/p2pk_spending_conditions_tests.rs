@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! P2PK (NUT-11) tests for swap functionality
 //!
 //! These tests verify that the mint correctly validates P2PK spending conditions

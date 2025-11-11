@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! HTLC (NUT-14) tests for swap functionality
 //!
 //! These tests verify that the mint correctly validates HTLC spending conditions

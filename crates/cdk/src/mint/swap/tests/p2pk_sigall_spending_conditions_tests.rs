@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! P2PK SIG_ALL tests for swap functionality
 //!
 //! These tests verify that the mint correctly enforces SIG_ALL flag behavior

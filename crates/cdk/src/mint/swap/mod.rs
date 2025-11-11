@@ -10,7 +10,7 @@ use cdk_common::SpendingConditionVerification;
 pub mod swap_saga;
 
 #[cfg(test)]
-pub(crate) mod spending_conditions;
+mod tests;
 
 impl Mint {
     /// Process Swap

@@ -28,7 +28,7 @@ pub(crate) mod melt_saga;
 pub(crate) mod shared;
 
 #[cfg(test)]
-mod spending_conditions;
+mod tests;
 
 use melt_saga::MeltSaga;
 

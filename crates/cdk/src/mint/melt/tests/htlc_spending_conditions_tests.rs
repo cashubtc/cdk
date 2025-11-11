@@ -6,13 +6,10 @@
 //! - Hash preimage verification
 //! - Signature validation
 
-use std::str::FromStr;
-
 use cdk_common::dhke::construct_proofs;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
 use cdk_common::Amount;
-use cdk_common::SpendingConditionVerification;
 
 use crate::mint::test_helpers_for_nut10_spending_conditions::{
     create_test_hash_and_preimage, create_test_keypair, unzip3, TestMintHelper,
