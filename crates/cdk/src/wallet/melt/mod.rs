@@ -2,15 +2,18 @@ use std::collections::HashMap;
 
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection};
-use cdk_common::{Error, MeltQuoteBolt11Response, MeltQuoteState, ProofsMethods};
+use cdk_common::{Error, MeltQuoteBolt11Response, MeltQuoteState, PaymentMethod, ProofsMethods};
 use tracing::instrument;
 
+use crate::nuts::nut00::KnownMethod;
+use crate::nuts::MeltOptions;
 use crate::Wallet;
 
+mod bolt11;
+mod bolt12;
+mod custom;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 mod melt_bip353;
-mod melt_bolt11;
-mod melt_bolt12;
 
 impl Wallet {
     /// Check pending melt quotes
@@ -83,5 +86,25 @@ impl Wallet {
             }
         }
         Ok(())
+    }
+
+    /// Unified melt quote method for all payment methods
+    /// Routes to the appropriate handler based on the payment method
+    pub async fn melt_quote_unified(
+        &self,
+        method: PaymentMethod,
+        request: String,
+        options: Option<MeltOptions>,
+    ) -> Result<MeltQuote, Error> {
+        match method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => self.melt_quote(request, options).await,
+            PaymentMethod::Known(KnownMethod::Bolt12) => {
+                self.melt_bolt12_quote(request, options).await
+            }
+            PaymentMethod::Custom(custom_method) => {
+                self.melt_quote_custom(&custom_method, request, options)
+                    .await
+            }
+        }
     }
 }

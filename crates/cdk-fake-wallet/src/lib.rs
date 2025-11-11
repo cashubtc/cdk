@@ -28,9 +28,9 @@ use cdk_common::common::FeeReserve;
 use cdk_common::ensure_cdk;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
-    MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
-    PaymentQuoteResponse, WaitPaymentResponse,
+    self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
+    MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, SettingsResponse,
+    WaitPaymentResponse,
 };
 use error::Error;
 use futures::stream::StreamExt;
@@ -38,7 +38,6 @@ use futures::Stream;
 use lightning::offers::offer::OfferBuilder;
 use lightning_invoice::{Bolt11Invoice, Currency, InvoiceBuilder, PaymentSecret};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time;
 use tokio_stream::wrappers::ReceiverStream;
@@ -418,14 +417,17 @@ impl MintPayment for FakeWallet {
     type Err = payment::Error;
 
     #[instrument(skip_all)]
-    async fn get_settings(&self) -> Result<Value, Self::Err> {
-        Ok(serde_json::to_value(Bolt11Settings {
-            mpp: true,
-            unit: self.unit.clone(),
-            invoice_description: true,
-            amountless: false,
-            bolt12: true,
-        })?)
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        Ok(SettingsResponse {
+            unit: self.unit.to_string(),
+            bolt11: Some(payment::Bolt11Settings {
+                mpp: true,
+                amountless: false,
+                invoice_description: true,
+            }),
+            bolt12: Some(payment::Bolt12Settings { amountless: false }),
+            custom: std::collections::HashMap::new(),
+        })
     }
 
     #[instrument(skip_all)]
@@ -509,6 +511,10 @@ impl MintPayment for FakeWallet {
                     }
                 };
                 (amount_msat, None)
+            }
+            OutgoingPaymentOptions::Custom(_) => {
+                // Custom payment methods are not supported by fake wallet
+                return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
             }
         };
 
@@ -636,6 +642,10 @@ impl MintPayment for FakeWallet {
                     unit: unit.clone(),
                 })
             }
+            OutgoingPaymentOptions::Custom(_) => {
+                // Custom payment methods are not supported by fake wallet
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
         }
     }
 
@@ -703,6 +713,10 @@ impl MintPayment for FakeWallet {
                     amount,
                     expiry,
                 )
+            }
+            IncomingPaymentOptions::Custom(_) => {
+                // Custom payment methods are not supported by fake wallet
+                return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
             }
         };
 

@@ -199,6 +199,24 @@ impl Wallet {
             .await?;
         Ok(quote.into())
     }
+    /// Get a quote for a bolt12 mint
+    pub async fn mint_quote_unified(
+        &self,
+        amount: Option<Amount>,
+        request: Option<String>,
+        description: Option<String>,
+    ) -> Result<MintQuote, FfiError> {
+        let quote = self
+            .inner
+            .mint_quote_unified(
+                amount.map(Into::into),
+                cdk::nuts::PaymentMethod::Custom("stripe".to_string()),
+                request.unwrap(),
+                description,
+            )
+            .await?;
+        Ok(quote.into())
+    }
 
     /// Mint tokens using bolt12
     pub async fn mint_bolt12(
@@ -222,7 +240,27 @@ impl Wallet {
 
         Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
+    pub async fn mint_unified(
+        &self,
+        quote_id: String,
+        amount: Option<Amount>,
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+    ) -> Result<Proofs, FfiError> {
+        let conditions = spending_conditions.map(|sc| sc.try_into()).transpose()?;
 
+        let proofs = self
+            .inner
+            .mint_unified(
+                &quote_id,
+                amount.map(Into::into),
+                amount_split_target.into(),
+                conditions,
+            )
+            .await?;
+
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
+    }
     /// Get a quote for a bolt12 melt
     pub async fn melt_bolt12_quote(
         &self,
@@ -233,7 +271,23 @@ impl Wallet {
         let quote = self.inner.melt_bolt12_quote(request, cdk_options).await?;
         Ok(quote.into())
     }
-
+    /// Get a quote for a bolt12 melt
+    pub async fn melt_quote_unified(
+        &self,
+        request: String,
+        options: Option<MeltOptions>,
+    ) -> Result<MeltQuote, FfiError> {
+        let cdk_options = options.map(Into::into);
+        let quote = self
+            .inner
+            .melt_quote_unified(
+                cdk::nuts::PaymentMethod::Custom("stripe".to_string()),
+                request,
+                cdk_options,
+            )
+            .await?;
+        Ok(quote.into())
+    }
     /// Swap proofs
     pub async fn swap(
         &self,

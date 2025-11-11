@@ -214,7 +214,7 @@ impl<'de> Visitor<'de> for MintMethodSettingsVisitor {
         let unit = unit.ok_or_else(|| de::Error::missing_field("unit"))?;
 
         // Create options based on the method and the description flag
-        let options = if method == PaymentMethod::Bolt11 {
+        let options = if method == "bolt11" {
             description.map(|description| MintMethodOptions::Bolt11 { description })
         } else {
             None
@@ -249,6 +249,8 @@ pub enum MintMethodOptions {
         /// Mint supports setting bolt11 description
         description: bool,
     },
+    /// Custom Options
+    Custom {},
 }
 
 /// Mint Settings
@@ -326,7 +328,7 @@ mod tests {
         let settings: MintMethodSettings = from_str(json_str).unwrap();
 
         // Check that description was correctly moved to options
-        assert_eq!(settings.method, PaymentMethod::Bolt11);
+        assert_eq!(settings.method, PaymentMethod::from("bolt11"));
         assert_eq!(settings.unit, CurrencyUnit::Sat);
         assert_eq!(settings.min_amount, Some(Amount::from(0)));
         assert_eq!(settings.max_amount, Some(Amount::from(10000)));

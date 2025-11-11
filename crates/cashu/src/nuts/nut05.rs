@@ -287,7 +287,7 @@ impl<'de> Visitor<'de> for MeltMethodSettingsVisitor {
         let unit = unit.ok_or_else(|| de::Error::missing_field("unit"))?;
 
         // Create options based on the method and the amountless flag
-        let options = if method == PaymentMethod::Bolt11 && amountless.is_some() {
+        let options = if method == "bolt11" && amountless.is_some() {
             amountless.map(|amountless| MeltMethodOptions::Bolt11 { amountless })
         } else {
             None
@@ -401,7 +401,7 @@ mod tests {
         let settings: MeltMethodSettings = from_str(json_str).unwrap();
 
         // Check that amountless was correctly moved to options
-        assert_eq!(settings.method, PaymentMethod::Bolt11);
+        assert_eq!(settings.method, PaymentMethod::from("bolt11"));
         assert_eq!(settings.unit, CurrencyUnit::Sat);
         assert_eq!(settings.min_amount, Some(Amount::from(0)));
         assert_eq!(settings.max_amount, Some(Amount::from(10000)));

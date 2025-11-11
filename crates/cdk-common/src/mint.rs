@@ -666,6 +666,35 @@ impl TryFrom<MintQuote> for MintQuoteBolt12Response<String> {
     }
 }
 
+impl TryFrom<crate::mint::MintQuote> for crate::nuts::MintQuoteCustomResponse<QuoteId> {
+    type Error = crate::Error;
+
+    fn try_from(mint_quote: crate::mint::MintQuote) -> Result<Self, Self::Error> {
+        use serde_json::Value;
+
+        Ok(crate::nuts::MintQuoteCustomResponse {
+            state: mint_quote.state(),
+            quote: mint_quote.id.clone(),
+            request: mint_quote.request,
+            expiry: Some(mint_quote.expiry),
+            pubkey: mint_quote.pubkey,
+            amount: mint_quote.amount,
+            unit: Some(mint_quote.unit),
+            data: Value::Object(Default::default()), // Default empty JSON object
+        })
+    }
+}
+
+impl TryFrom<MintQuote> for crate::nuts::MintQuoteCustomResponse<String> {
+    type Error = crate::Error;
+
+    fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
+        let quote: crate::nuts::MintQuoteCustomResponse<QuoteId> = quote.try_into()?;
+
+        Ok(quote.into())
+    }
+}
+
 impl From<&MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
     fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt11Response<QuoteId> {
         MeltQuoteBolt11Response {
@@ -715,6 +744,15 @@ pub enum MeltPaymentRequest {
         #[serde(with = "offer_serde")]
         offer: Box<Offer>,
     },
+    /// Custom payment method
+    Custom {
+        /// Payment method name
+        method: String,
+        /// Payment request string
+        request: String,
+        /// Method-specific data
+        data: serde_json::Value,
+    },
 }
 
 impl std::fmt::Display for MeltPaymentRequest {
@@ -722,6 +760,7 @@ impl std::fmt::Display for MeltPaymentRequest {
         match self {
             MeltPaymentRequest::Bolt11 { bolt11 } => write!(f, "{bolt11}"),
             MeltPaymentRequest::Bolt12 { offer } => write!(f, "{offer}"),
+            MeltPaymentRequest::Custom { request, .. } => write!(f, "{request}"),
         }
     }
 }

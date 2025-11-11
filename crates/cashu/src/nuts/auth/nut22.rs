@@ -275,8 +275,6 @@ impl MintAuthRequest {
 mod tests {
     use std::collections::HashSet;
 
-    use strum::IntoEnumIterator;
-
     use super::super::nut21::{Method, RoutePath};
     use super::*;
 
@@ -305,9 +303,9 @@ mod tests {
         let paths = settings
             .protected_endpoints
             .iter()
-            .map(|ep| (ep.method, ep.path))
+            .map(|ep| (ep.method, ep.path.clone()))
             .collect::<Vec<_>>();
-        assert!(paths.contains(&(Method::Get, RoutePath::MintBolt11)));
+        assert!(paths.contains(&(Method::Get, RoutePath::Mint("bolt11".to_string()))));
         assert!(paths.contains(&(Method::Post, RoutePath::Swap)));
     }
 
@@ -334,10 +332,10 @@ mod tests {
 
         let expected_protected: HashSet<ProtectedEndpoint> = HashSet::from_iter(vec![
             ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintBolt11),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt12),
-            ProtectedEndpoint::new(Method::Get, RoutePath::MintBolt12),
+            ProtectedEndpoint::new(Method::Get, RoutePath::Mint("bolt11".to_string())),
+            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuote("bolt11".to_string())),
+            ProtectedEndpoint::new(Method::Get, RoutePath::MintQuote("bolt12".to_string())),
+            ProtectedEndpoint::new(Method::Get, RoutePath::Mint("bolt12".to_string())),
         ]);
 
         let deserialized_protected = settings.protected_endpoints.into_iter().collect();
@@ -376,7 +374,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(
             settings.protected_endpoints.len(),
-            RoutePath::iter().count()
+            RoutePath::all_known_paths().len()
         );
     }
 }
