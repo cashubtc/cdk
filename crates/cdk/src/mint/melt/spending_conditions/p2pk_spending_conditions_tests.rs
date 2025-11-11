@@ -4,12 +4,13 @@
 //! These tests verify that the mint correctly validates basic P2PK spending conditions
 //! during melt operations.
 
+use std::str::FromStr;
+
 use cdk_common::dhke::construct_proofs;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::nuts::SpendingConditions;
 use cdk_common::Amount;
 use cdk_common::SpendingConditionVerification;
-use std::str::FromStr;
 
 use crate::mint::test_helpers_for_nut10_spending_conditions::{
     create_test_keypair, unzip3, TestMintHelper,
