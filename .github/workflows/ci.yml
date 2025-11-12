@@ -36,12 +36,7 @@ jobs:
         with:
           shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Cargo fmt
-        run: |
-          nix develop -i -L .#stable --command bash -c '
-            # Force use of Nix-provided rustfmt
-            export RUSTFMT=$(command -v rustfmt)
-            cargo fmt --check
-          '
+        run: nix develop -i -L .#stable --command cargo fmt --check
       - name: typos
         run: nix develop -i -L .#stable --command typos
 
