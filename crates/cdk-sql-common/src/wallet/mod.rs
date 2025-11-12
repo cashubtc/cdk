@@ -779,14 +779,15 @@ ON CONFLICT(id) DO UPDATE SET
             )
             .execute(&tx).await?;
         }
-
-        query(r#"DELETE FROM proof WHERE y IN (:ys)"#)?
-            .bind_vec(
-                "ys",
-                removed_ys.iter().map(|y| y.to_bytes().to_vec()).collect(),
-            )
-            .execute(&tx)
-            .await?;
+        if !removed_ys.is_empty() {
+            query(r#"DELETE FROM proof WHERE y IN (:ys)"#)?
+                .bind_vec(
+                    "ys",
+                    removed_ys.iter().map(|y| y.to_bytes().to_vec()).collect(),
+                )
+                .execute(&tx)
+                .await?;
+        }
 
         tx.commit().await?;
 
