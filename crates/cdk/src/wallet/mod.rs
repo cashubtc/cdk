@@ -79,15 +79,15 @@ pub use types::{MeltQuote, MintQuote, SendKind};
 
 use crate::nuts::nut00::ProofsMethods;
 
-/// Clonable mutex
+/// Cloneable mutex
 ///
-/// Each instance is indepent from each other, that's why an Arc is not an option
+/// Each instance is independent from each other, that's why an Arc is not an option
 #[derive(Debug)]
-pub struct ClonableMutex<T>(Mutex<T>)
+pub struct CloneableMutex<T>(Mutex<T>)
 where
     T: Clone + Debug;
 
-impl<T> From<T> for ClonableMutex<T>
+impl<T> From<T> for CloneableMutex<T>
 where
     T: Clone + Debug,
 {
@@ -96,7 +96,7 @@ where
     }
 }
 
-impl<T> ClonableMutex<T>
+impl<T> CloneableMutex<T>
 where
     T: Clone + Debug,
 {
@@ -106,7 +106,7 @@ where
     }
 }
 
-impl<T> Clone for ClonableMutex<T>
+impl<T> Clone for CloneableMutex<T>
 where
     T: Clone + Debug,
 {
@@ -115,7 +115,7 @@ where
     }
 }
 
-impl<T> Deref for ClonableMutex<T>
+impl<T> Deref for CloneableMutex<T>
 where
     T: Clone + Debug,
 {
@@ -143,7 +143,7 @@ pub struct Wallet {
     pub metadata_cache: Arc<MintMetadataCache>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
-    metadata_cache_ttl: ClonableMutex<Option<Duration>>,
+    metadata_cache_ttl: CloneableMutex<Option<Duration>>,
     #[cfg(feature = "auth")]
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
     seed: [u8; 64],

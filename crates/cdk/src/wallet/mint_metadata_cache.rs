@@ -151,7 +151,7 @@ impl Wallet {
         *guarded_ttl = ttl;
     }
 
-    /// Get information about metada cache info
+    /// Get information about metadata cache info
     pub fn get_metadata_cache_info(&self) -> FreshnessStatus {
         self.metadata_cache.metadata.load().status.clone()
     }
@@ -159,7 +159,7 @@ impl Wallet {
 
 #[cfg(feature = "auth")]
 impl AuthWallet {
-    /// Get information about metada cache info
+    /// Get information about metadata cache info
     pub fn get_metadata_cache_info(&self) -> FreshnessStatus {
         self.metadata_cache.metadata.load().auth_status.clone()
     }
