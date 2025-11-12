@@ -34,16 +34,16 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "nightly-${{ steps.flake-hash.outputs.hash }}"
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Cargo fmt
         run: |
-          nix develop -i -L .#nightly --command bash -c '
+          nix develop -i -L .#stable --command bash -c '
             # Force use of Nix-provided rustfmt
             export RUSTFMT=$(command -v rustfmt)
             cargo fmt --check
           '
       - name: typos
-        run: nix develop -i -L .#nightly --command typos
+        run: nix develop -i -L .#stable --command typos
 
   examples:
     name: "Run examples"
