@@ -861,7 +861,7 @@ async fn test_swap_state_transition_notifications() {
             cashu::NotificationPayload::ProofState(cashu::ProofState { y, state, .. }) => {
                 state_transitions
                     .entry(y.to_string())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(state);
             }
             _ => panic!("Unexpected notification type"),
