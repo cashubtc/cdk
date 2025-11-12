@@ -37,13 +37,14 @@ MERGED_PRS=$(gh pr list \
     --jq '.[] | [.number, .title, .url] | @tsv' \
     2>/dev/null || echo "")
 
-# Fetch ongoing (open) PRs
-echo "Fetching ongoing PRs..."
-ONGOING_PRS=$(gh pr list \
+# Fetch recently active PRs (updated in last week, but not newly created)
+echo "Fetching recently active PRs..."
+RECENTLY_ACTIVE_PRS=$(gh pr list \
     --repo "$REPO" \
     --state open \
-    --json number,title,url,createdAt \
-    --jq '.[] | select(.createdAt < "'$SINCE_DATE'") | [.number, .title, .url] | @tsv' \
+    --search "updated:>=$SINCE_DATE -created:>=$SINCE_DATE" \
+    --json number,title,url \
+    --jq '.[] | [.number, .title, .url] | @tsv' \
     2>/dev/null || echo "")
 
 # Fetch new PRs (opened in the last week)
@@ -66,6 +67,27 @@ NEW_ISSUES=$(gh issue list \
     --jq '.[] | [.number, .title, .url] | @tsv' \
     2>/dev/null || echo "")
 
+# Fetch discussion items (labeled with meeting-discussion)
+echo "Fetching discussion items..."
+DISCUSSION_PRS=$(gh pr list \
+    --repo "$REPO" \
+    --state open \
+    --label "meeting-discussion" \
+    --json number,title,url \
+    --jq '.[] | [.number, .title, .url] | @tsv' \
+    2>/dev/null || echo "")
+
+DISCUSSION_ISSUES=$(gh issue list \
+    --repo "$REPO" \
+    --state open \
+    --label "meeting-discussion" \
+    --json number,title,url \
+    --jq '.[] | [.number, .title, .url] | @tsv' \
+    2>/dev/null || echo "")
+
+# Combine discussion items (PRs and issues)
+DISCUSSION_ITEMS=$(printf "%s\n%s" "$DISCUSSION_PRS" "$DISCUSSION_ISSUES" | grep -v '^$' || echo "")
+
 # Generate markdown
 AGENDA=$(cat <<EOF
 # CDK Development Meeting
@@ -78,10 +100,6 @@ Meeting Link: $MEETING_LINK
 
 $(format_list "$MERGED_PRS")
 
-## Ongoing
-
-$(format_list "$ONGOING_PRS")
-
 ## New
 
 ### Issues
@@ -91,6 +109,14 @@ $(format_list "$NEW_ISSUES")
 ### PRs
 
 $(format_list "$NEW_PRS")
+
+## Recently Active
+
+$(format_list "$RECENTLY_ACTIVE_PRS")
+
+## Discussion
+
+$(format_list "$DISCUSSION_ITEMS")
 EOF
 )
 
