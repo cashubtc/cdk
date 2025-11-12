@@ -39,10 +39,10 @@ use cdk_common::{KeySet, MintInfo};
 use tokio::sync::Mutex;
 
 use crate::nuts::Id;
-#[cfg(feature = "auth")]
-use crate::wallet::AuthMintConnector;
 use crate::wallet::MintConnector;
-use crate::Error;
+#[cfg(feature = "auth")]
+use crate::wallet::{AuthMintConnector, AuthWallet};
+use crate::{Error, Wallet};
 
 /// Default TTL
 pub const DEFAULT_TTL: Duration = Duration::from_secs(300);
@@ -52,12 +52,12 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(300);
 /// Tracks when data was last fetched and which version is currently cached.
 /// Used to determine if cache is ready and if database sync is needed.
 #[derive(Clone, Debug)]
-struct FreshnessStatus {
+pub struct FreshnessStatus {
     /// Whether this data has been successfully fetched at least once
-    is_populated: bool,
+    pub is_populated: bool,
 
     /// A future time when the cache would be considered as staled.
-    valid_until: Instant,
+    pub updated_at: Instant,
 
     /// Monotonically increasing version number (for database sync tracking)
     version: usize,
@@ -67,7 +67,7 @@ impl Default for FreshnessStatus {
     fn default() -> Self {
         Self {
             is_populated: false,
-            valid_until: Instant::now() + DEFAULT_TTL,
+            updated_at: Instant::now(),
             version: 0,
         }
     }
@@ -122,8 +122,6 @@ pub struct MintMetadataCache {
     /// The mint server URL this cache manages
     mint_url: MintUrl,
 
-    default_ttl: Duration,
-
     /// Atomically-updated metadata snapshot (lock-free reads)
     metadata: Arc<ArcSwap<MintMetadata>>,
 
@@ -143,6 +141,27 @@ impl std::fmt::Debug for MintMetadataCache {
             .field("is_populated", &self.metadata.load().status.is_populated)
             .field("keyset_count", &self.metadata.load().keysets.len())
             .finish()
+    }
+}
+
+impl Wallet {
+    /// Sets the metadata cache TTL
+    pub fn set_metadata_cache_ttl(&self, ttl: Option<Duration>) {
+        let mut guarded_ttl = self.metadata_cache_ttl.lock();
+        *guarded_ttl = ttl;
+    }
+
+    /// Get information about metada cache info
+    pub fn get_metadata_cache_info(&self) -> FreshnessStatus {
+        self.metadata_cache.metadata.load().status.clone()
+    }
+}
+
+#[cfg(feature = "auth")]
+impl AuthWallet {
+    /// Get information about metada cache info
+    pub fn get_metadata_cache_info(&self) -> FreshnessStatus {
+        self.metadata_cache.metadata.load().auth_status.clone()
     }
 }
 
@@ -170,10 +189,9 @@ impl MintMetadataCache {
     /// let cache = MintMetadataCache::new(mint_url, None);
     /// // No data loaded yet - call load() to fetch
     /// ```
-    pub fn new(mint_url: MintUrl, default_ttl: Option<Duration>) -> Self {
+    pub fn new(mint_url: MintUrl) -> Self {
         Self {
             mint_url,
-            default_ttl: default_ttl.unwrap_or(DEFAULT_TTL),
             metadata: Arc::new(ArcSwap::default()),
             db_sync_versions: Arc::new(Default::default()),
             fetch_lock: Arc::new(Mutex::new(())),
@@ -212,15 +230,17 @@ impl MintMetadataCache {
         &self,
         storage: &Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
         client: &Arc<dyn MintConnector + Send + Sync>,
+        ttl: Option<Duration>,
     ) -> Result<Arc<MintMetadata>, Error> {
         // Acquire lock to ensure only one fetch at a time
+        let ttl = ttl.unwrap_or(DEFAULT_TTL);
         let current_version = self.metadata.load().status.version;
         let _guard = self.fetch_lock.lock().await;
 
         // Check if another caller already updated the cache while we waited
         let current_metadata = self.metadata.load().clone();
         if current_metadata.status.is_populated
-            && current_metadata.status.valid_until > Instant::now()
+            && current_metadata.status.updated_at + ttl > Instant::now()
             && current_metadata.status.version > current_version
         {
             // Cache was just updated by another caller - return it
@@ -271,9 +291,11 @@ impl MintMetadataCache {
         &self,
         storage: &Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
         client: &Arc<dyn MintConnector + Send + Sync>,
+        ttl: Option<Duration>,
     ) -> Result<Arc<MintMetadata>, Error> {
         let cached_metadata = self.metadata.load().clone();
         let storage_id = Self::arc_pointer_id(storage);
+        let ttl = ttl.unwrap_or(DEFAULT_TTL);
 
         // Check what version of cache this database has seen
         let db_synced_version = self
@@ -284,7 +306,7 @@ impl MintMetadataCache {
             .unwrap_or_default();
 
         if cached_metadata.status.is_populated
-            && cached_metadata.status.valid_until > Instant::now()
+            && cached_metadata.status.updated_at + ttl > Instant::now()
         {
             // Cache is ready - check if database needs updating
             if db_synced_version != cached_metadata.status.version {
@@ -297,7 +319,7 @@ impl MintMetadataCache {
         }
 
         // Cache not populated - fetch from mint
-        self.load_from_mint(storage, client).await
+        self.load_from_mint(storage, client, Some(ttl)).await
     }
 
     /// Load auth keysets and keys (auth feature only)
@@ -331,7 +353,7 @@ impl MintMetadataCache {
 
         // Check if auth data is populated in cache
         if cached_metadata.auth_status.is_populated
-            && cached_metadata.auth_status.valid_until > Instant::now()
+            && cached_metadata.auth_status.updated_at > Instant::now()
         {
             if db_synced_version != cached_metadata.status.version {
                 // Database needs updating - spawn background sync
@@ -346,7 +368,7 @@ impl MintMetadataCache {
         // Re-check if auth data was updated while waiting for lock
         let current_metadata = self.metadata.load().clone();
         if current_metadata.auth_status.is_populated
-            && current_metadata.auth_status.valid_until > Instant::now()
+            && current_metadata.auth_status.updated_at > Instant::now()
         {
             tracing::debug!(
                 "Auth cache was updated while waiting for fetch lock, returning cached data"
@@ -562,14 +584,14 @@ impl MintMetadataCache {
         // Update freshness status based on what was fetched
         if client.is_some() {
             new_metadata.status.is_populated = true;
-            new_metadata.status.valid_until = Instant::now() + self.default_ttl;
+            new_metadata.status.updated_at = Instant::now();
             new_metadata.status.version += 1;
         }
 
         #[cfg(feature = "auth")]
         if auth_client.is_some() {
             new_metadata.auth_status.is_populated = true;
-            new_metadata.auth_status.valid_until = Instant::now() + self.default_ttl;
+            new_metadata.auth_status.updated_at = Instant::now();
             new_metadata.auth_status.version += 1;
         }
 

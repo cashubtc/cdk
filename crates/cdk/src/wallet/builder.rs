@@ -154,7 +154,7 @@ impl WalletBuilder {
                 cache.clone()
             } else {
                 // Create a new one
-                Arc::new(MintMetadataCache::new(mint_url.clone(), None))
+                Arc::new(MintMetadataCache::new(mint_url.clone()))
             }
         });
 
@@ -207,7 +207,7 @@ impl WalletBuilder {
                 cache.clone()
             } else {
                 // Create a new one
-                Arc::new(MintMetadataCache::new(mint_url.clone(), None))
+                Arc::new(MintMetadataCache::new(mint_url.clone()))
             }
         });
 
@@ -216,6 +216,7 @@ impl WalletBuilder {
             unit,
             localstore,
             metadata_cache,
+            metadata_cache_ttl: None.into(),
             target_proof_count: self.target_proof_count.unwrap_or(3),
             #[cfg(feature = "auth")]
             auth_wallet: Arc::new(RwLock::new(self.auth_wallet)),
