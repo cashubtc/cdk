@@ -21,7 +21,7 @@ cln = ["dep:cdk-cln"]
 lnd = ["dep:cdk-lnd"]
 lnbits = ["dep:cdk-lnbits"]
 fakewallet = ["dep:cdk-fake-wallet"]
-ldk-node = ["dep:cdk-ldk-node"]
+ldk-node = ["dep:cdk-ldk-node", "dep:ldk-node"]
 grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
 sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 # MSRV is not committed to with swagger enabled
@@ -46,6 +46,7 @@ cdk-cln = { workspace = true, optional = true }
 cdk-lnbits = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }
 cdk-ldk-node = { workspace = true, optional = true }
+ldk-node = { workspace = true, optional = true }
 cdk-fake-wallet = { workspace = true, optional = true }
 cdk-axum.workspace = true
 cdk-signatory.workspace = true

@@ -62,11 +62,55 @@ fi
 echo "Temp directory created: $CDK_ITESTS_DIR"
 export CDK_MINTD_DATABASE="$1"
 
-cargo build --bin start_regtest_mints 
+echo "========================================="
+echo "Building all required binaries..."
+echo "========================================="
+BUILD_START=$(date +%s)
 
-echo "Starting regtest and mints"
-# Run the binary in background
-cargo r --bin start_regtest_mints -- --enable-logging "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR" "$CDK_ITESTS_MINT_ADDR" "$CDK_ITESTS_MINT_PORT_0" "$CDK_ITESTS_MINT_PORT_1" &
+# Build in order of increasing feature sets to maximize cache reuse:
+# 1. Build integration tests with all features first (superset)
+# 2. Then build the binary (reuses shared dependencies)
+# This way, the http_subscription build includes everything from base build
+
+echo "[1/2] Building integration test binaries with all features..."
+STEP_START=$(date +%s)
+cargo build --tests -p cdk-integration-tests --features http_subscription
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to build integration tests with http_subscription feature"
+    exit 1
+fi
+STEP_END=$(date +%s)
+STEP_ELAPSED=$((STEP_END - STEP_START))
+echo "SUCCESS: Integration tests with http_subscription built in ${STEP_ELAPSED}s"
+echo ""
+
+echo "[2/2] Building start_regtest_mints binary..."
+STEP_START=$(date +%s)
+cargo build --bin start_regtest_mints
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to build start_regtest_mints"
+    exit 1
+fi
+STEP_END=$(date +%s)
+STEP_ELAPSED=$((STEP_END - STEP_START))
+echo "SUCCESS: start_regtest_mints built in ${STEP_ELAPSED}s"
+echo ""
+
+BUILD_END=$(date +%s)
+BUILD_ELAPSED=$((BUILD_END - BUILD_START))
+echo "========================================="
+echo "All binaries built in ${BUILD_ELAPSED}s"
+echo "========================================="
+echo ""
+
+echo "========================================="
+echo "Starting regtest environment..."
+echo "========================================="
+REGTEST_START=$(date +%s)
+
+echo "Launching start_regtest_mints binary..."
+# Run the pre-built binary in background
+target/debug/start_regtest_mints --enable-logging "$CDK_MINTD_DATABASE" "$CDK_ITESTS_DIR" "$CDK_ITESTS_MINT_ADDR" "$CDK_ITESTS_MINT_PORT_0" "$CDK_ITESTS_MINT_PORT_1" &
 export CDK_REGTEST_PID=$!
 
 # Give it a moment to start - reduced from 5 to 2 seconds since we have better waiting mechanisms now
@@ -176,58 +220,94 @@ while true; do
     fi
 done
 
+REGTEST_END=$(date +%s)
+REGTEST_ELAPSED=$((REGTEST_END - REGTEST_START))
+echo "========================================="
+echo "Regtest environment ready in ${REGTEST_ELAPSED}s"
+echo "========================================="
+echo ""
+
+echo "========================================="
+echo "Running tests..."
+echo "========================================="
+TESTS_START=$(date +%s)
+
 # Run cargo test
-echo "Running regtest test with CLN mint and CLN client"
+echo "[Test 1/8] Running regtest test with CLN mint and LND client"
 export CDK_TEST_LIGHTNING_CLIENT="lnd"
+TEST_START=$(date +%s)
 cargo test -p cdk-integration-tests --test regtest
 if [ $? -ne 0 ]; then
     echo "regtest test with cln mint failed, exiting"
     exit 1
 fi
+TEST_END=$(date +%s)
+echo "  Completed in $((TEST_END - TEST_START))s"
+echo ""
 
-echo "Running happy_path_mint_wallet test with CLN mint and CLN client"
+echo "[Test 2/8] Running happy_path_mint_wallet test with CLN mint and CLN client"
+TEST_START=$(date +%s)
 cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 if [ $? -ne 0 ]; then
     echo "happy_path_mint_wallet with cln mint test failed, exiting"
     exit 1
 fi
+TEST_END=$(date +%s)
+echo "  Completed in $((TEST_END - TEST_START))s"
+echo ""
 
 # Run cargo test with the http_subscription feature
-echo "Running regtest test with http_subscription feature (CLN client)"
+echo "[Test 3/8] Running regtest test with http_subscription feature (CLN client)"
+TEST_START=$(date +%s)
 cargo test -p cdk-integration-tests --test regtest --features http_subscription
 if [ $? -ne 0 ]; then
     echo "regtest test with http_subscription failed, exiting"
     exit 1
 fi
+TEST_END=$(date +%s)
+echo "  Completed in $((TEST_END - TEST_START))s"
+echo ""
 
-echo "Running regtest test with cln mint for bolt12 (CLN client)"
+echo "[Test 4/8] Running bolt12 test with CLN mint (CLN client)"
+TEST_START=$(date +%s)
 cargo test -p cdk-integration-tests --test bolt12
 if [ $? -ne 0 ]; then
     echo "regtest test failed, exiting"
     exit 1
 fi
+TEST_END=$(date +%s)
+echo "  Completed in $((TEST_END - TEST_START))s"
+echo ""
 
 # Switch Mints: Run tests with LND mint
 echo "Switching to LND mint for tests"
 
-echo "Running regtest test with LND mint and LND client"
+echo "[Test 5/8] Running regtest test with LND mint and LND client"
 CDK_TEST_MINT_URL_SWITCHED=$CDK_TEST_MINT_URL_2
 CDK_TEST_MINT_URL_2_SWITCHED=$CDK_TEST_MINT_URL
 export CDK_TEST_MINT_URL=$CDK_TEST_MINT_URL_SWITCHED
 export CDK_TEST_MINT_URL_2=$CDK_TEST_MINT_URL_2_SWITCHED
 
- cargo test -p cdk-integration-tests --test regtest
- if [ $? -ne 0 ]; then
-     echo "regtest test with LND mint failed, exiting"
-     exit 1
- fi
+TEST_START=$(date +%s)
+cargo test -p cdk-integration-tests --test regtest
+if [ $? -ne 0 ]; then
+    echo "regtest test with LND mint failed, exiting"
+    exit 1
+fi
+TEST_END=$(date +%s)
+echo "  Completed in $((TEST_END - TEST_START))s"
+echo ""
 
- echo "Running happy_path_mint_wallet test with LND mint and LND client"
- cargo test -p cdk-integration-tests --test happy_path_mint_wallet
- if [ $? -ne 0 ]; then
-     echo "happy_path_mint_wallet test with LND mint failed, exiting"
-     exit 1
- fi
+echo "[Test 6/8] Running happy_path_mint_wallet test with LND mint and LND client"
+TEST_START=$(date +%s)
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+if [ $? -ne 0 ]; then
+    echo "happy_path_mint_wallet test with LND mint failed, exiting"
+    exit 1
+fi
+TEST_END=$(date +%s)
+echo "  Completed in $((TEST_END - TEST_START))s"
+echo ""
 
 
 export CDK_TEST_MINT_URL="http://127.0.0.1:8089"
@@ -262,21 +342,42 @@ while true; do
 done
 
 
-echo "Running happy_path_mint_wallet test with LDK mint and CLN client"
+echo "[Test 7/8] Running happy_path_mint_wallet test with LDK mint and CLN client"
 export CDK_TEST_LIGHTNING_CLIENT="cln"  # Use CLN client for LDK tests
+TEST_START=$(date +%s)
 cargo test -p cdk-integration-tests --test happy_path_mint_wallet
 if [ $? -ne 0 ]; then
     echo "happy_path_mint_wallet test with LDK mint failed, exiting"
     exit 1
 fi
+TEST_END=$(date +%s)
+echo "  Completed in $((TEST_END - TEST_START))s"
+echo ""
 
-echo "Running regtest test with LDK mint and CLN client"
+echo "[Test 8/8] Running regtest test with LDK mint and CLN client"
+TEST_START=$(date +%s)
 cargo test -p cdk-integration-tests --test regtest
 if [ $? -ne 0 ]; then
     echo "regtest test LDK mint failed, exiting"
     exit 1
 fi
+TEST_END=$(date +%s)
+echo "  Completed in $((TEST_END - TEST_START))s"
+echo ""
 
+TESTS_END=$(date +%s)
+TESTS_ELAPSED=$((TESTS_END - TESTS_START))
 
+echo "========================================="
+echo "TIMING SUMMARY"
+echo "========================================="
+echo "Build phase:            ${BUILD_ELAPSED}s"
+echo "Regtest startup:        ${REGTEST_ELAPSED}s"
+echo "Test execution:         ${TESTS_ELAPSED}s"
+echo "========================================="
+TOTAL_ELAPSED=$((BUILD_ELAPSED + REGTEST_ELAPSED + TESTS_ELAPSED))
+echo "TOTAL TIME:             ${TOTAL_ELAPSED}s"
+echo "========================================="
+echo ""
 echo "All tests passed successfully"
 exit 0

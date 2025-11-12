@@ -71,6 +71,10 @@ futures = { version = "0.3.28", default-features = false, features = ["async-awa
 lightning-invoice = { version = "0.33.0", features = ["serde", "std"] }
 lightning = { version = "0.1.2", default-features = false, features = ["std"]}
 ldk-node = "0.6.2"
+bitcoincore-rpc = "0.19.0"
+cln-rpc = "0.4.0"
+fedimint-tonic-lnd = "0.2.0"
+tempfile = "3.12.0"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 thiserror = { version = "2" }
@@ -117,6 +121,7 @@ nostr-sdk = { version = "0.43.0", default-features = false, features = [
     "nip44",
     "nip59"
 ]}
+nix = { version = "0.29", features = ["signal"] }
 
 
 
