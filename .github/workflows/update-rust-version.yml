@@ -1,0 +1,77 @@
+name: Update Rust Version
+
+on:
+  schedule:
+    # Run weekly on Monday at 9 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch: # Allow manual triggering
+
+permissions: {}
+
+jobs:
+  check-rust-version:
+    name: Check and update Rust version
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get latest stable Rust version
+        id: latest-rust
+        run: |
+          # Fetch the latest stable Rust version from GitHub releases API
+          LATEST_VERSION=$(curl -s https://api.github.com/repos/rust-lang/rust/releases | jq -r '[.[] | select(.prerelease == false and .draft == false)][0].tag_name')
+          echo "version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+          echo "Latest stable Rust version: $LATEST_VERSION"
+
+      - name: Get current Rust version
+        id: current-rust
+        run: |
+          # Extract current version from rust-toolchain.toml
+          CURRENT_VERSION=$(grep '^channel=' rust-toolchain.toml | sed 's/channel="\(.*\)"/\1/')
+          echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "Current Rust version: $CURRENT_VERSION"
+
+      - name: Compare versions
+        id: compare
+        run: |
+          if [ "${{ steps.latest-rust.outputs.version }}" != "${{ steps.current-rust.outputs.version }}" ]; then
+            echo "needs_update=true" >> $GITHUB_OUTPUT
+            echo "Rust version needs update: ${{ steps.current-rust.outputs.version }} -> ${{ steps.latest-rust.outputs.version }}"
+          else
+            echo "needs_update=false" >> $GITHUB_OUTPUT
+            echo "Rust version is up to date"
+          fi
+
+      - name: Create Issue
+        if: steps.compare.outputs.needs_update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "Update Rust to ${{ steps.latest-rust.outputs.version }}" \
+            --label "rust-version" \
+            --assignee thesimplekid \
+            --body "$(cat <<'EOF'
+          New Rust version **${{ steps.latest-rust.outputs.version }}** is available (currently on **${{ steps.current-rust.outputs.version }}**).
+
+          ## Files to update
+          - \`rust-toolchain.toml\` - Update channel to \`${{ steps.latest-rust.outputs.version }}\`
+          - \`flake.nix\` - Update stable_toolchain to \`pkgs.rust-bin.stable."${{ steps.latest-rust.outputs.version }}".default\`
+          - Run \`nix flake update rust-overlay\` to update \`flake.lock\`
+
+          ## Release Notes
+          Check the [Rust release notes](https://github.com/rust-lang/rust/blob/master/RELEASES.md) for details on what's new in this version.
+
+          ---
+          🤖 Automated issue created by update-rust-version workflow
+          EOF
+          )"
+
+      - name: No update needed
+        if: steps.compare.outputs.needs_update == 'false'
+        run: |
+          echo "✓ Rust version is already up to date (${{ steps.current-rust.outputs.version }})"

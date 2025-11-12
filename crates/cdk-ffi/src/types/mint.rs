@@ -739,12 +739,12 @@ mod tests {
         let ffi_nuts: Nuts = cdk_nuts.clone().into();
 
         // Verify NUT04 settings
-        assert_eq!(ffi_nuts.nut04.disabled, false);
+        assert!(!ffi_nuts.nut04.disabled);
         assert_eq!(ffi_nuts.nut04.methods.len(), 1);
         assert_eq!(ffi_nuts.nut04.methods[0].description, Some(true));
 
         // Verify NUT05 settings
-        assert_eq!(ffi_nuts.nut05.disabled, false);
+        assert!(!ffi_nuts.nut05.disabled);
         assert_eq!(ffi_nuts.nut05.methods.len(), 1);
         assert_eq!(ffi_nuts.nut05.methods[0].amountless, Some(true));
 
@@ -969,8 +969,8 @@ mod tests {
         let ffi_nuts: Nuts = cdk_nuts.into();
 
         // Should have collected multiple units
-        assert!(ffi_nuts.mint_units.len() >= 1);
-        assert!(ffi_nuts.melt_units.len() >= 1);
+        assert!(!ffi_nuts.mint_units.is_empty());
+        assert!(!ffi_nuts.melt_units.is_empty());
     }
 
     #[test]
