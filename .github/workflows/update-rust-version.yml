@@ -1,0 +1,96 @@
+name: Update Rust Version
+
+on:
+  schedule:
+    # Run weekly on Monday at 9 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch: # Allow manual triggering
+
+permissions: {}
+
+jobs:
+  check-rust-version:
+    name: Check and update Rust version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+          token: ${{ secrets.BACKPORT_TOKEN }}
+
+      - name: Get latest stable Rust version
+        id: latest-rust
+        run: |
+          # Fetch the latest stable Rust version from GitHub releases API
+          LATEST_VERSION=$(curl -s https://api.github.com/repos/rust-lang/rust/releases | jq -r '[.[] | select(.prerelease == false and .draft == false)][0].tag_name')
+          echo "version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+          echo "Latest stable Rust version: $LATEST_VERSION"
+
+      - name: Get current Rust version
+        id: current-rust
+        run: |
+          # Extract current version from rust-toolchain.toml
+          CURRENT_VERSION=$(grep '^channel=' rust-toolchain.toml | sed 's/channel="\(.*\)"/\1/')
+          echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "Current Rust version: $CURRENT_VERSION"
+
+      - name: Compare versions
+        id: compare
+        run: |
+          if [ "${{ steps.latest-rust.outputs.version }}" != "${{ steps.current-rust.outputs.version }}" ]; then
+            echo "needs_update=true" >> $GITHUB_OUTPUT
+            echo "Rust version needs update: ${{ steps.current-rust.outputs.version }} -> ${{ steps.latest-rust.outputs.version }}"
+          else
+            echo "needs_update=false" >> $GITHUB_OUTPUT
+            echo "Rust version is up to date"
+          fi
+
+      - name: Update rust-toolchain.toml
+        if: steps.compare.outputs.needs_update == 'true'
+        run: |
+          sed -i 's/channel="[0-9]*\.[0-9]*\.[0-9]*"/channel="${{ steps.latest-rust.outputs.version }}"/' rust-toolchain.toml
+          echo "Updated rust-toolchain.toml"
+
+      - name: Update flake.nix
+        if: steps.compare.outputs.needs_update == 'true'
+        run: |
+          # Update stable_toolchain version in flake.nix
+          sed -i 's/stable_toolchain = pkgs\.rust-bin\.stable\."[0-9]*\.[0-9]*\.[0-9]*"\.default/stable_toolchain = pkgs.rust-bin.stable."${{ steps.latest-rust.outputs.version }}".default/' flake.nix
+          echo "Updated flake.nix"
+
+      - name: Create Pull Request
+        if: steps.compare.outputs.needs_update == 'true'
+        uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7.0.8
+        with:
+          token: ${{ secrets.BACKPORT_TOKEN }}
+          author: Rust Update Bot <bot@cashudevkit.org>
+          title: "chore: update Rust to ${{ steps.latest-rust.outputs.version }}"
+          body: |
+            Automated Rust version update from **${{ steps.current-rust.outputs.version }}** to **${{ steps.latest-rust.outputs.version }}**.
+
+            ## Changes
+            - Updated `rust-toolchain.toml` to use Rust ${{ steps.latest-rust.outputs.version }}
+            - Updated `flake.nix` stable_toolchain to use Rust ${{ steps.latest-rust.outputs.version }}
+
+            ## Testing
+            The CI will run all tests with the new Rust version. Please review the test results before merging.
+
+            ## Release Notes
+            Check the [Rust release notes](https://github.com/rust-lang/rust/blob/master/RELEASES.md) for details on what's new in this version.
+
+            ---
+            🤖 Automated changes by [create-pull-request](https://github.com/peter-evans/create-pull-request) GitHub action
+          commit-message: "chore: update Rust to ${{ steps.latest-rust.outputs.version }}"
+          labels: rust-version
+          branch: rust-update-${{ steps.latest-rust.outputs.version }}
+
+      - name: No update needed
+        if: steps.compare.outputs.needs_update == 'false'
+        run: |
+          echo "✓ Rust version is already up to date (${{ steps.current-rust.outputs.version }})"
