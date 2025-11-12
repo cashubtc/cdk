@@ -8,8 +8,6 @@
 //! - Concurrent operations
 //! - Failure handling
 
-#![cfg(test)]
-
 use cdk_common::mint::{MeltSagaState, OperationKind, Saga};
 use cdk_common::nuts::MeltQuoteState;
 use cdk_common::{Amount, ProofsMethods, State};
