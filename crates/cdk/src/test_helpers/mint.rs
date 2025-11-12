@@ -137,11 +137,7 @@ pub async fn mint_test_proofs(mint: &Mint, amount: Amount) -> Result<Proofs, Err
         sleep(Duration::from_secs(1)).await;
     }
 
-    let keysets = mint
-        .get_active_keysets()
-        .get(&CurrencyUnit::Sat)
-        .unwrap()
-        .clone();
+    let keysets = *mint.get_active_keysets().get(&CurrencyUnit::Sat).unwrap();
 
     let keys = mint
         .keyset_pubkeys(&keysets)?
@@ -151,10 +147,7 @@ pub async fn mint_test_proofs(mint: &Mint, amount: Amount) -> Result<Proofs, Err
         .keys
         .clone();
 
-    let fees: (u64, Vec<u64>) = (
-        0,
-        keys.iter().map(|a| a.0.to_u64()).collect::<Vec<_>>().into(),
-    );
+    let fees: (u64, Vec<u64>) = (0, keys.iter().map(|a| a.0.to_u64()).collect::<Vec<_>>());
 
     let premint_secrets =
         PreMintSecrets::random(keysets, amount, &SplitTarget::None, &fees.into()).unwrap();

@@ -59,7 +59,7 @@ test:
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  cargo test --lib
+  cargo test --lib --workspace --exclude cdk-postgres
 
   # Run pure integration tests
   cargo test -p cdk-integration-tests --test mint 
@@ -155,11 +155,11 @@ test-nutshell:
     
 
 # run `cargo clippy` on everything
-clippy *ARGS="--locked --offline --workspace --all-targets":
-  cargo clippy {{ARGS}}
+clippy *ARGS="--workspace --all-targets":
+  cargo clippy {{ARGS}} -- -D warnings
 
 # run `cargo clippy --fix` on everything
-clippy-fix *ARGS="--locked --offline --workspace --all-targets":
+clippy-fix *ARGS="--workspace --all-targets":
   cargo clippy {{ARGS}} --fix
 
 typos: 

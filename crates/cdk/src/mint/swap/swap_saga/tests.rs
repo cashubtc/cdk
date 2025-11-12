@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! Unit tests for the swap saga implementation
 //!
 //! These tests verify the swap saga pattern using in-memory mints and databases,
@@ -933,7 +932,7 @@ async fn test_swap_saga_concurrent_swaps() {
     let task1 = tokio::spawn(async move {
         let db = mint1.localstore();
         let pubsub = mint1.pubsub_manager();
-        let saga = SwapSaga::new(&*mint1, db, pubsub);
+        let saga = SwapSaga::new(&mint1, db, pubsub);
 
         let saga = saga
             .setup_swap(&proofs1, &output_blinded_messages_1, None, verification1)
@@ -945,7 +944,7 @@ async fn test_swap_saga_concurrent_swaps() {
     let task2 = tokio::spawn(async move {
         let db = mint2.localstore();
         let pubsub = mint2.pubsub_manager();
-        let saga = SwapSaga::new(&*mint2, db, pubsub);
+        let saga = SwapSaga::new(&mint2, db, pubsub);
 
         let saga = saga
             .setup_swap(&proofs2, &output_blinded_messages_2, None, verification2)
@@ -957,7 +956,7 @@ async fn test_swap_saga_concurrent_swaps() {
     let task3 = tokio::spawn(async move {
         let db = mint3.localstore();
         let pubsub = mint3.pubsub_manager();
-        let saga = SwapSaga::new(&*mint3, db, pubsub);
+        let saga = SwapSaga::new(&mint3, db, pubsub);
 
         let saga = saga
             .setup_swap(&proofs3, &output_blinded_messages_3, None, verification3)
@@ -1976,19 +1975,19 @@ async fn test_operation_id_uniqueness_and_tracking() {
     {
         let pubsub = mint.pubsub_manager();
 
-        let saga_1 = SwapSaga::new(&*mint, db.clone(), pubsub.clone());
+        let saga_1 = SwapSaga::new(&mint, db.clone(), pubsub.clone());
         let _saga_1 = saga_1
             .setup_swap(&proofs_1, &outputs_1, None, verification_1)
             .await
             .expect("Swap 1 setup should succeed");
 
-        let saga_2 = SwapSaga::new(&*mint, db.clone(), pubsub.clone());
+        let saga_2 = SwapSaga::new(&mint, db.clone(), pubsub.clone());
         let _saga_2 = saga_2
             .setup_swap(&proofs_2, &outputs_2, None, verification_2)
             .await
             .expect("Swap 2 setup should succeed");
 
-        let saga_3 = SwapSaga::new(&*mint, db.clone(), pubsub.clone());
+        let saga_3 = SwapSaga::new(&mint, db.clone(), pubsub.clone());
         let _saga_3 = saga_3
             .setup_swap(&proofs_3, &outputs_3, None, verification_3)
             .await
@@ -2033,7 +2032,7 @@ async fn test_operation_id_uniqueness_and_tracking() {
     let verification = create_verification(amount);
 
     let pubsub = mint.pubsub_manager();
-    let new_saga = SwapSaga::new(&*mint, db, pubsub);
+    let new_saga = SwapSaga::new(&mint, db, pubsub);
 
     let result = new_saga
         .setup_swap(&proofs_1, &new_outputs_1, None, verification)

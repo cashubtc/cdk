@@ -385,7 +385,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         Err(err) => match err {
             cdk::Error::TransactionUnbalanced(_, _, _) => (),
             err => {
-                bail!("Wrong mint error returned: {}", err.to_string());
+                bail!("Wrong mint error returned: {}", err);
             }
         },
         Ok(_) => {

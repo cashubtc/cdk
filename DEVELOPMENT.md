@@ -175,6 +175,43 @@ NOTE: if this command fails on macos change the nix channel to unstable (in the 
 just format
 ```
 
+## Code Formatting
+
+CDK uses a flexible rustfmt policy to balance code quality with developer experience:
+
+### Formatting Requirements for PRs
+Pull requests can be formatted with **either stable or nightly** rustfmt - both are accepted:
+
+- **Stable rustfmt:** Standard Rust formatting (less strict)
+- **Nightly rustfmt:** More strict formatting with additional rules
+
+**Why both are accepted:**
+- We prefer nightly rustfmt's stricter formatting
+- We don't want to force contributors to install nightly Rust
+- This reduces friction for developers using stable toolchains
+
+```bash
+# Format with stable (default)
+just format
+
+# Format with nightly (if you have it installed)
+cargo +nightly fmt
+```
+
+The CI will check your PR with stable rustfmt, so as long as your code passes stable formatting, your PR will pass CI.
+
+### Automated Nightly Formatting
+To keep the codebase consistently formatted with nightly rustfmt over time:
+
+- **Daily Check:** Every night at midnight UTC, a GitHub Action runs nightly rustfmt on the `main` branch
+- **Automated PRs:** If nightly rustfmt produces formatting changes, a PR is automatically created with:
+  - Title: `Automated nightly rustfmt (YYYY-MM-DD)`
+  - Label: `rustfmt`
+  - Author: `Fmt Bot <bot@cashudevkit.org>`
+- **Review Process:** These automated PRs are reviewed and merged to keep the codebase aligned with nightly formatting
+
+This approach ensures the codebase gradually adopts nightly formatting improvements without blocking contributors who use stable Rust.
+
 
 ### Running Clippy
 ```bash
