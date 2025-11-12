@@ -13,16 +13,11 @@ jobs:
     name: Check and update Rust version
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      issues: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: main
-          persist-credentials: false
-          token: ${{ secrets.BACKPORT_TOKEN }}
 
       - name: Get latest stable Rust version
         id: latest-rust
@@ -51,44 +46,30 @@ jobs:
             echo "Rust version is up to date"
           fi
 
-      - name: Update rust-toolchain.toml
+      - name: Create Issue
         if: steps.compare.outputs.needs_update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          sed -i 's/channel="[0-9]*\.[0-9]*\.[0-9]*"/channel="${{ steps.latest-rust.outputs.version }}"/' rust-toolchain.toml
-          echo "Updated rust-toolchain.toml"
+          gh issue create \
+            --title "Update Rust to ${{ steps.latest-rust.outputs.version }}" \
+            --label "rust-version" \
+            --assignee thesimplekid \
+            --body "$(cat <<'EOF'
+          New Rust version **${{ steps.latest-rust.outputs.version }}** is available (currently on **${{ steps.current-rust.outputs.version }}**).
 
-      - name: Update flake.nix
-        if: steps.compare.outputs.needs_update == 'true'
-        run: |
-          # Update stable_toolchain version in flake.nix
-          sed -i 's/stable_toolchain = pkgs\.rust-bin\.stable\."[0-9]*\.[0-9]*\.[0-9]*"\.default/stable_toolchain = pkgs.rust-bin.stable."${{ steps.latest-rust.outputs.version }}".default/' flake.nix
-          echo "Updated flake.nix"
+          ## Files to update
+          - \`rust-toolchain.toml\` - Update channel to \`${{ steps.latest-rust.outputs.version }}\`
+          - \`flake.nix\` - Update stable_toolchain to \`pkgs.rust-bin.stable."${{ steps.latest-rust.outputs.version }}".default\`
+          - Run \`nix flake update rust-overlay\` to update \`flake.lock\`
 
-      - name: Create Pull Request
-        if: steps.compare.outputs.needs_update == 'true'
-        uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7.0.8
-        with:
-          token: ${{ secrets.BACKPORT_TOKEN }}
-          author: Rust Update Bot <bot@cashudevkit.org>
-          title: "chore: update Rust to ${{ steps.latest-rust.outputs.version }}"
-          body: |
-            Automated Rust version update from **${{ steps.current-rust.outputs.version }}** to **${{ steps.latest-rust.outputs.version }}**.
+          ## Release Notes
+          Check the [Rust release notes](https://github.com/rust-lang/rust/blob/master/RELEASES.md) for details on what's new in this version.
 
-            ## Changes
-            - Updated `rust-toolchain.toml` to use Rust ${{ steps.latest-rust.outputs.version }}
-            - Updated `flake.nix` stable_toolchain to use Rust ${{ steps.latest-rust.outputs.version }}
-
-            ## Testing
-            The CI will run all tests with the new Rust version. Please review the test results before merging.
-
-            ## Release Notes
-            Check the [Rust release notes](https://github.com/rust-lang/rust/blob/master/RELEASES.md) for details on what's new in this version.
-
-            ---
-            🤖 Automated changes by [create-pull-request](https://github.com/peter-evans/create-pull-request) GitHub action
-          commit-message: "chore: update Rust to ${{ steps.latest-rust.outputs.version }}"
-          labels: rust-version
-          branch: rust-update-${{ steps.latest-rust.outputs.version }}
+          ---
+          🤖 Automated issue created by update-rust-version workflow
+          EOF
+          )"
 
       - name: No update needed
         if: steps.compare.outputs.needs_update == 'false'
