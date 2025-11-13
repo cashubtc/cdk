@@ -144,7 +144,7 @@ impl std::fmt::Debug for MintMetadataCache {
 impl Wallet {
     /// Sets the metadata cache TTL
     pub fn set_metadata_cache_ttl(&self, ttl: Option<Duration>) {
-        let mut guarded_ttl = self.metadata_cache_ttl.lock();
+        let mut guarded_ttl = self.metadata_cache_ttl.write();
         *guarded_ttl = ttl;
     }
 
