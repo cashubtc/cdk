@@ -2248,10 +2248,10 @@ where
         let current_time = unix_time();
 
         let blinded_secrets_json = serde_json::to_string(&saga.blinded_secrets)
-            .map_err(|e| Error::Internal(format!("Failed to serialize blinded_secrets: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to serialize blinded_secrets: {e}")))?;
 
         let input_ys_json = serde_json::to_string(&saga.input_ys)
-            .map_err(|e| Error::Internal(format!("Failed to serialize input_ys: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to serialize input_ys: {e}")))?;
 
         query(
             r#"
@@ -2645,23 +2645,23 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
 
     let operation_id_str = column_as_string!(&operation_id);
     let operation_id = uuid::Uuid::parse_str(&operation_id_str)
-        .map_err(|e| Error::Internal(format!("Invalid operation_id UUID: {}", e)))?;
+        .map_err(|e| Error::Internal(format!("Invalid operation_id UUID: {e}")))?;
 
     let operation_kind_str = column_as_string!(&operation_kind);
     let operation_kind = mint::OperationKind::from_str(&operation_kind_str)
-        .map_err(|e| Error::Internal(format!("Invalid operation kind: {}", e)))?;
+        .map_err(|e| Error::Internal(format!("Invalid operation kind: {e}")))?;
 
     let state_str = column_as_string!(&state);
     let state = mint::SagaStateEnum::new(operation_kind, &state_str)
-        .map_err(|e| Error::Internal(format!("Invalid saga state: {}", e)))?;
+        .map_err(|e| Error::Internal(format!("Invalid saga state: {e}")))?;
 
     let blinded_secrets_str = column_as_string!(&blinded_secrets);
     let blinded_secrets: Vec<PublicKey> = serde_json::from_str(&blinded_secrets_str)
-        .map_err(|e| Error::Internal(format!("Failed to deserialize blinded_secrets: {}", e)))?;
+        .map_err(|e| Error::Internal(format!("Failed to deserialize blinded_secrets: {e}")))?;
 
     let input_ys_str = column_as_string!(&input_ys);
     let input_ys: Vec<PublicKey> = serde_json::from_str(&input_ys_str)
-        .map_err(|e| Error::Internal(format!("Failed to deserialize input_ys: {}", e)))?;
+        .map_err(|e| Error::Internal(format!("Failed to deserialize input_ys: {e}")))?;
 
     let quote_id = match &quote_id {
         Column::Text(s) => {

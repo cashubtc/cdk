@@ -175,7 +175,7 @@ done
 
 # Run first test
 echo "Running fake_wallet test"
-cargo test -p cdk-integration-tests --test fake_wallet
+cargo test -p cdk-integration-tests --test fake_wallet -- --nocapture
 status1=$?
 
 # Exit immediately if the first test failed
@@ -186,7 +186,7 @@ fi
 
 # Run second test only if the first one succeeded
 echo "Running happy_path_mint_wallet test"
-cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet --  --nocapture
 status2=$?
 
 # Exit if the second test failed
