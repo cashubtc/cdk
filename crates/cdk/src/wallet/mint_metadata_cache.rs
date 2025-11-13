@@ -461,9 +461,18 @@ impl MintMetadataCache {
             versions.insert(storage_id, metadata.status.version);
         }
 
+        let mut tx = if let Ok(ok) = storage
+            .begin_db_transaction()
+            .await
+            .inspect_err(|err| tracing::warn!("Could not begin database transaction: {err}"))
+        {
+            ok
+        } else {
+            return;
+        };
+
         // Save mint info
-        storage
-            .add_mint(mint_url.clone(), Some(metadata.mint_info.clone()))
+        tx.add_mint(mint_url.clone(), Some(metadata.mint_info.clone()))
             .await
             .inspect_err(|e| tracing::warn!("Failed to save mint info for {}: {}", mint_url, e))
             .ok();
@@ -472,8 +481,7 @@ impl MintMetadataCache {
         let keysets: Vec<_> = metadata.keysets.values().map(|ks| (**ks).clone()).collect();
 
         if !keysets.is_empty() {
-            storage
-                .add_mint_keysets(mint_url.clone(), keysets)
+            tx.add_mint_keysets(mint_url.clone(), keysets)
                 .await
                 .inspect_err(|e| tracing::warn!("Failed to save keysets for {}: {}", mint_url, e))
                 .ok();
@@ -498,8 +506,7 @@ impl MintMetadataCache {
                     keys: (**keys).clone(),
                 };
 
-                storage
-                    .add_keys(keyset)
+                tx.add_keys(keyset)
                     .await
                     .inspect_err(|e| {
                         tracing::warn!(
@@ -512,6 +519,8 @@ impl MintMetadataCache {
                     .ok();
             }
         }
+
+        let _ = tx.commit().await.ok();
     }
 
     /// Fetch fresh metadata from mint HTTP API and update cache

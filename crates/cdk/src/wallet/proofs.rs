@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use cdk_common::amount::KeysetFeeAndAmounts;
+use cdk_common::database::DynWalletDatabaseTransaction;
 use cdk_common::wallet::TransactionId;
 use cdk_common::Id;
 use tracing::instrument;
@@ -18,38 +19,40 @@ impl Wallet {
     /// Get unspent proofs for mint
     #[instrument(skip(self))]
     pub async fn get_unspent_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::Unspent]), None).await
+        self.get_proofs_with(None, Some(vec![State::Unspent]), None)
+            .await
     }
 
     /// Get pending [`Proofs`]
     #[instrument(skip(self))]
     pub async fn get_pending_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::Pending]), None).await
+        self.get_proofs_with(None, Some(vec![State::Pending]), None)
+            .await
     }
 
     /// Get reserved [`Proofs`]
     #[instrument(skip(self))]
     pub async fn get_reserved_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::Reserved]), None)
+        self.get_proofs_with(None, Some(vec![State::Reserved]), None)
             .await
     }
 
     /// Get pending spent [`Proofs`]
     #[instrument(skip(self))]
     pub async fn get_pending_spent_proofs(&self) -> Result<Proofs, Error> {
-        self.get_proofs_with(Some(vec![State::PendingSpent]), None)
+        self.get_proofs_with(None, Some(vec![State::PendingSpent]), None)
             .await
     }
 
     /// Get this wallet's [Proofs] that match the args
     pub async fn get_proofs_with(
         &self,
+        tx: Option<&mut DynWalletDatabaseTransaction<'_>>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Proofs, Error> {
-        Ok(self
-            .localstore
-            .get_proofs(
+        Ok(if let Some(tx) = tx {
+            tx.get_proofs(
                 Some(self.mint_url.clone()),
                 Some(self.unit.clone()),
                 state,
@@ -58,16 +61,28 @@ impl Wallet {
             .await?
             .into_iter()
             .map(|p| p.proof)
-            .collect())
+            .collect()
+        } else {
+            self.localstore
+                .get_proofs(
+                    Some(self.mint_url.clone()),
+                    Some(self.unit.clone()),
+                    state,
+                    spending_conditions,
+                )
+                .await?
+                .into_iter()
+                .map(|p| p.proof)
+                .collect()
+        })
     }
 
     /// Return proofs to unspent allowing them to be selected and spent
     #[instrument(skip(self))]
     pub async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
-        Ok(self
-            .localstore
-            .update_proofs_state(ys, State::Unspent)
-            .await?)
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        tx.update_proofs_state(ys, State::Unspent).await?;
+        Ok(tx.commit().await?)
     }
 
     /// Reclaim unspent proofs
@@ -93,13 +108,14 @@ impl Wallet {
 
         self.swap(None, SplitTarget::default(), unspent, None, false)
             .await?;
-
-        match self.localstore.remove_transaction(transaction_id).await {
-            Ok(_) => (),
-            Err(e) => {
-                tracing::warn!("Failed to remove transaction: {:?}", e);
-            }
-        }
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let _ = tx
+            .remove_transaction(transaction_id)
+            .await
+            .inspect_err(|err| {
+                tracing::warn!("Failed to remove transaction: {:?}", err);
+            });
+        tx.commit().await?;
 
         Ok(())
     }
@@ -121,7 +137,9 @@ impl Wallet {
             })
             .collect();
 
-        self.localstore.update_proofs(vec![], spent_ys).await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        tx.update_proofs(vec![], spent_ys).await?;
+        tx.commit().await?;
 
         Ok(spendable.states)
     }
@@ -165,12 +183,13 @@ impl Wallet {
 
         let amount = Amount::try_sum(pending_proofs.iter().map(|p| p.proof.amount))?;
 
-        self.localstore
-            .update_proofs(
-                vec![],
-                non_pending_proofs.into_iter().map(|p| p.y).collect(),
-            )
-            .await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        tx.update_proofs(
+            vec![],
+            non_pending_proofs.into_iter().map(|p| p.y).collect(),
+        )
+        .await?;
+        tx.commit().await?;
 
         balance += amount;
 

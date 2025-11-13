@@ -79,16 +79,30 @@ impl WalletDatabase for WalletSqliteDatabase {
     ) -> Result<(), FfiError> {
         let cdk_mint_url = mint_url.try_into()?;
         let cdk_mint_info = mint_info.map(Into::into);
-        self.inner
-            .add_mint(cdk_mint_url, cdk_mint_info)
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.add_mint(cdk_mint_url, cdk_mint_info)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
 
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), FfiError> {
         let cdk_mint_url = mint_url.try_into()?;
-        self.inner
-            .remove_mint(cdk_mint_url)
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.remove_mint(cdk_mint_url)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
@@ -122,8 +136,15 @@ impl WalletDatabase for WalletSqliteDatabase {
     ) -> Result<(), FfiError> {
         let cdk_old_mint_url = old_mint_url.try_into()?;
         let cdk_new_mint_url = new_mint_url.try_into()?;
-        self.inner
-            .update_mint_url(cdk_old_mint_url, cdk_new_mint_url)
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.update_mint_url(cdk_old_mint_url, cdk_new_mint_url)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
@@ -136,8 +157,15 @@ impl WalletDatabase for WalletSqliteDatabase {
     ) -> Result<(), FfiError> {
         let cdk_mint_url = mint_url.try_into()?;
         let cdk_keysets: Vec<cdk::nuts::KeySetInfo> = keysets.into_iter().map(Into::into).collect();
-        self.inner
-            .add_mint_keysets(cdk_mint_url, cdk_keysets)
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.add_mint_keysets(cdk_mint_url, cdk_keysets)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
@@ -168,8 +196,15 @@ impl WalletDatabase for WalletSqliteDatabase {
     // Mint Quote Management
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError> {
         let cdk_quote = quote.try_into()?;
-        self.inner
-            .add_mint_quote(cdk_quote)
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.add_mint_quote(cdk_quote)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
@@ -193,8 +228,15 @@ impl WalletDatabase for WalletSqliteDatabase {
     }
 
     async fn remove_mint_quote(&self, quote_id: String) -> Result<(), FfiError> {
-        self.inner
-            .remove_mint_quote(&quote_id)
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.remove_mint_quote(&quote_id)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
@@ -202,8 +244,15 @@ impl WalletDatabase for WalletSqliteDatabase {
     // Melt Quote Management
     async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), FfiError> {
         let cdk_quote = quote.try_into()?;
-        self.inner
-            .add_melt_quote(cdk_quote)
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.add_melt_quote(cdk_quote)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
@@ -227,8 +276,15 @@ impl WalletDatabase for WalletSqliteDatabase {
     }
 
     async fn remove_melt_quote(&self, quote_id: String) -> Result<(), FfiError> {
-        self.inner
-            .remove_melt_quote(&quote_id)
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.remove_melt_quote(&quote_id)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
@@ -237,8 +293,15 @@ impl WalletDatabase for WalletSqliteDatabase {
     async fn add_keys(&self, keyset: KeySet) -> Result<(), FfiError> {
         // Convert FFI KeySet to cdk::nuts::KeySet
         let cdk_keyset: cdk::nuts::KeySet = keyset.try_into()?;
-        self.inner
-            .add_keys(cdk_keyset)
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.add_keys(cdk_keyset)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
@@ -255,8 +318,15 @@ impl WalletDatabase for WalletSqliteDatabase {
 
     async fn remove_keys(&self, id: Id) -> Result<(), FfiError> {
         let cdk_id = id.into();
-        self.inner
-            .remove_keys(&cdk_id)
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.remove_keys(&cdk_id)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
@@ -290,8 +360,15 @@ impl WalletDatabase for WalletSqliteDatabase {
             removed_ys.into_iter().map(|pk| pk.try_into()).collect();
         let cdk_removed_ys = cdk_removed_ys?;
 
-        self.inner
-            .update_proofs(cdk_added, cdk_removed_ys)
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.update_proofs(cdk_added, cdk_removed_ys)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
@@ -350,8 +427,15 @@ impl WalletDatabase for WalletSqliteDatabase {
         let cdk_ys = cdk_ys?;
         let cdk_state = state.into();
 
-        self.inner
-            .update_proofs_state(cdk_ys, cdk_state)
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.update_proofs_state(cdk_ys, cdk_state)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
@@ -359,10 +443,19 @@ impl WalletDatabase for WalletSqliteDatabase {
     // Keyset Counter Management
     async fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<u32, FfiError> {
         let cdk_id = keyset_id.into();
-        self.inner
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        let result = tx
             .increment_keyset_counter(&cdk_id, count)
             .await
-            .map_err(|e| FfiError::Database { msg: e.to_string() })
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        Ok(result)
     }
 
     // Transaction Management
@@ -370,8 +463,15 @@ impl WalletDatabase for WalletSqliteDatabase {
         // Convert FFI Transaction to CDK Transaction using TryFrom
         let cdk_transaction: cdk::wallet::types::Transaction = transaction.try_into()?;
 
-        self.inner
-            .add_transaction(cdk_transaction)
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.add_transaction(cdk_transaction)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
@@ -410,8 +510,15 @@ impl WalletDatabase for WalletSqliteDatabase {
 
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), FfiError> {
         let cdk_id = transaction_id.try_into()?;
-        self.inner
-            .remove_transaction(cdk_id)
+        let mut tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.remove_transaction(cdk_id)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        tx.commit()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
