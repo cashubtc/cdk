@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk_common::amount::FeeAndAmounts;
-use cdk_common::database::{self, WalletDatabase};
+use cdk_common::database::{self, DynWalletDatabaseTransaction, WalletDatabase};
 use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
 use getrandom::getrandom;
@@ -271,9 +271,10 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn update_mint_url(&mut self, new_mint_url: MintUrl) -> Result<(), Error> {
         // Update the mint URL in the wallet DB
-        self.localstore
-            .update_mint_url(self.mint_url.clone(), new_mint_url.clone())
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        tx.update_mint_url(self.mint_url.clone(), new_mint_url.clone())
             .await?;
+        tx.commit().await?;
 
         // Update the mint URL in the wallet struct field
         self.mint_url = new_mint_url;
@@ -367,12 +368,15 @@ impl Wallet {
     }
 
     /// Get amounts needed to refill proof state
-    #[instrument(skip(self))]
-    pub async fn amounts_needed_for_state_target(
+    #[instrument(skip(self, tx))]
+    pub(crate) async fn amounts_needed_for_state_target(
         &self,
+        tx: &mut DynWalletDatabaseTransaction<'_>,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Vec<Amount>, Error> {
-        let unspent_proofs = self.get_unspent_proofs().await?;
+        let unspent_proofs = self
+            .get_proofs_with(Some(tx), Some(vec![State::Unspent]), None)
+            .await?;
 
         let amounts_count: HashMap<u64, u64> =
             unspent_proofs
@@ -402,14 +406,15 @@ impl Wallet {
     }
 
     /// Determine [`SplitTarget`] for amount based on state
-    #[instrument(skip(self))]
+    #[instrument(skip(self, tx))]
     async fn determine_split_target_values(
         &self,
+        tx: &mut DynWalletDatabaseTransaction<'_>,
         change_amount: Amount,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<SplitTarget, Error> {
         let mut amounts_needed_refill = self
-            .amounts_needed_for_state_target(fee_and_amounts)
+            .amounts_needed_for_state_target(tx, fee_and_amounts)
             .await?;
 
         amounts_needed_refill.sort();
@@ -495,9 +500,10 @@ impl Wallet {
 
                 tracing::debug!("Restored {} proofs", proofs.len());
 
-                self.localstore
-                    .increment_keyset_counter(&keyset.id, proofs.len() as u32)
+                let mut tx = self.localstore.begin_db_transaction().await?;
+                tx.increment_keyset_counter(&keyset.id, proofs.len() as u32)
                     .await?;
+                tx.commit().await?;
 
                 let states = self.check_proofs_spent(proofs.clone()).await?;
 
@@ -523,9 +529,9 @@ impl Wallet {
                     })
                     .collect::<Result<Vec<ProofInfo>, _>>()?;
 
-                self.localstore
-                    .update_proofs(unspent_proofs, vec![])
-                    .await?;
+                let mut tx = self.localstore.begin_db_transaction().await?;
+                tx.update_proofs(unspent_proofs, vec![]).await?;
+                tx.commit().await?;
 
                 empty_batch = 0;
                 start_counter += 100;

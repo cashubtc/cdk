@@ -1,3 +1,4 @@
+use cdk_common::database::DynWalletDatabaseTransaction;
 use cdk_common::nut02::KeySetInfosMethods;
 use tracing::instrument;
 
@@ -27,6 +28,7 @@ impl Wallet {
 
         let pre_swap = self
             .create_swap(
+                self.localstore.begin_db_transaction().await?,
                 amount,
                 amount_split_target.clone(),
                 input_proofs.clone(),
@@ -133,9 +135,11 @@ impl Wallet {
             .map(|proof| proof.y())
             .collect::<Result<Vec<PublicKey>, _>>()?;
 
-        self.localstore
-            .update_proofs(added_proofs, deleted_ys)
-            .await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
+        tx.update_proofs(added_proofs, deleted_ys).await?;
+        tx.commit().await?;
+
         Ok(send_proofs)
     }
 
@@ -196,9 +200,10 @@ impl Wallet {
     }
 
     /// Create Swap Payload
-    #[instrument(skip(self, proofs))]
+    #[instrument(skip(self, proofs, tx))]
     pub async fn create_swap(
         &self,
+        mut tx: DynWalletDatabaseTransaction<'_>,
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
         proofs: Proofs,
@@ -210,13 +215,13 @@ impl Wallet {
 
         // Desired amount is either amount passed or value of all proof
         let proofs_total = proofs.total_amount()?;
-
-        let ys: Vec<PublicKey> = proofs.ys()?;
-        self.localstore
-            .update_proofs_state(ys, State::Reserved)
+        let fee = self.get_proofs_fee(&proofs).await?;
+        let fee_and_amounts = self
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
 
-        let fee = self.get_proofs_fee(&proofs).await?;
+        let ys: Vec<PublicKey> = proofs.ys()?;
+        tx.update_proofs_state(ys, State::Reserved).await?;
 
         let total_to_subtract = amount
             .unwrap_or(Amount::ZERO)
@@ -226,10 +231,6 @@ impl Wallet {
         let change_amount: Amount = proofs_total
             .checked_sub(total_to_subtract)
             .ok_or(Error::InsufficientFunds)?;
-
-        let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-            .await?;
 
         let (send_amount, change_amount) = match include_fees {
             true => {
@@ -259,7 +260,7 @@ impl Wallet {
         // else use state refill
         let change_split_target = match amount_split_target {
             SplitTarget::None => {
-                self.determine_split_target_values(change_amount, &fee_and_amounts)
+                self.determine_split_target_values(&mut tx, change_amount, &fee_and_amounts)
                     .await?
             }
             s => s,
@@ -296,8 +297,7 @@ impl Wallet {
                 total_secrets_needed
             );
 
-            let new_counter = self
-                .localstore
+            let new_counter = tx
                 .increment_keyset_counter(&active_keyset_id, total_secrets_needed)
                 .await?;
 
@@ -365,6 +365,8 @@ impl Wallet {
         desired_messages.sort_secrets();
 
         let swap_request = SwapRequest::new(proofs, desired_messages.blinded_messages());
+
+        tx.commit().await?;
 
         Ok(PreSwap {
             pre_mint_secrets: desired_messages,

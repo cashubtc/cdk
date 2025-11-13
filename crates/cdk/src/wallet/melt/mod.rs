@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
+use cdk_common::database::DynWalletDatabaseTransaction;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection};
-use cdk_common::{Error, MeltQuoteBolt11Response, MeltQuoteState, ProofsMethods};
+use cdk_common::{Error, MeltQuoteBolt11Response, MeltQuoteState, ProofsMethods, State};
 use tracing::instrument;
 
 use crate::Wallet;
@@ -48,6 +49,7 @@ impl Wallet {
 
     pub(crate) async fn add_transaction_for_pending_melt(
         &self,
+        tx: &mut DynWalletDatabaseTransaction<'_>,
         quote: &MeltQuote,
         response: &MeltQuoteBolt11Response<String>,
     ) -> Result<(), Error> {
@@ -59,29 +61,30 @@ impl Wallet {
                 response.state
             );
             if response.state == MeltQuoteState::Paid {
-                let pending_proofs = self.get_pending_proofs().await?;
+                let pending_proofs = self
+                    .get_proofs_with(Some(tx), Some(vec![State::Pending]), None)
+                    .await?;
                 let proofs_total = pending_proofs.total_amount().unwrap_or_default();
                 let change_total = response.change_amount().unwrap_or_default();
 
-                self.localstore
-                    .add_transaction(Transaction {
-                        mint_url: self.mint_url.clone(),
-                        direction: TransactionDirection::Outgoing,
-                        amount: response.amount,
-                        fee: proofs_total
-                            .checked_sub(response.amount)
-                            .and_then(|amt| amt.checked_sub(change_total))
-                            .unwrap_or_default(),
-                        unit: quote.unit.clone(),
-                        ys: pending_proofs.ys()?,
-                        timestamp: unix_time(),
-                        memo: None,
-                        metadata: HashMap::new(),
-                        quote_id: Some(quote.id.clone()),
-                        payment_request: Some(quote.request.clone()),
-                        payment_proof: response.payment_preimage.clone(),
-                    })
-                    .await?;
+                tx.add_transaction(Transaction {
+                    mint_url: self.mint_url.clone(),
+                    direction: TransactionDirection::Outgoing,
+                    amount: response.amount,
+                    fee: proofs_total
+                        .checked_sub(response.amount)
+                        .and_then(|amt| amt.checked_sub(change_total))
+                        .unwrap_or_default(),
+                    unit: quote.unit.clone(),
+                    ys: pending_proofs.ys()?,
+                    timestamp: unix_time(),
+                    memo: None,
+                    metadata: HashMap::new(),
+                    quote_id: Some(quote.id.clone()),
+                    payment_request: Some(quote.request.clone()),
+                    payment_proof: response.payment_preimage.clone(),
+                })
+                .await?;
             }
         }
         Ok(())
