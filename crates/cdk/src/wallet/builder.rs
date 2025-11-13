@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use cdk_common::database;
+use cdk_common::parking_lot::Mutex;
 #[cfg(feature = "auth")]
 use cdk_common::AuthToken;
 #[cfg(feature = "auth")]
@@ -27,6 +29,7 @@ pub struct WalletBuilder {
     seed: Option<[u8; 64]>,
     use_http_subscription: bool,
     client: Option<Arc<dyn MintConnector + Send + Sync>>,
+    metadata_cache_ttl: Option<Duration>,
     metadata_cache: Option<Arc<MintMetadataCache>>,
     metadata_caches: HashMap<MintUrl, Arc<MintMetadataCache>>,
 }
@@ -42,6 +45,7 @@ impl Default for WalletBuilder {
             auth_wallet: None,
             seed: None,
             client: None,
+            metadata_cache_ttl: None,
             use_http_subscription: false,
             metadata_cache: None,
             metadata_caches: HashMap::new(),
@@ -58,6 +62,12 @@ impl WalletBuilder {
     /// Use HTTP for wallet subscriptions to mint events
     pub fn use_http_subscription(mut self) -> Self {
         self.use_http_subscription = true;
+        self
+    }
+
+    /// Set metadata_cache_ttl
+    pub fn set_metadata_cache_ttl(mut self, metadata_cache_ttl: Option<Duration>) -> Self {
+        self.metadata_cache_ttl = metadata_cache_ttl;
         self
     }
 
@@ -201,6 +211,8 @@ impl WalletBuilder {
             }
         };
 
+        let metadata_cache_ttl = self.metadata_cache_ttl;
+
         let metadata_cache = self.metadata_cache.unwrap_or_else(|| {
             // Check if we already have a cache for this mint in the HashMap
             if let Some(cache) = self.metadata_caches.get(&mint_url) {
@@ -216,7 +228,7 @@ impl WalletBuilder {
             unit,
             localstore,
             metadata_cache,
-            metadata_cache_ttl: None.into(),
+            metadata_cache_ttl: Arc::new(Mutex::new(metadata_cache_ttl)),
             target_proof_count: self.target_proof_count.unwrap_or(3),
             #[cfg(feature = "auth")]
             auth_wallet: Arc::new(RwLock::new(self.auth_wallet)),

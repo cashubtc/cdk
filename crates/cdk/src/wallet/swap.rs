@@ -49,11 +49,10 @@ impl Wallet {
 
         let active_keys = self
             .metadata_cache
-            .load(
-                &self.localstore,
-                &self.client,
-                self.metadata_cache_ttl.clone_inner(),
-            )
+            .load(&self.localstore, &self.client, {
+                let ttl = self.metadata_cache_ttl.lock();
+                *ttl
+            })
             .await?
             .keys
             .get(&active_keyset_id)

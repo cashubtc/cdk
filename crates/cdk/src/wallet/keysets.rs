@@ -15,11 +15,10 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn load_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
         self.metadata_cache
-            .load(
-                &self.localstore,
-                &self.client,
-                self.metadata_cache_ttl.clone_inner(),
-            )
+            .load(&self.localstore, &self.client, {
+                let ttl = self.metadata_cache_ttl.lock();
+                *ttl
+            })
             .await?
             .keys
             .get(&keyset_id)
@@ -42,11 +41,10 @@ impl Wallet {
     pub async fn get_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
         let keysets = self
             .metadata_cache
-            .load(
-                &self.localstore,
-                &self.client,
-                self.metadata_cache_ttl.clone_inner(),
-            )
+            .load(&self.localstore, &self.client, {
+                let ttl = self.metadata_cache_ttl.lock();
+                *ttl
+            })
             .await?
             .keysets
             .iter()
@@ -77,11 +75,10 @@ impl Wallet {
 
         let keysets = self
             .metadata_cache
-            .load_from_mint(
-                &self.localstore,
-                &self.client,
-                self.metadata_cache_ttl.clone_inner(),
-            )
+            .load_from_mint(&self.localstore, &self.client, {
+                let ttl = self.metadata_cache_ttl.lock();
+                *ttl
+            })
             .await?
             .keysets
             .iter()
@@ -123,11 +120,10 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn get_active_keyset(&self) -> Result<KeySetInfo, Error> {
         self.metadata_cache
-            .load(
-                &self.localstore,
-                &self.client,
-                self.metadata_cache_ttl.clone_inner(),
-            )
+            .load(&self.localstore, &self.client, {
+                let ttl = self.metadata_cache_ttl.lock();
+                *ttl
+            })
             .await?
             .active_keysets
             .iter()
@@ -143,11 +139,10 @@ impl Wallet {
     pub async fn get_keyset_fees_and_amounts(&self) -> Result<KeysetFeeAndAmounts, Error> {
         let metadata = self
             .metadata_cache
-            .load(
-                &self.localstore,
-                &self.client,
-                self.metadata_cache_ttl.clone_inner(),
-            )
+            .load(&self.localstore, &self.client, {
+                let ttl = self.metadata_cache_ttl.lock();
+                *ttl
+            })
             .await?;
 
         let mut fees = HashMap::new();

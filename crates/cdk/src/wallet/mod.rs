@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -79,53 +78,6 @@ pub use types::{MeltQuote, MintQuote, SendKind};
 
 use crate::nuts::nut00::ProofsMethods;
 
-/// Cloneable mutex
-///
-/// Each instance is independent from each other, that's why an Arc is not an option
-#[derive(Debug)]
-pub struct CloneableMutex<T>(Mutex<T>)
-where
-    T: Clone + Debug;
-
-impl<T> From<T> for CloneableMutex<T>
-where
-    T: Clone + Debug,
-{
-    fn from(value: T) -> Self {
-        Self(Mutex::new(value))
-    }
-}
-
-impl<T> CloneableMutex<T>
-where
-    T: Clone + Debug,
-{
-    /// Clone the inner guarded object
-    pub fn clone_inner(&self) -> T {
-        (*self.0.lock().deref()).clone()
-    }
-}
-
-impl<T> Clone for CloneableMutex<T>
-where
-    T: Clone + Debug,
-{
-    fn clone(&self) -> Self {
-        Self(Mutex::new(self.0.lock().clone()))
-    }
-}
-
-impl<T> Deref for CloneableMutex<T>
-where
-    T: Clone + Debug,
-{
-    type Target = Mutex<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 /// CDK Wallet
 ///
 /// The CDK [`Wallet`] is a high level cashu wallet.
@@ -143,7 +95,7 @@ pub struct Wallet {
     pub metadata_cache: Arc<MintMetadataCache>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
-    metadata_cache_ttl: CloneableMutex<Option<Duration>>,
+    metadata_cache_ttl: Arc<Mutex<Option<Duration>>>,
     #[cfg(feature = "auth")]
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
     seed: [u8; 64],
@@ -275,11 +227,10 @@ impl Wallet {
         let mut fee_per_keyset = HashMap::new();
         let metadata = self
             .metadata_cache
-            .load(
-                &self.localstore,
-                &self.client,
-                self.metadata_cache_ttl.clone_inner(),
-            )
+            .load(&self.localstore, &self.client, {
+                let ttl = self.metadata_cache_ttl.lock();
+                *ttl
+            })
             .await?;
 
         for keyset_id in proofs_per_keyset.keys() {
@@ -300,11 +251,10 @@ impl Wallet {
     pub async fn get_keyset_count_fee(&self, keyset_id: &Id, count: u64) -> Result<Amount, Error> {
         let input_fee_ppk = self
             .metadata_cache
-            .load(
-                &self.localstore,
-                &self.client,
-                self.metadata_cache_ttl.clone_inner(),
-            )
+            .load(&self.localstore, &self.client, {
+                let ttl = self.metadata_cache_ttl.lock();
+                *ttl
+            })
             .await?
             .keysets
             .get(keyset_id)
