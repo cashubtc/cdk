@@ -172,8 +172,8 @@ where
             msg.push_str(&proof.c.to_hex());
         }
 
-        // Add all output amount, and B_ values in order (if any)
-        // msg = ... || amount_0 || id_0 || B_0 || ... || amount_m || id_m || B_m
+        // Add all output amounts and B_ values in order (if any)
+        // msg = ... || amount_0 || B_0 || ... || amount_m || B_m
         if let Some(outputs) = &self.outputs {
             for output in outputs {
                 msg.push_str(&output.amount.to_string());

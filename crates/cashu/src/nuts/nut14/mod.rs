@@ -169,7 +169,7 @@ impl Proof {
         if valid_sig_count >= relevant_num_sigs_required {
             Ok(())
         } else {
-            Err(Error::IncorrectSecretKind)
+            Err(Error::NUT11(super::nut11::Error::SpendConditionsNotMet))
         }
     }
 
