@@ -994,6 +994,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "mint")]
     fn four_bytes_hash_currency_unit() {
         let unit = CurrencyUnit::Sat;
         let index = unit.derivation_index();
