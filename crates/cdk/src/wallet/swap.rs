@@ -50,7 +50,7 @@ impl Wallet {
         let active_keys = self
             .metadata_cache
             .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.lock();
+                let ttl = self.metadata_cache_ttl.read();
                 *ttl
             })
             .await?

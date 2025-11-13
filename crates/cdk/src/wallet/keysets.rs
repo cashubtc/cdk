@@ -16,7 +16,7 @@ impl Wallet {
     pub async fn load_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
         self.metadata_cache
             .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.lock();
+                let ttl = self.metadata_cache_ttl.read();
                 *ttl
             })
             .await?
@@ -42,7 +42,7 @@ impl Wallet {
         let keysets = self
             .metadata_cache
             .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.lock();
+                let ttl = self.metadata_cache_ttl.read();
                 *ttl
             })
             .await?
@@ -75,10 +75,7 @@ impl Wallet {
 
         let keysets = self
             .metadata_cache
-            .load_from_mint(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.lock();
-                *ttl
-            })
+            .load_from_mint(&self.localstore, &self.client)
             .await?
             .keysets
             .iter()
@@ -121,7 +118,7 @@ impl Wallet {
     pub async fn get_active_keyset(&self) -> Result<KeySetInfo, Error> {
         self.metadata_cache
             .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.lock();
+                let ttl = self.metadata_cache_ttl.read();
                 *ttl
             })
             .await?
@@ -140,7 +137,7 @@ impl Wallet {
         let metadata = self
             .metadata_cache
             .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.lock();
+                let ttl = self.metadata_cache_ttl.read();
                 *ttl
             })
             .await?;

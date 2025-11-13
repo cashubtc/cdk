@@ -144,7 +144,7 @@ impl std::fmt::Debug for MintMetadataCache {
 impl Wallet {
     /// Sets the metadata cache TTL
     pub fn set_metadata_cache_ttl(&self, ttl: Option<Duration>) {
-        let mut guarded_ttl = self.metadata_cache_ttl.lock();
+        let mut guarded_ttl = self.metadata_cache_ttl.write();
         *guarded_ttl = ttl;
     }
 
@@ -211,7 +211,6 @@ impl MintMetadataCache {
     ///
     /// * `storage` - Database to persist metadata to (async background write)
     /// * `client` - HTTP client for fetching from mint server
-    /// * `ttl` - Optional TTL, if not provided it is assumed that any cached data is good enough
     ///
     /// # Returns
     ///
@@ -228,7 +227,6 @@ impl MintMetadataCache {
         &self,
         storage: &Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
         client: &Arc<dyn MintConnector + Send + Sync>,
-        ttl: Option<Duration>,
     ) -> Result<Arc<MintMetadata>, Error> {
         // Acquire lock to ensure only one fetch at a time
         let current_version = self.metadata.load().status.version;
@@ -236,11 +234,7 @@ impl MintMetadataCache {
 
         // Check if another caller already updated the cache while we waited
         let current_metadata = self.metadata.load().clone();
-        if current_metadata.status.is_populated
-            && ttl
-                .map(|ttl| current_metadata.status.updated_at + ttl > Instant::now())
-                .unwrap_or(true)
-            && current_metadata.status.version > current_version
+        if current_metadata.status.is_populated && current_metadata.status.version > current_version
         {
             // Cache was just updated by another caller - return it
             tracing::debug!(
@@ -320,7 +314,7 @@ impl MintMetadataCache {
         }
 
         // Cache not populated - fetch from mint
-        self.load_from_mint(storage, client, ttl).await
+        self.load_from_mint(storage, client).await
     }
 
     /// Load auth keysets and keys (auth feature only)

@@ -9,12 +9,12 @@ use std::time::Duration;
 
 use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
-use cdk_common::parking_lot::Mutex;
+use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
 use getrandom::getrandom;
 use subscription::{ActiveSubscription, SubscriptionManager};
 #[cfg(feature = "auth")]
-use tokio::sync::RwLock;
+use tokio::sync::RwLock as TokioRwLock;
 use tracing::instrument;
 use zeroize::Zeroize;
 
@@ -95,9 +95,9 @@ pub struct Wallet {
     pub metadata_cache: Arc<MintMetadataCache>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
-    metadata_cache_ttl: Arc<Mutex<Option<Duration>>>,
+    metadata_cache_ttl: Arc<RwLock<Option<Duration>>>,
     #[cfg(feature = "auth")]
-    auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
+    auth_wallet: Arc<TokioRwLock<Option<AuthWallet>>>,
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
@@ -228,7 +228,7 @@ impl Wallet {
         let metadata = self
             .metadata_cache
             .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.lock();
+                let ttl = self.metadata_cache_ttl.read();
                 *ttl
             })
             .await?;
@@ -252,7 +252,7 @@ impl Wallet {
         let input_fee_ppk = self
             .metadata_cache
             .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.lock();
+                let ttl = self.metadata_cache_ttl.read();
                 *ttl
             })
             .await?
