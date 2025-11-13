@@ -3,11 +3,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cdk_common::database;
-use cdk_common::parking_lot::Mutex;
+use cdk_common::parking_lot::RwLock;
 #[cfg(feature = "auth")]
 use cdk_common::AuthToken;
 #[cfg(feature = "auth")]
-use tokio::sync::RwLock;
+use tokio::sync::RwLock as TokioRwLock;
 
 use crate::cdk_database::WalletDatabase;
 use crate::error::Error;
@@ -228,10 +228,10 @@ impl WalletBuilder {
             unit,
             localstore,
             metadata_cache,
-            metadata_cache_ttl: Arc::new(Mutex::new(metadata_cache_ttl)),
+            metadata_cache_ttl: Arc::new(RwLock::new(metadata_cache_ttl)),
             target_proof_count: self.target_proof_count.unwrap_or(3),
             #[cfg(feature = "auth")]
-            auth_wallet: Arc::new(RwLock::new(self.auth_wallet)),
+            auth_wallet: Arc::new(TokioRwLock::new(self.auth_wallet)),
             seed,
             client: client.clone(),
             subscription: SubscriptionManager::new(client, self.use_http_subscription),
