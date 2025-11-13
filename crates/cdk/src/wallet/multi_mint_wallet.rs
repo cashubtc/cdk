@@ -11,6 +11,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use cdk_common::database;
 use cdk_common::database::WalletDatabase;
+use cdk_common::task::spawn;
 use cdk_common::wallet::{Transaction, TransactionDirection};
 use tokio::sync::RwLock;
 use tracing::instrument;
@@ -914,20 +915,7 @@ impl MultiMintWallet {
             let target_mint_url = target_mint_url.clone();
 
             // Spawn parallel transfer task
-            #[cfg(not(target_arch = "wasm32"))]
-            let task = tokio::spawn(async move {
-                self_clone
-                    .transfer(
-                        &source_mint_url,
-                        &target_mint_url,
-                        TransferMode::ExactReceive(transfer_amount),
-                    )
-                    .await
-                    .map(|result| result.amount_received)
-            });
-
-            #[cfg(target_arch = "wasm32")]
-            let task = tokio::task::spawn_local(async move {
+            let task = spawn(async move {
                 self_clone
                     .transfer(
                         &source_mint_url,
@@ -1342,14 +1330,7 @@ impl MultiMintWallet {
             let amount_msat = u64::from(amount) * 1000;
             let options = Some(MeltOptions::new_mpp(amount_msat));
 
-            #[cfg(not(target_arch = "wasm32"))]
-            let task = tokio::spawn(async move {
-                let quote = wallet.melt_quote(bolt11_clone, options).await;
-                (mint_url_clone, quote)
-            });
-
-            #[cfg(target_arch = "wasm32")]
-            let task = tokio::task::spawn_local(async move {
+            let task = spawn(async move {
                 let quote = wallet.melt_quote(bolt11_clone, options).await;
                 (mint_url_clone, quote)
             });
@@ -1398,14 +1379,7 @@ impl MultiMintWallet {
 
             let mint_url_clone = mint_url.clone();
 
-            #[cfg(not(target_arch = "wasm32"))]
-            let task = tokio::spawn(async move {
-                let melted = wallet.melt(&quote_id).await;
-                (mint_url_clone, melted)
-            });
-
-            #[cfg(target_arch = "wasm32")]
-            let task = tokio::task::spawn_local(async move {
+            let task = spawn(async move {
                 let melted = wallet.melt(&quote_id).await;
                 (mint_url_clone, melted)
             });

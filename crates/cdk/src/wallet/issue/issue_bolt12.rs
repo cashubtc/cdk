@@ -29,8 +29,6 @@ impl Wallet {
         let mint_url = self.mint_url.clone();
         let unit = &self.unit;
 
-        self.refresh_keysets().await?;
-
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
             let mint_method_settings = self
@@ -85,8 +83,6 @@ impl Wallet {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
-        self.refresh_keysets().await?;
-
         let quote_info = self.localstore.get_mint_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {

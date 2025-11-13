@@ -49,8 +49,6 @@ impl Wallet {
         request: String,
         options: Option<MeltOptions>,
     ) -> Result<MeltQuote, Error> {
-        self.refresh_keysets().await?;
-
         let invoice = Bolt11Invoice::from_str(&request)?;
 
         let quote_request = MeltQuoteBolt11Request {
@@ -390,7 +388,7 @@ impl Wallet {
         let available_proofs = self.get_unspent_proofs().await?;
 
         let active_keyset_ids = self
-            .refresh_keysets()
+            .get_mint_keysets()
             .await?
             .into_iter()
             .map(|k| k.id)

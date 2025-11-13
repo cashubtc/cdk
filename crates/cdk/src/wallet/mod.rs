@@ -1,12 +1,15 @@
 #![doc = include_str!("./README.md")]
 
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Duration;
 
 use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
+use cdk_common::parking_lot::Mutex;
 use cdk_common::subscription::WalletParams;
 use getrandom::getrandom;
 use subscription::{ActiveSubscription, SubscriptionManager};
@@ -28,6 +31,7 @@ use crate::nuts::{
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
+use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::Amount;
 #[cfg(feature = "auth")]
 use crate::OidcClient;
@@ -42,6 +46,7 @@ mod issue;
 mod keysets;
 mod melt;
 mod mint_connector;
+mod mint_metadata_cache;
 pub mod multi_mint_wallet;
 pub mod payment_request;
 mod proofs;
@@ -86,8 +91,11 @@ pub struct Wallet {
     pub unit: CurrencyUnit,
     /// Storage backend
     pub localstore: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
+    /// Mint metadata cache for this mint (lock-free cached access to keys, keysets, and mint info)
+    pub metadata_cache: Arc<MintMetadataCache>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
+    metadata_cache_ttl: Arc<Mutex<Option<Duration>>>,
     #[cfg(feature = "auth")]
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
     seed: [u8; 64],
@@ -217,12 +225,18 @@ impl Wallet {
         proofs_per_keyset: HashMap<Id, u64>,
     ) -> Result<Amount, Error> {
         let mut fee_per_keyset = HashMap::new();
+        let metadata = self
+            .metadata_cache
+            .load(&self.localstore, &self.client, {
+                let ttl = self.metadata_cache_ttl.lock();
+                *ttl
+            })
+            .await?;
 
         for keyset_id in proofs_per_keyset.keys() {
-            let mint_keyset_info = self
-                .localstore
-                .get_keyset_by_id(keyset_id)
-                .await?
+            let mint_keyset_info = metadata
+                .keysets
+                .get(keyset_id)
                 .ok_or(Error::UnknownKeySet)?;
             fee_per_keyset.insert(*keyset_id, mint_keyset_info.input_fee_ppk);
         }
@@ -236,9 +250,14 @@ impl Wallet {
     #[instrument(skip_all)]
     pub async fn get_keyset_count_fee(&self, keyset_id: &Id, count: u64) -> Result<Amount, Error> {
         let input_fee_ppk = self
-            .localstore
-            .get_keyset_by_id(keyset_id)
+            .metadata_cache
+            .load(&self.localstore, &self.client, {
+                let ttl = self.metadata_cache_ttl.lock();
+                *ttl
+            })
             .await?
+            .keysets
+            .get(keyset_id)
             .ok_or(Error::UnknownKeySet)?
             .input_fee_ppk;
 
@@ -307,6 +326,7 @@ impl Wallet {
                                 self.mint_url.clone(),
                                 None,
                                 self.localstore.clone(),
+                                self.metadata_cache.clone(),
                                 mint_info.protected_endpoints(),
                                 oidc_client,
                             );
