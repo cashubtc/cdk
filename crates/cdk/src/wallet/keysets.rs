@@ -75,10 +75,7 @@ impl Wallet {
 
         let keysets = self
             .metadata_cache
-            .load_from_mint(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.read();
-                *ttl
-            })
+            .load_from_mint(&self.localstore, &self.client)
             .await?
             .keysets
             .iter()
