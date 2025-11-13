@@ -121,7 +121,6 @@ impl Secret {
 /// For HTLC, preimage_needed is true before locktime; From NUT-14: "if the current system time
 /// is later than Secret.tag.locktime, the Proof can be spent if Proof.witness includes
 /// a signature from the key in Secret.tags.refund."
-
 pub(crate) fn get_pubkeys_and_required_sigs(
     secret: &Secret,
     current_time: u64,
@@ -335,7 +334,7 @@ pub trait SpendingConditionVerification {
     /// When SIG_ALL is set, all proofs in the transaction must be signed together.
     fn verify_full_sig_all_check(&self) -> Result<(), super::nut11::Error> {
         debug_assert!(
-            self.has_at_least_one_sig_all()? == true,
+            self.has_at_least_one_sig_all()?,
             "verify_full_sig_all_check() called on proofs without SIG_ALL. This shouldn't happen"
         );
         // Verify all inputs meet SIG_ALL requirements per NUT-11:
@@ -370,7 +369,7 @@ pub trait SpendingConditionVerification {
     /// This function will NOT be called if any input has SIG_ALL.
     fn verify_inputs_individually(&self) -> Result<(), super::nut14::Error> {
         debug_assert!(
-            self.has_at_least_one_sig_all()? == false,
+            !(self.has_at_least_one_sig_all()?),
             "verify_inputs_individually() called on SIG_ALL. This shouldn't happen"
         );
         for proof in self.inputs() {
