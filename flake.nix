@@ -109,8 +109,10 @@
             clightning
             bitcoind
             sqlx-cli
-            cargo-outdated
             mprocs
+
+            cargo-outdated
+            cargo-mutants
 
             # Needed for github ci
             libz

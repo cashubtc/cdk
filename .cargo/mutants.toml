@@ -1,0 +1,39 @@
+# Mutation Testing Configuration for CDK
+# Phase 1: Focus on cashu crate only
+
+# Start with cashu crate only - exclude other crates initially
+exclude_globs = [
+    "crates/cdk-*/**",  # Exclude other crates initially
+    "**/tests/**",      # Don't mutate test code
+    "**/benches/**",    # Don't mutate benchmarks
+]
+
+# Reasonable timeout to catch hangs (5 minutes minimum)
+minimum_test_timeout = 300
+
+# Skip specific mutations that cause infinite loops
+# These mutations create scenarios where loops never terminate or recursive functions never return.
+# Format: "file.rs:line.*pattern"
+exclude_re = [
+    # dhke.rs:61 - Mutating counter += to *= causes infinite loop (counter stays 0)
+    "crates/cashu/src/dhke.rs:61:.*replace \\+= with \\*=",
+
+    # amount.rs:108 - Mutating % to / in split causes infinite loop
+    "crates/cashu/src/amount.rs:108:.*replace % with /",
+
+    # amount.rs:100 - split() returning empty vec causes infinite loops
+    "crates/cashu/src/amount.rs:100:.*replace.*split.*with vec!\\[\\]",
+    "crates/cashu/src/amount.rs:100:.*replace.*split.*with vec!\\[Default",
+
+    # amount.rs:203 - checked_add returning Some(Default/0) causes infinite increment loops
+    "crates/cashu/src/amount.rs:203:.*replace.*checked_add.*with Some\\(Default",
+
+    # amount.rs:226 - try_sum returning Ok(Default/0) causes infinite loops
+    "crates/cashu/src/amount.rs:226:.*replace.*try_sum.*with Ok\\(Default",
+
+    # amount.rs:288 - From<u64> returning Default/0 causes infinite loops
+    "crates/cashu/src/amount.rs:288:.*replace.*from.*with Default",
+
+    # amount.rs:331 - Sub returning Default/0 causes infinite loops
+    "crates/cashu/src/amount.rs:331:.*replace.*sub.*with Default",
+]
