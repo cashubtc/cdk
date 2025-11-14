@@ -177,7 +177,13 @@ pub(crate) fn get_pubkeys_and_required_sigs(
                 // HTLC: needs preimage before locktime, pubkeys from conditions
                 // (data contains hash, not pubkey)
                 let pubkeys = conditions.pubkeys.clone().unwrap_or_default();
-                let required_sigs = conditions.num_sigs.unwrap_or(1);
+                // If no pubkeys are specified, require 0 signatures (only preimage needed)
+                // Otherwise, default to requiring 1 signature
+                let required_sigs = if pubkeys.is_empty() {
+                    0
+                } else {
+                    conditions.num_sigs.unwrap_or(1)
+                };
                 Ok((true, pubkeys, required_sigs))
             }
         }

@@ -191,6 +191,9 @@ impl Proof {
 
 #[cfg(test)]
 mod tests {
+    use bitcoin::hashes::sha256::Hash as Sha256Hash;
+    use bitcoin::hashes::Hash;
+
     use super::*;
     use crate::nuts::nut00::Witness;
     use crate::nuts::nut10::Kind;
