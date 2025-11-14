@@ -10,10 +10,9 @@ use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::DynMintAuthDatabase;
 use cdk_common::database::{self, DynMintDatabase};
-use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
+use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
-use cdk_common::secret;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::global;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
@@ -853,39 +852,12 @@ impl Mint {
     /// Verify [`Proof`] meets conditions and is signed
     #[tracing::instrument(skip_all)]
     pub async fn verify_proofs(&self, proofs: Proofs) -> Result<(), Error> {
+        // This ignore P2PK and HTLC, as all NUT-10 spending conditions are
+        // checked elsewhere.
         #[cfg(feature = "prometheus")]
         global::inc_in_flight_requests("verify_proofs");
 
-        let result = async {
-            proofs
-                .iter()
-                .map(|proof| {
-                    // Check if secret is a nut10 secret with conditions
-                    if let Ok(secret) =
-                        <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
-                    {
-                        // Checks and verifies known secret kinds.
-                        // If it is an unknown secret kind it will be treated as a normal secret.
-                        // Spending conditions will **not** be check. It is up to the wallet to ensure
-                        // only supported secret kinds are used as there is no way for the mint to
-                        // enforce only signing supported secrets as they are blinded at
-                        // that point.
-                        match secret.kind() {
-                            Kind::P2PK => {
-                                proof.verify_p2pk()?;
-                            }
-                            Kind::HTLC => {
-                                proof.verify_htlc()?;
-                            }
-                        }
-                    }
-                    Ok(())
-                })
-                .collect::<Result<Vec<()>, Error>>()?;
-
-            self.signatory.verify_proofs(proofs).await
-        }
-        .await;
+        let result = self.signatory.verify_proofs(proofs).await;
 
         #[cfg(feature = "prometheus")]
         {

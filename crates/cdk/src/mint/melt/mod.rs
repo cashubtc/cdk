@@ -8,7 +8,7 @@ use cdk_common::payment::{
     Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, OutgoingPaymentOptions,
 };
 use cdk_common::quote_id::QuoteId;
-use cdk_common::{MeltOptions, MeltQuoteBolt12Request};
+use cdk_common::{MeltOptions, MeltQuoteBolt12Request, SpendingConditionVerification};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use lightning::offers::offer::Offer;
@@ -24,8 +24,11 @@ use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
 use crate::{ensure_cdk, Amount, Error};
 
-mod melt_saga;
-pub(super) mod shared;
+pub(crate) mod melt_saga;
+pub(crate) mod shared;
+
+#[cfg(test)]
+mod tests;
 
 use melt_saga::MeltSaga;
 
@@ -422,6 +425,13 @@ impl Mint {
         &self,
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK
+        // and HTLC (including SIGALL)
+        melt_request.verify_spending_conditions()?;
+
+        // We don't need to check P2PK or HTLC again. It has all been checked above
+        // and the code doesn't reach here unless such verifications were satisfactory
+
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
         let init_saga = MeltSaga::new(

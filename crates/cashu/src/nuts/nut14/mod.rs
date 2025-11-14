@@ -4,8 +4,6 @@
 
 use std::str::FromStr;
 
-use bitcoin::hashes::sha256::Hash as Sha256Hash;
-use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -14,7 +12,6 @@ use super::nut00::Witness;
 use super::nut10::Secret;
 use super::nut11::valid_signatures;
 use super::{Conditions, Proof};
-use crate::ensure_cdk;
 use crate::util::{hex, unix_time};
 
 pub mod serde_htlc_witness;
@@ -46,6 +43,9 @@ pub enum Error {
     /// Witness Signatures not provided
     #[error("Witness did not provide signatures")]
     SignaturesNotProvided,
+    /// SIG_ALL not supported in this context
+    #[error("SIG_ALL proofs must be verified using a different method")]
+    SigAllNotSupportedHere,
     /// Secp256k1 error
     #[error(transparent)]
     Secp256k1(#[from] bitcoin::secp256k1::Error),
@@ -68,87 +68,109 @@ pub struct HTLCWitness {
     pub signatures: Option<Vec<String>>,
 }
 
-impl Proof {
-    /// Verify HTLC
-    pub fn verify_htlc(&self) -> Result<(), Error> {
-        let secret: Secret = self.secret.clone().try_into()?;
-        let conditions: Option<Conditions> = secret
-            .secret_data()
-            .tags()
-            .and_then(|c| c.clone().try_into().ok());
-
-        let htlc_witness = match &self.witness {
-            Some(Witness::HTLCWitness(witness)) => witness,
-            _ => return Err(Error::IncorrectSecretKind),
-        };
-
+impl HTLCWitness {
+    /// Decode the preimage from hex and verify it's exactly 32 bytes
+    ///
+    /// Returns the 32-byte preimage data if valid, or an error if:
+    /// - The hex decoding fails
+    /// - The decoded data is not exactly 32 bytes
+    pub fn preimage_data(&self) -> Result<[u8; 32], Error> {
         const REQUIRED_PREIMAGE_BYTES: usize = 32;
 
-        let preimage_bytes =
-            hex::decode(&htlc_witness.preimage).map_err(|_| Error::InvalidHexPreimage)?;
+        // Decode the 64-character hex string to bytes
+        let preimage_bytes = hex::decode(&self.preimage).map_err(|_| Error::InvalidHexPreimage)?;
 
+        // Verify the preimage is exactly 32 bytes
         if preimage_bytes.len() != REQUIRED_PREIMAGE_BYTES {
             return Err(Error::PreimageInvalidSize);
         }
 
-        if let Some(conditions) = conditions {
-            // Check locktime
-            if let Some(locktime) = conditions.locktime {
-                // If locktime is in passed and no refund keys provided anyone can spend
-                if locktime.lt(&unix_time()) && conditions.refund_keys.is_none() {
-                    return Ok(());
-                }
+        // Convert to fixed-size array
+        let mut array = [0u8; 32];
+        array.copy_from_slice(&preimage_bytes);
+        Ok(array)
+    }
+}
 
-                // If refund keys are provided verify p2pk signatures
-                if let (Some(refund_key), Some(signatures)) =
-                    (conditions.refund_keys, &self.witness)
-                {
-                    let signatures = signatures
-                        .signatures()
-                        .ok_or(Error::SignaturesNotProvided)?
-                        .iter()
-                        .map(|s| Signature::from_str(s))
-                        .collect::<Result<Vec<Signature>, _>>()?;
+impl Proof {
+    /// Verify HTLC
+    pub fn verify_htlc(&self) -> Result<(), Error> {
+        let secret: Secret = self.secret.clone().try_into()?;
+        let spending_conditions: Conditions = secret
+            .secret_data()
+            .tags()
+            .cloned()
+            .unwrap_or_default()
+            .try_into()?;
 
-                    // If secret includes refund keys check that there is a valid signature
-                    if valid_signatures(self.secret.as_bytes(), &refund_key, &signatures)?.ge(&1) {
-                        return Ok(());
-                    }
-                }
-            }
-            // If pubkeys are present check there is a valid signature
-            if let Some(pubkey) = conditions.pubkeys {
-                let req_sigs = conditions.num_sigs.unwrap_or(1);
-
-                let signatures = htlc_witness
-                    .signatures
-                    .as_ref()
-                    .ok_or(Error::SignaturesNotProvided)?;
-
-                let signatures = signatures
-                    .iter()
-                    .map(|s| Signature::from_str(s))
-                    .collect::<Result<Vec<Signature>, _>>()?;
-
-                let valid_sigs = valid_signatures(self.secret.as_bytes(), &pubkey, &signatures)?;
-                ensure_cdk!(valid_sigs >= req_sigs, Error::IncorrectSecretKind);
-            }
+        if spending_conditions.sig_flag == super::SigFlag::SigAll {
+            return Err(Error::SigAllNotSupportedHere);
         }
 
-        if secret.kind().ne(&super::Kind::HTLC) {
+        if secret.kind() != super::Kind::HTLC {
             return Err(Error::IncorrectSecretKind);
         }
 
-        let hash_lock =
-            Sha256Hash::from_str(secret.secret_data().data()).map_err(|_| Error::InvalidHash)?;
+        // Get the appropriate spending conditions based on locktime
+        let now = unix_time();
+        let (preimage_needed, relevant_pubkeys, relevant_num_sigs_required) =
+            super::nut10::get_pubkeys_and_required_sigs(&secret, now).map_err(Error::NUT11)?;
 
-        let preimage_hash = Sha256Hash::hash(&preimage_bytes);
+        // While a Witness is usually needed in a P2PK or HTLC proof, it's not
+        // always needed. If we are past the locktime, and there are no refund
+        // keys, then the proofs are anyone-can-spend:
+        //     NUT-11: "If the tag locktime is the unix time and the mint's local
+        //              clock is greater than locktime, the Proof becomes spendable
+        //              by anyone, except if [there are no refund keys]"
+        // Therefore, this function should not extract any Witness unless it
+        // is needed to get a preimage or signatures.
 
-        if hash_lock.ne(&preimage_hash) {
-            return Err(Error::Preimage);
+        // If preimage is needed (before locktime), verify it
+        if preimage_needed {
+            // Extract HTLC witness
+            let htlc_witness = match &self.witness {
+                Some(Witness::HTLCWitness(witness)) => witness,
+                _ => return Err(Error::IncorrectSecretKind),
+            };
+
+            // Verify preimage using shared function
+            super::nut10::verify_htlc_preimage(htlc_witness, &secret)?;
         }
 
-        Ok(())
+        if relevant_num_sigs_required == 0 {
+            return Ok(());
+        }
+
+        // if we get here, the preimage check (if it was needed) has been done
+        // and we know that at least one signature is required. So, we extract
+        // the witness.signatures and count them:
+
+        // Extract witness signatures
+        let htlc_witness = match &self.witness {
+            Some(Witness::HTLCWitness(witness)) => witness,
+            _ => return Err(Error::IncorrectSecretKind),
+        };
+        let witness_signatures = htlc_witness
+            .signatures
+            .as_ref()
+            .ok_or(Error::SignaturesNotProvided)?;
+
+        // Convert signatures from strings
+        let signatures: Vec<Signature> = witness_signatures
+            .iter()
+            .map(|s| Signature::from_str(s))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Count valid signatures using relevant_pubkeys
+        let msg: &[u8] = self.secret.as_bytes();
+        let valid_sig_count = valid_signatures(msg, &relevant_pubkeys, &signatures)?;
+
+        // Check if we have enough valid signatures
+        if valid_sig_count >= relevant_num_sigs_required {
+            Ok(())
+        } else {
+            Err(Error::NUT11(super::nut11::Error::SpendConditionsNotMet))
+        }
     }
 
     /// Add Preimage
