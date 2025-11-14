@@ -10,7 +10,8 @@ use serde::ser::{SerializeStruct, Serializer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::nut00::{BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
+use super::nut00::{BlindedMessage, PaymentMethod, Proofs};
+use super::nut01::CurrencyUnit;
 use super::ProofsMethods;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
