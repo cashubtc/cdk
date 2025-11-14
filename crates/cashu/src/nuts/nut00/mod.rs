@@ -579,8 +579,23 @@ pub enum CurrencyUnit {
 
 #[cfg(feature = "mint")]
 impl CurrencyUnit {
+    /// Derivation index mint will use for unit
+    #[deprecated(
+        since = "0.14.0",
+        note = "This function is outdated; use `hashed_derivation_index` instead."
+    )]
+    pub fn derivation_index(&self) -> Option<u32> {
+        match self {
+            Self::Sat => Some(0),
+            Self::Msat => Some(1),
+            Self::Usd => Some(2),
+            Self::Eur => Some(3),
+            Self::Auth => Some(4),
+            _ => None,
+        }
+    }
     ///  Big endian encoded integer of the first 4 bytes of the sha256 hash of the unit string.
-    pub fn derivation_index(&self) -> u32 {
+    pub fn hashed_derivation_index(&self) -> u32 {
         use bitcoin::hashes::sha256;
 
         let unit_str = self.to_string().to_lowercase();
@@ -997,23 +1012,23 @@ mod tests {
     #[cfg(feature = "mint")]
     fn four_bytes_hash_currency_unit() {
         let unit = CurrencyUnit::Sat;
-        let index = unit.derivation_index();
+        let index = unit.hashed_derivation_index();
         assert_eq!(index, 866057899);
 
         let unit = CurrencyUnit::Msat;
-        let index = unit.derivation_index();
+        let index = unit.hashed_derivation_index();
         assert_eq!(index, 1980671987);
 
         let unit = CurrencyUnit::Eur;
-        let index = unit.derivation_index();
+        let index = unit.hashed_derivation_index();
         assert_eq!(index, 975082952);
 
         let unit = CurrencyUnit::Usd;
-        let index = unit.derivation_index();
+        let index = unit.hashed_derivation_index();
         assert_eq!(index, 1443872135);
 
         let unit = CurrencyUnit::Auth;
-        let index = unit.derivation_index();
+        let index = unit.hashed_derivation_index();
 
         assert_eq!(index, 1039440956)
     }

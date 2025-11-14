@@ -159,7 +159,7 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
 }
 
 pub fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<DerivationPath> {
-    let unit_index = unit.derivation_index();
+    let unit_index = unit.hashed_derivation_index();
 
     Some(DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(129372).expect("129372 is a valid index"),
