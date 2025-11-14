@@ -54,7 +54,7 @@ pub use nut05::{
 pub use nut06::{ContactInfo, MintInfo, MintVersion, Nuts};
 pub use nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
 pub use nut09::{RestoreRequest, RestoreResponse};
-pub use nut10::{Kind, Secret as Nut10Secret, SecretData};
+pub use nut10::{Kind, Secret as Nut10Secret, SecretData, SpendingConditionVerification};
 pub use nut11::{Conditions, P2PKWitness, SigFlag, SpendingConditions};
 pub use nut12::{BlindSignatureDleq, ProofDleq};
 pub use nut14::HTLCWitness;

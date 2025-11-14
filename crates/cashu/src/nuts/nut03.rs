@@ -91,6 +91,32 @@ impl SwapRequest {
     }
 }
 
+impl super::nut10::SpendingConditionVerification for SwapRequest {
+    fn inputs(&self) -> &Proofs {
+        &self.inputs
+    }
+
+    fn sig_all_msg_to_sign(&self) -> String {
+        let mut msg = String::new();
+
+        // Add all input secrets and C values in order
+        // msg = secret_0 || C_0 || ... || secret_n || C_n
+        for proof in &self.inputs {
+            msg.push_str(&proof.secret.to_string());
+            msg.push_str(&proof.c.to_hex());
+        }
+
+        // Add all output amounts and B_ values in order
+        // msg = ... || amount_0 || B_0 || ... || amount_m || B_m
+        for output in &self.outputs {
+            msg.push_str(&output.amount.to_string());
+            msg.push_str(&output.blinded_secret.to_hex());
+        }
+
+        msg
+    }
+}
+
 /// Split Response [NUT-06]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
