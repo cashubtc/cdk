@@ -155,15 +155,14 @@ impl Proof {
 
         // Based on the current time, we must identify the relevant keys
         let now = unix_time();
-        let (preimage_needed, relevant_pubkeys, relevant_num_sigs_required) =
-            super::nut10::get_pubkeys_and_required_sigs(&secret, now)?;
+        let requirements = super::nut10::get_pubkeys_and_required_sigs(&secret, now)?;
 
-        if preimage_needed {
+        if requirements.preimage_needed {
             return Err(Error::PreimageNotSupportedInP2PK);
         }
 
         // Handle "anyone can spend" case (locktime passed with no refund keys)
-        if relevant_num_sigs_required == 0 {
+        if requirements.required_sigs == 0 {
             return Ok(());
         }
 
@@ -178,7 +177,7 @@ impl Proof {
         let msg: &[u8] = self.secret.as_bytes();
         let valid_sig_count = valid_signatures(
             msg,
-            &relevant_pubkeys,
+            &requirements.pubkeys,
             &witness_signatures
                 .iter()
                 .map(|s| Signature::from_str(s))
@@ -186,7 +185,7 @@ impl Proof {
         )?;
 
         // Check if we have enough valid signatures
-        if valid_sig_count >= relevant_num_sigs_required {
+        if valid_sig_count >= requirements.required_sigs {
             Ok(())
         } else {
             Err(Error::SpendConditionsNotMet)

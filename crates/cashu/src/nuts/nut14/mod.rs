@@ -113,7 +113,7 @@ impl Proof {
 
         // Get the appropriate spending conditions based on locktime
         let now = unix_time();
-        let (preimage_needed, relevant_pubkeys, relevant_num_sigs_required) =
+        let requirements =
             super::nut10::get_pubkeys_and_required_sigs(&secret, now).map_err(Error::NUT11)?;
 
         // While a Witness is usually needed in a P2PK or HTLC proof, it's not
@@ -126,7 +126,7 @@ impl Proof {
         // is needed to get a preimage or signatures.
 
         // If preimage is needed (before locktime), verify it
-        if preimage_needed {
+        if requirements.preimage_needed {
             // Extract HTLC witness
             let htlc_witness = match &self.witness {
                 Some(Witness::HTLCWitness(witness)) => witness,
@@ -137,7 +137,7 @@ impl Proof {
             super::nut10::verify_htlc_preimage(htlc_witness, &secret)?;
         }
 
-        if relevant_num_sigs_required == 0 {
+        if requirements.required_sigs == 0 {
             return Ok(());
         }
 
@@ -163,10 +163,10 @@ impl Proof {
 
         // Count valid signatures using relevant_pubkeys
         let msg: &[u8] = self.secret.as_bytes();
-        let valid_sig_count = valid_signatures(msg, &relevant_pubkeys, &signatures)?;
+        let valid_sig_count = valid_signatures(msg, &requirements.pubkeys, &signatures)?;
 
         // Check if we have enough valid signatures
-        if valid_sig_count >= relevant_num_sigs_required {
+        if valid_sig_count >= requirements.required_sigs {
             Ok(())
         } else {
             Err(Error::NUT11(super::nut11::Error::SpendConditionsNotMet))
