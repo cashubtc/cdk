@@ -7,4 +7,5 @@
 
 #[cfg(feature = "mint")]
 pub mod mint;
+#[cfg(feature = "mint")]
 pub mod nut10;
