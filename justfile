@@ -40,7 +40,7 @@ check *ARGS="--workspace --all-targets":
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  cargo check {{ARGS}}
+  cargo +nightly check {{ARGS}}
 
 # run code formatters
 format:
@@ -49,7 +49,7 @@ format:
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  cargo fmt --all
+  cargo +nightly fmt --all
   nixpkgs-fmt $(echo **.nix)
 
 # run doc tests
@@ -155,12 +155,12 @@ test-nutshell:
     
 
 # run `cargo clippy` on everything
-clippy *ARGS="--workspace --all-targets":
-  cargo clippy {{ARGS}} -- -D warnings
+clippy *ARGS="--locked --offline --workspace --all-targets":
+  cargo +nightly clippy {{ARGS}} -- -D warnings
 
 # run `cargo clippy --fix` on everything
-clippy-fix *ARGS="--workspace --all-targets":
-  cargo clippy {{ARGS}} --fix
+clippy-fix *ARGS="--locked --offline --workspace --all-targets":
+  cargo +nightly clippy {{ARGS}} --fix
 
 typos: 
   typos
