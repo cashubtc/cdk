@@ -78,7 +78,7 @@ jobs:
 
   clippy:
     name: "Stable build, clippy and test"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     needs: pre-commit-checks
     strategy:
