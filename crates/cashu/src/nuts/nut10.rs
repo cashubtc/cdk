@@ -13,6 +13,20 @@ use thiserror::Error;
 use super::nut01::PublicKey;
 use super::Conditions;
 
+/// Spending requirements for P2PK or HTLC verification
+///
+/// Returned by `get_pubkeys_and_required_sigs` to indicate what conditions
+/// must be met to spend a proof.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SpendingRequirements {
+    /// Whether a preimage is required (HTLC only, before locktime)
+    pub preimage_needed: bool,
+    /// Public keys that can provide valid signatures
+    pub pubkeys: Vec<PublicKey>,
+    /// Minimum number of signatures required from the pubkeys
+    pub required_sigs: u64,
+}
+
 /// NUT13 Error
 #[derive(Debug, Error)]
 pub enum Error {
@@ -116,15 +130,17 @@ impl Secret {
 /// From NUT-11: "If the tag locktime is the unix time and the mint's local clock is greater than
 /// locktime, the Proof becomes spendable by anyone, except [... if refund keys are specified]"
 ///
-/// Returns (preimage_needed, pubkeys, required_sigs).
-/// For P2PK, preimage_needed is always false.
-/// For HTLC, preimage_needed is true before locktime; From NUT-14: "if the current system time
-/// is later than Secret.tag.locktime, the Proof can be spent if Proof.witness includes
-/// a signature from the key in Secret.tags.refund."
+/// Returns `SpendingRequirements` containing:
+/// - `preimage_needed`: For P2PK, always false. For HTLC, true before locktime.
+/// - `pubkeys`: The public keys that can provide valid signatures
+/// - `required_sigs`: The minimum number of signatures required
+///
+/// From NUT-14: "if the current system time is later than Secret.tag.locktime, the Proof can
+/// be spent if Proof.witness includes a signature from the key in Secret.tags.refund."
 pub(crate) fn get_pubkeys_and_required_sigs(
     secret: &Secret,
     current_time: u64,
-) -> Result<(bool, Vec<PublicKey>, u64), super::nut11::Error> {
+) -> Result<SpendingRequirements, super::nut11::Error> {
     debug_assert!(
         secret.kind() == Kind::P2PK || secret.kind() == Kind::HTLC,
         "get_pubkeys_and_required_sigs called with invalid kind - this is a bug"
@@ -149,10 +165,18 @@ pub(crate) fn get_pubkeys_and_required_sigs(
         if let Some(refund_keys) = &conditions.refund_keys {
             // Locktime has passed and refund keys exist - use refund keys
             let refund_sigs = conditions.num_sigs_refund.unwrap_or(1);
-            Ok((false, refund_keys.clone(), refund_sigs))
+            Ok(SpendingRequirements {
+                preimage_needed: false,
+                pubkeys: refund_keys.clone(),
+                required_sigs: refund_sigs,
+            })
         } else {
             // Locktime has passed with no refund keys - anyone can spend
-            Ok((false, vec![], 0))
+            Ok(SpendingRequirements {
+                preimage_needed: false,
+                pubkeys: vec![],
+                required_sigs: 0,
+            })
         }
     } else {
         // Before locktime: logic differs between P2PK and HTLC
@@ -171,14 +195,28 @@ pub(crate) fn get_pubkeys_and_required_sigs(
                 }
 
                 let primary_num_sigs_required = conditions.num_sigs.unwrap_or(1);
-                Ok((false, primary_keys, primary_num_sigs_required))
+                Ok(SpendingRequirements {
+                    preimage_needed: false,
+                    pubkeys: primary_keys,
+                    required_sigs: primary_num_sigs_required,
+                })
             }
             Kind::HTLC => {
                 // HTLC: needs preimage before locktime, pubkeys from conditions
                 // (data contains hash, not pubkey)
                 let pubkeys = conditions.pubkeys.clone().unwrap_or_default();
-                let required_sigs = conditions.num_sigs.unwrap_or(1);
-                Ok((true, pubkeys, required_sigs))
+                // If no pubkeys are specified, require 0 signatures (only preimage needed)
+                // Otherwise, default to requiring 1 signature
+                let required_sigs = if pubkeys.is_empty() {
+                    0
+                } else {
+                    conditions.num_sigs.unwrap_or(1)
+                };
+                Ok(SpendingRequirements {
+                    preimage_needed: true,
+                    pubkeys,
+                    required_sigs,
+                })
             }
         }
     }
@@ -417,13 +455,15 @@ pub trait SpendingConditionVerification {
         let current_time = crate::util::unix_time();
 
         // Get the relevant public keys and required signature count based on locktime
-        let (preimage_needed, pubkeys, required_sigs) =
-            get_pubkeys_and_required_sigs(&first_secret, current_time)?;
+        let requirements = get_pubkeys_and_required_sigs(&first_secret, current_time)?;
 
-        debug_assert!(!preimage_needed, "P2PK should never require preimage");
+        debug_assert!(
+            !requirements.preimage_needed,
+            "P2PK should never require preimage"
+        );
 
         // Handle "anyone can spend" case (locktime passed with no refund keys)
-        if required_sigs == 0 {
+        if requirements.required_sigs == 0 {
             return Ok(());
         }
 
@@ -449,11 +489,14 @@ pub trait SpendingConditionVerification {
             .map_err(|_| super::nut11::Error::InvalidSignature)?;
 
         // Verify signatures using the existing valid_signatures function
-        let valid_sig_count =
-            super::nut11::valid_signatures(msg_to_sign.as_bytes(), &pubkeys, &signatures)?;
+        let valid_sig_count = super::nut11::valid_signatures(
+            msg_to_sign.as_bytes(),
+            &requirements.pubkeys,
+            &signatures,
+        )?;
 
         // Check if we have enough valid signatures
-        if valid_sig_count < required_sigs {
+        if valid_sig_count < requirements.required_sigs {
             return Err(super::nut11::Error::SpendConditionsNotMet);
         }
 
@@ -478,11 +521,10 @@ pub trait SpendingConditionVerification {
         let current_time = crate::util::unix_time();
 
         // Get the relevant public keys, required signature count, and whether preimage is needed
-        let (preimage_needed, pubkeys, required_sigs) =
-            get_pubkeys_and_required_sigs(&first_secret, current_time)?;
+        let requirements = get_pubkeys_and_required_sigs(&first_secret, current_time)?;
 
         // If preimage is needed (before locktime), verify it
-        if preimage_needed {
+        if requirements.preimage_needed {
             // Extract HTLC witness
             let htlc_witness = match first_input.witness.as_ref() {
                 Some(super::Witness::HTLCWitness(witness)) => witness,
@@ -495,7 +537,7 @@ pub trait SpendingConditionVerification {
         }
 
         // Handle "anyone can spend" case (locktime passed with no refund keys)
-        if required_sigs == 0 {
+        if requirements.required_sigs == 0 {
             return Ok(());
         }
 
@@ -521,11 +563,14 @@ pub trait SpendingConditionVerification {
             .map_err(|_| super::nut11::Error::InvalidSignature)?;
 
         // Verify signatures using the existing valid_signatures function
-        let valid_sig_count =
-            super::nut11::valid_signatures(msg_to_sign.as_bytes(), &pubkeys, &signatures)?;
+        let valid_sig_count = super::nut11::valid_signatures(
+            msg_to_sign.as_bytes(),
+            &requirements.pubkeys,
+            &signatures,
+        )?;
 
         // Check if we have enough valid signatures
-        if valid_sig_count < required_sigs {
+        if valid_sig_count < requirements.required_sigs {
             return Err(super::nut11::Error::SpendConditionsNotMet);
         }
 
