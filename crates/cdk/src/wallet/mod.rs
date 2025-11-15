@@ -284,72 +284,66 @@ impl Wallet {
     /// Query mint for current mint information
     #[instrument(skip(self))]
     pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, Error> {
-        match self.client.get_mint_info().await {
-            Ok(mint_info) => {
-                // If mint provides time make sure it is accurate
-                if let Some(mint_unix_time) = mint_info.time {
-                    let current_unix_time = unix_time();
-                    if current_unix_time.abs_diff(mint_unix_time) > 30 {
-                        tracing::warn!(
-                            "Mint time does match wallet time. Mint: {}, Wallet: {}",
-                            mint_unix_time,
-                            current_unix_time
-                        );
-                        return Err(Error::MintTimeExceedsTolerance);
-                    }
-                }
+        let mint_info = self
+            .metadata_cache
+            .load_from_mint(&self.localstore, &self.client)
+            .await?
+            .mint_info
+            .clone();
 
-                // Create or update auth wallet
-                #[cfg(feature = "auth")]
-                {
-                    let mut auth_wallet = self.auth_wallet.write().await;
-                    match &*auth_wallet {
-                        Some(auth_wallet) => {
-                            let mut protected_endpoints =
-                                auth_wallet.protected_endpoints.write().await;
-                            *protected_endpoints = mint_info.protected_endpoints();
-
-                            if let Some(oidc_client) = mint_info
-                                .openid_discovery()
-                                .map(|url| OidcClient::new(url, None))
-                            {
-                                auth_wallet.set_oidc_client(Some(oidc_client)).await;
-                            }
-                        }
-                        None => {
-                            tracing::info!("Mint has auth enabled creating auth wallet");
-
-                            let oidc_client = mint_info
-                                .openid_discovery()
-                                .map(|url| OidcClient::new(url, None));
-                            let new_auth_wallet = AuthWallet::new(
-                                self.mint_url.clone(),
-                                None,
-                                self.localstore.clone(),
-                                self.metadata_cache.clone(),
-                                mint_info.protected_endpoints(),
-                                oidc_client,
-                            );
-                            *auth_wallet = Some(new_auth_wallet.clone());
-
-                            self.client.set_auth_wallet(Some(new_auth_wallet)).await;
-                        }
-                    }
-                }
-
-                self.localstore
-                    .add_mint(self.mint_url.clone(), Some(mint_info.clone()))
-                    .await?;
-
-                tracing::trace!("Mint info updated for {}", self.mint_url);
-
-                Ok(Some(mint_info))
-            }
-            Err(err) => {
-                tracing::warn!("Could not get mint info {}", err);
-                Ok(None)
+        // If mint provides time make sure it is accurate
+        if let Some(mint_unix_time) = mint_info.time {
+            let current_unix_time = unix_time();
+            if current_unix_time.abs_diff(mint_unix_time) > 30 {
+                tracing::warn!(
+                    "Mint time does match wallet time. Mint: {}, Wallet: {}",
+                    mint_unix_time,
+                    current_unix_time
+                );
+                return Err(Error::MintTimeExceedsTolerance);
             }
         }
+
+        // Create or update auth wallet
+        #[cfg(feature = "auth")]
+        {
+            let mut auth_wallet = self.auth_wallet.write().await;
+            match &*auth_wallet {
+                Some(auth_wallet) => {
+                    let mut protected_endpoints = auth_wallet.protected_endpoints.write().await;
+                    *protected_endpoints = mint_info.protected_endpoints();
+
+                    if let Some(oidc_client) = mint_info
+                        .openid_discovery()
+                        .map(|url| OidcClient::new(url, None))
+                    {
+                        auth_wallet.set_oidc_client(Some(oidc_client)).await;
+                    }
+                }
+                None => {
+                    tracing::info!("Mint has auth enabled creating auth wallet");
+
+                    let oidc_client = mint_info
+                        .openid_discovery()
+                        .map(|url| OidcClient::new(url, None));
+                    let new_auth_wallet = AuthWallet::new(
+                        self.mint_url.clone(),
+                        None,
+                        self.localstore.clone(),
+                        self.metadata_cache.clone(),
+                        mint_info.protected_endpoints(),
+                        oidc_client,
+                    );
+                    *auth_wallet = Some(new_auth_wallet.clone());
+
+                    self.client.set_auth_wallet(Some(new_auth_wallet)).await;
+                }
+            }
+        }
+
+        tracing::trace!("Mint info updated for {}", self.mint_url);
+
+        Ok(Some(mint_info))
     }
 
     /// Get amounts needed to refill proof state
