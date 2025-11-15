@@ -196,6 +196,8 @@ mod tests {
     use crate::nuts::nut10::Kind;
     use crate::nuts::Nut10Secret;
     use crate::secret::Secret as SecretString;
+    use bitcoin::hashes::sha256::Hash as Sha256Hash;
+    use bitcoin::hashes::Hash;
 
     /// Tests that verify_htlc correctly accepts a valid HTLC with the correct preimage.
     ///
@@ -211,7 +213,12 @@ mod tests {
         let hash = Sha256Hash::hash(&preimage_bytes);
         let hash_str = hash.to_string();
 
-        let nut10_secret = Nut10Secret::new(Kind::HTLC, hash_str, None::<Vec<Vec<String>>>);
+        let conditions = Conditions {
+            num_sigs: Some(0), // because default is 1 now
+            ..Default::default()
+        };
+
+        let nut10_secret = Nut10Secret::new(Kind::HTLC, hash_str, Some(conditions));
         let secret: SecretString = nut10_secret.try_into().unwrap();
 
         let htlc_witness = HTLCWitness {
@@ -372,7 +379,12 @@ mod tests {
         let hash = Sha256Hash::hash(&preimage_bytes);
         let hash_str = hash.to_string();
 
-        let nut10_secret = Nut10Secret::new(Kind::HTLC, hash_str, None::<Vec<Vec<String>>>);
+        let conditions = Conditions {
+            num_sigs: Some(0), // because default is 1 now
+            ..Default::default()
+        };
+
+        let nut10_secret = Nut10Secret::new(Kind::HTLC, hash_str, Some(conditions));
         let secret: SecretString = nut10_secret.try_into().unwrap();
 
         let mut proof = Proof {
