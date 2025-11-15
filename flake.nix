@@ -32,6 +32,7 @@
     , rust-overlay
     , flake-utils
     , pre-commit-hooks
+    , crane
     , ...
     }@inputs:
     flake-utils.lib.eachDefaultSystem (
@@ -88,6 +89,168 @@
             targets = [ "wasm32-unknown-unknown" ]; # wasm
           }
         );
+
+        # ========================================
+        # Crane setup for cached builds
+        # ========================================
+        craneLib = (crane.mkLib pkgs).overrideToolchain stable_toolchain;
+
+        # Source for crane builds
+        src = builtins.path {
+          path = ./.;
+          name = "cdk-source";
+        };
+
+        # Common args for all Crane builds
+        commonCraneArgs = {
+          inherit src;
+          pname = "cdk";
+          version = "0.14.0";
+
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            protobuf
+          ];
+
+          buildInputs = with pkgs; [
+            openssl
+            sqlite
+            zlib
+          ] ++ libsDarwin;
+
+          # Environment variables
+          PROTOC = "${pkgs.protobuf}/bin/protoc";
+          PROTOC_INCLUDE = "${pkgs.protobuf}/include";
+        };
+
+        # Build ALL dependencies once - this is what gets cached by Cachix
+        # Note: We exclude swagger feature as it tries to download assets during build
+        workspaceDeps = craneLib.buildDepsOnly (commonCraneArgs // {
+          pname = "cdk-deps";
+          # Build deps for workspace - swagger excluded (downloads during build)
+          cargoExtraArgs = "--workspace";
+        });
+
+        # Helper function to create clippy checks
+        mkClippy = name: cargoArgs: craneLib.cargoClippy (commonCraneArgs // {
+          pname = "cdk-clippy-${name}";
+          cargoArtifacts = workspaceDeps;
+          cargoClippyExtraArgs = "${cargoArgs} -- -D warnings";
+        });
+
+        # Helper function to create example checks (compile only, no network access in sandbox)
+        mkExample = name: craneLib.mkCargoDerivation (commonCraneArgs // {
+          pname = "cdk-example-${name}";
+          cargoArtifacts = workspaceDeps;
+          buildPhaseCargoCommand = "cargo build --example ${name}";
+          # Examples are compiled but not run (no network in Nix sandbox)
+          installPhaseCommand = "mkdir -p $out";
+        });
+
+        # Helper function to create example packages (outputs binary for running outside sandbox)
+        mkExamplePackage = name: craneLib.mkCargoDerivation (commonCraneArgs // {
+          pname = "cdk-example-${name}";
+          cargoArtifacts = workspaceDeps;
+          buildPhaseCargoCommand = "cargo build --release --example ${name}";
+          installPhaseCommand = ''
+            mkdir -p $out/bin
+            cp target/release/examples/${name} $out/bin/
+          '';
+        });
+
+        # ========================================
+        # Example definitions - single source of truth
+        # ========================================
+        exampleChecks = [
+          "mint-token"
+          "melt-token"
+          "p2pk"
+          "proof-selection"
+          "wallet"
+        ];
+
+        # ========================================
+        # Clippy check definitions - single source of truth
+        # ========================================
+        clippyChecks = {
+          # Core crate: cashu
+          "cashu" = "-p cashu";
+          "cashu-no-default" = "-p cashu --no-default-features";
+          "cashu-wallet" = "-p cashu --no-default-features --features wallet";
+          "cashu-mint" = "-p cashu --no-default-features --features mint";
+          "cashu-auth" = "-p cashu --no-default-features --features auth";
+
+          # Core crate: cdk-common
+          "cdk-common" = "-p cdk-common";
+          "cdk-common-no-default" = "-p cdk-common --no-default-features";
+          "cdk-common-wallet" = "-p cdk-common --no-default-features --features wallet";
+          "cdk-common-mint" = "-p cdk-common --no-default-features --features mint";
+          "cdk-common-auth" = "-p cdk-common --no-default-features --features auth";
+
+          # Core crate: cdk
+          "cdk" = "-p cdk";
+          "cdk-no-default" = "-p cdk --no-default-features";
+          "cdk-wallet" = "-p cdk --no-default-features --features wallet";
+          "cdk-mint" = "-p cdk --no-default-features --features mint";
+          "cdk-auth" = "-p cdk --no-default-features --features auth";
+
+          # SQL crates
+          "cdk-sql-common" = "-p cdk-sql-common";
+          "cdk-sql-common-wallet" = "-p cdk-sql-common --no-default-features --features wallet";
+          "cdk-sql-common-mint" = "-p cdk-sql-common --no-default-features --features mint";
+
+          # Database crates
+          "cdk-redb" = "-p cdk-redb";
+          "cdk-sqlite" = "-p cdk-sqlite";
+          "cdk-sqlite-sqlcipher" = "-p cdk-sqlite --features sqlcipher";
+
+          # HTTP/API layer
+          # Note: swagger feature excluded - downloads assets during build, incompatible with Nix sandbox
+          "cdk-axum" = "-p cdk-axum";
+          "cdk-axum-no-default" = "-p cdk-axum --no-default-features";
+          "cdk-axum-redis" = "-p cdk-axum --no-default-features --features redis";
+
+          # Lightning backends
+          "cdk-cln" = "-p cdk-cln";
+          "cdk-lnd" = "-p cdk-lnd";
+          "cdk-lnbits" = "-p cdk-lnbits";
+          "cdk-fake-wallet" = "-p cdk-fake-wallet";
+          "cdk-payment-processor" = "-p cdk-payment-processor";
+          "cdk-ldk-node" = "-p cdk-ldk-node";
+
+          # Other crates
+          "cdk-signatory" = "-p cdk-signatory";
+          "cdk-mint-rpc" = "-p cdk-mint-rpc";
+          "cdk-prometheus" = "-p cdk-prometheus";
+          "cdk-ffi" = "-p cdk-ffi";
+
+          # Binaries: cdk-cli
+          "bin-cdk-cli" = "--bin cdk-cli";
+          "bin-cdk-cli-sqlcipher" = "--bin cdk-cli --features sqlcipher";
+          "bin-cdk-cli-redb" = "--bin cdk-cli --features redb";
+
+          # Binaries: cdk-mintd
+          "bin-cdk-mintd" = "--bin cdk-mintd";
+          "bin-cdk-mintd-redis" = "--bin cdk-mintd --features redis";
+          "bin-cdk-mintd-sqlcipher" = "--bin cdk-mintd --features sqlcipher";
+          "bin-cdk-mintd-lnd-sqlite" = "--bin cdk-mintd --no-default-features --features lnd,sqlite";
+          "bin-cdk-mintd-cln-postgres" = "--bin cdk-mintd --no-default-features --features cln,postgres";
+          "bin-cdk-mintd-lnbits-sqlite" = "--bin cdk-mintd --no-default-features --features lnbits,sqlite";
+          "bin-cdk-mintd-fakewallet-sqlite" = "--bin cdk-mintd --no-default-features --features fakewallet,sqlite";
+          "bin-cdk-mintd-grpc-processor-sqlite" = "--bin cdk-mintd --no-default-features --features grpc-processor,sqlite";
+          "bin-cdk-mintd-management-rpc-lnd-sqlite" = "--bin cdk-mintd --no-default-features --features management-rpc,lnd,sqlite";
+          "bin-cdk-mintd-cln-sqlite" = "--bin cdk-mintd --no-default-features --features cln,sqlite";
+          "bin-cdk-mintd-lnd-postgres" = "--bin cdk-mintd --no-default-features --features lnd,postgres";
+          "bin-cdk-mintd-lnbits-postgres" = "--bin cdk-mintd --no-default-features --features lnbits,postgres";
+          "bin-cdk-mintd-fakewallet-postgres" = "--bin cdk-mintd --no-default-features --features fakewallet,postgres";
+          "bin-cdk-mintd-grpc-processor-postgres" = "--bin cdk-mintd --no-default-features --features grpc-processor,postgres";
+          "bin-cdk-mintd-management-rpc-cln-postgres" = "--bin cdk-mintd --no-default-features --features management-rpc,cln,postgres";
+          "bin-cdk-mintd-auth-sqlite-fakewallet" = "--bin cdk-mintd --no-default-features --features auth,sqlite,fakewallet";
+          "bin-cdk-mintd-auth-postgres-lnd" = "--bin cdk-mintd --no-default-features --features auth,postgres,lnd";
+
+          # Binaries: cdk-mint-cli
+          "bin-cdk-mint-cli" = "--bin cdk-mint-cli";
+        };
 
         # Common inputs
         envVars = {
@@ -204,42 +367,53 @@
         ];
       in
       {
-        checks = {
-          # Pre-commit checks
-          pre-commit-check =
-            let
-              # this is a hack based on https://github.com/cachix/pre-commit-hooks.nix/issues/126
-              # we want to use our own rust stuff from oxalica's overlay
-              _rust = pkgs.rust-bin.stable.latest.default;
-              rust = pkgs.buildEnv {
-                name = _rust.name;
-                inherit (_rust) meta;
-                buildInputs = [ pkgs.makeWrapper ];
-                paths = [ _rust ];
-                pathsToLink = [
-                  "/"
-                  "/bin"
-                ];
-                postBuild = ''
-                  for i in $out/bin/*; do
-                    wrapProgram "$i" --prefix PATH : "$out/bin"
-                  done
-                '';
-              };
-            in
-            pre-commit-hooks.lib.${system}.run {
-              src = ./.;
-              hooks = {
-                rustfmt = {
-                  enable = true;
-                  entry = lib.mkForce "${rust}/bin/cargo-fmt fmt --all -- --config format_code_in_doc_comments=true --check --color always";
+        # Expose deps for explicit cache warming
+        packages = {
+          deps = workspaceDeps;
+        }
+        # Example packages (binaries that can be run outside sandbox with network access)
+        // (builtins.listToAttrs (map (name: { name = "example-${name}"; value = mkExamplePackage name; }) exampleChecks));
+        checks =
+          # Generate clippy checks from clippyChecks attrset
+          (builtins.mapAttrs (name: args: mkClippy name args) clippyChecks)
+          # Generate example checks from exampleChecks list
+          // (builtins.listToAttrs (map (name: { name = "example-${name}"; value = mkExample name; }) exampleChecks))
+          // {
+            # Pre-commit checks
+            pre-commit-check =
+              let
+                # this is a hack based on https://github.com/cachix/pre-commit-hooks.nix/issues/126
+                # we want to use our own rust stuff from oxalica's overlay
+                _rust = pkgs.rust-bin.stable.latest.default;
+                rust = pkgs.buildEnv {
+                  name = _rust.name;
+                  inherit (_rust) meta;
+                  buildInputs = [ pkgs.makeWrapper ];
+                  paths = [ _rust ];
+                  pathsToLink = [
+                    "/"
+                    "/bin"
+                  ];
+                  postBuild = ''
+                    for i in $out/bin/*; do
+                      wrapProgram "$i" --prefix PATH : "$out/bin"
+                    done
+                  '';
                 };
-                nixpkgs-fmt.enable = true;
-                typos.enable = true;
-                commitizen.enable = true; # conventional commits
+              in
+              pre-commit-hooks.lib.${system}.run {
+                src = ./.;
+                hooks = {
+                  rustfmt = {
+                    enable = true;
+                    entry = lib.mkForce "${rust}/bin/cargo-fmt fmt --all -- --config format_code_in_doc_comments=true --check --color always";
+                  };
+                  nixpkgs-fmt.enable = true;
+                  typos.enable = true;
+                  commitizen.enable = true; # conventional commits
+                };
               };
-            };
-        };
+          };
 
         devShells =
           let
