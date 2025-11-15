@@ -540,8 +540,8 @@ jobs:
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml down
 
-  doc-tests:
-    name: "Documentation Tests"
+  docs:
+    name: "Documentation tests and checks"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: pre-commit-checks
@@ -574,28 +574,5 @@ jobs:
           shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Run doc tests
         run: nix develop -i -L .#stable --command cargo test --doc
-
-  strict-docs:
-    name: "Strict Documentation Check"
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: doc-tests
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Check docs with strict warnings
         run: nix develop -i -L .#stable --command just docs-strict
