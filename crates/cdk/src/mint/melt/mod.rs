@@ -179,7 +179,7 @@ impl Mint {
                     METRICS.record_mint_operation("get_melt_bolt11_quote", false);
                     METRICS.record_error();
                 }
-                Error::UnsupportedUnit
+                err
             })?;
 
         if &payment_quote.unit != unit {
@@ -285,7 +285,7 @@ impl Mint {
                     err
                 );
 
-                Error::UnsupportedUnit
+                err
             })?;
 
         if &payment_quote.unit != unit {
