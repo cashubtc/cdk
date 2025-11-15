@@ -376,23 +376,18 @@ jobs:
       matrix:
         build-args:
           [
-            -p cashu --no-default-features --features "wallet mint",
-            -p cdk-common --no-default-features --features "wallet mint",
-            -p cdk-sql-common,
-            -p cdk,
-            -p cdk --no-default-features --features "mint auth",
-            -p cdk --no-default-features --features "wallet auth",
-            -p cdk --no-default-features --features "http_subscription",
-            -p cdk-axum,
-            -p cdk-axum --no-default-features --features redis,
-            -p cdk-lnbits,
-            -p cdk-fake-wallet,
-            -p cdk-cln,
-            -p cdk-lnd,
-            -p cdk-mint-rpc,
-            -p cdk-sqlite,
-            -p cdk-mintd,
-            -p cdk-payment-processor --no-default-features,
+            # Core library - all features EXCEPT swagger (which breaks MSRV)
+            -p cdk --features "mint,wallet,auth,nostr,bip353,tor,prometheus",
+
+            # Mintd with all backends, databases, and features (no swagger)
+            # This also validates cdk-axum, all LN backends, all databases as dependencies
+            -p cdk-mintd --no-default-features --features "cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,auth,prometheus,redis,management-rpc",
+
+            # CLI - default features (excludes redb which breaks MSRV)
+            -p cdk-cli,
+
+            # Minimal builds to ensure no-default-features works
+            -p cdk --no-default-features --features wallet,
           ]
     steps:
       - name: checkout
