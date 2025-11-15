@@ -377,11 +377,11 @@ jobs:
         build-args:
           [
             # Core library - all features EXCEPT swagger (which breaks MSRV)
-            -p cdk --features "mint,wallet,auth,nostr,bip353,tor,prometheus",
+            '-p cdk --features "mint,wallet,auth,nostr,bip353,tor,prometheus"',
 
             # Mintd with all backends, databases, and features (no swagger)
             # This also validates cdk-axum, all LN backends, all databases as dependencies
-            -p cdk-mintd --no-default-features --features "cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,auth,prometheus,redis,management-rpc",
+            '-p cdk-mintd --no-default-features --features "cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,auth,prometheus,redis,management-rpc"',
 
             # CLI - default features (excludes redb which breaks MSRV)
             -p cdk-cli,
