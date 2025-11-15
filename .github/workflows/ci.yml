@@ -409,46 +409,6 @@ jobs:
       - name: Build
         run: nix develop -i -L .#msrv --command cargo build ${{ matrix.build-args }}
 
-
-  check-wasm:
-    name: Check WASM
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    strategy:
-      fail-fast: true
-      matrix:
-        rust:
-          - stable
-        target:
-          - wasm32-unknown-unknown
-        build-args:
-          [
-            -p cdk,
-            -p cdk --no-default-features,
-            -p cdk --no-default-features --features wallet,
-          ]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
-      - name: Build cdk and binding
-        run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
-
-
   check-wasm-msrv:
     name: Check WASM
     runs-on: ubuntu-latest
