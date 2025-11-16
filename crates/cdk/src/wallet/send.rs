@@ -289,6 +289,7 @@ impl PreparedSend {
                     self.proofs_to_swap,
                     self.options.conditions.clone(),
                     false, // already included in swap_amount
+                    self.options.use_p2bk,
                 )
                 .await?
             {
@@ -308,10 +309,7 @@ impl PreparedSend {
         // Check if proofs are reserved or unspent
         let sendable_proof_ys = self
             .wallet
-            .get_proofs_with(
-                Some(vec![State::Reserved, State::Unspent]),
-                self.options.conditions.clone().map(|c| vec![c]),
-            )
+            .get_proofs_with(Some(vec![State::Reserved, State::Unspent]), None)
             .await?
             .ys()?;
         if proofs_to_send
@@ -355,6 +353,8 @@ impl PreparedSend {
                 payment_proof: None,
             })
             .await?;
+
+        //tracing::debug!("proofs_to_send.p2pk_e: {:?}", proofs_to_send.iter().map(|p| p.p2pk_e));
 
         // Create and return token
         Ok(Token::new(
@@ -434,6 +434,11 @@ pub struct SendOptions {
     /// Maximum number of proofs to include in the token
     /// Default is `None`, which means all selected proofs will be included.
     pub max_proofs: Option<usize>,
+    /// Enable P2BK (Pay-to-Blinded-Key)
+    ///
+    /// When this is true, P2PK transactions will use blinded keys via NUT-26 protocol.
+    /// This enhances privacy by preventing the mint from learning the true pubkeys.
+    pub use_p2bk: bool,
     /// Metadata
     pub metadata: HashMap<String, String>,
 }

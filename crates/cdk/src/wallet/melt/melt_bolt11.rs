@@ -416,6 +416,7 @@ impl Wallet {
                     vec![proof],
                     None,
                     false,
+                    false,
                 )
                 .await?
                 .ok_or_else(|| {

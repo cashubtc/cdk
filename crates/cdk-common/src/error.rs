@@ -373,6 +373,9 @@ pub enum Error {
     /// NUT11 Error
     #[error(transparent)]
     NUT11(#[from] crate::nuts::nut11::Error),
+    /// NUT10 Error
+    #[error(transparent)]
+    NUT10(#[from] crate::nuts::nut10::Error),
     /// NUT12 Error
     #[error(transparent)]
     NUT12(#[from] crate::nuts::nut12::Error),
@@ -400,6 +403,9 @@ pub enum Error {
     /// NUT23 Error
     #[error(transparent)]
     NUT23(#[from] crate::nuts::nut23::Error),
+    /// NUT26 Error
+    #[error(transparent)]
+    NUT26(#[from] crate::nuts::nut26::Error),
     /// Quote ID Error
     #[error(transparent)]
     #[cfg(feature = "mint")]

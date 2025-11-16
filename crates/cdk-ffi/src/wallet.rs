@@ -242,6 +242,7 @@ impl Wallet {
         input_proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
+        use_p2bk: bool,
     ) -> Result<Option<Proofs>, FfiError> {
         let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
             input_proofs.into_iter().map(|p| p.try_into()).collect();
@@ -258,6 +259,7 @@ impl Wallet {
                 cdk_proofs,
                 conditions,
                 include_fees,
+                use_p2bk,
             )
             .await?;
 

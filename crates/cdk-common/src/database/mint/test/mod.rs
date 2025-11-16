@@ -61,6 +61,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -69,6 +70,7 @@ where
             c: SecretKey::generate().public_key(),
             witness: None,
             dleq: None,
+            p2pk_e: None,
         },
     ];
 
