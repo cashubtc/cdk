@@ -64,7 +64,7 @@ pub fn get_second_mint_url_from_env() -> String {
     }
 }
 
-// This is the ln wallet we use to send/receive ln payements as the wallet
+// This is the ln wallet we use to send/receive ln payments as the wallet
 pub async fn init_lnd_client(work_dir: &Path) -> LndClient {
     let lnd_dir = get_lnd_dir(work_dir, "one");
     let cert_file = lnd_dir.join("tls.cert");
@@ -133,7 +133,7 @@ pub async fn create_invoice_for_env(amount_sat: Option<u64>) -> Result<String> {
     }
 }
 
-// This is the ln wallet we use to send/receive ln payements as the wallet
+// This is the ln wallet we use to send/receive ln payments as the wallet
 async fn _get_lnd_client() -> LndClient {
     let temp_dir = get_work_dir();
 
