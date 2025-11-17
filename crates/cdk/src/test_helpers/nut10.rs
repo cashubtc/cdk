@@ -1,9 +1,6 @@
 #![cfg(test)]
 //! Shared test helpers for spending condition tests (P2PK, HTLC, etc.)
 
-use crate::mint::Mint;
-use crate::secret::Secret;
-use crate::Error;
 use cdk_common::dhke::blind_message;
 use cdk_common::nuts::nut10::Secret as Nut10Secret;
 use cdk_common::nuts::{
@@ -11,7 +8,10 @@ use cdk_common::nuts::{
 };
 use cdk_common::Amount;
 
+use crate::mint::Mint;
+use crate::secret::Secret;
 use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
+use crate::Error;
 
 /// Test mint wrapper with convenient access to common keyset info
 pub struct TestMintHelper {

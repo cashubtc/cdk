@@ -8,8 +8,7 @@ use std::str::FromStr;
 use cdk_common::dhke::construct_proofs;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
-use cdk_common::Amount;
-use cdk_common::SpendingConditionVerification;
+use cdk_common::{Amount, SpendingConditionVerification};
 
 use crate::test_helpers::nut10::{create_test_keypair, unzip3, TestMintHelper};
 use crate::util::unix_time;
