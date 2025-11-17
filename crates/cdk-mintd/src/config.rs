@@ -692,4 +692,359 @@ mod tests {
         assert!(!debug_output.contains("特殊字符 !@#$%^&*()"));
         assert!(debug_output.contains("<hashed: "));
     }
+
+    /// Test that configuration can be loaded purely from environment variables
+    /// without requiring a config.toml file with backend sections.
+    ///
+    /// This test verifies the fix for the issue where Stage 1 validation
+    /// panics before environment variables are applied.
+    #[test]
+    #[cfg(feature = "lnd")]
+    fn test_env_var_only_config_lnd() {
+        use std::path::PathBuf;
+        use std::{env, fs};
+
+        // Create a temporary directory for config file
+        let temp_dir = env::temp_dir().join("cdk_test_env_vars");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        // Create a minimal config.toml with backend set but NO [lnd] section
+        let config_content = r#"
+[ln]
+backend = "lnd"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        // Set environment variables for LND configuration
+        env::set_var(crate::env_vars::ENV_LND_ADDRESS, "https://localhost:10009");
+        env::set_var(crate::env_vars::ENV_LND_CERT_FILE, "/tmp/test_tls.cert");
+        env::set_var(
+            crate::env_vars::ENV_LND_MACAROON_FILE,
+            "/tmp/test_admin.macaroon",
+        );
+        env::set_var(crate::env_vars::ENV_LND_FEE_PERCENT, "0.01");
+        env::set_var(crate::env_vars::ENV_LND_RESERVE_FEE_MIN, "4");
+
+        // This should work after the fix but currently panics
+        // because Settings::new() validates before env vars are applied
+        let settings = Settings::new(Some(&config_path));
+
+        // After fix, verify that settings were populated from env vars
+        assert!(settings.lnd.is_some());
+        let lnd_config = settings.lnd.as_ref().unwrap();
+        assert_eq!(lnd_config.address, "https://localhost:10009");
+        assert_eq!(lnd_config.cert_file, PathBuf::from("/tmp/test_tls.cert"));
+        assert_eq!(
+            lnd_config.macaroon_file,
+            PathBuf::from("/tmp/test_admin.macaroon")
+        );
+        assert_eq!(lnd_config.fee_percent, 0.01);
+        let reserve_fee_u64: u64 = lnd_config.reserve_fee_min.into();
+        assert_eq!(reserve_fee_u64, 4);
+
+        // Cleanup env vars
+        env::remove_var(crate::env_vars::ENV_LND_ADDRESS);
+        env::remove_var(crate::env_vars::ENV_LND_CERT_FILE);
+        env::remove_var(crate::env_vars::ENV_LND_MACAROON_FILE);
+        env::remove_var(crate::env_vars::ENV_LND_FEE_PERCENT);
+        env::remove_var(crate::env_vars::ENV_LND_RESERVE_FEE_MIN);
+
+        // Cleanup test file
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Test that CLN configuration can be loaded purely from environment variables
+    /// without requiring a config.toml file with backend sections.
+    #[test]
+    #[cfg(feature = "cln")]
+    fn test_env_var_only_config_cln() {
+        use std::path::PathBuf;
+        use std::{env, fs};
+
+        // Create a temporary directory for config file
+        let temp_dir = env::temp_dir().join("cdk_test_env_vars_cln");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        // Create a minimal config.toml with backend set but NO [cln] section
+        let config_content = r#"
+[ln]
+backend = "cln"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        // Set environment variables for CLN configuration
+        env::set_var(crate::env_vars::ENV_CLN_RPC_PATH, "/tmp/lightning-rpc");
+        env::set_var(crate::env_vars::ENV_CLN_BOLT12, "false");
+        env::set_var(crate::env_vars::ENV_CLN_FEE_PERCENT, "0.01");
+        env::set_var(crate::env_vars::ENV_CLN_RESERVE_FEE_MIN, "4");
+
+        // This should work after the fix but currently panics
+        let settings = Settings::new(Some(&config_path));
+
+        // After fix, verify that settings were populated from env vars
+        assert!(settings.cln.is_some());
+        let cln_config = settings.cln.as_ref().unwrap();
+        assert_eq!(cln_config.rpc_path, PathBuf::from("/tmp/lightning-rpc"));
+        assert_eq!(cln_config.bolt12, false);
+        assert_eq!(cln_config.fee_percent, 0.01);
+        let reserve_fee_u64: u64 = cln_config.reserve_fee_min.into();
+        assert_eq!(reserve_fee_u64, 4);
+
+        // Cleanup env vars
+        env::remove_var(crate::env_vars::ENV_CLN_RPC_PATH);
+        env::remove_var(crate::env_vars::ENV_CLN_BOLT12);
+        env::remove_var(crate::env_vars::ENV_CLN_FEE_PERCENT);
+        env::remove_var(crate::env_vars::ENV_CLN_RESERVE_FEE_MIN);
+
+        // Cleanup test file
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Test that LNbits configuration can be loaded purely from environment variables
+    /// without requiring a config.toml file with backend sections.
+    ///
+    /// **Current status**: FAILS - panics before env vars are applied
+    /// **After fix**: Should PASS - env vars populate missing config
+    #[test]
+    #[cfg(feature = "lnbits")]
+    fn test_env_var_only_config_lnbits() {
+        use std::{env, fs};
+
+        // Create a temporary directory for config file
+        let temp_dir = env::temp_dir().join("cdk_test_env_vars_lnbits");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        // Create a minimal config.toml with backend set but NO [lnbits] section
+        let config_content = r#"
+[ln]
+backend = "lnbits"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        // Set environment variables for LNbits configuration
+        env::set_var(crate::env_vars::ENV_LNBITS_ADMIN_API_KEY, "test_admin_key");
+        env::set_var(
+            crate::env_vars::ENV_LNBITS_INVOICE_API_KEY,
+            "test_invoice_key",
+        );
+        env::set_var(
+            crate::env_vars::ENV_LNBITS_API,
+            "https://lnbits.example.com",
+        );
+        env::set_var(crate::env_vars::ENV_LNBITS_FEE_PERCENT, "0.02");
+        env::set_var(crate::env_vars::ENV_LNBITS_RESERVE_FEE_MIN, "5");
+
+        // This should work after the fix but currently panics
+        let settings = Settings::new(Some(&config_path));
+
+        // After fix, verify that settings were populated from env vars
+        assert!(settings.lnbits.is_some());
+        let lnbits_config = settings.lnbits.as_ref().unwrap();
+        assert_eq!(lnbits_config.admin_api_key, "test_admin_key");
+        assert_eq!(lnbits_config.invoice_api_key, "test_invoice_key");
+        assert_eq!(lnbits_config.lnbits_api, "https://lnbits.example.com");
+        assert_eq!(lnbits_config.fee_percent, 0.02);
+        let reserve_fee_u64: u64 = lnbits_config.reserve_fee_min.into();
+        assert_eq!(reserve_fee_u64, 5);
+
+        // Cleanup env vars
+        env::remove_var(crate::env_vars::ENV_LNBITS_ADMIN_API_KEY);
+        env::remove_var(crate::env_vars::ENV_LNBITS_INVOICE_API_KEY);
+        env::remove_var(crate::env_vars::ENV_LNBITS_API);
+        env::remove_var(crate::env_vars::ENV_LNBITS_FEE_PERCENT);
+        env::remove_var(crate::env_vars::ENV_LNBITS_RESERVE_FEE_MIN);
+
+        // Cleanup test file
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Test that FakeWallet configuration can be loaded purely from environment variables
+    /// without requiring a config.toml file with backend sections.
+    #[test]
+    #[cfg(feature = "fakewallet")]
+    fn test_env_var_only_config_fakewallet() {
+        use std::{env, fs};
+
+        // Create a temporary directory for config file
+        let temp_dir = env::temp_dir().join("cdk_test_env_vars_fakewallet");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        // Create a minimal config.toml with backend set but NO [fake_wallet] section
+        let config_content = r#"
+[ln]
+backend = "fakewallet"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        // Set environment variables for FakeWallet configuration
+        env::set_var(crate::env_vars::ENV_FAKE_WALLET_SUPPORTED_UNITS, "sat,msat");
+        env::set_var(crate::env_vars::ENV_FAKE_WALLET_FEE_PERCENT, "0.0");
+        env::set_var(crate::env_vars::ENV_FAKE_WALLET_RESERVE_FEE_MIN, "0");
+        env::set_var(crate::env_vars::ENV_FAKE_WALLET_MIN_DELAY, "0");
+        env::set_var(crate::env_vars::ENV_FAKE_WALLET_MAX_DELAY, "5");
+
+        // This should work after the fix but currently panics
+        let settings = Settings::new(Some(&config_path));
+
+        // After fix, verify that settings were populated from env vars
+        assert!(settings.fake_wallet.is_some());
+        let fakewallet_config = settings.fake_wallet.as_ref().unwrap();
+        assert_eq!(fakewallet_config.fee_percent, 0.0);
+        let reserve_fee_u64: u64 = fakewallet_config.reserve_fee_min.into();
+        assert_eq!(reserve_fee_u64, 0);
+        assert_eq!(fakewallet_config.min_delay_time, 0);
+        assert_eq!(fakewallet_config.max_delay_time, 5);
+
+        // Cleanup env vars
+        env::remove_var(crate::env_vars::ENV_FAKE_WALLET_SUPPORTED_UNITS);
+        env::remove_var(crate::env_vars::ENV_FAKE_WALLET_FEE_PERCENT);
+        env::remove_var(crate::env_vars::ENV_FAKE_WALLET_RESERVE_FEE_MIN);
+        env::remove_var(crate::env_vars::ENV_FAKE_WALLET_MIN_DELAY);
+        env::remove_var(crate::env_vars::ENV_FAKE_WALLET_MAX_DELAY);
+
+        // Cleanup test file
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Test that GrpcProcessor configuration can be loaded purely from environment variables
+    /// without requiring a config.toml file with backend sections.
+    #[test]
+    #[cfg(feature = "grpc-processor")]
+    fn test_env_var_only_config_grpc_processor() {
+        use std::{env, fs};
+
+        // Create a temporary directory for config file
+        let temp_dir = env::temp_dir().join("cdk_test_env_vars_grpc");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        // Create a minimal config.toml with backend set but NO [grpc_processor] section
+        let config_content = r#"
+[ln]
+backend = "grpcprocessor"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        // Set environment variables for GRPC Processor configuration
+        env::set_var(
+            crate::env_vars::ENV_GRPC_PROCESSOR_SUPPORTED_UNITS,
+            "sat,msat",
+        );
+        env::set_var(crate::env_vars::ENV_GRPC_PROCESSOR_ADDRESS, "localhost");
+        env::set_var(crate::env_vars::ENV_GRPC_PROCESSOR_PORT, "50051");
+
+        // This should work after the fix but currently panics
+        let settings = Settings::new(Some(&config_path));
+
+        // After fix, verify that settings were populated from env vars
+        assert!(settings.grpc_processor.is_some());
+        let grpc_config = settings.grpc_processor.as_ref().unwrap();
+        assert_eq!(grpc_config.addr, "localhost");
+        assert_eq!(grpc_config.port, 50051);
+
+        // Cleanup env vars
+        env::remove_var(crate::env_vars::ENV_GRPC_PROCESSOR_SUPPORTED_UNITS);
+        env::remove_var(crate::env_vars::ENV_GRPC_PROCESSOR_ADDRESS);
+        env::remove_var(crate::env_vars::ENV_GRPC_PROCESSOR_PORT);
+
+        // Cleanup test file
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Test that LdkNode configuration can be loaded purely from environment variables
+    /// without requiring a config.toml file with backend sections.
+    ///
+    /// **Current status**: FAILS - panics before env vars are applied
+    /// **After fix**: Should PASS - env vars populate missing config
+    #[test]
+    #[cfg(feature = "ldk-node")]
+    #[ignore] // Remove this attribute after fixing the config validation issue
+    fn test_env_var_only_config_ldk_node() {
+        use std::{env, fs};
+
+        // Create a temporary directory for config file
+        let temp_dir = env::temp_dir().join("cdk_test_env_vars_ldk");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        // Create a minimal config.toml with backend set but NO [ldk_node] section
+        let config_content = r#"
+[ln]
+backend = "ldknode"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        // Set environment variables for LDK Node configuration
+        env::set_var(crate::env_vars::LDK_NODE_FEE_PERCENT_ENV_VAR, "0.01");
+        env::set_var(crate::env_vars::LDK_NODE_RESERVE_FEE_MIN_ENV_VAR, "4");
+        env::set_var(crate::env_vars::LDK_NODE_BITCOIN_NETWORK_ENV_VAR, "regtest");
+        env::set_var(
+            crate::env_vars::LDK_NODE_CHAIN_SOURCE_TYPE_ENV_VAR,
+            "esplora",
+        );
+        env::set_var(
+            crate::env_vars::LDK_NODE_ESPLORA_URL_ENV_VAR,
+            "http://localhost:3000",
+        );
+        env::set_var(
+            crate::env_vars::LDK_NODE_STORAGE_DIR_PATH_ENV_VAR,
+            "/tmp/ldk",
+        );
+
+        // This should work after the fix but currently panics
+        let settings = Settings::new(Some(&config_path));
+
+        // After fix, verify that settings were populated from env vars
+        assert!(settings.ldk_node.is_some());
+        let ldk_config = settings.ldk_node.as_ref().unwrap();
+        assert_eq!(ldk_config.fee_percent, 0.01);
+        let reserve_fee_u64: u64 = ldk_config.reserve_fee_min.into();
+        assert_eq!(reserve_fee_u64, 4);
+        assert_eq!(ldk_config.bitcoin_network, Some("regtest".to_string()));
+        assert_eq!(ldk_config.chain_source_type, Some("esplora".to_string()));
+        assert_eq!(
+            ldk_config.esplora_url,
+            Some("http://localhost:3000".to_string())
+        );
+        assert_eq!(ldk_config.storage_dir_path, Some("/tmp/ldk".to_string()));
+
+        // Cleanup env vars
+        env::remove_var(crate::env_vars::LDK_NODE_FEE_PERCENT_ENV_VAR);
+        env::remove_var(crate::env_vars::LDK_NODE_RESERVE_FEE_MIN_ENV_VAR);
+        env::remove_var(crate::env_vars::LDK_NODE_BITCOIN_NETWORK_ENV_VAR);
+        env::remove_var(crate::env_vars::LDK_NODE_CHAIN_SOURCE_TYPE_ENV_VAR);
+        env::remove_var(crate::env_vars::LDK_NODE_ESPLORA_URL_ENV_VAR);
+        env::remove_var(crate::env_vars::LDK_NODE_STORAGE_DIR_PATH_ENV_VAR);
+
+        // Cleanup test file
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
 }
