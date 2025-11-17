@@ -96,8 +96,9 @@ async fn test_htlc_requiring_preimage_and_one_signature() {
     );
 
     // Step 6: Create a real melt quote that we'll use for all tests
-    use cdk_common::SpendingConditionVerification;
     use std::str::FromStr;
+
+    use cdk_common::SpendingConditionVerification;
     let bolt11_str = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq";
     let bolt11 = cdk_common::Bolt11Invoice::from_str(bolt11_str).unwrap();
 

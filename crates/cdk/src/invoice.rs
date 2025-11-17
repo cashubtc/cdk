@@ -110,15 +110,15 @@ mod tests {
 
     #[test]
     fn test_decode_bolt11() {
-        // This is a sample bolt11 invoice for testing
-        let bolt11 = "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygshp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53pe5clth2l6j95s92zcz2v5h9z8xrzm0j2w3sye65pjzqgpl44gc8";
+        // This is a valid bolt11 invoice for 100 sats
+        let bolt11 = "lnbc1u1p53kkd9pp5ve8pd9zr60yjyvs6tn77mndavzrl5lwd2gx5hk934f6q8jwguzgsdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5482y73fxmlvg4t66nupdaph93h7dcmfsg2ud72wajf0cpk3a96rq9qxpqysgqujexd0l89u5dutn8hxnsec0c7jrt8wz0z67rut0eah0g7p6zhycn2vff0ts5vwn2h93kx8zzqy3tzu4gfhkya2zpdmqelg0ceqnjztcqma65pr";
 
         let result = decode_invoice(bolt11);
         assert!(result.is_ok());
 
         let decoded = result.unwrap();
         assert_eq!(decoded.payment_type, PaymentType::Bolt11);
-        assert_eq!(decoded.amount_msat, Some(250000000));
+        assert_eq!(decoded.amount_msat, Some(100000));
     }
 
     #[test]
