@@ -8,7 +8,6 @@ use cdk_common::wallet::MeltQuote;
 use tracing::instrument;
 
 use crate::lightning_address::LightningAddress;
-use crate::nuts::MeltOptions;
 use crate::{Amount, Error, Wallet};
 
 impl Wallet {
@@ -85,10 +84,7 @@ impl Wallet {
         );
 
         // Create a melt quote for the invoice using the existing bolt11 functionality
-        self.melt_quote(
-            invoice.to_string(),
-            Some(MeltOptions::new_amountless(amount)),
-        )
-        .await
+        // The invoice from LNURL already contains the amount, so we don't need amountless options
+        self.melt_quote(invoice.to_string(), None).await
     }
 }
