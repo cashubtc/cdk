@@ -243,6 +243,20 @@ impl MintMetadataCache {
             return Ok(current_metadata);
         }
 
+        // Load keys from database before fetching from HTTP
+        // This prevents re-fetching keys we already have and avoids duplicate insertions
+        if let Some(keysets) = storage.get_mint_keysets(self.mint_url.clone()).await? {
+            let mut updated_metadata = (*self.metadata.load().clone()).clone();
+            for keyset_info in keysets {
+                if let Some(keys) = storage.get_keys(&keyset_info.id).await? {
+                    tracing::trace!("Loaded keys for keyset {} from database", keyset_info.id);
+                    updated_metadata.keys.insert(keyset_info.id, Arc::new(keys));
+                }
+            }
+            // Update cache with database keys before HTTP fetch
+            self.metadata.store(Arc::new(updated_metadata));
+        }
+
         // Perform the fetch
         #[cfg(feature = "auth")]
         let metadata = self.fetch_from_http(Some(client), None).await?;
@@ -371,6 +385,23 @@ impl MintMetadataCache {
             return Ok(current_metadata);
         }
 
+        // Load keys from database before fetching from HTTP
+        // This prevents re-fetching keys we already have and avoids duplicate insertions
+        if let Some(keysets) = storage.get_mint_keysets(self.mint_url.clone()).await? {
+            let mut updated_metadata = (*self.metadata.load().clone()).clone();
+            for keyset_info in keysets {
+                if let Some(keys) = storage.get_keys(&keyset_info.id).await? {
+                    tracing::trace!(
+                        "Loaded keys for keyset {} from database (auth)",
+                        keyset_info.id
+                    );
+                    updated_metadata.keys.insert(keyset_info.id, Arc::new(keys));
+                }
+            }
+            // Update cache with database keys before HTTP fetch
+            self.metadata.store(Arc::new(updated_metadata));
+        }
+
         // Auth data not in cache - fetch from mint
         let metadata = self.fetch_from_http(None, Some(auth_client)).await?;
 
@@ -455,6 +486,15 @@ impl MintMetadataCache {
         // Save keys for each keyset
         for (keyset_id, keys) in &metadata.keys {
             if let Some(keyset_info) = metadata.keysets.get(keyset_id) {
+                // Check if keys already exist in database to avoid duplicate insertion
+                if storage.get_keys(keyset_id).await.ok().flatten().is_some() {
+                    tracing::trace!(
+                        "Keys for keyset {} already in database, skipping insert",
+                        keyset_id
+                    );
+                    continue;
+                }
+
                 let keyset = KeySet {
                     id: *keyset_id,
                     unit: keyset_info.unit.clone(),
