@@ -1,9 +1,9 @@
 name: Weekly Mutation Testing
 
 on:
-  # Run every Monday at 9 AM UTC
+  # Run every Friday at 3 AM UTC
   schedule:
-    - cron: '0 9 * * 1'
+    - cron: '0 3 * * 5'
   # Allow manual trigger
   workflow_dispatch:
 
