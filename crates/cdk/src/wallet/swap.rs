@@ -47,17 +47,7 @@ impl Wallet {
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
 
-        let active_keys = self
-            .metadata_cache
-            .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.read();
-                *ttl
-            })
-            .await?
-            .keys
-            .get(&active_keyset_id)
-            .ok_or(Error::UnknownKeySet)?
-            .clone();
+        let active_keys = self.load_keyset_keys(active_keyset_id).await?;
 
         let post_swap_proofs = construct_proofs(
             swap_response.signatures,

@@ -215,17 +215,7 @@ impl Wallet {
             }
         };
 
-        let active_keys = self
-            .metadata_cache
-            .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.read();
-                *ttl
-            })
-            .await?
-            .keys
-            .get(&active_keyset_id)
-            .ok_or(Error::NoActiveKeyset)?
-            .clone();
+        let active_keys = self.load_keyset_keys(active_keyset_id).await?;
 
         let change_proofs = match melt_response.change {
             Some(change) => {
