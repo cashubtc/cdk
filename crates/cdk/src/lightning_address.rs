@@ -5,7 +5,7 @@
 //! identifiers that look like email addresses (e.g., user@domain.com).
 //!
 //! Lightning addresses are converted to LNURL-pay endpoints following the spec:
-//! https://domain.com/.well-known/lnurlp/user
+//! <https://domain.com/.well-known/lnurlp/user>
 
 use std::str::FromStr;
 use std::sync::Arc;
