@@ -41,7 +41,7 @@ jobs:
             cargo fmt
           '
           # Manually remove trailing whitespace
-          git ls-files -- '*.rs' -z | xargs -0 sed -E -i'' -e 's/[[:space:]]+$//'
+          find . -name '*.rs' -type f -exec sed -E -i 's/[[:space:]]+$//' {} +
       - name: Get the current date
         run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
       - name: Create Pull Request
