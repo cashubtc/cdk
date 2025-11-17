@@ -962,4 +962,140 @@ mod tests {
         let amount = Amount::from(1337u64);
         assert_eq!(amount.to_u64(), 1337);
     }
+
+    /// Tests that checked_mul returns the correct product value.
+    ///
+    /// This is critical for any multiplication operations. If it returns None
+    /// or Some(Amount::ZERO) instead of the actual product, calculations will be wrong.
+    ///
+    /// Mutant testing: Kills mutations that replace checked_mul with None or Some(Default::default()).
+    #[test]
+    fn test_checked_mul_returns_correct_value() {
+        let amount1 = Amount::from(10);
+        let amount2 = Amount::from(5);
+        let result = amount1.checked_mul(amount2);
+        assert_eq!(result, Some(Amount::from(50)));
+        assert_ne!(result, None);
+        assert_ne!(result, Some(Amount::ZERO));
+
+        let amount1 = Amount::from(100);
+        let amount2 = Amount::from(20);
+        let result = amount1.checked_mul(amount2);
+        assert_eq!(result, Some(Amount::from(2000)));
+        assert_ne!(result, Some(Amount::ZERO));
+
+        let amount1 = Amount::from(7);
+        let amount2 = Amount::from(13);
+        let result = amount1.checked_mul(amount2);
+        assert_eq!(result, Some(Amount::from(91)));
+
+        // Test multiplication by zero
+        let amount1 = Amount::from(100);
+        let amount2 = Amount::ZERO;
+        let result = amount1.checked_mul(amount2);
+        assert_eq!(result, Some(Amount::ZERO));
+
+        // Test multiplication by one
+        let amount1 = Amount::from(42);
+        let amount2 = Amount::ONE;
+        let result = amount1.checked_mul(amount2);
+        assert_eq!(result, Some(Amount::from(42)));
+
+        // Test overflow
+        let amount1 = Amount::from(u64::MAX);
+        let amount2 = Amount::from(2);
+        let result = amount1.checked_mul(amount2);
+        assert!(result.is_none());
+    }
+
+    /// Tests that checked_div returns the correct quotient value.
+    ///
+    /// This is critical for division operations. If it returns None or
+    /// Some(Amount::ZERO) instead of the actual quotient, calculations will be wrong.
+    ///
+    /// Mutant testing: Kills mutations that replace checked_div with None or Some(Default::default()).
+    #[test]
+    fn test_checked_div_returns_correct_value() {
+        let amount1 = Amount::from(100);
+        let amount2 = Amount::from(5);
+        let result = amount1.checked_div(amount2);
+        assert_eq!(result, Some(Amount::from(20)));
+        assert_ne!(result, None);
+        assert_ne!(result, Some(Amount::ZERO));
+
+        let amount1 = Amount::from(1000);
+        let amount2 = Amount::from(10);
+        let result = amount1.checked_div(amount2);
+        assert_eq!(result, Some(Amount::from(100)));
+        assert_ne!(result, Some(Amount::ZERO));
+
+        let amount1 = Amount::from(91);
+        let amount2 = Amount::from(7);
+        let result = amount1.checked_div(amount2);
+        assert_eq!(result, Some(Amount::from(13)));
+
+        // Test division by one
+        let amount1 = Amount::from(42);
+        let amount2 = Amount::ONE;
+        let result = amount1.checked_div(amount2);
+        assert_eq!(result, Some(Amount::from(42)));
+
+        // Test integer division (truncation)
+        let amount1 = Amount::from(10);
+        let amount2 = Amount::from(3);
+        let result = amount1.checked_div(amount2);
+        assert_eq!(result, Some(Amount::from(3)));
+
+        // Test division by zero
+        let amount1 = Amount::from(100);
+        let amount2 = Amount::ZERO;
+        let result = amount1.checked_div(amount2);
+        assert!(result.is_none());
+    }
+
+    /// Tests that Amount::convert_unit returns the correct converted value.
+    ///
+    /// This is critical for unit conversions. If it returns Ok(Amount::ZERO)
+    /// instead of the actual converted value, all conversions will be wrong.
+    ///
+    /// Mutant testing: Kills mutations that replace convert_unit with Ok(Default::default()).
+    #[test]
+    fn test_convert_unit_returns_correct_value() {
+        let amount = Amount::from(1000);
+        let result = amount
+            .convert_unit(&CurrencyUnit::Sat, &CurrencyUnit::Msat)
+            .unwrap();
+        assert_eq!(result, Amount::from(1_000_000));
+        assert_ne!(result, Amount::ZERO);
+
+        let amount = Amount::from(5000);
+        let result = amount
+            .convert_unit(&CurrencyUnit::Msat, &CurrencyUnit::Sat)
+            .unwrap();
+        assert_eq!(result, Amount::from(5));
+        assert_ne!(result, Amount::ZERO);
+
+        let amount = Amount::from(123);
+        let result = amount
+            .convert_unit(&CurrencyUnit::Sat, &CurrencyUnit::Sat)
+            .unwrap();
+        assert_eq!(result, Amount::from(123));
+
+        let amount = Amount::from(456);
+        let result = amount
+            .convert_unit(&CurrencyUnit::Usd, &CurrencyUnit::Usd)
+            .unwrap();
+        assert_eq!(result, Amount::from(456));
+
+        let amount = Amount::from(789);
+        let result = amount
+            .convert_unit(&CurrencyUnit::Eur, &CurrencyUnit::Eur)
+            .unwrap();
+        assert_eq!(result, Amount::from(789));
+
+        // Test invalid conversion
+        let amount = Amount::from(100);
+        let result = amount.convert_unit(&CurrencyUnit::Sat, &CurrencyUnit::Eur);
+        assert!(result.is_err());
+    }
 }
