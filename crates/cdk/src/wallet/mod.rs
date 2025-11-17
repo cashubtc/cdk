@@ -346,6 +346,26 @@ impl Wallet {
         Ok(Some(mint_info))
     }
 
+    /// Load mint info from cache
+    ///
+    /// This is a helper function that loads the mint info from the metadata cache
+    /// using the configured TTL. Unlike `fetch_mint_info()`, this does not make
+    /// a network call if the cache is fresh.
+    #[instrument(skip(self))]
+    pub async fn load_mint_info(&self) -> Result<MintInfo, Error> {
+        let mint_info = self
+            .metadata_cache
+            .load(&self.localstore, &self.client, {
+                let ttl = self.metadata_cache_ttl.read();
+                *ttl
+            })
+            .await?
+            .mint_info
+            .clone();
+
+        Ok(mint_info)
+    }
+
     /// Get amounts needed to refill proof state
     #[instrument(skip(self))]
     pub async fn amounts_needed_for_state_target(
