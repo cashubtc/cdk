@@ -126,6 +126,13 @@ pub enum Error {
     #[error("No Lightning offer found in BIP353 payment instructions")]
     Bip353NoLightningOffer,
 
+    /// Lightning Address parsing error
+    #[error("Failed to parse Lightning address: {0}")]
+    LightningAddressParse(String),
+    /// Lightning Address request error
+    #[error("Failed to request invoice from Lightning address service: {0}")]
+    LightningAddressRequest(String),
+
     /// Internal Error - Send error
     #[error("Internal send error: {0}")]
     SendError(String),
