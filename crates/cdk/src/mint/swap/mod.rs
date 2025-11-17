@@ -1,3 +1,4 @@
+use cdk_common::SpendingConditionVerification;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use swap_saga::SwapSaga;
@@ -5,7 +6,6 @@ use tracing::instrument;
 
 use super::{Mint, SwapRequest, SwapResponse};
 use crate::Error;
-use cdk_common::SpendingConditionVerification;
 
 pub mod swap_saga;
 

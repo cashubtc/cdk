@@ -51,6 +51,7 @@ pub use oidc_client::OidcClient;
 #[cfg(any(feature = "wallet", feature = "mint"))]
 pub mod event;
 pub mod fees;
+pub mod invoice;
 
 #[doc(hidden)]
 pub use bitcoin::secp256k1;

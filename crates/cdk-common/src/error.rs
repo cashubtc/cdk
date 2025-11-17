@@ -110,6 +110,9 @@ pub enum Error {
     /// Could not parse bolt12
     #[error("Could not parse bolt12")]
     Bolt12parse,
+    /// Could not parse invoice (bolt11 or bolt12)
+    #[error("Could not parse invoice")]
+    InvalidInvoice,
 
     /// BIP353 address parsing error
     #[error("Failed to parse BIP353 address: {0}")]
