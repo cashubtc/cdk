@@ -17,8 +17,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-          persist-credentials: false
-          token: ${{ secrets.BACKPORT_TOKEN }}
       - name: Get flake hash
         id: flake-hash
         run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
