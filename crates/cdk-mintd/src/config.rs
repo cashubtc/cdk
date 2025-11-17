@@ -579,46 +579,6 @@ impl Settings {
             .build()?;
         let settings: Settings = config.try_deserialize()?;
 
-        match settings.ln.ln_backend {
-            LnBackend::None => panic!("Ln backend must be set"),
-            #[cfg(feature = "cln")]
-            LnBackend::Cln => assert!(
-                settings.cln.is_some(),
-                "CLN backend requires a valid config."
-            ),
-            #[cfg(feature = "lnbits")]
-            LnBackend::LNbits => assert!(
-                settings.lnbits.is_some(),
-                "LNbits backend requires a valid config"
-            ),
-            #[cfg(feature = "lnd")]
-            LnBackend::Lnd => {
-                assert!(
-                    settings.lnd.is_some(),
-                    "LND backend requires a valid config."
-                )
-            }
-            #[cfg(feature = "ldk-node")]
-            LnBackend::LdkNode => {
-                assert!(
-                    settings.ldk_node.is_some(),
-                    "LDK Node backend requires a valid config."
-                )
-            }
-            #[cfg(feature = "fakewallet")]
-            LnBackend::FakeWallet => assert!(
-                settings.fake_wallet.is_some(),
-                "FakeWallet backend requires a valid config."
-            ),
-            #[cfg(feature = "grpc-processor")]
-            LnBackend::GrpcProcessor => {
-                assert!(
-                    settings.grpc_processor.is_some(),
-                    "GRPC backend requires a valid config."
-                )
-            }
-        }
-
         Ok(settings)
     }
 }
@@ -696,11 +656,31 @@ mod tests {
     /// Test that configuration can be loaded purely from environment variables
     /// without requiring a config.toml file with backend sections.
     ///
-    /// This test verifies the fix for the issue where Stage 1 validation
-    /// panics before environment variables are applied.
+    /// This test runs sequentially for all enabled backends to avoid env var interference.
     #[test]
+    fn test_env_var_only_config_all_backends() {
+        // Run each backend test sequentially
+        #[cfg(feature = "lnd")]
+        test_lnd_env_config();
+
+        #[cfg(feature = "cln")]
+        test_cln_env_config();
+
+        #[cfg(feature = "lnbits")]
+        test_lnbits_env_config();
+
+        #[cfg(feature = "fakewallet")]
+        test_fakewallet_env_config();
+
+        #[cfg(feature = "grpc-processor")]
+        test_grpc_processor_env_config();
+
+        #[cfg(feature = "ldk-node")]
+        test_ldk_node_env_config();
+    }
+
     #[cfg(feature = "lnd")]
-    fn test_env_var_only_config_lnd() {
+    fn test_lnd_env_config() {
         use std::path::PathBuf;
         use std::{env, fs};
 
@@ -721,6 +701,7 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for LND configuration
+        env::set_var(crate::env_vars::ENV_LN_BACKEND, "lnd");
         env::set_var(crate::env_vars::ENV_LND_ADDRESS, "https://localhost:10009");
         env::set_var(crate::env_vars::ENV_LND_CERT_FILE, "/tmp/test_tls.cert");
         env::set_var(
@@ -730,11 +711,11 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_LND_FEE_PERCENT, "0.01");
         env::set_var(crate::env_vars::ENV_LND_RESERVE_FEE_MIN, "4");
 
-        // This should work after the fix but currently panics
-        // because Settings::new() validates before env vars are applied
-        let settings = Settings::new(Some(&config_path));
+        // Load settings and apply environment variables (same as production code)
+        let mut settings = Settings::new(Some(&config_path));
+        settings.from_env().expect("Failed to apply env vars");
 
-        // After fix, verify that settings were populated from env vars
+        // Verify that settings were populated from env vars
         assert!(settings.lnd.is_some());
         let lnd_config = settings.lnd.as_ref().unwrap();
         assert_eq!(lnd_config.address, "https://localhost:10009");
@@ -748,6 +729,7 @@ max_melt = 500000
         assert_eq!(reserve_fee_u64, 4);
 
         // Cleanup env vars
+        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
         env::remove_var(crate::env_vars::ENV_LND_ADDRESS);
         env::remove_var(crate::env_vars::ENV_LND_CERT_FILE);
         env::remove_var(crate::env_vars::ENV_LND_MACAROON_FILE);
@@ -758,11 +740,8 @@ max_melt = 500000
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
-    /// Test that CLN configuration can be loaded purely from environment variables
-    /// without requiring a config.toml file with backend sections.
-    #[test]
     #[cfg(feature = "cln")]
-    fn test_env_var_only_config_cln() {
+    fn test_cln_env_config() {
         use std::path::PathBuf;
         use std::{env, fs};
 
@@ -783,15 +762,17 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for CLN configuration
+        env::set_var(crate::env_vars::ENV_LN_BACKEND, "cln");
         env::set_var(crate::env_vars::ENV_CLN_RPC_PATH, "/tmp/lightning-rpc");
         env::set_var(crate::env_vars::ENV_CLN_BOLT12, "false");
         env::set_var(crate::env_vars::ENV_CLN_FEE_PERCENT, "0.01");
         env::set_var(crate::env_vars::ENV_CLN_RESERVE_FEE_MIN, "4");
 
-        // This should work after the fix but currently panics
-        let settings = Settings::new(Some(&config_path));
+        // Load settings and apply environment variables (same as production code)
+        let mut settings = Settings::new(Some(&config_path));
+        settings.from_env().expect("Failed to apply env vars");
 
-        // After fix, verify that settings were populated from env vars
+        // Verify that settings were populated from env vars
         assert!(settings.cln.is_some());
         let cln_config = settings.cln.as_ref().unwrap();
         assert_eq!(cln_config.rpc_path, PathBuf::from("/tmp/lightning-rpc"));
@@ -801,6 +782,7 @@ max_melt = 500000
         assert_eq!(reserve_fee_u64, 4);
 
         // Cleanup env vars
+        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
         env::remove_var(crate::env_vars::ENV_CLN_RPC_PATH);
         env::remove_var(crate::env_vars::ENV_CLN_BOLT12);
         env::remove_var(crate::env_vars::ENV_CLN_FEE_PERCENT);
@@ -810,14 +792,8 @@ max_melt = 500000
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
-    /// Test that LNbits configuration can be loaded purely from environment variables
-    /// without requiring a config.toml file with backend sections.
-    ///
-    /// **Current status**: FAILS - panics before env vars are applied
-    /// **After fix**: Should PASS - env vars populate missing config
-    #[test]
     #[cfg(feature = "lnbits")]
-    fn test_env_var_only_config_lnbits() {
+    fn test_lnbits_env_config() {
         use std::{env, fs};
 
         // Create a temporary directory for config file
@@ -837,6 +813,7 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for LNbits configuration
+        env::set_var(crate::env_vars::ENV_LN_BACKEND, "lnbits");
         env::set_var(crate::env_vars::ENV_LNBITS_ADMIN_API_KEY, "test_admin_key");
         env::set_var(
             crate::env_vars::ENV_LNBITS_INVOICE_API_KEY,
@@ -849,10 +826,11 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_LNBITS_FEE_PERCENT, "0.02");
         env::set_var(crate::env_vars::ENV_LNBITS_RESERVE_FEE_MIN, "5");
 
-        // This should work after the fix but currently panics
-        let settings = Settings::new(Some(&config_path));
+        // Load settings and apply environment variables (same as production code)
+        let mut settings = Settings::new(Some(&config_path));
+        settings.from_env().expect("Failed to apply env vars");
 
-        // After fix, verify that settings were populated from env vars
+        // Verify that settings were populated from env vars
         assert!(settings.lnbits.is_some());
         let lnbits_config = settings.lnbits.as_ref().unwrap();
         assert_eq!(lnbits_config.admin_api_key, "test_admin_key");
@@ -863,6 +841,7 @@ max_melt = 500000
         assert_eq!(reserve_fee_u64, 5);
 
         // Cleanup env vars
+        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
         env::remove_var(crate::env_vars::ENV_LNBITS_ADMIN_API_KEY);
         env::remove_var(crate::env_vars::ENV_LNBITS_INVOICE_API_KEY);
         env::remove_var(crate::env_vars::ENV_LNBITS_API);
@@ -873,11 +852,8 @@ max_melt = 500000
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
-    /// Test that FakeWallet configuration can be loaded purely from environment variables
-    /// without requiring a config.toml file with backend sections.
-    #[test]
     #[cfg(feature = "fakewallet")]
-    fn test_env_var_only_config_fakewallet() {
+    fn test_fakewallet_env_config() {
         use std::{env, fs};
 
         // Create a temporary directory for config file
@@ -897,16 +873,18 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for FakeWallet configuration
+        env::set_var(crate::env_vars::ENV_LN_BACKEND, "fakewallet");
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_SUPPORTED_UNITS, "sat,msat");
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_FEE_PERCENT, "0.0");
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_RESERVE_FEE_MIN, "0");
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_MIN_DELAY, "0");
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_MAX_DELAY, "5");
 
-        // This should work after the fix but currently panics
-        let settings = Settings::new(Some(&config_path));
+        // Load settings and apply environment variables (same as production code)
+        let mut settings = Settings::new(Some(&config_path));
+        settings.from_env().expect("Failed to apply env vars");
 
-        // After fix, verify that settings were populated from env vars
+        // Verify that settings were populated from env vars
         assert!(settings.fake_wallet.is_some());
         let fakewallet_config = settings.fake_wallet.as_ref().unwrap();
         assert_eq!(fakewallet_config.fee_percent, 0.0);
@@ -916,6 +894,7 @@ max_melt = 500000
         assert_eq!(fakewallet_config.max_delay_time, 5);
 
         // Cleanup env vars
+        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
         env::remove_var(crate::env_vars::ENV_FAKE_WALLET_SUPPORTED_UNITS);
         env::remove_var(crate::env_vars::ENV_FAKE_WALLET_FEE_PERCENT);
         env::remove_var(crate::env_vars::ENV_FAKE_WALLET_RESERVE_FEE_MIN);
@@ -926,11 +905,8 @@ max_melt = 500000
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
-    /// Test that GrpcProcessor configuration can be loaded purely from environment variables
-    /// without requiring a config.toml file with backend sections.
-    #[test]
     #[cfg(feature = "grpc-processor")]
-    fn test_env_var_only_config_grpc_processor() {
+    fn test_grpc_processor_env_config() {
         use std::{env, fs};
 
         // Create a temporary directory for config file
@@ -950,6 +926,7 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for GRPC Processor configuration
+        env::set_var(crate::env_vars::ENV_LN_BACKEND, "grpcprocessor");
         env::set_var(
             crate::env_vars::ENV_GRPC_PROCESSOR_SUPPORTED_UNITS,
             "sat,msat",
@@ -957,16 +934,18 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_GRPC_PROCESSOR_ADDRESS, "localhost");
         env::set_var(crate::env_vars::ENV_GRPC_PROCESSOR_PORT, "50051");
 
-        // This should work after the fix but currently panics
-        let settings = Settings::new(Some(&config_path));
+        // Load settings and apply environment variables (same as production code)
+        let mut settings = Settings::new(Some(&config_path));
+        settings.from_env().expect("Failed to apply env vars");
 
-        // After fix, verify that settings were populated from env vars
+        // Verify that settings were populated from env vars
         assert!(settings.grpc_processor.is_some());
         let grpc_config = settings.grpc_processor.as_ref().unwrap();
         assert_eq!(grpc_config.addr, "localhost");
         assert_eq!(grpc_config.port, 50051);
 
         // Cleanup env vars
+        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
         env::remove_var(crate::env_vars::ENV_GRPC_PROCESSOR_SUPPORTED_UNITS);
         env::remove_var(crate::env_vars::ENV_GRPC_PROCESSOR_ADDRESS);
         env::remove_var(crate::env_vars::ENV_GRPC_PROCESSOR_PORT);
@@ -975,15 +954,8 @@ max_melt = 500000
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
-    /// Test that LdkNode configuration can be loaded purely from environment variables
-    /// without requiring a config.toml file with backend sections.
-    ///
-    /// **Current status**: FAILS - panics before env vars are applied
-    /// **After fix**: Should PASS - env vars populate missing config
-    #[test]
     #[cfg(feature = "ldk-node")]
-    #[ignore] // Remove this attribute after fixing the config validation issue
-    fn test_env_var_only_config_ldk_node() {
+    fn test_ldk_node_env_config() {
         use std::{env, fs};
 
         // Create a temporary directory for config file
@@ -1003,6 +975,7 @@ max_melt = 500000
         fs::write(&config_path, config_content).expect("Failed to write config file");
 
         // Set environment variables for LDK Node configuration
+        env::set_var(crate::env_vars::ENV_LN_BACKEND, "ldknode");
         env::set_var(crate::env_vars::LDK_NODE_FEE_PERCENT_ENV_VAR, "0.01");
         env::set_var(crate::env_vars::LDK_NODE_RESERVE_FEE_MIN_ENV_VAR, "4");
         env::set_var(crate::env_vars::LDK_NODE_BITCOIN_NETWORK_ENV_VAR, "regtest");
@@ -1019,10 +992,11 @@ max_melt = 500000
             "/tmp/ldk",
         );
 
-        // This should work after the fix but currently panics
-        let settings = Settings::new(Some(&config_path));
+        // Load settings and apply environment variables (same as production code)
+        let mut settings = Settings::new(Some(&config_path));
+        settings.from_env().expect("Failed to apply env vars");
 
-        // After fix, verify that settings were populated from env vars
+        // Verify that settings were populated from env vars
         assert!(settings.ldk_node.is_some());
         let ldk_config = settings.ldk_node.as_ref().unwrap();
         assert_eq!(ldk_config.fee_percent, 0.01);
@@ -1037,6 +1011,7 @@ max_melt = 500000
         assert_eq!(ldk_config.storage_dir_path, Some("/tmp/ldk".to_string()));
 
         // Cleanup env vars
+        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
         env::remove_var(crate::env_vars::LDK_NODE_FEE_PERCENT_ENV_VAR);
         env::remove_var(crate::env_vars::LDK_NODE_RESERVE_FEE_MIN_ENV_VAR);
         env::remove_var(crate::env_vars::LDK_NODE_BITCOIN_NETWORK_ENV_VAR);
