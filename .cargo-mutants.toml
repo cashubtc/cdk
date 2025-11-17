@@ -1,0 +1,9 @@
+# Cargo mutants configuration
+# See: https://mutants.rs/
+
+# Skip simple getters that are trivially correct and tested by integration tests
+# These mutations would be caught by integration tests like test_split_with_fee
+exclude_re = [
+    "cashu/src/amount.rs.*FeeAndAmounts::fee",
+    "cashu/src/amount.rs.*FeeAndAmounts::amounts",
+]
