@@ -38,7 +38,7 @@ jobs:
           nix develop -i -L .#nightly --command bash -c '
             # Force use of Nix-provided rustfmt
             export RUSTFMT=$(command -v rustfmt)
-            cargo +nightly fmt
+            cargo fmt
           '
           # Manually remove trailing whitespace
           git ls-files -- '*.rs' -z | xargs -0 sed -E -i'' -e 's/[[:space:]]+$//'
