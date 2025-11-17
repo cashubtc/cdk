@@ -33,7 +33,7 @@ pub enum Error {
     FetchPayRequest(#[from] crate::Error),
     /// Lightning address service error
     #[error("Lightning address service error: {0}")]
-    ServiceError(String),
+    Service(String),
     /// Amount below minimum
     #[error("Amount {amount} msat is below minimum {min} msat")]
     AmountBelowMinimum { amount: u64, min: u64 },
@@ -80,7 +80,7 @@ impl LightningAddress {
 
         // Validate the response
         if let Some(ref reason) = lnurl_response.reason {
-            return Err(Error::ServiceError(reason.clone()));
+            return Err(Error::Service(reason.clone()));
         }
 
         Ok(lnurl_response)
@@ -124,7 +124,7 @@ impl LightningAddress {
 
         // Check for errors
         if let Some(ref reason) = invoice_response.reason {
-            return Err(Error::ServiceError(reason.clone()));
+            return Err(Error::Service(reason.clone()));
         }
 
         // Parse and return the invoice

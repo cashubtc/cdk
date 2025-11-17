@@ -127,7 +127,7 @@ impl Wallet {
         if supports_bolt12 {
             // Mint supports bolt12, try BIP353 first
             match self.melt_bip353_quote(address, amount).await {
-                Ok(quote) => return Ok(quote),
+                Ok(quote) => Ok(quote),
                 Err(Error::Bip353Resolve(_)) => {
                     // DNS resolution failed, fall back to Lightning address
                     tracing::debug!(
@@ -139,7 +139,7 @@ impl Wallet {
                 Err(e) => {
                     // BIP353 resolved but failed for another reason (e.g., mint error)
                     // Don't fall back to Lightning address
-                    return Err(e);
+                    Err(e)
                 }
             }
         } else {
