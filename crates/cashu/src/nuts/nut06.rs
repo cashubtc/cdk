@@ -14,7 +14,7 @@ use super::nut19::CachedEndpoint;
 use super::{nut04, nut05, nut15, nut19, MppMethodSettings};
 #[cfg(feature = "auth")]
 use super::{AuthRequired, BlindAuthSettings, ClearAuthSettings, ProtectedEndpoint};
-use crate::CurrencyUnit;
+use crate::nuts::CurrencyUnit;
 
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
