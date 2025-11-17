@@ -79,12 +79,17 @@ async fn test_regtest_bolt12_mint() {
         .await
         .unwrap();
     cln_client
-        .pay_bolt12_offer(None, mint_quote.request)
+        .pay_bolt12_offer(None, mint_quote.request.clone())
         .await
         .unwrap();
 
     let proofs = wallet
-        .mint_bolt12(&mint_quote.id, None, SplitTarget::default(), None)
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(60),
+        )
         .await
         .unwrap();
 
