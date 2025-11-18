@@ -4,6 +4,109 @@
 <!-- The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), -->
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
+
+## [Unreleased]
+
+### Summary
+
+This release focuses on reliability and robustness improvements across the codebase. The mint now implements saga patterns for both melt and swap operations, providing better error recovery and state consistency during these critical operations. Async melt processing has been added for improved throughput. The wallet gains a new Tor mint connector with isolated circuits support for enhanced privacy when communicating with mints, along with a MintMetadataCache that delivers significant performance improvements for key and metadata management. A new proof recovery mechanism automatically handles failed wallet operations. MultiMintWallet receives improvements including the ability to check and wait for mint quotes and configure internal wallets. NUT-11 SIG_ALL message aggregation has been updated to match the latest specification. On the infrastructure side, a generic pubsub module has been introduced in cdk-common, and cdk-ffi adds postgres support. Additional highlights include keyset amount tracking and SQL balance calculation optimization for improved performance, wallet functions to pay human readable addresses (BIP353 and Lightning address), invoice decoding for BOLT11 and BOLT12 in the FFI bindings, and a mutation testing infrastructure to ensure security-critical code coverage. The release also brings numerous bug fixes addressing database contention, HTLC witness handling, and quote state management.
+
+### Added
+- cdk: Add wallet functions to pay human readable addresses (BIP353 and Lightning address) ([thesimplekid]).
+- cdk-ffi: Add invoice decoding for bolt11 and bolt12 ([thesimplekid]).
+- cdk: Add keyset_amounts table to track issued and redeemed amounts for improved performance ([crodas]).
+- cdk: Add melt quote state transition validation ([thesimplekid]).
+- cdk: Add payment request and proof to transaction records ([thesimplekid]).
+- cdk: Add WebSocket authentication support ([thesimplekid]).
+- cdk: Add proof recovery mechanism for failed wallet operations ([crodas]).
+- cdk-ffi: Added postgres support ([asmo]).
+- cdk: Optimize SQL balance calculation ([vnprc]).
+- cdk: Add tor mint connector for wallet with isolated circuits support ([lollerfirst]).
+- cdk-common: Introduce a generic pubsub module ([crodas]).
+- cdk: Add MultiMintWallet check and wait for mint quotes ([davidcaseria]).
+- cdk: Allow passing metadata to a melt ([benthecarman]).
+- cashu: Include supported amounts instead of assuming the power of 2 ([crodas]).
+- test: Add mutation testing infrastructure and security-critical coverage ([thesimplekid]).
+
+### Changed
+- cdk: Introduce MintMetadataCache for efficient key and metadata management ([crodas]).
+- cdk: Implement saga pattern for melt operations ([thesimplekid]).
+- cdk: Implement saga pattern for swap operations ([thesimplekid]).
+- cdk: Async melt processing ([thesimplekid]).
+- cdk: Extract keyset key loading into helper method ([thesimplekid]).
+- cdk: Update Wallet::fetch_mint_info ([crodas]).
+- cdk-ffi: Update FFI Database Objects to Records ([davidcaseria]).
+- cdk: Redesign Lightning invoice creation and display with better UX and status handling ([erik]).
+- cdk: Configure internal Wallets of a MultiMintWallet ([davidcaseria]).
+- cdk-ffi: Split uniffi types into multiple mods ([davidcaseria]).
+- cdk-ffi: Make Uniffi Records Codable in Swift ([davidcaseria]).
+- cdk: Replace proof swap with state check in error recovery ([crodas]).
+- cdk: Simplify mint addition in MultiMintWallet ([thesimplekid]).
+- cdk: Update NUT-11 SIG_ALL message aggregation per spec ([SatsAndSports]).
+- cdk: Remove delete functions for quotes ([thesimplekid]).
+
+### Fixed
+- cdk: Enable pure environment variable configuration for Lightning backends ([thesimplekid]).
+- cdk: Prevent database contention in metadata cache load operations ([crodas]).
+- cdk: Allow starting insecure mint server ([thesimplekid]).
+- cdk: Load keyset keys from database to prevent duplicate insertions ([thesimplekid]).
+- cdk: Fix missing try_proof_operation_or_reclaim wrapping of a swap ([crodas]).
+- cdk: Don't read keys from the database unnecessarily ([crodas]).
+- cdk: Return actual error from get_payment_quote ([gudnuf]).
+- cdk: Require 0 signatures for HTLC with no pubkeys specified ([thesimplekid]).
+- cdk: Fix NUT-14 disabled in info ([thesimplekid]).
+- cdk: Check the removed_ys argument before creating the delete query ([asmo]).
+- cdk: Add parent directory validation before database creation ([thesimplekid]).
+- cashu: Skip serializing empty NUT15 settings in mint info ([thesimplekid]).
+- cdk: Fix bug with websocket close ([crodas]).
+- cdk: Fix htlc witness deserialization ([stefanbitcr]).
+- cdk-lnbits: Fix msats error handling ([thesimplekid]).
+- cdk: Handle fiat melt amount conversions ([gudnuf]).
+- cdk: Only settle same unit quote internally ([gudnuf]).
+- cdk: Revert redis cache removal ([thesimplekid]).
+- cdk: Improve add transaction handling ([thesimplekid]).
+- cdk: Read the latest mint quote status in a transaction to avoid race conditions ([crodas]).
+- cdk: Fix websocket issues and mint quotes ([crodas]).
+- cashu: Fix PreMintSecrets into_iter() ([codingpeanut157]).
+
+## [0.13.4](https://github.com/cashubtc/cdk/releases/tag/v0.13.4)
+
+### Added
+- cdk-lnbits: Update LNbits integration ([thesimplekid]).
+- cdk: Clean witness data ([thesimplekid]).
+
+## [0.13.3](https://github.com/cashubtc/cdk/releases/tag/v0.13.3)
+
+### Fixed
+- cdk-lnbits: Fix lnbits fee calc ([thesimplekid]).
+
+## [0.13.2](https://github.com/cashubtc/cdk/releases/tag/v0.13.2)
+
+### Added
+- cashu: Add spending-condition inspection helpers and token_secrets() ([lollerfirst]).
+
+### Changed
+- cdk: Make sorting Transactions a stable sort ([benthecarman]).
+- Updated stable Rust to 1.85.0 ([thesimplekid]).
+
+### Fixed
+- cdk-lnbits: Add websocket reconnection with exponential backoff ([thesimplekid]).
+- cdk: Add parent directory validation before database creation ([thesimplekid]).
+- cashu: Skip serializing empty NUT15 settings in mint info ([lollerfirst]).
+- cdk: Improve Melted error handling and add debug logging ([thesimplekid]).
+- cdk: Read the latest mint quote status in a transaction to avoid race conditions ([crodas]).
+
+## [0.13.1](https://github.com/cashubtc/cdk/releases/tag/v0.13.1)
+
+### Fixed
+- cdk: Only settle same unit quote internally ([gudnuf]).
+- cdk-cli: Show amounts correctly ([thesimplekid]).
+- cdk-lnbits: Fix msats error handling ([thesimplekid]).
+
+### Changed
+- cdk: Simplify mint addition in MultiMintWallet by removing unnecessary mint info fetching and keyset refresh ([thesimplekid]).
+- cdk-ffi: Make UniFFI Records Codable in Swift ([davidcaseria]).
+
 ## [0.13.0](https://github.com/cashubtc/cdk/releases/tag/v0.13.0)
 
 ### Summary
@@ -571,3 +674,5 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [gudnuf]: https://github.com/gudnuf
 [codingpeanut157]: https://github.com/codingpeanut157
 [erik]: https://github.com/swedishfrenchpress
+[SatsAndSports]: https://github.com/SatsAndSports
+[stefanbitcr]: https://github.com/stefanbitcr
