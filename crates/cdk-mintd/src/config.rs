@@ -186,33 +186,82 @@ impl Default for Ln {
 }
 
 #[cfg(feature = "lnbits")]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LNbits {
     pub admin_api_key: String,
     pub invoice_api_key: String,
     pub lnbits_api: String,
+    #[serde(default = "default_fee_percent")]
     pub fee_percent: f32,
+    #[serde(default = "default_reserve_fee_min")]
+    pub reserve_fee_min: Amount,
+}
+
+#[cfg(feature = "lnbits")]
+impl Default for LNbits {
+    fn default() -> Self {
+        Self {
+            admin_api_key: String::new(),
+            invoice_api_key: String::new(),
+            lnbits_api: String::new(),
+            fee_percent: 0.02,
+            reserve_fee_min: 2.into(),
+        }
+    }
+}
+
+#[cfg(feature = "cln")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Cln {
+    pub rpc_path: PathBuf,
+    #[serde(default = "default_cln_bolt12")]
+    pub bolt12: bool,
+    #[serde(default = "default_fee_percent")]
+    pub fee_percent: f32,
+    #[serde(default = "default_reserve_fee_min")]
     pub reserve_fee_min: Amount,
 }
 
 #[cfg(feature = "cln")]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Cln {
-    pub rpc_path: PathBuf,
-    #[serde(default)]
-    pub bolt12: bool,
-    pub fee_percent: f32,
-    pub reserve_fee_min: Amount,
+impl Default for Cln {
+    fn default() -> Self {
+        Self {
+            rpc_path: PathBuf::new(),
+            bolt12: true,
+            fee_percent: 0.02,
+            reserve_fee_min: 2.into(),
+        }
+    }
+}
+
+#[cfg(feature = "cln")]
+fn default_cln_bolt12() -> bool {
+    true
 }
 
 #[cfg(feature = "lnd")]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Lnd {
     pub address: String,
     pub cert_file: PathBuf,
     pub macaroon_file: PathBuf,
+    #[serde(default = "default_fee_percent")]
     pub fee_percent: f32,
+    #[serde(default = "default_reserve_fee_min")]
     pub reserve_fee_min: Amount,
+}
+
+#[cfg(feature = "lnd")]
+impl Default for Lnd {
+    fn default() -> Self {
+        Self {
+            address: String::new(),
+            cert_file: PathBuf::new(),
+            macaroon_file: PathBuf::new(),
+            fee_percent: 0.02,
+            reserve_fee_min: 2.into(),
+        }
+    }
 }
 
 #[cfg(feature = "ldk-node")]
@@ -323,6 +372,15 @@ impl Default for FakeWallet {
 }
 
 // Helper functions to provide default values
+// Common fee defaults for all backends
+fn default_fee_percent() -> f32 {
+    0.02
+}
+
+fn default_reserve_fee_min() -> Amount {
+    2.into()
+}
+
 #[cfg(feature = "fakewallet")]
 fn default_min_delay_time() -> u64 {
     1
@@ -333,12 +391,35 @@ fn default_max_delay_time() -> u64 {
     3
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct GrpcProcessor {
+    #[serde(default)]
     pub supported_units: Vec<CurrencyUnit>,
+    #[serde(default = "default_grpc_addr")]
     pub addr: String,
+    #[serde(default = "default_grpc_port")]
     pub port: u16,
+    #[serde(default)]
     pub tls_dir: Option<PathBuf>,
+}
+
+impl Default for GrpcProcessor {
+    fn default() -> Self {
+        Self {
+            supported_units: Vec::new(),
+            addr: default_grpc_addr(),
+            port: default_grpc_port(),
+            tls_dir: None,
+        }
+    }
+}
+
+fn default_grpc_addr() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_grpc_port() -> u16 {
+    50051
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
