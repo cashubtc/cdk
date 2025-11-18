@@ -624,6 +624,24 @@ impl<'a> WalletDatabaseTransaction<'a, cdk::cdk_database::Error>
         Ok(result.map(Into::into))
     }
 
+    async fn get_keys(
+        &mut self,
+        id: &cdk::nuts::Id,
+    ) -> Result<Option<cdk::nuts::Keys>, cdk::cdk_database::Error> {
+        let ffi_id = (*id).into();
+        let result = self
+            .ffi_db
+            .get_keys(ffi_id)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+        match result {
+            Some(keys) => Ok(Some(keys.try_into().map_err(|e: FfiError| {
+                cdk::cdk_database::Error::Database(e.to_string().into())
+            })?)),
+            None => Ok(None),
+        }
+    }
+
     async fn get_mint_quote(
         &mut self,
         quote_id: &str,

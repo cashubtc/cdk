@@ -36,9 +36,13 @@ mod tests {
         let mint_info = MintInfo::new().description("test");
         let mint_url = MintUrl::from_str("https://mint.xyz").unwrap();
 
-        db.add_mint(mint_url.clone(), Some(mint_info.clone()))
+        let mut tx = db.begin_db_transaction().await.expect("tx");
+
+        tx.add_mint(mint_url.clone(), Some(mint_info.clone()))
             .await
             .unwrap();
+
+        tx.commit().await.expect("commit");
 
         let res = db.get_mint(mint_url).await.unwrap();
         assert_eq!(mint_info, res.clone().unwrap());
