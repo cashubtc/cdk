@@ -125,7 +125,7 @@ impl Wallet {
             .nut05
             .methods
             .iter()
-            .any(|m| m.method == PaymentMethod::Bolt12);
+            .any(|m| m.method == PaymentMethod::Known(KnownMethod::Bolt12));
 
         if supports_bolt12 {
             // Mint supports bolt12, try BIP353 first
