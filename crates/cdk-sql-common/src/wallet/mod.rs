@@ -567,6 +567,26 @@ where
         .transpose()?)
     }
 
+    #[instrument(skip(self), fields(keyset_id = %id))]
+    async fn get_keys(&mut self, id: &Id) -> Result<Option<Keys>, Error> {
+        Ok(query(
+            r#"
+            SELECT
+                keys
+            FROM key
+            WHERE id = :id
+            "#,
+        )?
+        .bind("id", id.to_string())
+        .pluck(&self.inner)
+        .await?
+        .map(|keys| {
+            let keys = column_as_string!(keys);
+            serde_json::from_str(&keys).map_err(Error::from)
+        })
+        .transpose()?)
+    }
+
     #[instrument(skip(self))]
     async fn get_mint_quote(&mut self, quote_id: &str) -> Result<Option<MintQuote>, Error> {
         Ok(query(

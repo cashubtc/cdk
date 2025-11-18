@@ -516,9 +516,7 @@ async fn test_reuse_auth_proof() {
     }
 
     let mut tx = wallet.localstore.begin_db_transaction().await.unwrap();
-    tx.update_proofs(vec![], proofs.iter().map(|p| p.y).collect())
-        .await
-        .unwrap();
+    tx.update_proofs(proofs, vec![]).await.unwrap();
     tx.commit().await.unwrap();
 
     {

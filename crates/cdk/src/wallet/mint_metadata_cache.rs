@@ -491,7 +491,7 @@ impl MintMetadataCache {
         for (keyset_id, keys) in &metadata.keys {
             if let Some(keyset_info) = metadata.keysets.get(keyset_id) {
                 // Check if keys already exist in database to avoid duplicate insertion
-                if storage.get_keys(keyset_id).await.ok().flatten().is_some() {
+                if tx.get_keys(keyset_id).await.ok().flatten().is_some() {
                     tracing::trace!(
                         "Keys for keyset {} already in database, skipping insert",
                         keyset_id
