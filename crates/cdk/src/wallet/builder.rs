@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use cdk_common::database;
 use cdk_common::parking_lot::RwLock;
+use cdk_common::task::spawn;
 #[cfg(feature = "auth")]
 use cdk_common::AuthToken;
 #[cfg(feature = "auth")]
@@ -221,6 +222,17 @@ impl WalletBuilder {
                 // Create a new one
                 Arc::new(MintMetadataCache::new(mint_url.clone()))
             }
+        });
+
+        let metadata_for_loader = metadata_cache.clone();
+        let localstore_for_loader = localstore.clone();
+        spawn(async move {
+            let _ = metadata_for_loader
+                .load_from_storage(&localstore_for_loader)
+                .await
+                .inspect_err(|err| {
+                    tracing::warn!("Failed to load mint metadata from storage {err}");
+                });
         });
 
         Ok(Wallet {
