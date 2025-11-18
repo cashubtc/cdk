@@ -1,0 +1,83 @@
+name: Weekly Mutation Testing
+
+on:
+  # Run every Friday at 3 AM UTC
+  schedule:
+    - cron: '0 3 * * 5'
+  # Allow manual trigger
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cargo-mutants:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: Run mutation tests on cashu crate
+        run: cargo mutants --package cashu --in-place --no-shuffle
+        continue-on-error: true
+
+      - name: Upload mutation results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants.out
+          path: mutants.out
+          retention-days: 90
+
+      - name: Check for missed mutants and create issue
+        if: always()
+        run: |
+          if [ -s mutants.out/missed.txt ]; then
+            echo "Missed mutants found"
+            MUTANTS_VERSION=$(cargo mutants --version)
+            MISSED_COUNT=$(wc -l < mutants.out/missed.txt)
+            CAUGHT_COUNT=$(wc -l < mutants.out/caught.txt 2>/dev/null || echo "0")
+
+            gh issue create \
+              --title "🧬 Weekly Mutation Testing Report - $(date +%Y-%m-%d)" \
+              --label "mutation-testing,weekly-report" \
+              --body "$(cat <<EOF
+          ## Mutation Testing Results
+
+          - ✅ Caught: ${CAUGHT_COUNT}
+          - ❌ Missed: ${MISSED_COUNT}
+
+          ### Top 10 Missed Mutations
+
+          \`\`\`
+          $(head -n 10 mutants.out/missed.txt)
+          \`\`\`
+
+          ### Action Items
+
+          1. Review the missed mutations above
+          2. Add tests to catch these mutations
+          3. For the complete list, check the [mutants.out artifact](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          **cargo-mutants version:** ${MUTANTS_VERSION}
+
+          ---
+
+          💡 **Tip:** Use \`just mutants-quick\` to test only your changes before pushing!
+          EOF
+          )"
+          else
+            echo "No missed mutants found! 🎉"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

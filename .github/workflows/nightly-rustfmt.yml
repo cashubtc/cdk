@@ -1,0 +1,57 @@
+name: Nightly rustfmt
+on:
+  schedule:
+    - cron: "0 0 * * *" # runs daily at 00:00 UTC
+  workflow_dispatch: # allows manual triggering
+
+permissions: {}
+
+jobs:
+  format:
+    name: Nightly rustfmt
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "nightly-${{ steps.flake-hash.outputs.hash }}"
+      - name: Run Nightly rustfmt
+        run: |
+          nix develop -i -L .#nightly --command bash -c '
+            # Force use of Nix-provided rustfmt
+            export RUSTFMT=$(command -v rustfmt)
+            cargo fmt
+          '
+          # Manually remove trailing whitespace
+          find . -name '*.rs' -type f -exec sed -E -i 's/[[:space:]]+$//' {} +
+      - name: Get the current date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7.0.8
+        env:
+          PRE_COMMIT_ALLOW_NO_CONFIG: 1
+        with:
+          token: ${{ secrets.BACKPORT_TOKEN }}
+          author: Fmt Bot <bot@cashudevkit.org>
+          title: Automated nightly rustfmt (${{ env.date }})
+          body: |
+            Automated nightly `rustfmt` changes by [create-pull-request](https://github.com/peter-evans/create-pull-request) GitHub action
+          commit-message: ${{ env.date }} automated rustfmt nightly
+          labels: rustfmt
+          branch: automated-rustfmt-${{ env.date }}

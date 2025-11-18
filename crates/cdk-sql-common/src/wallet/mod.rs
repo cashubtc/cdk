@@ -779,14 +779,15 @@ ON CONFLICT(id) DO UPDATE SET
             )
             .execute(&tx).await?;
         }
-
-        query(r#"DELETE FROM proof WHERE y IN (:ys)"#)?
-            .bind_vec(
-                "ys",
-                removed_ys.iter().map(|y| y.to_bytes().to_vec()).collect(),
-            )
-            .execute(&tx)
-            .await?;
+        if !removed_ys.is_empty() {
+            query(r#"DELETE FROM proof WHERE y IN (:ys)"#)?
+                .bind_vec(
+                    "ys",
+                    removed_ys.iter().map(|y| y.to_bytes().to_vec()).collect(),
+                )
+                .execute(&tx)
+                .await?;
+        }
 
         tx.commit().await?;
 
@@ -916,16 +917,16 @@ ON CONFLICT(id) DO UPDATE SET
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         let tx = ConnectionWithTransaction::new(conn).await?;
 
-        // Lock the row and get current counter
+        // Lock the row and get current counter from keyset_counter table
         let current_counter = query(
             r#"
             SELECT counter
-            FROM keyset
-            WHERE id=:id
+            FROM keyset_counter
+            WHERE keyset_id=:keyset_id
             FOR UPDATE
             "#,
         )?
-        .bind("id", keyset_id.to_string())
+        .bind("keyset_id", keyset_id.to_string())
         .pluck(&tx)
         .await?
         .map(|n| Ok::<_, Error>(column_as_number!(n)))
@@ -934,16 +935,17 @@ ON CONFLICT(id) DO UPDATE SET
 
         let new_counter = current_counter + count;
 
-        // Update with the new counter value
+        // Upsert the new counter value
         query(
             r#"
-            UPDATE keyset
-            SET counter=:new_counter
-            WHERE id=:id
+            INSERT INTO keyset_counter (keyset_id, counter)
+            VALUES (:keyset_id, :new_counter)
+            ON CONFLICT(keyset_id) DO UPDATE SET
+                counter = excluded.counter
             "#,
         )?
+        .bind("keyset_id", keyset_id.to_string())
         .bind("new_counter", new_counter)
-        .bind("id", keyset_id.to_string())
         .execute(&tx)
         .await?;
 

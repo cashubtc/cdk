@@ -9,7 +9,7 @@ use cdk_common::payment::{
     OutgoingPaymentOptions,
 };
 use cdk_common::quote_id::QuoteId;
-use cdk_common::{MeltOptions, MeltQuoteBolt12Request, MeltQuoteCustomRequest};
+use cdk_common::{MeltOptions, MeltQuoteBolt12Request, MeltQuoteCustomRequest, SpendingConditionVerification};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use lightning::offers::offer::Offer;
@@ -25,8 +25,11 @@ use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
 use crate::{ensure_cdk, Amount, Error};
 
-mod melt_saga;
-pub(super) mod shared;
+pub(crate) mod melt_saga;
+pub(crate) mod shared;
+
+#[cfg(test)]
+mod tests;
 
 use melt_saga::MeltSaga;
 
@@ -178,7 +181,7 @@ impl Mint {
                     METRICS.record_mint_operation("get_melt_bolt11_quote", false);
                     METRICS.record_error();
                 }
-                Error::UnsupportedUnit
+                err
             })?;
 
         if &payment_quote.unit != unit {
@@ -284,7 +287,7 @@ impl Mint {
                     err
                 );
 
-                Error::UnsupportedUnit
+                err
             })?;
 
         if &payment_quote.unit != unit {
@@ -535,6 +538,13 @@ impl Mint {
         &self,
         melt_request: &MeltRequest<QuoteId>,
     ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK
+        // and HTLC (including SIGALL)
+        melt_request.verify_spending_conditions()?;
+
+        // We don't need to check P2PK or HTLC again. It has all been checked above
+        // and the code doesn't reach here unless such verifications were satisfactory
+
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
         let init_saga = MeltSaga::new(
@@ -555,5 +565,103 @@ impl Mint {
 
         // Step 4: Finalize (TX2 - marks spent, issues change)
         payment_saga.finalize().await
+    }
+
+    /// Process melt asynchronously - returns immediately after setup with PENDING state
+    ///
+    /// This method is called when the client includes the `Prefer: respond-async` header.
+    /// It performs the setup phase (TX1) to validate and reserve proofs, then spawns a
+    /// background task to complete the payment and finalization phases.
+    pub async fn melt_async(
+        &self,
+        melt_request: &MeltRequest<QuoteId>,
+    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+        let verification = self.verify_inputs(melt_request.inputs()).await?;
+
+        let init_saga = MeltSaga::new(
+            std::sync::Arc::new(self.clone()),
+            self.localstore.clone(),
+            std::sync::Arc::clone(&self.pubsub_manager),
+        );
+
+        let setup_saga = init_saga.setup_melt(melt_request, verification).await?;
+
+        // Get the quote to return with PENDING state
+        let quote_id = melt_request.quote().clone();
+        let quote = self
+            .localstore
+            .get_melt_quote(&quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        // Spawn background task to complete the melt operation
+        let melt_request_clone = melt_request.clone();
+        let quote_id_clone = quote_id.clone();
+        tokio::spawn(async move {
+            tracing::debug!(
+                "Starting background melt completion for quote: {}",
+                quote_id_clone
+            );
+
+            // Step 2: Attempt internal settlement
+            match setup_saga
+                .attempt_internal_settlement(&melt_request_clone)
+                .await
+            {
+                Ok((setup_saga, settlement)) => {
+                    // Step 3: Make payment
+                    match setup_saga.make_payment(settlement).await {
+                        Ok(payment_saga) => {
+                            // Step 4: Finalize
+                            match payment_saga.finalize().await {
+                                Ok(_) => {
+                                    tracing::info!(
+                                        "Background melt completed successfully for quote: {}",
+                                        quote_id_clone
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to finalize melt for quote {}: {}",
+                                        quote_id_clone,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to make payment for quote {}: {}",
+                                quote_id_clone,
+                                e
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed internal settlement for quote {}: {}",
+                        quote_id_clone,
+                        e
+                    );
+                }
+            }
+        });
+
+        debug_assert!(quote.state == MeltQuoteState::Pending);
+
+        // Return immediately with the quote in PENDING state
+        Ok(MeltQuoteBolt11Response {
+            quote: quote_id,
+            amount: quote.amount,
+            fee_reserve: quote.fee_reserve,
+            state: quote.state,
+            paid: Some(false),
+            expiry: quote.expiry,
+            payment_preimage: None,
+            change: None,
+            request: Some(quote.request.to_string()),
+            unit: Some(quote.unit),
+        })
     }
 }

@@ -175,7 +175,7 @@ done
 
 # Run first test
 echo "Running fake_wallet test"
-cargo test -p cdk-integration-tests --test fake_wallet
+cargo test -p cdk-integration-tests --test fake_wallet -- --nocapture
 status1=$?
 
 # Exit immediately if the first test failed
@@ -186,15 +186,26 @@ fi
 
 # Run second test only if the first one succeeded
 echo "Running happy_path_mint_wallet test"
-cargo test -p cdk-integration-tests --test happy_path_mint_wallet
+cargo test -p cdk-integration-tests --test happy_path_mint_wallet --  --nocapture
 status2=$?
 
-# Exit with the status of the second test
+# Exit if the second test failed
 if [ $status2 -ne 0 ]; then
     echo "Second test failed with status $status2, exiting"
     exit $status2
 fi
 
-# Both tests passed
+# Run third test (async_melt) only if previous tests succeeded
+echo "Running async_melt test"
+cargo test -p cdk-integration-tests --test async_melt
+status3=$?
+
+# Exit with the status of the third test
+if [ $status3 -ne 0 ]; then
+    echo "Third test (async_melt) failed with status $status3, exiting"
+    exit $status3
+fi
+
+# All tests passed
 echo "All tests passed successfully"
 exit 0

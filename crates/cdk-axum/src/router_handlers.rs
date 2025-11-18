@@ -1,6 +1,7 @@
 use anyhow::Result;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{Json, Path, State};
+use axum::extract::{FromRequestParts, Json, Path, State};
+use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::{ErrorCode, ErrorResponse};
@@ -18,6 +19,46 @@ use tracing::instrument;
 use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
 use crate::MintState;
+
+const PREFER_HEADER_KEY: &str = "Prefer";
+
+/// Header extractor for the Prefer header
+///
+/// This extractor checks for the `Prefer: respond-async` header
+/// to determine if the client wants asynchronous processing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreferHeader {
+    pub respond_async: bool,
+}
+
+impl<S> FromRequestParts<S> for PreferHeader
+where
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, String);
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        // Check for Prefer header
+        if let Some(prefer_value) = parts.headers.get(PREFER_HEADER_KEY) {
+            let value = prefer_value.to_str().map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "Invalid Prefer header value".to_string(),
+                )
+            })?;
+
+            // Check if it contains "respond-async"
+            let respond_async = value.to_lowercase().contains("respond-async");
+
+            return Ok(PreferHeader { respond_async });
+        }
+
+        // No Prefer header found - default to synchronous processing
+        Ok(PreferHeader {
+            respond_async: false,
+        })
+    }
+}
 
 /// Macro to add cache to endpoint
 #[macro_export]
@@ -51,6 +92,47 @@ macro_rules! post_cache_wrapper {
                 let response = $handler(auth, state, payload).await?;
                 #[cfg(not(feature = "auth"))]
                 let response = $handler(state, payload).await?;
+                mint_state.cache.set(cache_key, &response.deref()).await;
+                Ok(response)
+            }
+        }
+    };
+}
+
+/// Macro to add cache to endpoint with prefer header support (for async operations)
+#[macro_export]
+macro_rules! post_cache_wrapper_with_prefer {
+    ($handler:ident, $request_type:ty, $response_type:ty) => {
+        paste! {
+            /// Cache wrapper function for $handler with PreferHeader support:
+            /// Wrap $handler into a function that caches responses using the request as key
+            pub async fn [<cache_ $handler>](
+                #[cfg(feature = "auth")] auth: AuthHeader,
+                prefer: PreferHeader,
+                state: State<MintState>,
+                payload: Json<$request_type>
+            ) -> Result<Json<$response_type>, Response> {
+                use std::ops::Deref;
+
+                let json_extracted_payload = payload.deref();
+                let State(mint_state) = state.clone();
+                let cache_key = match mint_state.cache.calculate_key(&json_extracted_payload) {
+                    Some(key) => key,
+                    None => {
+                        // Could not calculate key, just return the handler result
+                        #[cfg(feature = "auth")]
+                        return $handler(auth, prefer, state, payload).await;
+                        #[cfg(not(feature = "auth"))]
+                        return $handler(prefer, state, payload).await;
+                    }
+                };
+                if let Some(cached_response) = mint_state.cache.get::<$response_type>(&cache_key).await {
+                    return Ok(Json(cached_response));
+                }
+                #[cfg(feature = "auth")]
+                let response = $handler(auth, prefer, state, payload).await?;
+                #[cfg(not(feature = "auth"))]
+                let response = $handler(prefer, state, payload).await?;
                 mint_state.cache.set(cache_key, &response.deref()).await;
                 Ok(response)
             }

@@ -1,13 +1,16 @@
+use cdk_common::SpendingConditionVerification;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use swap_saga::SwapSaga;
 use tracing::instrument;
 
-use super::nut11::{enforce_sig_flag, EnforceSigFlag};
-use super::{Mint, SigFlag, SwapRequest, SwapResponse};
+use super::{Mint, SwapRequest, SwapResponse};
 use crate::Error;
 
 pub mod swap_saga;
+
+#[cfg(test)]
+mod tests;
 
 impl Mint {
     /// Process Swap
@@ -22,6 +25,13 @@ impl Mint {
         swap_request.input_amount()?;
         swap_request.output_amount()?;
 
+        // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK
+        // and HTLC (including SIGALL)
+        swap_request.verify_spending_conditions()?;
+
+        // We don't need to check P2PK or HTLC again. It has all been checked above
+        // and the code doesn't reach here unless such verifications were satisfactory
+
         // Verify inputs (cryptographic verification, no DB needed)
         let input_verification =
             self.verify_inputs(swap_request.inputs())
@@ -33,9 +43,6 @@ impl Mint {
                     tracing::debug!("Input verification failed: {:?}", err);
                     err
                 })?;
-
-        // Verify signature flag (no DB needed)
-        self.validate_sig_flag(&swap_request).await?;
 
         // Step 1: Initialize the swap saga
         let init_saga = SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone());
@@ -63,16 +70,6 @@ impl Mint {
         }
 
         Ok(response)
-    }
-
-    async fn validate_sig_flag(&self, swap_request: &SwapRequest) -> Result<(), Error> {
-        let EnforceSigFlag { sig_flag, .. } = enforce_sig_flag(swap_request.inputs().clone());
-
-        if sig_flag == SigFlag::SigAll {
-            swap_request.verify_sig_all()?;
-        }
-
-        Ok(())
     }
 
     #[cfg(feature = "prometheus")]
