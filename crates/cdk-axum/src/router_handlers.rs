@@ -20,45 +20,6 @@ use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
 use crate::MintState;
 
-const PREFER_HEADER_KEY: &str = "Prefer";
-
-/// Header extractor for the Prefer header
-///
-/// This extractor checks for the `Prefer: respond-async` header
-/// to determine if the client wants asynchronous processing
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PreferHeader {
-    pub respond_async: bool,
-}
-
-impl<S> FromRequestParts<S> for PreferHeader
-where
-    S: Send + Sync,
-{
-    type Rejection = (StatusCode, String);
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        // Check for Prefer header
-        if let Some(prefer_value) = parts.headers.get(PREFER_HEADER_KEY) {
-            let value = prefer_value.to_str().map_err(|_| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    "Invalid Prefer header value".to_string(),
-                )
-            })?;
-
-            // Check if it contains "respond-async"
-            let respond_async = value.to_lowercase().contains("respond-async");
-
-            return Ok(PreferHeader { respond_async });
-        }
-
-        // No Prefer header found - default to synchronous processing
-        Ok(PreferHeader {
-            respond_async: false,
-        })
-    }
-}
 
 /// Macro to add cache to endpoint
 #[macro_export]
