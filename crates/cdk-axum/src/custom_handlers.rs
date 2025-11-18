@@ -452,7 +452,7 @@ pub async fn cache_post_melt_custom(
     #[cfg(feature = "auth")]
     let result = post_melt_custom(auth, prefer, state, method, payload).await?;
     #[cfg(not(feature = "auth"))]
-    let result = post_melt_custom(prefer, state,  method, payload).await?;
+    let result = post_melt_custom(prefer, state, method, payload).await?;
 
     // Cache the response
     mint_state.cache.set(cache_key, result.deref()).await;
