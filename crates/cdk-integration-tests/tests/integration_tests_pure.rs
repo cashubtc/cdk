@@ -1052,3 +1052,264 @@ async fn get_keyset_id(mint: &Mint) -> Id {
         .expect("Keyset ID generation is successful");
     keys.id
 }
+
+/// Tests wallet's ability to store and retrieve mint quotes
+/// This is foundational for batch minting operations
+#[tokio::test]
+async fn test_wallet_quote_storage_basic() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+
+    // Create a quote
+    let quote = wallet
+        .mint_quote(Amount::from(50), None)
+        .await
+        .expect("Failed to create quote");
+
+    // Verify quote is stored and retrievable
+    let stored = wallet
+        .localstore
+        .get_mint_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(stored.id, quote.id);
+    assert_eq!(stored.amount, Some(Amount::from(50)));
+}
+
+/// Tests that wallet storage handles idempotent quote additions correctly
+#[tokio::test]
+async fn test_wallet_quote_idempotency() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+
+    // Create and store a quote
+    let quote = wallet
+        .mint_quote(Amount::from(100), None)
+        .await
+        .expect("Failed to create quote");
+
+    // Retrieve and store again (idempotency test)
+    let quote_data = wallet
+        .localstore
+        .get_mint_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let result = wallet.localstore.add_mint_quote(quote_data).await;
+    assert!(result.is_ok(), "Should handle idempotent quote storage");
+
+    // Verify quote is still retrievable
+    let retrieved = wallet.localstore.get_mint_quote(&quote.id).await.unwrap();
+    assert!(retrieved.is_some(), "Quote should still be in storage");
+}
+
+/// Tests wallet's ability to store quotes with NUT-20 secret keys (locked quotes)
+#[tokio::test]
+async fn test_wallet_quote_storage_with_nut20_locks() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+
+    // Create a quote
+    let quote = wallet
+        .mint_quote(Amount::from(100), None)
+        .await
+        .expect("Failed to create quote");
+
+    // Add NUT-20 secret key to simulate locked quote
+    let secret_key = SecretKey::generate();
+    let mut quote_data = wallet
+        .localstore
+        .get_mint_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    quote_data.secret_key = Some(secret_key.clone());
+
+    // Update quote with secret key (idempotent - just re-add it)
+    wallet.localstore.add_mint_quote(quote_data).await.unwrap();
+
+    // Verify quote is stored with correct secret key
+    let stored = wallet
+        .localstore
+        .get_mint_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(stored.secret_key.is_some(), "Quote should have secret key");
+    assert_eq!(
+        stored.secret_key.unwrap().public_key(),
+        secret_key.public_key()
+    );
+}
+
+/// REGRESSION TEST: Batch mint with mixed locked/unlocked quotes
+///
+/// This test verifies that the wallet can successfully batch mint multiple quotes
+/// with different NUT-20 locking states (some locked, some unlocked).
+///
+/// # Bug Context
+/// There is a known bug in batch minting (introduced in commit 152a4634):
+/// - Wallet creates multiple blinded outputs by splitting the total amount
+/// - Server expects exactly 1 output per quote
+///
+/// This test will **fail until the bug is fixed**. When you fix the batch minting
+/// implementation, this test should pass.
+///
+/// # Expected Behavior (once fixed)
+/// 1. Create 2 quotes (100 sats + 50 sats) - one locked, one unlocked
+/// 2. Mark both as PAID in the mint database
+/// 3. Call wallet.mint_batch() with both quote IDs
+/// 4. Receive proofs totaling 150 sats
+/// 5. Wallet balance should increase by 150 sats
+///
+/// # Currently Fails With
+/// `TransactionUnbalanced(100, 2, 0)` - Server receives wrong number of outputs
+///
+/// # Root Cause
+/// The wallet's batch mint implementation in `cdk/src/wallet/issue/batch.rs` splits
+/// the total amount (150 sats) into multiple blinded outputs (~4 outputs via binary split),
+/// but the server's batch handler in `cdk/src/mint/issue/mod.rs` assumes exactly
+/// 1 output per quote (expects 2 outputs for 2 quotes).
+
+#[tokio::test]
+async fn test_batch_mint_mixed_locked_unlocked() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Quote 1: Unlocked (None), Quote 2: Locked (Some(secret_key))
+    let secret_key_2 = SecretKey::generate();
+    let (quote_1_id, quote_2_id) =
+        setup_batch_mint_test(&mint, &wallet, [(100, None), (50, Some(secret_key_2))]).await;
+
+    // Mint both quotes in a batch
+    let proofs = wallet
+        .mint_batch(vec![quote_1_id, quote_2_id], SplitTarget::default(), None)
+        .await
+        .expect("Failed to mint batch");
+
+    // Verify the batch mint succeeded with correct amounts
+    assert_eq!(
+        proofs.total_amount().expect("Failed to get total amount"),
+        Amount::from(150),
+        "Batch should mint 150 sats total"
+    );
+
+    let balance = wallet.total_balance().await.expect("Failed to get balance");
+    assert_eq!(
+        balance,
+        Amount::from(150),
+        "Wallet balance should be 150 sats"
+    );
+}
+
+/// REGRESSION TEST: Batch mint with two unlocked quotes
+///
+/// This test verifies batch minting with the simplest case: multiple unlocked quotes
+/// (no NUT-20 signature requirements).
+///
+/// # Bug Context
+/// Same as `test_batch_mint_mixed_locked_unlocked` - architectural mismatch in batch
+/// minting output structure.
+///
+/// # Expected Behavior (once bug is fixed)
+/// 1. Create 2 unlocked quotes (100 sats + 50 sats)
+/// 2. Mark both as PAID
+/// 3. Batch mint both quotes
+/// 4. Receive 150 sats in proofs
+#[tokio::test]
+async fn test_batch_mint_two_unlocked_quotes() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Both quotes unlocked (None, None)
+    let (quote_1_id, quote_2_id) =
+        setup_batch_mint_test(&mint, &wallet, [(100, None), (50, None)]).await;
+
+    // Batch mint
+    let proofs = wallet
+        .mint_batch(vec![quote_1_id, quote_2_id], SplitTarget::default(), None)
+        .await
+        .expect("Failed to mint batch");
+
+    assert_eq!(
+        proofs.total_amount().expect("Failed to get total amount"),
+        Amount::from(150),
+        "Should mint 150 sats total"
+    );
+}
+
+/// REGRESSION TEST: Batch mint with two locked quotes
+///
+/// This test verifies batch minting with NUT-20 locked quotes - all quotes require
+/// signatures.
+///
+/// # Bug Context
+/// Same as `test_batch_mint_mixed_locked_unlocked` - architectural mismatch in batch
+/// minting output structure.
+///
+/// # Expected Behavior (once bug is fixed)
+/// 1. Create 2 locked quotes (100 sats + 50 sats)
+/// 2. Mark both as PAID
+/// 3. Batch mint both quotes with proper NUT-20 signatures
+/// 4. Receive 150 sats in proofs
+#[tokio::test]
+async fn test_batch_mint_two_locked_quotes() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Both quotes locked (Some(secret_key), Some(secret_key))
+    let secret_key_1 = SecretKey::generate();
+    let secret_key_2 = SecretKey::generate();
+    let (quote_1_id, quote_2_id) = setup_batch_mint_test(
+        &mint,
+        &wallet,
+        [(100, Some(secret_key_1)), (50, Some(secret_key_2))],
+    )
+    .await;
+
+    // Batch mint
+    let proofs = wallet
+        .mint_batch(vec![quote_1_id, quote_2_id], SplitTarget::default(), None)
+        .await
+        .expect("Failed to mint batch");
+
+    assert_eq!(
+        proofs.total_amount().expect("Failed to get total amount"),
+        Amount::from(150),
+        "Should mint 150 sats total"
+    );
+}

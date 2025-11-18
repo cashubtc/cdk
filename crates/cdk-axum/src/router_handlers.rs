@@ -15,7 +15,9 @@ use cdk::nuts::{
     SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
+use cdk::{BatchMintRequest, BatchQuoteStatusRequest, BatchQuoteStatusResponse};
 use paste::paste;
+use std::str::FromStr;
 use tracing::instrument;
 
 #[cfg(feature = "auth")]
@@ -149,6 +151,12 @@ post_cache_wrapper_with_prefer!(
     post_melt_bolt11,
     MeltRequest<QuoteId>,
     MeltQuoteBolt11Response<QuoteId>
+);
+post_cache_wrapper!(post_batch_mint, BatchMintRequest, MintResponse);
+post_cache_wrapper!(
+    post_batch_check_mint,
+    BatchQuoteStatusRequest,
+    BatchQuoteStatusResponse
 );
 
 #[cfg_attr(feature = "swagger", utoipa::path(
@@ -641,6 +649,183 @@ pub(crate) async fn post_restore(
     })?;
 
     Ok(Json(restore_response))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/mint/bolt11/check",
+    request_body(content = BatchQuoteStatusRequest, description = "Batch quote status params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = BatchQuoteStatusResponse, content_type = "application/json"),
+        (status = 400, description = "Invalid request", body = ErrorResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+/// Get status of multiple mint quotes in a single batch request
+///
+/// Check the status of multiple mint quotes at once. Unknown quotes are omitted from response.
+#[instrument(skip_all, fields(quote_count = ?payload.quote.len()))]
+pub(crate) async fn post_batch_check_mint(
+    #[cfg(feature = "auth")] auth: AuthHeader,
+    State(state): State<MintState>,
+    Json(payload): Json<BatchQuoteStatusRequest>,
+) -> Result<Json<BatchQuoteStatusResponse>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
+    // Validation: empty quotes
+    if payload.quote.is_empty() {
+        return Err(into_response(cdk::error::Error::Custom(
+            "Quote list cannot be empty".to_string(),
+        )));
+    }
+
+    // Validation: max 100 quotes per batch
+    if payload.quote.len() > 100 {
+        return Err(into_response(cdk::error::Error::Custom(
+            "Maximum 100 quotes per batch".to_string(),
+        )));
+    }
+
+    // Validation: no duplicate quotes
+    let mut unique_quotes = std::collections::HashSet::new();
+    for quote_id in &payload.quote {
+        if !unique_quotes.insert(quote_id.clone()) {
+            return Err(into_response(cdk::error::Error::Custom(
+                "Duplicate quote IDs in request".to_string(),
+            )));
+        }
+    }
+
+    let mut responses = Vec::new();
+
+    for quote_id_str in &payload.quote {
+        // Try to parse as QuoteId
+        let quote_id = match QuoteId::from_str(quote_id_str) {
+            Ok(id) => id,
+            Err(_) => {
+                // Invalid quote ID format, skip
+                continue;
+            }
+        };
+
+        // Check quote status and get quote response
+        match state.mint.check_mint_quote(&quote_id).await {
+            Ok(mint_quote_response) => {
+                // Convert response to Bolt11Response<String> format for batch response
+                let bolt11_response: cdk::nuts::MintQuoteBolt11Response<String> =
+                    match mint_quote_response {
+                        cdk::mint::MintQuoteResponse::Bolt11(resp) => resp.into(),
+                        cdk::mint::MintQuoteResponse::Bolt12(_) => {
+                            // For now, skip Bolt12 responses in batch
+                            // (could be enhanced to support both)
+                            continue;
+                        }
+                    };
+                responses.push(bolt11_response);
+            }
+            Err(_) => {
+                // Quote not found, omit from response (per spec)
+                continue;
+            }
+        }
+    }
+
+    Ok(Json(BatchQuoteStatusResponse(responses)))
+}
+
+#[cfg_attr(feature = "swagger", utoipa::path(
+    post,
+    context_path = "/v1",
+    path = "/mint/bolt11/batch",
+    request_body(content = BatchMintRequest, description = "Batch mint params", content_type = "application/json"),
+    responses(
+        (status = 200, description = "Successful response", body = MintResponse, content_type = "application/json"),
+        (status = 400, description = "Invalid request", body = ErrorResponse, content_type = "application/json"),
+        (status = 409, description = "Quote conflict", body = ErrorResponse, content_type = "application/json"),
+        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
+    )
+))]
+/// Mint multiple tokens in a single batch request
+///
+/// Create blinded signatures for multiple quotes at once using a single payment.
+#[instrument(skip_all, fields(quote_count = ?payload.quote.len(), outputs_count = ?payload.outputs.len()))]
+pub(crate) async fn post_batch_mint(
+    #[cfg(feature = "auth")] auth: AuthHeader,
+    State(state): State<MintState>,
+    Json(payload): Json<BatchMintRequest>,
+) -> Result<Json<MintResponse>, Response> {
+    #[cfg(feature = "auth")]
+    {
+        state
+            .mint
+            .verify_auth(
+                auth.into(),
+                &ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11),
+            )
+            .await
+            .map_err(into_response)?;
+    }
+
+    // Validation: empty quotes
+    if payload.quote.is_empty() {
+        return Err(into_response(cdk::error::Error::Custom(
+            "Quote list cannot be empty".to_string(),
+        )));
+    }
+
+    // Validation: max 100 quotes per batch
+    if payload.quote.len() > 100 {
+        return Err(into_response(cdk::error::Error::Custom(
+            "Maximum 100 quotes per batch".to_string(),
+        )));
+    }
+
+    // Validation: no duplicate quotes
+    let mut unique_quotes = std::collections::HashSet::new();
+    for quote_id in &payload.quote {
+        if !unique_quotes.insert(quote_id.clone()) {
+            return Err(into_response(cdk::error::Error::Custom(
+                "Duplicate quote IDs in request".to_string(),
+            )));
+        }
+    }
+
+    // Validation: outputs length matches quotes length
+    if payload.outputs.len() != payload.quote.len() {
+        return Err(into_response(cdk::error::Error::Custom(
+            "Outputs count must match quotes count".to_string(),
+        )));
+    }
+
+    // Validation: signature array (if present) matches quotes length
+    if let Some(ref signatures) = payload.signature {
+        if signatures.len() != payload.quote.len() {
+            return Err(into_response(cdk::error::Error::Custom(
+                "Signature array length must match quotes count".to_string(),
+            )));
+        }
+    }
+
+    // For now, we'll delegate to the mint's batch processing logic
+    // This will be implemented in Task 1.3 in the Mint struct
+    match state.mint.process_batch_mint_request(payload).await {
+        Ok(response) => Ok(Json(response)),
+        Err(err) => {
+            tracing::error!("Could not process batch mint: {}", err);
+            Err(into_response(err))
+        }
+    }
 }
 
 #[instrument(skip_all)]

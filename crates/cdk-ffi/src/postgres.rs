@@ -95,6 +95,10 @@ impl WalletDatabase for WalletPostgresDatabase {
         self.inner.get_mint_quote(quote_id).await
     }
 
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError> {
+        self.inner.add_mint_quote(quote).await
+    }
+
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
         self.inner.get_mint_quotes().await
     }

@@ -3,7 +3,10 @@
 use std::fmt::Debug;
 
 use async_trait::async_trait;
-use cdk_common::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
+use cdk_common::{
+    mint::{BatchMintRequest, BatchQuoteStatusRequest, BatchQuoteStatusResponse},
+    MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response,
+};
 
 use super::Error;
 // Re-export Lightning address types for trait implementers
@@ -127,4 +130,11 @@ pub trait MintConnector: Debug {
         &self,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteBolt11Response<String>, Error>;
+    /// Batch Mint Quote Status [NUT-XX]
+    async fn post_mint_batch_quote_status(
+        &self,
+        request: BatchQuoteStatusRequest,
+    ) -> Result<BatchQuoteStatusResponse, Error>;
+    /// Batch Mint [NUT-XX]
+    async fn post_mint_batch(&self, request: BatchMintRequest) -> Result<MintResponse, Error>;
 }

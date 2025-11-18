@@ -746,3 +746,59 @@ mod offer_serde {
         })?))
     }
 }
+
+/// Batch Mint Request [NUT-XX]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct BatchMintRequest {
+    /// Quote IDs
+    pub quote: Vec<String>,
+    /// Blinded messages
+    pub outputs: Vec<cashu::nuts::nut00::BlindedMessage>,
+    /// Signatures for NUT-20 locked quotes (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<Vec<Option<String>>>,
+}
+
+impl BatchMintRequest {
+    /// Total amount of outputs
+    pub fn total_amount(&self) -> Result<Amount, cashu::nuts::nut04::Error> {
+        Amount::try_sum(self.outputs.iter().map(|msg| msg.amount))
+            .map_err(|_| cashu::nuts::nut04::Error::AmountOverflow)
+    }
+}
+
+/// Batch Quote Status Request [NUT-XX]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct BatchQuoteStatusRequest {
+    /// Quote IDs
+    pub quote: Vec<String>,
+}
+
+/// Batch Quote Status Response [NUT-XX]
+/// Returns a Vec that should be serialized as a JSON array
+#[derive(Debug, Clone)]
+pub struct BatchQuoteStatusResponse(
+    /// Vector of quote status responses as JSON
+    pub Vec<crate::MintQuoteBolt11Response<String>>,
+);
+
+impl Serialize for BatchQuoteStatusResponse {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BatchQuoteStatusResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Vec::<crate::MintQuoteBolt11Response<String>>::deserialize(deserializer)
+            .map(BatchQuoteStatusResponse)
+    }
+}

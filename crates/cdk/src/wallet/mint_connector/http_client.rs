@@ -3,7 +3,10 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
-use cdk_common::{nut19, MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
+use cdk_common::{
+    mint::{BatchMintRequest, BatchQuoteStatusRequest, BatchQuoteStatusResponse},
+    nut19, MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response,
+};
 #[cfg(feature = "auth")]
 use cdk_common::{Method, ProtectedEndpoint, RoutePath};
 use serde::de::DeserializeOwned;
@@ -568,6 +571,45 @@ where
         self.retriable_http_request(
             nut19::Method::Post,
             nut19::Path::MeltBolt12,
+            auth_token,
+            &request,
+        )
+        .await
+    }
+
+    /// Batch Mint Quote Status [NUT-XX]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_mint_batch_quote_status(
+        &self,
+        request: BatchQuoteStatusRequest,
+    ) -> Result<BatchQuoteStatusResponse, Error> {
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", "batch"])?;
+
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MintBolt11)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.transport.http_post(url, auth_token, &request).await
+    }
+
+    /// Batch Mint [NUT-XX]
+    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
+    async fn post_mint_batch(&self, request: BatchMintRequest) -> Result<MintResponse, Error> {
+        #[cfg(feature = "auth")]
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MintBolt11)
+            .await?;
+
+        #[cfg(not(feature = "auth"))]
+        let auth_token = None;
+        self.retriable_http_request(
+            nut19::Method::Post,
+            nut19::Path::MintBolt11,
             auth_token,
             &request,
         )

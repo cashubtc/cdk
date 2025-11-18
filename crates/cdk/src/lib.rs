@@ -38,6 +38,9 @@ mod lightning_address;
 #[cfg(all(any(feature = "wallet", feature = "mint"), feature = "auth"))]
 mod oidc_client;
 
+/// Re-export batch mint types
+#[cfg(feature = "mint")]
+pub use cdk_common::mint::{BatchMintRequest, BatchQuoteStatusRequest, BatchQuoteStatusResponse};
 #[cfg(feature = "mint")]
 #[doc(hidden)]
 pub use cdk_common::payment as cdk_payment;

@@ -31,6 +31,8 @@ pub struct MintQuote {
     pub payment_method: PaymentMethod,
     /// Secret key (optional, hex-encoded)
     pub secret_key: Option<String>,
+    /// Spending condition for NUT-20 locked quotes (optional)
+    pub spending_condition: Option<String>,
 }
 
 impl From<cdk::wallet::MintQuote> for MintQuote {
@@ -47,6 +49,7 @@ impl From<cdk::wallet::MintQuote> for MintQuote {
             amount_paid: quote.amount_paid.into(),
             payment_method: quote.payment_method.into(),
             secret_key: quote.secret_key.map(|sk| sk.to_secret_hex()),
+            spending_condition: quote.spending_condition.clone(),
         }
     }
 }
@@ -73,6 +76,7 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
             amount_paid: quote.amount_paid.into(),
             payment_method: quote.payment_method.into(),
             secret_key,
+            spending_condition: quote.spending_condition,
         })
     }
 }

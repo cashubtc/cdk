@@ -231,9 +231,9 @@ where
         query(
                 r#"
     INSERT INTO mint_quote
-    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid)
+    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid, spending_condition)
     VALUES
-    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid)
+    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid, :spending_condition)
     ON CONFLICT(id) DO UPDATE SET
         mint_url = excluded.mint_url,
         amount = excluded.amount,
@@ -244,7 +244,8 @@ where
         secret_key = excluded.secret_key,
         payment_method = excluded.payment_method,
         amount_issued = excluded.amount_issued,
-        amount_paid = excluded.amount_paid
+        amount_paid = excluded.amount_paid,
+        spending_condition = excluded.spending_condition
     ;
             "#,
             )?
@@ -259,6 +260,7 @@ where
             .bind("payment_method", quote.payment_method.to_string())
             .bind("amount_issued", quote.amount_issued.to_i64())
             .bind("amount_paid", quote.amount_paid.to_i64())
+            .bind("spending_condition", quote.spending_condition.as_deref())
             .execute(&self.inner).await?;
 
         Ok(())
@@ -680,7 +682,8 @@ where
             secret_key,
             payment_method,
             amount_issued,
-            amount_paid
+            amount_paid,
+            spending_condition
         FROM
             mint_quote
         WHERE
@@ -1032,6 +1035,48 @@ where
         get_keyset_by_id_inner(&*conn, keyset_id, false).await
     }
 
+    #[instrument(skip_all)]
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+INSERT INTO mint_quote
+(id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid, spending_condition)
+VALUES
+(:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid, :spending_condition)
+ON CONFLICT(id) DO UPDATE SET
+    mint_url = excluded.mint_url,
+    amount = excluded.amount,
+    unit = excluded.unit,
+    request = excluded.request,
+    state = excluded.state,
+    expiry = excluded.expiry,
+    secret_key = excluded.secret_key,
+    payment_method = excluded.payment_method,
+    amount_issued = excluded.amount_issued,
+    amount_paid = excluded.amount_paid,
+    spending_condition = excluded.spending_condition
+;
+        "#,
+        )?
+        .bind("id", quote.id.to_string())
+        .bind("mint_url", quote.mint_url.to_string())
+        .bind("amount", quote.amount.map(|a| a.to_i64()))
+        .bind("unit", quote.unit.to_string())
+        .bind("request", quote.request)
+        .bind("state", quote.state.to_string())
+        .bind("expiry", quote.expiry as i64)
+        .bind("secret_key", quote.secret_key.map(|p| p.to_string()))
+        .bind("payment_method", quote.payment_method.to_string())
+        .bind("amount_issued", quote.amount_issued.to_i64())
+        .bind("amount_paid", quote.amount_paid.to_i64())
+        .bind("spending_condition", quote.spending_condition.as_deref())
+        .execute(&*conn)
+        .await?;
+
+        Ok(())
+    }
+
     #[instrument(skip(self))]
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
@@ -1054,7 +1099,8 @@ where
                 secret_key,
                 payment_method,
                 amount_issued,
-                amount_paid
+                amount_paid,
+                spending_condition
             FROM
                 mint_quote
             "#,
@@ -1338,7 +1384,8 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
             secret_key,
             row_method,
             row_amount_minted,
-            row_amount_paid
+            row_amount_paid,
+            spending_condition
         ) = row
     );
 
@@ -1363,6 +1410,7 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
         payment_method,
         amount_issued: amount_minted.into(),
         amount_paid: amount_paid.into(),
+        spending_condition: column_as_nullable_string!(spending_condition),
     })
 }
 
