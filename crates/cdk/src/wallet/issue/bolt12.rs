@@ -38,7 +38,7 @@ impl Wallet {
                 .ok_or(Error::IncorrectMint)?
                 .nuts
                 .nut04
-                .get_settings(unit, &crate::nuts::PaymentMethod::Bolt12)
+                .get_settings(unit, &crate::nuts::PaymentMethod::from("bolt12"))
                 .ok_or(Error::UnsupportedUnit)?;
 
             match mint_method_settings.options {
@@ -61,7 +61,7 @@ impl Wallet {
         let quote = MintQuote::new(
             quote_res.quote,
             mint_url,
-            PaymentMethod::Bolt12,
+            PaymentMethod::from("bolt12"),
             amount,
             unit.clone(),
             quote_res.request,

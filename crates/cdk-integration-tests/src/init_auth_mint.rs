@@ -42,7 +42,7 @@ where
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
-            PaymentMethod::Bolt11,
+            PaymentMethod::from("bolt11"),
             MintMeltLimits::new(1, 300),
             Arc::new(fake_wallet),
         )
@@ -58,12 +58,12 @@ where
     );
 
     let blind_auth_endpoints = vec![
-        ProtectedEndpoint::new(Method::Post, RoutePath::MintQuoteBolt11),
-        ProtectedEndpoint::new(Method::Post, RoutePath::MintBolt11),
-        ProtectedEndpoint::new(Method::Get, RoutePath::MintQuoteBolt11),
-        ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuoteBolt11),
-        ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuoteBolt11),
-        ProtectedEndpoint::new(Method::Post, RoutePath::MeltBolt11),
+        ProtectedEndpoint::new(Method::Post, RoutePath::MintQuote("bolt11".to_string())),
+        ProtectedEndpoint::new(Method::Post, RoutePath::Mint("bolt11".to_string())),
+        ProtectedEndpoint::new(Method::Get, RoutePath::MintQuote("bolt11".to_string())),
+        ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuote("bolt11".to_string())),
+        ProtectedEndpoint::new(Method::Get, RoutePath::MeltQuote("bolt11".to_string())),
+        ProtectedEndpoint::new(Method::Post, RoutePath::Melt("bolt11".to_string())),
         ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
         ProtectedEndpoint::new(Method::Post, RoutePath::Checkstate),
         ProtectedEndpoint::new(Method::Post, RoutePath::Restore),

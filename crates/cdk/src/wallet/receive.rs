@@ -210,7 +210,6 @@ impl Wallet {
         opts: ReceiveOptions,
     ) -> Result<Amount, Error> {
         let token = Token::from_str(encoded_token)?;
-
         let unit = token.unit().unwrap_or_default();
 
         ensure_cdk!(unit == self.unit, Error::UnsupportedUnit);

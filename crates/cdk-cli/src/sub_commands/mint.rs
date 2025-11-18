@@ -50,8 +50,8 @@ pub async fn mint(
     let payment_method = PaymentMethod::from_str(&sub_command_args.method)?;
 
     let quote = match &sub_command_args.quote_id {
-        None => match payment_method {
-            PaymentMethod::Bolt11 => {
+        None => match payment_method.as_str() {
+            "bolt11" => {
                 let amount = sub_command_args
                     .amount
                     .ok_or(anyhow!("Amount must be defined"))?;
@@ -63,7 +63,7 @@ pub async fn mint(
 
                 quote
             }
-            PaymentMethod::Bolt12 => {
+            "bolt12" => {
                 let amount = sub_command_args.amount;
                 println!("{:?}", sub_command_args.single_use);
                 let quote = wallet
