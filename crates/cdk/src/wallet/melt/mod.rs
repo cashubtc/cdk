@@ -14,6 +14,8 @@ mod bolt12;
 mod custom;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 mod melt_bip353;
+#[cfg(feature = "wallet")]
+mod melt_lightning_address;
 
 impl Wallet {
     /// Check pending melt quotes
@@ -88,6 +90,66 @@ impl Wallet {
         Ok(())
     }
 
+    /// Get a melt quote for a human-readable address
+    ///
+    /// This method accepts a human-readable address that could be either a BIP353 address
+    /// or a Lightning address. It intelligently determines which to try based on mint support:
+    ///
+    /// 1. If the mint supports Bolt12, it tries BIP353 first
+    /// 2. Falls back to Lightning address only if BIP353 DNS resolution fails
+    /// 3. If BIP353 resolves but fails at the mint, it does NOT fall back to Lightning address
+    /// 4. If the mint doesn't support Bolt12, it tries Lightning address directly
+    #[cfg(all(feature = "bip353", feature = "wallet", not(target_arch = "wasm32")))]
+    pub async fn melt_human_readable_quote(
+        &self,
+        address: &str,
+        amount_msat: impl Into<crate::Amount>,
+    ) -> Result<MeltQuote, Error> {
+        use cdk_common::nuts::PaymentMethod;
+
+        let amount = amount_msat.into();
+
+        // Get mint info from cache to check bolt12 support (no network call)
+        let mint_info = &self
+            .metadata_cache
+            .load(&self.localstore, &self.client, {
+                let ttl = self.metadata_cache_ttl.read();
+                *ttl
+            })
+            .await?
+            .mint_info;
+
+        // Check if mint supports bolt12 by looking at nut05 methods
+        let supports_bolt12 = mint_info
+            .nuts
+            .nut05
+            .methods
+            .iter()
+            .any(|m| m.method == PaymentMethod::Bolt12);
+
+        if supports_bolt12 {
+            // Mint supports bolt12, try BIP353 first
+            match self.melt_bip353_quote(address, amount).await {
+                Ok(quote) => Ok(quote),
+                Err(Error::Bip353Resolve(_)) => {
+                    // DNS resolution failed, fall back to Lightning address
+                    tracing::debug!(
+                        "BIP353 DNS resolution failed for {}, trying Lightning address",
+                        address
+                    );
+                    return self.melt_lightning_address_quote(address, amount).await;
+                }
+                Err(e) => {
+                    // BIP353 resolved but failed for another reason (e.g., mint error)
+                    // Don't fall back to Lightning address
+                    Err(e)
+                }
+            }
+        } else {
+            // Mint doesn't support bolt12, use Lightning address directly
+            self.melt_lightning_address_quote(address, amount).await
+        }
+    }
     /// Unified melt quote method for all payment methods
     /// Routes to the appropriate handler based on the payment method
     pub async fn melt_quote_unified(

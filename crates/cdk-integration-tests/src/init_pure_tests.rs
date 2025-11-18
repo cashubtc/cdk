@@ -62,6 +62,20 @@ impl MintConnector for DirectMintConnection {
         panic!("Not implemented");
     }
 
+    async fn fetch_lnurl_pay_request(
+        &self,
+        _url: &str,
+    ) -> Result<cdk::wallet::LnurlPayResponse, Error> {
+        unimplemented!("Lightning address not supported in DirectMintConnection")
+    }
+
+    async fn fetch_lnurl_invoice(
+        &self,
+        _url: &str,
+    ) -> Result<cdk::wallet::LnurlPayInvoiceResponse, Error> {
+        unimplemented!("Lightning address not supported in DirectMintConnection")
+    }
+
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
         Ok(self.mint.pubkeys().keysets)
     }
