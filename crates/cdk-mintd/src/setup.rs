@@ -234,8 +234,7 @@ impl LnBackendSetup for config::GrpcProcessor {
 impl LnBackendSetup for config::LdkNode {
     async fn setup(
         &self,
-        _routers: &mut Vec<Router>,
-        _settings: &Settings,
+        settings: &Settings,
         _unit: CurrencyUnit,
         runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
