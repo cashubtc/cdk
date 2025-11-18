@@ -12,10 +12,18 @@ Cashu mint daemon implementation for the Cashu Development Kit (CDK). This binar
 ## Features
 
 - **Multiple Database Backends**: SQLite, PostgreSQL, and ReDB
-- **Lightning Network Integration**: Support for CLN, LND, LNbits, LDK Node, and test backends  
+- **Lightning Network Integration**: Support for CLN, LND, LNbits, LDK Node, and test backends
 - **Authentication**: Optional user authentication with OpenID Connect
 - **Management RPC**: gRPC interface for mint management
 - **Docker Support**: Ready-to-use Docker configurations
+
+## Lightning Backend Documentation
+
+For detailed configuration of each Lightning backend, see:
+
+- **[LND](../cdk-lnd/README.md)** - Lightning Network Daemon
+- **[CLN](../cdk-cln/README.md)** - Core Lightning
+- **[LNbits](../cdk-lnbits/README.md)** - LNbits API integration
 
 ## Installation
 
@@ -100,8 +108,8 @@ ln_backend = "cln"
 
 [cln]
 rpc_path = "/home/bitcoin/.lightning/bitcoin/lightning-rpc"
-fee_percent = 0.01
-reserve_fee_min = 10
+# fee_percent = 0.02      # Optional, defaults to 2%
+# reserve_fee_min = 2     # Optional, defaults to 2 sats
 ```
 
 ### With LND Lightning Backend
@@ -113,8 +121,8 @@ ln_backend = "lnd"
 address = "https://localhost:10009"
 macaroon_file = "/home/bitcoin/.lnd/data/chain/bitcoin/mainnet/admin.macaroon"
 cert_file = "/home/bitcoin/.lnd/tls.cert"
-fee_percent = 0.01
-reserve_fee_min = 10
+# fee_percent = 0.02      # Optional, defaults to 2%
+# reserve_fee_min = 2     # Optional, defaults to 2 sats
 ```
 
 ### With PostgreSQL Database

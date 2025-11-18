@@ -94,30 +94,30 @@ ln_backend = "fakewallet"
 # min_melt=1
 # max_melt=500000
 
-[cln]
-rpc_path = ""
-fee_percent = 0.04
-reserve_fee_min = 4
+# [cln]
+# rpc_path = "/path/to/.lightning/bitcoin/lightning-rpc"
+# bolt12 = true              # Optional, defaults to true
+# fee_percent = 0.02         # Optional, defaults to 2%
+# reserve_fee_min = 2        # Optional, defaults to 2 sats
 
 # [lnbits]
 # admin_api_key = ""
 # invoice_api_key = ""
 # lnbits_api = ""
-# fee_percent = 0.04
-# # Fee in sats
-# reserve_fee_min = 4
+# fee_percent = 0.02         # Optional, defaults to 2%
+# reserve_fee_min = 2        # Optional, defaults to 2 sats
 # Note: Only LNBits v1 API is supported (websocket-based)
 
 # [lnd]
-# address = "https://domain:port"
-# macaroon_file = ""
-# cert_file = ""
-# fee_percent=0.04
-# reserve_fee_min=4
+# address = "https://localhost:10009"
+# cert_file = "/path/to/.lnd/tls.cert"
+# macaroon_file = "/path/to/.lnd/data/chain/bitcoin/mainnet/admin.macaroon"
+# fee_percent = 0.02         # Optional, defaults to 2%
+# reserve_fee_min = 2        # Optional, defaults to 2 sats
 
 # [ldk_node]
-# fee_percent = 0.04
-# reserve_fee_min = 4
+# fee_percent = 0.02         # Optional, defaults to 2%
+# reserve_fee_min = 2        # Optional, defaults to 2 sats
 # bitcoin_network = "signet"  # mainnet, testnet, signet, regtest
 # chain_source_type = "esplora"  # esplora, bitcoinrpc  
 # 
