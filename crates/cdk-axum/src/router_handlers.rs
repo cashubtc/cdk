@@ -1,7 +1,6 @@
 use anyhow::Result;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{FromRequestParts, Json, Path, State};
-use axum::http::request::Parts;
+use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::{ErrorCode, ErrorResponse};
