@@ -219,6 +219,23 @@ where
             .execute(&self.inner)
             .await?;
 
+        if new_state == State::Spent {
+            query(
+                r#"
+                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+                SELECT keyset_id, 0, COALESCE(SUM(amount), 0)
+                FROM proof
+                WHERE y IN (:ys)
+                GROUP BY keyset_id
+                ON CONFLICT (keyset_id)
+                DO UPDATE SET total_redeemed = keyset_amounts.total_redeemed + EXCLUDED.total_redeemed
+                "#,
+            )?
+            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+            .execute(&self.inner)
+            .await?;
+        }
+
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
     }
 
@@ -1618,6 +1635,25 @@ where
         .into_iter()
         .unzip())
     }
+
+    /// Get total proofs redeemed by keyset id
+    async fn get_total_redeemed(&self) -> Result<HashMap<Id, Amount>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                keyset_id,
+                total_redeemed as amount
+            FROM
+                keyset_amounts
+        "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_hashmap_amount)
+        .collect()
+    }
 }
 
 #[async_trait]
@@ -1698,6 +1734,19 @@ where
                     .bind("signed_time", current_time as i64)
                     .execute(&self.inner)
                     .await?;
+
+                    query(
+                        r#"
+                        INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+                        VALUES (:keyset_id, :amount, 0)
+                        ON CONFLICT (keyset_id)
+                        DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
+                        "#,
+                    )?
+                    .bind("amount", u64::from(signature.amount) as i64)
+                    .bind("keyset_id", signature.keyset_id.to_string())
+                    .execute(&self.inner)
+                    .await?;
                 }
                 Some((c, _dleq_e, _dleq_s)) => {
                     // Blind message exists: check if c is NULL
@@ -1723,6 +1772,19 @@ where
                             .bind("blinded_message", message.to_bytes().to_vec())
                             .bind("signed_time", current_time as i64)
                             .bind("amount", u64::from(signature.amount) as i64)
+                            .execute(&self.inner)
+                            .await?;
+
+                            query(
+                                r#"
+                                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
+                                VALUES (:keyset_id, :amount, 0)
+                                ON CONFLICT (keyset_id)
+                                DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
+                                "#,
+                            )?
+                            .bind("amount", u64::from(signature.amount) as i64)
+                            .bind("keyset_id", signature.keyset_id.to_string())
                             .execute(&self.inner)
                             .await?;
                         }
@@ -1906,6 +1968,25 @@ where
         .into_iter()
         .map(sql_row_to_blind_signature)
         .collect::<Result<Vec<BlindSignature>, _>>()?)
+    }
+
+    /// Get total proofs redeemed by keyset id
+    async fn get_total_issued(&self) -> Result<HashMap<Id, Amount>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                keyset_id,
+                total_issued as amount
+            FROM
+                keyset_amounts
+        "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_hashmap_amount)
+        .collect()
     }
 }
 
@@ -2167,10 +2248,10 @@ where
         let current_time = unix_time();
 
         let blinded_secrets_json = serde_json::to_string(&saga.blinded_secrets)
-            .map_err(|e| Error::Internal(format!("Failed to serialize blinded_secrets: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to serialize blinded_secrets: {e}")))?;
 
         let input_ys_json = serde_json::to_string(&saga.input_ys)
-            .map_err(|e| Error::Internal(format!("Failed to serialize input_ys: {}", e)))?;
+            .map_err(|e| Error::Internal(format!("Failed to serialize input_ys: {e}")))?;
 
         query(
             r#"
@@ -2482,6 +2563,20 @@ fn sql_row_to_proof(row: Vec<Column>) -> Result<Proof, Error> {
     })
 }
 
+fn sql_row_to_hashmap_amount(row: Vec<Column>) -> Result<(Id, Amount), Error> {
+    unpack_into!(
+        let (
+            keyset_id, amount
+        ) = row
+    );
+
+    let amount: u64 = column_as_number!(amount);
+    Ok((
+        column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
+        Amount::from(amount),
+    ))
+}
+
 fn sql_row_to_proof_with_state(row: Vec<Column>) -> Result<(Proof, Option<State>), Error> {
     unpack_into!(
         let (
@@ -2550,23 +2645,23 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
 
     let operation_id_str = column_as_string!(&operation_id);
     let operation_id = uuid::Uuid::parse_str(&operation_id_str)
-        .map_err(|e| Error::Internal(format!("Invalid operation_id UUID: {}", e)))?;
+        .map_err(|e| Error::Internal(format!("Invalid operation_id UUID: {e}")))?;
 
     let operation_kind_str = column_as_string!(&operation_kind);
     let operation_kind = mint::OperationKind::from_str(&operation_kind_str)
-        .map_err(|e| Error::Internal(format!("Invalid operation kind: {}", e)))?;
+        .map_err(|e| Error::Internal(format!("Invalid operation kind: {e}")))?;
 
     let state_str = column_as_string!(&state);
     let state = mint::SagaStateEnum::new(operation_kind, &state_str)
-        .map_err(|e| Error::Internal(format!("Invalid saga state: {}", e)))?;
+        .map_err(|e| Error::Internal(format!("Invalid saga state: {e}")))?;
 
     let blinded_secrets_str = column_as_string!(&blinded_secrets);
     let blinded_secrets: Vec<PublicKey> = serde_json::from_str(&blinded_secrets_str)
-        .map_err(|e| Error::Internal(format!("Failed to deserialize blinded_secrets: {}", e)))?;
+        .map_err(|e| Error::Internal(format!("Failed to deserialize blinded_secrets: {e}")))?;
 
     let input_ys_str = column_as_string!(&input_ys);
     let input_ys: Vec<PublicKey> = serde_json::from_str(&input_ys_str)
-        .map_err(|e| Error::Internal(format!("Failed to deserialize input_ys: {}", e)))?;
+        .map_err(|e| Error::Internal(format!("Failed to deserialize input_ys: {e}")))?;
 
     let quote_id = match &quote_id {
         Column::Text(s) => {

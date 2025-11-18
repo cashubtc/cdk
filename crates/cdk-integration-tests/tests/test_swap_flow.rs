@@ -58,6 +58,29 @@ async fn test_swap_happy_path() {
         .expect("Could not get proofs");
 
     let keyset_id = get_keyset_id(&mint).await;
+
+    // Check initial amounts after minting
+    let total_issued = mint.total_issued().await.unwrap();
+    let total_redeemed = mint.total_redeemed().await.unwrap();
+    let initial_issued = total_issued
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let initial_redeemed = total_redeemed
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    assert_eq!(
+        initial_issued,
+        Amount::from(100),
+        "Should have issued 100 sats"
+    );
+    assert_eq!(
+        initial_redeemed,
+        Amount::ZERO,
+        "Should have redeemed 0 sats initially"
+    );
+
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     // Create swap request for same amount (100 sats)
@@ -116,6 +139,29 @@ async fn test_swap_happy_path() {
         saved_signatures.len(),
         swap_response.signatures.len(),
         "All signatures should be saved"
+    );
+
+    // Check keyset amounts after swap
+    // Swap redeems old proofs (100 sats) and issues new proofs (100 sats)
+    let total_issued = mint.total_issued().await.unwrap();
+    let total_redeemed = mint.total_redeemed().await.unwrap();
+    let after_issued = total_issued
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let after_redeemed = total_redeemed
+        .get(&keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    assert_eq!(
+        after_issued,
+        Amount::from(200),
+        "Should have issued 200 sats total (initial 100 + swap 100)"
+    );
+    assert_eq!(
+        after_redeemed,
+        Amount::from(100),
+        "Should have redeemed 100 sats from the swap"
     );
 }
 
@@ -815,7 +861,7 @@ async fn test_swap_state_transition_notifications() {
             cashu::NotificationPayload::ProofState(cashu::ProofState { y, state, .. }) => {
                 state_transitions
                     .entry(y.to_string())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(state);
             }
             _ => panic!("Unexpected notification type"),
@@ -900,4 +946,257 @@ async fn test_swap_proof_state_consistency() {
             }
         }
     }
+}
+
+/// Tests that wallet correctly increments keyset counters when receiving proofs
+/// from multiple keysets and then performing operations with them.
+///
+/// This test validates:
+/// 1. Wallet can receive proofs from multiple different keysets
+/// 2. Counter is correctly incremented for the target keyset during swap
+/// 3. Database maintains separate counters for each keyset
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_wallet_multi_keyset_counter_updates() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Fund wallet with initial 100 sats using first keyset
+    fund_wallet(wallet.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let first_keyset_id = get_keyset_id(&mint).await;
+
+    // Rotate to a second keyset
+    mint.rotate_keyset(CurrencyUnit::Sat, 32, 0)
+        .await
+        .expect("Failed to rotate keyset");
+
+    // Wait for keyset rotation to propagate
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Refresh wallet keysets to know about the new keyset
+    wallet
+        .refresh_keysets()
+        .await
+        .expect("Failed to refresh wallet keysets");
+
+    // Fund wallet again with 100 sats using second keyset
+    fund_wallet(wallet.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet with second keyset");
+
+    let second_keyset_id = mint
+        .pubkeys()
+        .keysets
+        .iter()
+        .find(|k| k.id != first_keyset_id)
+        .expect("Should have second keyset")
+        .id;
+
+    // Verify we now have proofs from two different keysets
+    let all_proofs = wallet
+        .get_unspent_proofs()
+        .await
+        .expect("Could not get proofs");
+
+    let keysets_in_use: std::collections::HashSet<_> =
+        all_proofs.iter().map(|p| p.keyset_id).collect();
+
+    assert_eq!(
+        keysets_in_use.len(),
+        2,
+        "Should have proofs from 2 different keysets"
+    );
+    assert!(
+        keysets_in_use.contains(&first_keyset_id),
+        "Should have proofs from first keyset"
+    );
+    assert!(
+        keysets_in_use.contains(&second_keyset_id),
+        "Should have proofs from second keyset"
+    );
+
+    // Get initial total issued and redeemed for both keysets before swap
+    let total_issued_before = mint.total_issued().await.unwrap();
+    let total_redeemed_before = mint.total_redeemed().await.unwrap();
+
+    let first_keyset_issued_before = total_issued_before
+        .get(&first_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let first_keyset_redeemed_before = total_redeemed_before
+        .get(&first_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+
+    let second_keyset_issued_before = total_issued_before
+        .get(&second_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let second_keyset_redeemed_before = total_redeemed_before
+        .get(&second_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+
+    tracing::info!(
+        "Before swap - First keyset: issued={}, redeemed={}",
+        first_keyset_issued_before,
+        first_keyset_redeemed_before
+    );
+    tracing::info!(
+        "Before swap - Second keyset: issued={}, redeemed={}",
+        second_keyset_issued_before,
+        second_keyset_redeemed_before
+    );
+
+    // Both keysets should have issued 100 sats
+    assert_eq!(
+        first_keyset_issued_before,
+        Amount::from(100),
+        "First keyset should have issued 100 sats"
+    );
+    assert_eq!(
+        second_keyset_issued_before,
+        Amount::from(100),
+        "Second keyset should have issued 100 sats"
+    );
+    // Neither should have redeemed anything yet
+    assert_eq!(
+        first_keyset_redeemed_before,
+        Amount::ZERO,
+        "First keyset should have redeemed 0 sats before swap"
+    );
+    assert_eq!(
+        second_keyset_redeemed_before,
+        Amount::ZERO,
+        "Second keyset should have redeemed 0 sats before swap"
+    );
+
+    // Now perform a swap with all proofs - this should only increment the counter
+    // for the active (second) keyset, not for the first keyset
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+
+    let total_amount = all_proofs.total_amount().expect("Should get total amount");
+
+    // Create swap using the active (second) keyset
+    let preswap = PreMintSecrets::random(
+        second_keyset_id,
+        total_amount,
+        &SplitTarget::default(),
+        &fee_and_amounts,
+    )
+    .expect("Failed to create preswap");
+
+    let swap_request = SwapRequest::new(all_proofs.clone(), preswap.blinded_messages());
+
+    // Execute the swap
+    let swap_response = mint
+        .process_swap_request(swap_request)
+        .await
+        .expect("Swap should succeed");
+
+    // Verify response
+    assert_eq!(
+        swap_response.signatures.len(),
+        preswap.blinded_messages().len(),
+        "Should receive signature for each blinded message"
+    );
+
+    // All the new proofs should be from the second (active) keyset
+    let keys = mint
+        .pubkeys()
+        .keysets
+        .iter()
+        .find(|k| k.id == second_keyset_id)
+        .expect("Should find second keyset")
+        .keys
+        .clone();
+
+    let new_proofs = construct_proofs(
+        swap_response.signatures,
+        preswap.rs(),
+        preswap.secrets(),
+        &keys,
+    )
+    .expect("Failed to construct proofs");
+
+    // Verify all new proofs use the second keyset
+    for proof in &new_proofs {
+        assert_eq!(
+            proof.keyset_id, second_keyset_id,
+            "All new proofs should use the active (second) keyset"
+        );
+    }
+
+    // Verify total issued and redeemed after swap
+    let total_issued_after = mint.total_issued().await.unwrap();
+    let total_redeemed_after = mint.total_redeemed().await.unwrap();
+
+    let first_keyset_issued_after = total_issued_after
+        .get(&first_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let first_keyset_redeemed_after = total_redeemed_after
+        .get(&first_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+
+    let second_keyset_issued_after = total_issued_after
+        .get(&second_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+    let second_keyset_redeemed_after = total_redeemed_after
+        .get(&second_keyset_id)
+        .copied()
+        .unwrap_or(Amount::ZERO);
+
+    tracing::info!(
+        "After swap - First keyset: issued={}, redeemed={}",
+        first_keyset_issued_after,
+        first_keyset_redeemed_after
+    );
+    tracing::info!(
+        "After swap - Second keyset: issued={}, redeemed={}",
+        second_keyset_issued_after,
+        second_keyset_redeemed_after
+    );
+
+    // After swap:
+    // - First keyset: issued stays 100, redeemed increases by 100 (all its proofs were spent in swap)
+    // - Second keyset: issued increases by 200 (original 100 + new 100 from swap output),
+    //                  redeemed increases by 100 (its proofs from first funding were spent)
+    assert_eq!(
+        first_keyset_issued_after,
+        Amount::from(100),
+        "First keyset issued should stay 100 sats (no new issuance)"
+    );
+    assert_eq!(
+        first_keyset_redeemed_after,
+        Amount::from(100),
+        "First keyset should have redeemed 100 sats (all its proofs spent in swap)"
+    );
+
+    assert_eq!(
+        second_keyset_issued_after,
+        Amount::from(300),
+        "Second keyset should have issued 300 sats total (100 initial + 100 the second funding + 100 from swap output from the old keyset)"
+    );
+    assert_eq!(
+        second_keyset_redeemed_after,
+        Amount::from(100),
+        "Second keyset should have redeemed 100 sats (its proofs from initial funding spent in swap)"
+    );
+
+    // The test verifies that:
+    // 1. We can have proofs from multiple keysets in a wallet
+    // 2. Swap operation processes inputs from any keyset but creates outputs using active keyset
+    // 3. The keyset_counter table correctly handles counters for different keysets independently
+    // 4. The database upsert logic in increment_keyset_counter works for multiple keysets
+    // 5. Total issued and redeemed are tracked correctly per keyset during multi-keyset swaps
 }

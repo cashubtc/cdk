@@ -63,7 +63,7 @@ impl WalletRedbDatabase {
                 if !parent.exists() {
                     return Err(Error::Io(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
-                        format!("Parent directory does not exist: {:?}", parent),
+                        format!("Parent directory does not exist: {parent:?}"),
                     )));
                 }
             }
@@ -171,7 +171,7 @@ impl WalletRedbDatabase {
             if !parent.exists() {
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    format!("Parent directory does not exist: {:?}", parent),
+                    format!("Parent directory does not exist: {parent:?}"),
                 )));
             }
         }

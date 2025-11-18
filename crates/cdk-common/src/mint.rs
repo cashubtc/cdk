@@ -49,7 +49,7 @@ impl FromStr for OperationKind {
             "swap" => Ok(OperationKind::Swap),
             "mint" => Ok(OperationKind::Mint),
             "melt" => Ok(OperationKind::Melt),
-            _ => Err(Error::Custom(format!("Invalid operation kind: {}", value))),
+            _ => Err(Error::Custom(format!("Invalid operation kind: {value}"))),
         }
     }
 }
@@ -80,7 +80,7 @@ impl FromStr for SwapSagaState {
         match value.as_str() {
             "setup_complete" => Ok(SwapSagaState::SetupComplete),
             "signed" => Ok(SwapSagaState::Signed),
-            _ => Err(Error::Custom(format!("Invalid swap saga state: {}", value))),
+            _ => Err(Error::Custom(format!("Invalid swap saga state: {value}"))),
         }
     }
 }
@@ -279,7 +279,7 @@ impl Operation {
             "mint" => Ok(Self::Mint(uuid)),
             "melt" => Ok(Self::Melt(uuid)),
             "swap" => Ok(Self::Swap(uuid)),
-            _ => Err(Error::Custom(format!("Invalid operation kind: {}", kind))),
+            _ => Err(Error::Custom(format!("Invalid operation kind: {kind}"))),
         }
     }
 }
@@ -670,8 +670,6 @@ impl TryFrom<crate::mint::MintQuote> for crate::nuts::MintQuoteCustomResponse<Qu
     type Error = crate::Error;
 
     fn try_from(mint_quote: crate::mint::MintQuote) -> Result<Self, Self::Error> {
-        use serde_json::Value;
-
         Ok(crate::nuts::MintQuoteCustomResponse {
             state: mint_quote.state(),
             quote: mint_quote.id.clone(),
@@ -680,7 +678,6 @@ impl TryFrom<crate::mint::MintQuote> for crate::nuts::MintQuoteCustomResponse<Qu
             pubkey: mint_quote.pubkey,
             amount: mint_quote.amount,
             unit: Some(mint_quote.unit),
-            data: Value::Object(Default::default()), // Default empty JSON object
         })
     }
 }
@@ -750,8 +747,6 @@ pub enum MeltPaymentRequest {
         method: String,
         /// Payment request string
         request: String,
-        /// Method-specific data
-        data: serde_json::Value,
     },
 }
 

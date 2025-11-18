@@ -7,7 +7,9 @@
 //! When the method parameter is "bolt11" or "bolt12", these handlers use the
 //! specific Bolt11/Bolt12 request/response types instead of the generic custom types.
 
-use axum::extract::{Json, Path, State};
+use axum::extract::{FromRequestParts, Json, Path, State};
+use axum::http::request::Parts;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::mint::QuoteId;
 #[cfg(feature = "auth")]
@@ -26,6 +28,48 @@ use crate::auth::AuthHeader;
 use crate::router_handlers::into_response;
 use crate::MintState;
 
+const PREFER_HEADER_KEY: &str = "Prefer";
+
+/// Header extractor for the Prefer header
+///
+/// This extractor checks for the `Prefer: respond-async` header
+/// to determine if the client wants asynchronous processing
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreferHeader {
+    pub respond_async: bool,
+}
+
+impl<S> FromRequestParts<S> for PreferHeader
+where
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, String);
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> anyhow::Result<Self, Self::Rejection> {
+        // Check for Prefer header
+        if let Some(prefer_value) = parts.headers.get(PREFER_HEADER_KEY) {
+            let value = prefer_value.to_str().map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "Invalid Prefer header value".to_string(),
+                )
+            })?;
+
+            // Check if it contains "respond-async"
+            let respond_async = value.to_lowercase().contains("respond-async");
+
+            return Ok(PreferHeader { respond_async });
+        }
+
+        // No Prefer header found - default to synchronous processing
+        Ok(PreferHeader {
+            respond_async: false,
+        })
+    }
+}
 /// Generic handler for custom payment method mint quotes
 ///
 /// This handler works for ANY custom payment method (e.g., paypal, venmo, cashapp, bolt11, bolt12).
@@ -297,6 +341,8 @@ pub async fn get_check_melt_custom_quote(
 #[instrument(skip_all, fields(method = ?method))]
 pub async fn post_melt_custom(
     #[cfg(feature = "auth")] auth: AuthHeader,
+    prefer: PreferHeader,
+
     State(state): State<MintState>,
     Path(method): Path<String>,
     Json(payload): Json<cdk::nuts::MeltRequest<QuoteId>>,
@@ -313,8 +359,17 @@ pub async fn post_melt_custom(
             .map_err(into_response)?;
     }
 
-    // Note: melt() will validate the quote internally
-    let res = state.mint.melt(&payload).await.map_err(into_response)?;
+    let res = if prefer.respond_async {
+        // Asynchronous processing - return immediately after setup
+        state
+            .mint
+            .melt_async(&payload)
+            .await
+            .map_err(into_response)?
+    } else {
+        // Synchronous processing - wait for completion
+        state.mint.melt(&payload).await.map_err(into_response)?
+    };
 
     Ok(Json(res))
 }
@@ -366,6 +421,7 @@ pub async fn cache_post_mint_custom(
 #[instrument(skip_all, fields(method = ?method))]
 pub async fn cache_post_melt_custom(
     #[cfg(feature = "auth")] auth: AuthHeader,
+    prefer: PreferHeader,
     state: State<MintState>,
     method: Path<String>,
     payload: Json<cdk::nuts::MeltRequest<QuoteId>>,
@@ -380,7 +436,7 @@ pub async fn cache_post_melt_custom(
         None => {
             // Could not calculate key, just return the handler result
             #[cfg(feature = "auth")]
-            return post_melt_custom(auth, state, method, payload).await;
+            return post_melt_custom(auth, prefer, state, method, payload).await;
             #[cfg(not(feature = "auth"))]
             return post_melt_custom(state, method, payload).await;
         }
@@ -395,7 +451,7 @@ pub async fn cache_post_melt_custom(
     }
 
     #[cfg(feature = "auth")]
-    let result = post_melt_custom(auth, state, method, payload).await?;
+    let result = post_melt_custom(auth, prefer, state, method, payload).await?;
     #[cfg(not(feature = "auth"))]
     let result = post_melt_custom(state, method, payload).await?;
 

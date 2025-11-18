@@ -54,21 +54,17 @@ impl Wallet {
 
         let amount = amount.ok_or(Error::AmountUndefined)?;
 
-        // Pack method and request into data field
-        let data = serde_json::json!({
-            "method": method,
-            "request": request,
-        });
-
         let mint_request = MintQuoteCustomRequest {
             amount,
             unit: self.unit.clone(),
             description,
             pubkey: Some(secret_key.public_key()),
-            data,
         };
 
-        let quote_res = self.client.post_mint_custom_quote(mint_request).await?;
+        let quote_res = self
+            .client
+            .post_mint_custom_quote(method, mint_request)
+            .await?;
 
         let quote = MintQuote::new(
             quote_res.quote,

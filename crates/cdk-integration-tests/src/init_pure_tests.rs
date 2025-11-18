@@ -212,6 +212,7 @@ impl MintConnector for DirectMintConnection {
     /// Mint Quote for Custom Payment Method
     async fn post_mint_custom_quote(
         &self,
+        _method: &str,
         _request: MintQuoteCustomRequest,
     ) -> Result<MintQuoteCustomResponse<String>, Error> {
         // Custom payment methods not implemented in test mock

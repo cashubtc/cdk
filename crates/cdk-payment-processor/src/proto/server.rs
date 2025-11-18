@@ -9,7 +9,6 @@ use cdk_common::payment::{IncomingPaymentOptions, MintPayment};
 use cdk_common::CurrencyUnit;
 use futures::{Stream, StreamExt};
 use lightning::offers::offer::Offer;
-use serde_json::Value;
 use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Instant};
@@ -204,7 +203,6 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
         {
             incoming_payment_options::Options::Custom(opts) => IncomingPaymentOptions::Custom(
                 Box::new(cdk_common::payment::CustomIncomingPaymentOptions {
-                    data: Value::Null,
                     method: "".to_string(),
                     description: opts.description,
                     amount: opts.amount.unwrap_or(0).into(),
@@ -280,7 +278,6 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         request: request.request.clone(),
                         max_fee_amount: None,
                         timeout_secs: None,
-                        data: Value::Null,
                         melt_options: request.options.map(Into::into),
                     },
                 ))
@@ -351,7 +348,6 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         request: opts.offer,   // Reusing offer field for custom request string
                         max_fee_amount: opts.max_fee_amount.map(Into::into),
                         timeout_secs: opts.timeout_secs,
-                        data: Value::Null,
                         melt_options: opts.melt_options.map(Into::into),
                     }),
                 );

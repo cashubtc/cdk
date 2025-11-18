@@ -170,10 +170,71 @@ just itest REDB/SQLITE/MEMORY
 
 NOTE: if this command fails on macos change the nix channel to unstable (in the `flake.nix` file modify `nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";` to `nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";`)
 
+### Running Mutation Tests
+
+Mutation testing validates test suite quality by introducing small code changes (mutations) and verifying tests catch them.
+
+```bash
+# Run mutation tests on cashu crate (configured in .cargo/mutants.toml)
+cargo mutants
+
+# Check specific files only
+cargo mutants --file crates/cashu/src/amount.rs
+
+# Re-run previously caught mutations to verify fixes
+cargo mutants --in-diff
+```
+
+**Understanding Results:**
+- **Caught mutations**: Tests correctly detected the code change (good!)
+- **Missed mutations**: Code change went undetected - indicates missing test coverage
+- **Timeouts**: Mutation caused infinite loop - some are excluded in config to keep tests practical
+
+The `.cargo/mutants.toml` file excludes mutations that cause infinite loops during testing. These don't indicate bugs - they're just mutations that would make the test suite hang indefinitely.
+
+See [cargo-mutants documentation](https://mutants.rs/) for more options.
+
 ### Running Format
 ```bash
 just format
 ```
+
+## Code Formatting
+
+CDK uses a flexible rustfmt policy to balance code quality with developer experience:
+
+### Formatting Requirements for PRs
+Pull requests can be formatted with **either stable or nightly** rustfmt - both are accepted:
+
+- **Stable rustfmt:** Standard Rust formatting (less strict)
+- **Nightly rustfmt:** More strict formatting with additional rules
+
+**Why both are accepted:**
+- We prefer nightly rustfmt's stricter formatting
+- We don't want to force contributors to install nightly Rust
+- This reduces friction for developers using stable toolchains
+
+```bash
+# Format with stable (default)
+just format
+
+# Format with nightly (if you have it installed)
+cargo +nightly fmt
+```
+
+The CI will check your PR with stable rustfmt, so as long as your code passes stable formatting, your PR will pass CI.
+
+### Automated Nightly Formatting
+To keep the codebase consistently formatted with nightly rustfmt over time:
+
+- **Daily Check:** Every night at midnight UTC, a GitHub Action runs nightly rustfmt on the `main` branch
+- **Automated PRs:** If nightly rustfmt produces formatting changes, a PR is automatically created with:
+  - Title: `Automated nightly rustfmt (YYYY-MM-DD)`
+  - Label: `rustfmt`
+  - Author: `Fmt Bot <bot@cashudevkit.org>`
+- **Review Process:** These automated PRs are reviewed and merged to keep the codebase aligned with nightly formatting
+
+This approach ensures the codebase gradually adopts nightly formatting improvements without blocking contributors who use stable Rust.
 
 
 ### Running Clippy

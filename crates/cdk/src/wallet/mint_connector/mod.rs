@@ -117,6 +117,7 @@ pub trait MintConnector: Debug {
     /// Mint Quote for Custom Payment Method
     async fn post_mint_custom_quote(
         &self,
+        method: &str,
         request: MintQuoteCustomRequest,
     ) -> Result<MintQuoteCustomResponse<String>, Error>;
 

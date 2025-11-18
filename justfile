@@ -59,7 +59,7 @@ test:
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  cargo test --lib
+  cargo test --lib --workspace --exclude cdk-postgres
 
   # Run pure integration tests
   cargo test -p cdk-integration-tests --test mint 
@@ -87,10 +87,89 @@ test-all db="memory":
     ./misc/fake_itests.sh "{{db}}" external_signatory
     ./misc/fake_itests.sh "{{db}}"
     
+# Mutation Testing Commands
+
+# Run mutation tests on a specific crate
+# Usage: just mutants <crate-name>
+# Example: just mutants cashu
+mutants CRATE:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running mutation tests on crate: {{CRATE}}"
+  cargo mutants --package {{CRATE}} -vV
+
+# Run mutation tests on the cashu crate
+mutants-cashu:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running mutation tests on cashu crate..."
+  cargo mutants --package cashu -vV
+
+# Run mutation tests on the cdk crate
+mutants-cdk:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running mutation tests on cdk crate..."
+  cargo mutants --package cdk -vV
+
+# Run mutation tests on entire workspace (WARNING: very slow)
+mutants-all:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running mutation tests on entire workspace..."
+  echo "WARNING: This may take a very long time!"
+  cargo mutants -vV
+
+# Quick mutation test for current work (alias for mutants-diff)
+mutants-quick:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running mutations on changed files since HEAD..."
+  cargo mutants --in-diff HEAD -vV
+
+# Run mutation tests only on changed code since HEAD
+mutants-diff:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running mutation tests on changed code..."
+  cargo mutants --in-diff HEAD -vV
+
+# Run mutation tests and save output to log file
+# Usage: just mutants-log <crate-name> <log-suffix>
+# Example: just mutants-log cashu baseline
+mutants-log CRATE SUFFIX:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  LOG_FILE="mutants-{{CRATE}}-{{SUFFIX}}.log"
+  echo "Running mutation tests on {{CRATE}}, saving to $LOG_FILE..."
+  cargo mutants --package {{CRATE}} -vV 2>&1 | tee "$LOG_FILE"
+  echo "Results saved to $LOG_FILE"
+
+# Mutation test with baseline comparison
+# Usage: just mutants-check <crate-name>
+# Example: just mutants-check cashu
+mutants-check CRATE:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  BASELINE="mutants-{{CRATE}}-baseline.log"
+  if [ ! -f "$BASELINE" ]; then
+    echo "ERROR: No baseline found at $BASELINE"
+    echo "Run: just mutants-log {{CRATE}} baseline"
+    exit 1
+  fi
+  cargo mutants --package {{CRATE}} -vV | tee mutants-{{CRATE}}-current.log
+  # Compare results
+  echo "=== Baseline vs Current ==="
+  diff <(grep "^CAUGHT\|^MISSED" "$BASELINE" | wc -l) \
+       <(grep "^CAUGHT\|^MISSED" mutants-{{CRATE}}-current.log | wc -l) || true
+
 test-nutshell:
   #!/usr/bin/env bash
   set -euo pipefail
-  
+
   # Function to cleanup docker containers
   cleanup() {
     echo "Cleaning up docker containers..."
@@ -155,11 +234,11 @@ test-nutshell:
     
 
 # run `cargo clippy` on everything
-clippy *ARGS="--locked --offline --workspace --all-targets":
-  cargo clippy {{ARGS}}
+clippy *ARGS="--workspace --all-targets":
+  cargo clippy {{ARGS}} -- -D warnings
 
 # run `cargo clippy --fix` on everything
-clippy-fix *ARGS="--locked --offline --workspace --all-targets":
+clippy-fix *ARGS="--workspace --all-targets":
   cargo clippy {{ARGS}} --fix
 
 typos: 

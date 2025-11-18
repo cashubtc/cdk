@@ -559,15 +559,9 @@ where
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn post_mint_custom_quote(
         &self,
+        method: &str,
         request: MintQuoteCustomRequest,
     ) -> Result<MintQuoteCustomResponse<String>, Error> {
-        // Extract method from request data
-        let method = request
-            .data
-            .get("method")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Custom("Missing method in custom quote request".to_string()))?;
-
         let url = self.mint_url.join_paths(&["v1", "mint", "quote", method])?;
 
         #[cfg(feature = "auth")]

@@ -182,8 +182,6 @@ pub struct CustomIncomingPaymentOptions {
     pub description: Option<String>,
     /// Amount for the payment request
     pub amount: Amount,
-    /// Method-specific data (opaque JSON)
-    pub data: Value,
     /// Optional expiry time as Unix timestamp in seconds
     pub unix_expiry: Option<u64>,
 }
@@ -236,8 +234,6 @@ pub struct CustomOutgoingPaymentOptions {
     pub max_fee_amount: Option<Amount>,
     /// Optional timeout in seconds
     pub timeout_secs: Option<u64>,
-    /// Method-specific data (opaque JSON)
-    pub data: Value,
     /// Melt options
     pub melt_options: Option<MeltOptions>,
 }
@@ -282,20 +278,15 @@ impl TryFrom<crate::mint::MeltQuote> for OutgoingPaymentOptions {
                     },
                 )))
             }
-            MeltPaymentRequest::Custom {
-                method,
-                request,
-                data,
-            } => Ok(OutgoingPaymentOptions::Custom(Box::new(
-                CustomOutgoingPaymentOptions {
+            MeltPaymentRequest::Custom { method, request } => Ok(OutgoingPaymentOptions::Custom(
+                Box::new(CustomOutgoingPaymentOptions {
                     method,
                     request,
                     max_fee_amount: Some(melt_quote.fee_reserve),
                     timeout_secs: None,
-                    data,
                     melt_options: melt_quote.options,
-                },
-            ))),
+                }),
+            )),
         }
     }
 }

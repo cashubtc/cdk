@@ -129,7 +129,10 @@ impl<Q> MeltRequest<Q> {
     }
 }
 
-impl<Q: Serialize + DeserializeOwned> MeltRequest<Q> {
+impl<Q> MeltRequest<Q>
+where
+    Q: Serialize + DeserializeOwned,
+{
     /// Create new [`MeltRequest`]
     pub fn new(quote: Q, inputs: Proofs, outputs: Option<Vec<BlindedMessage>>) -> Self {
         Self {
@@ -148,6 +151,41 @@ impl<Q: Serialize + DeserializeOwned> MeltRequest<Q> {
     pub fn inputs_amount(&self) -> Result<Amount, Error> {
         Amount::try_sum(self.inputs.iter().map(|proof| proof.amount))
             .map_err(|_| Error::AmountOverflow)
+    }
+}
+
+impl<Q> super::nut10::SpendingConditionVerification for MeltRequest<Q>
+where
+    Q: std::fmt::Display,
+{
+    fn inputs(&self) -> &Proofs {
+        &self.inputs
+    }
+
+    fn sig_all_msg_to_sign(&self) -> String {
+        let mut msg = String::new();
+
+        // Add all input secrets and C values in order
+        // msg = secret_0 || C_0 || ... || secret_n || C_n
+        for proof in &self.inputs {
+            msg.push_str(&proof.secret.to_string());
+            msg.push_str(&proof.c.to_hex());
+        }
+
+        // Add all output amounts and B_ values in order (if any)
+        // msg = ... || amount_0 || B_0 || ... || amount_m || B_m
+        if let Some(outputs) = &self.outputs {
+            for output in outputs {
+                msg.push_str(&output.amount.to_string());
+                msg.push_str(&output.blinded_secret.to_hex());
+            }
+        }
+
+        // Add quote ID
+        // msg = ... || quote_id
+        msg.push_str(&self.quote.to_string());
+
+        msg
     }
 }
 
