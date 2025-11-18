@@ -670,8 +670,6 @@ impl TryFrom<crate::mint::MintQuote> for crate::nuts::MintQuoteCustomResponse<Qu
     type Error = crate::Error;
 
     fn try_from(mint_quote: crate::mint::MintQuote) -> Result<Self, Self::Error> {
-        use serde_json::Value;
-
         Ok(crate::nuts::MintQuoteCustomResponse {
             state: mint_quote.state(),
             quote: mint_quote.id.clone(),
@@ -680,7 +678,6 @@ impl TryFrom<crate::mint::MintQuote> for crate::nuts::MintQuoteCustomResponse<Qu
             pubkey: mint_quote.pubkey,
             amount: mint_quote.amount,
             unit: Some(mint_quote.unit),
-            data: Value::Object(Default::default()), // Default empty JSON object
         })
     }
 }
@@ -750,8 +747,6 @@ pub enum MeltPaymentRequest {
         method: String,
         /// Payment request string
         request: String,
-        /// Method-specific data
-        data: serde_json::Value,
     },
 }
 

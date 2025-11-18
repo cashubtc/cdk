@@ -355,7 +355,6 @@ impl Mint {
         let MeltQuoteCustomRequest {
             request,
             unit,
-            data,
             method,
         } = melt_request;
 
@@ -376,7 +375,6 @@ impl Mint {
                 request: request.clone(),
                 max_fee_amount: None,
                 timeout_secs: None,
-                data: data.clone(),
                 melt_options: None,
             }));
 
@@ -421,7 +419,6 @@ impl Mint {
             MeltPaymentRequest::Custom {
                 method: method.to_string(),
                 request: request.clone(),
-                data: data.clone(),
             },
             unit.clone(),
             payment_quote.amount,

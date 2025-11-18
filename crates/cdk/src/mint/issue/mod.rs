@@ -312,7 +312,6 @@ impl Mint {
                         method,
                         description: request.description,
                         amount: request.amount,
-                        data: request.data,
                         unix_expiry: Some(quote_expiry),
                     };
 
