@@ -216,6 +216,28 @@ where
         self.transport.resolve_dns_txt(domain).await
     }
 
+    /// Fetch Lightning address pay request data
+    #[instrument(skip(self))]
+    async fn fetch_lnurl_pay_request(
+        &self,
+        url: &str,
+    ) -> Result<crate::lightning_address::LnurlPayResponse, Error> {
+        let parsed_url =
+            url::Url::parse(url).map_err(|e| Error::Custom(format!("Invalid URL: {}", e)))?;
+        self.transport.http_get(parsed_url, None).await
+    }
+
+    /// Fetch invoice from Lightning address callback
+    #[instrument(skip(self))]
+    async fn fetch_lnurl_invoice(
+        &self,
+        url: &str,
+    ) -> Result<crate::lightning_address::LnurlPayInvoiceResponse, Error> {
+        let parsed_url =
+            url::Url::parse(url).map_err(|e| Error::Custom(format!("Invalid URL: {}", e)))?;
+        self.transport.http_get(parsed_url, None).await
+    }
+
     /// Get Active Mint Keys [NUT-01]
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {

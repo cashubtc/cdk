@@ -6,6 +6,8 @@ use async_trait::async_trait;
 use cdk_common::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
 
 use super::Error;
+// Re-export Lightning address types for trait implementers
+pub use crate::lightning_address::{LnurlPayInvoiceResponse, LnurlPayResponse};
 use crate::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeySet, KeysetResponse, MeltQuoteBolt11Request,
     MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
@@ -34,6 +36,18 @@ pub trait MintConnector: Debug {
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     /// Resolve the DNS record getting the TXT value
     async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error>;
+
+    /// Fetch Lightning address pay request data
+    async fn fetch_lnurl_pay_request(
+        &self,
+        url: &str,
+    ) -> Result<crate::lightning_address::LnurlPayResponse, Error>;
+
+    /// Fetch invoice from Lightning address callback
+    async fn fetch_lnurl_invoice(
+        &self,
+        url: &str,
+    ) -> Result<crate::lightning_address::LnurlPayInvoiceResponse, Error>;
 
     /// Get Active Mint Keys [NUT-01]
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error>;
