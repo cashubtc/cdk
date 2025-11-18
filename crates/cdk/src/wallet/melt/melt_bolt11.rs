@@ -49,8 +49,6 @@ impl Wallet {
         request: String,
         options: Option<MeltOptions>,
     ) -> Result<MeltQuote, Error> {
-        self.refresh_keysets().await?;
-
         let invoice = Bolt11Invoice::from_str(&request)?;
 
         let quote_request = MeltQuoteBolt11Request {
@@ -198,30 +196,26 @@ impl Wallet {
         );
 
         let melt_response = match quote_info.payment_method {
-            cdk_common::PaymentMethod::Bolt11 => self.client.post_melt(request).await,
-            cdk_common::PaymentMethod::Bolt12 => self.client.post_melt_bolt12(request).await,
+            cdk_common::PaymentMethod::Bolt11 => {
+                self.try_proof_operation_or_reclaim(
+                    request.inputs().clone(),
+                    self.client.post_melt(request),
+                )
+                .await?
+            }
+            cdk_common::PaymentMethod::Bolt12 => {
+                self.try_proof_operation_or_reclaim(
+                    request.inputs().clone(),
+                    self.client.post_melt_bolt12(request),
+                )
+                .await?
+            }
             cdk_common::PaymentMethod::Custom(_) => {
                 return Err(Error::UnsupportedPaymentMethod);
             }
         };
 
-        let melt_response = match melt_response {
-            Ok(melt_response) => melt_response,
-            Err(err) => {
-                tracing::error!("Could not melt: {}", err);
-                tracing::info!("Checking status of input proofs.");
-
-                self.reclaim_unspent(proofs).await?;
-
-                return Err(err);
-            }
-        };
-
-        let active_keys = self
-            .localstore
-            .get_keys(&active_keyset_id)
-            .await?
-            .ok_or(Error::NoActiveKeyset)?;
+        let active_keys = self.load_keyset_keys(active_keyset_id).await?;
 
         let change_proofs = match melt_response.change {
             Some(change) => {
@@ -390,7 +384,7 @@ impl Wallet {
         let available_proofs = self.get_unspent_proofs().await?;
 
         let active_keyset_ids = self
-            .refresh_keysets()
+            .get_mint_keysets()
             .await?
             .into_iter()
             .map(|k| k.id)

@@ -306,13 +306,10 @@ impl Witness {
     pub fn add_signatures(&mut self, signatues: Vec<String>) {
         match self {
             Self::P2PKWitness(p2pk_witness) => p2pk_witness.signatures.extend(signatues),
-            Self::HTLCWitness(htlc_witness) => {
-                htlc_witness.signatures = htlc_witness.signatures.clone().map(|sigs| {
-                    let mut sigs = sigs;
-                    sigs.extend(signatues);
-                    sigs
-                });
-            }
+            Self::HTLCWitness(htlc_witness) => match &mut htlc_witness.signatures {
+                Some(sigs) => sigs.extend(signatues),
+                None => htlc_witness.signatures = Some(signatues),
+            },
         }
     }
 
@@ -930,7 +927,10 @@ impl Iterator for PreMintSecrets {
 
     fn next(&mut self) -> Option<Self::Item> {
         // Use the iterator of the vector
-        self.secrets.pop()
+        if self.secrets.is_empty() {
+            return None;
+        }
+        Some(self.secrets.remove(0))
     }
 }
 

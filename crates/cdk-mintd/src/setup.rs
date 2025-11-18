@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 #[cfg(feature = "cln")]
 use anyhow::anyhow;
+#[cfg(any(feature = "lnbits", feature = "lnd"))]
+use anyhow::bail;
 use async_trait::async_trait;
 #[cfg(feature = "fakewallet")]
 use bip39::rand::{thread_rng, Rng};
@@ -49,6 +51,13 @@ impl LnBackendSetup for config::Cln {
         _work_dir: &Path,
         kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_cln::Cln> {
+        // Validate required connection field
+        if self.rpc_path.as_os_str().is_empty() {
+            return Err(anyhow!(
+                "CLN rpc_path must be set via config or CDK_MINTD_CLN_RPC_PATH env var"
+            ));
+        }
+
         let cln_socket = expand_path(
             self.rpc_path
                 .to_str()
@@ -83,6 +92,19 @@ impl LnBackendSetup for config::LNbits {
         _work_dir: &Path,
         _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_lnbits::LNbits> {
+        // Validate required connection fields
+        if self.admin_api_key.is_empty() {
+            bail!("LNbits admin_api_key must be set via config or CDK_MINTD_LNBITS_ADMIN_API_KEY env var");
+        }
+        if self.invoice_api_key.is_empty() {
+            bail!("LNbits invoice_api_key must be set via config or CDK_MINTD_LNBITS_INVOICE_API_KEY env var");
+        }
+        if self.lnbits_api.is_empty() {
+            bail!(
+                "LNbits lnbits_api must be set via config or CDK_MINTD_LNBITS_LNBITS_API env var"
+            );
+        }
+
         let admin_api_key = &self.admin_api_key;
         let invoice_api_key = &self.invoice_api_key;
 
@@ -117,6 +139,19 @@ impl LnBackendSetup for config::Lnd {
         _work_dir: &Path,
         kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_lnd::Lnd> {
+        // Validate required connection fields
+        if self.address.is_empty() {
+            bail!("LND address must be set via config or CDK_MINTD_LND_ADDRESS env var");
+        }
+        if self.cert_file.as_os_str().is_empty() {
+            bail!("LND cert_file must be set via config or CDK_MINTD_LND_CERT_FILE env var");
+        }
+        if self.macaroon_file.as_os_str().is_empty() {
+            bail!(
+                "LND macaroon_file must be set via config or CDK_MINTD_LND_MACAROON_FILE env var"
+            );
+        }
+
         let address = &self.address;
         let cert_file = &self.cert_file;
         let macaroon_file = &self.macaroon_file;

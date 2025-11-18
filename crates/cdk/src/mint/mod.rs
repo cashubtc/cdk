@@ -9,11 +9,10 @@ use cdk_common::amount::to_unit;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
 use cdk_common::database::DynMintAuthDatabase;
-use cdk_common::database::{self, DynMintDatabase, MintTransaction};
-use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
+use cdk_common::database::{self, DynMintDatabase};
+use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
-use cdk_common::secret;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::global;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
@@ -28,9 +27,9 @@ use tracing::instrument;
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::nuts::*;
+use crate::Amount;
 #[cfg(feature = "auth")]
 use crate::OidcClient;
-use crate::{cdk_database, Amount};
 
 #[cfg(feature = "auth")]
 pub(crate) mod auth;
@@ -40,7 +39,6 @@ mod issue;
 mod keysets;
 mod ln;
 mod melt;
-mod proof_writer;
 mod start_up_check;
 mod subscription;
 mod swap;
@@ -69,7 +67,7 @@ pub struct Mint {
     #[cfg(feature = "auth")]
     auth_localstore: Option<DynMintAuthDatabase>,
     /// Payment processors for mint
-    payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+    payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
     /// Subscription manager
     pubsub_manager: Arc<PubSubManager>,
     #[cfg(feature = "auth")]
@@ -203,9 +201,11 @@ impl Mint {
             }
         }
 
+        let payment_processors = Arc::new(payment_processors);
+
         Ok(Self {
             signatory,
-            pubsub_manager: PubSubManager::new(localstore.clone()),
+            pubsub_manager: PubSubManager::new((localstore.clone(), payment_processors.clone())),
             localstore,
             #[cfg(feature = "auth")]
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
@@ -238,14 +238,21 @@ impl Mint {
     /// - Payment processor initialization and startup
     /// - Invoice payment monitoring across all configured payment processors
     pub async fn start(&self) -> Result<(), Error> {
-        // Checks the status of all pending melt quotes
-        // Pending melt quotes where the payment has gone through inputs are burnt
-        // Pending melt quotes where the payment has **failed** inputs are reset to unspent
-        self.check_pending_melt_quotes().await?;
-
         // Recover from incomplete swap sagas
         // This cleans up incomplete swap operations using persisted saga state
-        self.recover_from_incomplete_sagas().await?;
+        if let Err(e) = self.recover_from_incomplete_sagas().await {
+            tracing::error!("Failed to recover incomplete swap sagas: {}", e);
+            // Don't fail startup
+        }
+
+        // Recover from incomplete melt sagas
+        // This cleans up incomplete melt operations using persisted saga state
+        // Now includes checking payment status with LN backend to determine
+        // whether to finalize (if paid) or compensate (if failed/unpaid)
+        if let Err(e) = self.recover_from_incomplete_melt_sagas().await {
+            tracing::error!("Failed to recover incomplete melt sagas: {}", e);
+            // Don't fail startup
+        }
 
         let mut task_state = self.task_state.lock().await;
 
@@ -257,7 +264,7 @@ impl Mint {
         // Start all payment processors first
         tracing::info!("Starting payment processors...");
         let mut seen_processors = Vec::new();
-        for (key, processor) in &self.payment_processors {
+        for (key, processor) in self.payment_processors.iter() {
             // Skip if we've already spawned a task for this processor instance
             if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
                 continue;
@@ -369,7 +376,7 @@ impl Mint {
         tracing::info!("Stopping payment processors...");
         let mut seen_processors = Vec::new();
 
-        for (key, processor) in &self.payment_processors {
+        for (key, processor) in self.payment_processors.iter() {
             // Skip if we've already spawned a task for this processor instance
             if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
                 continue;
@@ -845,39 +852,12 @@ impl Mint {
     /// Verify [`Proof`] meets conditions and is signed
     #[tracing::instrument(skip_all)]
     pub async fn verify_proofs(&self, proofs: Proofs) -> Result<(), Error> {
+        // This ignore P2PK and HTLC, as all NUT-10 spending conditions are
+        // checked elsewhere.
         #[cfg(feature = "prometheus")]
         global::inc_in_flight_requests("verify_proofs");
 
-        let result = async {
-            proofs
-                .iter()
-                .map(|proof| {
-                    // Check if secret is a nut10 secret with conditions
-                    if let Ok(secret) =
-                        <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
-                    {
-                        // Checks and verifies known secret kinds.
-                        // If it is an unknown secret kind it will be treated as a normal secret.
-                        // Spending conditions will **not** be check. It is up to the wallet to ensure
-                        // only supported secret kinds are used as there is no way for the mint to
-                        // enforce only signing supported secrets as they are blinded at
-                        // that point.
-                        match secret.kind() {
-                            Kind::P2PK => {
-                                proof.verify_p2pk()?;
-                            }
-                            Kind::HTLC => {
-                                proof.verify_htlc()?;
-                            }
-                        }
-                    }
-                    Ok(())
-                })
-                .collect::<Result<Vec<()>, Error>>()?;
-
-            self.signatory.verify_proofs(proofs).await
-        }
-        .await;
+        let result = self.signatory.verify_proofs(proofs).await;
 
         #[cfg(feature = "prometheus")]
         {
@@ -886,78 +866,6 @@ impl Mint {
         }
 
         result
-    }
-
-    /// Verify melt request is valid
-    /// Check to see if there is a corresponding mint quote for a melt.
-    /// In this case the mint can settle the payment internally and no ln payment is
-    /// needed
-    #[instrument(skip_all)]
-    pub async fn handle_internal_melt_mint(
-        &self,
-        tx: &mut Box<dyn MintTransaction<'_, cdk_database::Error> + Send + Sync + '_>,
-        melt_quote: &MeltQuote,
-        melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<Option<Amount>, Error> {
-        let mint_quote = match tx
-            .get_mint_quote_by_request(&melt_quote.request.to_string())
-            .await
-        {
-            Ok(Some(mint_quote)) if mint_quote.unit == melt_quote.unit => mint_quote,
-            // Not an internal melt -> mint or unit mismatch
-            Ok(_) => return Ok(None),
-            Err(err) => {
-                tracing::debug!("Error attempting to get mint quote: {}", err);
-                return Err(Error::Internal);
-            }
-        };
-
-        // Mint quote has already been settled, proofs should not be burned or held.
-        if (mint_quote.state() == MintQuoteState::Issued
-            || mint_quote.state() == MintQuoteState::Paid)
-            && mint_quote.payment_method == PaymentMethod::Bolt11
-        {
-            return Err(Error::RequestAlreadyPaid);
-        }
-
-        let inputs_amount_quote_unit = melt_request.inputs_amount().map_err(|_| {
-            tracing::error!("Proof inputs in melt quote overflowed");
-            Error::AmountOverflow
-        })?;
-
-        if let Some(amount) = mint_quote.amount {
-            if amount > inputs_amount_quote_unit {
-                tracing::debug!(
-                    "Not enough inputs provided: {} needed {}",
-                    inputs_amount_quote_unit,
-                    amount
-                );
-                return Err(Error::InsufficientFunds);
-            }
-        }
-
-        let amount = melt_quote.amount;
-
-        tracing::info!(
-            "Mint quote {} paid {} from internal payment.",
-            mint_quote.id,
-            amount
-        );
-
-        let total_paid = tx
-            .increment_mint_quote_amount_paid(&mint_quote.id, amount, melt_quote.id.to_string())
-            .await?;
-
-        self.pubsub_manager
-            .mint_quote_payment(&mint_quote, total_paid);
-
-        tracing::info!(
-            "Melt quote {} paid Mint quote {}",
-            melt_quote.id,
-            mint_quote.id
-        );
-
-        Ok(Some(amount))
     }
 
     /// Restore
@@ -1015,21 +923,10 @@ impl Mint {
         global::inc_in_flight_requests("total_issued");
 
         let result = async {
-            let keysets = self.keysets().keysets;
-
-            let mut total_issued = HashMap::new();
-
-            for keyset in keysets {
-                let blinded = self
-                    .localstore
-                    .get_blind_signatures_for_keyset(&keyset.id)
-                    .await?;
-
-                let total = Amount::try_sum(blinded.iter().map(|b| b.amount))?;
-
-                total_issued.insert(keyset.id, total);
+            let mut total_issued = self.localstore.get_total_issued().await?;
+            for keyset in self.keysets().keysets {
+                total_issued.entry(keyset.id).or_default();
             }
-
             Ok(total_issued)
         }
         .await;
@@ -1049,28 +946,19 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         global::inc_in_flight_requests("total_redeemed");
 
-        let keysets = self.signatory.keysets().await?;
-
-        let mut total_redeemed = HashMap::new();
-
-        for keyset in keysets.keysets {
-            let (proofs, state) = self.localstore.get_proofs_by_keyset_id(&keyset.id).await?;
-
-            let total_spent =
-                Amount::try_sum(proofs.iter().zip(state).filter_map(|(p, s)| {
-                    match s == Some(State::Spent) {
-                        true => Some(p.amount),
-                        false => None,
-                    }
-                }))?;
-
-            total_redeemed.insert(keyset.id, total_spent);
+        let total_redeemed = async {
+            let mut total_redeemed = self.localstore.get_total_redeemed().await?;
+            for keyset in self.keysets().keysets {
+                total_redeemed.entry(keyset.id).or_default();
+            }
+            Ok(total_redeemed)
         }
+        .await;
 
         #[cfg(feature = "prometheus")]
         global::dec_in_flight_requests("total_redeemed");
 
-        Ok(total_redeemed)
+        total_redeemed
     }
 }
 

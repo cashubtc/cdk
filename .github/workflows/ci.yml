@@ -34,16 +34,11 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "nightly-${{ steps.flake-hash.outputs.hash }}"
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Cargo fmt
-        run: |
-          nix develop -i -L .#nightly --command bash -c '
-            # Force use of Nix-provided rustfmt
-            export RUSTFMT=$(command -v rustfmt)
-            cargo fmt --check
-          '
+        run: nix develop -i -L .#stable --command cargo fmt --check
       - name: typos
-        run: nix develop -i -L .#nightly --command typos
+        run: nix develop -i -L .#stable --command typos
 
   examples:
     name: "Run examples"
@@ -381,23 +376,18 @@ jobs:
       matrix:
         build-args:
           [
-            -p cashu --no-default-features --features "wallet mint",
-            -p cdk-common --no-default-features --features "wallet mint",
-            -p cdk-sql-common,
-            -p cdk,
-            -p cdk --no-default-features --features "mint auth",
-            -p cdk --no-default-features --features "wallet auth",
-            -p cdk --no-default-features --features "http_subscription",
-            -p cdk-axum,
-            -p cdk-axum --no-default-features --features redis,
-            -p cdk-lnbits,
-            -p cdk-fake-wallet,
-            -p cdk-cln,
-            -p cdk-lnd,
-            -p cdk-mint-rpc,
-            -p cdk-sqlite,
-            -p cdk-mintd,
-            -p cdk-payment-processor --no-default-features,
+            # Core library - all features EXCEPT swagger (which breaks MSRV)
+            '-p cdk --features "mint,wallet,auth,nostr,bip353,tor,prometheus"',
+
+            # Mintd with all backends, databases, and features (no swagger)
+            # This also validates cdk-axum, all LN backends, all databases as dependencies
+            '-p cdk-mintd --no-default-features --features "cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,auth,prometheus,redis,management-rpc"',
+
+            # CLI - default features (excludes redb which breaks MSRV)
+            -p cdk-cli,
+
+            # Minimal builds to ensure no-default-features works
+            -p cdk --no-default-features --features wallet,
           ]
     steps:
       - name: checkout
@@ -418,46 +408,6 @@ jobs:
           shared-key: "msrv-${{ steps.flake-hash.outputs.hash }}"
       - name: Build
         run: nix develop -i -L .#msrv --command cargo build ${{ matrix.build-args }}
-
-
-  check-wasm:
-    name: Check WASM
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: pre-commit-checks
-    strategy:
-      fail-fast: true
-      matrix:
-        rust:
-          - stable
-        target:
-          - wasm32-unknown-unknown
-        build-args:
-          [
-            -p cdk,
-            -p cdk --no-default-features,
-            -p cdk --no-default-features --features wallet,
-          ]
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
-      - name: Build cdk and binding
-        run: nix develop -i -L ".#${{ matrix.rust }}" --command cargo build ${{ matrix.build-args }} --target ${{ matrix.target }}
-
 
   check-wasm-msrv:
     name: Check WASM
@@ -550,8 +500,8 @@ jobs:
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml down
 
-  doc-tests:
-    name: "Documentation Tests"
+  docs:
+    name: "Documentation tests and checks"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: pre-commit-checks
@@ -584,28 +534,5 @@ jobs:
           shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Run doc tests
         run: nix develop -i -L .#stable --command cargo test --doc
-
-  strict-docs:
-    name: "Strict Documentation Check"
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: doc-tests
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: Get flake hash
-        id: flake-hash
-        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
-      - name: Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-        with:
-          diagnostic-endpoint: ""
-          use-flakehub: false
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Check docs with strict warnings
         run: nix develop -i -L .#stable --command just docs-strict

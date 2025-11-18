@@ -28,8 +28,6 @@ impl Wallet {
     ) -> Result<Amount, Error> {
         let mint_url = &self.mint_url;
 
-        self.refresh_keysets().await?;
-
         let active_keyset_id = self.fetch_active_keyset().await?.id;
 
         let keys = self.load_keyset_keys(active_keyset_id).await?;
@@ -128,7 +126,12 @@ impl Wallet {
             }
         }
 
-        let swap_response = self.client.post_swap(pre_swap.swap_request).await?;
+        let swap_response = self
+            .try_proof_operation_or_reclaim(
+                pre_swap.swap_request.inputs().clone(),
+                self.client.post_swap(pre_swap.swap_request),
+            )
+            .await?;
 
         // Proof to keep
         let recv_proofs = construct_proofs(

@@ -469,6 +469,45 @@ impl Wallet {
             .await?;
         Ok(quote.into())
     }
+
+    /// Get a quote for a Lightning address melt
+    ///
+    /// This method resolves a Lightning address (e.g., "alice@example.com") to a Lightning invoice
+    /// and then creates a melt quote for that invoice.
+    pub async fn melt_lightning_address_quote(
+        &self,
+        lightning_address: String,
+        amount_msat: Amount,
+    ) -> Result<MeltQuote, FfiError> {
+        let cdk_amount: cdk::Amount = amount_msat.into();
+        let quote = self
+            .inner
+            .melt_lightning_address_quote(&lightning_address, cdk_amount)
+            .await?;
+        Ok(quote.into())
+    }
+
+    /// Get a quote for a human-readable address melt
+    ///
+    /// This method accepts a human-readable address that could be either a BIP353 address
+    /// or a Lightning address. It intelligently determines which to try based on mint support:
+    ///
+    /// 1. If the mint supports Bolt12, it tries BIP353 first
+    /// 2. Falls back to Lightning address only if BIP353 DNS resolution fails
+    /// 3. If BIP353 resolves but fails at the mint, it does NOT fall back to Lightning address
+    /// 4. If the mint doesn't support Bolt12, it tries Lightning address directly
+    pub async fn melt_human_readable(
+        &self,
+        address: String,
+        amount_msat: Amount,
+    ) -> Result<MeltQuote, FfiError> {
+        let cdk_amount: cdk::Amount = amount_msat.into();
+        let quote = self
+            .inner
+            .melt_human_readable_quote(&address, cdk_amount)
+            .await?;
+        Ok(quote.into())
+    }
 }
 
 /// Auth methods for Wallet

@@ -21,8 +21,6 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
     ) -> Result<Option<Proofs>, Error> {
-        self.refresh_keysets().await?;
-
         tracing::info!("Swapping");
         let mint_url = &self.mint_url;
         let unit = &self.unit;
@@ -37,18 +35,19 @@ impl Wallet {
             )
             .await?;
 
-        let swap_response = self.client.post_swap(pre_swap.swap_request).await?;
+        let swap_response = self
+            .try_proof_operation_or_reclaim(
+                pre_swap.swap_request.inputs().clone(),
+                self.client.post_swap(pre_swap.swap_request),
+            )
+            .await?;
 
         let active_keyset_id = pre_swap.pre_mint_secrets.keyset_id;
         let fee_and_amounts = self
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
 
-        let active_keys = self
-            .localstore
-            .get_keys(&active_keyset_id)
-            .await?
-            .ok_or(Error::NoActiveKeyset)?;
+        let active_keys = self.load_keyset_keys(active_keyset_id).await?;
 
         let post_swap_proofs = construct_proofs(
             swap_response.signatures,
@@ -170,7 +169,7 @@ impl Wallet {
         ensure_cdk!(proofs_sum >= amount, Error::InsufficientFunds);
 
         let active_keyset_ids = self
-            .refresh_keysets()
+            .get_mint_keysets()
             .await?
             .active()
             .map(|k| k.id)

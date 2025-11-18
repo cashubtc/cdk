@@ -110,6 +110,9 @@ pub enum Error {
     /// Could not parse bolt12
     #[error("Could not parse bolt12")]
     Bolt12parse,
+    /// Could not parse invoice (bolt11 or bolt12)
+    #[error("Could not parse invoice")]
+    InvalidInvoice,
 
     /// BIP353 address parsing error
     #[error("Failed to parse BIP353 address: {0}")]
@@ -125,6 +128,13 @@ pub enum Error {
     /// BIP353 no Lightning offer found
     #[error("No Lightning offer found in BIP353 payment instructions")]
     Bip353NoLightningOffer,
+
+    /// Lightning Address parsing error
+    #[error("Failed to parse Lightning address: {0}")]
+    LightningAddressParse(String),
+    /// Lightning Address request error
+    #[error("Failed to request invoice from Lightning address service: {0}")]
+    LightningAddressRequest(String),
 
     /// Internal Error - Send error
     #[error("Internal send error: {0}")]
