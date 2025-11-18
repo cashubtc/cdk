@@ -338,7 +338,7 @@ impl MintMetadataCache {
             .await?
             .ok_or(Error::UnknownKeySet)?
             .into_iter()
-            .map(|x| Arc::new(x))
+            .map(Arc::new)
             .collect::<Vec<_>>();
 
         for keyset_info in keysets.iter() {
@@ -356,7 +356,7 @@ impl MintMetadataCache {
 
         updated_metadata.keysets = keysets
             .into_iter()
-            .map(|keyset| (keyset.id.clone(), keyset))
+            .map(|keyset| (keyset.id, keyset))
             .collect();
         updated_metadata.status.is_populated = true;
         updated_metadata.status.version += 1;
