@@ -19,7 +19,6 @@ use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
 use crate::MintState;
 
-
 /// Macro to add cache to endpoint
 #[macro_export]
 macro_rules! post_cache_wrapper {

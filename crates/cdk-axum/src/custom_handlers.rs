@@ -45,7 +45,10 @@ where
 {
     type Rejection = (StatusCode, String);
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> anyhow::Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> anyhow::Result<Self, Self::Rejection> {
         // Check for Prefer header
         if let Some(prefer_value) = parts.headers.get(PREFER_HEADER_KEY) {
             let value = prefer_value.to_str().map_err(|_| {
@@ -433,7 +436,7 @@ pub async fn cache_post_melt_custom(
         None => {
             // Could not calculate key, just return the handler result
             #[cfg(feature = "auth")]
-            return post_melt_custom(auth, prefer,state, method, payload).await;
+            return post_melt_custom(auth, prefer, state, method, payload).await;
             #[cfg(not(feature = "auth"))]
             return post_melt_custom(state, method, payload).await;
         }
@@ -448,7 +451,7 @@ pub async fn cache_post_melt_custom(
     }
 
     #[cfg(feature = "auth")]
-    let result = post_melt_custom(auth,prefer, state, method, payload).await?;
+    let result = post_melt_custom(auth, prefer, state, method, payload).await?;
     #[cfg(not(feature = "auth"))]
     let result = post_melt_custom(state, method, payload).await?;
 
