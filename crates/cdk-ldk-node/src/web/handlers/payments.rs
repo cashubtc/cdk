@@ -15,8 +15,8 @@ use serde::Deserialize;
 use crate::web::handlers::utils::{deserialize_optional_u64, get_paginated_payments_streaming};
 use crate::web::handlers::AppState;
 use crate::web::templates::{
-    error_message, form_card, format_msats_as_btc, format_sats_as_btc, info_card, layout,
-    payment_list_item, success_message,
+    error_message, format_msats_as_btc, format_sats_as_btc, info_card, is_node_running,
+    layout_with_status, payment_list_item, success_message,
 };
 
 #[derive(Deserialize)]
@@ -86,7 +86,7 @@ pub async fn payments_page(
         div class="card" {
             div class="payment-list-header" {
                 div {
-                    h2 { "Payment History" }
+                    h2 style="font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.5; padding-bottom: 1rem; border-bottom: 1px solid hsl(var(--border)); margin-bottom: 0;" { "Payment History" }
                     @if total_count > 0 {
                         p style="margin: 0.25rem 0 0 0; color: #666; font-size: 0.9rem;" {
                             "Showing " (start_index + 1) " to " (end_index) " of " (total_count) " payments"
@@ -116,14 +116,6 @@ pub async fn payments_page(
                         PaymentDirection::Outbound => "Outbound",
                     };
 
-                    @let status_str = match payment.status {
-                        PaymentStatus::Pending => "Pending",
-                        PaymentStatus::Succeeded => "Succeeded",
-                        PaymentStatus::Failed => "Failed",
-                    };
-
-                    @let amount_str = payment.amount_msat.map(format_msats_as_btc).unwrap_or_else(|| "Unknown".to_string());
-
                     @let (payment_hash, description, payment_type, preimage) = match &payment.kind {
                         PaymentKind::Bolt11 { hash, preimage, .. } => {
                             (Some(hash.to_string()), None::<String>, "BOLT11", preimage.map(|p| p.to_string()))
@@ -146,6 +138,27 @@ pub async fn payments_page(
                             (Some(hash.to_string()), None::<String>, "BOLT11 JIT", None)
                         },
                     };
+
+                    @let status_str = {
+                        // Helper function to determine invoice status
+                        fn get_invoice_status(status: PaymentStatus, direction: PaymentDirection, payment_type: &str) -> &'static str {
+                            match status {
+                                PaymentStatus::Succeeded => "Succeeded",
+                                PaymentStatus::Failed => "Failed",
+                                PaymentStatus::Pending => {
+                                    // For inbound BOLT11 payments, show "Unpaid" instead of "Pending"
+                                    if direction == PaymentDirection::Inbound && payment_type == "BOLT11" {
+                                        "Unpaid"
+                                    } else {
+                                        "Pending"
+                                    }
+                                }
+                            }
+                        }
+                        get_invoice_status(payment.status, payment.direction, payment_type)
+                    };
+
+                    @let amount_str = payment.amount_msat.map(format_msats_as_btc).unwrap_or_else(|| "Unknown".to_string());
 
                     (payment_list_item(
                         &payment.id.to_string(),
@@ -236,57 +249,106 @@ pub async fn payments_page(
         }
     };
 
-    Ok(Html(layout("Payment History", content).into_string()))
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(
+        layout_with_status("Payment History", content, is_running).into_string(),
+    ))
 }
 
-pub async fn send_payments_page(
-    State(_state): State<AppState>,
-) -> Result<Html<String>, StatusCode> {
+pub async fn send_payments_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let content = html! {
         h2 style="text-align: center; margin-bottom: 3rem;" { "Send Payment" }
-        div class="grid" {
-            (form_card(
-                "Pay BOLT11 Invoice",
-                html! {
-                    form method="post" action="/payments/bolt11" {
-                        div class="form-group" {
-                            label for="invoice" { "BOLT11 Invoice" }
-                            textarea id="invoice" name="invoice" required placeholder="lnbc..." style="height: 120px;" {}
-                        }
-                        div class="form-group" {
-                            label for="amount_btc" { "Amount Override (optional)" }
-                            input type="number" id="amount_btc" name="amount_btc" placeholder="Leave empty to use invoice amount" step="1" {}
-                        }
-                        button type="submit" { "Pay BOLT11 Invoice" }
-                    }
-                }
-            ))
-
-            (form_card(
-                "Pay BOLT12 Offer",
-                html! {
-                    form method="post" action="/payments/bolt12" {
-                        div class="form-group" {
-                            label for="offer" { "BOLT12 Offer" }
-                            textarea id="offer" name="offer" required placeholder="lno..." style="height: 120px;" {}
-                        }
-                        div class="form-group" {
-                            label for="amount_btc" { "Amount (required for variable amount offers)" }
-                            input type="number" id="amount_btc" name="amount_btc" placeholder="Required for variable amount offers, ignored for fixed amount offers" step="1" {}
-                        }
-                        button type="submit" { "Pay BOLT12 Offer" }
-                    }
-                }
-            ))
-        }
 
         div class="card" {
-            h3 { "Payment History" }
-            a href="/payments" { button { "View All Payments" } }
+            // Tab navigation
+            div class="payment-tabs" style="display: flex; gap: 0.5rem; margin-bottom: 1.5rem; border-bottom: 1px solid hsl(var(--border)); padding-bottom: 0;" {
+                button type="button" class="payment-tab active" onclick="switchTab('bolt11')" data-tab="bolt11" {
+                    "BOLT11 Invoice"
+                }
+                button type="button" class="payment-tab" onclick="switchTab('bolt12')" data-tab="bolt12" {
+                    "BOLT12 Offer"
+                }
+            }
+
+            // BOLT11 tab content
+            div id="bolt11-content" class="tab-content active" {
+                form method="post" action="/payments/bolt11" {
+                    div class="form-group" {
+                        label for="invoice" { "BOLT11 Invoice" }
+                        textarea id="invoice" name="invoice" required placeholder="lnbc..." rows="4" {}
+                    }
+                    div class="form-group" {
+                        label for="amount_btc_bolt11" { "Amount Override (optional)" }
+                        input type="number" id="amount_btc_bolt11" name="amount_btc" placeholder="Leave empty to use invoice amount" step="1" {}
+                        p style="font-size: 0.8125rem; color: hsl(var(--muted-foreground)); margin-top: 0.5rem;" {
+                            "Only specify an amount if you want to override the invoice amount"
+                        }
+                    }
+                    div class="form-actions" {
+                        a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
+                        button type="submit" class="button-primary" { "Pay Invoice" }
+                    }
+                }
+            }
+
+            // BOLT12 tab content
+            div id="bolt12-content" class="tab-content" {
+                form method="post" action="/payments/bolt12" {
+                    div class="form-group" {
+                        label for="offer" { "BOLT12 Offer" }
+                        textarea id="offer" name="offer" required placeholder="lno..." rows="4" {}
+                    }
+                    div class="form-group" {
+                        label for="amount_btc_bolt12" { "Amount" }
+                        input type="number" id="amount_btc_bolt12" name="amount_btc" placeholder="Amount in satoshis" step="1" {}
+                        p style="font-size: 0.8125rem; color: hsl(var(--muted-foreground)); margin-top: 0.5rem;" {
+                            "Required for variable amount offers, ignored for fixed amount offers"
+                        }
+                    }
+                    div class="form-actions" {
+                        a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
+                        button type="submit" class="button-primary" { "Pay Offer" }
+                    }
+                }
+            }
+        }
+
+        // Tab switching script
+        script type="text/javascript" {
+            (maud::PreEscaped(r#"
+            function switchTab(tabName) {
+                console.log('Switching to tab:', tabName);
+
+                // Hide all tab contents
+                const contents = document.querySelectorAll('.tab-content');
+                contents.forEach(content => content.classList.remove('active'));
+
+                // Remove active class from all tabs
+                const tabs = document.querySelectorAll('.payment-tab');
+                tabs.forEach(tab => tab.classList.remove('active'));
+
+                // Show selected tab content
+                const tabContent = document.getElementById(tabName + '-content');
+                if (tabContent) {
+                    tabContent.classList.add('active');
+                    console.log('Activated tab content:', tabName);
+                }
+
+                // Add active class to selected tab
+                const tabButton = document.querySelector('[data-tab="' + tabName + '"]');
+                if (tabButton) {
+                    tabButton.classList.add('active');
+                    console.log('Activated tab button:', tabName);
+                }
+            }
+            "#))
         }
     };
 
-    Ok(Html(layout("Send Payments", content).into_string()))
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(
+        layout_with_status("Send Payments", content, is_running).into_string(),
+    ))
 }
 
 pub async fn post_pay_bolt11(
@@ -306,7 +368,9 @@ pub async fn post_pay_bolt11(
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
-                .body(Body::from(layout("Payment Error", content).into_string()))
+                .body(Body::from(
+                    layout_with_status("Payment Error", content, true).into_string(),
+                ))
                 .unwrap());
         }
     };
@@ -348,7 +412,9 @@ pub async fn post_pay_bolt11(
             return Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .header("content-type", "text/html")
-                .body(Body::from(layout("Payment Error", content).into_string()))
+                .body(Body::from(
+                    layout_with_status("Payment Error", content, true).into_string(),
+                ))
                 .unwrap());
         }
     };
@@ -433,7 +499,9 @@ pub async fn post_pay_bolt11(
 
     Ok(Response::builder()
         .header("content-type", "text/html")
-        .body(Body::from(layout("Payment Result", content).into_string()))
+        .body(Body::from(
+            layout_with_status("Payment Result", content, true).into_string(),
+        ))
         .unwrap())
 }
 
@@ -454,7 +522,9 @@ pub async fn post_pay_bolt12(
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
-                .body(Body::from(layout("Payment Error", content).into_string()))
+                .body(Body::from(
+                    layout_with_status("Payment Error", content, true).into_string(),
+                ))
                 .unwrap());
         }
     };
@@ -486,7 +556,9 @@ pub async fn post_pay_bolt12(
                     return Ok(Response::builder()
                         .status(StatusCode::BAD_REQUEST)
                         .header("content-type", "text/html")
-                        .body(Body::from(layout("Payment Error", content).into_string()))
+                        .body(Body::from(
+                            layout_with_status("Payment Error", content, true).into_string(),
+                        ))
                         .unwrap());
                 }
             };
@@ -518,7 +590,9 @@ pub async fn post_pay_bolt12(
             return Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .header("content-type", "text/html")
-                .body(Body::from(layout("Payment Error", content).into_string()))
+                .body(Body::from(
+                    layout_with_status("Payment Error", content, true).into_string(),
+                ))
                 .unwrap());
         }
     };
@@ -610,6 +684,8 @@ pub async fn post_pay_bolt12(
 
     Ok(Response::builder()
         .header("content-type", "text/html")
-        .body(Body::from(layout("Payment Result", content).into_string()))
+        .body(Body::from(
+            layout_with_status("Payment Result", content, true).into_string(),
+        ))
         .unwrap())
 }

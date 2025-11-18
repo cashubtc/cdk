@@ -8,6 +8,8 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
 
+pub mod task;
+
 pub mod common;
 pub mod database;
 pub mod error;
@@ -24,6 +26,7 @@ pub mod subscription;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 pub mod ws;
+
 // re-exporting external crates
 pub use bitcoin;
 pub use cashu::amount::{self, Amount};
@@ -33,3 +36,5 @@ pub use cashu::nuts::{self, *};
 pub use cashu::quote_id::{self, *};
 pub use cashu::{dhke, ensure_cdk, mint_url, secret, util, SECP256K1};
 pub use error::Error;
+/// Re-export parking_lot for reuse
+pub use parking_lot;

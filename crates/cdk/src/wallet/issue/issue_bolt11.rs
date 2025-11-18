@@ -52,8 +52,6 @@ impl Wallet {
         let mint_url = self.mint_url.clone();
         let unit = self.unit.clone();
 
-        self.refresh_keysets().await?;
-
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
             let settings = self
@@ -196,8 +194,6 @@ impl Wallet {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
-        self.refresh_keysets().await?;
-
         let quote_info = self
             .localstore
             .get_mint_quote(quote_id)
@@ -222,6 +218,9 @@ impl Wallet {
         }
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
+        let fee_and_amounts = self
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await?;
 
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
@@ -229,10 +228,12 @@ impl Wallet {
                 amount_mintable,
                 &amount_split_target,
                 spending_conditions,
+                &fee_and_amounts,
             )?,
             None => {
                 // Calculate how many secrets we'll need
-                let amount_split = amount_mintable.split_targeted(&amount_split_target)?;
+                let amount_split =
+                    amount_mintable.split_targeted(&amount_split_target, &fee_and_amounts)?;
                 let num_secrets = amount_split.len() as u32;
 
                 tracing::debug!(
@@ -255,6 +256,7 @@ impl Wallet {
                     &self.seed,
                     amount_mintable,
                     &amount_split_target,
+                    &fee_and_amounts,
                 )?
             }
         };
@@ -322,6 +324,9 @@ impl Wallet {
                 timestamp: unix_time,
                 memo: None,
                 metadata: HashMap::new(),
+                quote_id: Some(quote_id.to_string()),
+                payment_request: Some(quote_info.request),
+                payment_proof: None,
             })
             .await?;
 

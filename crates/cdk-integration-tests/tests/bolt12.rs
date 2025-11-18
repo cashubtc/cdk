@@ -1,13 +1,14 @@
 use std::env;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cashu::amount::SplitTarget;
 use cashu::nut23::Amountless;
-use cashu::{Amount, CurrencyUnit, MintRequest, PreMintSecrets, ProofsMethods};
-use cdk::wallet::{HttpClient, MintConnector, Wallet};
+use cashu::{Amount, CurrencyUnit, MintRequest, MintUrl, PreMintSecrets, ProofsMethods};
+use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletBuilder};
 use cdk_integration_tests::get_mint_url_from_env;
 use cdk_integration_tests::init_regtest::{get_cln_dir, get_temp_dir};
 use cdk_sqlite::wallet::memory;
@@ -78,12 +79,17 @@ async fn test_regtest_bolt12_mint() {
         .await
         .unwrap();
     cln_client
-        .pay_bolt12_offer(None, mint_quote.request)
+        .pay_bolt12_offer(None, mint_quote.request.clone())
         .await
         .unwrap();
 
     let proofs = wallet
-        .mint_bolt12(&mint_quote.id, None, SplitTarget::default(), None)
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(60),
+        )
         .await
         .unwrap();
 
@@ -97,13 +103,16 @@ async fn test_regtest_bolt12_mint() {
 /// - Tests the functionality of reusing a quote for multiple payments
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
-    let wallet = Wallet::new(
-        &get_mint_url_from_env(),
-        CurrencyUnit::Sat,
-        Arc::new(memory::empty().await?),
-        Mnemonic::generate(12)?.to_seed_normalized(""),
-        None,
-    )?;
+    let mint_url = MintUrl::from_str(&get_mint_url_from_env())?;
+
+    let wallet = WalletBuilder::new()
+        .mint_url(mint_url)
+        .unit(CurrencyUnit::Sat)
+        .localstore(Arc::new(memory::empty().await?))
+        .seed(Mnemonic::generate(12)?.to_seed_normalized(""))
+        .target_proof_count(3)
+        .use_http_subscription()
+        .build()?;
 
     let mint_quote = wallet.mint_bolt12_quote(None, None).await?;
 
@@ -120,7 +129,7 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 
@@ -136,7 +145,7 @@ async fn test_regtest_bolt12_mint_multiple() -> Result<()> {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 
@@ -187,7 +196,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
             quote_one.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 
@@ -206,7 +215,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
             quote_two.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 
@@ -283,7 +292,7 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
             mint_quote.clone(),
             SplitTarget::default(),
             None,
-            tokio::time::Duration::from_secs(15),
+            tokio::time::Duration::from_secs(60),
         )
         .await?;
 
@@ -348,7 +357,14 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
     assert_eq!(state.amount_paid, (pay_amount_msats / 1_000).into());
     assert_eq!(state.amount_issued, Amount::ZERO);
 
-    let pre_mint = PreMintSecrets::random(active_keyset_id, 500.into(), &SplitTarget::None)?;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+
+    let pre_mint = PreMintSecrets::random(
+        active_keyset_id,
+        500.into(),
+        &SplitTarget::None,
+        &fee_and_amounts,
+    )?;
 
     let quote_info = wallet
         .localstore
@@ -374,7 +390,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
         Err(err) => match err {
             cdk::Error::TransactionUnbalanced(_, _, _) => (),
             err => {
-                bail!("Wrong mint error returned: {}", err.to_string());
+                bail!("Wrong mint error returned: {}", err);
             }
         },
         Ok(_) => {

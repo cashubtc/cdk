@@ -1,0 +1,68 @@
+name: Backport merged pull request
+on:
+  pull_request_target:
+    # Run on merge (close) or if label is added after merging
+    types: [closed, labeled]
+
+# Set concurrency limit to a single backport workflow per PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  backport:
+    permissions:
+      contents: write # so it can comment
+      pull-requests: write # so it can create pull requests
+    name: Backport pull request
+    runs-on: ubuntu-latest
+
+    # Don't run on closed unmerged pull requests or if a non-backport label is added
+    if: |
+      github.event.pull_request.merged &&
+      (
+        github.event.action != 'labeled' ||
+        contains(github.event.label.name, 'backport')
+      )
+
+    outputs:
+      was_successful: ${{ steps.create-pr.outputs.was_successful }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - id: create-pr
+        name: Create backport pull requests
+        uses: korthout/backport-action@v3
+        with:
+          github_token: ${{ secrets.BACKPORT_TOKEN }}
+
+  open-issue:
+    permissions:
+      contents: read
+      issues: write
+    name: Open issue for failed backports
+    runs-on: ubuntu-latest
+    needs: backport
+
+    # Open an issue only if the backport job failed
+    if: ${{ needs.backport.outputs.was_successful == 'false' }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set SHORT_PR_TITLE env
+        run: |
+          SHORT_PR_TITLE=$(
+            echo '${{ github.event.pull_request.title }}' \
+            | awk '{print (length($0) > 40) ? substr($0, 1, 40) "..." : $0}'
+          )
+          echo "SHORT_PR_TITLE=$SHORT_PR_TITLE" >> "$GITHUB_ENV"
+
+      - name: Create issue
+        uses: JasonEtco/create-an-issue@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          SHORT_PR_TITLE: ${{ env.SHORT_PR_TITLE }}
+        with:
+          filename: .github/templates/failed-backport-issue.md

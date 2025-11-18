@@ -388,4 +388,168 @@ mod tests {
 
         assert!(verify_message(&bob_sec, unblinded, &message).is_ok());
     }
+
+    /// Tests that `verify_message` correctly rejects verification when using an incorrect key.
+    ///
+    /// This test ensures that the verification process fails when attempting to verify
+    /// a signature with a different key than the one used to create it. This is critical
+    /// for security - if this check didn't exist, tokens could be forged by anyone.
+    ///
+    /// Mutant testing: Catches mutations that remove or weaken the key comparison logic
+    /// in `verify_message`, such as always returning Ok or ignoring the key parameter.
+    #[test]
+    fn test_verify_message_wrong_key() {
+        // Test that verify_message fails with wrong key
+        let message = b"test message";
+        let correct_key =
+            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap();
+        let wrong_key =
+            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
+                .unwrap();
+
+        let (blinded, r) = blind_message(message, None).unwrap();
+        let signed = sign_message(&correct_key, &blinded).unwrap();
+        let unblinded = unblind_message(&signed, &r, &correct_key.public_key()).unwrap();
+
+        // Should fail with wrong key
+        assert!(verify_message(&wrong_key, unblinded, message).is_err());
+    }
+
+    /// Tests that `verify_message` correctly rejects verification when the message doesn't match.
+    ///
+    /// This test ensures that attempting to verify a signature against a different message
+    /// than the one originally signed results in an error. This prevents message substitution
+    /// attacks where an attacker might try to claim a signature for one message is valid
+    /// for a different message.
+    ///
+    /// Mutant testing: Catches mutations that remove or weaken the message comparison logic,
+    /// such as skipping the hash_to_curve step or ignoring the message parameter entirely.
+    #[test]
+    fn test_verify_message_wrong_message() {
+        // Test that verify_message fails with wrong message
+        let message = b"test message";
+        let wrong_message = b"wrong message";
+        let key =
+            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap();
+
+        let (blinded, r) = blind_message(message, None).unwrap();
+        let signed = sign_message(&key, &blinded).unwrap();
+        let unblinded = unblind_message(&signed, &r, &key.public_key()).unwrap();
+
+        // Should fail with wrong message
+        assert!(verify_message(&key, unblinded, wrong_message).is_err());
+    }
+
+    /// Tests that `construct_proofs` returns an error when input vectors have mismatched lengths.
+    ///
+    /// This test verifies that the function properly validates that the `promises`, `rs`, and
+    /// `secrets` vectors all have the same length before processing. This is essential for
+    /// correctness - each proof requires exactly one promise, one blinding factor (r), and
+    /// one secret. Mismatched lengths would indicate a programming error or corrupted data.
+    ///
+    /// Mutant testing: Catches mutations that remove or weaken the length validation check
+    /// at the beginning of `construct_proofs`, such as changing `!=` to `==` or removing
+    /// the validation entirely, which could lead to panics or incorrect proof construction.
+    #[test]
+    fn test_construct_proofs_length_mismatch() {
+        use std::collections::BTreeMap;
+
+        use crate::nuts::nut02::Id;
+        use crate::Amount;
+
+        // Test that construct_proofs fails when lengths don't match
+        let mut keys_map = BTreeMap::new();
+        keys_map.insert(Amount::from(1), SecretKey::generate().public_key());
+        let keys = Keys::new(keys_map);
+
+        // Mismatched promises and rs lengths
+        let promise = BlindSignature {
+            amount: Amount::from(1),
+            c: SecretKey::generate().public_key(),
+            keyset_id: Id::from_str("00deadbeef123456").unwrap(),
+            dleq: None,
+        };
+        let promises = vec![promise];
+        let rs = vec![SecretKey::generate(), SecretKey::generate()]; // Different length
+        let secrets = vec![Secret::from_str("test").unwrap()];
+
+        let result = construct_proofs(promises, rs, secrets, &keys);
+        assert!(result.is_err());
+    }
+
+    /// Tests that `construct_proofs` returns the correct number of proof objects.
+    ///
+    /// This test verifies that when given N valid inputs (promises, blinding factors, secrets),
+    /// the function returns exactly N proofs, not zero or any other count. This ensures that
+    /// the loop in `construct_proofs` actually processes all inputs and accumulates results
+    /// correctly.
+    ///
+    /// Mutant testing: Specifically designed to catch mutations that replace the function body
+    /// with `Ok(Default::default())` or similar shortcuts that would return an empty vector
+    /// instead of processing the inputs. This is a common mutation that could pass tests that
+    /// only check for success without verifying the actual results.
+    #[test]
+    fn test_construct_proofs_returns_correct_count() {
+        use std::collections::BTreeMap;
+
+        use crate::nuts::nut02::Id;
+        use crate::Amount;
+
+        // Test that construct_proofs returns the correct number of proofs
+        let secret_key = SecretKey::generate();
+        let mut keys_map = BTreeMap::new();
+        keys_map.insert(Amount::from(1), secret_key.public_key());
+        let keys = Keys::new(keys_map);
+
+        let secret = Secret::from_str("test").unwrap();
+        let (blinded_message, r) = blind_message(secret.as_bytes(), None).unwrap();
+        let signature = sign_message(&secret_key, &blinded_message).unwrap();
+
+        let promise = BlindSignature {
+            amount: Amount::from(1),
+            c: signature,
+            keyset_id: Id::from_str("00deadbeef123456").unwrap(),
+            dleq: None,
+        };
+
+        let promises = vec![promise.clone(), promise.clone()];
+        let rs = vec![r.clone(), r];
+        let secrets = vec![secret.clone(), secret];
+
+        let proofs = construct_proofs(promises, rs, secrets, &keys).unwrap();
+
+        // Should return 2 proofs, not 0 (kills the Ok(Default::default()) mutant)
+        assert_eq!(proofs.len(), 2);
+    }
+
+    /// Tests that hash_to_curve properly increments the counter and terminates.
+    ///
+    /// The hash_to_curve function uses a counter that increments in a loop at line 61.
+    /// If the counter increment is mutated (e.g., to `counter *= 1`), the loop would
+    /// never progress and would run until the timeout.
+    ///
+    /// This test uses a message that requires multiple iterations to find a valid point,
+    /// ensuring the counter increment logic is working correctly.
+    ///
+    /// Mutant testing: Kills mutations that replace `counter += 1` with `counter *= 1`
+    /// or other operations that don't advance the counter.
+    #[test]
+    fn test_hash_to_curve_counter_increments() {
+        // This specific message is documented in test_hash_to_curve as taking
+        // "a few iterations of the loop before finding a valid point"
+        let secret = "0000000000000000000000000000000000000000000000000000000000000002";
+        let sec_hex = hex::decode(secret).unwrap();
+
+        let result = hash_to_curve(&sec_hex);
+        assert!(result.is_ok(), "hash_to_curve should find a valid point");
+
+        let y = result.unwrap();
+        let expected_y = PublicKey::from_hex(
+            "026cdbe15362df59cd1dd3c9c11de8aedac2106eca69236ecd9fbe117af897be4f",
+        )
+        .unwrap();
+        assert_eq!(y, expected_y);
+    }
 }

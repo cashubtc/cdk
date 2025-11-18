@@ -7,15 +7,16 @@ mod wallet;
 
 #[cfg(feature = "mint")]
 pub use mint::{
-    Database as MintDatabase, DbTransactionFinalizer as MintDbWriterFinalizer,
-    KeysDatabase as MintKeysDatabase, KeysDatabaseTransaction as MintKeyDatabaseTransaction,
-    ProofsDatabase as MintProofsDatabase, ProofsTransaction as MintProofsTransaction,
-    QuotesDatabase as MintQuotesDatabase, QuotesTransaction as MintQuotesTransaction,
-    SignaturesDatabase as MintSignaturesDatabase,
+    Database as MintDatabase, DbTransactionFinalizer as MintDbWriterFinalizer, DynMintDatabase,
+    KVStore as MintKVStore, KVStoreDatabase as MintKVStoreDatabase,
+    KVStoreTransaction as MintKVStoreTransaction, KeysDatabase as MintKeysDatabase,
+    KeysDatabaseTransaction as MintKeyDatabaseTransaction, ProofsDatabase as MintProofsDatabase,
+    ProofsTransaction as MintProofsTransaction, QuotesDatabase as MintQuotesDatabase,
+    QuotesTransaction as MintQuotesTransaction, SignaturesDatabase as MintSignaturesDatabase,
     SignaturesTransaction as MintSignatureTransaction, Transaction as MintTransaction,
 };
 #[cfg(all(feature = "mint", feature = "auth"))]
-pub use mint::{MintAuthDatabase, MintAuthTransaction};
+pub use mint::{DynMintAuthDatabase, MintAuthDatabase, MintAuthTransaction};
 #[cfg(feature = "wallet")]
 pub use wallet::Database as WalletDatabase;
 
@@ -187,6 +188,10 @@ pub enum Error {
     /// QuoteNotFound
     #[error("Quote not found")]
     QuoteNotFound,
+
+    /// KV Store invalid key or namespace
+    #[error("Invalid KV store key or namespace: {0}")]
+    KVStoreInvalidKey(String),
 }
 
 #[cfg(feature = "mint")]

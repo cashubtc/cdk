@@ -25,6 +25,9 @@ pub enum Error {
     /// Redb Storage Error
     #[error(transparent)]
     Storage(#[from] Box<redb::StorageError>),
+    /// Upgrade Transaction Error
+    #[error(transparent)]
+    Upgrade(#[from] Box<redb::UpgradeError>),
     /// Serde Json Error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
@@ -40,6 +43,9 @@ pub enum Error {
     /// CDK Error
     #[error(transparent)]
     CDK(#[from] cdk_common::error::Error),
+    /// IO Error
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
     /// NUT00 Error
     #[error(transparent)]
     CDKNUT00(#[from] cdk_common::nuts::nut00::Error),
@@ -109,5 +115,11 @@ impl From<redb::TableError> for Error {
 impl From<redb::StorageError> for Error {
     fn from(e: redb::StorageError) -> Self {
         Self::Storage(Box::new(e))
+    }
+}
+
+impl From<redb::UpgradeError> for Error {
+    fn from(e: redb::UpgradeError) -> Self {
+        Self::Upgrade(Box::new(e))
     }
 }

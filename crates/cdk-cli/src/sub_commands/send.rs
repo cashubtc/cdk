@@ -1,16 +1,14 @@
 use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
-use cdk::nuts::{Conditions, CurrencyUnit, PublicKey, SpendingConditions};
+use cdk::mint_url::MintUrl;
+use cdk::nuts::{Conditions, PublicKey, SpendingConditions};
 use cdk::wallet::types::SendKind;
 use cdk::wallet::{MultiMintWallet, SendMemo, SendOptions};
 use cdk::Amount;
 use clap::Args;
 
-use crate::sub_commands::balance::mint_balances;
-use crate::utils::{
-    check_sufficient_funds, get_number_input, get_wallet_by_index, get_wallet_by_mint_url,
-};
+use crate::utils::get_number_input;
 
 #[derive(Args)]
 pub struct SendSubCommand {
@@ -50,39 +48,78 @@ pub struct SendSubCommand {
     /// Mint URL to use for sending
     #[arg(long)]
     mint_url: Option<String>,
-    /// Currency unit e.g. sat
-    #[arg(default_value = "sat")]
-    unit: String,
+    /// Allow transferring funds from other mints if the target mint has insufficient balance
+    #[arg(long)]
+    allow_transfer: bool,
+    /// Maximum amount to transfer from other mints
+    #[arg(long)]
+    max_transfer_amount: Option<u64>,
+
+    /// Specific mints to exclude from transfers (can be specified multiple times)
+    #[arg(long, action = clap::ArgAction::Append)]
+    excluded_mints: Vec<String>,
 }
 
 pub async fn send(
     multi_mint_wallet: &MultiMintWallet,
     sub_command_args: &SendSubCommand,
 ) -> Result<()> {
-    let unit = CurrencyUnit::from_str(&sub_command_args.unit)?;
-    let mints_amounts = mint_balances(multi_mint_wallet, &unit).await?;
-
-    // Get wallet either by mint URL or by index
-    let wallet = if let Some(mint_url) = &sub_command_args.mint_url {
-        // Use the provided mint URL
-        get_wallet_by_mint_url(multi_mint_wallet, mint_url, unit).await?
+    // Determine which mint to use for sending BEFORE asking for amount
+    let selected_mint = if let Some(mint_url) = &sub_command_args.mint_url {
+        Some(MintUrl::from_str(mint_url)?)
     } else {
-        // Fallback to the index-based selection
-        let mint_number: usize = get_number_input("Enter mint number to create token")?;
-        get_wallet_by_index(multi_mint_wallet, &mints_amounts, mint_number, unit).await?
+        // Display all mints with their balances and let user select
+        let balances_map = multi_mint_wallet.get_balances().await?;
+        if balances_map.is_empty() {
+            return Err(anyhow!("No mints available in the wallet"));
+        }
+
+        let balances_vec: Vec<(MintUrl, Amount)> = balances_map.into_iter().collect();
+
+        println!("\nAvailable mints and balances:");
+        for (index, (mint_url, balance)) in balances_vec.iter().enumerate() {
+            println!(
+                "  {}: {} - {} {}",
+                index,
+                mint_url,
+                balance,
+                multi_mint_wallet.unit()
+            );
+        }
+        println!("  {}: Any mint (auto-select best)", balances_vec.len());
+
+        let selection = loop {
+            let selection: usize =
+                get_number_input("Enter mint number to send from (or select Any)")?;
+
+            if selection == balances_vec.len() {
+                break None; // "Any" option selected
+            }
+
+            if let Some((mint_url, _)) = balances_vec.get(selection) {
+                break Some(mint_url.clone());
+            }
+
+            println!("Invalid selection, please try again.");
+        };
+
+        selection
     };
 
-    let token_amount = Amount::from(get_number_input::<u64>("Enter value of token in sats")?);
+    let token_amount = Amount::from(get_number_input::<u64>(&format!(
+        "Enter value of token in {}",
+        multi_mint_wallet.unit()
+    ))?);
 
-    // Find the mint amount for the selected wallet to check if we have sufficient funds
-    let mint_url = &wallet.mint_url;
-    let mint_amount = mints_amounts
-        .iter()
-        .find(|(url, _)| url == mint_url)
-        .map(|(_, amount)| *amount)
-        .ok_or_else(|| anyhow!("Could not find balance for mint: {}", mint_url))?;
-
-    check_sufficient_funds(mint_amount, token_amount)?;
+    // Check total balance across all wallets
+    let total_balance = multi_mint_wallet.total_balance().await?;
+    if total_balance < token_amount {
+        return Err(anyhow!(
+            "Insufficient funds. Total balance: {}, Required: {}",
+            total_balance,
+            token_amount
+        ));
+    }
 
     let conditions = match (&sub_command_args.preimage, &sub_command_args.hash) {
         (Some(_), Some(_)) => {
@@ -206,22 +243,66 @@ pub async fn send(
         (false, None) => SendKind::OnlineExact,
     };
 
-    let prepared_send = wallet
-        .prepare_send(
-            token_amount,
-            SendOptions {
-                memo: sub_command_args.memo.clone().map(|memo| SendMemo {
-                    memo,
-                    include_memo: true,
-                }),
-                send_kind,
-                include_fee: sub_command_args.include_fee,
-                conditions,
-                ..Default::default()
-            },
-        )
-        .await?;
-    let token = prepared_send.confirm(None).await?;
+    let send_options = SendOptions {
+        memo: sub_command_args.memo.clone().map(|memo| SendMemo {
+            memo,
+            include_memo: true,
+        }),
+        send_kind,
+        include_fee: sub_command_args.include_fee,
+        conditions,
+        ..Default::default()
+    };
+
+    // Parse excluded mints from CLI arguments
+    let excluded_mints: Result<Vec<MintUrl>, _> = sub_command_args
+        .excluded_mints
+        .iter()
+        .map(|url| MintUrl::from_str(url))
+        .collect();
+    let excluded_mints = excluded_mints?;
+
+    // Prepare and confirm the send based on mint selection
+    let token = if let Some(specific_mint) = selected_mint {
+        // User selected a specific mint
+        let multi_mint_options = cdk::wallet::multi_mint_wallet::MultiMintSendOptions {
+            allow_transfer: sub_command_args.allow_transfer,
+            max_transfer_amount: sub_command_args.max_transfer_amount.map(Amount::from),
+            allowed_mints: vec![specific_mint.clone()], // Use selected mint as the only allowed mint
+            excluded_mints,
+            send_options: send_options.clone(),
+        };
+
+        let prepared = multi_mint_wallet
+            .prepare_send(specific_mint, token_amount, multi_mint_options)
+            .await?;
+
+        let memo = send_options.memo.clone();
+        prepared.confirm(memo).await?
+    } else {
+        // User selected "Any" - find the first mint with sufficient balance
+        let balances = multi_mint_wallet.get_balances().await?;
+        let best_mint = balances
+            .into_iter()
+            .find(|(_, balance)| *balance >= token_amount)
+            .map(|(mint_url, _)| mint_url)
+            .ok_or_else(|| anyhow!("No mint has sufficient balance for the requested amount"))?;
+
+        let multi_mint_options = cdk::wallet::multi_mint_wallet::MultiMintSendOptions {
+            allow_transfer: sub_command_args.allow_transfer,
+            max_transfer_amount: sub_command_args.max_transfer_amount.map(Amount::from),
+            allowed_mints: vec![best_mint.clone()], // Use the best mint as the only allowed mint
+            excluded_mints,
+            send_options: send_options.clone(),
+        };
+
+        let prepared = multi_mint_wallet
+            .prepare_send(best_mint, token_amount, multi_mint_options)
+            .await?;
+
+        let memo = send_options.memo.clone();
+        prepared.confirm(memo).await?
+    };
 
     match sub_command_args.v3 {
         true => {

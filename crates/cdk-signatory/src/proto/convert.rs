@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 use cdk_common::secret::Secret;
 use cdk_common::util::hex;
-use cdk_common::{Amount, PublicKey};
+use cdk_common::{Amount, Id, PublicKey};
 use tonic::Status;
 
 use super::*;
@@ -43,8 +43,16 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
     type Error = cdk_common::Error;
 
     fn try_into(self) -> Result<crate::signatory::SignatoryKeySet, Self::Error> {
+        let keys = self
+            .keys
+            .ok_or(cdk_common::Error::Custom(INTERNAL_ERROR.to_owned()))?
+            .keys
+            .into_iter()
+            .map(|(amount, pk)| PublicKey::from_slice(&pk).map(|pk| (amount.into(), pk)))
+            .collect::<Result<BTreeMap<Amount, _>, _>>()?;
+
         Ok(crate::signatory::SignatoryKeySet {
-            id: self.id.parse()?,
+            id: Id::from_bytes(&self.id)?,
             unit: self
                 .unit
                 .ok_or(cdk_common::Error::Custom(INTERNAL_ERROR.to_owned()))?
@@ -52,14 +60,8 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
                 .map_err(|_| cdk_common::Error::Custom("Invalid currency unit".to_owned()))?,
             active: self.active,
             input_fee_ppk: self.input_fee_ppk,
-            keys: cdk_common::Keys::new(
-                self.keys
-                    .ok_or(cdk_common::Error::Custom(INTERNAL_ERROR.to_owned()))?
-                    .keys
-                    .into_iter()
-                    .map(|(amount, pk)| PublicKey::from_slice(&pk).map(|pk| (amount.into(), pk)))
-                    .collect::<Result<BTreeMap<Amount, _>, _>>()?,
-            ),
+            amounts: keys.keys().map(|x| x.to_u64()).collect::<Vec<_>>(),
+            keys: cdk_common::Keys::new(keys),
             final_expiry: self.final_expiry,
         })
     }
@@ -68,7 +70,7 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
 impl From<crate::signatory::SignatoryKeySet> for KeySet {
     fn from(keyset: crate::signatory::SignatoryKeySet) -> Self {
         Self {
-            id: keyset.id.to_string(),
+            id: keyset.id.to_bytes(),
             unit: Some(keyset.unit.into()),
             active: keyset.active,
             input_fee_ppk: keyset.input_fee_ppk,
@@ -80,6 +82,7 @@ impl From<crate::signatory::SignatoryKeySet> for KeySet {
                     .collect(),
             }),
             final_expiry: keyset.final_expiry,
+            version: Default::default(),
         }
     }
 }
@@ -141,7 +144,7 @@ impl From<cdk_common::BlindSignature> for BlindSignature {
         BlindSignature {
             amount: value.amount.into(),
             blinded_secret: value.c.to_bytes().to_vec(),
-            keyset_id: value.keyset_id.to_string(),
+            keyset_id: value.keyset_id.to_bytes(),
             dleq: value.dleq.map(|x| x.into()),
         }
     }
@@ -161,7 +164,7 @@ impl From<cdk_common::Proof> for Proof {
     fn from(value: cdk_common::Proof) -> Self {
         Proof {
             amount: value.amount.into(),
-            keyset_id: value.keyset_id.to_string(),
+            keyset_id: value.keyset_id.to_bytes(),
             secret: value.secret.to_bytes(),
             c: value.c.to_bytes().to_vec(),
         }
@@ -179,9 +182,7 @@ impl TryInto<cdk_common::Proof> for Proof {
 
         Ok(cdk_common::Proof {
             amount: self.amount.into(),
-            keyset_id: self
-                .keyset_id
-                .parse()
+            keyset_id: Id::from_bytes(&self.keyset_id)
                 .map_err(|e| Status::from_error(Box::new(e)))?,
             secret: Secret::new(secret),
             c: cdk_common::PublicKey::from_slice(&self.c)
@@ -199,7 +200,7 @@ impl TryInto<cdk_common::BlindSignature> for BlindSignature {
         Ok(cdk_common::BlindSignature {
             amount: self.amount.into(),
             c: cdk_common::PublicKey::from_slice(&self.blinded_secret)?,
-            keyset_id: self.keyset_id.parse().expect("Invalid keyset id"),
+            keyset_id: Id::from_bytes(&self.keyset_id)?,
             dleq: self.dleq.map(|dleq| dleq.try_into()).transpose()?,
         })
     }
@@ -209,7 +210,7 @@ impl From<cdk_common::BlindedMessage> for BlindedMessage {
     fn from(value: cdk_common::BlindedMessage) -> Self {
         BlindedMessage {
             amount: value.amount.into(),
-            keyset_id: value.keyset_id.to_string(),
+            keyset_id: value.keyset_id.to_bytes(),
             blinded_secret: value.blinded_secret.to_bytes().to_vec(),
         }
     }
@@ -220,9 +221,7 @@ impl TryInto<cdk_common::BlindedMessage> for BlindedMessage {
     fn try_into(self) -> Result<cdk_common::BlindedMessage, Self::Error> {
         Ok(cdk_common::BlindedMessage {
             amount: self.amount.into(),
-            keyset_id: self
-                .keyset_id
-                .parse()
+            keyset_id: Id::from_bytes(&self.keyset_id)
                 .map_err(|e| Status::from_error(Box::new(e)))?,
             blinded_secret: cdk_common::PublicKey::from_slice(&self.blinded_secret)
                 .map_err(|e| Status::from_error(Box::new(e)))?,
@@ -311,10 +310,7 @@ impl TryInto<cdk_common::KeySet> for KeySet {
     type Error = cdk_common::error::Error;
     fn try_into(self) -> Result<cdk_common::KeySet, Self::Error> {
         Ok(cdk_common::KeySet {
-            id: self
-                .id
-                .parse()
-                .map_err(|_| cdk_common::error::Error::Custom("Invalid ID".to_owned()))?,
+            id: Id::from_bytes(&self.id)?,
             unit: self
                 .unit
                 .ok_or(cdk_common::error::Error::Custom(INTERNAL_ERROR.to_owned()))?
@@ -337,7 +333,7 @@ impl From<crate::signatory::RotateKeyArguments> for RotationRequest {
     fn from(value: crate::signatory::RotateKeyArguments) -> Self {
         Self {
             unit: Some(value.unit.into()),
-            max_order: value.max_order.into(),
+            amounts: value.amounts,
             input_fee_ppk: value.input_fee_ppk,
         }
     }
@@ -352,10 +348,7 @@ impl TryInto<crate::signatory::RotateKeyArguments> for RotationRequest {
                 .unit
                 .ok_or(Status::invalid_argument("unit not set"))?
                 .try_into()?,
-            max_order: self
-                .max_order
-                .try_into()
-                .map_err(|_| Status::invalid_argument("Invalid max_order"))?,
+            amounts: self.amounts,
             input_fee_ppk: self.input_fee_ppk,
         })
     }
@@ -364,12 +357,13 @@ impl TryInto<crate::signatory::RotateKeyArguments> for RotationRequest {
 impl From<cdk_common::KeySetInfo> for KeySet {
     fn from(value: cdk_common::KeySetInfo) -> Self {
         Self {
-            id: value.id.into(),
+            id: value.id.to_bytes(),
             unit: Some(value.unit.into()),
             active: value.active,
             input_fee_ppk: value.input_fee_ppk,
             keys: Default::default(),
             final_expiry: value.final_expiry,
+            version: Default::default(),
         }
     }
 }
@@ -379,7 +373,7 @@ impl TryInto<cdk_common::KeySetInfo> for KeySet {
 
     fn try_into(self) -> Result<cdk_common::KeySetInfo, Self::Error> {
         Ok(cdk_common::KeySetInfo {
-            id: self.id.try_into()?,
+            id: Id::from_bytes(&self.id)?,
             unit: self
                 .unit
                 .ok_or(cdk_common::Error::Custom(INTERNAL_ERROR.to_owned()))?

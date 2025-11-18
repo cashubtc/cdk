@@ -18,6 +18,7 @@ bench = []
 wallet = ["cashu/wallet"]
 mint = ["cashu/mint", "dep:uuid"]
 auth = ["cashu/auth"]
+prometheus = ["cdk-prometheus/default"]
 
 [dependencies]
 async-trait.workspace = true
@@ -30,6 +31,7 @@ lightning-invoice.workspace = true
 lightning.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+cdk-prometheus = { workspace = true, optional = true}
 url.workspace = true
 uuid = { workspace = true, optional = true }
 utoipa = { workspace = true, optional = true }
@@ -37,11 +39,22 @@ futures.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
+web-time.workspace = true
+tokio.workspace = true
+parking_lot = "0.12.5"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-instant = { workspace = true, features = ["wasm-bindgen", "inaccurate"] }
 uuid = { workspace = true, features = ["js"], optional = true }
+getrandom = { version = "0.2", features = ["js"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]
 rand.workspace = true
 bip39.workspace = true
+wasm-bindgen-test = "0.3"
+criterion.workspace = true
+
+[[bench]]
+name = "transaction_id_benchmark"
+harness = false

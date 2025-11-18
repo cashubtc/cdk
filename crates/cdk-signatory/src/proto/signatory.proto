@@ -32,7 +32,7 @@ message BlindedMessages {
 // Represents a blinded message
 message BlindedMessage {
   uint64 amount = 1;
-  string keyset_id = 2;
+  bytes keyset_id = 2;
   bytes blinded_secret = 3;
 }
 
@@ -57,12 +57,13 @@ message SignatoryKeysets {
 }
 
 message KeySet {
-  string id = 1;
+  bytes id = 1;
   CurrencyUnit unit = 2;
   bool active = 3;
   uint64 input_fee_ppk = 4;
   Keys keys = 5;
   optional uint64 final_expiry = 6;
+  uint64 version = 7;
 }
 
 message Keys {
@@ -72,7 +73,7 @@ message Keys {
 message RotationRequest {
   CurrencyUnit unit = 1;
   uint64 input_fee_ppk = 2;
-  uint32 max_order = 3;
+  repeated uint64 amounts = 3;
 }
 
 enum CurrencyUnitType {
@@ -99,10 +100,11 @@ message Proofs {
 
 message Proof {
   uint64 amount = 1;
-  string keyset_id = 2;
+  bytes keyset_id = 2;
   bytes secret = 3;
   bytes c = 4;
 }
+
 
 message BlindSignatures {
   repeated BlindSignature blind_signatures = 1;
@@ -110,7 +112,7 @@ message BlindSignatures {
 
 message BlindSignature {
   uint64 amount = 1;
-  string keyset_id = 2;
+  bytes keyset_id = 2;
   bytes blinded_secret = 3;
   optional BlindSignatureDLEQ dleq = 4;
 }

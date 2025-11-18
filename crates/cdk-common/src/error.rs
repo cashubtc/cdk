@@ -110,6 +110,9 @@ pub enum Error {
     /// Could not parse bolt12
     #[error("Could not parse bolt12")]
     Bolt12parse,
+    /// Could not parse invoice (bolt11 or bolt12)
+    #[error("Could not parse invoice")]
+    InvalidInvoice,
 
     /// BIP353 address parsing error
     #[error("Failed to parse BIP353 address: {0}")]
@@ -125,6 +128,13 @@ pub enum Error {
     /// BIP353 no Lightning offer found
     #[error("No Lightning offer found in BIP353 payment instructions")]
     Bip353NoLightningOffer,
+
+    /// Lightning Address parsing error
+    #[error("Failed to parse Lightning address: {0}")]
+    LightningAddressParse(String),
+    /// Lightning Address request error
+    #[error("Failed to request invoice from Lightning address service: {0}")]
+    LightningAddressRequest(String),
 
     /// Internal Error - Send error
     #[error("Internal send error: {0}")]
@@ -209,6 +219,9 @@ pub enum Error {
     /// P2PK spending conditions not met
     #[error("P2PK condition not met `{0}`")]
     P2PKConditionsNotMet(String),
+    /// Duplicate signature from same pubkey in P2PK
+    #[error("Duplicate signature from same pubkey in P2PK")]
+    DuplicateSignatureError,
     /// Spending Locktime not provided
     #[error("Spending condition locktime not provided")]
     LocktimeNotProvided,
@@ -247,6 +260,32 @@ pub enum Error {
     /// Preimage not provided
     #[error("Preimage not provided")]
     PreimageNotProvided,
+
+    // MultiMint Wallet Errors
+    /// Currency unit mismatch in MultiMintWallet
+    #[error("Currency unit mismatch: wallet uses {expected}, but {found} provided")]
+    MultiMintCurrencyUnitMismatch {
+        /// Expected currency unit
+        expected: CurrencyUnit,
+        /// Found currency unit
+        found: CurrencyUnit,
+    },
+    /// Unknown mint in MultiMintWallet
+    #[error("Unknown mint: {mint_url}")]
+    UnknownMint {
+        /// URL of the unknown mint
+        mint_url: String,
+    },
+    /// Transfer between mints timed out
+    #[error("Transfer timeout: failed to transfer {amount} from {source_mint} to {target_mint}")]
+    TransferTimeout {
+        /// Source mint URL
+        source_mint: String,
+        /// Target mint URL  
+        target_mint: String,
+        /// Amount that failed to transfer
+        amount: Amount,
+    },
     /// Insufficient Funds
     #[error("Insufficient funds")]
     InsufficientFunds,
@@ -271,6 +310,9 @@ pub enum Error {
     /// Transaction not found
     #[error("Transaction not found")]
     TransactionNotFound,
+    /// KV Store invalid key or namespace
+    #[error("Invalid KV store key or namespace: {0}")]
+    KVStoreInvalidKey(String),
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),
@@ -303,7 +345,10 @@ pub enum Error {
     /// Http transport error
     #[error("Http transport error {0:?}: {1}")]
     HttpError(Option<u16>, String),
-    #[cfg(feature = "wallet")]
+    /// Parse invoice error
+    #[cfg(feature = "mint")]
+    #[error(transparent)]
+    Uuid(#[from] uuid::Error),
     // Crate error conversions
     /// Cashu Url Error
     #[error(transparent)]
@@ -356,9 +401,11 @@ pub enum Error {
     NUT20(#[from] crate::nuts::nut20::Error),
     /// NUT21 Error
     #[error(transparent)]
+    #[cfg(feature = "auth")]
     NUT21(#[from] crate::nuts::nut21::Error),
     /// NUT22 Error
     #[error(transparent)]
+    #[cfg(feature = "auth")]
     NUT22(#[from] crate::nuts::nut22::Error),
     /// NUT23 Error
     #[error(transparent)]
@@ -387,32 +434,21 @@ pub enum Error {
 pub struct ErrorResponse {
     /// Error Code
     pub code: ErrorCode,
-    /// Human readable Text
-    pub error: Option<String>,
-    /// Longer human readable description
-    pub detail: Option<String>,
+    /// Human readable description
+    #[serde(default)]
+    pub detail: String,
 }
 
 impl fmt::Display for ErrorResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "code: {}, error: {}, detail: {}",
-            self.code,
-            self.error.clone().unwrap_or_default(),
-            self.detail.clone().unwrap_or_default()
-        )
+        write!(f, "code: {}, detail: {}", self.code, self.detail)
     }
 }
 
 impl ErrorResponse {
     /// Create new [`ErrorResponse`]
-    pub fn new(code: ErrorCode, error: Option<String>, detail: Option<String>) -> Self {
-        Self {
-            code,
-            error,
-            detail,
-        }
+    pub fn new(code: ErrorCode, detail: String) -> Self {
+        Self { code, detail }
     }
 
     /// Error response from json
@@ -428,10 +464,19 @@ impl ErrorResponse {
             Ok(res) => Ok(res),
             Err(_) => Ok(Self {
                 code: ErrorCode::Unknown(999),
-                error: Some(value.to_string()),
-                detail: None,
+                detail: value.to_string(),
             }),
         }
+    }
+}
+
+/// Maps NUT11 errors to appropriate error codes
+fn map_nut11_error(nut11_error: &crate::nuts::nut11::Error) -> ErrorCode {
+    match nut11_error {
+        crate::nuts::nut11::Error::SignaturesNotProvided => ErrorCode::WitnessMissingOrInvalid,
+        crate::nuts::nut11::Error::InvalidSignature => ErrorCode::WitnessMissingOrInvalid,
+        crate::nuts::nut11::Error::DuplicateSignature => ErrorCode::DuplicateSignature,
+        _ => ErrorCode::Unknown(9999), // Parsing/validation errors
     }
 }
 
@@ -440,122 +485,118 @@ impl From<Error> for ErrorResponse {
         match err {
             Error::TokenAlreadySpent => ErrorResponse {
                 code: ErrorCode::TokenAlreadySpent,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::UnsupportedUnit => ErrorResponse {
                 code: ErrorCode::UnsupportedUnit,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::PaymentFailed => ErrorResponse {
                 code: ErrorCode::LightningError,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::RequestAlreadyPaid => ErrorResponse {
                 code: ErrorCode::InvoiceAlreadyPaid,
-                error: Some("Invoice already paid.".to_string()),
-                detail: None,
+                detail: "Invoice already paid.".to_string(),
             },
             Error::TransactionUnbalanced(inputs_total, outputs_total, fee_expected) => {
                 ErrorResponse {
                     code: ErrorCode::TransactionUnbalanced,
-                    error: Some(format!(
-                        "Inputs: {inputs_total}, Outputs: {outputs_total}, expected_fee: {fee_expected}",
-                    )),
-                    detail: Some("Transaction inputs should equal outputs less fee".to_string()),
+                    detail: format!(
+                        "Inputs: {inputs_total}, Outputs: {outputs_total}, expected_fee: {fee_expected}. Transaction inputs should equal outputs less fee"
+                    ),
                 }
             }
             Error::MintingDisabled => ErrorResponse {
                 code: ErrorCode::MintingDisabled,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::BlindedMessageAlreadySigned => ErrorResponse {
                 code: ErrorCode::BlindedMessageAlreadySigned,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::InsufficientFunds => ErrorResponse {
                 code: ErrorCode::TransactionUnbalanced,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::AmountOutofLimitRange(_min, _max, _amount) => ErrorResponse {
                 code: ErrorCode::AmountOutofLimitRange,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::ExpiredQuote(_, _) => ErrorResponse {
                 code: ErrorCode::QuoteExpired,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::PendingQuote => ErrorResponse {
                 code: ErrorCode::QuotePending,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::TokenPending => ErrorResponse {
                 code: ErrorCode::TokenPending,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::ClearAuthRequired => ErrorResponse {
                 code: ErrorCode::ClearAuthRequired,
-                error: None,
-                detail: None,
+                detail: Error::ClearAuthRequired.to_string(),
             },
             Error::ClearAuthFailed => ErrorResponse {
                 code: ErrorCode::ClearAuthFailed,
-                error: None,
-                detail: None,
+                detail: Error::ClearAuthFailed.to_string(),
             },
             Error::BlindAuthRequired => ErrorResponse {
                 code: ErrorCode::BlindAuthRequired,
-                error: None,
-                detail: None,
+                detail: Error::BlindAuthRequired.to_string(),
             },
             Error::BlindAuthFailed => ErrorResponse {
                 code: ErrorCode::BlindAuthFailed,
-                error: None,
-                detail: None,
+                detail: Error::BlindAuthFailed.to_string(),
             },
             Error::NUT20(err) => ErrorResponse {
                 code: ErrorCode::WitnessMissingOrInvalid,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::DuplicateInputs => ErrorResponse {
                 code: ErrorCode::DuplicateInputs,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::DuplicateOutputs => ErrorResponse {
                 code: ErrorCode::DuplicateOutputs,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::MultipleUnits => ErrorResponse {
                 code: ErrorCode::MultipleUnits,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::UnitMismatch => ErrorResponse {
                 code: ErrorCode::UnitMismatch,
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
             Error::UnpaidQuote => ErrorResponse {
                 code: ErrorCode::QuoteNotPaid,
-                error: Some(err.to_string()),
-                detail: None
+                detail: Error::UnpaidQuote.to_string(),
+            },
+            Error::NUT11(err) => {
+                let code = map_nut11_error(&err);
+                let extra = if matches!(err, crate::nuts::nut11::Error::SignaturesNotProvided) {
+                    Some("P2PK signatures are required but not provided".to_string())
+                } else {
+                    None
+                };
+                ErrorResponse {
+                    code,
+                    detail: match extra {
+                        Some(extra) => format!("{err}. {extra}"),
+                        None => err.to_string(),
+                    },
+                }
+            },
+            Error::DuplicateSignatureError => ErrorResponse {
+                code: ErrorCode::DuplicateSignature,
+                detail: err.to_string(),
             },
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(9999),
-                error: Some(err.to_string()),
-                detail: None,
+                detail: err.to_string(),
             },
         }
     }
@@ -609,6 +650,7 @@ impl From<ErrorResponse> for Error {
             ErrorCode::UnitMismatch => Self::UnitMismatch,
             ErrorCode::ClearAuthRequired => Self::ClearAuthRequired,
             ErrorCode::BlindAuthRequired => Self::BlindAuthRequired,
+            ErrorCode::DuplicateSignature => Self::DuplicateSignatureError,
             _ => Self::UnknownErrorResponse(err.to_string()),
         }
     }
@@ -668,6 +710,8 @@ pub enum ErrorCode {
     BlindAuthRequired,
     /// Blind Auth Failed
     BlindAuthFailed,
+    /// Duplicate signature from same pubkey
+    DuplicateSignature,
     /// Unknown error code
     Unknown(u16),
 }
@@ -697,6 +741,7 @@ impl ErrorCode {
             20006 => Self::InvoiceAlreadyPaid,
             20007 => Self::QuoteExpired,
             20008 => Self::WitnessMissingOrInvalid,
+            20009 => Self::DuplicateSignature,
             30001 => Self::ClearAuthRequired,
             30002 => Self::ClearAuthFailed,
             31001 => Self::BlindAuthRequired,
@@ -729,6 +774,7 @@ impl ErrorCode {
             Self::InvoiceAlreadyPaid => 20006,
             Self::QuoteExpired => 20007,
             Self::WitnessMissingOrInvalid => 20008,
+            Self::DuplicateSignature => 20009,
             Self::ClearAuthRequired => 30001,
             Self::ClearAuthFailed => 30002,
             Self::BlindAuthRequired => 31001,

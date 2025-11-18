@@ -181,6 +181,8 @@ pub fn create_fake_wallet_settings(
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
             url: format!("http://127.0.0.1:{port}"),
+            quote_ttl: None,
+
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
             seed: None,
@@ -217,8 +219,10 @@ pub fn create_fake_wallet_settings(
             engine: DatabaseEngine::from_str(database).expect("valid database"),
             postgres: None,
         },
+        auth_database: None,
         mint_management_rpc: None,
         auth: None,
+        prometheus: Some(Default::default()),
     }
 }
 
@@ -232,6 +236,8 @@ pub fn create_cln_settings(
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
             url: format!("http://127.0.0.1:{port}"),
+            quote_ttl: None,
+
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
             seed: None,
@@ -263,8 +269,10 @@ pub fn create_cln_settings(
         fake_wallet: None,
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
+        auth_database: None,
         mint_management_rpc: None,
         auth: None,
+        prometheus: Some(Default::default()),
     }
 }
 
@@ -276,6 +284,7 @@ pub fn create_lnd_settings(
 ) -> cdk_mintd::config::Settings {
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
+            quote_ttl: None,
             url: format!("http://127.0.0.1:{port}"),
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
@@ -308,7 +317,9 @@ pub fn create_lnd_settings(
         fake_wallet: None,
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
+        auth_database: None,
         mint_management_rpc: None,
         auth: None,
+        prometheus: Some(Default::default()),
     }
 }

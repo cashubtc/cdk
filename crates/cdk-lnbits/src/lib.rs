@@ -15,7 +15,7 @@ use cdk_common::amount::{to_unit, Amount, MSAT_IN_SAT};
 use cdk_common::common::FeeReserve;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, IncomingPaymentOptions,
+    self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
     MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
     PaymentQuoteResponse, WaitPaymentResponse,
 };
@@ -155,31 +155,65 @@ impl MintPayment for LNbits {
         self.wait_invoice_cancel_token.cancel()
     }
 
-    async fn wait_any_incoming_payment(
+    async fn wait_payment_event(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
         let api = self.lnbits_api.clone();
         let cancel_token = self.wait_invoice_cancel_token.clone();
         let is_active = Arc::clone(&self.wait_invoice_is_active);
 
         Ok(Box::pin(futures::stream::unfold(
-            (api, cancel_token, is_active),
-            |(api, cancel_token, is_active)| async move {
+            (api, cancel_token, is_active, 0u32),
+            |(api, cancel_token, is_active, mut retry_count)| async move {
                 is_active.store(true, Ordering::SeqCst);
 
-                let receiver = api.receiver();
-                let mut receiver = receiver.lock().await;
+                loop {
+                    tracing::debug!("LNbits: Starting wait loop, attempting to get receiver");
+                    let receiver = api.receiver();
+                    let mut receiver = receiver.lock().await;
+                    tracing::debug!("LNbits: Got receiver lock, waiting for messages");
 
-                tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        is_active.store(false, Ordering::SeqCst);
-                        tracing::info!("Waiting for lnbits invoice ending");
-                        None
-                    }
-                    msg_option = receiver.recv() => {
-                        Self::process_message(msg_option, &api, &is_active)
-                            .await
-                            .map(|response| (response, (api, cancel_token, is_active)))
+                    tokio::select! {
+                        _ = cancel_token.cancelled() => {
+                            is_active.store(false, Ordering::SeqCst);
+                            tracing::info!("Waiting for lnbits invoice ending");
+                            return None;
+                        }
+                        msg_option = receiver.recv() => {
+                            tracing::debug!("LNbits: Received message from websocket: {:?}", msg_option.as_ref().map(|_| "Some(message)"));
+                            match msg_option {
+                                Some(_) => {
+                                    // Successfully received a message, reset retry count
+                                    retry_count = 0;
+                                    let result = Self::process_message(msg_option, &api, &is_active).await;
+                                    return result.map(|response| {
+                                        (Event::PaymentReceived(response), (api, cancel_token, is_active, retry_count))
+                                    });
+                                }
+                                None => {
+                                    // Connection lost, need to reconnect
+                                    drop(receiver); // Drop the lock before reconnecting
+
+                                    tracing::warn!("LNbits websocket connection lost (receiver returned None), attempting to reconnect...");
+
+                                    // Exponential backoff: 1s, 2s, 4s, 8s, max 10s
+                                    let backoff_secs = std::cmp::min(2u64.pow(retry_count), 10);
+                                    tracing::info!("Retrying in {} seconds (attempt {})", backoff_secs, retry_count + 1);
+                                    tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+
+                                    // Attempt to resubscribe
+                                    if let Err(err) = api.subscribe_to_websocket().await {
+                                        tracing::error!("Failed to resubscribe to LNbits websocket: {:?}", err);
+                                    } else {
+                                        tracing::info!("Successfully reconnected to LNbits websocket");
+                                    }
+
+                                    retry_count += 1;
+                                    // Continue the loop to try again
+                                    continue;
+                                }
+                            }
+                        }
                     }
                 }
             },
@@ -191,10 +225,6 @@ impl MintPayment for LNbits {
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
-        if unit != &CurrencyUnit::Sat {
-            return Err(Self::Err::Anyhow(anyhow!("Unsupported unit")));
-        }
-
         match options {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let amount_msat = match bolt11_options.melt_options {
@@ -211,12 +241,11 @@ impl MintPayment for LNbits {
                         .into(),
                 };
 
-                let amount = amount_msat / MSAT_IN_SAT.into();
-
                 let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
+                    (self.fee_reserve.percent_fee_reserve * u64::from(amount_msat) as f32) as u64;
 
-                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
+                let absolute_fee_reserve: u64 =
+                    u64::from(self.fee_reserve.min_fee_reserve) * MSAT_IN_SAT;
 
                 let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
@@ -224,8 +253,8 @@ impl MintPayment for LNbits {
                     request_lookup_id: Some(PaymentIdentifier::PaymentHash(
                         *bolt11_options.bolt11.payment_hash().as_ref(),
                     )),
-                    amount,
-                    fee: fee.into(),
+                    amount: to_unit(amount_msat, &CurrencyUnit::Msat, unit)?,
+                    fee: to_unit(fee, &CurrencyUnit::Msat, unit)?,
                     state: MeltQuoteState::Unpaid,
                     unit: unit.clone(),
                 })
@@ -302,10 +331,6 @@ impl MintPayment for LNbits {
         unit: &CurrencyUnit,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        if unit != &CurrencyUnit::Sat {
-            return Err(Self::Err::Anyhow(anyhow!("Unsupported unit")));
-        }
-
         match options {
             IncomingPaymentOptions::Bolt11(bolt11_options) => {
                 let description = bolt11_options.description.unwrap_or_default();

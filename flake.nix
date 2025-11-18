@@ -56,7 +56,7 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.86.0".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.91.1".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
           extensions = [
             "rustfmt"
@@ -68,6 +68,11 @@
         # MSRV stable
         msrv_toolchain = pkgs.rust-bin.stable."1.85.0".default.override {
           targets = [ "wasm32-unknown-unknown" ]; # wasm
+          extensions = [
+            "rustfmt"
+            "clippy"
+            "rust-analyzer"
+          ];
         };
 
         # Nightly used for formatting
@@ -104,8 +109,10 @@
             clightning
             bitcoind
             sqlx-cli
-            cargo-outdated
             mprocs
+
+            cargo-outdated
+            cargo-mutants
 
             # Needed for github ci
             libz
@@ -114,7 +121,6 @@
 
         # Common arguments can be set here to avoid repeating them later
         nativeBuildInputs = [
-          pkgs.rust-analyzer
           #Add additional build inputs here
         ]
         ++ lib.optionals isDarwin [
@@ -168,6 +174,8 @@
             msrv = pkgs.mkShell (
               {
                 shellHook = "
+                  cargo update
+                  cargo update home --precise 0.5.11
               ${_shellHook}
               ";
                 buildInputs = buildInputs ++ [ msrv_toolchain ];
@@ -178,7 +186,15 @@
 
             stable = pkgs.mkShell (
               {
-                shellHook = ''${_shellHook}'';
+                shellHook = ''
+                  ${_shellHook}
+                  # Needed for github ci
+                  export LD_LIBRARY_PATH=${
+                    pkgs.lib.makeLibraryPath [
+                      pkgs.zlib
+                    ]
+                  }:$LD_LIBRARY_PATH
+                '';
                 buildInputs = buildInputs ++ [ stable_toolchain ];
                 inherit nativeBuildInputs;
 

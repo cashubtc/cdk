@@ -25,6 +25,8 @@ mod lnbits;
 mod lnd;
 #[cfg(feature = "management-rpc")]
 mod management_rpc;
+#[cfg(feature = "prometheus")]
+mod prometheus;
 
 use std::env;
 use std::str::FromStr;
@@ -50,6 +52,8 @@ pub use lnd::*;
 #[cfg(feature = "management-rpc")]
 pub use management_rpc::*;
 pub use mint_info::*;
+#[cfg(feature = "prometheus")]
+pub use prometheus::*;
 
 use crate::config::{DatabaseEngine, LnBackend, Settings};
 
@@ -69,6 +73,21 @@ impl Settings {
                     .unwrap_or_default()
                     .from_env(),
             );
+        }
+
+        // Parse auth database configuration from environment variables (when auth is enabled)
+        #[cfg(feature = "auth")]
+        {
+            self.auth_database = Some(crate::config::AuthDatabase {
+                postgres: Some(
+                    self.auth_database
+                        .clone()
+                        .unwrap_or_default()
+                        .postgres
+                        .unwrap_or_default()
+                        .from_env(),
+                ),
+            });
         }
 
         self.info = self.info.clone().from_env();
@@ -96,6 +115,11 @@ impl Settings {
                     .unwrap_or_default()
                     .from_env(),
             );
+        }
+
+        #[cfg(feature = "prometheus")]
+        {
+            self.prometheus = Some(self.prometheus.clone().unwrap_or_default().from_env());
         }
 
         match self.ln.ln_backend {

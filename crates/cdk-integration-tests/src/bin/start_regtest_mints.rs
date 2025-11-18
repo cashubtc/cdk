@@ -107,8 +107,15 @@ async fn start_cln_mint(
             println!("CLN mint shutdown signal received");
         };
 
-        match cdk_mintd::run_mintd_with_shutdown(&temp_dir, &settings, shutdown_future, None, None)
-            .await
+        match cdk_mintd::run_mintd_with_shutdown(
+            &temp_dir,
+            &settings,
+            shutdown_future,
+            None,
+            None,
+            vec![],
+        )
+        .await
         {
             Ok(_) => println!("CLN mint exited normally"),
             Err(e) => eprintln!("CLN mint exited with error: {e}"),
@@ -172,6 +179,7 @@ async fn start_lnd_mint(
             shutdown_future,
             None,
             None,
+            vec![],
         )
         .await
         {
@@ -240,6 +248,7 @@ async fn start_ldk_mint(
             shutdown_future,
             None,
             runtime,
+            vec![],
         )
         .await
         {
@@ -259,6 +268,7 @@ fn create_ldk_settings(
 ) -> cdk_mintd::config::Settings {
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
+            quote_ttl: None,
             url: format!("http://127.0.0.1:{port}"),
             listen_host: "127.0.0.1".to_string(),
             listen_port: port,
@@ -287,7 +297,9 @@ fn create_ldk_settings(
         fake_wallet: None,
         grpc_processor: None,
         database: cdk_mintd::config::Database::default(),
+        auth_database: None,
         mint_management_rpc: None,
+        prometheus: None,
         auth: None,
     }
 }

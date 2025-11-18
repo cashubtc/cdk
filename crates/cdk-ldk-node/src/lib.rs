@@ -895,9 +895,9 @@ impl MintPayment for CdkLdkNode {
     /// Listen for invoices to be paid to the mint
     /// Returns a stream of request_lookup_id once invoices are paid
     #[instrument(skip(self))]
-    async fn wait_any_incoming_payment(
+    async fn wait_payment_event(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = cdk_common::payment::Event> + Send>>, Self::Err> {
         tracing::info!("Starting stream for invoices - wait_any_incoming_payment called");
 
         // Set active flag to indicate stream is active
@@ -911,10 +911,10 @@ impl MintPayment for CdkLdkNode {
         // Transform the String stream into a WaitPaymentResponse stream
         let response_stream = BroadcastStream::new(receiver.resubscribe());
 
-        // Map the stream to handle BroadcastStreamRecvError
+        // Map the stream to handle BroadcastStreamRecvError and wrap in Event
         let response_stream = response_stream.filter_map(|result| async move {
             match result {
-                Ok(payment) => Some(payment),
+                Ok(payment) => Some(cdk_common::payment::Event::PaymentReceived(payment)),
                 Err(err) => {
                     tracing::warn!("Error in broadcast stream: {}", err);
                     None

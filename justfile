@@ -59,22 +59,25 @@ test:
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  cargo test --lib
+  cargo test --lib --workspace --exclude cdk-postgres
 
   # Run pure integration tests
   cargo test -p cdk-integration-tests --test mint 
 
   
 # run doc tests
-test-pure db="memory": build
+test-pure db="memory":
   #!/usr/bin/env bash
   set -euo pipefail
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
 
-  # Run pure integration tests
+  # Run pure integration tests (cargo test will only build what's needed for the test)
   CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1
+  
+  # Run swap flow tests (detailed testing of swap operation)
+  CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test test_swap_flow -- --test-threads 1
 
 test-all db="memory":
     #!/usr/bin/env bash
@@ -84,10 +87,89 @@ test-all db="memory":
     ./misc/fake_itests.sh "{{db}}" external_signatory
     ./misc/fake_itests.sh "{{db}}"
     
+# Mutation Testing Commands
+
+# Run mutation tests on a specific crate
+# Usage: just mutants <crate-name>
+# Example: just mutants cashu
+mutants CRATE:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running mutation tests on crate: {{CRATE}}"
+  cargo mutants --package {{CRATE}} -vV
+
+# Run mutation tests on the cashu crate
+mutants-cashu:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running mutation tests on cashu crate..."
+  cargo mutants --package cashu -vV
+
+# Run mutation tests on the cdk crate
+mutants-cdk:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running mutation tests on cdk crate..."
+  cargo mutants --package cdk -vV
+
+# Run mutation tests on entire workspace (WARNING: very slow)
+mutants-all:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running mutation tests on entire workspace..."
+  echo "WARNING: This may take a very long time!"
+  cargo mutants -vV
+
+# Quick mutation test for current work (alias for mutants-diff)
+mutants-quick:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running mutations on changed files since HEAD..."
+  cargo mutants --in-diff HEAD -vV
+
+# Run mutation tests only on changed code since HEAD
+mutants-diff:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running mutation tests on changed code..."
+  cargo mutants --in-diff HEAD -vV
+
+# Run mutation tests and save output to log file
+# Usage: just mutants-log <crate-name> <log-suffix>
+# Example: just mutants-log cashu baseline
+mutants-log CRATE SUFFIX:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  LOG_FILE="mutants-{{CRATE}}-{{SUFFIX}}.log"
+  echo "Running mutation tests on {{CRATE}}, saving to $LOG_FILE..."
+  cargo mutants --package {{CRATE}} -vV 2>&1 | tee "$LOG_FILE"
+  echo "Results saved to $LOG_FILE"
+
+# Mutation test with baseline comparison
+# Usage: just mutants-check <crate-name>
+# Example: just mutants-check cashu
+mutants-check CRATE:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  BASELINE="mutants-{{CRATE}}-baseline.log"
+  if [ ! -f "$BASELINE" ]; then
+    echo "ERROR: No baseline found at $BASELINE"
+    echo "Run: just mutants-log {{CRATE}} baseline"
+    exit 1
+  fi
+  cargo mutants --package {{CRATE}} -vV | tee mutants-{{CRATE}}-current.log
+  # Compare results
+  echo "=== Baseline vs Current ==="
+  diff <(grep "^CAUGHT\|^MISSED" "$BASELINE" | wc -l) \
+       <(grep "^CAUGHT\|^MISSED" mutants-{{CRATE}}-current.log | wc -l) || true
+
 test-nutshell:
   #!/usr/bin/env bash
   set -euo pipefail
-  
+
   # Function to cleanup docker containers
   cleanup() {
     echo "Cleaning up docker containers..."
@@ -152,11 +234,11 @@ test-nutshell:
     
 
 # run `cargo clippy` on everything
-clippy *ARGS="--locked --offline --workspace --all-targets":
-  cargo clippy {{ARGS}}
+clippy *ARGS="--workspace --all-targets":
+  cargo clippy {{ARGS}} -- -D warnings
 
 # run `cargo clippy --fix` on everything
-clippy-fix *ARGS="--locked --offline --workspace --all-targets":
+clippy-fix *ARGS="--workspace --all-targets":
   cargo clippy {{ARGS}} --fix
 
 typos: 
@@ -196,8 +278,8 @@ itest db:
 fake-mint-itest db:
   #!/usr/bin/env bash
   set -euo pipefail
-  ./misc/fake_itests.sh "{{db}}" external_signatory
   ./misc/fake_itests.sh "{{db}}"
+  ./misc/fake_itests.sh "{{db}}" external_signatory
 
 itest-payment-processor ln:
   #!/usr/bin/env bash
@@ -322,17 +404,21 @@ release m="":
 
   args=(
     "-p cashu"
+    "-p cdk-prometheus"
     "-p cdk-common"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
+    "-p cdk-postgres"
     "-p cdk-redb"
     "-p cdk-signatory"
     "-p cdk"
+    "-p cdk-ffi"
     "-p cdk-axum"
     "-p cdk-mint-rpc"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
+    "-p cdk-ldk-node"
     "-p cdk-fake-wallet"
     "-p cdk-payment-processor"
     "-p cdk-cli"
@@ -345,6 +431,13 @@ release m="":
     cargo publish $arg {{m}}
     echo
   done
+
+  # Extract version from the cdk-ffi crate
+  VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "cdk-ffi") | .version')
+  
+  # Trigger Swift package release after Rust crates are published
+  echo "📦 Triggering Swift package release for version $VERSION..."
+  just ffi-release-swift $VERSION
 
 check-docs:
   #!/usr/bin/env bash
@@ -402,3 +495,147 @@ docs-strict:
     RUSTDOCFLAGS="-D warnings" cargo doc $arg --all-features --no-deps
     echo
   done
+
+# =============================================================================
+# FFI Commands - CDK Foreign Function Interface bindings
+# =============================================================================
+
+# Helper function to get library extension based on platform
+_ffi-lib-ext:
+  #!/usr/bin/env bash
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    echo "dylib"
+  else
+    echo "so"
+  fi
+
+# Build the FFI library
+ffi-build *ARGS="--release":
+  cargo build {{ARGS}} --package cdk-ffi --features postgres
+
+# Generate bindings for a specific language
+ffi-generate LANGUAGE *ARGS="--release": ffi-build
+  #!/usr/bin/env bash
+  set -euo pipefail
+  LANG="{{LANGUAGE}}"
+  
+  # Validate language
+  case "$LANG" in
+    python|swift|kotlin)
+      ;;
+    *)
+      echo "❌ Unsupported language: $LANG"
+      echo "Supported languages: python, swift, kotlin"
+      exit 1
+      ;;
+  esac
+  
+  # Set emoji and build type
+  case "$LANG" in
+    python) EMOJI="🐍" ;;
+    swift) EMOJI="🍎" ;;
+    kotlin) EMOJI="🎯" ;;
+  esac
+  
+  # Determine build type and library path
+  if [[ "{{ARGS}}" == *"--release"* ]] || [[ "{{ARGS}}" == "" ]]; then
+    BUILD_TYPE="release"
+  else
+    BUILD_TYPE="debug"
+    cargo build --package cdk-ffi --features postgres
+  fi
+  
+  LIB_EXT=$(just _ffi-lib-ext)
+  
+  echo "$EMOJI Generating $LANG bindings..."
+  mkdir -p target/bindings/$LANG
+  
+  cargo run --bin uniffi-bindgen generate \
+    --library target/$BUILD_TYPE/libcdk_ffi.$LIB_EXT \
+    --language $LANG \
+    --out-dir target/bindings/$LANG
+  
+  echo "✅ $LANG bindings generated in target/bindings/$LANG/"
+
+# Generate Python bindings (shorthand)
+ffi-generate-python *ARGS="--release": 
+  just ffi-generate python {{ARGS}}
+
+# Generate Swift bindings (shorthand)
+ffi-generate-swift *ARGS="--release":
+  just ffi-generate swift {{ARGS}}
+
+# Generate Kotlin bindings (shorthand)
+ffi-generate-kotlin *ARGS="--release":
+  just ffi-generate kotlin {{ARGS}}
+
+# Generate bindings for all supported languages
+ffi-generate-all *ARGS="--release": ffi-build
+  @echo "🔧 Generating UniFFI bindings for all languages..."
+  just ffi-generate python {{ARGS}}
+  just ffi-generate swift {{ARGS}}
+  just ffi-generate kotlin {{ARGS}}
+  @echo "✅ All bindings generated successfully!"
+
+# Build debug version and generate Python bindings quickly (for development)
+ffi-dev-python:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  
+  # Generate Python bindings first
+  just ffi-generate python --debug
+  
+  # Copy library to Python bindings directory
+  LIB_EXT=$(just _ffi-lib-ext)
+  echo "📦 Copying library to Python bindings directory..."
+  cp target/debug/libcdk_ffi.$LIB_EXT target/bindings/python/
+  
+  # Launch Python REPL with CDK FFI loaded
+  cd target/bindings/python
+  echo "🐍 Launching Python REPL with CDK FFI library loaded..."
+  echo "💡 The 'cdk_ffi' module is pre-imported and ready to use!"
+  python3 -i -c "from cdk_ffi import *; print('✅ CDK FFI library loaded successfully!');"
+
+# Test language bindings with a simple import
+ffi-test-bindings LANGUAGE: (ffi-generate LANGUAGE "--debug")
+  #!/usr/bin/env bash
+  set -euo pipefail
+  LANG="{{LANGUAGE}}"
+  LIB_EXT=$(just _ffi-lib-ext)
+  
+  echo "📦 Copying library to $LANG bindings directory..."
+  cp target/debug/libcdk_ffi.$LIB_EXT target/bindings/$LANG/
+  
+  cd target/bindings/$LANG
+  echo "🧪 Testing $LANG bindings..."
+  
+  case "$LANG" in
+    python)
+      python3 -c "import cdk_ffi; print('✅ Python bindings work!')"
+      ;;
+    *)
+      echo "✅ $LANG bindings generated (manual testing required)"
+      ;;
+  esac
+
+# Test Python bindings (shorthand)
+ffi-test-python:
+  just ffi-test-bindings python
+
+# Trigger Swift Package release workflow
+ffi-release-swift VERSION:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  
+  echo "🚀 Triggering Publish Swift Package workflow..."
+  echo "   Version: {{VERSION}}"
+  echo "   CDK Ref: v{{VERSION}}"
+  
+  # Trigger the workflow using GitHub CLI
+  gh workflow run "Publish Swift Package" \
+    --repo cashubtc/cdk-swift \
+    --field version="{{VERSION}}" \
+    --field cdk_repo="cashubtc/cdk" \
+    --field cdk_ref="v{{VERSION}}"
+  
+  echo "✅ Workflow triggered successfully!"

@@ -85,6 +85,7 @@ async fn start_fake_auth_mint(
         swap: AuthType::Blind,
         restore: AuthType::Blind,
         check_proof_state: AuthType::Blind,
+        websocket_auth: AuthType::Blind,
     });
 
     // Set description for the mint
@@ -101,8 +102,15 @@ async fn start_fake_auth_mint(
             println!("Fake auth mint shutdown signal received");
         };
 
-        match cdk_mintd::run_mintd_with_shutdown(&temp_dir, &settings, shutdown_future, None, None)
-            .await
+        match cdk_mintd::run_mintd_with_shutdown(
+            &temp_dir,
+            &settings,
+            shutdown_future,
+            None,
+            None,
+            vec![],
+        )
+        .await
         {
             Ok(_) => println!("Fake auth mint exited normally"),
             Err(e) => eprintln!("Fake auth mint exited with error: {e}"),

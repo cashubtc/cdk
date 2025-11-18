@@ -10,6 +10,8 @@ use cdk_sql_common::pool::{DatabaseConfig, DatabasePool};
 use cdk_sql_common::stmt::{Column, Statement};
 use cdk_sql_common::{SQLMintDatabase, SQLWalletDatabase};
 use db::{pg_batch, pg_execute, pg_fetch_all, pg_fetch_one, pg_pluck};
+use native_tls::TlsConnector;
+use postgres_native_tls::MakeTlsConnector;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
 use tokio_postgres::{connect, Client, Error as PgError, NoTls};
@@ -25,6 +27,11 @@ pub enum SslMode {
     NoTls(NoTls),
     NativeTls(postgres_native_tls::MakeTlsConnector),
 }
+const SSLMODE_VERIFY_FULL: &str = "sslmode=verify-full";
+const SSLMODE_VERIFY_CA: &str = "sslmode=verify-ca";
+const SSLMODE_PREFER: &str = "sslmode=prefer";
+const SSLMODE_ALLOW: &str = "sslmode=allow";
+const SSLMODE_REQUIRE: &str = "sslmode=require";
 
 impl Default for SslMode {
     fn default() -> Self {
@@ -47,6 +54,7 @@ impl Debug for SslMode {
 #[derive(Clone, Debug)]
 pub struct PgConfig {
     url: String,
+    schema: Option<String>,
     tls: SslMode,
 }
 
@@ -60,11 +68,67 @@ impl DatabaseConfig for PgConfig {
     }
 }
 
+impl PgConfig {
+    /// strip schema from the connection string
+    fn strip_schema(input: &str) -> (Option<String>, String) {
+        let mut schema: Option<String> = None;
+
+        // Split by whitespace
+        let mut parts = Vec::new();
+        for token in input.split_whitespace() {
+            if let Some(rest) = token.strip_prefix("schema=") {
+                schema = Some(rest.to_string());
+            } else {
+                parts.push(token);
+            }
+        }
+
+        let cleaned = parts.join(" ");
+        (schema, cleaned)
+    }
+}
+
 impl From<&str> for PgConfig {
-    fn from(value: &str) -> Self {
+    fn from(conn_str: &str) -> Self {
+        let (schema, conn_str) = Self::strip_schema(conn_str);
+        fn build_tls(accept_invalid_certs: bool, accept_invalid_hostnames: bool) -> SslMode {
+            let mut builder = TlsConnector::builder();
+            if accept_invalid_certs {
+                builder.danger_accept_invalid_certs(true);
+            }
+            if accept_invalid_hostnames {
+                builder.danger_accept_invalid_hostnames(true);
+            }
+
+            match builder.build() {
+                Ok(connector) => {
+                    let make_tls_connector = MakeTlsConnector::new(connector);
+                    SslMode::NativeTls(make_tls_connector)
+                }
+                Err(_) => SslMode::NoTls(NoTls {}),
+            }
+        }
+
+        let tls = if conn_str.contains(SSLMODE_VERIFY_FULL) {
+            // Strict TLS: valid certs and hostnames required
+            build_tls(false, false)
+        } else if conn_str.contains(SSLMODE_VERIFY_CA) {
+            // Verify CA, but allow invalid hostnames
+            build_tls(false, true)
+        } else if conn_str.contains(SSLMODE_PREFER)
+            || conn_str.contains(SSLMODE_ALLOW)
+            || conn_str.contains(SSLMODE_REQUIRE)
+        {
+            // Lenient TLS for preferred/allow/require: accept invalid certs and hostnames
+            build_tls(true, true)
+        } else {
+            SslMode::NoTls(NoTls {})
+        };
+
         PgConfig {
-            url: value.to_owned(),
-            tls: Default::default(),
+            url: conn_str.to_owned(),
+            schema,
+            tls,
         }
     }
 }
@@ -78,14 +142,10 @@ impl DatabasePool for PgConnectionPool {
 
     fn new_resource(
         config: &Self::Config,
-        still_valid: Arc<AtomicBool>,
+        stale: Arc<AtomicBool>,
         timeout: Duration,
     ) -> Result<Self::Connection, cdk_sql_common::pool::Error<Self::Error>> {
-        Ok(PostgresConnection::new(
-            config.to_owned(),
-            timeout,
-            still_valid,
-        ))
+        Ok(PostgresConnection::new(config.to_owned(), timeout, stale))
     }
 }
 
@@ -100,13 +160,24 @@ pub struct PostgresConnection {
 
 impl PostgresConnection {
     /// Creates a new instance
-    pub fn new(config: PgConfig, timeout: Duration, still_valid: Arc<AtomicBool>) -> Self {
+    pub fn new(config: PgConfig, timeout: Duration, stale: Arc<AtomicBool>) -> Self {
         let failed = Arc::new(Mutex::new(None));
         let result = Arc::new(OnceLock::new());
         let notify = Arc::new(Notify::new());
         let error_clone = failed.clone();
         let result_clone = result.clone();
         let notify_clone = notify.clone();
+
+        async fn select_schema(conn: &Client, schema: &str) -> Result<(), Error> {
+            conn.batch_execute(&format!(
+                r#"
+                    CREATE SCHEMA IF NOT EXISTS "{schema}";
+                    SET search_path TO "{schema}"
+                    "#
+            ))
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))
+        }
 
         tokio::spawn(async move {
             match config.tls {
@@ -116,16 +187,26 @@ impl PostgresConnection {
                         Err(err) => {
                             *error_clone.lock().await =
                                 Some(cdk_common::database::Error::Database(Box::new(err)));
-                            still_valid.store(false, std::sync::atomic::Ordering::Release);
+                            stale.store(false, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
                         }
                     };
 
+                    let stale_for_spawn = stale.clone();
                     tokio::spawn(async move {
                         let _ = connection.await;
-                        still_valid.store(false, std::sync::atomic::Ordering::Release);
+                        stale_for_spawn.store(true, std::sync::atomic::Ordering::Release);
                     });
+
+                    if let Some(schema) = config.schema.as_ref() {
+                        if let Err(err) = select_schema(&client, schema).await {
+                            *error_clone.lock().await = Some(err);
+                            stale.store(false, std::sync::atomic::Ordering::Release);
+                            notify_clone.notify_waiters();
+                            return;
+                        }
+                    }
 
                     let _ = result_clone.set(client);
                     notify_clone.notify_waiters();
@@ -136,16 +217,26 @@ impl PostgresConnection {
                         Err(err) => {
                             *error_clone.lock().await =
                                 Some(cdk_common::database::Error::Database(Box::new(err)));
-                            still_valid.store(false, std::sync::atomic::Ordering::Release);
+                            stale.store(false, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
                         }
                     };
 
+                    let stale_for_spawn = stale.clone();
                     tokio::spawn(async move {
                         let _ = connection.await;
-                        still_valid.store(false, std::sync::atomic::Ordering::Release);
+                        stale_for_spawn.store(true, std::sync::atomic::Ordering::Release);
                     });
+
+                    if let Some(schema) = config.schema.as_ref() {
+                        if let Err(err) = select_schema(&client, schema).await {
+                            *error_clone.lock().await = Some(err);
+                            stale.store(true, std::sync::atomic::Ordering::Release);
+                            notify_clone.notify_waiters();
+                            return;
+                        }
+                    }
 
                     let _ = result_clone.set(client);
                     notify_clone.notify_waiters();
@@ -228,29 +319,31 @@ pub type MintPgDatabase = SQLMintDatabase<PgConnectionPool>;
 #[cfg(feature = "auth")]
 pub type MintPgAuthDatabase = SQLMintAuthDatabase<PgConnectionPool>;
 
-/// Mint DB implementation with PostgresSQL
+/// Wallet DB implementation with PostgreSQL
 pub type WalletPgDatabase = SQLWalletDatabase<PgConnectionPool>;
+
+/// Convenience free functions (cannot add inherent impls for a foreign type).
+/// These mirror the Mint patterns and call through to the generic constructors.
+pub async fn new_wallet_pg_database(conn_str: &str) -> Result<WalletPgDatabase, Error> {
+    <SQLWalletDatabase<PgConnectionPool>>::new(conn_str).await
+}
 
 #[cfg(test)]
 mod test {
     use cdk_common::mint_db_test;
-    use once_cell::sync::Lazy;
-    use tokio::sync::Mutex;
 
     use super::*;
 
-    static MIGRATION_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
-
-    async fn provide_db() -> MintPgDatabase {
-        let m = MIGRATION_LOCK.lock().await;
+    async fn provide_db(test_id: String) -> MintPgDatabase {
         let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
             .or_else(|_| std::env::var("PG_DB_URL")) // Fallback for compatibility
             .unwrap_or("host=localhost user=test password=test dbname=testdb port=5433".to_owned());
-        let db = MintPgDatabase::new(db_url.as_str())
+
+        let db_url = format!("{db_url} schema={test_id}");
+
+        MintPgDatabase::new(db_url.as_str())
             .await
-            .expect("database");
-        drop(m);
-        db
+            .expect("database")
     }
 
     mint_db_test!(provide_db);

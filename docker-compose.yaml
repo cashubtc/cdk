@@ -1,5 +1,40 @@
+version: '3.8'
+
 services:
   # CDK Mint service
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./misc/provisioning/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--enable-feature=otlp-write-receiver'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - cdk
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3011:3000"
+    volumes:
+      - ./misc/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./misc/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+    environment:
+      - GF_DASHBOARDS_JSON_ENABLED=true
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_PROVISIONING_PATHS=/etc/grafana/provisioning
+    networks:
+      - cdk
   mintd:
     build:
       context: .
@@ -16,7 +51,7 @@ services:
       # Database configuration - choose one:
       # Option 1: SQLite (embedded, no additional setup needed)
       - CDK_MINTD_DATABASE=sqlite
-      # Option 2: ReDB (embedded, no additional setup needed)  
+      # Option 2: ReDB (embedded, no additional setup needed)
       # - CDK_MINTD_DATABASE=redb
       # Option 3: PostgreSQL (requires postgres service, enable with: docker-compose --profile postgres up)
       # - CDK_MINTD_DATABASE=postgres
@@ -24,12 +59,21 @@ services:
       # Cache configuration
       - CDK_MINTD_CACHE_BACKEND=memory
       # For Redis cache (requires redis service, enable with: docker-compose --profile redis up):
-      # - CDK_MINTD_CACHE_REDIS_URL=redis://redis:6379 
+      # - CDK_MINTD_CACHE_REDIS_URL=redis://redis:6379
       # - CDK_MINTD_CACHE_REDIS_KEY_PREFIX=cdk-mintd
+      - CDK_MINTD_PROMETHEUS_ENABLED=true
+      - CDK_MINTD_PROMETHEUS_ADDRESS=0.0.0.0
+      - CDK_MINTD_PROMETHEUS_PORT=9000
     command: ["cdk-mintd"]
+    depends_on:
+      - prometheus
+      - grafana
+    networks:
+      - cdk
     # Uncomment when using PostgreSQL:
     # depends_on:
     #   - postgres
+
 
   # PostgreSQL database service
   # Enable with: docker-compose --profile postgres up
@@ -76,5 +120,13 @@ services:
 volumes:
   postgres_data:
     driver: local
-#   redis_data:
-#     driver: local
+  ldk_node_data:
+    driver: local
+# redis_data:
+#   driver: local
+
+
+
+networks:
+  cdk:
+    driver: bridge

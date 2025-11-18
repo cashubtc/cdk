@@ -8,12 +8,13 @@ use arc_swap::ArcSwap;
 use cdk_common::amount::to_unit;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 #[cfg(feature = "auth")]
-use cdk_common::database::MintAuthDatabase;
-use cdk_common::database::{self, MintDatabase, MintTransaction};
-use cdk_common::nuts::{self, BlindSignature, BlindedMessage, CurrencyUnit, Id, Kind};
-use cdk_common::payment::WaitPaymentResponse;
+use cdk_common::database::DynMintAuthDatabase;
+use cdk_common::database::{self, DynMintDatabase};
+use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
+use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
-use cdk_common::secret;
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::global;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
 #[cfg(feature = "auth")]
@@ -23,13 +24,12 @@ use tokio::sync::{Mutex, Notify};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::instrument;
 
-use crate::cdk_payment::{self, MintPayment};
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::nuts::*;
+use crate::Amount;
 #[cfg(feature = "auth")]
 use crate::OidcClient;
-use crate::{cdk_database, Amount};
 
 #[cfg(feature = "auth")]
 pub(crate) mod auth;
@@ -39,15 +39,19 @@ mod issue;
 mod keysets;
 mod ln;
 mod melt;
-mod proof_writer;
 mod start_up_check;
-pub mod subscription;
+mod subscription;
 mod swap;
 mod verification;
 
 pub use builder::{MintBuilder, MintMeltLimits};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use verification::Verification;
+
+const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
+const CDK_MINT_CONFIG_SECONDARY_NAMESPACE: &str = "config";
+const CDK_MINT_CONFIG_KV_KEY: &str = "mint_info";
+const CDK_MINT_QUOTE_TTL_KV_KEY: &str = "quote_ttl";
 
 /// Cashu Mint
 #[derive(Clone)]
@@ -58,13 +62,12 @@ pub struct Mint {
     /// be a gRPC client to a remote signatory server.
     signatory: Arc<dyn Signatory + Send + Sync>,
     /// Mint Storage backend
-    localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+    localstore: DynMintDatabase,
     /// Auth Storage backend (only available with auth feature)
     #[cfg(feature = "auth")]
-    auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>>,
+    auth_localstore: Option<DynMintAuthDatabase>,
     /// Payment processors for mint
-    payment_processors:
-        HashMap<PaymentProcessorKey, Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>>,
+    payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
     /// Subscription manager
     pubsub_manager: Arc<PubSubManager>,
     #[cfg(feature = "auth")]
@@ -89,11 +92,8 @@ impl Mint {
     pub async fn new(
         mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
-        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
-        payment_processors: HashMap<
-            PaymentProcessorKey,
-            Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
-        >,
+        localstore: DynMintDatabase,
+        payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -111,12 +111,9 @@ impl Mint {
     pub async fn new_with_auth(
         mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
-        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
-        auth_localstore: Arc<dyn MintAuthDatabase<Err = database::Error> + Send + Sync>,
-        payment_processors: HashMap<
-            PaymentProcessorKey,
-            Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
-        >,
+        localstore: DynMintDatabase,
+        auth_localstore: DynMintAuthDatabase,
+        payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -133,14 +130,9 @@ impl Mint {
     async fn new_internal(
         mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
-        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
-        #[cfg(feature = "auth")] auth_localstore: Option<
-            Arc<dyn database::MintAuthDatabase<Err = database::Error> + Send + Sync>,
-        >,
-        payment_processors: HashMap<
-            PaymentProcessorKey,
-            Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
-        >,
+        localstore: DynMintDatabase,
+        #[cfg(feature = "auth")] auth_localstore: Option<DynMintAuthDatabase>,
+        payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     ) -> Result<Self, Error> {
         let keysets = signatory.keysets().await?;
         if !keysets
@@ -161,18 +153,62 @@ impl Mint {
                 .count()
         );
 
-        let mint_store = localstore.clone();
-        let mut tx = mint_store.begin_transaction().await?;
-        tx.set_mint_info(mint_info.clone()).await?;
-        tx.set_quote_ttl(QuoteTTL::default()).await?;
-        tx.commit().await?;
+        // Persist missing pubkey early to avoid losing it on next boot and ensure stable identity across restarts
+        let mut computed_info = mint_info;
+        if computed_info.pubkey.is_none() {
+            computed_info.pubkey = Some(keysets.pubkey);
+        }
+
+        match localstore
+            .kv_read(
+                CDK_MINT_PRIMARY_NAMESPACE,
+                CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                CDK_MINT_CONFIG_KV_KEY,
+            )
+            .await?
+        {
+            Some(bytes) => {
+                let mut stored: MintInfo = serde_json::from_slice(&bytes)?;
+                let mut mutated = false;
+                if stored.pubkey.is_none() && computed_info.pubkey.is_some() {
+                    stored.pubkey = computed_info.pubkey;
+                    mutated = true;
+                }
+                if mutated {
+                    let updated = serde_json::to_vec(&stored)?;
+                    let mut tx = localstore.begin_transaction().await?;
+                    tx.kv_write(
+                        CDK_MINT_PRIMARY_NAMESPACE,
+                        CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                        CDK_MINT_CONFIG_KV_KEY,
+                        &updated,
+                    )
+                    .await?;
+                    tx.commit().await?;
+                }
+            }
+            None => {
+                let bytes = serde_json::to_vec(&computed_info)?;
+                let mut tx = localstore.begin_transaction().await?;
+                tx.kv_write(
+                    CDK_MINT_PRIMARY_NAMESPACE,
+                    CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                    CDK_MINT_CONFIG_KV_KEY,
+                    &bytes,
+                )
+                .await?;
+                tx.commit().await?;
+            }
+        }
+
+        let payment_processors = Arc::new(payment_processors);
 
         Ok(Self {
             signatory,
-            pubsub_manager: Arc::new(localstore.clone().into()),
+            pubsub_manager: PubSubManager::new((localstore.clone(), payment_processors.clone())),
             localstore,
             #[cfg(feature = "auth")]
-            oidc_client: mint_info.nuts.nut21.as_ref().map(|nut21| {
+            oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
                 OidcClient::new(
                     nut21.openid_discovery.clone(),
                     Some(nut21.client_id.clone()),
@@ -202,6 +238,22 @@ impl Mint {
     /// - Payment processor initialization and startup
     /// - Invoice payment monitoring across all configured payment processors
     pub async fn start(&self) -> Result<(), Error> {
+        // Recover from incomplete swap sagas
+        // This cleans up incomplete swap operations using persisted saga state
+        if let Err(e) = self.recover_from_incomplete_sagas().await {
+            tracing::error!("Failed to recover incomplete swap sagas: {}", e);
+            // Don't fail startup
+        }
+
+        // Recover from incomplete melt sagas
+        // This cleans up incomplete melt operations using persisted saga state
+        // Now includes checking payment status with LN backend to determine
+        // whether to finalize (if paid) or compensate (if failed/unpaid)
+        if let Err(e) = self.recover_from_incomplete_melt_sagas().await {
+            tracing::error!("Failed to recover incomplete melt sagas: {}", e);
+            // Don't fail startup
+        }
+
         let mut task_state = self.task_state.lock().await;
 
         // Prevent starting if already running
@@ -212,7 +264,7 @@ impl Mint {
         // Start all payment processors first
         tracing::info!("Starting payment processors...");
         let mut seen_processors = Vec::new();
-        for (key, processor) in &self.payment_processors {
+        for (key, processor) in self.payment_processors.iter() {
             // Skip if we've already spawned a task for this processor instance
             if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
                 continue;
@@ -324,7 +376,7 @@ impl Mint {
         tracing::info!("Stopping payment processors...");
         let mut seen_processors = Vec::new();
 
-        for (key, processor) in &self.payment_processors {
+        for (key, processor) in self.payment_processors.iter() {
             // Skip if we've already spawned a task for this processor instance
             if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
                 continue;
@@ -351,7 +403,7 @@ impl Mint {
         &self,
         unit: CurrencyUnit,
         payment_method: PaymentMethod,
-    ) -> Result<Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>, Error> {
+    ) -> Result<DynMintPayment, Error> {
         let key = PaymentProcessorKey::new(unit.clone(), payment_method.clone());
         self.payment_processors.get(&key).cloned().ok_or_else(|| {
             tracing::info!(
@@ -364,7 +416,7 @@ impl Mint {
     }
 
     /// Localstore
-    pub fn localstore(&self) -> Arc<dyn MintDatabase<database::Error> + Send + Sync> {
+    pub fn localstore(&self) -> DynMintDatabase {
         Arc::clone(&self.localstore)
     }
 
@@ -376,7 +428,17 @@ impl Mint {
     /// Get mint info
     #[instrument(skip_all)]
     pub async fn mint_info(&self) -> Result<MintInfo, Error> {
-        let mint_info = self.localstore.get_mint_info().await?;
+        let mint_info = self
+            .localstore
+            .kv_read(
+                CDK_MINT_PRIMARY_NAMESPACE,
+                CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                CDK_MINT_CONFIG_KV_KEY,
+            )
+            .await?
+            .ok_or(Error::CouldNotGetMintInfo)?;
+
+        let mint_info: MintInfo = serde_json::from_slice(&mint_info)?;
 
         #[cfg(feature = "auth")]
         let mint_info = if let Some(auth_db) = self.auth_localstore.as_ref() {
@@ -418,34 +480,82 @@ impl Mint {
     /// Set mint info
     #[instrument(skip_all)]
     pub async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error> {
+        tracing::info!("Updating mint info");
+        let mint_info_bytes = serde_json::to_vec(&mint_info)?;
         let mut tx = self.localstore.begin_transaction().await?;
-        tx.set_mint_info(mint_info).await?;
-        Ok(tx.commit().await?)
+        tx.kv_write(
+            CDK_MINT_PRIMARY_NAMESPACE,
+            CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+            CDK_MINT_CONFIG_KV_KEY,
+            &mint_info_bytes,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Get quote ttl
     #[instrument(skip_all)]
     pub async fn quote_ttl(&self) -> Result<QuoteTTL, Error> {
-        Ok(self.localstore.get_quote_ttl().await?)
+        let quote_ttl_bytes = self
+            .localstore
+            .kv_read(
+                CDK_MINT_PRIMARY_NAMESPACE,
+                CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                CDK_MINT_QUOTE_TTL_KV_KEY,
+            )
+            .await?;
+
+        match quote_ttl_bytes {
+            Some(bytes) => {
+                let quote_ttl: QuoteTTL = serde_json::from_slice(&bytes)?;
+                Ok(quote_ttl)
+            }
+            None => {
+                // Return default if not found
+                Ok(QuoteTTL::default())
+            }
+        }
     }
 
     /// Set quote ttl
     #[instrument(skip_all)]
     pub async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Error> {
+        let quote_ttl_bytes = serde_json::to_vec(&quote_ttl)?;
         let mut tx = self.localstore.begin_transaction().await?;
-        tx.set_quote_ttl(quote_ttl).await?;
-        Ok(tx.commit().await?)
+        tx.kv_write(
+            CDK_MINT_PRIMARY_NAMESPACE,
+            CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+            CDK_MINT_QUOTE_TTL_KV_KEY,
+            &quote_ttl_bytes,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// For each backend starts a task that waits for any invoice to be paid
     /// Once invoice is paid mint quote status is updated
+    /// Returns true if a QuoteTTL is persisted in the database. This is used to avoid overwriting
+    /// explicit configuration with defaults when the TTL has already been set by an operator.
+    #[instrument(skip_all)]
+    pub async fn quote_ttl_is_persisted(&self) -> Result<bool, Error> {
+        let quote_ttl_bytes = self
+            .localstore
+            .kv_read(
+                CDK_MINT_PRIMARY_NAMESPACE,
+                CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                CDK_MINT_QUOTE_TTL_KV_KEY,
+            )
+            .await?;
+
+        Ok(quote_ttl_bytes.is_some())
+    }
+
     #[instrument(skip_all)]
     async fn wait_for_paid_invoices(
-        payment_processors: &HashMap<
-            PaymentProcessorKey,
-            Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
-        >,
-        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+        payment_processors: &HashMap<PaymentProcessorKey, DynMintPayment>,
+        localstore: DynMintDatabase,
         pubsub_manager: Arc<PubSubManager>,
         shutdown: Arc<Notify>,
     ) -> Result<(), Error> {
@@ -517,8 +627,8 @@ impl Mint {
     /// Handles payment waiting for a single processor
     #[instrument(skip_all)]
     async fn wait_for_processor_payments(
-        processor: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
-        localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+        processor: DynMintPayment,
+        localstore: DynMintDatabase,
         pubsub_manager: Arc<PubSubManager>,
         shutdown: Arc<Notify>,
     ) -> Result<(), Error> {
@@ -528,16 +638,20 @@ impl Mint {
                     processor.cancel_wait_invoice();
                     break;
                 }
-                result = processor.wait_any_incoming_payment() => {
+                result = processor.wait_payment_event() => {
                     match result {
                         Ok(mut stream) => {
-                            while let Some(request_lookup_id) = stream.next().await {
-                                if let Err(e) = Self::handle_payment_notification(
-                                    &localstore,
-                                    &pubsub_manager,
-                                    request_lookup_id,
-                                ).await {
-                                    tracing::warn!("Payment notification error: {:?}", e);
+                            while let Some(event) = stream.next().await {
+                                match event {
+                                    cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
+                                        if let Err(e) = Self::handle_payment_notification(
+                                            &localstore,
+                                            &pubsub_manager,
+                                            wait_payment_response,
+                                        ).await {
+                                            tracing::warn!("Payment notification error: {:?}", e);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -556,7 +670,7 @@ impl Mint {
     /// This is a helper function that can be called with just the required components
     #[instrument(skip_all)]
     async fn handle_payment_notification(
-        localstore: &Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+        localstore: &DynMintDatabase,
         pubsub_manager: &Arc<PubSubManager>,
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
@@ -712,192 +826,139 @@ impl Mint {
     #[tracing::instrument(skip_all)]
     pub async fn blind_sign(
         &self,
-        blinded_messages: Vec<BlindedMessage>,
+        blinded_message: Vec<BlindedMessage>,
     ) -> Result<Vec<BlindSignature>, Error> {
-        self.signatory.blind_sign(blinded_messages).await
+        #[cfg(test)]
+        {
+            if crate::test_helpers::mint::should_fail_in_test() {
+                return Err(Error::SignatureMissingOrInvalid);
+            }
+        }
+
+        #[cfg(feature = "prometheus")]
+        global::inc_in_flight_requests("blind_sign");
+
+        let result = self.signatory.blind_sign(blinded_message).await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            global::dec_in_flight_requests("blind_sign");
+            global::record_mint_operation("blind_sign", result.is_ok());
+        }
+
+        result
     }
 
     /// Verify [`Proof`] meets conditions and is signed
     #[tracing::instrument(skip_all)]
     pub async fn verify_proofs(&self, proofs: Proofs) -> Result<(), Error> {
-        proofs
-            .iter()
-            .map(|proof| {
-                // Check if secret is a nut10 secret with conditions
-                if let Ok(secret) =
-                    <&secret::Secret as TryInto<nuts::nut10::Secret>>::try_into(&proof.secret)
-                {
-                    // Checks and verifies known secret kinds.
-                    // If it is an unknown secret kind it will be treated as a normal secret.
-                    // Spending conditions will **not** be check. It is up to the wallet to ensure
-                    // only supported secret kinds are used as there is no way for the mint to
-                    // enforce only signing supported secrets as they are blinded at
-                    // that point.
-                    match secret.kind() {
-                        Kind::P2PK => {
-                            proof.verify_p2pk()?;
-                        }
-                        Kind::HTLC => {
-                            proof.verify_htlc()?;
-                        }
-                    }
-                }
-                Ok(())
-            })
-            .collect::<Result<Vec<()>, Error>>()?;
+        // This ignore P2PK and HTLC, as all NUT-10 spending conditions are
+        // checked elsewhere.
+        #[cfg(feature = "prometheus")]
+        global::inc_in_flight_requests("verify_proofs");
 
-        self.signatory.verify_proofs(proofs).await
-    }
+        let result = self.signatory.verify_proofs(proofs).await;
 
-    /// Verify melt request is valid
-    /// Check to see if there is a corresponding mint quote for a melt.
-    /// In this case the mint can settle the payment internally and no ln payment is
-    /// needed
-    #[instrument(skip_all)]
-    pub async fn handle_internal_melt_mint(
-        &self,
-        tx: &mut Box<dyn MintTransaction<'_, cdk_database::Error> + Send + Sync + '_>,
-        melt_quote: &MeltQuote,
-        melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<Option<Amount>, Error> {
-        let mint_quote = match tx
-            .get_mint_quote_by_request(&melt_quote.request.to_string())
-            .await
+        #[cfg(feature = "prometheus")]
         {
-            Ok(Some(mint_quote)) => mint_quote,
-            // Not an internal melt -> mint
-            Ok(None) => return Ok(None),
-            Err(err) => {
-                tracing::debug!("Error attempting to get mint quote: {}", err);
-                return Err(Error::Internal);
-            }
-        };
-
-        // Mint quote has already been settled, proofs should not be burned or held.
-        if (mint_quote.state() == MintQuoteState::Issued
-            || mint_quote.state() == MintQuoteState::Paid)
-            && mint_quote.payment_method == PaymentMethod::Bolt11
-        {
-            return Err(Error::RequestAlreadyPaid);
+            global::dec_in_flight_requests("verify_proofs");
+            global::record_mint_operation("verify_proofs", result.is_ok());
         }
 
-        let inputs_amount_quote_unit = melt_request.inputs_amount().map_err(|_| {
-            tracing::error!("Proof inputs in melt quote overflowed");
-            Error::AmountOverflow
-        })?;
-
-        if let Some(amount) = mint_quote.amount {
-            if amount > inputs_amount_quote_unit {
-                tracing::debug!(
-                    "Not enough inputs provided: {} needed {}",
-                    inputs_amount_quote_unit,
-                    amount
-                );
-                return Err(Error::InsufficientFunds);
-            }
-        }
-
-        let amount = melt_quote.amount;
-
-        tracing::info!(
-            "Mint quote {} paid {} from internal payment.",
-            mint_quote.id,
-            amount
-        );
-
-        let total_paid = tx
-            .increment_mint_quote_amount_paid(&mint_quote.id, amount, melt_quote.id.to_string())
-            .await?;
-
-        self.pubsub_manager
-            .mint_quote_payment(&mint_quote, total_paid);
-
-        tracing::info!(
-            "Melt quote {} paid Mint quote {}",
-            melt_quote.id,
-            mint_quote.id
-        );
-
-        Ok(Some(amount))
+        result
     }
 
     /// Restore
     #[instrument(skip_all)]
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
-        let output_len = request.outputs.len();
+        #[cfg(feature = "prometheus")]
+        global::inc_in_flight_requests("restore");
 
-        let mut outputs = Vec::with_capacity(output_len);
-        let mut signatures = Vec::with_capacity(output_len);
+        let result = async {
+            let output_len = request.outputs.len();
 
-        let blinded_message: Vec<PublicKey> =
-            request.outputs.iter().map(|b| b.blinded_secret).collect();
+            let mut outputs = Vec::with_capacity(output_len);
+            let mut signatures = Vec::with_capacity(output_len);
 
-        let blinded_signatures = self
-            .localstore
-            .get_blind_signatures(&blinded_message)
-            .await?;
+            let blinded_message: Vec<PublicKey> =
+                request.outputs.iter().map(|b| b.blinded_secret).collect();
 
-        assert_eq!(blinded_signatures.len(), output_len);
+            let blinded_signatures = self
+                .localstore
+                .get_blind_signatures(&blinded_message)
+                .await?;
 
-        for (blinded_message, blinded_signature) in
-            request.outputs.into_iter().zip(blinded_signatures)
-        {
-            if let Some(blinded_signature) = blinded_signature {
-                outputs.push(blinded_message);
-                signatures.push(blinded_signature);
+            assert_eq!(blinded_signatures.len(), output_len);
+
+            for (blinded_message, blinded_signature) in
+                request.outputs.into_iter().zip(blinded_signatures)
+            {
+                if let Some(blinded_signature) = blinded_signature {
+                    outputs.push(blinded_message);
+                    signatures.push(blinded_signature);
+                }
             }
+
+            Ok(RestoreResponse {
+                outputs,
+                signatures: signatures.clone(),
+                promises: Some(signatures),
+            })
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            global::dec_in_flight_requests("restore");
+            global::record_mint_operation("restore", result.is_ok());
         }
 
-        Ok(RestoreResponse {
-            outputs,
-            signatures: signatures.clone(),
-            promises: Some(signatures),
-        })
+        result
     }
 
     /// Get the total amount issed by keyset
     #[instrument(skip_all)]
     pub async fn total_issued(&self) -> Result<HashMap<Id, Amount>, Error> {
-        let keysets = self.keysets().keysets;
+        #[cfg(feature = "prometheus")]
+        global::inc_in_flight_requests("total_issued");
 
-        let mut total_issued = HashMap::new();
+        let result = async {
+            let mut total_issued = self.localstore.get_total_issued().await?;
+            for keyset in self.keysets().keysets {
+                total_issued.entry(keyset.id).or_default();
+            }
+            Ok(total_issued)
+        }
+        .await;
 
-        for keyset in keysets {
-            let blinded = self
-                .localstore
-                .get_blind_signatures_for_keyset(&keyset.id)
-                .await?;
-
-            let total = Amount::try_sum(blinded.iter().map(|b| b.amount))?;
-
-            total_issued.insert(keyset.id, total);
+        #[cfg(feature = "prometheus")]
+        {
+            global::dec_in_flight_requests("total_issued");
+            global::record_mint_operation("total_issued", result.is_ok());
         }
 
-        Ok(total_issued)
+        result
     }
 
     /// Total redeemed for keyset
     #[instrument(skip_all)]
     pub async fn total_redeemed(&self) -> Result<HashMap<Id, Amount>, Error> {
-        let keysets = self.signatory.keysets().await?;
+        #[cfg(feature = "prometheus")]
+        global::inc_in_flight_requests("total_redeemed");
 
-        let mut total_redeemed = HashMap::new();
-
-        for keyset in keysets.keysets {
-            let (proofs, state) = self.localstore.get_proofs_by_keyset_id(&keyset.id).await?;
-
-            let total_spent =
-                Amount::try_sum(proofs.iter().zip(state).filter_map(|(p, s)| {
-                    match s == Some(State::Spent) {
-                        true => Some(p.amount),
-                        false => None,
-                    }
-                }))?;
-
-            total_redeemed.insert(keyset.id, total_spent);
+        let total_redeemed = async {
+            let mut total_redeemed = self.localstore.get_total_redeemed().await?;
+            for keyset in self.keysets().keysets {
+                total_redeemed.entry(keyset.id).or_default();
+            }
+            Ok(total_redeemed)
         }
+        .await;
 
-        Ok(total_redeemed)
+        #[cfg(feature = "prometheus")]
+        global::dec_in_flight_requests("total_redeemed");
+
+        total_redeemed
     }
 }
 

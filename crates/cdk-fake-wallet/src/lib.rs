@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bitcoin::hashes::{sha256, Hash};
@@ -27,7 +28,7 @@ use cdk_common::common::FeeReserve;
 use cdk_common::ensure_cdk;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
-    self, Bolt11Settings, CreateIncomingPaymentResponse, IncomingPaymentOptions,
+    self, Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
     MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
     PaymentQuoteResponse, WaitPaymentResponse,
 };
@@ -50,24 +51,160 @@ pub mod error;
 /// Default maximum size for the secondary repayment queue
 const DEFAULT_REPAY_QUEUE_MAX_SIZE: usize = 100;
 
+/// Cache duration for exchange rate (5 minutes)
+const RATE_CACHE_DURATION: Duration = Duration::from_secs(300);
+
+/// Mempool.space prices API response structure
+#[derive(Debug, Deserialize)]
+struct MempoolPricesResponse {
+    #[serde(rename = "USD")]
+    usd: f64,
+    #[serde(rename = "EUR")]
+    eur: f64,
+}
+
+/// Exchange rate cache with built-in fallback rates
+#[derive(Debug, Clone)]
+struct ExchangeRateCache {
+    rates: Arc<Mutex<Option<(MempoolPricesResponse, Instant)>>>,
+}
+
+impl ExchangeRateCache {
+    fn new() -> Self {
+        Self {
+            rates: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Get current BTC rate for the specified currency with caching and fallback
+    async fn get_btc_rate(&self, currency: &CurrencyUnit) -> Result<f64, Error> {
+        // Return cached rate if still valid
+        {
+            let cached_rates = self.rates.lock().await;
+            if let Some((rates, timestamp)) = &*cached_rates {
+                if timestamp.elapsed() < RATE_CACHE_DURATION {
+                    return Self::rate_for_currency(rates, currency);
+                }
+            }
+        }
+
+        // Try to fetch fresh rates, fallback on error
+        match self.fetch_fresh_rate(currency).await {
+            Ok(rate) => Ok(rate),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch exchange rates, using fallback for {:?}: {}",
+                    currency,
+                    e
+                );
+                Self::fallback_rate(currency)
+            }
+        }
+    }
+
+    /// Fetch fresh rate and update cache
+    async fn fetch_fresh_rate(&self, currency: &CurrencyUnit) -> Result<f64, Error> {
+        let url = "https://mempool.space/api/v1/prices";
+        let response = reqwest::get(url)
+            .await
+            .map_err(|_| Error::UnknownInvoiceAmount)?
+            .json::<MempoolPricesResponse>()
+            .await
+            .map_err(|_| Error::UnknownInvoiceAmount)?;
+
+        let rate = Self::rate_for_currency(&response, currency)?;
+        *self.rates.lock().await = Some((response, Instant::now()));
+        Ok(rate)
+    }
+
+    fn rate_for_currency(
+        rates: &MempoolPricesResponse,
+        currency: &CurrencyUnit,
+    ) -> Result<f64, Error> {
+        match currency {
+            CurrencyUnit::Usd => Ok(rates.usd),
+            CurrencyUnit::Eur => Ok(rates.eur),
+            _ => Err(Error::UnknownInvoiceAmount),
+        }
+    }
+
+    fn fallback_rate(currency: &CurrencyUnit) -> Result<f64, Error> {
+        match currency {
+            CurrencyUnit::Usd => Ok(110_000.0), // $110k per BTC
+            CurrencyUnit::Eur => Ok(95_000.0),  // €95k per BTC
+            _ => Err(Error::UnknownInvoiceAmount),
+        }
+    }
+}
+
+async fn convert_currency_amount(
+    amount: u64,
+    from_unit: &CurrencyUnit,
+    target_unit: &CurrencyUnit,
+    rate_cache: &ExchangeRateCache,
+) -> Result<Amount, Error> {
+    use CurrencyUnit::*;
+
+    // Try basic unit conversion first (handles SAT/MSAT and same-unit conversions)
+    if let Ok(converted) = to_unit(amount, from_unit, target_unit) {
+        return Ok(converted);
+    }
+
+    // Handle fiat <-> bitcoin conversions that require exchange rates
+    match (from_unit, target_unit) {
+        // Fiat to Bitcoin conversions
+        (Usd | Eur, Sat) => {
+            let rate = rate_cache.get_btc_rate(from_unit).await?;
+            let fiat_amount = amount as f64 / 100.0; // cents to dollars/euros
+            Ok(Amount::from(
+                (fiat_amount / rate * 100_000_000.0).round() as u64
+            )) // to sats
+        }
+        (Usd | Eur, Msat) => {
+            let rate = rate_cache.get_btc_rate(from_unit).await?;
+            let fiat_amount = amount as f64 / 100.0; // cents to dollars/euros
+            Ok(Amount::from(
+                (fiat_amount / rate * 100_000_000_000.0).round() as u64,
+            )) // to msats
+        }
+
+        // Bitcoin to fiat conversions
+        (Sat, Usd | Eur) => {
+            let rate = rate_cache.get_btc_rate(target_unit).await?;
+            let btc_amount = amount as f64 / 100_000_000.0; // sats to BTC
+            Ok(Amount::from((btc_amount * rate * 100.0).round() as u64)) // to cents
+        }
+        (Msat, Usd | Eur) => {
+            let rate = rate_cache.get_btc_rate(target_unit).await?;
+            let btc_amount = amount as f64 / 100_000_000_000.0; // msats to BTC
+            Ok(Amount::from((btc_amount * rate * 100.0).round() as u64)) // to cents
+        }
+
+        _ => Err(Error::UnknownInvoiceAmount), // Unsupported conversion
+    }
+}
+
 /// Secondary repayment queue manager for any-amount invoices
 #[derive(Debug, Clone)]
 struct SecondaryRepaymentQueue {
     queue: Arc<Mutex<VecDeque<PaymentIdentifier>>>,
     max_size: usize,
-    sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount, String)>,
+    sender: tokio::sync::mpsc::Sender<WaitPaymentResponse>,
+    unit: CurrencyUnit,
 }
 
 impl SecondaryRepaymentQueue {
     fn new(
         max_size: usize,
-        sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount, String)>,
+        sender: tokio::sync::mpsc::Sender<WaitPaymentResponse>,
+        unit: CurrencyUnit,
     ) -> Self {
         let queue = Arc::new(Mutex::new(VecDeque::new()));
         let repayment_queue = Self {
             queue: queue.clone(),
             max_size,
             sender,
+            unit,
         };
 
         // Start the background secondary repayment processor
@@ -101,6 +238,7 @@ impl SecondaryRepaymentQueue {
     fn start_secondary_repayment_processor(&self) {
         let queue = self.queue.clone();
         let sender = self.sender.clone();
+        let unit = self.unit.clone();
 
         tokio::spawn(async move {
             use bitcoin::secp256k1::rand::rngs::OsRng;
@@ -127,7 +265,13 @@ impl SecondaryRepaymentQueue {
                 if let Some(payment) = payment_to_process {
                     // Generate a random amount for this secondary payment (same range as initial payment: 1-1000)
                     let random_amount: u64 = rng.gen_range(1..=1000);
-                    let secondary_amount = Amount::from(random_amount);
+
+                    // Create amount based on unit, ensuring minimum of 1 sat worth
+                    let secondary_amount = match &unit {
+                        CurrencyUnit::Sat => Amount::from(random_amount),
+                        CurrencyUnit::Msat => Amount::from(u64::max(random_amount * 1000, 1000)),
+                        _ => Amount::from(u64::max(random_amount, 1)), // fallback
+                    };
 
                     // Generate a unique payment identifier for this secondary payment
                     // We'll create a new payment hash by appending a timestamp and random bytes
@@ -157,14 +301,14 @@ impl SecondaryRepaymentQueue {
 
                     // Send the payment notification using the original payment identifier
                     // The mint will process this through the normal payment stream
-                    if let Err(e) = sender
-                        .send((
-                            payment.clone(),
-                            secondary_amount,
-                            unique_payment_id.to_string(),
-                        ))
-                        .await
-                    {
+                    let secondary_response = WaitPaymentResponse {
+                        payment_identifier: payment.clone(),
+                        payment_amount: secondary_amount,
+                        unit: unit.clone(),
+                        payment_id: unique_payment_id.to_string(),
+                    };
+
+                    if let Err(e) = sender.send(secondary_response).await {
                         tracing::error!(
                             "Failed to send secondary repayment notification for {:?}: {}",
                             unique_payment_id,
@@ -181,11 +325,9 @@ impl SecondaryRepaymentQueue {
 #[derive(Clone)]
 pub struct FakeWallet {
     fee_reserve: FeeReserve,
-    #[allow(clippy::type_complexity)]
-    sender: tokio::sync::mpsc::Sender<(PaymentIdentifier, Amount, String)>,
-    #[allow(clippy::type_complexity)]
-    receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<(PaymentIdentifier, Amount, String)>>>>,
-    payment_states: Arc<Mutex<HashMap<String, MeltQuoteState>>>,
+    sender: tokio::sync::mpsc::Sender<WaitPaymentResponse>,
+    receiver: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<WaitPaymentResponse>>>>,
+    payment_states: Arc<Mutex<HashMap<String, (MeltQuoteState, Amount)>>>,
     failed_payment_check: Arc<Mutex<HashSet<String>>>,
     payment_delay: u64,
     wait_invoice_cancel_token: CancellationToken,
@@ -193,13 +335,14 @@ pub struct FakeWallet {
     incoming_payments: Arc<RwLock<HashMap<PaymentIdentifier, Vec<WaitPaymentResponse>>>>,
     unit: CurrencyUnit,
     secondary_repayment_queue: SecondaryRepaymentQueue,
+    exchange_rate_cache: ExchangeRateCache,
 }
 
 impl FakeWallet {
     /// Create new [`FakeWallet`]
     pub fn new(
         fee_reserve: FeeReserve,
-        payment_states: HashMap<String, MeltQuoteState>,
+        payment_states: HashMap<String, (MeltQuoteState, Amount)>,
         fail_payment_check: HashSet<String>,
         payment_delay: u64,
         unit: CurrencyUnit,
@@ -217,7 +360,7 @@ impl FakeWallet {
     /// Create new [`FakeWallet`] with custom secondary repayment queue size
     pub fn new_with_repay_queue_size(
         fee_reserve: FeeReserve,
-        payment_states: HashMap<String, MeltQuoteState>,
+        payment_states: HashMap<String, (MeltQuoteState, Amount)>,
         fail_payment_check: HashSet<String>,
         payment_delay: u64,
         unit: CurrencyUnit,
@@ -227,7 +370,7 @@ impl FakeWallet {
         let incoming_payments = Arc::new(RwLock::new(HashMap::new()));
 
         let secondary_repayment_queue =
-            SecondaryRepaymentQueue::new(repay_queue_max_size, sender.clone());
+            SecondaryRepaymentQueue::new(repay_queue_max_size, sender.clone(), unit.clone());
 
         Self {
             fee_reserve,
@@ -241,6 +384,7 @@ impl FakeWallet {
             incoming_payments,
             unit,
             secondary_repayment_queue,
+            exchange_rate_cache: ExchangeRateCache::new(),
         }
     }
 }
@@ -295,9 +439,9 @@ impl MintPayment for FakeWallet {
     }
 
     #[instrument(skip_all)]
-    async fn wait_any_incoming_payment(
+    async fn wait_payment_event(
         &self,
-    ) -> Result<Pin<Box<dyn Stream<Item = WaitPaymentResponse> + Send>>, Self::Err> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
         tracing::info!("Starting stream for fake invoices");
         let receiver = self
             .receiver
@@ -306,16 +450,10 @@ impl MintPayment for FakeWallet {
             .take()
             .ok_or(Error::NoReceiver)
             .unwrap();
-        let unit = self.unit.clone();
         let receiver_stream = ReceiverStream::new(receiver);
-        Ok(Box::pin(receiver_stream.map(
-            move |(request_lookup_id, payment_amount, payment_id)| WaitPaymentResponse {
-                payment_identifier: request_lookup_id.clone(),
-                payment_amount,
-                unit: unit.clone(),
-                payment_id,
-            },
-        )))
+        Ok(Box::pin(receiver_stream.map(move |wait_response| {
+            Event::PaymentReceived(wait_response)
+        })))
     }
 
     #[instrument(skip_all)]
@@ -374,7 +512,13 @@ impl MintPayment for FakeWallet {
             }
         };
 
-        let amount = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
+        let amount = convert_currency_amount(
+            amount_msat,
+            &CurrencyUnit::Msat,
+            unit,
+            &self.exchange_rate_cache,
+        )
+        .await?;
 
         let relative_fee_reserve =
             (self.fee_reserve.percent_fee_reserve * u64::from(amount) as f32) as u64;
@@ -419,7 +563,22 @@ impl MintPayment for FakeWallet {
                     .map(|s| s.check_payment_state)
                     .unwrap_or(MeltQuoteState::Paid);
 
-                payment_states.insert(payment_hash.clone(), checkout_going_status);
+                let amount_msat: u64 = if let Some(melt_options) = bolt11_options.melt_options {
+                    melt_options.amount_msat().into()
+                } else {
+                    // Fall back to invoice amount
+                    bolt11
+                        .amount_milli_satoshis()
+                        .ok_or(Error::UnknownInvoiceAmount)?
+                };
+
+                let amount_spent = if checkout_going_status == MeltQuoteState::Paid {
+                    amount_msat.into()
+                } else {
+                    Amount::ZERO
+                };
+
+                payment_states.insert(payment_hash.clone(), (checkout_going_status, amount_spent));
 
                 if let Some(description) = status {
                     if description.check_err {
@@ -430,16 +589,13 @@ impl MintPayment for FakeWallet {
                     ensure_cdk!(!description.pay_err, Error::UnknownInvoice.into());
                 }
 
-                let amount_msat: u64 = if let Some(melt_options) = bolt11_options.melt_options {
-                    melt_options.amount_msat().into()
-                } else {
-                    // Fall back to invoice amount
-                    bolt11
-                        .amount_milli_satoshis()
-                        .ok_or(Error::UnknownInvoiceAmount)?
-                };
-
-                let total_spent = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
+                let total_spent = convert_currency_amount(
+                    amount_msat,
+                    &CurrencyUnit::Msat,
+                    unit,
+                    &self.exchange_rate_cache,
+                )
+                .await?;
 
                 Ok(MakePaymentResponse {
                     payment_proof: Some("".to_string()),
@@ -464,7 +620,13 @@ impl MintPayment for FakeWallet {
                     }
                 };
 
-                let total_spent = to_unit(amount_msat, &CurrencyUnit::Msat, unit)?;
+                let total_spent = convert_currency_amount(
+                    amount_msat,
+                    &CurrencyUnit::Msat,
+                    unit,
+                    &self.exchange_rate_cache,
+                )
+                .await?;
 
                 Ok(MakePaymentResponse {
                     payment_proof: Some("".to_string()),
@@ -497,7 +659,13 @@ impl MintPayment for FakeWallet {
 
                 let offer_builder = match amount {
                     Some(amount) => {
-                        let amount_msat = to_unit(amount, unit, &CurrencyUnit::Msat)?;
+                        let amount_msat = convert_currency_amount(
+                            u64::from(amount),
+                            unit,
+                            &CurrencyUnit::Msat,
+                            &self.exchange_rate_cache,
+                        )
+                        .await?;
                         offer_builder.amount_msats(amount_msat.into())
                     }
                     None => offer_builder,
@@ -514,16 +682,19 @@ impl MintPayment for FakeWallet {
             }
             IncomingPaymentOptions::Bolt11(bolt11_options) => {
                 let description = bolt11_options.description.unwrap_or_default();
-                let amount = if unit == &CurrencyUnit::Sat {
-                    to_unit(bolt11_options.amount, unit, &CurrencyUnit::Msat)
-                        .unwrap_or(bolt11_options.amount * Amount::from(1000))
-                } else {
-                    bolt11_options.amount
-                };
+                let amount = bolt11_options.amount;
                 let expiry = bolt11_options.unix_expiry;
 
-                // Since this is fake we just use the amount no matter the unit to create an invoice
-                let invoice = create_fake_invoice(amount.into(), description.clone());
+                let amount_msat = convert_currency_amount(
+                    u64::from(amount),
+                    unit,
+                    &CurrencyUnit::Msat,
+                    &self.exchange_rate_cache,
+                )
+                .await?
+                .into();
+
+                let invoice = create_fake_invoice(amount_msat, description.clone());
                 let payment_hash = invoice.payment_hash();
 
                 (
@@ -547,8 +718,9 @@ impl MintPayment for FakeWallet {
             use bitcoin::secp256k1::rand::rngs::OsRng;
             use bitcoin::secp256k1::rand::Rng;
             let mut rng = OsRng;
-            let random_amount: u64 = rng.gen_range(1..=1000);
-            random_amount.into()
+            let random_amount: u64 = rng.gen_range(1000..=10000);
+            // Use the same unit as the wallet for any-amount invoices
+            Amount::from(random_amount)
         } else {
             amount
         };
@@ -571,15 +743,7 @@ impl MintPayment for FakeWallet {
                 .push(response.clone());
 
             // Send the message after waiting for the specified duration
-            if sender
-                .send((
-                    payment_hash_clone.clone(),
-                    final_amount,
-                    payment_hash_clone.to_string(),
-                ))
-                .await
-                .is_err()
-            {
+            if sender.send(response.clone()).await.is_err() {
                 tracing::error!("Failed to send label: {:?}", payment_hash_clone);
             }
         });
@@ -626,7 +790,7 @@ impl MintPayment for FakeWallet {
         let states = self.payment_states.lock().await;
         let status = states.get(&request_lookup_id.to_string()).cloned();
 
-        let status = status.unwrap_or(MeltQuoteState::Paid);
+        let (status, total_spent) = status.unwrap_or((MeltQuoteState::Unknown, Amount::default()));
 
         let fail_payments = self.failed_payment_check.lock().await;
 
@@ -638,7 +802,7 @@ impl MintPayment for FakeWallet {
             payment_proof: Some("".to_string()),
             payment_lookup_id: request_lookup_id.clone(),
             status,
-            total_spent: Amount::ZERO,
+            total_spent,
             unit: CurrencyUnit::Msat,
         })
     }

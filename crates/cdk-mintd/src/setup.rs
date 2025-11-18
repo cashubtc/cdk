@@ -3,14 +3,17 @@ use std::collections::HashMap;
 #[cfg(feature = "fakewallet")]
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 
 #[cfg(feature = "cln")]
 use anyhow::anyhow;
+#[cfg(any(feature = "lnbits", feature = "lnd"))]
+use anyhow::bail;
 use async_trait::async_trait;
-use axum::Router;
 #[cfg(feature = "fakewallet")]
 use bip39::rand::{thread_rng, Rng};
 use bip39::Mnemonic;
+use cdk::cdk_database::MintKVStore;
 use cdk::cdk_payment::MintPayment;
 use cdk::nuts::CurrencyUnit;
 #[cfg(any(
@@ -30,11 +33,11 @@ use crate::expand_path;
 pub trait LnBackendSetup {
     async fn setup(
         &self,
-        routers: &mut Vec<Router>,
         settings: &Settings,
         unit: CurrencyUnit,
         runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
+        kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<impl MintPayment>;
 }
 
@@ -43,12 +46,19 @@ pub trait LnBackendSetup {
 impl LnBackendSetup for config::Cln {
     async fn setup(
         &self,
-        _routers: &mut Vec<Router>,
         _settings: &Settings,
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
+        kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_cln::Cln> {
+        // Validate required connection field
+        if self.rpc_path.as_os_str().is_empty() {
+            return Err(anyhow!(
+                "CLN rpc_path must be set via config or CDK_MINTD_CLN_RPC_PATH env var"
+            ));
+        }
+
         let cln_socket = expand_path(
             self.rpc_path
                 .to_str()
@@ -61,7 +71,12 @@ impl LnBackendSetup for config::Cln {
             percent_fee_reserve: self.fee_percent,
         };
 
-        let cln = cdk_cln::Cln::new(cln_socket, fee_reserve).await?;
+        let cln = cdk_cln::Cln::new(
+            cln_socket,
+            fee_reserve,
+            kv_store.expect("Cln needs kv store"),
+        )
+        .await?;
 
         Ok(cln)
     }
@@ -72,12 +87,25 @@ impl LnBackendSetup for config::Cln {
 impl LnBackendSetup for config::LNbits {
     async fn setup(
         &self,
-        _routers: &mut Vec<Router>,
         _settings: &Settings,
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
+        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_lnbits::LNbits> {
+        // Validate required connection fields
+        if self.admin_api_key.is_empty() {
+            bail!("LNbits admin_api_key must be set via config or CDK_MINTD_LNBITS_ADMIN_API_KEY env var");
+        }
+        if self.invoice_api_key.is_empty() {
+            bail!("LNbits invoice_api_key must be set via config or CDK_MINTD_LNBITS_INVOICE_API_KEY env var");
+        }
+        if self.lnbits_api.is_empty() {
+            bail!(
+                "LNbits lnbits_api must be set via config or CDK_MINTD_LNBITS_LNBITS_API env var"
+            );
+        }
+
         let admin_api_key = &self.admin_api_key;
         let invoice_api_key = &self.invoice_api_key;
 
@@ -106,12 +134,25 @@ impl LnBackendSetup for config::LNbits {
 impl LnBackendSetup for config::Lnd {
     async fn setup(
         &self,
-        _routers: &mut Vec<Router>,
         _settings: &Settings,
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
+        kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_lnd::Lnd> {
+        // Validate required connection fields
+        if self.address.is_empty() {
+            bail!("LND address must be set via config or CDK_MINTD_LND_ADDRESS env var");
+        }
+        if self.cert_file.as_os_str().is_empty() {
+            bail!("LND cert_file must be set via config or CDK_MINTD_LND_CERT_FILE env var");
+        }
+        if self.macaroon_file.as_os_str().is_empty() {
+            bail!(
+                "LND macaroon_file must be set via config or CDK_MINTD_LND_MACAROON_FILE env var"
+            );
+        }
+
         let address = &self.address;
         let cert_file = &self.cert_file;
         let macaroon_file = &self.macaroon_file;
@@ -126,6 +167,7 @@ impl LnBackendSetup for config::Lnd {
             cert_file.clone(),
             macaroon_file.clone(),
             fee_reserve,
+            kv_store.expect("Lnd needs kv store"),
         )
         .await?;
 
@@ -138,11 +180,11 @@ impl LnBackendSetup for config::Lnd {
 impl LnBackendSetup for config::FakeWallet {
     async fn setup(
         &self,
-        _router: &mut Vec<Router>,
         _settings: &Settings,
         unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
+        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_fake_wallet::FakeWallet> {
         let fee_reserve = FeeReserve {
             min_fee_reserve: self.reserve_fee_min,
@@ -170,11 +212,11 @@ impl LnBackendSetup for config::FakeWallet {
 impl LnBackendSetup for config::GrpcProcessor {
     async fn setup(
         &self,
-        _routers: &mut Vec<Router>,
         _settings: &Settings,
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
+        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_payment_processor::PaymentProcessorClient> {
         let payment_processor = cdk_payment_processor::PaymentProcessorClient::new(
             &self.addr,
@@ -193,10 +235,11 @@ impl LnBackendSetup for config::LdkNode {
     async fn setup(
         &self,
         _routers: &mut Vec<Router>,
-        settings: &Settings,
+        _settings: &Settings,
         _unit: CurrencyUnit,
         runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
+        _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_ldk_node::CdkLdkNode> {
         use std::net::SocketAddr;
 

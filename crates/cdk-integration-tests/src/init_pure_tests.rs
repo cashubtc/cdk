@@ -11,7 +11,7 @@ use bip39::Mnemonic;
 use cashu::quote_id::QuoteId;
 use cashu::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
 use cdk::amount::SplitTarget;
-use cdk::cdk_database::{self, MintDatabase, WalletDatabase};
+use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{
@@ -55,6 +55,24 @@ impl Debug for DirectMintConnection {
 /// Convert the requests and responses between the [String] and [Uuid] variants as necessary.
 #[async_trait]
 impl MintConnector for DirectMintConnection {
+    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
+        panic!("Not implemented");
+    }
+
+    async fn fetch_lnurl_pay_request(
+        &self,
+        _url: &str,
+    ) -> Result<cdk::wallet::LnurlPayResponse, Error> {
+        unimplemented!("Lightning address not supported in DirectMintConnection")
+    }
+
+    async fn fetch_lnurl_invoice(
+        &self,
+        _url: &str,
+    ) -> Result<cdk::wallet::LnurlPayInvoiceResponse, Error> {
+        unimplemented!("Lightning address not supported in DirectMintConnection")
+    }
+
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
         Ok(self.mint.pubkeys().keysets)
     }
@@ -247,7 +265,7 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         fee_reserve.clone(),
         HashMap::default(),
         HashSet::default(),
-        0,
+        2,
         CurrencyUnit::Sat,
     );
 
@@ -267,16 +285,13 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
         .with_description("pure test mint".to_string())
         .with_urls(vec!["https://aaa".to_string()]);
 
-    let tx_localstore = localstore.clone();
-    let mut tx = tx_localstore.begin_transaction().await?;
-
     let quote_ttl = QuoteTTL::new(10000, 10000);
-    tx.set_quote_ttl(quote_ttl).await?;
-    tx.commit().await?;
 
     let mint = mint_builder
         .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
         .await?;
+
+    mint.set_quote_ttl(quote_ttl).await?;
 
     mint.start().await?;
 

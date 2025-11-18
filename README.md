@@ -1,7 +1,7 @@
-> **Warning**
+> [!Warning]
 > This project is in early development, it does however work with real sats! Always use amounts you don't mind losing.
 
-[![crates.io](https://img.shields.io/crates/v/cdk.svg)](https://crates.io/crates/cdk) [![Documentation](https://docs.rs/cdk/badge.svg)](https://docs.rs/cdk)
+[![crates.io](https://img.shields.io/crates/v/cdk.svg)](https://crates.io/crates/cdk) [![Documentation](https://docs.rs/cdk/badge.svg)](https://docs.rs/cdk) [![License](https://img.shields.io/github/license/cashubtc/cdk)](https://github.com/cashubtc/cdk/blob/main/LICENSE)
 
 # Cashu Development Kit
 
@@ -15,6 +15,7 @@ CDK is a collection of rust crates for [Cashu](https://github.com/cashubtc) wall
 The project is split up into several crates in the `crates/` directory:
 
 * Libraries:
+    * [**cashu**](./crates/cashu/): Core Cashu protocol implementation.
     * [**cdk**](./crates/cdk/): Rust implementation of Cashu protocol.
     * [**cdk-sqlite**](./crates/cdk-sqlite/): SQLite Storage backend.
     * [**cdk-postgres**](./crates/cdk-postgres/): PostgreSQL Storage backend.
@@ -25,6 +26,13 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-lnbits**](./crates/cdk-lnbits/): [LNbits](https://lnbits.com/) Lightning backend for mint. **Note: Only LNBits v1 API is supported.**
     * [**cdk-ldk-node**](./crates/cdk-ldk-node/): LDK Node Lightning backend for mint.
     * [**cdk-fake-wallet**](./crates/cdk-fake-wallet/): Fake Lightning backend for mint. To be used only for testing, quotes are automatically filled.
+    * [**cdk-common**](./crates/cdk-common/): Common utilities and shared code.
+    * [**cdk-sql-common**](./crates/cdk-sql-common/): Common SQL utilities for storage backends.
+    * [**cdk-signatory**](./crates/cdk-signatory/): Signing utilities and cryptographic operations.
+    * [**cdk-payment-processor**](./crates/cdk-payment-processor/): Payment processing functionality.
+    * [**cdk-prometheus**](./crates/cdk-prometheus/): Prometheus metrics integration.
+    * [**cdk-ffi**](./crates/cdk-ffi/): Foreign Function Interface bindings for other languages.
+    * [**cdk-integration-tests**](./crates/cdk-integration-tests/): Integration test suite.
     * [**cdk-mint-rpc**](./crates/cdk-mint-rpc/): Mint management gRPC server and cli.
 * Binaries:
     * [**cdk-cli**](./crates/cdk-cli/): Cashu wallet CLI.
@@ -35,22 +43,6 @@ The project is split up into several crates in the `crates/` directory:
 ## Development 
 
 For a guide to settings up a development environment see [DEVELOPMENT.md](./DEVELOPMENT.md)
-
-## LDK Node Network Configuration
-
-For detailed configuration examples for running CDK with LDK Node on different Bitcoin networks (Mutinynet, Testnet, Mainnet), see [LDK Node Network Guide](./crates/cdk-ldk-node/NETWORK_GUIDE.md).
-
-**Quick Start with Mutinynet (Recommended for Testing):**
-```toml
-[ln]
-ln_backend = "ldk-node"
-
-[ldk_node]
-bitcoin_network = "signet"
-esplora_url = "https://mutinynet.com/api"
-rgs_url = "https://rgs.mutinynet.com/snapshot/0"
-gossip_source_type = "rgs"
-```
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):
 
@@ -87,6 +79,7 @@ gossip_source_type = "rgs"
 | [21][21] | Clear Authentication | :heavy_check_mark: |
 | [22][22] | Blind Authentication  | :heavy_check_mark: |
 | [23][23] | Payment Method: BOLT11 | :heavy_check_mark: |
+| [25][25] | Payment Method: BOLT12 | :heavy_check_mark: |
 
 
 ## License
@@ -126,3 +119,4 @@ Please see the [development guide](DEVELOPMENT.md).
 [21]: https://github.com/cashubtc/nuts/blob/main/21.md
 [22]: https://github.com/cashubtc/nuts/blob/main/22.md
 [23]: https://github.com/cashubtc/nuts/blob/main/23.md
+[25]: https://github.com/cashubtc/nuts/blob/main/25.md

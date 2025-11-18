@@ -1,0 +1,137 @@
+version: '3.8'
+
+services:
+  # CDK Mint service with LDK Node backend
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./misc/provisioning/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--enable-feature=otlp-write-receiver'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - cdk
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3011:3000"
+    volumes:
+      - ./misc/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./misc/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+    environment:
+      - GF_DASHBOARDS_JSON_ENABLED=true
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_PROVISIONING_PATHS=/etc/grafana/provisioning
+    networks:
+      - cdk
+
+  mintd-ldk-node:
+    # Use the ldk-node tagged image from the same repository
+    image: cashubtc/mintd:ldk-node-amd64
+    # Alternatively, build locally:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.ldk-node
+    container_name: mint-ldk-node
+    ports:
+      - "8085:8085"
+      - "8091:8091" # LDK admin dashboard (WARNING!!! Do not expose to network! Doing so will leave LDK node funds accessible by whole network)
+    environment:
+      - CDK_MINTD_URL=https://example.com
+      - CDK_MINTD_LN_BACKEND=ldk-node
+      - CDK_MINTD_LISTEN_HOST=0.0.0.0
+      - CDK_MINTD_LISTEN_PORT=8085
+      - CDK_MINTD_MNEMONIC=
+      # Database configuration - choose one:
+      # Option 1: SQLite (embedded, no additional setup needed)
+      - CDK_MINTD_DATABASE=sqlite
+      # Option 2: ReDB (embedded, no additional setup needed)
+      # - CDK_MINTD_DATABASE=redb
+      # Option 3: PostgreSQL (requires postgres service, enable with: docker-compose --profile postgres up)
+      # - CDK_MINTD_DATABASE=postgres
+      # - CDK_MINTD_DATABASE_URL=postgresql://cdk_user:cdk_password@postgres:5432/cdk_mint
+      # Cache configuration
+      - CDK_MINTD_CACHE_BACKEND=memory
+      - CDK_MINTD_PROMETHEUS_ENABLED=true
+      - CDK_MINTD_PROMETHEUS_ADDRESS=0.0.0.0
+      - CDK_MINTD_PROMETHEUS_PORT=9000
+      # LDK Node specific configuration
+      - CDK_MINTD_LDK_NODE_BITCOIN_NETWORK=testnet # or: testnet, signet, regtest
+      - CDK_MINTD_LDK_NODE_ESPLORA_URL=https://blockstream.info/testnet/api
+      - CDK_MINTD_LDK_NODE_LISTENING_ADDRESSES=0.0.0.0:9735
+      # LDK admin dashboard config
+      - CDK_MINTD_LDK_NODE_WEBSERVER_HOST=0.0.0.0
+      # Other Options
+      # - CDK_MINTD_LDK_NODE_WEBSERVER_PORT=
+      # - CDK_MINTD_LDK_NODE_FEE_PERCENT=
+      # - CDK_MINTD_LDK_NODE_RESERVE_FEE_MIN=
+      # - CDK_MINTD_LDK_NODE_CHAIN_SOURCE_TYPE=esplora # or: bitcoinrpc
+      # if chain source is set to bitcoinrpc, the following RPC options need to be set instead
+      # - CDK_MINTD_LDK_NODE_BITCOIND_RPC_HOST=
+      # - CDK_MINTD_LDK_NODE_BITCOIND_RPC_PORT=
+      # - CDK_MINTD_LDK_NODE_BITCOIND_RPC_USER=
+      # - CDK_MINTD_LDK_NODE_BITCOIND_RPC_PASSWORD=
+      # - CDK_MINTD_LDK_NODE_STORAGE_DIR_PATH=
+      # - CDK_MINTD_LDK_NODE_LDK_NODE_HOST=
+      # - CDK_MINTD_LDK_NODE_LDK_NODE_PORT=
+      # - CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE=rgs # or: p2p
+      # - CDK_MINTD_LDK_NODE_RGS_URL=
+
+    volumes:
+      # Persist LDK node data
+      - ldk_node_data:/usr/src/app/ldk_node_data
+    command: ["cdk-mintd"]
+    depends_on:
+      - prometheus
+      - grafana
+    networks:
+      - cdk
+    # Uncomment when using PostgreSQL:
+    # depends_on:
+    #   - postgres
+
+  # PostgreSQL database service
+  # Enable with: docker-compose --profile postgres up
+  postgres:
+    image: postgres:16-alpine
+    container_name: mint_postgres
+    restart: unless-stopped
+    profiles:
+      - postgres
+    environment:
+      - POSTGRES_USER=cdk_user
+      - POSTGRES_PASSWORD=cdk_password
+      - POSTGRES_DB=cdk_mint
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cdk_user -d cdk_mint"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cdk
+
+volumes:
+  postgres_data:
+    driver: local
+  ldk_node_data:
+    driver: local
+
+networks:
+  cdk:
+    driver: bridge

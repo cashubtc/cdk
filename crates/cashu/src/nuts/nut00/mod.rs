@@ -18,6 +18,8 @@ use super::nut10;
 #[cfg(feature = "wallet")]
 use super::nut11::SpendingConditions;
 #[cfg(feature = "wallet")]
+use crate::amount::FeeAndAmounts;
+#[cfg(feature = "wallet")]
 use crate::amount::SplitTarget;
 #[cfg(feature = "wallet")]
 use crate::dhke::blind_message;
@@ -279,12 +281,12 @@ impl PartialOrd for BlindSignature {
 #[serde(untagged)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum Witness {
-    /// P2PK Witness
-    #[serde(with = "serde_p2pk_witness")]
-    P2PKWitness(P2PKWitness),
     /// HTLC Witness
     #[serde(with = "serde_htlc_witness")]
     HTLCWitness(HTLCWitness),
+    /// P2PK Witness
+    #[serde(with = "serde_p2pk_witness")]
+    P2PKWitness(P2PKWitness),
 }
 
 impl From<P2PKWitness> for Witness {
@@ -304,13 +306,10 @@ impl Witness {
     pub fn add_signatures(&mut self, signatues: Vec<String>) {
         match self {
             Self::P2PKWitness(p2pk_witness) => p2pk_witness.signatures.extend(signatues),
-            Self::HTLCWitness(htlc_witness) => {
-                htlc_witness.signatures = htlc_witness.signatures.clone().map(|sigs| {
-                    let mut sigs = sigs;
-                    sigs.extend(signatues);
-                    sigs
-                });
-            }
+            Self::HTLCWitness(htlc_witness) => match &mut htlc_witness.signatures {
+                Some(sigs) => sigs.extend(signatues),
+                None => htlc_witness.signatures = Some(signatues),
+            },
         }
     }
 
@@ -746,8 +745,9 @@ impl PreMintSecrets {
         keyset_id: Id,
         amount: Amount,
         amount_split_target: &SplitTarget,
+        fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
-        let amount_split = amount.split_targeted(amount_split_target)?;
+        let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
 
         let mut output = Vec::with_capacity(amount_split.len());
 
@@ -830,8 +830,9 @@ impl PreMintSecrets {
         amount: Amount,
         amount_split_target: &SplitTarget,
         conditions: &SpendingConditions,
+        fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
-        let amount_split = amount.split_targeted(amount_split_target)?;
+        let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
 
         let mut output = Vec::with_capacity(amount_split.len());
 
@@ -926,7 +927,10 @@ impl Iterator for PreMintSecrets {
 
     fn next(&mut self) -> Option<Self::Item> {
         // Use the iterator of the vector
-        self.secrets.pop()
+        if self.secrets.is_empty() {
+            return None;
+        }
+        Some(self.secrets.remove(0))
     }
 }
 
@@ -1037,5 +1041,29 @@ mod tests {
             let deserialized: PaymentMethod = serde_json::from_str(&serialized).unwrap();
             assert_eq!(method, deserialized);
         }
+    }
+
+    #[test]
+    fn test_witness_serialization() {
+        let htlc_witness = HTLCWitness {
+            preimage: "preimage".to_string(),
+            signatures: Some(vec!["sig1".to_string()]),
+        };
+        let witness = Witness::HTLCWitness(htlc_witness);
+
+        let serialized = serde_json::to_string(&witness).unwrap();
+        let deserialized: Witness = serde_json::from_str(&serialized).unwrap();
+
+        assert!(matches!(deserialized, Witness::HTLCWitness(_)));
+
+        let p2pk_witness = P2PKWitness {
+            signatures: vec!["sig1".to_string(), "sig2".to_string()],
+        };
+        let witness = Witness::P2PKWitness(p2pk_witness);
+
+        let serialized = serde_json::to_string(&witness).unwrap();
+        let deserialized: Witness = serde_json::from_str(&serialized).unwrap();
+
+        assert!(matches!(deserialized, Witness::P2PKWitness(_)));
     }
 }

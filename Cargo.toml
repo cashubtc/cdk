@@ -8,7 +8,6 @@ resolver = "2"
 unsafe_code = "forbid"
 unreachable_pub = "warn"
 missing_debug_implementations = "warn"
-large_enum_variant = "warn"
 
 [workspace.lints.clippy]
 pedantic = "warn"
@@ -22,6 +21,7 @@ redundant_else = "warn"
 redundant_closure_for_method_calls = "warn"
 unneeded_field_pattern = "warn"
 use_debug = "warn"
+large_enum_variant = "warn"
 
 [workspace.lints.rustdoc]
 missing_docs = "warn"
@@ -33,7 +33,7 @@ rust-version = "1.85.0"
 license = "MIT"
 homepage = "https://github.com/cashubtc/cdk"
 repository = "https://github.com/cashubtc/cdk.git"
-version = "0.12.0"
+version = "0.13.0"
 readme = "README.md"
 
 [workspace.dependencies]
@@ -43,32 +43,35 @@ axum = { version = "0.8.1", features = ["ws"] }
 bitcoin = { version = "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
 bip39 = { version = "2.0", features = ["rand"] }
 jsonwebtoken = "9.2.0"
-cashu = { path = "./crates/cashu", version = "=0.12.0" }
-cdk = { path = "./crates/cdk", default-features = false, version = "=0.12.0" }
-cdk-common = { path = "./crates/cdk-common", default-features = false, version = "=0.12.0" }
-cdk-axum = { path = "./crates/cdk-axum", default-features = false, version = "=0.12.0" }
-cdk-cln = { path = "./crates/cdk-cln", version = "=0.12.0" }
-cdk-lnbits = { path = "./crates/cdk-lnbits", version = "=0.12.0" }
-cdk-lnd = { path = "./crates/cdk-lnd", version = "=0.12.0" }
-cdk-ldk-node = { path = "./crates/cdk-ldk-node", version = "=0.12.0" }
-cdk-fake-wallet = { path = "./crates/cdk-fake-wallet", version = "=0.12.0" }
-cdk-payment-processor = { path = "./crates/cdk-payment-processor", default-features = true, version = "=0.12.0" }
-cdk-mint-rpc = { path = "./crates/cdk-mint-rpc", version = "=0.12.0" }
-cdk-redb = { path = "./crates/cdk-redb", default-features = true, version = "=0.12.0" }
-cdk-sql-common = { path = "./crates/cdk-sql-common", default-features = true, version = "=0.12.0" }
-cdk-sqlite = { path = "./crates/cdk-sqlite", default-features = true, version = "=0.12.0" }
-cdk-postgres = { path = "./crates/cdk-postgres", default-features = true, version = "=0.12.0" }
-cdk-signatory = { path = "./crates/cdk-signatory", version = "=0.12.0", default-features = false }
-cdk-mintd = { path = "./crates/cdk-mintd", version = "=0.12.0", default-features = false }
+cashu = { path = "./crates/cashu", version = "=0.13.0" }
+cdk = { path = "./crates/cdk", default-features = false, version = "=0.13.0" }
+cdk-common = { path = "./crates/cdk-common", default-features = false, version = "=0.13.0" }
+cdk-axum = { path = "./crates/cdk-axum", default-features = false, version = "=0.13.0" }
+cdk-cln = { path = "./crates/cdk-cln", version = "=0.13.0" }
+cdk-lnbits = { path = "./crates/cdk-lnbits", version = "=0.13.0" }
+cdk-lnd = { path = "./crates/cdk-lnd", version = "=0.13.0" }
+cdk-ldk-node = { path = "./crates/cdk-ldk-node", version = "=0.13.0" }
+cdk-fake-wallet = { path = "./crates/cdk-fake-wallet", version = "=0.13.0" }
+cdk-ffi = { path = "./crates/cdk-ffi", version = "=0.13.0" }
+cdk-payment-processor = { path = "./crates/cdk-payment-processor", default-features = true, version = "=0.13.0" }
+cdk-mint-rpc = { path = "./crates/cdk-mint-rpc", version = "=0.13.0" }
+cdk-redb = { path = "./crates/cdk-redb", default-features = true, version = "=0.13.0" }
+cdk-sql-common = { path = "./crates/cdk-sql-common", default-features = true, version = "=0.13.0" }
+cdk-sqlite = { path = "./crates/cdk-sqlite", default-features = true, version = "=0.13.0" }
+cdk-postgres = { path = "./crates/cdk-postgres", default-features = true, version = "=0.13.0" }
+cdk-signatory = { path = "./crates/cdk-signatory", version = "=0.13.0", default-features = false }
+cdk-mintd = { path = "./crates/cdk-mintd", version = "=0.13.0", default-features = false }
+cdk-prometheus = { path = "./crates/cdk-prometheus", version = "=0.13.0", default-features = false }
 clap = { version = "4.5.31", features = ["derive"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"
 config = { version = "0.15.11", features = ["toml"] }
+criterion = "0.6.0"
 futures = { version = "0.3.28", default-features = false, features = ["async-await"] }
 lightning-invoice = { version = "0.33.0", features = ["serde", "std"] }
 lightning = { version = "0.1.2", default-features = false, features = ["std"]}
 ldk-node = "0.6.2"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 thiserror = { version = "2" }
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "test-util", "sync"] }
@@ -98,7 +101,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "deflate",
 ]}
 once_cell = "1.20.2"
-instant = { version = "0.1", default-features = false }
+web-time = "1.1.0"
 rand = "0.9.1"
 regex = "1"
 home = "0.5.5"
@@ -108,6 +111,13 @@ tonic-build = "0.13.1"
 strum = "0.27.1"
 strum_macros = "0.27.1"
 rustls = { version = "0.23.27", default-features = false, features = ["ring"] }
+prometheus = { version = "0.13.4", features = ["process"], default-features = false }
+nostr-sdk = { version = "0.43.0", default-features = false, features = [
+    "nip04",
+    "nip44",
+    "nip59"
+]}
+
 
 
 
@@ -123,6 +133,14 @@ keywords = ["bitcoin", "e-cash", "cashu"]
 inherits = "dev"
 incremental = false
 lto = "off"
+
+[profile.release-smaller]
+inherits = "release"
+opt-level = 'z'     # Optimize for size.
+lto = true          # Enable Link Time Optimization
+codegen-units = 1   # Reduce number of codegen units to increase optimizations.
+panic = "abort"     # Abort on panic
+strip = "debuginfo" # Partially strip symbols from binary
 
 [workspace.metadata.crane]
 name = "cdk-workspace"

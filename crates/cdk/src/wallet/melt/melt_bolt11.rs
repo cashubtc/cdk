@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use cdk_common::amount::SplitTarget;
 use cdk_common::wallet::{Transaction, TransactionDirection};
+use cdk_common::PaymentMethod;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
@@ -48,12 +49,10 @@ impl Wallet {
         request: String,
         options: Option<MeltOptions>,
     ) -> Result<MeltQuote, Error> {
-        self.refresh_keysets().await?;
-
         let invoice = Bolt11Invoice::from_str(&request)?;
 
         let quote_request = MeltQuoteBolt11Request {
-            request: Bolt11Invoice::from_str(&request)?,
+            request: invoice.clone(),
             unit: self.unit.clone(),
             options,
         };
@@ -87,6 +86,7 @@ impl Wallet {
             state: quote_res.state,
             expiry: quote_res.expiry,
             payment_preimage: quote_res.payment_preimage,
+            payment_method: PaymentMethod::Bolt11,
         };
 
         self.localstore.add_melt_quote(quote.clone()).await?;
@@ -127,6 +127,18 @@ impl Wallet {
     /// Melt specific proofs
     #[instrument(skip(self, proofs))]
     pub async fn melt_proofs(&self, quote_id: &str, proofs: Proofs) -> Result<Melted, Error> {
+        self.melt_proofs_with_metadata(quote_id, proofs, HashMap::new())
+            .await
+    }
+
+    /// Melt specific proofs
+    #[instrument(skip(self, proofs))]
+    pub async fn melt_proofs_with_metadata(
+        &self,
+        quote_id: &str,
+        proofs: Proofs,
+        metadata: HashMap<String, String>,
+    ) -> Result<Melted, Error> {
         let quote_info = self
             .localstore
             .get_melt_quote(quote_id)
@@ -183,25 +195,27 @@ impl Wallet {
             Some(premint_secrets.blinded_messages()),
         );
 
-        let melt_response = self.client.post_melt(request).await;
-
-        let melt_response = match melt_response {
-            Ok(melt_response) => melt_response,
-            Err(err) => {
-                tracing::error!("Could not melt: {}", err);
-                tracing::info!("Checking status of input proofs.");
-
-                self.reclaim_unspent(proofs).await?;
-
-                return Err(err);
+        let melt_response = match quote_info.payment_method {
+            cdk_common::PaymentMethod::Bolt11 => {
+                self.try_proof_operation_or_reclaim(
+                    request.inputs().clone(),
+                    self.client.post_melt(request),
+                )
+                .await?
+            }
+            cdk_common::PaymentMethod::Bolt12 => {
+                self.try_proof_operation_or_reclaim(
+                    request.inputs().clone(),
+                    self.client.post_melt_bolt12(request),
+                )
+                .await?
+            }
+            cdk_common::PaymentMethod::Custom(_) => {
+                return Err(Error::UnsupportedPaymentMethod);
             }
         };
 
-        let active_keys = self
-            .localstore
-            .get_keys(&active_keyset_id)
-            .await?
-            .ok_or(Error::NoActiveKeyset)?;
+        let active_keys = self.load_keyset_keys(active_keyset_id).await?;
 
         let change_proofs = match melt_response.change {
             Some(change) => {
@@ -227,6 +241,8 @@ impl Wallet {
             }
             None => None,
         };
+
+        let payment_preimage = melt_response.payment_preimage.clone();
 
         let melted = Melted::from_proofs(
             melt_response.state,
@@ -276,7 +292,10 @@ impl Wallet {
                 ys: proofs.ys()?,
                 timestamp: unix_time(),
                 memo: None,
-                metadata: HashMap::new(),
+                metadata,
+                quote_id: Some(quote_id.to_string()),
+                payment_request: Some(quote_info.request),
+                payment_proof: payment_preimage,
             })
             .await?;
 
@@ -311,6 +330,44 @@ impl Wallet {
     /// }
     #[instrument(skip(self))]
     pub async fn melt(&self, quote_id: &str) -> Result<Melted, Error> {
+        self.melt_with_metadata(quote_id, HashMap::new()).await
+    }
+
+    /// Melt with additional metadata to be saved locally with the transaction
+    /// # Synopsis
+    /// ```rust, no_run
+    ///  use std::sync::Arc;
+    ///
+    ///  use cdk_sqlite::wallet::memory;
+    ///  use cdk::nuts::CurrencyUnit;
+    ///  use cdk::wallet::Wallet;
+    ///  use rand::random;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> anyhow::Result<()> {
+    ///  let seed = random::<[u8; 64]>();
+    ///  let mint_url = "https://fake.thesimplekid.dev";
+    ///  let unit = CurrencyUnit::Sat;
+    ///
+    ///  let localstore = memory::empty().await?;
+    ///  let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None).unwrap();
+    ///  let bolt11 = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq".to_string();
+    ///  let quote = wallet.melt_quote(bolt11, None).await?;
+    ///  let quote_id = quote.id;
+    ///
+    ///  let mut metadata = std::collections::HashMap::new();
+    ///  metadata.insert("my key".to_string(), "my value".to_string());
+    ///
+    ///  let _ = wallet.melt_with_metadata(&quote_id, metadata).await?;
+    ///
+    ///  Ok(())
+    /// }
+    #[instrument(skip(self))]
+    pub async fn melt_with_metadata(
+        &self,
+        quote_id: &str,
+        metadata: HashMap<String, String>,
+    ) -> Result<Melted, Error> {
         let quote_info = self
             .localstore
             .get_melt_quote(quote_id)
@@ -327,12 +384,12 @@ impl Wallet {
         let available_proofs = self.get_unspent_proofs().await?;
 
         let active_keyset_ids = self
-            .refresh_keysets()
+            .get_mint_keysets()
             .await?
             .into_iter()
             .map(|k| k.id)
             .collect();
-        let keyset_fees = self.get_keyset_fees().await?;
+        let keyset_fees = self.get_keyset_fees_and_amounts().await?;
         let (mut input_proofs, mut exchange) = Wallet::select_exact_proofs(
             inputs_needed_amount,
             available_proofs,
@@ -359,6 +416,7 @@ impl Wallet {
             input_proofs.extend_from_slice(&new_proofs);
         }
 
-        self.melt_proofs(quote_id, input_proofs).await
+        self.melt_proofs_with_metadata(quote_id, input_proofs, metadata)
+            .await
     }
 }

@@ -17,7 +17,8 @@ pub fn payment_list_item(
     let status_class = match status {
         "Succeeded" => "status-active",
         "Failed" => "status-inactive",
-        "Pending" => "status-badge",
+        "Pending" => "status-pending",
+        "Unpaid" => "status-pending", // Use pending styling for unpaid
         _ => "status-badge",
     };
 

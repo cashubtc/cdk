@@ -9,10 +9,12 @@ use bip39::Mnemonic;
 use cdk::cdk_database;
 use cdk::cdk_database::WalletDatabase;
 use cdk::nuts::CurrencyUnit;
-use cdk::wallet::{HttpClient, MultiMintWallet, Wallet, WalletBuilder};
+use cdk::wallet::MultiMintWallet;
 #[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+use clap::ValueEnum;
 use clap::{Parser, Subcommand};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
@@ -27,11 +29,15 @@ const DEFAULT_WORK_DIR: &str = ".cdk-cli";
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 
 /// Simple CLI application to interact with cashu
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum TorToggle {
+    On,
+    Off,
+}
+
 #[derive(Parser)]
-#[command(name = "cdk-cli")]
-#[command(author = "thesimplekid <tsk@thesimplekid.com>")]
-#[command(version = CARGO_PKG_VERSION.unwrap_or("Unknown"))]
-#[command(author, version, about, long_about = None)]
+#[command(name = "cdk-cli", author = "thesimplekid <tsk@thesimplekid.com>", version = CARGO_PKG_VERSION.unwrap_or("Unknown"), about, long_about = None)]
 struct Cli {
     /// Database engine to use (sqlite/redb)
     #[arg(short, long, default_value = "sqlite")]
@@ -49,6 +55,14 @@ struct Cli {
     /// NWS Proxy
     #[arg(short, long)]
     proxy: Option<Url>,
+    /// Currency unit to use for the wallet
+    #[arg(short, long, default_value = "sat")]
+    unit: String,
+    /// Use Tor transport (only when built with --features tor). Defaults to 'on' when feature is enabled.
+    #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+    #[arg(long = "tor", value_enum, default_value_t = TorToggle::On)]
+    transport: TorToggle,
+    /// Subcommand to run
     #[command(subcommand)]
     command: Commands,
 }
@@ -67,6 +81,8 @@ enum Commands {
     Receive(sub_commands::receive::ReceiveSubCommand),
     /// Send
     Send(sub_commands::send::SendSubCommand),
+    /// Transfer tokens between mints
+    Transfer(sub_commands::transfer::TransferSubCommand),
     /// Reclaim pending proofs that are no longer pending
     CheckPending,
     /// View mint info
@@ -115,7 +131,10 @@ async fn main() -> Result<()> {
         }
     };
 
-    fs::create_dir_all(&work_dir)?;
+    // Create work directory if it doesn't exist
+    if !work_dir.exists() {
+        fs::create_dir_all(&work_dir)?;
+    }
 
     let localstore: Arc<dyn WalletDatabase<Err = cdk_database::Error> + Send + Sync> =
         match args.engine.as_str() {
@@ -168,62 +187,46 @@ async fn main() -> Result<()> {
     };
     let seed = mnemonic.to_seed_normalized("");
 
-    let mut wallets: Vec<Wallet> = Vec::new();
+    // Parse currency unit from args
+    let currency_unit = CurrencyUnit::from_str(&args.unit)
+        .unwrap_or_else(|_| CurrencyUnit::Custom(args.unit.clone()));
 
-    let mints = localstore.get_mints().await?;
-
-    for (mint_url, mint_info) in mints {
-        let units = if let Some(mint_info) = mint_info {
-            mint_info.supported_units().into_iter().cloned().collect()
-        } else {
-            vec![CurrencyUnit::Sat]
-        };
-
-        let proxy_client = if let Some(proxy_url) = args.proxy.as_ref() {
-            Some(HttpClient::with_proxy(
-                mint_url.clone(),
+    // Create MultiMintWallet with specified currency unit
+    // The constructor will automatically load wallets for this currency unit
+    let multi_mint_wallet = match &args.proxy {
+        Some(proxy_url) => {
+            MultiMintWallet::new_with_proxy(
+                localstore.clone(),
+                seed,
+                currency_unit.clone(),
                 proxy_url.clone(),
-                None,
-                true,
-            )?)
-        } else {
-            None
-        };
-
-        let seed = mnemonic.to_seed_normalized("");
-
-        for unit in units {
-            let mint_url_clone = mint_url.clone();
-            let mut builder = WalletBuilder::new()
-                .mint_url(mint_url_clone.clone())
-                .unit(unit)
-                .localstore(localstore.clone())
-                .seed(seed);
-
-            if let Some(http_client) = &proxy_client {
-                builder = builder.client(http_client.clone());
-            }
-
-            let wallet = builder.build()?;
-
-            let wallet_clone = wallet.clone();
-
-            tokio::spawn(async move {
-                // We refresh keysets, this internally gets mint info
-                if let Err(err) = wallet_clone.refresh_keysets().await {
-                    tracing::error!(
-                        "Could not get mint quote for {}, {}",
-                        wallet_clone.mint_url,
-                        err
-                    );
-                }
-            });
-
-            wallets.push(wallet);
+            )
+            .await?
         }
-    }
-
-    let multi_mint_wallet = MultiMintWallet::new(localstore, seed, wallets);
+        None => {
+            #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+            {
+                match args.transport {
+                    TorToggle::On => {
+                        MultiMintWallet::new_with_tor(
+                            localstore.clone(),
+                            seed,
+                            currency_unit.clone(),
+                        )
+                        .await?
+                    }
+                    TorToggle::Off => {
+                        MultiMintWallet::new(localstore.clone(), seed, currency_unit.clone())
+                            .await?
+                    }
+                }
+            }
+            #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
+            {
+                MultiMintWallet::new(localstore.clone(), seed, currency_unit.clone()).await?
+            }
+        }
+    };
 
     match &args.command {
         Commands::DecodeToken(sub_command_args) => {
@@ -238,6 +241,9 @@ async fn main() -> Result<()> {
         }
         Commands::Send(sub_command_args) => {
             sub_commands::send::send(&multi_mint_wallet, sub_command_args).await
+        }
+        Commands::Transfer(sub_command_args) => {
+            sub_commands::transfer::transfer(&multi_mint_wallet, sub_command_args).await
         }
         Commands::CheckPending => {
             sub_commands::check_pending::check_pending(&multi_mint_wallet).await

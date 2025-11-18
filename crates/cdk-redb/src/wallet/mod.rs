@@ -58,6 +58,16 @@ impl WalletRedbDatabase {
     /// Create new [`WalletRedbDatabase`]
     pub fn new(path: &Path) -> Result<Self, Error> {
         {
+            // Check if parent directory exists before attempting to create database
+            if let Some(parent) = path.parent() {
+                if !parent.exists() {
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("Parent directory does not exist: {parent:?}"),
+                    )));
+                }
+            }
+
             let db = Arc::new(Database::create(path)?);
 
             let db_version: Option<String>;
@@ -156,7 +166,19 @@ impl WalletRedbDatabase {
             drop(db);
         }
 
-        let db = Database::create(path)?;
+        // Check parent directory again for final database creation
+        if let Some(parent) = path.parent() {
+            if !parent.exists() {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Parent directory does not exist: {parent:?}"),
+                )));
+            }
+        }
+
+        let mut db = Database::create(path)?;
+
+        db.upgrade()?;
 
         Ok(Self { db: Arc::new(db) })
     }
@@ -719,6 +741,18 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(proofs)
     }
 
+    async fn get_balance(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        state: Option<Vec<State>>,
+    ) -> Result<u64, database::Error> {
+        // For redb, we still need to fetch all proofs and sum them
+        // since redb doesn't have SQL aggregation
+        let proofs = self.get_proofs(mint_url, unit, state, None).await?;
+        Ok(proofs.iter().map(|p| u64::from(p.proof.amount)).sum())
+    }
+
     async fn update_proofs_state(
         &self,
         ys: Vec<PublicKey>,
@@ -793,6 +827,8 @@ impl WalletDatabase for WalletRedbDatabase {
 
     #[instrument(skip(self))]
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), Self::Err> {
+        let id = transaction.id();
+
         let write_txn = self.db.begin_write().map_err(Error::from)?;
 
         {
@@ -801,7 +837,7 @@ impl WalletDatabase for WalletRedbDatabase {
                 .map_err(Error::from)?;
             table
                 .insert(
-                    transaction.id().as_slice(),
+                    id.as_slice(),
                     serde_json::to_string(&transaction)
                         .map_err(Error::from)?
                         .as_str(),

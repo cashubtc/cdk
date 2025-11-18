@@ -1,18 +1,10 @@
 //! Cashu utils
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{SystemTime, UNIX_EPOCH};
+pub mod hex;
 
 use bitcoin::secp256k1::{rand, All, Secp256k1};
 use once_cell::sync::Lazy;
-
-pub mod hex;
-
-#[cfg(target_arch = "wasm32")]
-use instant::SystemTime;
-
-#[cfg(target_arch = "wasm32")]
-const UNIX_EPOCH: SystemTime = SystemTime::UNIX_EPOCH;
+use web_time::{SystemTime, UNIX_EPOCH};
 
 /// Secp256k1 global context
 pub static SECP256K1: Lazy<Secp256k1<All>> = Lazy::new(|| {
@@ -46,7 +38,7 @@ pub enum CborError {
 ///
 /// See <https://www.rfc-editor.org/rfc/rfc8949.html#name-diagnostic-notation>
 pub fn serialize_to_cbor_diag<T: serde::Serialize>(data: &T) -> Result<String, CborError> {
-    let mut cbor_buffer = Vec::new();
+    let mut cbor_buffer = Vec::<u8>::new();
     ciborium::ser::into_writer(data, &mut cbor_buffer)?;
 
     let diag = cbor_diag::parse_bytes(&cbor_buffer)?;

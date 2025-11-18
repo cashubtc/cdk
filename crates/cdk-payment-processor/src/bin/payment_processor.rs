@@ -1,5 +1,5 @@
 #[cfg(feature = "fake")]
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
 #[cfg(any(feature = "cln", feature = "lnd", feature = "fake"))]
@@ -14,6 +14,8 @@ use cdk_common::payment::{self, MintPayment};
 use cdk_common::Amount;
 #[cfg(feature = "fake")]
 use cdk_fake_wallet::FakeWallet;
+#[cfg(feature = "cln")]
+use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "cln", feature = "lnd", feature = "fake"))]
@@ -106,10 +108,14 @@ async fn main() -> anyhow::Result<()> {
                         percent_fee_reserve: cln_settings.fee_percent,
                     };
 
-                    Arc::new(cdk_cln::Cln::new(cln_settings.rpc_path, fee_reserve).await?)
+                    let kv_store = Arc::new(MintSqliteDatabase::new(":memory:").await?);
+                    Arc::new(cdk_cln::Cln::new(cln_settings.rpc_path, fee_reserve, kv_store).await?)
                 }
                 #[cfg(feature = "fake")]
                 "FAKEWALLET" => {
+                    use std::collections::HashMap;
+                    use std::sync::Arc;
+
                     let fee_reserve = FeeReserve {
                         min_fee_reserve: 1.into(),
                         percent_fee_reserve: 0.0,
@@ -119,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
                         fee_reserve,
                         HashMap::default(),
                         HashSet::default(),
-                        0,
+                        2,
                         cashu::CurrencyUnit::Sat,
                     );
 
@@ -133,12 +139,14 @@ async fn main() -> anyhow::Result<()> {
                         percent_fee_reserve: lnd_settings.fee_percent,
                     };
 
+                    let kv_store = Arc::new(MintSqliteDatabase::new(":memory:").await?);
                     Arc::new(
                         cdk_lnd::Lnd::new(
                             lnd_settings.address,
                             lnd_settings.cert_file,
                             lnd_settings.macaroon_file,
                             fee_reserve,
+                            kv_store,
                         )
                         .await?,
                     )

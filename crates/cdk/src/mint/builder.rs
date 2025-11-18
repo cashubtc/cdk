@@ -4,23 +4,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bitcoin::bip32::DerivationPath;
-use cdk_common::database::{self, MintDatabase, MintKeysDatabase};
+use cdk_common::database::{DynMintDatabase, MintKeysDatabase};
 use cdk_common::error::Error;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
-use cdk_common::payment::Bolt11Settings;
+use cdk_common::payment::{Bolt11Settings, DynMintPayment};
 #[cfg(feature = "auth")]
-use cdk_common::{nut21, nut22};
+use cdk_common::{database::DynMintAuthDatabase, nut21, nut22};
 use cdk_signatory::signatory::Signatory;
 
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
-#[cfg(feature = "auth")]
-use super::MintAuthDatabase;
 use super::Nuts;
 use crate::amount::Amount;
 use crate::cdk_database;
-use crate::cdk_payment::{self, MintPayment};
 use crate::mint::Mint;
 #[cfg(feature = "auth")]
 use crate::nuts::ProtectedEndpoint;
@@ -33,18 +30,17 @@ use crate::types::PaymentProcessorKey;
 /// Cashu Mint Builder
 pub struct MintBuilder {
     mint_info: MintInfo,
-    localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>,
+    localstore: DynMintDatabase,
     #[cfg(feature = "auth")]
-    auth_localstore: Option<Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>>,
-    payment_processors:
-        HashMap<PaymentProcessorKey, Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>>,
+    auth_localstore: Option<DynMintAuthDatabase>,
+    payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     supported_units: HashMap<CurrencyUnit, (u64, u8)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
 }
 
 impl MintBuilder {
     /// New [`MintBuilder`]
-    pub fn new(localstore: Arc<dyn MintDatabase<database::Error> + Send + Sync>) -> MintBuilder {
+    pub fn new(localstore: DynMintDatabase) -> MintBuilder {
         let mint_info = MintInfo {
             nuts: Nuts::new()
                 .nut07(true)
@@ -53,6 +49,7 @@ impl MintBuilder {
                 .nut10(true)
                 .nut11(true)
                 .nut12(true)
+                .nut14(true)
                 .nut20(true),
             ..Default::default()
         };
@@ -72,7 +69,7 @@ impl MintBuilder {
     #[cfg(feature = "auth")]
     pub fn with_auth(
         mut self,
-        auth_localstore: Arc<dyn MintAuthDatabase<Err = cdk_database::Error> + Send + Sync>,
+        auth_localstore: DynMintAuthDatabase,
         openid_discovery: String,
         client_id: String,
         protected_endpoints: Vec<ProtectedEndpoint>,
@@ -84,6 +81,31 @@ impl MintBuilder {
             protected_endpoints,
         ));
         self
+    }
+
+    /// Initialize builder's MintInfo from the database if present.
+    /// If not present or parsing fails, keeps the current MintInfo.
+    pub async fn init_from_db_if_present(&mut self) -> Result<(), cdk_database::Error> {
+        // Attempt to read existing mint_info from the KV store
+        let bytes_opt = self
+            .localstore
+            .kv_read(
+                super::CDK_MINT_PRIMARY_NAMESPACE,
+                super::CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                super::CDK_MINT_CONFIG_KV_KEY,
+            )
+            .await?;
+
+        if let Some(bytes) = bytes_opt {
+            if let Ok(info) = serde_json::from_slice::<MintInfo>(&bytes) {
+                self.mint_info = info;
+            } else {
+                // If parsing fails, leave the current builder state untouched
+                tracing::warn!("Failed to parse existing mint_info from DB; using builder state");
+            }
+        }
+
+        Ok(())
     }
 
     /// Set blind auth settings
@@ -130,6 +152,14 @@ impl MintBuilder {
     pub fn with_motd(mut self, motd: String) -> Self {
         self.mint_info.motd = Some(motd);
         self
+    }
+
+    /// Get a clone of the current MintInfo configured on the builder
+    /// This allows using config-derived settings to initialize persistent state
+    /// before any attempt to read from the database, which avoids first-run
+    /// failures when the DB is empty.
+    pub fn current_mint_info(&self) -> MintInfo {
+        self.mint_info.clone()
     }
 
     /// Set terms of service URL
@@ -211,7 +241,7 @@ impl MintBuilder {
         unit: CurrencyUnit,
         method: PaymentMethod,
         limits: MintMeltLimits,
-        payment_processor: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync>,
+        payment_processor: DynMintPayment,
     ) -> Result<(), Error> {
         let key = PaymentProcessorKey {
             unit: unit.clone(),
@@ -268,7 +298,6 @@ impl MintBuilder {
         self.payment_processors.insert(key, payment_processor);
         Ok(())
     }
-
     /// Sets the input fee ppk for a given unit
     ///
     /// The unit **MUST** already have been added with a ln backend
@@ -352,5 +381,54 @@ impl MintMeltLimits {
             melt_min: min.into(),
             melt_max: max.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use cdk_sqlite::mint::memory;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_mint_builder_default_nuts_support() {
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore);
+        let mint_info = builder.current_mint_info();
+
+        assert!(
+            mint_info.nuts.nut07.supported,
+            "NUT-07 should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut08.supported,
+            "NUT-08 should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut09.supported,
+            "NUT-09 should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut10.supported,
+            "NUT-10 should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut11.supported,
+            "NUT-11 should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut12.supported,
+            "NUT-12 should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut14.supported,
+            "NUT-14 (HTLC) should be supported by default"
+        );
+        assert!(
+            mint_info.nuts.nut20.supported,
+            "NUT-20 should be supported by default"
+        );
     }
 }

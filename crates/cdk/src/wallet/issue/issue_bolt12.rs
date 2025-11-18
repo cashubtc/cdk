@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use cdk_common::nut04::MintMethodOptions;
-use cdk_common::nut24::MintQuoteBolt12Request;
+use cdk_common::nut25::MintQuoteBolt12Request;
 use cdk_common::wallet::{Transaction, TransactionDirection};
 use cdk_common::{Proofs, SecretKey};
 use tracing::instrument;
@@ -28,8 +28,6 @@ impl Wallet {
     ) -> Result<MintQuote, Error> {
         let mint_url = self.mint_url.clone();
         let unit = &self.unit;
-
-        self.refresh_keysets().await?;
 
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
@@ -85,8 +83,6 @@ impl Wallet {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
-        self.refresh_keysets().await?;
-
         let quote_info = self.localstore.get_mint_quote(quote_id).await?;
 
         let quote_info = if let Some(quote) = quote_info {
@@ -100,6 +96,9 @@ impl Wallet {
         };
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
+        let fee_and_amounts = self
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await?;
 
         let amount = match amount {
             Some(amount) => amount,
@@ -123,10 +122,11 @@ impl Wallet {
                 amount,
                 &amount_split_target,
                 spending_conditions,
+                &fee_and_amounts,
             )?,
             None => {
                 // Calculate how many secrets we'll need without generating them
-                let amount_split = amount.split_targeted(&amount_split_target)?;
+                let amount_split = amount.split_targeted(&amount_split_target, &fee_and_amounts)?;
                 let num_secrets = amount_split.len() as u32;
 
                 tracing::debug!(
@@ -149,6 +149,7 @@ impl Wallet {
                     &self.seed,
                     amount,
                     &amount_split_target,
+                    &fee_and_amounts,
                 )?
             }
         };
@@ -226,6 +227,9 @@ impl Wallet {
                 timestamp: unix_time(),
                 memo: None,
                 metadata: HashMap::new(),
+                quote_id: Some(quote_id.to_string()),
+                payment_request: Some(quote_info.request),
+                payment_proof: None,
             })
             .await?;
 

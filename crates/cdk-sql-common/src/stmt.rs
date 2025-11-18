@@ -104,6 +104,18 @@ pub fn split_sql_parts(input: &str) -> Result<Vec<SqlPart>, SqlParseError> {
                 }
             }
 
+            '-' => {
+                current.push(chars.next().unwrap());
+                if chars.peek() == Some(&'-') {
+                    while let Some(&next) = chars.peek() {
+                        current.push(chars.next().unwrap());
+                        if next == '\n' {
+                            break;
+                        }
+                    }
+                }
+            }
+
             ':' => {
                 // Flush current raw SQL
                 if !current.is_empty() {

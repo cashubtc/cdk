@@ -15,7 +15,8 @@ use serde::Deserialize;
 use crate::web::handlers::utils::deserialize_optional_u64;
 use crate::web::handlers::AppState;
 use crate::web::templates::{
-    error_message, form_card, format_sats_as_btc, info_card, layout, success_message,
+    error_message, form_card, format_sats_as_btc, info_card, is_node_running, layout_with_status,
+    success_message,
 };
 
 #[derive(Deserialize)]
@@ -43,7 +44,7 @@ pub async fn channels_page(State(_state): State<AppState>) -> Result<Response, S
         .unwrap())
 }
 
-pub async fn open_channel_page(State(_state): State<AppState>) -> Result<Html<String>, StatusCode> {
+pub async fn open_channel_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
     let content = form_card(
         "Open New Channel",
         html! {
@@ -68,14 +69,18 @@ pub async fn open_channel_page(State(_state): State<AppState>) -> Result<Html<St
                     label for="push_btc" { "Push Amount (optional)" }
                     input type="number" id="push_btc" name="push_btc" placeholder="₿0" step="1" {}
                 }
-                button type="submit" { "Open Channel" }
-                " "
-                a href="/balance" { button type="button" { "Cancel" } }
+                div class="form-actions" {
+                    a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
+                    button type="submit" class="button-primary" { "Open Channel" }
+                }
             }
         },
     );
 
-    Ok(Html(layout("Open Channel", content).into_string()))
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(
+        layout_with_status("Open Channel", content, is_running).into_string(),
+    ))
 }
 
 pub async fn post_open_channel(
@@ -105,7 +110,7 @@ pub async fn post_open_channel(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Open Channel Error", content).into_string(),
+                    layout_with_status("Open Channel Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -125,7 +130,7 @@ pub async fn post_open_channel(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Open Channel Error", content).into_string(),
+                    layout_with_status("Open Channel Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -149,7 +154,7 @@ pub async fn post_open_channel(
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .header("content-type", "text/html")
             .body(Body::from(
-                layout("Open Channel Error", content).into_string(),
+                layout_with_status("Open Channel Error", content, true).into_string(),
             ))
             .unwrap());
     }
@@ -207,55 +212,13 @@ pub async fn post_open_channel(
     Ok(Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
-            layout("Open Channel Result", content).into_string(),
+            layout_with_status("Open Channel Result", content, true).into_string(),
         ))
         .unwrap())
 }
 
 pub async fn close_channel_page(
-    State(_state): State<AppState>,
-    query: Query<HashMap<String, String>>,
-) -> Result<Html<String>, StatusCode> {
-    let channel_id = query.get("channel_id").unwrap_or(&"".to_string()).clone();
-    let node_id = query.get("node_id").unwrap_or(&"".to_string()).clone();
-
-    if channel_id.is_empty() || node_id.is_empty() {
-        let content = html! {
-            (error_message("Missing channel ID or node ID"))
-            div class="card" {
-                a href="/balance" { button { "← Back to Lightning" } }
-            }
-        };
-        return Ok(Html(layout("Close Channel Error", content).into_string()));
-    }
-
-    let content = form_card(
-        "Close Channel",
-        html! {
-            p { "Are you sure you want to close this channel?" }
-            div class="info-item" {
-                span class="info-label" { "User Channel ID:" }
-                span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (channel_id) }
-            }
-            div class="info-item" {
-                span class="info-label" { "Node ID:" }
-                span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (node_id) }
-            }
-            form method="post" action="/channels/close" style="margin-top: 1rem;" {
-                input type="hidden" name="channel_id" value=(channel_id) {}
-                input type="hidden" name="node_id" value=(node_id) {}
-                button type="submit" style="background: #dc3545;" { "Close Channel" }
-                " "
-                a href="/balance" { button type="button" { "Cancel" } }
-            }
-        },
-    );
-
-    Ok(Html(layout("Close Channel", content).into_string()))
-}
-
-pub async fn force_close_channel_page(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     query: Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
     let channel_id = query.get("channel_id").unwrap_or(&"".to_string()).clone();
@@ -269,41 +232,123 @@ pub async fn force_close_channel_page(
             }
         };
         return Ok(Html(
-            layout("Force Close Channel Error", content).into_string(),
+            layout_with_status("Close Channel Error", content, true).into_string(),
         ));
     }
+
+    // Get channel information for amount display
+    let channels = state.node.inner.list_channels();
+    let channel = channels
+        .iter()
+        .find(|c| c.user_channel_id.0.to_string() == channel_id);
+
+    let content = form_card(
+        "Close Channel",
+        html! {
+            p style="margin-bottom: 1.5rem;" { "Are you sure you want to close this channel?" }
+
+            // Channel details in consistent format
+            div class="channel-details" {
+                div class="detail-row" {
+                    span class="detail-label" { "User Channel ID" }
+                    span class="detail-value-amount" { (channel_id) }
+                }
+                div class="detail-row" {
+                    span class="detail-label" { "Node ID" }
+                    span class="detail-value-amount" { (node_id) }
+                }
+                @if let Some(ch) = channel {
+                    div class="detail-row" {
+                        span class="detail-label" { "Channel Amount" }
+                        span class="detail-value-amount" { (format_sats_as_btc(ch.channel_value_sats)) }
+                    }
+                }
+            }
+
+            form method="post" action="/channels/close" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;" {
+                input type="hidden" name="channel_id" value=(channel_id) {}
+                input type="hidden" name="node_id" value=(node_id) {}
+                a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
+                button type="submit" class="button-destructive" { "Close Channel" }
+            }
+        },
+    );
+
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(
+        layout_with_status("Close Channel", content, is_running).into_string(),
+    ))
+}
+
+pub async fn force_close_channel_page(
+    State(state): State<AppState>,
+    query: Query<HashMap<String, String>>,
+) -> Result<Html<String>, StatusCode> {
+    let channel_id = query.get("channel_id").unwrap_or(&"".to_string()).clone();
+    let node_id = query.get("node_id").unwrap_or(&"".to_string()).clone();
+
+    if channel_id.is_empty() || node_id.is_empty() {
+        let content = html! {
+            (error_message("Missing channel ID or node ID"))
+            div class="card" {
+                a href="/balance" { button { "← Back to Lightning" } }
+            }
+        };
+        return Ok(Html(
+            layout_with_status("Force Close Channel Error", content, true).into_string(),
+        ));
+    }
+
+    // Get channel information for amount display
+    let channels = state.node.inner.list_channels();
+    let channel = channels
+        .iter()
+        .find(|c| c.user_channel_id.0.to_string() == channel_id);
 
     let content = form_card(
         "Force Close Channel",
         html! {
-            div style="border: 2px solid #d63384; background-color: rgba(214, 51, 132, 0.1); padding: 1rem; margin-bottom: 1rem; border-radius: 0.5rem;" {
-                h4 style="color: #d63384; margin: 0 0 0.5rem 0;" { "⚠️ Warning: Force Close" }
-                p style="color: #d63384; margin: 0; font-size: 0.9rem;" {
+            div style="border: 2px solid #f97316; background-color: rgba(249, 115, 22, 0.1); padding: 1rem; margin-bottom: 1rem; border-radius: 0.5rem;" {
+                h4 style="color: #f97316; margin: 0 0 0.5rem 0;" { "⚠️ Warning: Force Close" }
+                p style="color: #f97316; margin: 0; font-size: 0.9rem;" {
                     "Force close should NOT be used if normal close is preferred. "
                     "Force close will immediately broadcast the latest commitment transaction and may result in delayed fund recovery. "
                     "Only use this if the channel counterparty is unresponsive or there are other issues preventing normal closure."
                 }
             }
-            p { "Are you sure you want to force close this channel?" }
-            div class="info-item" {
-                span class="info-label" { "User Channel ID:" }
-                span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (channel_id) }
+            p style="margin-bottom: 1.5rem;" { "Are you sure you want to force close this channel?" }
+
+            // Channel details in consistent format
+            div class="channel-details" {
+                div class="detail-row" {
+                    span class="detail-label" { "User Channel ID" }
+                    span class="detail-value-amount" { (channel_id) }
+                }
+                div class="detail-row" {
+                    span class="detail-label" { "Node ID" }
+                    span class="detail-value-amount" { (node_id) }
+                }
+                @if let Some(ch) = channel {
+                    div class="detail-row" {
+                        span class="detail-label" { "Channel Amount" }
+                        span class="detail-value-amount" { (format_sats_as_btc(ch.channel_value_sats)) }
+                    }
+                }
             }
-            div class="info-item" {
-                span class="info-label" { "Node ID:" }
-                span class="info-value" style="font-family: monospace; font-size: 0.85rem;" { (node_id) }
-            }
-            form method="post" action="/channels/force-close" style="margin-top: 1rem;" {
+
+            form method="post" action="/channels/force-close" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;" {
                 input type="hidden" name="channel_id" value=(channel_id) {}
                 input type="hidden" name="node_id" value=(node_id) {}
-                button type="submit" style="background: #d63384;" { "Force Close Channel" }
-                " "
-                a href="/balance" { button type="button" { "Cancel" } }
+                a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
+                button type="submit" class="button-destructive" { "Force Close Channel" }
             }
         },
     );
 
-    Ok(Html(layout("Force Close Channel", content).into_string()))
+    let is_running = is_node_running(&state.node.inner);
+    Ok(Html(
+        layout_with_status("Force Close Channel", content, is_running).into_string(),
+    ))
 }
 
 pub async fn post_close_channel(
@@ -333,7 +378,7 @@ pub async fn post_close_channel(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Close Channel Error", content).into_string(),
+                    layout_with_status("Close Channel Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -353,7 +398,7 @@ pub async fn post_close_channel(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Close Channel Error", content).into_string(),
+                    layout_with_status("Close Channel Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -404,7 +449,7 @@ pub async fn post_close_channel(
     Ok(Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
-            layout("Close Channel Result", content).into_string(),
+            layout_with_status("Close Channel Result", content, true).into_string(),
         ))
         .unwrap())
 }
@@ -436,7 +481,7 @@ pub async fn post_force_close_channel(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Force Close Channel Error", content).into_string(),
+                    layout_with_status("Force Close Channel Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -456,7 +501,7 @@ pub async fn post_force_close_channel(
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
-                    layout("Force Close Channel Error", content).into_string(),
+                    layout_with_status("Force Close Channel Error", content, true).into_string(),
                 ))
                 .unwrap());
         }
@@ -509,7 +554,7 @@ pub async fn post_force_close_channel(
     Ok(Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
-            layout("Force Close Channel Result", content).into_string(),
+            layout_with_status("Force Close Channel Result", content, true).into_string(),
         ))
         .unwrap())
 }
