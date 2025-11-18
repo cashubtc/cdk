@@ -19,12 +19,12 @@ use cdk_common::{Amount, CurrencyUnit, MeltOptions, MeltQuoteState};
 use futures::{Stream, StreamExt};
 use ldk_node::bitcoin::hashes::Hash;
 use ldk_node::bitcoin::Network;
-use ldk_node::config::{Config, WALLET_KEYS_SEED_LEN};
+
 use ldk_node::lightning::ln::channelmanager::PaymentId;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use ldk_node::lightning_invoice::{Bolt11InvoiceDescription, Description};
 use ldk_node::lightning_types::payment::PaymentHash;
-use ldk_node::logger::{LogLevel, LogRecord, LogWriter};
+use ldk_node::logger::{LogLevel, LogWriter};
 use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus, SendingParameters};
 use ldk_node::{Builder, Event, Node};
 use tokio::runtime::Runtime;
@@ -218,7 +218,7 @@ impl CdkLdkNode {
         if builder.log_dir_path.is_some() {
             ldk.set_filesystem_logger(builder.log_dir_path, Some(LogLevel::Info));
         } else {
-            ldk.set_custom_logger(Arc::new(StdoutLogWriter::default()));
+            ldk.set_custom_logger(Arc::new(StdoutLogWriter));
         }
 
         ldk.set_node_alias("cdk-ldk-node".to_string())?;

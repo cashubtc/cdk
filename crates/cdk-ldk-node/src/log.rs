@@ -4,7 +4,6 @@
 pub struct StdoutLogWriter;
 impl crate::LogWriter for StdoutLogWriter {
     /// Logs a given `LogRecord` instance using structured tracing events.
-
     fn log(&self, record: ldk_node::logger::LogRecord) {
         let level = match record.level.to_string().to_ascii_lowercase().as_str() {
             "error" => tracing::Level::ERROR,
