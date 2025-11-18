@@ -342,7 +342,6 @@ pub async fn get_check_melt_custom_quote(
 pub async fn post_melt_custom(
     #[cfg(feature = "auth")] auth: AuthHeader,
     prefer: PreferHeader,
-
     State(state): State<MintState>,
     Path(method): Path<String>,
     Json(payload): Json<cdk::nuts::MeltRequest<QuoteId>>,
@@ -438,7 +437,7 @@ pub async fn cache_post_melt_custom(
             #[cfg(feature = "auth")]
             return post_melt_custom(auth, prefer, state, method, payload).await;
             #[cfg(not(feature = "auth"))]
-            return post_melt_custom(state, method, payload).await;
+            return post_melt_custom(state, prefer, method, payload).await;
         }
     };
 
@@ -453,7 +452,7 @@ pub async fn cache_post_melt_custom(
     #[cfg(feature = "auth")]
     let result = post_melt_custom(auth, prefer, state, method, payload).await?;
     #[cfg(not(feature = "auth"))]
-    let result = post_melt_custom(state, method, payload).await?;
+    let result = post_melt_custom(state, prefer, method, payload).await?;
 
     // Cache the response
     mint_state.cache.set(cache_key, result.deref()).await;
