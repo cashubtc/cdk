@@ -35,7 +35,6 @@ pub struct PaymentConfirmed {
     #[allow(dead_code)] // Stored for completeness, accessed from DB in finalize
     pub blinded_messages: Vec<BlindedMessage>,
     pub payment_result: MakePaymentResponse,
-    #[allow(dead_code)] // Stored for completeness, may be used for metrics/tracking
     pub operation: Operation,
 }
 
