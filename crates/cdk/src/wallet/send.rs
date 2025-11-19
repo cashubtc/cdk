@@ -106,7 +106,7 @@ impl Wallet {
                         .collect(),
                 )
                 .await?;
-            amount + send_fee
+            amount + send_fee.total
         } else {
             amount
         };
@@ -122,7 +122,7 @@ impl Wallet {
 
         // Check if selected proofs are exact
         let send_fee = if opts.include_fee {
-            self.get_proofs_fee(&selected_proofs).await?
+            self.get_proofs_fee(&selected_proofs).await?.total
         } else {
             Amount::ZERO
         };
@@ -175,7 +175,10 @@ impl Wallet {
             (send_split, send_fee)
         } else {
             let send_split = amount.split(&fee_and_amounts);
-            let send_fee = Amount::ZERO;
+            let send_fee = crate::fees::ProofsFeeBreakdown {
+                total: Amount::ZERO,
+                per_keyset: std::collections::HashMap::new(),
+            };
             (send_split, send_fee)
         };
         tracing::debug!("Send amounts: {:?}", send_amounts);
@@ -188,7 +191,7 @@ impl Wallet {
             .await?;
 
         // Check if proofs are exact send amount (and does not exceed max_proofs)
-        let mut exact_proofs = proofs.total_amount()? == amount + send_fee;
+        let mut exact_proofs = proofs.total_amount()? == amount + send_fee.total;
         if let Some(max_proofs) = opts.max_proofs {
             exact_proofs &= proofs.len() <= max_proofs;
         }
@@ -209,7 +212,7 @@ impl Wallet {
             proofs,
             &send_amounts,
             amount,
-            send_fee,
+            send_fee.total,
             &keyset_fees,
             force_swap,
             is_exact_or_offline,
@@ -225,7 +228,7 @@ impl Wallet {
             proofs_to_swap: split_result.proofs_to_swap,
             swap_fee: split_result.swap_fee,
             proofs_to_send: split_result.proofs_to_send,
-            send_fee,
+            send_fee: send_fee.total,
         })
     }
 }
@@ -570,7 +573,7 @@ pub fn split_proofs_for_send(
                 // Ensure proofs_to_swap can cover the swap's input fee plus the needed output
                 loop {
                     let swap_input_fee =
-                        calculate_fee(&proofs_to_swap.count_by_keyset(), keyset_fees)?;
+                        calculate_fee(&proofs_to_swap.count_by_keyset(), keyset_fees)?.total;
                     let swap_total = proofs_to_swap.total_amount()?;
 
                     let swap_can_produce = swap_total.checked_sub(swap_input_fee);
@@ -595,7 +598,7 @@ pub fn split_proofs_for_send(
         }
     }
 
-    let swap_fee = calculate_fee(&proofs_to_swap.count_by_keyset(), keyset_fees)?;
+    let swap_fee = calculate_fee(&proofs_to_swap.count_by_keyset(), keyset_fees)?.total;
 
     Ok(ProofSplitResult {
         proofs_to_send,

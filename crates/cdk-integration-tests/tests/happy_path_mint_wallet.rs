@@ -332,7 +332,7 @@ async fn test_restore() {
 
     assert!(!proofs.is_empty());
 
-    let expected_fee = wallet.get_proofs_fee(&proofs).await.unwrap();
+    let expected_fee = wallet.get_proofs_fee(&proofs).await.unwrap().total;
     wallet_2
         .swap(None, SplitTarget::default(), proofs, None, false)
         .await

@@ -231,56 +231,149 @@ impl Saga {
 }
 
 /// Operation
-pub enum Operation {
-    /// Mint
-    Mint(Uuid),
-    /// Melt
-    Melt(Uuid),
-    /// Swap
-    Swap(Uuid),
+pub struct Operation {
+    id: Uuid,
+    kind: OperationKind,
+    total_issued: Amount,
+    total_redeemed: Amount,
+    fee_collected: Amount,
+    complete_at: Option<u64>,
+    /// Payment amount (only for melt operations)
+    payment_amount: Option<Amount>,
+    /// Payment fee (only for melt operations)
+    payment_fee: Option<Amount>,
+    /// Payment method (only for mint/melt operations)
+    payment_method: Option<PaymentMethod>,
 }
 
 impl Operation {
+    /// New
+    pub fn new(
+        id: Uuid,
+        kind: OperationKind,
+        total_issued: Amount,
+        total_redeemed: Amount,
+        fee_collected: Amount,
+        complete_at: Option<u64>,
+        payment_method: Option<PaymentMethod>,
+    ) -> Self {
+        Self {
+            id,
+            kind,
+            total_issued,
+            total_redeemed,
+            fee_collected,
+            complete_at,
+            payment_amount: None,
+            payment_fee: None,
+            payment_method,
+        }
+    }
+
     /// Mint
-    pub fn new_mint() -> Self {
-        Self::Mint(Uuid::new_v4())
+    pub fn new_mint(total_issued: Amount, payment_method: PaymentMethod) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            kind: OperationKind::Mint,
+            total_issued,
+            total_redeemed: Amount::ZERO,
+            fee_collected: Amount::ZERO,
+            complete_at: None,
+            payment_amount: None,
+            payment_fee: None,
+            payment_method: Some(payment_method),
+        }
     }
     /// Melt
-    pub fn new_melt() -> Self {
-        Self::Melt(Uuid::new_v4())
+    ///
+    /// In the context of a melt total_issued refrests to the change
+    pub fn new_melt(
+        total_redeemed: Amount,
+        fee_collected: Amount,
+        payment_method: PaymentMethod,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            kind: OperationKind::Melt,
+            total_issued: Amount::ZERO,
+            total_redeemed,
+            fee_collected,
+            complete_at: None,
+            payment_amount: None,
+            payment_fee: None,
+            payment_method: Some(payment_method),
+        }
     }
+
     /// Swap
-    pub fn new_swap() -> Self {
-        Self::Swap(Uuid::new_v4())
+    pub fn new_swap(total_issued: Amount, total_redeemed: Amount, fee_collected: Amount) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            kind: OperationKind::Swap,
+            total_issued,
+            total_redeemed,
+            fee_collected,
+            complete_at: None,
+            payment_amount: None,
+            payment_fee: None,
+            payment_method: None,
+        }
     }
 
     /// Operation id
     pub fn id(&self) -> &Uuid {
-        match self {
-            Operation::Mint(id) => id,
-            Operation::Melt(id) => id,
-            Operation::Swap(id) => id,
-        }
+        &self.id
     }
 
     /// Operation kind
-    pub fn kind(&self) -> &str {
-        match self {
-            Operation::Mint(_) => "mint",
-            Operation::Melt(_) => "melt",
-            Operation::Swap(_) => "swap",
-        }
+    pub fn kind(&self) -> OperationKind {
+        self.kind
     }
 
-    /// From kind and i
-    pub fn from_kind_and_id(kind: &str, id: &str) -> Result<Self, Error> {
-        let uuid = Uuid::parse_str(id)?;
-        match kind {
-            "mint" => Ok(Self::Mint(uuid)),
-            "melt" => Ok(Self::Melt(uuid)),
-            "swap" => Ok(Self::Swap(uuid)),
-            _ => Err(Error::Custom(format!("Invalid operation kind: {kind}"))),
-        }
+    /// Total issued
+    pub fn total_issued(&self) -> Amount {
+        self.total_issued
+    }
+
+    /// Total redeemed
+    pub fn total_redeemed(&self) -> Amount {
+        self.total_redeemed
+    }
+
+    /// Fee collected
+    pub fn fee_collected(&self) -> Amount {
+        self.fee_collected
+    }
+
+    /// Completed time
+    pub fn completed_at(&self) -> &Option<u64> {
+        &self.complete_at
+    }
+
+    /// Add change
+    pub fn add_change(&mut self, change: Amount) {
+        self.total_issued = change;
+    }
+
+    /// Payment amount (only for melt operations)
+    pub fn payment_amount(&self) -> Option<Amount> {
+        self.payment_amount
+    }
+
+    /// Payment fee (only for melt operations)
+    pub fn payment_fee(&self) -> Option<Amount> {
+        self.payment_fee
+    }
+
+    /// Set payment details for melt operations
+    pub fn set_payment_details(&mut self, payment_amount: Amount, payment_fee: Amount) {
+        self.payment_amount = Some(payment_amount);
+        self.payment_fee = Some(payment_fee);
+    }
+
+    /// Payment method (only for mint/melt operations)
+    pub fn payment_method(&self) -> Option<PaymentMethod> {
+        self.payment_method.clone()
     }
 }
 
