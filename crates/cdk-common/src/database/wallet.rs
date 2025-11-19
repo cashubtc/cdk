@@ -141,8 +141,10 @@ pub trait Database: Debug {
 
     /// Get mint quotes from storage
     async fn get_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Self::Err>;
-    /// Get pending mint quotes from storage (quotes with mintable balance or bolt12 quotes)
-    async fn get_unpaid_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Self::Err>;
+    /// Get unissued mint quotes from storage
+    /// Returns bolt11 quotes where nothing has been issued yet (amount_issued = 0) and all bolt12 quotes.
+    /// Includes unpaid bolt11 quotes to allow checking with the mint if they've been paid (wallet state may be outdated).
+    async fn get_unissued_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Self::Err>;
 
     /// Get melt quote from storage
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err>;

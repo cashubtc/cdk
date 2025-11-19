@@ -208,7 +208,7 @@ impl Wallet {
             &keys,
         )?;
 
-        // Remove filled quote from store
+        // Update quote with issued amount
         let mut quote_info = tx
             .get_mint_quote(quote_id)
             .await?

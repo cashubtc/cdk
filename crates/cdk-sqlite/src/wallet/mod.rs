@@ -281,4 +281,112 @@ mod tests {
         assert_eq!(single_proof[0].mint_url, proof_infos[2].mint_url);
         assert_eq!(single_proof[0].state, proof_infos[2].state);
     }
+
+    #[tokio::test]
+    async fn test_get_unissued_mint_quotes() {
+        use cdk_common::mint_url::MintUrl;
+        use cdk_common::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
+        use cdk_common::wallet::MintQuote;
+        use cdk_common::Amount;
+
+        // Create a temporary database
+        let path = std::env::temp_dir().to_path_buf().join(format!(
+            "cdk-test-unpaid-quotes-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+
+        #[cfg(feature = "sqlcipher")]
+        let db = WalletSqliteDatabase::new((path, "password".to_string()))
+            .await
+            .unwrap();
+
+        #[cfg(not(feature = "sqlcipher"))]
+        let db = WalletSqliteDatabase::new(path).await.unwrap();
+
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+
+        // Quote 1: Fully paid and issued (should NOT be returned)
+        let quote1 = MintQuote {
+            id: "quote_fully_paid".to_string(),
+            mint_url: mint_url.clone(),
+            amount: Some(Amount::from(100)),
+            unit: CurrencyUnit::Sat,
+            request: "test_request_1".to_string(),
+            state: MintQuoteState::Paid,
+            expiry: 1000000000,
+            secret_key: None,
+            payment_method: PaymentMethod::Bolt11,
+            amount_issued: Amount::from(100),
+            amount_paid: Amount::from(100),
+        };
+
+        // Quote 2: Paid but not yet issued (should be returned - has pending balance)
+        let quote2 = MintQuote {
+            id: "quote_pending_balance".to_string(),
+            mint_url: mint_url.clone(),
+            amount: Some(Amount::from(100)),
+            unit: CurrencyUnit::Sat,
+            request: "test_request_2".to_string(),
+            state: MintQuoteState::Paid,
+            expiry: 1000000000,
+            secret_key: None,
+            payment_method: PaymentMethod::Bolt11,
+            amount_issued: Amount::from(0),
+            amount_paid: Amount::from(100),
+        };
+
+        // Quote 3: Bolt12 quote with no balance (should be returned - bolt12 is reusable)
+        let quote3 = MintQuote {
+            id: "quote_bolt12".to_string(),
+            mint_url: mint_url.clone(),
+            amount: Some(Amount::from(100)),
+            unit: CurrencyUnit::Sat,
+            request: "test_request_3".to_string(),
+            state: MintQuoteState::Unpaid,
+            expiry: 1000000000,
+            secret_key: None,
+            payment_method: PaymentMethod::Bolt12,
+            amount_issued: Amount::from(0),
+            amount_paid: Amount::from(0),
+        };
+
+        // Quote 4: Unpaid bolt11 quote (should be returned - wallet needs to check with mint)
+        let quote4 = MintQuote {
+            id: "quote_unpaid".to_string(),
+            mint_url: mint_url.clone(),
+            amount: Some(Amount::from(100)),
+            unit: CurrencyUnit::Sat,
+            request: "test_request_4".to_string(),
+            state: MintQuoteState::Unpaid,
+            expiry: 1000000000,
+            secret_key: None,
+            payment_method: PaymentMethod::Bolt11,
+            amount_issued: Amount::from(0),
+            amount_paid: Amount::from(0),
+        };
+
+        // Add all quotes to the database
+        db.add_mint_quote(quote1).await.unwrap();
+        db.add_mint_quote(quote2.clone()).await.unwrap();
+        db.add_mint_quote(quote3.clone()).await.unwrap();
+        db.add_mint_quote(quote4.clone()).await.unwrap();
+
+        // Get unissued mint quotes
+        let unissued_quotes = db.get_unissued_mint_quotes().await.unwrap();
+
+        // Should return 3 quotes: quote2, quote3, and quote4
+        // - quote2: bolt11 with amount_issued = 0 (needs minting)
+        // - quote3: bolt12 (always returned, reusable)
+        // - quote4: bolt11 with amount_issued = 0 (check with mint if paid)
+        assert_eq!(unissued_quotes.len(), 3);
+
+        // Verify the returned quotes are the expected ones
+        let quote_ids: Vec<&str> = unissued_quotes.iter().map(|q| q.id.as_str()).collect();
+        assert!(quote_ids.contains(&"quote_pending_balance"));
+        assert!(quote_ids.contains(&"quote_bolt12"));
+        assert!(quote_ids.contains(&"quote_unpaid"));
+
+        // Verify that fully paid and issued quote is not returned
+        assert!(!quote_ids.contains(&"quote_fully_paid"));
+    }
 }

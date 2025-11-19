@@ -1069,7 +1069,7 @@ where
     }
 
     #[instrument(skip(self))]
-    async fn get_unpaid_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+    async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -1088,7 +1088,7 @@ where
             FROM
                 mint_quote
             WHERE
-                (amount_paid > amount_issued AND amount_paid > 0)
+                amount_issued = 0
                 OR
                 payment_method = 'bolt12'
             "#,
