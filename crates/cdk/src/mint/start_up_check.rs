@@ -315,22 +315,103 @@ impl Mint {
                 }
             };
 
-            // Check saga state to determine if payment was sent
-            // SetupComplete means setup transaction committed but payment NOT yet sent
+            // Check saga state to determine if payment was attempted
+            // SetupComplete means setup transaction committed but payment NOT yet attempted
+            // PaymentAttempted means payment was attempted - must check LN backend
             let should_compensate = match &saga.state {
                 cdk_common::mint::SagaStateEnum::Melt(state) => {
                     match state {
                         cdk_common::mint::MeltSagaState::SetupComplete => {
-                            // Setup complete but payment never sent - always compensate
+                            // Setup complete but payment never attempted - always compensate
                             tracing::info!(
-                                "Saga {} in SetupComplete state - payment never sent, will compensate",
+                                "Saga {} in SetupComplete state - payment never attempted, will compensate",
                                 saga.operation_id
                             );
                             true
                         }
-                        _ => {
-                            // Other states - should not happen in incomplete sagas, but check payment status anyway
-                            false // Will check payment status below
+                        cdk_common::mint::MeltSagaState::PaymentAttempted => {
+                            // Payment was attempted - check for internal settlement first, then LN backend
+                            tracing::info!(
+                                "Saga {} in PaymentAttempted state - checking for internal or external payment",
+                                saga.operation_id
+                            );
+
+                            // Check if this was an internal settlement by looking for a mint quote
+                            // that was paid by this melt quote
+                            let is_internal_settlement = match self
+                                .localstore
+                                .get_mint_quote_by_request(&quote.request.to_string())
+                                .await
+                            {
+                                Ok(Some(mint_quote)) => {
+                                    // Check if this mint quote was paid by our melt quote
+                                    let melt_quote_id_str = quote.id.to_string();
+                                    mint_quote.payment_ids().contains(&&melt_quote_id_str)
+                                }
+                                Ok(None) => false,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Error checking for internal settlement for saga {}: {}",
+                                        saga.operation_id,
+                                        e
+                                    );
+                                    false
+                                }
+                            };
+
+                            if is_internal_settlement {
+                                // Internal settlement was completed - finalize directly
+                                tracing::info!(
+                                    "Saga {} was internal settlement - will finalize directly",
+                                    saga.operation_id
+                                );
+
+                                // Get payment info for finalization
+                                let total_spent = quote.amount;
+                                let payment_lookup_id =
+                                    quote.request_lookup_id.clone().unwrap_or_else(|| {
+                                        cdk_common::payment::PaymentIdentifier::CustomId(
+                                            quote.id.to_string(),
+                                        )
+                                    });
+
+                                if let Err(err) = self
+                                    .finalize_paid_melt_quote(
+                                        &quote,
+                                        total_spent,
+                                        None, // No preimage for internal settlement
+                                        &payment_lookup_id,
+                                    )
+                                    .await
+                                {
+                                    tracing::error!(
+                                        "Failed to finalize internal settlement saga {}: {}",
+                                        saga.operation_id,
+                                        err
+                                    );
+                                }
+
+                                // Delete saga after successful finalization
+                                let mut tx = self.localstore.begin_transaction().await?;
+                                if let Err(e) = tx.delete_saga(&saga.operation_id).await {
+                                    tracing::error!(
+                                        "Failed to delete saga for {}: {}",
+                                        saga.operation_id,
+                                        e
+                                    );
+                                    tx.rollback().await?;
+                                } else {
+                                    tx.commit().await?;
+                                    tracing::info!(
+                                        "Successfully recovered and finalized internal settlement saga {}",
+                                        saga.operation_id
+                                    );
+                                }
+
+                                continue; // Skip to next saga
+                            }
+
+                            false // Will check LN payment status below
                         }
                     }
                 }
