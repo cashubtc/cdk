@@ -357,7 +357,14 @@ fn main() -> Result<()> {
                 addr: [127, 0, 0, 1],
                 port: 8092,
             }],
-        );
+        )
+        .with_seed(
+            Mnemonic::parse(
+                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            )
+            .unwrap(),
+        )
+        .with_log_dir_path(ldk_work_dir.join("logs").to_string_lossy().to_string());
         let cdk_ldk = node_builder.build()?;
 
         let inner_node = cdk_ldk.node();
