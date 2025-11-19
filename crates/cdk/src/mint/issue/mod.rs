@@ -657,7 +657,8 @@ impl Mint {
         let unit = unit.ok_or(Error::UnsupportedUnit).unwrap();
         ensure_cdk!(unit == mint_quote.unit, Error::UnsupportedUnit);
 
-        let operation = Operation::new_mint();
+        let amount_issued = mint_request.total_amount()?;
+        let operation = Operation::new_mint(amount_issued);
 
         tx.add_blinded_messages(Some(&mint_request.quote), &mint_request.outputs, &operation).await?;
 
@@ -672,11 +673,13 @@ impl Mint {
         )
             .await?;
 
-        let amount_issued = mint_request.total_amount()?;
 
         let total_issued = tx
             .increment_mint_quote_amount_issued(&mint_request.quote, amount_issued)
             .await?;
+
+
+        tx.add_completed_operation(&operation).await?;
 
         tx.commit().await?;
 

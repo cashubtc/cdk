@@ -127,8 +127,8 @@ pub struct MeltSaga<S> {
     pubsub: Arc<PubSubManager>,
     /// Compensating actions in LIFO order (most recent first)
     compensations: Arc<Mutex<VecDeque<Box<dyn CompensatingAction>>>>,
-    /// Operation for tracking
-    operation: Operation,
+    /// Operation ID (used for saga tracking, generated upfront)
+    operation_id: uuid::Uuid,
     /// Tracks if metrics were incremented (for cleanup)
     #[cfg(feature = "prometheus")]
     metrics_incremented: bool,
@@ -141,15 +141,17 @@ impl MeltSaga<Initial> {
         #[cfg(feature = "prometheus")]
         METRICS.inc_in_flight_requests("melt_bolt11");
 
+        let operation_id = uuid::Uuid::new_v4();
+
         Self {
             mint,
             db,
             pubsub,
             compensations: Arc::new(Mutex::new(VecDeque::new())),
-            operation: Operation::new_melt(),
+            operation_id,
             #[cfg(feature = "prometheus")]
             metrics_incremented: true,
-            state_data: Initial,
+            state_data: Initial { operation_id },
         }
     }
 
@@ -198,12 +200,27 @@ impl MeltSaga<Initial> {
 
         let mut tx = self.db.begin_transaction().await?;
 
+        // Calculate fee to create Operation with actual amounts
+        let fee = self.mint.get_proofs_fee(melt_request.inputs()).await?;
+
+        // Create Operation with actual amounts now that we know them
+        // total_redeemed = input_amount (proofs being burnt)
+        // fee_collected = fee
+        let operation = Operation::new(
+            self.state_data.operation_id,
+            cdk_common::mint::OperationKind::Melt,
+            Amount::ZERO, // total_issued (change will be calculated later)
+            input_amount, // total_redeemed
+            fee,          // fee_collected
+            None,         // complete_at
+        );
+
         // Add proofs to the database
         if let Err(err) = tx
             .add_proofs(
                 melt_request.inputs().clone(),
                 Some(melt_request.quote_id().to_owned()),
-                &self.operation,
+                &operation,
             )
             .await
         {
@@ -284,8 +301,6 @@ impl MeltSaga<Initial> {
         self.pubsub
             .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
 
-        let fee = self.mint.get_proofs_fee(melt_request.inputs()).await?;
-
         let required_total = quote.amount + quote.fee_reserve + fee;
 
         if input_amount < required_total {
@@ -335,7 +350,7 @@ impl MeltSaga<Initial> {
         tx.add_blinded_messages(
             Some(melt_request.quote_id()),
             melt_request.outputs().as_ref().unwrap_or(&Vec::new()),
-            &self.operation,
+            &operation,
         )
         .await?;
 
@@ -350,7 +365,7 @@ impl MeltSaga<Initial> {
 
         // Persist saga state for crash recovery (atomic with TX1)
         let saga = Saga::new_melt(
-            *self.operation.id(),
+            self.operation_id,
             MeltSagaState::SetupComplete,
             input_ys.clone(),
             blinded_secrets.clone(),
@@ -384,13 +399,14 @@ impl MeltSaga<Initial> {
             db: self.db,
             pubsub: self.pubsub,
             compensations: self.compensations,
-            operation: self.operation,
+            operation_id: self.operation_id,
             #[cfg(feature = "prometheus")]
             metrics_incremented: self.metrics_incremented,
             state_data: SetupComplete {
                 quote,
                 input_ys,
                 blinded_messages: blinded_messages_vec,
+                operation,
             },
         })
     }
@@ -495,7 +511,7 @@ impl MeltSaga<SetupComplete> {
         // Update saga state to PaymentAttempted BEFORE internal settlement commits
         // This ensures crash recovery knows payment may have occurred
         tx.update_saga(
-            self.operation.id(),
+            &self.operation_id,
             SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
         )
         .await?;
@@ -620,7 +636,7 @@ impl MeltSaga<SetupComplete> {
                 {
                     let mut tx = self.db.begin_transaction().await?;
                     tx.update_saga(
-                        self.operation.id(),
+                        &self.operation_id,
                         SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
                     )
                     .await?;
@@ -737,7 +753,7 @@ impl MeltSaga<SetupComplete> {
             db: self.db,
             pubsub: self.pubsub,
             compensations: self.compensations,
-            operation: self.operation,
+            operation_id: self.operation_id,
             #[cfg(feature = "prometheus")]
             metrics_incremented: self.metrics_incremented,
             state_data: PaymentConfirmed {
@@ -745,6 +761,7 @@ impl MeltSaga<SetupComplete> {
                 input_ys: self.state_data.input_ys,
                 blinded_messages: self.state_data.blinded_messages,
                 payment_result,
+                operation: self.state_data.operation,
             },
         })
     }
@@ -895,10 +912,28 @@ impl MeltSaga<PaymentConfirmed> {
         tx.delete_melt_request(&self.state_data.quote.id).await?;
 
         // Delete saga - melt completed successfully (best-effort)
-        if let Err(e) = tx.delete_saga(self.operation.id()).await {
+        if let Err(e) = tx.delete_saga(&self.operation_id).await {
             tracing::warn!("Failed to delete saga in finalize: {}", e);
             // Don't rollback - melt succeeded
         }
+
+        let mut operation = self.state_data.operation;
+        let change_amount = change
+            .as_ref()
+            .map(|c| Amount::try_sum(c.iter().map(|a| a.amount)).expect("Change cannot overflow"))
+            .unwrap_or_default();
+
+        operation.add_change(change_amount);
+
+        // Set payment details for melt operation
+        // payment_amount = the Lightning invoice amount
+        // payment_fee = actual fee paid (total_spent - invoice_amount)
+        let payment_fee = total_spent
+            .checked_sub(self.state_data.quote.amount)
+            .unwrap_or(Amount::ZERO);
+        operation.set_payment_details(self.state_data.quote.amount, payment_fee);
+
+        tx.add_completed_operation(&operation).await?;
 
         tx.commit().await?;
 
@@ -914,11 +949,7 @@ impl MeltSaga<PaymentConfirmed> {
             self.state_data.quote.id,
             total_spent,
             inputs_amount,
-            change
-                .as_ref()
-                .map(|c| Amount::try_sum(c.iter().map(|a| a.amount))
-                    .expect("Change cannot overflow"))
-                .unwrap_or_default()
+            change_amount
         );
 
         self.compensations.lock().await.clear();
