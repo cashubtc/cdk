@@ -6,13 +6,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use cashu::Amount;
 use cdk_integration_tests::cli::{init_logging, CommonArgs};
 use cdk_integration_tests::init_regtest::start_regtest_end;
-use cdk_ldk_node::CdkLdkNode;
 use clap::Parser;
-use ldk_node::lightning::ln::msgs::SocketAddress;
-use tokio::signal;
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{oneshot, Notify};
 use tokio::time::timeout;
 
@@ -25,6 +22,10 @@ struct Args {
 
     /// Working directory path
     work_dir: String,
+
+    /// Skip LDK node initialization (for interactive mode where mint will create its own LDK node)
+    #[arg(long)]
+    skip_ldk: bool,
 }
 
 fn signal_progress(work_dir: &Path) {
@@ -50,37 +51,15 @@ async fn main() -> Result<()> {
     let shutdown_clone = Arc::clone(&shutdown_regtest);
     let shutdown_clone_two = Arc::clone(&shutdown_regtest);
 
-    let ldk_work_dir = temp_dir.join("ldk_mint");
-    let cdk_ldk = CdkLdkNode::new(
-        bitcoin::Network::Regtest,
-        cdk_ldk_node::ChainSource::BitcoinRpc(cdk_ldk_node::BitcoinRpcConfig {
-            host: "127.0.0.1".to_string(),
-            port: 18443,
-            user: "testuser".to_string(),
-            password: "testpass".to_string(),
-        }),
-        cdk_ldk_node::GossipSource::P2P,
-        ldk_work_dir.to_string_lossy().to_string(),
-        cdk_common::common::FeeReserve {
-            min_fee_reserve: Amount::ZERO,
-            percent_fee_reserve: 0.0,
-        },
-        vec![SocketAddress::TcpIpV4 {
-            addr: [127, 0, 0, 1],
-            port: 8092,
-        }],
-        None,
-    )?;
-
-    let inner_node = cdk_ldk.node();
-
     let temp_dir_clone = temp_dir.clone();
+    let skip_ldk = args.skip_ldk;
 
     let (tx, rx) = oneshot::channel();
     tokio::spawn(async move {
-        start_regtest_end(&temp_dir_clone, tx, shutdown_clone, Some(inner_node))
-            .await
-            .expect("Error starting regtest");
+        if let Err(e) = start_regtest_end(&temp_dir_clone, tx, shutdown_clone, skip_ldk).await {
+            tracing::error!("Error starting regtest: {:?}", e);
+            panic!("Error starting regtest: {:?}", e);
+        }
     });
 
     match timeout(Duration::from_secs(300), rx).await {
@@ -95,12 +74,22 @@ async fn main() -> Result<()> {
     }
 
     let shutdown_future = async {
-        // Wait for Ctrl+C signal
-        signal::ctrl_c()
-            .await
-            .expect("failed to install CTRL+C handler");
-        tracing::info!("Shutdown signal received");
-        println!("\nReceived Ctrl+C, shutting down mints...");
+        // Wait for SIGTERM or SIGINT (Ctrl+C) signal
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
+
+        tokio::select! {
+            _ = sigterm.recv() => {
+                tracing::info!("Received SIGTERM");
+                println!("\nReceived SIGTERM, shutting down...");
+            }
+            _ = sigint.recv() => {
+                tracing::info!("Received SIGINT/Ctrl+C");
+                println!("\nReceived Ctrl+C, shutting down...");
+            }
+        }
+
         shutdown_clone_two.notify_waiters();
     };
 

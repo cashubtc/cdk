@@ -37,8 +37,11 @@ once_cell.workspace = true
 uuid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-# ln-regtest-rs = { path = "../../../../ln-regtest-rs" }
-ln-regtest-rs = { git = "https://github.com/thesimplekid/ln-regtest-rs", rev = "df81424" }
+bitcoincore-rpc.workspace = true
+cln-rpc.workspace = true
+fedimint-tonic-lnd.workspace = true
+lightning.workspace = true
+tempfile.workspace = true
 lightning-invoice.workspace = true
 ldk-node.workspace = true
 tracing.workspace = true
@@ -51,6 +54,7 @@ reqwest.workspace = true
 bitcoin = "0.32.0"
 clap = { workspace = true, features = ["derive"] }
 web-time.workspace = true
+nix = { workspace = true, features = ["signal"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio.workspace = true

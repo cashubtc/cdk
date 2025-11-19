@@ -273,7 +273,18 @@ goose-changelog-commits *COMMITS="5":
 itest db:
   #!/usr/bin/env bash
   set -euo pipefail
+
+  echo "Starting itest timing..."
+  START_TIME=$(date +%s.%N)
+
   ./misc/itests.sh "{{db}}"
+
+  END_TIME=$(date +%s.%N)
+  ELAPSED=$(awk "BEGIN {printf \"%.2f\", $END_TIME - $START_TIME}")
+
+  echo ""
+  echo "Integration tests completed!"
+  echo "Total time: ${ELAPSED}s"
 
 fake-mint-itest db:
   #!/usr/bin/env bash
@@ -301,6 +312,115 @@ regtest db="sqlite":
   #!/usr/bin/env bash
   set -euo pipefail
   ./misc/interactive_regtest_mprocs.sh {{db}}
+
+# Time regtest startup (build, start, measure setup time, then shutdown)
+time-regtest-startup:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  echo "⏱️  Building regtest binary..."
+  cargo build -p cdk-integration-tests --bin start_regtest --quiet
+
+  # Create temporary directory
+  TEMP_DIR=$(mktemp -d)
+  trap "rm -rf $TEMP_DIR" EXIT
+
+  # Create a named pipe for progress signaling
+  mkfifo "$TEMP_DIR/progress_pipe"
+
+  echo "🚀 Starting regtest environment timing test..."
+  echo "📁 Working directory: $TEMP_DIR"
+  echo ""
+
+  # Start the regtest in background and capture its PID
+  START_TIME=$(date +%s.%N)
+
+  # Run regtest in background (without pipe to avoid PID capture issues)
+  target/debug/start_regtest "$TEMP_DIR" --enable-logging > "$TEMP_DIR/regtest.log" 2>&1 &
+  REGTEST_PID=$!
+  echo "Started regtest with PID: $REGTEST_PID"
+
+  # Tail the log in background to show filtered output
+  tail -f "$TEMP_DIR/regtest.log" 2>/dev/null | grep -E "(Starting|initialized|opened|completed|ERROR|panic)" &
+  TAIL_PID=$!
+
+  # Start reading from pipe in background
+  (
+    if read -r line < "$TEMP_DIR/progress_pipe"; then
+      END_TIME=$(date +%s.%N)
+      ELAPSED=$(awk "BEGIN {printf \"%.2f\", $END_TIME - $START_TIME}")
+      echo ""
+      echo "✅ Regtest startup completed!"
+      echo "⏱️  Total time: ${ELAPSED}s"
+      # Signal completion
+      touch "$TEMP_DIR/timing_complete"
+    fi
+  ) &
+  READER_PID=$!
+
+  # Wait for reader to complete (with timeout)
+  if wait $READER_PID 2>/dev/null; then
+    # Success - kill the regtest process
+    echo "Shutting down regtest..."
+
+    # Kill the tail process first (don't need to see more logs)
+    kill $TAIL_PID 2>/dev/null || true
+
+    # Send SIGTERM to the main process
+    kill -TERM $REGTEST_PID 2>/dev/null || true
+
+    # Wait up to 10 seconds for graceful shutdown
+    for i in {1..10}; do
+      if ! kill -0 $REGTEST_PID 2>/dev/null; then
+        echo "Regtest shut down gracefully"
+        break
+      fi
+      sleep 1
+    done
+
+    # Force kill if still running
+    if kill -0 $REGTEST_PID 2>/dev/null; then
+      echo "Force killing regtest..."
+      kill -9 $REGTEST_PID 2>/dev/null || true
+    fi
+
+    # Clean up any lingering daemon processes
+    echo "Cleaning up daemon processes..."
+    pkill -f "bitcoind.*regtest" 2>/dev/null || true
+    pkill -f "lightningd.*regtest" 2>/dev/null || true
+    pkill -f "lnd.*regtest" 2>/dev/null || true
+
+    # Give processes a moment to clean up
+    sleep 1
+
+    # Verify cleanup (pgrep returns 1 when no matches, so we need to handle that)
+    set +e  # Temporarily disable exit on error for pgrep
+    REMAINING=$(pgrep -f "bitcoind.*regtest|lightningd.*regtest|lnd.*regtest" 2>/dev/null | wc -l)
+    set -e  # Re-enable exit on error
+
+    if [ "$REMAINING" -gt 0 ]; then
+      echo "⚠️  Warning: $REMAINING daemon processes still running, force killing..."
+      pkill -9 -f "bitcoind.*regtest" 2>/dev/null || true
+      pkill -9 -f "lightningd.*regtest" 2>/dev/null || true
+      pkill -9 -f "lnd.*regtest" 2>/dev/null || true
+      sleep 1
+    fi
+
+    echo "✅ Timing test completed successfully"
+    exit 0
+  else
+    echo "❌ Regtest startup timed out or failed"
+    kill -9 $TAIL_PID 2>/dev/null || true
+    kill -9 $REGTEST_PID 2>/dev/null || true
+    kill -9 $READER_PID 2>/dev/null || true
+
+    # Clean up daemon processes on failure too
+    pkill -9 -f "bitcoind.*regtest" 2>/dev/null || true
+    pkill -9 -f "lightningd.*regtest" 2>/dev/null || true
+    pkill -9 -f "lnd.*regtest" 2>/dev/null || true
+
+    exit 1
+  fi
 
 # Lightning Network Commands (require regtest environment to be running)
 

@@ -23,6 +23,8 @@ use cdk::nuts::CurrencyUnit;
     feature = "fakewallet"
 ))]
 use cdk::types::FeeReserve;
+#[cfg(feature = "ldk-node")]
+use ldk_node::Node;
 
 use crate::config::{self, Settings};
 #[cfg(feature = "cln")]
@@ -37,6 +39,8 @@ pub trait LnBackendSetup {
         runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
         kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        #[cfg(feature = "ldk-node")] existing_ldk_node: Option<Arc<Node>>,
+        #[cfg(not(feature = "ldk-node"))] _existing_ldk_node: (),
     ) -> anyhow::Result<impl MintPayment>;
 }
 
@@ -50,6 +54,8 @@ impl LnBackendSetup for config::Cln {
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
         kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        #[cfg(feature = "ldk-node")] _existing_ldk_node: Option<Arc<Node>>,
+        #[cfg(not(feature = "ldk-node"))] _existing_ldk_node: (),
     ) -> anyhow::Result<cdk_cln::Cln> {
         // Validate required connection field
         if self.rpc_path.as_os_str().is_empty() {
@@ -91,6 +97,8 @@ impl LnBackendSetup for config::LNbits {
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
         _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        #[cfg(feature = "ldk-node")] _existing_ldk_node: Option<Arc<Node>>,
+        #[cfg(not(feature = "ldk-node"))] _existing_ldk_node: (),
     ) -> anyhow::Result<cdk_lnbits::LNbits> {
         // Validate required connection fields
         if self.admin_api_key.is_empty() {
@@ -138,6 +146,8 @@ impl LnBackendSetup for config::Lnd {
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
         kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        #[cfg(feature = "ldk-node")] _existing_ldk_node: Option<Arc<Node>>,
+        #[cfg(not(feature = "ldk-node"))] _existing_ldk_node: (),
     ) -> anyhow::Result<cdk_lnd::Lnd> {
         // Validate required connection fields
         if self.address.is_empty() {
@@ -184,6 +194,8 @@ impl LnBackendSetup for config::FakeWallet {
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
         _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        #[cfg(feature = "ldk-node")] _existing_ldk_node: Option<Arc<Node>>,
+        #[cfg(not(feature = "ldk-node"))] _existing_ldk_node: (),
     ) -> anyhow::Result<cdk_fake_wallet::FakeWallet> {
         let fee_reserve = FeeReserve {
             min_fee_reserve: self.reserve_fee_min,
@@ -216,6 +228,8 @@ impl LnBackendSetup for config::GrpcProcessor {
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         _work_dir: &Path,
         _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        #[cfg(feature = "ldk-node")] _existing_ldk_node: Option<Arc<Node>>,
+        #[cfg(not(feature = "ldk-node"))] _existing_ldk_node: (),
     ) -> anyhow::Result<cdk_payment_processor::PaymentProcessorClient> {
         let payment_processor = cdk_payment_processor::PaymentProcessorClient::new(
             &self.addr,
@@ -231,6 +245,12 @@ impl LnBackendSetup for config::GrpcProcessor {
 #[cfg(feature = "ldk-node")]
 #[async_trait]
 impl LnBackendSetup for config::LdkNode {
+    /// Setup LDK node backend
+    ///
+    /// # Arguments
+    /// * `runtime` - Tokio runtime for the LDK node. Only used when creating a NEW node.
+    ///               Ignored when `existing_ldk_node` is provided (node already running).
+    /// * `existing_ldk_node` - Optional pre-existing LDK node to reuse (e.g., from regtest setup)
     async fn setup(
         &self,
         _settings: &Settings,
@@ -238,6 +258,8 @@ impl LnBackendSetup for config::LdkNode {
         runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
         _kv_store: Option<Arc<dyn MintKVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+        #[cfg(feature = "ldk-node")] existing_ldk_node: Option<Arc<Node>>,
+        #[cfg(not(feature = "ldk-node"))] _existing_ldk_node: (),
     ) -> anyhow::Result<cdk_ldk_node::CdkLdkNode> {
         use std::net::SocketAddr;
 
@@ -248,97 +270,107 @@ impl LnBackendSetup for config::LdkNode {
             percent_fee_reserve: self.fee_percent,
         };
 
-        // Parse network from config
-        let network = match self
-            .bitcoin_network
-            .as_ref()
-            .map(|n| n.to_lowercase())
-            .as_deref()
-            .unwrap_or("regtest")
-        {
-            "mainnet" | "bitcoin" => Network::Bitcoin,
-            "testnet" => Network::Testnet,
-            "signet" => Network::Signet,
-            _ => Network::Regtest,
-        };
-
-        // Parse chain source from config
-        let chain_source = match self
-            .chain_source_type
-            .as_ref()
-            .map(|s| s.to_lowercase())
-            .as_deref()
-            .unwrap_or("esplora")
-        {
-            "bitcoinrpc" => {
-                let host = self
-                    .bitcoind_rpc_host
-                    .clone()
-                    .unwrap_or_else(|| "127.0.0.1".to_string());
-                let port = self.bitcoind_rpc_port.unwrap_or(18443);
-                let user = self
-                    .bitcoind_rpc_user
-                    .clone()
-                    .unwrap_or_else(|| "testuser".to_string());
-                let password = self
-                    .bitcoind_rpc_password
-                    .clone()
-                    .unwrap_or_else(|| "testpass".to_string());
-
-                cdk_ldk_node::ChainSource::BitcoinRpc(cdk_ldk_node::BitcoinRpcConfig {
-                    host,
-                    port,
-                    user,
-                    password,
-                })
-            }
-            _ => {
-                let esplora_url = self
-                    .esplora_url
-                    .clone()
-                    .unwrap_or_else(|| "https://mutinynet.com/api".to_string());
-                cdk_ldk_node::ChainSource::Esplora(esplora_url)
-            }
-        };
-
-        // Parse gossip source from config
-        let gossip_source = match self.rgs_url.clone() {
-            Some(rgs_url) => cdk_ldk_node::GossipSource::RapidGossipSync(rgs_url),
-            None => cdk_ldk_node::GossipSource::P2P,
-        };
-
-        // Get storage directory path
-        let storage_dir_path = if let Some(dir_path) = &self.storage_dir_path {
-            dir_path.clone()
+        // Check if an existing LDK node was provided
+        // If so, use it instead of creating a new one
+        let mut ldk_node = if let Some(existing_node) = existing_ldk_node {
+            tracing::info!("Using existing LDK node instance (already running, no runtime needed)");
+            // When using an existing node, it's already running so we don't need a runtime
+            cdk_ldk_node::CdkLdkNode::from_node(existing_node, fee_reserve, None)?
         } else {
-            let mut work_dir = work_dir.to_path_buf();
-            work_dir.push("ldk-node");
-            work_dir.to_string_lossy().to_string()
+            tracing::info!("Creating new LDK node instance");
+
+            // Parse network from config
+            let network = match self
+                .bitcoin_network
+                .as_ref()
+                .map(|n| n.to_lowercase())
+                .as_deref()
+                .unwrap_or("regtest")
+            {
+                "mainnet" | "bitcoin" => Network::Bitcoin,
+                "testnet" => Network::Testnet,
+                "signet" => Network::Signet,
+                _ => Network::Regtest,
+            };
+
+            // Parse chain source from config
+            let chain_source = match self
+                .chain_source_type
+                .as_ref()
+                .map(|s| s.to_lowercase())
+                .as_deref()
+                .unwrap_or("esplora")
+            {
+                "bitcoinrpc" => {
+                    let host = self
+                        .bitcoind_rpc_host
+                        .clone()
+                        .unwrap_or_else(|| "127.0.0.1".to_string());
+                    let port = self.bitcoind_rpc_port.unwrap_or(18443);
+                    let user = self
+                        .bitcoind_rpc_user
+                        .clone()
+                        .unwrap_or_else(|| "testuser".to_string());
+                    let password = self
+                        .bitcoind_rpc_password
+                        .clone()
+                        .unwrap_or_else(|| "testpass".to_string());
+
+                    cdk_ldk_node::ChainSource::BitcoinRpc(cdk_ldk_node::BitcoinRpcConfig {
+                        host,
+                        port,
+                        user,
+                        password,
+                    })
+                }
+                _ => {
+                    let esplora_url = self
+                        .esplora_url
+                        .clone()
+                        .unwrap_or_else(|| "https://mutinynet.com/api".to_string());
+                    cdk_ldk_node::ChainSource::Esplora(esplora_url)
+                }
+            };
+
+            // Parse gossip source from config
+            let gossip_source = match self.rgs_url.clone() {
+                Some(rgs_url) => cdk_ldk_node::GossipSource::RapidGossipSync(rgs_url),
+                None => cdk_ldk_node::GossipSource::P2P,
+            };
+
+            // Get storage directory path
+            let storage_dir_path = if let Some(dir_path) = &self.storage_dir_path {
+                dir_path.clone()
+            } else {
+                let mut work_dir = work_dir.to_path_buf();
+                work_dir.push("ldk-node");
+                work_dir.to_string_lossy().to_string()
+            };
+
+            // Get LDK node listen address
+            let host = self
+                .ldk_node_host
+                .clone()
+                .unwrap_or_else(|| "127.0.0.1".to_string());
+            let port = self.ldk_node_port.unwrap_or(8090);
+
+            let socket_addr = SocketAddr::new(host.parse()?, port);
+
+            // Parse socket address using ldk_node's SocketAddress
+            // We need to get the actual socket address struct from ldk_node
+            // For now, let's construct it manually based on the cdk-ldk-node implementation
+            let listen_address = vec![socket_addr.into()];
+
+            cdk_ldk_node::CdkLdkNode::new(
+                network,
+                chain_source,
+                gossip_source,
+                storage_dir_path,
+                fee_reserve,
+                listen_address,
+                runtime,
+            )?
         };
-
-        // Get LDK node listen address
-        let host = self
-            .ldk_node_host
-            .clone()
-            .unwrap_or_else(|| "127.0.0.1".to_string());
-        let port = self.ldk_node_port.unwrap_or(8090);
-
-        let socket_addr = SocketAddr::new(host.parse()?, port);
-
-        // Parse socket address using ldk_node's SocketAddress
-        // We need to get the actual socket address struct from ldk_node
-        // For now, let's construct it manually based on the cdk-ldk-node implementation
-        let listen_address = vec![socket_addr.into()];
-
-        let mut ldk_node = cdk_ldk_node::CdkLdkNode::new(
-            network,
-            chain_source,
-            gossip_source,
-            storage_dir_path,
-            fee_reserve,
-            listen_address,
-            runtime,
-        )?;
 
         // Configure webserver address if specified
         let webserver_addr = if let Some(host) = &self.webserver_host {

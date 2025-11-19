@@ -26,15 +26,18 @@ use cdk::amount::{Amount, SplitTarget};
 use cdk::{StreamExt, Wallet};
 use cdk_fake_wallet::create_fake_invoice;
 use init_regtest::{get_lnd_dir, LND_RPC_ADDR};
-use ln_regtest_rs::ln_client::{ClnClient, LightningClient, LndClient};
 
 use crate::init_regtest::get_cln_dir;
+use crate::ln_regtest::ln_client::{ClnClient, LightningClient, LndClient};
 
 pub mod cli;
 pub mod init_auth_mint;
 pub mod init_pure_tests;
 pub mod init_regtest;
+pub mod jit;
+pub mod ln_regtest;
 pub mod shared;
+pub mod util;
 
 pub async fn fund_wallet(wallet: Arc<Wallet>, amount: Amount) {
     let quote = wallet
