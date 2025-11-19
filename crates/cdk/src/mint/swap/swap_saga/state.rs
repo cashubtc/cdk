@@ -29,6 +29,5 @@ pub struct Signed {
     pub blinded_messages: Vec<BlindedMessage>,
     pub ys: Vec<PublicKey>,
     pub signatures: Vec<BlindSignature>,
-    #[allow(dead_code)] // Stored for completeness, may be used for metrics/tracking
     pub operation: Operation,
 }
