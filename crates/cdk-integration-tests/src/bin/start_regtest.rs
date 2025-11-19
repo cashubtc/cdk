@@ -9,7 +9,7 @@ use anyhow::Result;
 use cashu::Amount;
 use cdk_integration_tests::cli::{init_logging, CommonArgs};
 use cdk_integration_tests::init_regtest::start_regtest_end;
-use cdk_ldk_node::{CdkLdkNode, CdkLdkNodeBuilder};
+use cdk_ldk_node::CdkLdkNodeBuilder;
 use clap::Parser;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use tokio::signal;

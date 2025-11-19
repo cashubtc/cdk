@@ -22,7 +22,7 @@ use cashu::Amount;
 use cdk_integration_tests::cli::CommonArgs;
 use cdk_integration_tests::init_regtest::start_regtest_end;
 use cdk_integration_tests::shared;
-use cdk_ldk_node::{CdkLdkNode, CdkLdkNodeBuilder};
+use cdk_ldk_node::CdkLdkNodeBuilder;
 use cdk_mintd::config::LoggingConfig;
 use clap::Parser;
 use ldk_node::lightning::ln::msgs::SocketAddress;
