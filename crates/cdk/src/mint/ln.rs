@@ -104,7 +104,6 @@ impl Mint {
                             payment.payment_id
                         );
                         // This is fine - another concurrent request already processed this payment
-                        // The in-memory check at line 49 can miss this due to stale data
                     }
                     Err(e) => return Err(e.into()),
                 }
