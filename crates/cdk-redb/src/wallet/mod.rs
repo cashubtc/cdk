@@ -524,7 +524,7 @@ impl WalletDatabase for WalletRedbDatabase {
             .flat_map(|(_id, quote)| serde_json::from_str::<MintQuote>(quote.value()).ok())
             .filter(|quote| {
                 // Return quotes with pending balance OR bolt12 quotes
-                (quote.amount_paid > quote.amount_issued && u64::from(quote.amount_paid) > 0)
+                quote.amount_paid > quote.amount_issued
                     || quote.payment_method == PaymentMethod::Bolt12
             })
             .collect())
