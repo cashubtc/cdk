@@ -766,7 +766,6 @@ impl Mint {
                             wait_payment_response.payment_id
                         );
                         // This is fine - another concurrent request already processed this payment
-                        // The in-memory check at line 712 can miss this due to stale data
                     }
                     Err(e) => return Err(e.into()),
                 }
