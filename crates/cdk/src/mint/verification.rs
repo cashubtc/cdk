@@ -227,15 +227,15 @@ impl Mint {
             err
         })?;
 
-        let fees = self.get_proofs_fee(inputs).await?;
+        let fee_breakdown = self.get_proofs_fee(inputs).await?;
 
         if output_verification
             .unit
             .as_ref()
             .ok_or(Error::TransactionUnbalanced(
-                input_verification.amount.to_u64(),
-                output_verification.amount.to_u64(),
-                fees.into(),
+                input_verification.amount.into(),
+                output_verification.amount.into(),
+                fee_breakdown.total.into(),
             ))?
             != input_verification
                 .unit
@@ -257,13 +257,13 @@ impl Mint {
         if output_verification.amount
             != input_verification
                 .amount
-                .checked_sub(fees)
+                .checked_sub(fee_breakdown.total)
                 .ok_or(Error::AmountOverflow)?
         {
             return Err(Error::TransactionUnbalanced(
                 input_verification.amount.into(),
                 output_verification.amount.into(),
-                fees.into(),
+                fee_breakdown.total.into(),
             ));
         }
 
