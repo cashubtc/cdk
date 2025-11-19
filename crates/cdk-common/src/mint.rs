@@ -91,15 +91,15 @@ impl FromStr for SwapSagaState {
 pub enum MeltSagaState {
     /// Setup complete (proofs reserved, quote verified)
     SetupComplete,
-    /// Payment sent to Lightning network
-    PaymentSent,
+    /// Payment attempted to Lightning network (may or may not have succeeded)
+    PaymentAttempted,
 }
 
 impl fmt::Display for MeltSagaState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MeltSagaState::SetupComplete => write!(f, "setup_complete"),
-            MeltSagaState::PaymentSent => write!(f, "payment_sent"),
+            MeltSagaState::PaymentAttempted => write!(f, "payment_attempted"),
         }
     }
 }
@@ -110,7 +110,7 @@ impl FromStr for MeltSagaState {
         let value = value.to_lowercase();
         match value.as_str() {
             "setup_complete" => Ok(MeltSagaState::SetupComplete),
-            "payment_sent" => Ok(MeltSagaState::PaymentSent),
+            "payment_attempted" => Ok(MeltSagaState::PaymentAttempted),
             _ => Err(Error::Custom(format!("Invalid melt saga state: {}", value))),
         }
     }
@@ -147,7 +147,7 @@ impl SagaStateEnum {
             },
             SagaStateEnum::Melt(state) => match state {
                 MeltSagaState::SetupComplete => "setup_complete",
-                MeltSagaState::PaymentSent => "payment_sent",
+                MeltSagaState::PaymentAttempted => "payment_attempted",
             },
         }
     }
