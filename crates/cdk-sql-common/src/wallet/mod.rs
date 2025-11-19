@@ -11,6 +11,7 @@ use cdk_common::database::{ConversionError, Error, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
+use cdk_common::util::unix_time;
 use cdk_common::wallet::{self, MintQuote, Transaction, TransactionDirection, TransactionId};
 use cdk_common::{
     database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PaymentMethod, Proof,
@@ -477,9 +478,9 @@ ON CONFLICT(mint_url) DO UPDATE SET
         query(
             r#"
 INSERT INTO mint_quote
-(id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid)
+(id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid, created_time)
 VALUES
-(:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid)
+(:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid, :created_time)
 ON CONFLICT(id) DO UPDATE SET
     mint_url = excluded.mint_url,
     amount = excluded.amount,
@@ -505,6 +506,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind("payment_method", quote.payment_method.to_string())
         .bind("amount_issued", quote.amount_issued.to_i64())
         .bind("amount_paid", quote.amount_paid.to_i64())
+        .bind("created_time", unix_time() as i64)
         .execute(&*conn).await?;
 
         Ok(())
@@ -569,7 +571,7 @@ ON CONFLICT(id) DO UPDATE SET
     }
 
     #[instrument(skip(self))]
-    async fn get_unpaid_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
+    async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
@@ -584,12 +586,11 @@ ON CONFLICT(id) DO UPDATE SET
                 secret_key,
                 payment_method,
                 amount_issued,
-                amount_paid,
-                keyset_id
+                amount_paid
             FROM
                 mint_quote
             WHERE
-                (amount_paid > amount_issued AND amount_paid > 0)
+                amount_issued = 0
                 OR
                 payment_method = 'bolt12'
             ORDER BY created_time ASC

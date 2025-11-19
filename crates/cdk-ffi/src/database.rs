@@ -67,8 +67,9 @@ pub trait WalletDatabase: Send + Sync {
     /// Get mint quotes from storage
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError>;
 
-    /// Get unpaid mint quotes from storage (quotes with mintable balance or bolt12 quotes)
-    async fn get_unpaid_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError>;
+    /// Get unissued mint quotes from storage
+    /// Returns bolt11 quotes where nothing has been issued yet (amount_issued = 0) and all bolt12 quotes.
+    async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError>;
 
     /// Remove mint quote from storage
     async fn remove_mint_quote(&self, quote_id: String) -> Result<(), FfiError>;
@@ -328,10 +329,10 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    async fn get_unpaid_mint_quotes(&self) -> Result<Vec<cdk::wallet::MintQuote>, Self::Err> {
+    async fn get_unissued_mint_quotes(&self) -> Result<Vec<cdk::wallet::MintQuote>, Self::Err> {
         let result = self
             .ffi_db
-            .get_unpaid_mint_quotes()
+            .get_unissued_mint_quotes()
             .await
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
         Ok(result
