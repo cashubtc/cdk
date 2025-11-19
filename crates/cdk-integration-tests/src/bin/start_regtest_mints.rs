@@ -380,7 +380,6 @@ fn main() -> Result<()> {
                     fs::remove_dir_all(&ldk_work_dir)?;
                     fs::create_dir_all(ldk_work_dir.join("logs"))?;
                 }
-                
                 // Recreate builder since it was consumed
                 let node_builder = CdkLdkNodeBuilder::new(
                     bitcoin::Network::Regtest,
@@ -408,7 +407,7 @@ fn main() -> Result<()> {
                     .unwrap(),
                 )
                 .with_log_dir_path(ldk_work_dir.join("logs").join("ldk_node.log").to_string_lossy().to_string());
-                
+
                 node_builder.build()?
             }
         };
