@@ -227,7 +227,12 @@ async fn start_ldk_mint(
     };
 
     // Create settings struct for LDK mint using a new shared function
-    let settings = create_ldk_settings(port, ldk_config, Mnemonic::generate(12)?.to_string());
+    let settings = create_ldk_settings(
+        port,
+        ldk_config,
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+            .to_string(),
+    );
 
     println!("Starting LDK mintd on port {port}");
 
@@ -339,6 +344,7 @@ fn main() -> Result<()> {
         let shutdown_clone_one = Arc::clone(&shutdown_clone);
 
         let ldk_work_dir = temp_dir.join("ldk_mint");
+        fs::create_dir_all(ldk_work_dir.join("logs"))?;
         let node_builder = CdkLdkNodeBuilder::new(
             bitcoin::Network::Regtest,
             cdk_ldk_node::ChainSource::BitcoinRpc(cdk_ldk_node::BitcoinRpcConfig {
@@ -364,8 +370,48 @@ fn main() -> Result<()> {
             )
             .unwrap(),
         )
-        .with_log_dir_path(ldk_work_dir.join("logs").to_string_lossy().to_string());
-        let cdk_ldk = node_builder.build()?;
+        .with_log_dir_path(ldk_work_dir.join("logs").join("ldk_node.log").to_string_lossy().to_string());
+        let cdk_ldk = match node_builder.build() {
+            Ok(node) => node,
+            Err(e) => {
+                tracing::warn!("Failed to start LDK node: {}. Attempting to wipe data and restart...", e);
+                // Clean up the storage directory
+                if ldk_work_dir.exists() {
+                    fs::remove_dir_all(&ldk_work_dir)?;
+                    fs::create_dir_all(ldk_work_dir.join("logs"))?;
+                }
+                
+                // Recreate builder since it was consumed
+                let node_builder = CdkLdkNodeBuilder::new(
+                    bitcoin::Network::Regtest,
+                    cdk_ldk_node::ChainSource::BitcoinRpc(cdk_ldk_node::BitcoinRpcConfig {
+                        host: "127.0.0.1".to_string(),
+                        port: 18443,
+                        user: "testuser".to_string(),
+                        password: "testpass".to_string(),
+                    }),
+                    cdk_ldk_node::GossipSource::P2P,
+                    ldk_work_dir.to_string_lossy().to_string(),
+                    cdk_common::common::FeeReserve {
+                        min_fee_reserve: Amount::ZERO,
+                        percent_fee_reserve: 0.0,
+                    },
+                    vec![SocketAddress::TcpIpV4 {
+                        addr: [127, 0, 0, 1],
+                        port: 8092,
+                    }],
+                )
+                .with_seed(
+                    Mnemonic::parse(
+                        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+                    )
+                    .unwrap(),
+                )
+                .with_log_dir_path(ldk_work_dir.join("logs").join("ldk_node.log").to_string_lossy().to_string());
+                
+                node_builder.build()?
+            }
+        };
 
         let inner_node = cdk_ldk.node();
 
