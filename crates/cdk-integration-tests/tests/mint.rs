@@ -107,10 +107,10 @@ async fn test_correct_keyset() {
 /// should gracefully handle the duplicate and return a Duplicate error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_concurrent_duplicate_payment_handling() {
+    use cashu::PaymentMethod;
     use cdk::cdk_database::{MintDatabase, MintQuotesDatabase};
     use cdk::mint::MintQuote;
     use cdk::Amount;
-    use cashu::PaymentMethod;
     use cdk_common::payment::PaymentIdentifier;
     use tokio::task::JoinSet;
 
