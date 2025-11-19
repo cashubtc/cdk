@@ -15,7 +15,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use cdk_common::database::mint::{validate_kvstore_params, SagaDatabase, SagaTransaction};
+use cdk_common::database::mint::{
+    validate_kvstore_params, CompletedOperationsDatabase, CompletedOperationsTransaction,
+    SagaDatabase, SagaTransaction,
+};
 use cdk_common::database::{
     self, ConversionError, Error, MintDatabase, MintDbWriterFinalizer, MintKeyDatabaseTransaction,
     MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase, MintQuotesTransaction,
@@ -184,7 +187,7 @@ where
             .bind("state", "UNSPENT".to_string())
             .bind("quote_id", quote_id.clone().map(|q| q.to_string()))
             .bind("created_time", current_time as i64)
-            .bind("operation_kind", operation.kind())
+            .bind("operation_kind", operation.kind().to_string())
             .bind("operation_id", operation.id().to_string())
             .execute(&self.inner)
             .await?;
@@ -801,7 +804,7 @@ where
             .bind("keyset_id", message.keyset_id.to_string())
             .bind("quote_id", quote_id.map(|q| q.to_string()))
             .bind("created_time", current_time as i64)
-            .bind("operation_kind", operation.kind())
+            .bind("operation_kind", operation.kind().to_string())
             .bind("operation_id", operation.id().to_string())
             .execute(&self.inner)
             .await
@@ -2284,6 +2287,127 @@ where
 }
 
 #[async_trait]
+impl<RM> CompletedOperationsTransaction<'_> for SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = Error;
+
+    async fn add_completed_operation(
+        &mut self,
+        operation: &mint::Operation,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            INSERT INTO completed_operations
+            (operation_id, operation_kind, completed_at, total_issued, total_redeemed, fee_collected, payment_amount, payment_fee)
+            VALUES
+            (:operation_id, :operation_kind, :completed_at, :total_issued, :total_redeemed, :fee_collected, :payment_amount, :payment_fee)
+            "#,
+        )?
+        .bind("operation_id", operation.id().to_string())
+        .bind("operation_kind", operation.kind().to_string())
+        .bind("completed_at", operation.completed_at().unwrap_or(unix_time()) as i64)
+        .bind("total_issued", operation.total_issued().to_u64() as i64)
+        .bind("total_redeemed", operation.total_redeemed().to_u64() as i64)
+        .bind("fee_collected", operation.fee_collected().to_u64() as i64)
+        .bind("payment_amount", operation.payment_amount().map(|a| a.to_u64() as i64))
+        .bind("payment_fee", operation.payment_fee().map(|a| a.to_u64() as i64))
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<RM> CompletedOperationsDatabase for SQLMintDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = Error;
+
+    async fn get_completed_operation(
+        &self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Option<mint::Operation>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT
+                operation_id,
+                operation_kind,
+                completed_at,
+                total_issued,
+                total_redeemed,
+                fee_collected
+            FROM
+                completed_operations
+            WHERE
+                operation_id = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_completed_operation)
+        .transpose()?)
+    }
+
+    async fn get_completed_operations_by_kind(
+        &self,
+        operation_kind: mint::OperationKind,
+    ) -> Result<Vec<mint::Operation>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT
+                operation_id,
+                operation_kind,
+                completed_at,
+                total_issued,
+                total_redeemed,
+                fee_collected
+            FROM
+                completed_operations
+            WHERE
+                operation_kind = :operation_kind
+            ORDER BY completed_at DESC
+            "#,
+        )?
+        .bind("operation_kind", operation_kind.to_string())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_completed_operation)
+        .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    async fn get_completed_operations(&self) -> Result<Vec<mint::Operation>, Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT
+                operation_id,
+                operation_kind,
+                completed_at,
+                total_issued,
+                total_redeemed,
+                fee_collected
+            FROM
+                completed_operations
+            ORDER BY completed_at DESC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_completed_operation)
+        .collect::<Result<Vec<_>, _>>()?)
+    }
+}
+
+#[async_trait]
 impl<RM> MintDatabase<Error> for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
@@ -2616,6 +2740,45 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
         created_at,
         updated_at,
     })
+}
+
+fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, Error> {
+    unpack_into!(
+        let (
+            operation_id,
+            operation_kind,
+            completed_at,
+            total_issued,
+            total_redeemed,
+            fee_collected
+        ) = row
+    );
+
+    let operation_id_str = column_as_string!(&operation_id);
+    let operation_id = uuid::Uuid::parse_str(&operation_id_str)
+        .map_err(|e| Error::Internal(format!("Invalid operation_id UUID: {e}")))?;
+
+    let operation_kind_str = column_as_string!(&operation_kind);
+    let operation_kind = mint::OperationKind::from_str(&operation_kind_str)
+        .map_err(|e| Error::Internal(format!("Invalid operation kind: {e}")))?;
+
+    let completed_at: u64 = column_as_number!(completed_at);
+    let total_issued_u64: u64 = column_as_number!(total_issued);
+    let total_redeemed_u64: u64 = column_as_number!(total_redeemed);
+    let fee_collected_u64: u64 = column_as_number!(fee_collected);
+
+    let total_issued = Amount::from(total_issued_u64);
+    let total_redeemed = Amount::from(total_redeemed_u64);
+    let fee_collected = Amount::from(fee_collected_u64);
+
+    Ok(mint::Operation::new(
+        operation_id,
+        operation_kind,
+        total_issued,
+        total_redeemed,
+        fee_collected,
+        Some(completed_at),
+    ))
 }
 
 #[cfg(test)]
