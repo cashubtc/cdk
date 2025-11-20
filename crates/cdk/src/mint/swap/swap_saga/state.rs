@@ -19,6 +19,7 @@ pub struct SetupComplete {
     pub blinded_messages: Vec<BlindedMessage>,
     pub ys: Vec<PublicKey>,
     pub operation: Operation,
+    pub fee_breakdown: crate::fees::ProofsFeeBreakdown,
 }
 
 /// Signed state - has everything including signatures.
@@ -30,4 +31,5 @@ pub struct Signed {
     pub ys: Vec<PublicKey>,
     pub signatures: Vec<BlindSignature>,
     pub operation: Operation,
+    pub fee_breakdown: crate::fees::ProofsFeeBreakdown,
 }

@@ -413,6 +413,7 @@ pub trait CompletedOperationsTransaction<'a> {
     async fn add_completed_operation(
         &mut self,
         operation: &mint::Operation,
+        fee_by_keyset: &std::collections::HashMap<crate::nuts::Id, crate::Amount>,
     ) -> Result<(), Self::Err>;
 }
 

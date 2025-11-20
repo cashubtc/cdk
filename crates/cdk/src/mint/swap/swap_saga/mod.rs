@@ -164,9 +164,7 @@ impl<'a> SwapSaga<'a, Initial> {
         // Calculate amounts to create Operation
         let total_redeemed = input_verification.amount;
         let total_issued = Amount::try_sum(blinded_messages.iter().map(|bm| bm.amount))?;
-        let fee_collected = total_redeemed
-            .checked_sub(total_issued)
-            .ok_or(Error::AmountOverflow)?;
+        let fee_breakdown = self.mint.get_proofs_fee(input_proofs).await?;
 
         // Create Operation with actual amounts now that we know them
         let operation = Operation::new(
@@ -174,7 +172,7 @@ impl<'a> SwapSaga<'a, Initial> {
             cdk_common::mint::OperationKind::Swap,
             total_issued,
             total_redeemed,
-            fee_collected,
+            fee_breakdown.total,
             None, // complete_at
         );
 
@@ -289,6 +287,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 blinded_messages: blinded_messages_vec,
                 ys,
                 operation,
+                fee_breakdown,
             },
         })
     }
@@ -339,6 +338,7 @@ impl<'a> SwapSaga<'a, SetupComplete> {
                         ys: self.state_data.ys,
                         signatures,
                         operation: self.state_data.operation,
+                        fee_breakdown: self.state_data.fee_breakdown,
                     },
                 })
             }
@@ -454,8 +454,11 @@ impl SwapSaga<'_, Signed> {
             self.pubsub.proof_state((*pk, State::Spent));
         }
 
-        tx.add_completed_operation(&self.state_data.operation)
-            .await?;
+        tx.add_completed_operation(
+            &self.state_data.operation,
+            &self.state_data.fee_breakdown.per_keyset,
+        )
+        .await?;
 
         // Delete saga - swap completed successfully (best-effort, atomic with TX2)
         // Don't fail the swap if saga deletion fails - orphaned saga will be

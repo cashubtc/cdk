@@ -2296,6 +2296,7 @@ where
     async fn add_completed_operation(
         &mut self,
         operation: &mint::Operation,
+        fee_by_keyset: &std::collections::HashMap<cdk_common::nuts::Id, cdk_common::Amount>,
     ) -> Result<(), Self::Err> {
         query(
             r#"
@@ -2315,6 +2316,24 @@ where
         .bind("payment_fee", operation.payment_fee().map(|a| a.to_u64() as i64))
         .execute(&self.inner)
         .await?;
+
+        // Update keyset_amounts with fee_collected from the breakdown
+        for (keyset_id, fee) in fee_by_keyset {
+            if fee.to_u64() > 0 {
+                query(
+                    r#"
+                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed, fee_collected)
+                    VALUES (:keyset_id, 0, 0, :fee)
+                    ON CONFLICT (keyset_id)
+                    DO UPDATE SET fee_collected = keyset_amounts.fee_collected + EXCLUDED.fee_collected
+                    "#,
+                )?
+                .bind("keyset_id", keyset_id.to_string())
+                .bind("fee", fee.to_u64() as i64)
+                .execute(&self.inner)
+                .await?;
+            }
+        }
 
         Ok(())
     }

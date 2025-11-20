@@ -23,6 +23,7 @@ pub struct SetupComplete {
     pub input_ys: Vec<PublicKey>,
     pub blinded_messages: Vec<BlindedMessage>,
     pub operation: Operation,
+    pub fee_breakdown: crate::fees::ProofsFeeBreakdown,
 }
 
 /// Payment confirmed - has everything including payment result.
@@ -36,6 +37,7 @@ pub struct PaymentConfirmed {
     pub blinded_messages: Vec<BlindedMessage>,
     pub payment_result: MakePaymentResponse,
     pub operation: Operation,
+    pub fee_breakdown: crate::fees::ProofsFeeBreakdown,
 }
 
 /// Result of attempting internal settlement for a melt operation.
