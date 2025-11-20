@@ -158,7 +158,13 @@ pub async fn payments_page(
                         get_invoice_status(payment.status, payment.direction, payment_type)
                     };
 
-                    @let amount_str = payment.amount_msat.map(format_msats_as_btc).unwrap_or_else(|| "Unknown".to_string());
+                    @let amount_str = {
+                        match (payment.amount_msat, payment.fee_paid_msat) {
+                            (Some(amount), Some(fee)) => format_msats_as_btc(amount + fee),
+                            (Some(amount), None) => format_msats_as_btc(amount),
+                            _ => "Unknown".to_string()
+                        }
+                    };
 
                     (payment_list_item(
                         &payment.id.to_string(),
