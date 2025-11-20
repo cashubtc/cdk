@@ -438,19 +438,22 @@ impl Wallet {
         fees_and_keyset_amounts: &KeysetFeeAndAmounts,
     ) -> Result<Proofs, Error> {
         tracing::debug!("Including fees");
-        let fee = calculate_fee(
+        let fee_breakdown = calculate_fee(
             &selected_proofs.count_by_keyset(),
             &fees_and_keyset_amounts
                 .iter()
                 .map(|(key, values)| (*key, values.fee()))
                 .collect(),
         )
-        .unwrap_or_default();
-        let net_amount = selected_proofs.total_amount()? - fee;
+        .unwrap_or_else(|_| crate::fees::ProofsFeeBreakdown {
+            total: Amount::ZERO,
+            per_keyset: std::collections::HashMap::new(),
+        });
+        let net_amount = selected_proofs.total_amount()? - fee_breakdown.total;
         tracing::debug!(
             "Net amount={}, fee={}, total amount={}",
             net_amount,
-            fee,
+            fee_breakdown.total,
             selected_proofs.total_amount()?
         );
         if net_amount >= amount {

@@ -201,7 +201,7 @@ impl MeltSaga<Initial> {
         let mut tx = self.db.begin_transaction().await?;
 
         // Calculate fee to create Operation with actual amounts
-        let fee = self.mint.get_proofs_fee(melt_request.inputs()).await?;
+        let fee_breakdown = self.mint.get_proofs_fee(melt_request.inputs()).await?;
 
         // Create Operation with actual amounts now that we know them
         // total_redeemed = input_amount (proofs being burnt)
@@ -209,10 +209,10 @@ impl MeltSaga<Initial> {
         let operation = Operation::new(
             self.state_data.operation_id,
             cdk_common::mint::OperationKind::Melt,
-            Amount::ZERO, // total_issued (change will be calculated later)
-            input_amount, // total_redeemed
-            fee,          // fee_collected
-            None,         // complete_at
+            Amount::ZERO,        // total_issued (change will be calculated later)
+            input_amount,        // total_redeemed
+            fee_breakdown.total, // fee_collected
+            None,                // complete_at
         );
 
         // Add proofs to the database
@@ -301,20 +301,22 @@ impl MeltSaga<Initial> {
         self.pubsub
             .melt_quote_status(&quote, None, None, MeltQuoteState::Pending);
 
-        let required_total = quote.amount + quote.fee_reserve + fee;
+        let inputs_fee_breakdown = self.mint.get_proofs_fee(melt_request.inputs()).await?;
+
+        let required_total = quote.amount + quote.fee_reserve + inputs_fee_breakdown.total;
 
         if input_amount < required_total {
             tracing::info!(
                 "Melt request unbalanced: inputs {}, amount {}, fee {}",
                 input_amount,
                 quote.amount,
-                fee
+                inputs_fee_breakdown.total
             );
             tx.rollback().await?;
             return Err(Error::TransactionUnbalanced(
                 input_amount.into(),
                 quote.amount.into(),
-                (fee + quote.fee_reserve).into(),
+                (inputs_fee_breakdown.total + quote.fee_reserve).into(),
             ));
         }
 
@@ -336,13 +338,11 @@ impl MeltSaga<Initial> {
             }
         }
 
-        let inputs_fee = self.mint.get_proofs_fee(melt_request.inputs()).await?;
-
         // Add melt request tracking record
         tx.add_melt_request(
             melt_request.quote_id(),
             melt_request.inputs_amount()?,
-            inputs_fee,
+            inputs_fee_breakdown.total,
         )
         .await?;
 
@@ -407,6 +407,7 @@ impl MeltSaga<Initial> {
                 input_ys,
                 blinded_messages: blinded_messages_vec,
                 operation,
+                fee_breakdown,
             },
         })
     }
@@ -762,6 +763,7 @@ impl MeltSaga<SetupComplete> {
                 blinded_messages: self.state_data.blinded_messages,
                 payment_result,
                 operation: self.state_data.operation,
+                fee_breakdown: self.state_data.fee_breakdown,
             },
         })
     }
@@ -933,7 +935,8 @@ impl MeltSaga<PaymentConfirmed> {
             .unwrap_or(Amount::ZERO);
         operation.set_payment_details(self.state_data.quote.amount, payment_fee);
 
-        tx.add_completed_operation(&operation).await?;
+        tx.add_completed_operation(&operation, &self.state_data.fee_breakdown.per_keyset)
+            .await?;
 
         tx.commit().await?;
 

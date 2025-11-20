@@ -679,7 +679,9 @@ impl Mint {
             .await?;
 
 
-        tx.add_completed_operation(&operation).await?;
+        // Mint operations have no input fees (no proofs being spent)
+        let fee_by_keyset = std::collections::HashMap::new();
+        tx.add_completed_operation(&operation, &fee_by_keyset).await?;
 
         tx.commit().await?;
 

@@ -93,7 +93,7 @@ impl Wallet {
 
         // Check if selected proofs are exact
         let send_fee = if opts.include_fee {
-            self.get_proofs_fee(&selected_proofs).await?
+            self.get_proofs_fee(&selected_proofs).await?.total
         } else {
             Amount::ZERO
         };
@@ -146,7 +146,10 @@ impl Wallet {
             (send_split, send_fee)
         } else {
             let send_split = amount.split(&fee_and_amounts);
-            let send_fee = Amount::ZERO;
+            let send_fee = crate::fees::ProofsFeeBreakdown {
+                total: Amount::ZERO,
+                per_keyset: std::collections::HashMap::new(),
+            };
             (send_split, send_fee)
         };
         tracing::debug!("Send amounts: {:?}", send_amounts);
@@ -158,7 +161,7 @@ impl Wallet {
             .await?;
 
         // Check if proofs are exact send amount (and does not exceed max_proofs)
-        let mut exact_proofs = proofs.total_amount()? == amount + send_fee;
+        let mut exact_proofs = proofs.total_amount()? == amount + send_fee.total;
         if let Some(max_proofs) = opts.max_proofs {
             exact_proofs &= proofs.len() <= max_proofs;
         }
@@ -186,7 +189,7 @@ impl Wallet {
         }
 
         // Calculate swap fee
-        let swap_fee = self.get_proofs_fee(&proofs_to_swap).await?;
+        let swap_fee = self.get_proofs_fee(&proofs_to_swap).await?.total;
 
         // Return prepared send
         Ok(PreparedSend {
@@ -196,7 +199,7 @@ impl Wallet {
             proofs_to_swap,
             swap_fee,
             proofs_to_send,
-            send_fee,
+            send_fee: send_fee.total,
         })
     }
 }
