@@ -35,7 +35,8 @@ impl Wallet {
         // Convert the FFI database trait to a CDK database implementation
         let localstore = crate::database::create_cdk_database_from_ffi(db);
 
-        let wallet =
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let wallet = rt.block_on(async {
             CdkWalletBuilder::new()
                 .mint_url(mint_url.parse().map_err(|e: cdk::mint_url::Error| {
                     FfiError::InvalidUrl { msg: e.to_string() }
@@ -45,7 +46,8 @@ impl Wallet {
                 .seed(seed)
                 .target_proof_count(config.target_proof_count.unwrap_or(3) as usize)
                 .build()
-                .map_err(FfiError::from)?;
+                .map_err(FfiError::from)
+        })?;
 
         Ok(Self {
             inner: Arc::new(wallet),
