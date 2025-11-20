@@ -47,7 +47,7 @@ pub trait DatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
     async fn get_keyset_by_id(&mut self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Error>;
 
     /// Get [`Keys`] from storage
-    async fn get_keys(&mut self, id: &Id) -> Result<Option<Keys>, Self::Err>;
+    async fn get_keys(&mut self, id: &Id) -> Result<Option<Keys>, Error>;
 
     /// Add mint keyset to storage
     async fn add_mint_keysets(
@@ -57,10 +57,7 @@ pub trait DatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
     ) -> Result<(), Error>;
 
     /// Get mint quote from storage. This function locks the returned minted quote for update
-    async fn get_mint_quote(
-        &mut self,
-        quote_id: &str,
-    ) -> Result<Option<WalletMintQuote>, Self::Err>;
+    async fn get_mint_quote(&mut self, quote_id: &str) -> Result<Option<WalletMintQuote>, Error>;
 
     /// Add mint quote to storage
     async fn add_mint_quote(&mut self, quote: WalletMintQuote) -> Result<(), Error>;
