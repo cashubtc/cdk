@@ -33,6 +33,9 @@ impl Wallet {
         let mint_url = &self.mint_url;
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
+        let fee_and_amounts = self
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await?;
 
         let keys = self.load_keyset_keys(active_keyset_id).await?;
 
@@ -119,7 +122,16 @@ impl Wallet {
         tx.update_proofs(proofs_info.clone(), vec![]).await?;
 
         let mut pre_swap = self
-            .create_swap(tx, None, opts.amount_split_target, proofs, None, false)
+            .create_swap(
+                tx,
+                active_keyset_id,
+                &fee_and_amounts,
+                None,
+                opts.amount_split_target,
+                proofs,
+                None,
+                false,
+            )
             .await?;
 
         if sig_flag.eq(&SigFlag::SigAll) {

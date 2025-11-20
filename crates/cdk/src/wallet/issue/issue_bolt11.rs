@@ -200,6 +200,11 @@ impl Wallet {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
+        let active_keyset_id = self.fetch_active_keyset().await?.id;
+        let fee_and_amounts = self
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await?;
+
         let mut tx = self.localstore.begin_db_transaction().await?;
         let quote_info = tx
             .get_mint_quote(quote_id)
@@ -222,11 +227,6 @@ impl Wallet {
         if quote_info.expiry > unix_time {
             tracing::warn!("Attempting to mint with expired quote.");
         }
-
-        let active_keyset_id = self.fetch_active_keyset().await?.id;
-        let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-            .await?;
 
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
