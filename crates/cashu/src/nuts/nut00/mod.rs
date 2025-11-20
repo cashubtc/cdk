@@ -9,6 +9,8 @@ use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::string::FromUtf8Error;
 
+#[cfg(feature = "mint")]
+use bitcoin::hashes::Hash as BitcoinHash;
 use serde::{de, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
@@ -575,6 +577,10 @@ pub enum CurrencyUnit {
 #[cfg(feature = "mint")]
 impl CurrencyUnit {
     /// Derivation index mint will use for unit
+    #[deprecated(
+        since = "0.14.0",
+        note = "This function is outdated; use `hashed_derivation_index` instead."
+    )]
     pub fn derivation_index(&self) -> Option<u32> {
         match self {
             Self::Sat => Some(0),
@@ -584,6 +590,15 @@ impl CurrencyUnit {
             Self::Auth => Some(4),
             _ => None,
         }
+    }
+    ///  Big endian encoded integer of the first 4 bytes of the sha256 hash of the unit string.
+    pub fn hashed_derivation_index(&self) -> u32 {
+        use bitcoin::hashes::sha256;
+
+        let unit_str = self.to_string().to_lowercase();
+        let bytes = <sha256::Hash as BitcoinHash>::hash(unit_str.as_bytes());
+        // Take the first 4 bytes and convert to u32 (big endian) make sure the integer
+        u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) & !(1 << 31)
     }
 }
 
@@ -988,6 +1003,31 @@ mod tests {
         let serialized = serde_json::to_string(&unit).unwrap();
         let deserialized: CurrencyUnit = serde_json::from_str(&serialized).unwrap();
         assert_eq!(unit, deserialized)
+    }
+
+    #[test]
+    #[cfg(feature = "mint")]
+    fn four_bytes_hash_currency_unit() {
+        let unit = CurrencyUnit::Sat;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 866057899);
+
+        let unit = CurrencyUnit::Msat;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 1980671987);
+
+        let unit = CurrencyUnit::Eur;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 975082952);
+
+        let unit = CurrencyUnit::Usd;
+        let index = unit.hashed_derivation_index();
+        assert_eq!(index, 1443872135);
+
+        let unit = CurrencyUnit::Auth;
+        let index = unit.hashed_derivation_index();
+
+        assert_eq!(index, 1039440956)
     }
 
     #[test]

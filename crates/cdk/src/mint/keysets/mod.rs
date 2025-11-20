@@ -84,6 +84,7 @@ impl Mint {
                 unit,
                 amounts: (0..max_order).map(|n| 2u64.pow(n.into())).collect(),
                 input_fee_ppk,
+                final_expiry: None,
             })
             .await?;
 
