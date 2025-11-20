@@ -1,8 +1,7 @@
 name: Publish Docker Image AMD64
 
 on:
-  release:
-    types: [published]
+
   workflow_dispatch:
     inputs:
       tag:
@@ -12,7 +11,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: cashubtc/mintd
+  IMAGE_NAME: asmogo/mintd
 
 jobs:
   build-and-push:
