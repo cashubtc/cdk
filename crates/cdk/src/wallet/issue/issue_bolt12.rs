@@ -83,6 +83,11 @@ impl Wallet {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
+        let active_keyset_id = self.fetch_active_keyset().await?.id;
+        let fee_and_amounts = self
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await?;
+
         let mut tx = self.localstore.begin_db_transaction().await?;
         let quote_info = tx.get_mint_quote(quote_id).await?;
 
@@ -95,11 +100,6 @@ impl Wallet {
         } else {
             return Err(Error::UnknownQuote);
         };
-
-        let active_keyset_id = self.fetch_active_keyset().await?.id;
-        let fee_and_amounts = self
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-            .await?;
 
         let (mut tx, quote_info, amount) = match amount {
             Some(amount) => (tx, quote_info, amount),
@@ -126,7 +126,7 @@ impl Wallet {
 
         let split_target = match amount_split_target {
             SplitTarget::None => {
-                self.determine_split_target_values(amount, &fee_and_amounts)
+                self.determine_split_target_values(&mut tx, amount, &fee_and_amounts)
                     .await?
             }
             s => s,

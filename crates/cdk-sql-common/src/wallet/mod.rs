@@ -546,103 +546,22 @@ where
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_by_id(&mut self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Error> {
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                unit,
-                active,
-                input_fee_ppk,
-                final_expiry
-            FROM
-                keyset
-            WHERE id = :id
-            FOR UPDATE
-            "#,
-        )?
-        .bind("id", keyset_id.to_string())
-        .fetch_one(&self.inner)
-        .await?
-        .map(sql_row_to_keyset)
-        .transpose()?)
+        get_keyset_by_id_inner(&self.inner, keyset_id, true).await
     }
 
     #[instrument(skip(self), fields(keyset_id = %id))]
     async fn get_keys(&mut self, id: &Id) -> Result<Option<Keys>, Error> {
-        Ok(query(
-            r#"
-            SELECT
-                keys
-            FROM key
-            WHERE id = :id
-            "#,
-        )?
-        .bind("id", id.to_string())
-        .pluck(&self.inner)
-        .await?
-        .map(|keys| {
-            let keys = column_as_string!(keys);
-            serde_json::from_str(&keys).map_err(Error::from)
-        })
-        .transpose()?)
+        get_keys_inner(&self.inner, id).await
     }
 
     #[instrument(skip(self))]
     async fn get_mint_quote(&mut self, quote_id: &str) -> Result<Option<MintQuote>, Error> {
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                mint_url,
-                amount,
-                unit,
-                request,
-                state,
-                expiry,
-                secret_key,
-                payment_method,
-                amount_issued,
-                amount_paid
-            FROM
-                mint_quote
-            WHERE
-                id = :id
-            FOR UPDATE
-            "#,
-        )?
-        .bind("id", quote_id.to_string())
-        .fetch_one(&self.inner)
-        .await?
-        .map(sql_row_to_mint_quote)
-        .transpose()?)
+        get_mint_quote_inner(&self.inner, quote_id, true).await
     }
 
     #[instrument(skip(self))]
     async fn get_melt_quote(&mut self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Error> {
-        Ok(query(
-            r#"
-               SELECT
-                   id,
-                   unit,
-                   amount,
-                   request,
-                   fee_reserve,
-                   state,
-                   expiry,
-                   payment_preimage,
-                   payment_method
-               FROM
-                   melt_quote
-               WHERE
-                   id=:id
-                FOR UPDATE
-               "#,
-        )?
-        .bind("id", quote_id.to_owned())
-        .fetch_one(&self.inner)
-        .await?
-        .map(sql_row_to_melt_quote)
-        .transpose()?)
+        get_melt_quote_inner(&self.inner, quote_id, true).await
     }
 
     #[instrument(skip(self, state, spending_conditions))]
@@ -653,40 +572,15 @@ where
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, Error> {
-        Ok(query(
-            r#"
-            SELECT
-                amount,
-                unit,
-                keyset_id,
-                secret,
-                c,
-                witness,
-                dleq_e,
-                dleq_s,
-                dleq_r,
-                y,
-                mint_url,
-                state,
-                spending_condition
-            FROM proof
-            FOR UPDATE
-        "#,
-        )?
-        .fetch_all(&self.inner)
-        .await?
-        .into_iter()
-        .filter_map(|row| {
-            let row = sql_row_to_proof_info(row).ok()?;
-
-            // convert matches_conditions to SQL to lock only affected rows
-            if row.matches_conditions(&mint_url, &unit, &state, &spending_conditions) {
-                Some(row)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>())
+        get_proofs_inner(
+            &self.inner,
+            mint_url,
+            unit,
+            state,
+            spending_conditions,
+            true,
+        )
+        .await
     }
 }
 
@@ -704,6 +598,191 @@ where
     async fn rollback(self: Box<Self>) -> Result<(), Error> {
         Ok(self.inner.rollback().await?)
     }
+}
+
+// Inline helper functions that work with both connections and transactions
+#[inline]
+async fn get_keyset_by_id_inner<T>(
+    executor: &T,
+    keyset_id: &Id,
+    for_update: bool,
+) -> Result<Option<KeySetInfo>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            unit,
+            active,
+            input_fee_ppk,
+            final_expiry
+        FROM
+            keyset
+        WHERE id = :id
+        {for_update_clause}
+        "#
+    );
+
+    query(&query_str)?
+        .bind("id", keyset_id.to_string())
+        .fetch_one(executor)
+        .await?
+        .map(sql_row_to_keyset)
+        .transpose()
+}
+
+#[inline]
+async fn get_keys_inner<T>(executor: &T, id: &Id) -> Result<Option<Keys>, Error>
+where
+    T: DatabaseExecutor,
+{
+    query(
+        r#"
+        SELECT
+            keys
+        FROM key
+        WHERE id = :id
+        "#,
+    )?
+    .bind("id", id.to_string())
+    .pluck(executor)
+    .await?
+    .map(|keys| {
+        let keys = column_as_string!(keys);
+        serde_json::from_str(&keys).map_err(Error::from)
+    })
+    .transpose()
+}
+
+#[inline]
+async fn get_mint_quote_inner<T>(
+    executor: &T,
+    quote_id: &str,
+    for_update: bool,
+) -> Result<Option<MintQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            mint_url,
+            amount,
+            unit,
+            request,
+            state,
+            expiry,
+            secret_key,
+            payment_method,
+            amount_issued,
+            amount_paid
+        FROM
+            mint_quote
+        WHERE
+            id = :id
+        {for_update_clause}
+        "#
+    );
+
+    query(&query_str)?
+        .bind("id", quote_id.to_string())
+        .fetch_one(executor)
+        .await?
+        .map(sql_row_to_mint_quote)
+        .transpose()
+}
+
+#[inline]
+async fn get_melt_quote_inner<T>(
+    executor: &T,
+    quote_id: &str,
+    for_update: bool,
+) -> Result<Option<wallet::MeltQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            unit,
+            amount,
+            request,
+            fee_reserve,
+            state,
+            expiry,
+            payment_preimage,
+            payment_method
+        FROM
+            melt_quote
+        WHERE
+            id=:id
+        {for_update_clause}
+        "#
+    );
+
+    query(&query_str)?
+        .bind("id", quote_id.to_owned())
+        .fetch_one(executor)
+        .await?
+        .map(sql_row_to_melt_quote)
+        .transpose()
+}
+
+#[inline]
+async fn get_proofs_inner<T>(
+    executor: &T,
+    mint_url: Option<MintUrl>,
+    unit: Option<CurrencyUnit>,
+    state: Option<Vec<State>>,
+    spending_conditions: Option<Vec<SpendingConditions>>,
+    for_update: bool,
+) -> Result<Vec<ProofInfo>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            amount,
+            unit,
+            keyset_id,
+            secret,
+            c,
+            witness,
+            dleq_e,
+            dleq_s,
+            dleq_r,
+            y,
+            mint_url,
+            state,
+            spending_condition
+        FROM proof
+        {for_update_clause}
+        "#
+    );
+
+    Ok(query(&query_str)?
+        .fetch_all(executor)
+        .await?
+        .into_iter()
+        .filter_map(|row| {
+            let row = sql_row_to_proof_info(row).ok()?;
+
+            if row.matches_conditions(&mint_url, &unit, &state, &spending_conditions) {
+                Some(row)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>())
 }
 
 impl<RM> SQLWalletDatabase<RM>
@@ -951,54 +1030,13 @@ where
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                unit,
-                active,
-                input_fee_ppk,
-                final_expiry
-            FROM
-                keyset
-            WHERE id = :id
-            "#,
-        )?
-        .bind("id", keyset_id.to_string())
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_keyset)
-        .transpose()?)
+        get_keyset_by_id_inner(&*conn, keyset_id, false).await
     }
 
     #[instrument(skip(self))]
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                mint_url,
-                amount,
-                unit,
-                request,
-                state,
-                expiry,
-                secret_key,
-                payment_method,
-                amount_issued,
-                amount_paid
-            FROM
-                mint_quote
-            WHERE
-                id = :id
-            "#,
-        )?
-        .bind("id", quote_id.to_string())
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_mint_quote)
-        .transpose()?)
+        get_mint_quote_inner(&*conn, quote_id, false).await
     }
 
     #[instrument(skip(self))]
@@ -1032,50 +1070,13 @@ where
     #[instrument(skip(self))]
     async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<wallet::MeltQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                unit,
-                amount,
-                request,
-                fee_reserve,
-                state,
-                expiry,
-                payment_preimage,
-                payment_method
-            FROM
-                melt_quote
-            WHERE
-                id=:id
-            "#,
-        )?
-        .bind("id", quote_id.to_owned())
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_melt_quote)
-        .transpose()?)
+        get_melt_quote_inner(&*conn, quote_id, false).await
     }
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT
-                keys
-            FROM key
-            WHERE id = :id
-            "#,
-        )?
-        .bind("id", keyset_id.to_string())
-        .pluck(&*conn)
-        .await?
-        .map(|keys| {
-            let keys = column_as_string!(keys);
-            serde_json::from_str(&keys).map_err(Error::from)
-        })
-        .transpose()?)
+        get_keys_inner(&*conn, keyset_id).await
     }
 
     #[instrument(skip(self, state, spending_conditions))]
@@ -1087,38 +1088,7 @@ where
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT
-                amount,
-                unit,
-                keyset_id,
-                secret,
-                c,
-                witness,
-                dleq_e,
-                dleq_s,
-                dleq_r,
-                y,
-                mint_url,
-                state,
-                spending_condition
-            FROM proof
-        "#,
-        )?
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .filter_map(|row| {
-            let row = sql_row_to_proof_info(row).ok()?;
-
-            if row.matches_conditions(&mint_url, &unit, &state, &spending_conditions) {
-                Some(row)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>())
+        get_proofs_inner(&*conn, mint_url, unit, state, spending_conditions, false).await
     }
 
     async fn get_balance(
