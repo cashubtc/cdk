@@ -393,6 +393,193 @@ WHERE quote_id=:quote_id
     .collect()
 }
 
+// Inline helper functions that work with both connections and transactions
+#[inline]
+async fn get_mint_quote_inner<T>(
+    executor: &T,
+    quote_id: &QuoteId,
+    for_update: bool,
+) -> Result<Option<MintQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let payments = get_mint_quote_payments(executor, quote_id).await?;
+    let issuance = get_mint_quote_issuance(executor, quote_id).await?;
+
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            amount,
+            unit,
+            request,
+            expiry,
+            request_lookup_id,
+            pubkey,
+            created_time,
+            amount_paid,
+            amount_issued,
+            payment_method,
+            request_lookup_id_kind
+        FROM
+            mint_quote
+        WHERE id = :id
+        {for_update_clause}
+        "#
+    );
+
+    query(&query_str)?
+        .bind("id", quote_id.to_string())
+        .fetch_one(executor)
+        .await?
+        .map(|row| sql_row_to_mint_quote(row, payments, issuance))
+        .transpose()
+}
+
+#[inline]
+async fn get_mint_quote_by_request_inner<T>(
+    executor: &T,
+    request: &str,
+    for_update: bool,
+) -> Result<Option<MintQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            amount,
+            unit,
+            request,
+            expiry,
+            request_lookup_id,
+            pubkey,
+            created_time,
+            amount_paid,
+            amount_issued,
+            payment_method,
+            request_lookup_id_kind
+        FROM
+            mint_quote
+        WHERE request = :request
+        {for_update_clause}
+        "#
+    );
+
+    let mut mint_quote = query(&query_str)?
+        .bind("request", request.to_string())
+        .fetch_one(executor)
+        .await?
+        .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
+        .transpose()?;
+
+    if let Some(quote) = mint_quote.as_mut() {
+        let payments = get_mint_quote_payments(executor, &quote.id).await?;
+        let issuance = get_mint_quote_issuance(executor, &quote.id).await?;
+        quote.issuance = issuance;
+        quote.payments = payments;
+    }
+
+    Ok(mint_quote)
+}
+
+#[inline]
+async fn get_mint_quote_by_request_lookup_id_inner<T>(
+    executor: &T,
+    request_lookup_id: &PaymentIdentifier,
+    for_update: bool,
+) -> Result<Option<MintQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            amount,
+            unit,
+            request,
+            expiry,
+            request_lookup_id,
+            pubkey,
+            created_time,
+            amount_paid,
+            amount_issued,
+            payment_method,
+            request_lookup_id_kind
+        FROM
+            mint_quote
+        WHERE request_lookup_id = :request_lookup_id
+        AND request_lookup_id_kind = :request_lookup_id_kind
+        {for_update_clause}
+        "#
+    );
+
+    let mut mint_quote = query(&query_str)?
+        .bind("request_lookup_id", request_lookup_id.to_string())
+        .bind("request_lookup_id_kind", request_lookup_id.kind())
+        .fetch_one(executor)
+        .await?
+        .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
+        .transpose()?;
+
+    if let Some(quote) = mint_quote.as_mut() {
+        let payments = get_mint_quote_payments(executor, &quote.id).await?;
+        let issuance = get_mint_quote_issuance(executor, &quote.id).await?;
+        quote.issuance = issuance;
+        quote.payments = payments;
+    }
+
+    Ok(mint_quote)
+}
+
+#[inline]
+async fn get_melt_quote_inner<T>(
+    executor: &T,
+    quote_id: &QuoteId,
+    for_update: bool,
+) -> Result<Option<mint::MeltQuote>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let query_str = format!(
+        r#"
+        SELECT
+            id,
+            unit,
+            amount,
+            request,
+            fee_reserve,
+            expiry,
+            state,
+            payment_preimage,
+            request_lookup_id,
+            created_time,
+            paid_time,
+            payment_method,
+            options,
+            request_lookup_id_kind
+        FROM
+            melt_quote
+        WHERE
+            id=:id
+        {for_update_clause}
+        "#
+    );
+
+    query(&query_str)?
+        .bind("id", quote_id.to_string())
+        .fetch_one(executor)
+        .await?
+        .map(sql_row_to_melt_quote)
+        .transpose()
+}
+
 #[async_trait]
 impl<RM> MintKeyDatabaseTransaction<'_, Error> for SQLTransaction<RM>
 where
@@ -1105,153 +1292,28 @@ VALUES (:quote_id, :amount, :timestamp);
     }
 
     async fn get_mint_quote(&mut self, quote_id: &QuoteId) -> Result<Option<MintQuote>, Self::Err> {
-        let payments = get_mint_quote_payments(&self.inner, quote_id).await?;
-        let issuance = get_mint_quote_issuance(&self.inner, quote_id).await?;
-
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                amount,
-                unit,
-                request,
-                expiry,
-                request_lookup_id,
-                pubkey,
-                created_time,
-                amount_paid,
-                amount_issued,
-                payment_method,
-                request_lookup_id_kind
-            FROM
-                mint_quote
-            WHERE id = :id
-            FOR UPDATE
-            "#,
-        )?
-        .bind("id", quote_id.to_string())
-        .fetch_one(&self.inner)
-        .await?
-        .map(|row| sql_row_to_mint_quote(row, payments, issuance))
-        .transpose()?)
+        get_mint_quote_inner(&self.inner, quote_id, true).await
     }
 
     async fn get_melt_quote(
         &mut self,
         quote_id: &QuoteId,
     ) -> Result<Option<mint::MeltQuote>, Self::Err> {
-        Ok(query(
-            r#"
-            SELECT
-                id,
-                unit,
-                amount,
-                request,
-                fee_reserve,
-                expiry,
-                state,
-                payment_preimage,
-                request_lookup_id,
-                created_time,
-                paid_time,
-                payment_method,
-                options,
-                request_lookup_id
-            FROM
-                melt_quote
-            WHERE
-                id=:id
-            "#,
-        )?
-        .bind("id", quote_id.to_string())
-        .fetch_one(&self.inner)
-        .await?
-        .map(sql_row_to_melt_quote)
-        .transpose()?)
+        get_melt_quote_inner(&self.inner, quote_id, true).await
     }
 
     async fn get_mint_quote_by_request(
         &mut self,
         request: &str,
     ) -> Result<Option<MintQuote>, Self::Err> {
-        let mut mint_quote = query(
-            r#"
-            SELECT
-                id,
-                amount,
-                unit,
-                request,
-                expiry,
-                request_lookup_id,
-                pubkey,
-                created_time,
-                amount_paid,
-                amount_issued,
-                payment_method,
-                request_lookup_id_kind
-            FROM
-                mint_quote
-            WHERE request = :request
-            FOR UPDATE
-            "#,
-        )?
-        .bind("request", request.to_string())
-        .fetch_one(&self.inner)
-        .await?
-        .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
-        .transpose()?;
-
-        if let Some(quote) = mint_quote.as_mut() {
-            let payments = get_mint_quote_payments(&self.inner, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&self.inner, &quote.id).await?;
-            quote.issuance = issuance;
-            quote.payments = payments;
-        }
-
-        Ok(mint_quote)
+        get_mint_quote_by_request_inner(&self.inner, request, true).await
     }
 
     async fn get_mint_quote_by_request_lookup_id(
         &mut self,
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintQuote>, Self::Err> {
-        let mut mint_quote = query(
-            r#"
-            SELECT
-                id,
-                amount,
-                unit,
-                request,
-                expiry,
-                request_lookup_id,
-                pubkey,
-                created_time,
-                amount_paid,
-                amount_issued,
-                payment_method,
-                request_lookup_id_kind
-            FROM
-                mint_quote
-            WHERE request_lookup_id = :request_lookup_id
-            AND request_lookup_id_kind = :request_lookup_id_kind
-            FOR UPDATE
-            "#,
-        )?
-        .bind("request_lookup_id", request_lookup_id.to_string())
-        .bind("request_lookup_id_kind", request_lookup_id.kind())
-        .fetch_one(&self.inner)
-        .await?
-        .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
-        .transpose()?;
-
-        if let Some(quote) = mint_quote.as_mut() {
-            let payments = get_mint_quote_payments(&self.inner, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&self.inner, &quote.id).await?;
-            quote.issuance = issuance;
-            quote.payments = payments;
-        }
-
-        Ok(mint_quote)
+        get_mint_quote_by_request_lookup_id_inner(&self.inner, request_lookup_id, true).await
     }
 }
 
@@ -1270,36 +1332,7 @@ where
         let start_time = std::time::Instant::now();
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
-        let result = async {
-            let payments = get_mint_quote_payments(&*conn, quote_id).await?;
-            let issuance = get_mint_quote_issuance(&*conn, quote_id).await?;
-
-            query(
-                r#"
-                SELECT
-                    id,
-                    amount,
-                    unit,
-                    request,
-                    expiry,
-                    request_lookup_id,
-                    pubkey,
-                    created_time,
-                    amount_paid,
-                    amount_issued,
-                    payment_method,
-                    request_lookup_id_kind
-                FROM
-                    mint_quote
-                WHERE id = :id"#,
-            )?
-            .bind("id", quote_id.to_string())
-            .fetch_one(&*conn)
-            .await?
-            .map(|row| sql_row_to_mint_quote(row, payments, issuance))
-            .transpose()
-        }
-        .await;
+        let result = get_mint_quote_inner(&*conn, quote_id, false).await;
 
         #[cfg(feature = "prometheus")]
         {
@@ -1322,39 +1355,7 @@ where
         request: &str,
     ) -> Result<Option<MintQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let mut mint_quote = query(
-            r#"
-            SELECT
-                id,
-                amount,
-                unit,
-                request,
-                expiry,
-                request_lookup_id,
-                pubkey,
-                created_time,
-                amount_paid,
-                amount_issued,
-                payment_method,
-                request_lookup_id_kind
-            FROM
-                mint_quote
-            WHERE request = :request"#,
-        )?
-        .bind("request", request.to_owned())
-        .fetch_one(&*conn)
-        .await?
-        .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
-        .transpose()?;
-
-        if let Some(quote) = mint_quote.as_mut() {
-            let payments = get_mint_quote_payments(&*conn, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&*conn, &quote.id).await?;
-            quote.issuance = issuance;
-            quote.payments = payments;
-        }
-
-        Ok(mint_quote)
+        get_mint_quote_by_request_inner(&*conn, request, false).await
     }
 
     async fn get_mint_quote_by_request_lookup_id(
@@ -1362,43 +1363,7 @@ where
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintQuote>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let mut mint_quote = query(
-            r#"
-            SELECT
-                id,
-                amount,
-                unit,
-                request,
-                expiry,
-                request_lookup_id,
-                pubkey,
-                created_time,
-                amount_paid,
-                amount_issued,
-                payment_method,
-                request_lookup_id_kind
-            FROM
-                mint_quote
-            WHERE request_lookup_id = :request_lookup_id
-            AND request_lookup_id_kind = :request_lookup_id_kind
-            "#,
-        )?
-        .bind("request_lookup_id", request_lookup_id.to_string())
-        .bind("request_lookup_id_kind", request_lookup_id.kind())
-        .fetch_one(&*conn)
-        .await?
-        .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
-        .transpose()?;
-
-        // TODO: these should use an sql join so they can be done in one query
-        if let Some(quote) = mint_quote.as_mut() {
-            let payments = get_mint_quote_payments(&*conn, &quote.id).await?;
-            let issuance = get_mint_quote_issuance(&*conn, &quote.id).await?;
-            quote.issuance = issuance;
-            quote.payments = payments;
-        }
-
-        Ok(mint_quote)
+        get_mint_quote_by_request_lookup_id_inner(&*conn, request_lookup_id, false).await
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
@@ -1449,37 +1414,7 @@ where
         let start_time = std::time::Instant::now();
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
-        let result = async {
-            query(
-                r#"
-                SELECT
-                    id,
-                    unit,
-                    amount,
-                    request,
-                    fee_reserve,
-                    expiry,
-                    state,
-                    payment_preimage,
-                    request_lookup_id,
-                    created_time,
-                    paid_time,
-                    payment_method,
-                    options,
-                    request_lookup_id_kind
-                FROM
-                    melt_quote
-                WHERE
-                    id=:id
-                "#,
-            )?
-            .bind("id", quote_id.to_string())
-            .fetch_one(&*conn)
-            .await?
-            .map(sql_row_to_melt_quote)
-            .transpose()
-        }
-        .await;
+        let result = get_melt_quote_inner(&*conn, quote_id, false).await;
 
         #[cfg(feature = "prometheus")]
         {
