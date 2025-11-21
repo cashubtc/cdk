@@ -3,8 +3,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cdk::cdk_database::WalletDatabase as CdkWalletDatabase;
-use cdk_common::database::{DbTransactionFinalizer, WalletDatabaseTransaction};
+use cdk_common::database::{
+    DbTransactionFinalizer, DynWalletDatabaseTransaction, WalletDatabase as CdkWalletDatabase,
+    WalletDatabaseTransaction as CdkWalletDatabaseTransaction,
+};
+use cdk_sql_common::pool::DatabasePool;
+use cdk_sql_common::SQLWalletDatabase;
+use tokio::sync::Mutex;
 
 use crate::error::FfiError;
 #[cfg(feature = "postgres")]
@@ -17,6 +22,14 @@ use crate::types::*;
 #[uniffi::export(with_foreign)]
 #[async_trait::async_trait]
 pub trait WalletDatabase: Send + Sync {
+    /// Begins a DB transaction
+    async fn begin(&self) -> Result<(), FfiError>;
+
+    /// Begins a DB transaction
+    async fn commit(&self) -> Result<(), FfiError>;
+
+    async fn rollback(&self) -> Result<(), FfiError>;
+
     // Mint Management
     /// Add Mint to storage
     async fn add_mint(
@@ -428,10 +441,16 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
 
     async fn begin_db_transaction<'a>(
         &'a self,
-    ) -> Result<Box<dyn WalletDatabaseTransaction<'a, Self::Err> + Send + Sync + 'a>, Self::Err>
+    ) -> Result<Box<dyn CdkWalletDatabaseTransaction<'a, Self::Err> + Send + Sync + 'a>, Self::Err>
     {
+        self.ffi_db
+            .begin()
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+
         Ok(Box::new(WalletDatabaseTransactionBridge {
             ffi_db: Arc::clone(&self.ffi_db),
+            is_finalized: false,
         }))
     }
 }
@@ -439,10 +458,11 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
 /// Transaction bridge for FFI wallet database
 struct WalletDatabaseTransactionBridge {
     ffi_db: Arc<dyn WalletDatabase>,
+    is_finalized: bool,
 }
 
 #[async_trait::async_trait]
-impl<'a> WalletDatabaseTransaction<'a, cdk::cdk_database::Error>
+impl<'a> CdkWalletDatabaseTransaction<'a, cdk::cdk_database::Error>
     for WalletDatabaseTransactionBridge
 {
     async fn add_mint(
@@ -730,14 +750,531 @@ impl<'a> WalletDatabaseTransaction<'a, cdk::cdk_database::Error>
 impl DbTransactionFinalizer for WalletDatabaseTransactionBridge {
     type Err = cdk::cdk_database::Error;
 
-    async fn commit(self: Box<Self>) -> Result<(), cdk::cdk_database::Error> {
-        // FFI databases handle transactions internally, no-op here
+    async fn commit(mut self: Box<Self>) -> Result<(), cdk::cdk_database::Error> {
+        self.is_finalized = true;
+        self.ffi_db
+            .commit()
+            .await
+            .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+
+    async fn rollback(mut self: Box<Self>) -> Result<(), cdk::cdk_database::Error> {
+        self.is_finalized = true;
+        self.ffi_db
+            .rollback()
+            .await
+            .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
+    }
+}
+
+impl Drop for WalletDatabaseTransactionBridge {
+    fn drop(&mut self) {
+        if !self.is_finalized {
+            let db = self.ffi_db.clone();
+            tokio::spawn(async move {
+                let _ = db.rollback().await;
+            });
+        }
+    }
+}
+
+pub(crate) struct FfiWalletSQLDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    inner: SQLWalletDatabase<RM>,
+    // SAFETY: The transaction borrows from `inner`, but we guarantee through
+    // our API that `inner` outlives the transaction. The transaction is always
+    // explicitly committed or rolled back, and we never drop `inner` while a
+    // transaction is active. Automatic rollback on drop ensures no dangling state.
+    tx: Mutex<Option<DynWalletDatabaseTransaction<'static>>>,
+}
+
+impl<RM> FfiWalletSQLDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    /// Creates a new instance
+    pub fn new(inner: SQLWalletDatabase<RM>) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            tx: Mutex::new(None),
+        })
+    }
+}
+
+// Implement the local WalletDatabase trait (simple trait path required by uniffi)
+#[async_trait::async_trait]
+impl<RM> WalletDatabase for FfiWalletSQLDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn begin(&self) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        if inner_tx.is_some() {
+            return Err(FfiError::Database {
+                msg: "Nested transactions not supported".to_owned(),
+            });
+        }
+
+        let tx = self
+            .inner
+            .begin_db_transaction()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+
+        // SAFETY: We transmute the lifetime from 'a to 'static. This is safe because:
+        // 1. `inner` (Arc<CdkWalletPgDatabase>) is never dropped while tx is active
+        // 2. Transaction is always explicitly committed/rolled back via our API
+        // 3. Transaction has automatic rollback on drop, so no dangling state
+        // 4. The struct design ensures inner outlives any transaction
+        let tx_static: DynWalletDatabaseTransaction<'static> = unsafe { std::mem::transmute(tx) };
+
+        *inner_tx = Some(tx_static);
         Ok(())
     }
 
-    async fn rollback(self: Box<Self>) -> Result<(), cdk::cdk_database::Error> {
-        // FFI databases handle transactions internally, no-op here
-        Ok(())
+    /// Begins a DB transaction
+    async fn commit(&self) -> Result<(), FfiError> {
+        self.tx
+            .lock()
+            .await
+            .take()
+            .ok_or(FfiError::Database {
+                msg: "No transaction".to_owned(),
+            })?
+            .commit()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn rollback(&self) -> Result<(), FfiError> {
+        self.tx
+            .lock()
+            .await
+            .take()
+            .ok_or(FfiError::Database {
+                msg: "No transaction".to_owned(),
+            })?
+            .rollback()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    // Forward all trait methods to inner CDK database via the bridge adapter
+    async fn add_mint(
+        &self,
+        mint_url: MintUrl,
+        mint_info: Option<MintInfo>,
+    ) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+
+        let cdk_mint_url = mint_url.try_into()?;
+        let cdk_mint_info = mint_info.map(Into::into);
+        tx.add_mint(cdk_mint_url, cdk_mint_info)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+        let cdk_mint_url = mint_url.try_into()?;
+        tx.remove_mint(cdk_mint_url)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, FfiError> {
+        let cdk_mint_url = mint_url.try_into()?;
+        let result = self
+            .inner
+            .get_mint(cdk_mint_url)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+
+        Ok(result.map(Into::into))
+    }
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, FfiError> {
+        let result = self
+            .inner
+            .get_mints()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        Ok(result
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.map(Into::into)))
+            .collect())
+    }
+    async fn update_mint_url(
+        &self,
+        old_mint_url: MintUrl,
+        new_mint_url: MintUrl,
+    ) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+        let cdk_old_mint_url = old_mint_url.try_into()?;
+        let cdk_new_mint_url = new_mint_url.try_into()?;
+        tx.update_mint_url(cdk_old_mint_url, cdk_new_mint_url)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+    async fn add_mint_keysets(
+        &self,
+        mint_url: MintUrl,
+        keysets: Vec<KeySetInfo>,
+    ) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+        let cdk_mint_url = mint_url.try_into()?;
+        let cdk_keysets: Vec<cdk::nuts::KeySetInfo> = keysets.into_iter().map(Into::into).collect();
+        tx.add_mint_keysets(cdk_mint_url, cdk_keysets)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+    async fn get_mint_keysets(
+        &self,
+        mint_url: MintUrl,
+    ) -> Result<Option<Vec<KeySetInfo>>, FfiError> {
+        let cdk_mint_url = mint_url.try_into()?;
+        let result = self
+            .inner
+            .get_mint_keysets(cdk_mint_url)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        Ok(result.map(|keysets| keysets.into_iter().map(Into::into).collect()))
+    }
+
+    async fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<KeySetInfo>, FfiError> {
+        let cdk_id = keyset_id.into();
+
+        let result = if let Some(tx) = self.tx.lock().await.as_mut() {
+            tx.get_keyset_by_id(&cdk_id)
+                .await
+                .map_err(|e| FfiError::Database { msg: e.to_string() })?
+        } else {
+            self.inner
+                .get_keyset_by_id(&cdk_id)
+                .await
+                .map_err(|e| FfiError::Database { msg: e.to_string() })?
+        };
+
+        Ok(result.map(Into::into))
+    }
+
+    // Mint Quote Management
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+        let cdk_quote = quote.try_into()?;
+        tx.add_mint_quote(cdk_quote)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn get_mint_quote(&self, quote_id: String) -> Result<Option<MintQuote>, FfiError> {
+        let result = if let Some(tx) = self.tx.lock().await.as_mut() {
+            tx.get_mint_quote(&quote_id)
+                .await
+                .map_err(|e| FfiError::Database { msg: e.to_string() })?
+        } else {
+            self.inner
+                .get_mint_quote(&quote_id)
+                .await
+                .map_err(|e| FfiError::Database { msg: e.to_string() })?
+        };
+        Ok(result.map(|q| q.into()))
+    }
+
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
+        let result = self
+            .inner
+            .get_mint_quotes()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        Ok(result.into_iter().map(|q| q.into()).collect())
+    }
+
+    async fn remove_mint_quote(&self, quote_id: String) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+        tx.remove_mint_quote(&quote_id)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    // Melt Quote Management
+    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+        let cdk_quote = quote.try_into()?;
+        tx.add_melt_quote(cdk_quote)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn get_melt_quote(&self, quote_id: String) -> Result<Option<MeltQuote>, FfiError> {
+        let result = if let Some(tx) = self.tx.lock().await.as_mut() {
+            tx.get_melt_quote(&quote_id)
+                .await
+                .map_err(|e| FfiError::Database { msg: e.to_string() })?
+        } else {
+            self.inner
+                .get_melt_quote(&quote_id)
+                .await
+                .map_err(|e| FfiError::Database { msg: e.to_string() })?
+        };
+        Ok(result.map(|q| q.into()))
+    }
+
+    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, FfiError> {
+        let result = self
+            .inner
+            .get_melt_quotes()
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        Ok(result.into_iter().map(|q| q.into()).collect())
+    }
+
+    async fn remove_melt_quote(&self, quote_id: String) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+        tx.remove_melt_quote(&quote_id)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    // Keys Management
+    async fn add_keys(&self, keyset: KeySet) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+        // Convert FFI KeySet to cdk::nuts::KeySet
+        let cdk_keyset: cdk::nuts::KeySet = keyset.try_into()?;
+        tx.add_keys(cdk_keyset)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn get_keys(&self, id: Id) -> Result<Option<Keys>, FfiError> {
+        let cdk_id = id.into();
+        let result = if let Some(tx) = self.tx.lock().await.as_mut() {
+            tx.get_keys(&cdk_id)
+                .await
+                .map_err(|e| FfiError::Database { msg: e.to_string() })?
+        } else {
+            self.inner
+                .get_keys(&cdk_id)
+                .await
+                .map_err(|e| FfiError::Database { msg: e.to_string() })?
+        };
+        Ok(result.map(Into::into))
+    }
+
+    async fn remove_keys(&self, id: Id) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+        let cdk_id = id.into();
+        tx.remove_keys(&cdk_id)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    // Proof Management
+    async fn update_proofs(
+        &self,
+        added: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+
+        // Convert FFI types to CDK types
+        let cdk_added: Result<Vec<cdk::types::ProofInfo>, FfiError> = added
+            .into_iter()
+            .map(|info| {
+                Ok::<cdk::types::ProofInfo, FfiError>(cdk::types::ProofInfo {
+                    proof: info.proof.try_into()?,
+                    y: info.y.try_into()?,
+                    mint_url: info.mint_url.try_into()?,
+                    state: info.state.into(),
+                    spending_condition: info
+                        .spending_condition
+                        .map(|sc| sc.try_into())
+                        .transpose()?,
+                    unit: info.unit.into(),
+                })
+            })
+            .collect();
+        let cdk_added = cdk_added?;
+
+        let cdk_removed_ys: Result<Vec<cdk::nuts::PublicKey>, FfiError> =
+            removed_ys.into_iter().map(|pk| pk.try_into()).collect();
+        let cdk_removed_ys = cdk_removed_ys?;
+
+        tx.update_proofs(cdk_added, cdk_removed_ys)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn get_proofs(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        state: Option<Vec<ProofState>>,
+        spending_conditions: Option<Vec<SpendingConditions>>,
+    ) -> Result<Vec<ProofInfo>, FfiError> {
+        let cdk_mint_url = mint_url.map(|u| u.try_into()).transpose()?;
+        let cdk_unit = unit.map(Into::into);
+        let cdk_state = state.map(|s| s.into_iter().map(Into::into).collect());
+        let cdk_spending_conditions: Option<Vec<cdk::nuts::SpendingConditions>> =
+            spending_conditions
+                .map(|sc| {
+                    sc.into_iter()
+                        .map(|c| c.try_into())
+                        .collect::<Result<Vec<_>, FfiError>>()
+                })
+                .transpose()?;
+
+        let result = if let Some(tx) = self.tx.lock().await.as_mut() {
+            tx.get_proofs(cdk_mint_url, cdk_unit, cdk_state, cdk_spending_conditions)
+                .await
+                .map_err(|e| FfiError::Database { msg: e.to_string() })?
+        } else {
+            self.inner
+                .get_proofs(cdk_mint_url, cdk_unit, cdk_state, cdk_spending_conditions)
+                .await
+                .map_err(|e| FfiError::Database { msg: e.to_string() })?
+        };
+
+        Ok(result.into_iter().map(Into::into).collect())
+    }
+
+    async fn get_balance(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        state: Option<Vec<ProofState>>,
+    ) -> Result<u64, FfiError> {
+        let cdk_mint_url = mint_url.map(|u| u.try_into()).transpose()?;
+        let cdk_unit = unit.map(Into::into);
+        let cdk_state = state.map(|s| s.into_iter().map(Into::into).collect());
+
+        self.inner
+            .get_balance(cdk_mint_url, cdk_unit, cdk_state)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn update_proofs_state(
+        &self,
+        ys: Vec<PublicKey>,
+        state: ProofState,
+    ) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+        let cdk_ys: Result<Vec<cdk::nuts::PublicKey>, FfiError> =
+            ys.into_iter().map(|pk| pk.try_into()).collect();
+        let cdk_ys = cdk_ys?;
+        let cdk_state = state.into();
+
+        tx.update_proofs_state(cdk_ys, cdk_state)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    // Keyset Counter Management
+    async fn increment_keyset_counter(&self, keyset_id: Id, count: u32) -> Result<u32, FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+        let cdk_id = keyset_id.into();
+        tx.increment_keyset_counter(&cdk_id, count)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    // Transaction Management
+    async fn add_transaction(&self, transaction: Transaction) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+
+        // Convert FFI Transaction to CDK Transaction using TryFrom
+        let cdk_transaction: cdk::wallet::types::Transaction = transaction.try_into()?;
+
+        tx.add_transaction(cdk_transaction)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
+    }
+
+    async fn get_transaction(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<Transaction>, FfiError> {
+        let cdk_id = transaction_id.try_into()?;
+        let result = self
+            .inner
+            .get_transaction(cdk_id)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+        Ok(result.map(Into::into))
+    }
+
+    async fn list_transactions(
+        &self,
+        mint_url: Option<MintUrl>,
+        direction: Option<TransactionDirection>,
+        unit: Option<CurrencyUnit>,
+    ) -> Result<Vec<Transaction>, FfiError> {
+        let cdk_mint_url = mint_url.map(|u| u.try_into()).transpose()?;
+        let cdk_direction = direction.map(Into::into);
+        let cdk_unit = unit.map(Into::into);
+
+        let result = self
+            .inner
+            .list_transactions(cdk_mint_url, cdk_direction, cdk_unit)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+
+        Ok(result.into_iter().map(Into::into).collect())
+    }
+
+    async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), FfiError> {
+        let mut inner_tx = self.tx.lock().await;
+        let tx = inner_tx.as_mut().ok_or(FfiError::Database {
+            msg: "No transaction".to_owned(),
+        })?;
+        let cdk_id = transaction_id.try_into()?;
+        tx.remove_transaction(cdk_id)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })
     }
 }
 
