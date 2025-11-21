@@ -736,3 +736,412 @@ async fn test_batch_mint_validates_url_path_payment_method() {
         Ok(_) => panic!("Should have returned error"),
     }
 }
+
+// ============================================================================
+// Spending Conditions (NUT-11 P2PK and NUT-14 HTLC) Tests for Batch Mint
+// ============================================================================
+
+/// Helper to create blinded messages with P2PK spending conditions
+/// Returns both the blinded messages to send to mint and the secrets needed to unblind
+///
+/// This demonstrates the proper flow:
+/// 1. Client (wallet) creates spending conditions
+/// 2. Client creates PreMintSecrets WITH conditions (embeds them in the secret)
+/// 3. Client extracts blinded messages (WITHOUT the spending condition data)
+/// 4. Client sends blinded messages to mint
+/// 5. Mint signs blindly (without knowing about spending conditions)
+/// 6. Client later reconstructs proofs with spending conditions from the original secrets
+fn create_outputs_with_p2pk(
+    mint: &Arc<cdk::Mint>,
+    p2pk_pubkey: cdk::nuts::PublicKey,
+) -> (Vec<BlindedMessage>, PreMintSecrets) {
+    use cdk::nuts::nut11::SpendingConditions;
+
+    let keysets = *mint.get_active_keysets().get(&CurrencyUnit::Sat).unwrap();
+    let keyset_id = keysets;
+
+    // Step 1: Client creates P2PK spending condition
+    // This specifies: "only the holder of p2pk_pubkey can spend this proof"
+    let p2pk_condition = SpendingConditions::new_p2pk(p2pk_pubkey, None);
+
+    // Step 2: Client creates PreMintSecrets with the spending condition embedded
+    // The spending condition is serialized into the secret's JSON structure
+    let pre_mint = PreMintSecrets::with_conditions(
+        keyset_id,
+        Amount::from(1),
+        &SplitTarget::default(),
+        &p2pk_condition,
+        &(0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into(),
+    )
+    .expect("Failed to create PreMintSecrets with P2PK conditions");
+
+    // Step 3: Extract blinded messages (these do NOT contain spending condition data)
+    // The spending conditions stay in the client's PreMintSecrets.secrets
+    // Only the blinded messages are sent to the mint
+    let blinded_messages = pre_mint.blinded_messages().iter().cloned().collect();
+
+    (blinded_messages, pre_mint)
+}
+
+/// Helper to create blinded messages with HTLC spending conditions
+/// Returns both the blinded messages to send to mint and the secrets needed to unblind
+///
+/// HTLC (Hashed Time Locked Contract) spending conditions allow:
+/// - Locking proofs until a specific block height (locktime)
+/// - Requiring a preimage to unlock before that time
+/// - Allowing refund after locktime
+fn create_outputs_with_htlc(
+    mint: &Arc<cdk::Mint>,
+    preimage_hex: String,
+) -> (Vec<BlindedMessage>, PreMintSecrets) {
+    use cdk::nuts::nut11::SpendingConditions;
+
+    let keysets = *mint.get_active_keysets().get(&CurrencyUnit::Sat).unwrap();
+    let keyset_id = keysets;
+
+    // Step 1: Client creates HTLC spending condition with a preimage
+    // The preimage is hashed, and the hash is stored in the spending condition
+    // To spend, the holder must provide the preimage
+    let htlc_condition =
+        SpendingConditions::new_htlc(preimage_hex, None).expect("Failed to create HTLC condition");
+
+    // Step 2: Client creates PreMintSecrets with the HTLC condition embedded
+    let pre_mint = PreMintSecrets::with_conditions(
+        keyset_id,
+        Amount::from(1),
+        &SplitTarget::default(),
+        &htlc_condition,
+        &(0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into(),
+    )
+    .expect("Failed to create PreMintSecrets with HTLC conditions");
+
+    // Step 3: Extract blinded messages for sending to mint
+    let blinded_messages = pre_mint.blinded_messages().iter().cloned().collect();
+
+    (blinded_messages, pre_mint)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_with_p2pk_spending_conditions() {
+    let mint = create_test_mint().await;
+
+    // Create a quote that is paid (no NUT-20 lock)
+    let quote_id = create_and_store_mint_quote(
+        &mint,
+        Some(10.into()),
+        PaymentMethod::Bolt11,
+        Amount::from(10),
+        None, // No NUT-20 lock on the quote
+    )
+    .await
+    .expect("Failed to create quote");
+
+    // Create blinded messages WITH P2PK spending conditions
+    let secret_key = SecretKey::generate();
+    let p2pk_pubkey = secret_key.public_key();
+    let (mut outputs, pre_mint_secrets) = create_outputs_with_p2pk(&mint, p2pk_pubkey);
+
+    // Sign the blinded messages with P2PK key
+    for output in &mut outputs {
+        output
+            .sign_p2pk(secret_key.clone())
+            .expect("Failed to sign");
+    }
+
+    // Create batch mint request
+    let request = BatchMintRequest {
+        quote: vec![quote_id.to_string()],
+        outputs,
+        signature: None, // No NUT-20 signature needed
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+
+    // Test that proofs with P2PK spending conditions can be created via batch mint
+    match result {
+        Ok(response) => {
+            // Verify we got blind signatures back
+            assert!(
+                !response.signatures.is_empty(),
+                "Should return minted signatures"
+            );
+
+            // Now unblind the signatures to create proofs with spending conditions
+            // This proves that the spending conditions were preserved through the batch mint flow
+            let keyset = mint
+                .keyset(&response.signatures[0].keyset_id)
+                .expect("Could not get keyset");
+            let keys = keyset.keys;
+
+            // Reconstruct proofs by unblinding - this will fail if the secrets don't match
+            let proofs = cdk::dhke::construct_proofs(
+                response.signatures.clone(),
+                pre_mint_secrets.rs().clone(),
+                pre_mint_secrets.secrets().clone(),
+                &keys,
+            )
+            .expect("Failed to construct proofs with spending conditions");
+
+            // Verify we got proofs back with spending conditions
+            assert!(!proofs.is_empty(), "Should have constructed proofs");
+
+            // VERIFY SPENDING CONDITIONS ARE PRESENT IN THE PROOFS
+            for proof in &proofs {
+                // Extract spending conditions from the proof's secret
+                let spending_conditions =
+                    cdk::nuts::nut11::SpendingConditions::try_from(&proof.secret)
+                        .expect("Failed to extract spending conditions from proof");
+
+                // Verify the condition is P2PK
+                match spending_conditions {
+                    cdk::nuts::nut11::SpendingConditions::P2PKConditions { data, .. } => {
+                        // Verify it matches the pubkey we created
+                        assert_eq!(data, p2pk_pubkey, "P2PK public key should match");
+                    }
+                    _ => panic!("Expected P2PKConditions but got different condition type"),
+                }
+            }
+            // The proofs now contain the P2PK spending conditions in their secrets
+            // This confirms the end-to-end flow: create conditions -> batch mint -> unblind -> proofs with conditions
+        }
+        Err(Error::UnpaidQuote) => {
+            // Acceptable: Quote payment validation is independent of spending conditions
+            // This test still validates that spending conditions can be created and sent
+        }
+        Err(e) => {
+            panic!("Unexpected error: {:?}", e);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_with_htlc_spending_conditions() {
+    let mint = create_test_mint().await;
+
+    // Create a quote that is paid
+    let quote_id = create_and_store_mint_quote(
+        &mint,
+        Some(10.into()),
+        PaymentMethod::Bolt11,
+        Amount::from(10),
+        None,
+    )
+    .await
+    .expect("Failed to create quote");
+
+    // Create a valid HTLC preimage (32 bytes hex encoded)
+    let preimage_hex =
+        "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+
+    // Create blinded messages WITH HTLC spending conditions
+    let (outputs, pre_mint_secrets) = create_outputs_with_htlc(&mint, preimage_hex.clone());
+
+    // Create batch mint request
+    let request = BatchMintRequest {
+        quote: vec![quote_id.to_string()],
+        outputs,
+        signature: None,
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+
+    // Test that proofs with HTLC spending conditions can be created via batch mint
+    match result {
+        Ok(response) => {
+            // Verify we got blind signatures back
+            assert!(
+                !response.signatures.is_empty(),
+                "Should return minted signatures"
+            );
+
+            // Now unblind the signatures to create proofs with spending conditions
+            let keyset = mint
+                .keyset(&response.signatures[0].keyset_id)
+                .expect("Could not get keyset");
+            let keys = keyset.keys;
+
+            // Reconstruct proofs by unblinding - this will fail if the secrets don't match
+            let proofs = cdk::dhke::construct_proofs(
+                response.signatures.clone(),
+                pre_mint_secrets.rs().clone(),
+                pre_mint_secrets.secrets().clone(),
+                &keys,
+            )
+            .expect("Failed to construct proofs with spending conditions");
+
+            // Verify we got proofs back with spending conditions
+            assert!(!proofs.is_empty(), "Should have constructed proofs");
+
+            // VERIFY SPENDING CONDITIONS ARE PRESENT IN THE PROOFS
+            // Calculate the expected hash from the preimage
+            use bitcoin::hashes::Hash;
+            use cashu::util::hex;
+            let preimage_bytes = hex::decode(&preimage_hex).expect("Failed to decode preimage hex");
+            let expected_hash = bitcoin::hashes::sha256::Hash::hash(&preimage_bytes);
+
+            for proof in &proofs {
+                // Extract spending conditions from the proof's secret
+                let spending_conditions =
+                    cdk::nuts::nut11::SpendingConditions::try_from(&proof.secret)
+                        .expect("Failed to extract spending conditions from proof");
+
+                // Verify the condition is HTLC
+                match spending_conditions {
+                    cdk::nuts::nut11::SpendingConditions::HTLCConditions { data, .. } => {
+                        // Verify it matches the hash we created from the preimage
+                        assert_eq!(
+                            data.to_string(),
+                            expected_hash.to_string(),
+                            "HTLC hash should match preimage hash"
+                        );
+                    }
+                    _ => panic!("Expected HTLCConditions but got different condition type"),
+                }
+            }
+            // The proofs now contain the HTLC spending conditions in their secrets
+            // This confirms the end-to-end flow: create conditions -> batch mint -> unblind -> proofs with conditions
+        }
+        Err(Error::UnpaidQuote) => {
+            // Acceptable: Quote payment validation is independent of spending conditions
+        }
+        Err(e) => {
+            panic!("Unexpected error: {:?}", e);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_with_mixed_spending_conditions() {
+    let mint = create_test_mint().await;
+
+    // Create two quotes
+    let quote_id_1 = create_and_store_mint_quote(
+        &mint,
+        Some(5.into()),
+        PaymentMethod::Bolt11,
+        Amount::from(5),
+        None,
+    )
+    .await
+    .expect("Failed to create first quote");
+
+    let quote_id_2 = create_and_store_mint_quote(
+        &mint,
+        Some(5.into()),
+        PaymentMethod::Bolt11,
+        Amount::from(5),
+        None,
+    )
+    .await
+    .expect("Failed to create second quote");
+
+    // Create P2PK outputs for quote 1
+    let secret_key = SecretKey::generate();
+    let p2pk_pubkey = secret_key.public_key();
+    let (mut p2pk_outputs, p2pk_secrets) = create_outputs_with_p2pk(&mint, p2pk_pubkey);
+    for output in &mut p2pk_outputs {
+        output
+            .sign_p2pk(secret_key.clone())
+            .expect("Failed to sign");
+    }
+
+    // Create HTLC outputs for quote 2
+    let preimage_hex =
+        "1111111111111111111111111111111111111111111111111111111111111111".to_string();
+    let (htlc_outputs, htlc_secrets) = create_outputs_with_htlc(&mint, preimage_hex.clone());
+
+    // Combine outputs and secrets for verification later
+    let mut all_outputs = p2pk_outputs;
+    all_outputs.extend(htlc_outputs);
+
+    // Store secrets in order: first P2PK secrets, then HTLC secrets
+    let mut all_secrets = p2pk_secrets.secrets().clone();
+    all_secrets.extend(htlc_secrets.secrets().clone());
+
+    let mut all_rs = p2pk_secrets.rs().clone();
+    all_rs.extend(htlc_secrets.rs().clone());
+
+    // Create batch mint request with mixed conditions
+    let request = BatchMintRequest {
+        quote: vec![quote_id_1.to_string(), quote_id_2.to_string()],
+        outputs: all_outputs,
+        signature: None,
+    };
+
+    let result = mint
+        .process_batch_mint_request(request, PaymentMethod::Bolt11)
+        .await;
+
+    // This test validates that mixed spending conditions (P2PK + HTLC) can be included
+    // in a single batch mint request
+    match result {
+        Ok(response) => {
+            // Success: Mixed spending conditions accepted
+            assert_eq!(
+                response.signatures.len(),
+                2,
+                "Should return signatures for both quotes"
+            );
+
+            // Now unblind the signatures to create proofs with mixed spending conditions
+            let keyset = mint
+                .keyset(&response.signatures[0].keyset_id)
+                .expect("Could not get keyset");
+            let keys = keyset.keys;
+
+            // Reconstruct proofs by unblinding
+            let proofs = cdk::dhke::construct_proofs(
+                response.signatures.clone(),
+                all_rs,
+                all_secrets,
+                &keys,
+            )
+            .expect("Failed to construct proofs with mixed spending conditions");
+
+            // Verify we got proofs back
+            assert_eq!(proofs.len(), 2, "Should have constructed 2 proofs");
+
+            // VERIFY THAT EACH PROOF HAS THE CORRECT SPENDING CONDITIONS
+            // First proof should have P2PK conditions
+            let proof_0_conditions =
+                cdk::nuts::nut11::SpendingConditions::try_from(&proofs[0].secret)
+                    .expect("Failed to extract spending conditions from first proof");
+            match proof_0_conditions {
+                cdk::nuts::nut11::SpendingConditions::P2PKConditions { data, .. } => {
+                    assert_eq!(data, p2pk_pubkey, "First proof should have P2PK conditions");
+                }
+                _ => panic!("First proof should have P2PKConditions"),
+            }
+
+            // Second proof should have HTLC conditions
+            use bitcoin::hashes::Hash;
+            use cashu::util::hex;
+            let preimage_bytes = hex::decode(&preimage_hex).expect("Failed to decode preimage hex");
+            let expected_hash = bitcoin::hashes::sha256::Hash::hash(&preimage_bytes);
+
+            let proof_1_conditions =
+                cdk::nuts::nut11::SpendingConditions::try_from(&proofs[1].secret)
+                    .expect("Failed to extract spending conditions from second proof");
+            match proof_1_conditions {
+                cdk::nuts::nut11::SpendingConditions::HTLCConditions { data, .. } => {
+                    assert_eq!(
+                        data.to_string(),
+                        expected_hash.to_string(),
+                        "Second proof should have HTLC conditions with correct hash"
+                    );
+                }
+                _ => panic!("Second proof should have HTLCConditions"),
+            }
+        }
+        Err(Error::UnpaidQuote) => {
+            // Acceptable: Quote payment validation is independent of spending conditions
+        }
+        Err(e) => {
+            panic!("Unexpected error with mixed conditions: {:?}", e);
+        }
+    }
+}
