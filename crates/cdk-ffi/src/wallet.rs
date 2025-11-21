@@ -86,6 +86,14 @@ impl Wallet {
         Ok(info.map(Into::into))
     }
 
+    /// Load mint info
+    ///
+    /// This will get mint info from cache if it is fresh
+    pub async fn load_mint_info(&self) -> Result<MintInfo, FfiError> {
+        let info = self.inner.load_mint_info().await?;
+        Ok(info.into())
+    }
+
     /// Receive tokens
     pub async fn receive(
         &self,
