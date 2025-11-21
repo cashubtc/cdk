@@ -1173,17 +1173,12 @@ async fn test_batch_mint_mixed_locked_unlocked() {
 
     // Quote 1: Unlocked (None), Quote 2: Locked (Some(secret_key))
     let secret_key_2 = SecretKey::generate();
-    let (quote_1_id, quote_2_id) =
-        setup_batch_mint_test(&mint, &wallet, [(100, None), (50, Some(secret_key_2))]).await;
+    let quotes =
+        setup_batch_mint_test(&mint, &wallet, &[(100, None), (50, Some(secret_key_2))]).await;
 
     // Mint both quotes in a batch
     let proofs = wallet
-        .mint_batch(
-            vec![quote_1_id, quote_2_id],
-            SplitTarget::default(),
-            None,
-            PaymentMethod::Bolt11,
-        )
+        .mint_batch(quotes, SplitTarget::default(), None, PaymentMethod::Bolt11)
         .await
         .expect("Failed to mint batch");
 
@@ -1213,17 +1208,11 @@ async fn test_batch_mint_two_unlocked_quotes() {
         .expect("Failed to create test wallet");
 
     // Both quotes unlocked (None, None)
-    let (quote_1_id, quote_2_id) =
-        setup_batch_mint_test(&mint, &wallet, [(100, None), (50, None)]).await;
+    let quotes = setup_batch_mint_test(&mint, &wallet, &[(100, None), (50, None)]).await;
 
     // Batch mint
     let proofs = wallet
-        .mint_batch(
-            vec![quote_1_id, quote_2_id],
-            SplitTarget::default(),
-            None,
-            PaymentMethod::Bolt11,
-        )
+        .mint_batch(quotes, SplitTarget::default(), None, PaymentMethod::Bolt11)
         .await
         .expect("Failed to mint batch");
 
@@ -1247,21 +1236,16 @@ async fn test_batch_mint_two_locked_quotes() {
     // Both quotes locked (Some(secret_key), Some(secret_key))
     let secret_key_1 = SecretKey::generate();
     let secret_key_2 = SecretKey::generate();
-    let (quote_1_id, quote_2_id) = setup_batch_mint_test(
+    let quotes = setup_batch_mint_test(
         &mint,
         &wallet,
-        [(100, Some(secret_key_1)), (50, Some(secret_key_2))],
+        &[(100, Some(secret_key_1)), (50, Some(secret_key_2))],
     )
     .await;
 
     // Batch mint
     let proofs = wallet
-        .mint_batch(
-            vec![quote_1_id, quote_2_id],
-            SplitTarget::default(),
-            None,
-            PaymentMethod::Bolt11,
-        )
+        .mint_batch(quotes, SplitTarget::default(), None, PaymentMethod::Bolt11)
         .await
         .expect("Failed to mint batch");
 
@@ -1269,5 +1253,70 @@ async fn test_batch_mint_two_locked_quotes() {
         proofs.total_amount().expect("Failed to get total amount"),
         Amount::from(150),
         "Should mint 150 sats total"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_batch_mint_prevents_quote_reuse_across_batches() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Create three quotes: 100 sats, 50 sats, 75 sats
+    let quote_ids =
+        setup_batch_mint_test(&mint, &wallet, &[(100, None), (50, None), (75, None)]).await;
+    assert_eq!(quote_ids.len(), 3, "Should have created 3 quotes");
+
+    // First batch: mint quotes 0 and 1 → should succeed
+    let proofs_1 = wallet
+        .mint_batch(
+            vec![quote_ids[0].clone(), quote_ids[1].clone()],
+            SplitTarget::default(),
+            None,
+            PaymentMethod::Bolt11,
+        )
+        .await
+        .expect("Failed to mint first batch");
+
+    assert_eq!(
+        proofs_1.total_amount().expect("Failed to get total amount"),
+        Amount::from(150),
+        "First batch should mint 150 sats (100 + 50)"
+    );
+
+    let balance = wallet.total_balance().await.expect("Failed to get balance");
+    assert_eq!(
+        balance,
+        Amount::from(150),
+        "Wallet balance should be 150 sats after first batch"
+    );
+
+    // Second batch: attempt quotes 1 and 2 → should fail because quote 1 was already issued
+    let result = wallet
+        .mint_batch(
+            vec![quote_ids[1].clone(), quote_ids[2].clone()],
+            SplitTarget::default(),
+            None,
+            PaymentMethod::Bolt11,
+        )
+        .await;
+
+    // After the first batch mint succeeds, the used quotes are removed from the wallet's
+    // available quotes. Attempting to reuse them results in "Unknown quote" error.
+    assert!(
+        result.is_err(),
+        "Second batch should fail - quote 1 was already consumed in first batch"
+    );
+
+    // Verify balance unchanged after failed batch
+    let balance_after = wallet.total_balance().await.expect("Failed to get balance");
+    assert_eq!(
+        balance_after,
+        Amount::from(150),
+        "Wallet balance should remain 150 sats after failed batch"
     );
 }
