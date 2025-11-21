@@ -37,17 +37,20 @@ async fn test_wallet_batch_mint_validates_same_unit() -> anyhow::Result<()> {
     )
     .await?;
 
-    // Try to mint batch with different units - should fail before HTTP call
     let quote_ids = vec![quote1.id.clone(), quote2.id.clone()];
     let result = wallet
-        .mint_batch(quote_ids.clone(), SplitTarget::default(), None)
+        .mint_batch(
+            quote_ids,
+            SplitTarget::default(),
+            None,
+            PaymentMethod::Bolt11,
+        )
         .await;
 
-    assert!(result.is_err());
-    match result {
-        Err(cdk::error::Error::UnsupportedUnit) => (),
-        _ => panic!("Expected UnsupportedUnit error"),
-    }
+    assert!(matches!(
+        result,
+        Err(cdk::error::Error::BatchCurrencyUnitMismatch)
+    ));
 
     Ok(())
 }
@@ -82,24 +85,25 @@ async fn test_wallet_batch_mint_mixed_payment_methods_error() -> anyhow::Result<
     )
     .await?;
 
-    let quote_ids = vec![quote1.id.clone(), quote2.id.clone()];
-
-    // This should fail because quotes have different payment methods
     let result = wallet
-        .mint_batch(quote_ids.clone(), SplitTarget::default(), None)
+        .mint_batch(
+            vec![quote1.id.clone(), quote2.id.clone()],
+            SplitTarget::default(),
+            None,
+            PaymentMethod::Bolt11,
+        )
         .await;
 
-    assert!(result.is_err());
-    match result {
-        Err(cdk::error::Error::UnsupportedPaymentMethod) => (),
-        _ => panic!("Expected UnsupportedPaymentMethod error"),
-    }
+    assert!(matches!(
+        result,
+        Err(cdk::error::Error::BatchPaymentMethodMismatch)
+    ));
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_wallet_batch_mint_unpaid_quote_error() -> anyhow::Result<()> {
+async fn test_wallet_batch_mint_requires_all_paid_state() -> anyhow::Result<()> {
     let seed = rand::random::<[u8; 64]>();
     let mint_url = "https://fake.thesimplekid.dev";
     let unit = cdk::nuts::CurrencyUnit::Sat;
@@ -128,14 +132,16 @@ async fn test_wallet_batch_mint_unpaid_quote_error() -> anyhow::Result<()> {
     )
     .await?;
 
-    // Try to mint batch with one unpaid quote
-    let quote_ids = vec![quote1.id.clone(), quote2.id.clone()];
     let result = wallet
-        .mint_batch(quote_ids, SplitTarget::default(), None)
+        .mint_batch(
+            vec![quote1.id.clone(), quote2.id.clone()],
+            SplitTarget::default(),
+            None,
+            PaymentMethod::Bolt11,
+        )
         .await;
 
-    // Should fail because quote2 is not paid
-    assert!(result.is_err());
+    assert!(matches!(result, Err(cdk::error::Error::UnpaidQuote)));
 
     Ok(())
 }
@@ -149,32 +155,33 @@ async fn test_wallet_batch_mint_single_quote_validation() -> anyhow::Result<()> 
     let localstore = memory::empty().await?;
     let wallet = Wallet::new(mint_url, unit.clone(), Arc::new(localstore), seed, None)?;
 
-    let amount = Amount::from(500);
     let quote = store_test_quote(
         &wallet,
         mint_url,
         "single",
-        amount,
+        Amount::from(500),
         unit,
         PaymentMethod::Bolt11,
         MintQuoteState::Paid,
     )
     .await?;
 
-    // Try to mint batch with single quote - will fail at HTTP level but validation should pass
-    let quote_ids = vec![quote.id.clone()];
     let result = wallet
-        .mint_batch(quote_ids, SplitTarget::default(), None)
+        .mint_batch(
+            vec![quote.id.clone()],
+            SplitTarget::default(),
+            None,
+            PaymentMethod::Bolt11,
+        )
         .await;
 
-    // Should fail due to HTTP communication, not validation
     assert!(result.is_err());
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_wallet_batch_mint_empty_list_error() -> anyhow::Result<()> {
+async fn test_wallet_batch_mint_rejects_empty_quotes() -> anyhow::Result<()> {
     let seed = rand::random::<[u8; 64]>();
     let mint_url = "https://fake.thesimplekid.dev";
     let unit = cdk::nuts::CurrencyUnit::Sat;
@@ -182,16 +189,11 @@ async fn test_wallet_batch_mint_empty_list_error() -> anyhow::Result<()> {
     let localstore = memory::empty().await?;
     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None)?;
 
-    // Try to mint batch with empty list
     let result = wallet
-        .mint_batch(vec![], SplitTarget::default(), None)
+        .mint_batch(vec![], SplitTarget::default(), None, PaymentMethod::Bolt11)
         .await;
 
-    assert!(result.is_err());
-    match result {
-        Err(cdk::error::Error::AmountUndefined) => (),
-        _ => panic!("Expected AmountUndefined error"),
-    }
+    assert!(matches!(result, Err(cdk::error::Error::BatchEmpty)));
 
     Ok(())
 }
@@ -205,20 +207,166 @@ async fn test_wallet_batch_mint_unknown_quote_error() -> anyhow::Result<()> {
     let localstore = memory::empty().await?;
     let wallet = Wallet::new(mint_url, unit, Arc::new(localstore), seed, None)?;
 
-    // Try to mint batch with non-existent quote
     let result = wallet
         .mint_batch(
             vec!["nonexistent".to_string()],
             SplitTarget::default(),
             None,
+            PaymentMethod::Bolt11,
         )
         .await;
 
-    assert!(result.is_err());
-    match result {
-        Err(cdk::error::Error::UnknownQuote) => (),
-        _ => panic!("Expected UnknownQuote error"),
+    assert!(matches!(result, Err(cdk::error::Error::UnknownQuote)));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_wallet_batch_mint_rejects_oversized_batch() -> anyhow::Result<()> {
+    let seed = rand::random::<[u8; 64]>();
+    let mint_url = "https://fake.thesimplekid.dev";
+    let unit = cdk::nuts::CurrencyUnit::Sat;
+
+    let localstore = memory::empty().await?;
+    let wallet = Wallet::new(mint_url, unit.clone(), Arc::new(localstore), seed, None)?;
+
+    let quote_ids: Vec<String> = (0..101).map(|i| format!("quote_{}", i)).collect();
+    let result = wallet
+        .mint_batch(
+            quote_ids,
+            SplitTarget::default(),
+            None,
+            PaymentMethod::Bolt11,
+        )
+        .await;
+
+    assert!(matches!(result, Err(cdk::error::Error::BatchSizeExceeded)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_wallet_batch_mint_rejects_over_limit() -> anyhow::Result<()> {
+    let seed = rand::random::<[u8; 64]>();
+    let mint_url = "https://fake.thesimplekid.dev";
+    let unit = cdk::nuts::CurrencyUnit::Sat;
+
+    let localstore = memory::empty().await?;
+    let wallet = Wallet::new(mint_url, unit.clone(), Arc::new(localstore), seed, None)?;
+
+    let quote_ids = (0..101)
+        .map(|i| format!("quote_over_limit_{}", i))
+        .collect::<Vec<_>>();
+    for quote_id in &quote_ids {
+        store_test_quote(
+            &wallet,
+            mint_url,
+            quote_id,
+            Amount::from(1),
+            unit.clone(),
+            PaymentMethod::Bolt11,
+            MintQuoteState::Paid,
+        )
+        .await?;
     }
+
+    let result = wallet
+        .mint_batch(quote_ids, SplitTarget::default(), None, PaymentMethod::Bolt11)
+        .await;
+
+    assert!(matches!(result, Err(cdk::error::Error::BatchSizeExceeded)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_batch_mint_payment_method_validation() -> anyhow::Result<()> {
+    let seed = rand::random::<[u8; 64]>();
+    let mint_url = "https://fake.thesimplekid.dev";
+    let unit = cdk::nuts::CurrencyUnit::Sat;
+
+    let localstore = memory::empty().await?;
+    let wallet = Wallet::new(mint_url, unit.clone(), Arc::new(localstore), seed, None)?;
+
+    let quote1 = store_test_quote(
+        &wallet,
+        mint_url,
+        "bolt11_quote",
+        Amount::from(100),
+        unit.clone(),
+        PaymentMethod::Bolt11,
+        MintQuoteState::Paid,
+    )
+    .await?;
+    let quote2 = store_test_quote(
+        &wallet,
+        mint_url,
+        "bolt12_quote",
+        Amount::from(50),
+        unit,
+        PaymentMethod::Bolt12,
+        MintQuoteState::Paid,
+    )
+    .await?;
+
+    let result = wallet
+        .mint_batch(
+            vec![quote1.id.clone(), quote2.id.clone()],
+            SplitTarget::default(),
+            None,
+            PaymentMethod::Bolt11,
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(cdk::error::Error::BatchPaymentMethodMismatch)
+    ));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_batch_mint_enforces_url_payment_method() -> anyhow::Result<()> {
+    let seed = rand::random::<[u8; 64]>();
+    let mint_url = "https://fake.thesimplekid.dev";
+    let unit = cdk::nuts::CurrencyUnit::Sat;
+
+    let localstore = memory::empty().await?;
+    let wallet = Wallet::new(mint_url, unit.clone(), Arc::new(localstore), seed, None)?;
+
+    let quote1 = store_test_quote(
+        &wallet,
+        mint_url,
+        "bolt12_1",
+        Amount::from(100),
+        unit.clone(),
+        PaymentMethod::Bolt12,
+        MintQuoteState::Paid,
+    )
+    .await?;
+    let quote2 = store_test_quote(
+        &wallet,
+        mint_url,
+        "bolt12_2",
+        Amount::from(200),
+        unit,
+        PaymentMethod::Bolt12,
+        MintQuoteState::Paid,
+    )
+    .await?;
+
+    let result = wallet
+        .mint_batch(
+            vec![quote1.id.clone(), quote2.id.clone()],
+            SplitTarget::default(),
+            None,
+            PaymentMethod::Bolt11,
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(cdk::error::Error::BatchPaymentMethodEndpointMismatch)
+    ));
 
     Ok(())
 }

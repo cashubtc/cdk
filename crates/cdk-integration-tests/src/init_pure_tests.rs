@@ -246,7 +246,9 @@ impl MintConnector for DirectMintConnection {
         request: cdk_common::mint::BatchMintRequest,
     ) -> Result<MintResponse, Error> {
         // Process the batch mint request directly using the mint's batch handler
-        self.mint.process_batch_mint_request(request).await
+        self.mint
+            .process_batch_mint_request(request, cashu::PaymentMethod::Bolt11)
+            .await
     }
 }
 

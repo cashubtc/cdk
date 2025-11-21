@@ -313,6 +313,39 @@ pub enum Error {
     /// KV Store invalid key or namespace
     #[error("Invalid KV store key or namespace: {0}")]
     KVStoreInvalidKey(String),
+
+    // Batch Mint Errors (NUT-XX)
+    /// Batch request is empty (no quotes provided)
+    #[error("Batch request is empty")]
+    BatchEmpty,
+    /// Duplicate quote ID in batch request
+    #[error("Duplicate quote ID in batch")]
+    DuplicateQuoteIdInBatch,
+    /// All quotes in batch must use same payment method
+    #[error("All quotes in batch must use same payment method")]
+    BatchPaymentMethodMismatch,
+    /// All quotes in batch must use same currency unit
+    #[error("All quotes in batch must use same currency unit")]
+    BatchCurrencyUnitMismatch,
+    /// Quote payment method doesn't match endpoint
+    #[error("Batch quote payment method does not match endpoint")]
+    BatchPaymentMethodEndpointMismatch,
+    /// Invalid NUT-20 signature in batch
+    #[error("Invalid NUT-20 signature in batch")]
+    BatchInvalidSignature,
+    /// Signature provided for unlocked quote (no pubkey)
+    #[error("Signature provided for unlocked quote")]
+    BatchUnexpectedSignature,
+    /// Batch size exceeds limit (max 100 quotes)
+    #[error("Batch size exceeds limit (max 100 quotes)")]
+    BatchSizeExceeded,
+    /// Signature array size mismatch with quote count
+    #[error("Signature array size does not match quote count")]
+    BatchSignatureCountMismatch,
+    /// Bolt12 quotes not supported for batch minting
+    #[error("Bolt12 quotes are not supported for batch minting")]
+    BatchBolt12NotSupported,
+
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),

@@ -11,8 +11,8 @@ use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
-    SwapRequest, SwapResponse,
+    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
 use cdk::{BatchMintRequest, BatchQuoteStatusRequest, BatchQuoteStatusResponse};
@@ -104,6 +104,44 @@ macro_rules! post_cache_wrapper {
     };
 }
 
+macro_rules! post_cache_wrapper_with_path {
+    ($handler:ident, $path_type:ty, $request_type:ty, $response_type:ty) => {
+        paste! {
+            /// Cache wrapper function for $handler with path parameter:
+            /// Wrap $handler into a function that caches responses using the request as key
+            pub async fn [<cache_ $handler>](
+                #[cfg(feature = "auth")] auth: AuthHeader,
+                state: State<MintState>,
+                path: Path<$path_type>,
+                payload: Json<$request_type>
+            ) -> Result<Json<$response_type>, Response> {
+                use std::ops::Deref;
+                let json_extracted_payload = payload.deref();
+                let State(mint_state) = state.clone();
+                let cache_key = match mint_state.cache.calculate_key(&json_extracted_payload) {
+                    Some(key) => key,
+                    None => {
+                        // Could not calculate key, just return the handler result
+                        #[cfg(feature = "auth")]
+                        return $handler(auth, state, path, payload).await;
+                        #[cfg(not(feature = "auth"))]
+                        return $handler(state, path, payload).await;
+                    }
+                };
+                if let Some(cached_response) = mint_state.cache.get::<$response_type>(&cache_key).await {
+                    return Ok(Json(cached_response));
+                }
+                #[cfg(feature = "auth")]
+                let response = $handler(auth, state, path, payload).await?;
+                #[cfg(not(feature = "auth"))]
+                let response = $handler(state, path, payload).await?;
+                mint_state.cache.set(cache_key, &response.deref()).await;
+                Ok(response)
+            }
+        }
+    };
+}
+
 /// Macro to add cache to endpoint with prefer header support (for async operations)
 #[macro_export]
 macro_rules! post_cache_wrapper_with_prefer {
@@ -152,7 +190,7 @@ post_cache_wrapper_with_prefer!(
     MeltRequest<QuoteId>,
     MeltQuoteBolt11Response<QuoteId>
 );
-post_cache_wrapper!(post_batch_mint, BatchMintRequest, MintResponse);
+post_cache_wrapper_with_path!(post_batch_mint, String, BatchMintRequest, MintResponse);
 post_cache_wrapper!(
     post_batch_check_mint,
     BatchQuoteStatusRequest,
@@ -727,9 +765,7 @@ pub(crate) async fn post_batch_check_mint(
                     match mint_quote_response {
                         cdk::mint::MintQuoteResponse::Bolt11(resp) => resp.into(),
                         cdk::mint::MintQuoteResponse::Bolt12(_) => {
-                            // For now, skip Bolt12 responses in batch
-                            // (could be enhanced to support both)
-                            continue;
+                            unimplemented!("Bolt12 batch quote status not yet supported")
                         }
                     };
                 responses.push(bolt11_response);
@@ -759,12 +795,26 @@ pub(crate) async fn post_batch_check_mint(
 /// Mint multiple tokens in a single batch request
 ///
 /// Create blinded signatures for multiple quotes at once using a single payment.
+///
+/// Per NUT-XX specification, all quotes in a batch MUST be from the same payment method
+/// as indicated by the URL path (`{method}`). The endpoint is:
+/// - `POST /v1/mint/{method}/batch` for batch minting
+/// - Supports bolt11
+/// - TODO: bolt12
+///
+/// The handler validates that all quotes match the payment method in the URL path.
 #[instrument(skip_all, fields(quote_count = ?payload.quote.len(), outputs_count = ?payload.outputs.len()))]
 pub(crate) async fn post_batch_mint(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
+    Path(method): Path<String>,
     Json(payload): Json<BatchMintRequest>,
 ) -> Result<Json<MintResponse>, Response> {
+    let payment_method = match method.as_str() {
+        "bolt11" => PaymentMethod::Bolt11,
+        "bolt12" => unimplemented!("Bolt12 batch minting not yet implemented"),
+        _ => return Err(into_response(cdk::error::Error::UnsupportedPaymentMethod)),
+    };
     #[cfg(feature = "auth")]
     {
         state
@@ -817,9 +867,11 @@ pub(crate) async fn post_batch_mint(
         }
     }
 
-    // For now, we'll delegate to the mint's batch processing logic
-    // This will be implemented in Task 1.3 in the Mint struct
-    match state.mint.process_batch_mint_request(payload).await {
+    match state
+        .mint
+        .process_batch_mint_request(payload, payment_method)
+        .await
+    {
         Ok(response) => Ok(Json(response)),
         Err(err) => {
             tracing::error!("Could not process batch mint: {}", err);

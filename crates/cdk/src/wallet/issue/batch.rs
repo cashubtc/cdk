@@ -15,8 +15,12 @@ use crate::{Amount, Error, Wallet};
 impl Wallet {
     /// Mint batch of proofs from multiple quotes
     ///
+    /// Per NUT-XX specification (https://github.com/cashubtc/nuts/issues/XX), batch minting allows
+    /// minting multiple quotes in a single atomic operation. All quotes MUST be from the same
+    /// payment method and currency unit.
+    ///
     /// # Arguments
-    /// * `quote_ids` - List of quote IDs to mint from
+    /// * `quote_ids` - List of quote IDs to mint from (max 100)
     /// * `amount_split_target` - Target split for the amount
     /// * `spending_conditions` - Optional spending conditions (not yet supported for batches)
     ///
@@ -25,22 +29,25 @@ impl Wallet {
     ///
     /// # Errors
     /// * Returns error if quotes are from different mints
-    /// * Returns error if quotes are from different payment methods
+    /// * Returns error if quotes are from different payment methods (NUT-XX requirement)
+    /// * Returns error if quotes are from different currency units (NUT-XX requirement)
     /// * Returns error if any quote is unknown
     /// * Returns error if any quote is not in PAID state
+    /// * Returns error if batch exceeds 100 quote limit
     #[instrument(skip(self, spending_conditions), fields(quote_count = quote_ids.len()))]
     pub async fn mint_batch(
         &self,
         quote_ids: Vec<String>,
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
+        payment_method: crate::nuts::PaymentMethod,
     ) -> Result<Proofs, Error> {
         if quote_ids.is_empty() {
-            return Err(Error::AmountUndefined);
+            return Err(Error::BatchEmpty);
         }
 
         if quote_ids.len() > 100 {
-            return Err(Error::Custom("Batch exceeds 100 quote maximum".to_string()));
+            return Err(Error::BatchSizeExceeded);
         }
 
         // Fetch all quote details
@@ -55,18 +62,29 @@ impl Wallet {
         }
 
         // Validate all quotes are from same payment method
-        let payment_method = &quote_infos[0].payment_method;
+        let quote_payment_method = &quote_infos[0].payment_method;
         for quote_info in &quote_infos {
-            if &quote_info.payment_method != payment_method {
-                return Err(Error::UnsupportedPaymentMethod);
+            if &quote_info.payment_method != quote_payment_method {
+                return Err(Error::BatchPaymentMethodMismatch);
             }
+        }
+
+        // Validate quotes match the endpoint payment method
+        if *quote_payment_method != payment_method {
+            return Err(Error::BatchPaymentMethodEndpointMismatch);
+        }
+
+        // Validate payment method is supported for batch minting
+        // Currently only Bolt11 is supported
+        if payment_method != crate::nuts::PaymentMethod::Bolt11 {
+            return Err(Error::BatchBolt12NotSupported);
         }
 
         // Validate all quotes have same unit
         let unit = &quote_infos[0].unit;
         for quote_info in &quote_infos {
             if &quote_info.unit != unit {
-                return Err(Error::UnsupportedUnit);
+                return Err(Error::BatchCurrencyUnitMismatch);
             }
         }
 
@@ -77,19 +95,20 @@ impl Wallet {
             }
         }
 
-        // Check all quotes are not expired
-        let unix_time_now = unix_time();
-        for quote_info in &quote_infos {
-            if quote_info.expiry <= unix_time_now {
-                tracing::warn!("Attempting to mint with expired quote.");
-                // Continue anyway - server will validate expiry
-            }
-        }
-
-        // Calculate total amount
+        // Calculate total amount and validate individual quotes have meaningful amounts
         let mut total_amount = Amount::ZERO;
         for quote_info in &quote_infos {
-            total_amount += quote_info.amount_mintable();
+            let quote_amount = quote_info.amount_mintable();
+
+            // Per NUT-XX: While the spec allows quotes with zero mintable amount in specific
+            // contexts (e.g., Bolt12 quotes with no amount specified), we validate here
+            // that each individual quote has a positive mintable amount.
+            // This prevents accepting batches of technically zero-amount quotes.
+            if quote_amount == Amount::ZERO {
+                return Err(Error::AmountUndefined);
+            }
+
+            total_amount += quote_amount;
         }
 
         if total_amount == Amount::ZERO {
@@ -262,7 +281,7 @@ impl Wallet {
                 fee: Amount::ZERO,
                 unit: self.unit.clone(),
                 ys: proofs.ys()?,
-                timestamp: unix_time_now,
+                timestamp: unix_time(),
                 memo: None,
                 metadata: HashMap::new(),
                 quote_id: Some(batch_ids),
