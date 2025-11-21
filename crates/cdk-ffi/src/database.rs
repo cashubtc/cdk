@@ -1,18 +1,22 @@
 //! FFI Database bindings
 
 use std::collections::HashMap;
+#[cfg(feature = "async-trait")]
 use std::sync::Arc;
 
+#[cfg(feature = "async-trait")]
 use cdk::cdk_database::WalletDatabase as CdkWalletDatabase;
 
 use crate::error::FfiError;
+#[cfg(all(feature = "postgres", feature = "async-trait"))]
 use crate::postgres::WalletPostgresDatabase;
+#[cfg(feature = "async-trait")]
 use crate::sqlite::WalletSqliteDatabase;
 use crate::types::*;
 
 /// FFI-compatible trait for wallet database operations
 /// This trait mirrors the CDK WalletDatabase trait but uses FFI-compatible types
-#[uniffi::export(with_foreign)]
+#[cfg_attr(feature = "async-trait", uniffi::export(with_foreign))]
 #[async_trait::async_trait]
 pub trait WalletDatabase: Send + Sync {
     // Mint Management
@@ -152,22 +156,26 @@ pub trait WalletDatabase: Send + Sync {
 
 /// Internal bridge trait to convert from the FFI trait to the CDK database trait
 /// This allows us to bridge between the UniFFI trait and the CDK's internal database trait
+#[cfg(feature = "async-trait")]
 struct WalletDatabaseBridge {
     ffi_db: Arc<dyn WalletDatabase>,
 }
 
+#[cfg(feature = "async-trait")]
 impl WalletDatabaseBridge {
     fn new(ffi_db: Arc<dyn WalletDatabase>) -> Self {
         Self { ffi_db }
     }
 }
 
+#[cfg(feature = "async-trait")]
 impl std::fmt::Debug for WalletDatabaseBridge {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "WalletDatabaseBridge")
     }
 }
 
+#[cfg(feature = "async-trait")]
 #[async_trait::async_trait]
 impl CdkWalletDatabase for WalletDatabaseBridge {
     type Err = cdk::cdk_database::Error;
@@ -583,6 +591,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
 }
 
 /// FFI-safe wallet database backend selection
+#[cfg(feature = "async-trait")]
 #[derive(uniffi::Enum)]
 pub enum WalletDbBackend {
     Sqlite {
@@ -595,6 +604,7 @@ pub enum WalletDbBackend {
 }
 
 /// Factory helpers returning a CDK wallet database behind the FFI trait
+#[cfg(feature = "async-trait")]
 #[uniffi::export]
 pub fn create_wallet_db(backend: WalletDbBackend) -> Result<Arc<dyn WalletDatabase>, FfiError> {
     match backend {
@@ -602,6 +612,7 @@ pub fn create_wallet_db(backend: WalletDbBackend) -> Result<Arc<dyn WalletDataba
             let sqlite = WalletSqliteDatabase::new(path)?;
             Ok(sqlite as Arc<dyn WalletDatabase>)
         }
+        #[cfg(feature = "postgres")]
         WalletDbBackend::Postgres { url } => {
             let pg = WalletPostgresDatabase::new(url)?;
             Ok(pg as Arc<dyn WalletDatabase>)
@@ -610,6 +621,7 @@ pub fn create_wallet_db(backend: WalletDbBackend) -> Result<Arc<dyn WalletDataba
 }
 
 /// Helper function to create a CDK database from the FFI trait
+#[cfg(feature = "async-trait")]
 pub fn create_cdk_database_from_ffi(
     ffi_db: Arc<dyn WalletDatabase>,
 ) -> Arc<dyn CdkWalletDatabase<Err = cdk::cdk_database::Error> + Send + Sync> {

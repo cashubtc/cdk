@@ -7,6 +7,7 @@
 pub mod database;
 pub mod error;
 pub mod multi_mint_wallet;
+#[cfg(all(feature = "postgres", feature = "async-trait"))]
 pub mod postgres;
 pub mod sqlite;
 pub mod token;

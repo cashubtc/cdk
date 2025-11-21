@@ -12,7 +12,7 @@ use crate::{
 /// FFI-compatible WalletSqliteDatabase implementation that implements the WalletDatabase trait
 #[derive(uniffi::Object)]
 pub struct WalletSqliteDatabase {
-    inner: Arc<CdkWalletSqliteDatabase>,
+    pub(crate) inner: Arc<CdkWalletSqliteDatabase>,
 }
 use cdk::cdk_database::WalletDatabase as CdkWalletDatabase;
 

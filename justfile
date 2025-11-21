@@ -521,20 +521,13 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
   
   # Validate language
   case "$LANG" in
-    python|swift|kotlin)
+    python|swift|kotlin|dart)
       ;;
     *)
       echo "❌ Unsupported language: $LANG"
-      echo "Supported languages: python, swift, kotlin"
+      echo "Supported languages: python, swift, kotlin, dart"
       exit 1
       ;;
-  esac
-  
-  # Set emoji and build type
-  case "$LANG" in
-    python) EMOJI="🐍" ;;
-    swift) EMOJI="🍎" ;;
-    kotlin) EMOJI="🎯" ;;
   esac
   
   # Determine build type and library path
@@ -544,10 +537,10 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
     BUILD_TYPE="debug"
     cargo build --package cdk-ffi --features postgres
   fi
-  
+
   LIB_EXT=$(just _ffi-lib-ext)
-  
-  echo "$EMOJI Generating $LANG bindings..."
+
+  echo "Generating $LANG bindings..."
   mkdir -p target/bindings/$LANG
   
   cargo run --bin uniffi-bindgen generate \
@@ -569,12 +562,17 @@ ffi-generate-swift *ARGS="--release":
 ffi-generate-kotlin *ARGS="--release":
   just ffi-generate kotlin {{ARGS}}
 
+# Generate Dart bindings (shorthand)
+ffi-generate-dart *ARGS="--release":
+  just ffi-generate dart {{ARGS}}
+
 # Generate bindings for all supported languages
 ffi-generate-all *ARGS="--release": ffi-build
   @echo "🔧 Generating UniFFI bindings for all languages..."
   just ffi-generate python {{ARGS}}
   just ffi-generate swift {{ARGS}}
   just ffi-generate kotlin {{ARGS}}
+  just ffi-generate dart {{ARGS}}
   @echo "✅ All bindings generated successfully!"
 
 # Build debug version and generate Python bindings quickly (for development)

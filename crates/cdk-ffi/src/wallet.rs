@@ -16,7 +16,9 @@ pub struct Wallet {
     inner: Arc<CdkWallet>,
 }
 
-#[uniffi::export(async_runtime = "tokio")]
+// Conditional constructor implementations
+#[cfg(feature = "async-trait")]
+#[uniffi::export]
 impl Wallet {
     /// Create a new Wallet from mnemonic using WalletDatabase trait
     #[uniffi::constructor]
@@ -51,6 +53,50 @@ impl Wallet {
             inner: Arc::new(wallet),
         })
     }
+}
+
+#[cfg(not(feature = "async-trait"))]
+#[uniffi::export]
+impl Wallet {
+    /// Create a new Wallet from mnemonic using WalletSqliteDatabase
+    #[uniffi::constructor]
+    pub fn new(
+        mint_url: String,
+        unit: CurrencyUnit,
+        mnemonic: String,
+        db: Arc<crate::sqlite::WalletSqliteDatabase>,
+        config: WalletConfig,
+    ) -> Result<Self, FfiError> {
+        // Parse mnemonic and generate seed without passphrase
+        let m = Mnemonic::parse(&mnemonic)
+            .map_err(|e| FfiError::InvalidMnemonic { msg: e.to_string() })?;
+        let seed = m.to_seed_normalized("");
+
+        // Convert the SQLite database to a CDK database implementation
+        let localstore: Arc<dyn cdk::cdk_database::WalletDatabase<Err = cdk::cdk_database::Error> + Send + Sync> =
+            db.inner.clone() as Arc<dyn cdk::cdk_database::WalletDatabase<Err = cdk::cdk_database::Error> + Send + Sync>;
+
+        let wallet =
+            CdkWalletBuilder::new()
+                .mint_url(mint_url.parse().map_err(|e: cdk::mint_url::Error| {
+                    FfiError::InvalidUrl { msg: e.to_string() }
+                })?)
+                .unit(unit.into())
+                .localstore(localstore)
+                .seed(seed)
+                .target_proof_count(config.target_proof_count.unwrap_or(3) as usize)
+                .build()
+                .map_err(FfiError::from)?;
+
+        Ok(Self {
+            inner: Arc::new(wallet),
+        })
+    }
+}
+
+// Methods impl block (shared between both feature configurations)
+#[uniffi::export(async_runtime = "tokio")]
+impl Wallet {
 
     /// Get the mint URL
     pub fn mint_url(&self) -> MintUrl {
