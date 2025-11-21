@@ -17,15 +17,14 @@ use crate::wallet::{
 };
 
 /// Easy to use Dynamic Database type alias
-pub type DynWalletDatabaseTransaction<'a> =
-    Box<dyn DatabaseTransaction<'a, super::Error> + Sync + Send + 'a>;
+pub type DynWalletDatabaseTransaction = Box<dyn DatabaseTransaction<super::Error> + Sync + Send>;
 
 /// Database transaction
 ///
 /// This trait encapsulates all the changes to be done in the wallet
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait DatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
+pub trait DatabaseTransaction<Error>: DbTransactionFinalizer<Err = Error> {
     /// Add Mint to storage
     async fn add_mint(
         &mut self,
@@ -118,9 +117,9 @@ pub trait Database: Debug {
     type Err: Into<Error> + From<Error>;
 
     /// Begins a DB transaction
-    async fn begin_db_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn DatabaseTransaction<'a, Self::Err> + Send + Sync + 'a>, Self::Err>;
+    async fn begin_db_transaction(
+        &self,
+    ) -> Result<Box<dyn DatabaseTransaction<Self::Err> + Send + Sync>, Self::Err>;
 
     /// Get mint from storage
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Self::Err>;

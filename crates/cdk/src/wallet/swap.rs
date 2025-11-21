@@ -209,7 +209,7 @@ impl Wallet {
     #[allow(clippy::too_many_arguments)]
     pub async fn create_swap(
         &self,
-        mut tx: DynWalletDatabaseTransaction<'_>,
+        mut tx: DynWalletDatabaseTransaction,
         active_keyset_id: Id,
         fee_and_amounts: &FeeAndAmounts,
         amount: Option<Amount>,

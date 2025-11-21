@@ -439,10 +439,9 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
-    async fn begin_db_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn CdkWalletDatabaseTransaction<'a, Self::Err> + Send + Sync + 'a>, Self::Err>
-    {
+    async fn begin_db_transaction(
+        &self,
+    ) -> Result<Box<dyn CdkWalletDatabaseTransaction<Self::Err> + Send + Sync>, Self::Err> {
         self.ffi_db
             .begin()
             .await
@@ -462,9 +461,7 @@ struct WalletDatabaseTransactionBridge {
 }
 
 #[async_trait::async_trait]
-impl<'a> CdkWalletDatabaseTransaction<'a, cdk::cdk_database::Error>
-    for WalletDatabaseTransactionBridge
-{
+impl CdkWalletDatabaseTransaction<cdk::cdk_database::Error> for WalletDatabaseTransactionBridge {
     async fn add_mint(
         &mut self,
         mint_url: cdk::mint_url::MintUrl,
@@ -787,7 +784,7 @@ where
     // our API that `inner` outlives the transaction. The transaction is always
     // explicitly committed or rolled back, and we never drop `inner` while a
     // transaction is active. Automatic rollback on drop ensures no dangling state.
-    tx: Mutex<Option<DynWalletDatabaseTransaction<'static>>>,
+    tx: Mutex<Option<DynWalletDatabaseTransaction>>,
 }
 
 impl<RM> FfiWalletSQLDatabase<RM>
@@ -823,14 +820,7 @@ where
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })?;
 
-        // SAFETY: We transmute the lifetime from 'a to 'static. This is safe because:
-        // 1. `inner` (Arc<CdkWalletPgDatabase>) is never dropped while tx is active
-        // 2. Transaction is always explicitly committed/rolled back via our API
-        // 3. Transaction has automatic rollback on drop, so no dangling state
-        // 4. The struct design ensures inner outlives any transaction
-        let tx_static: DynWalletDatabaseTransaction<'static> = unsafe { std::mem::transmute(tx) };
-
-        *inner_tx = Some(tx_static);
+        *inner_tx = Some(tx);
         Ok(())
     }
 

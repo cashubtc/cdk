@@ -52,7 +52,7 @@ where
 }
 
 #[async_trait]
-impl<'a, RM> WalletDatabaseTransaction<'a, Error> for SQLWalletTransaction<RM>
+impl<RM> WalletDatabaseTransaction<Error> for SQLWalletTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
@@ -888,10 +888,9 @@ where
 {
     type Err = database::Error;
 
-    async fn begin_db_transaction<'a>(
-        &'a self,
-    ) -> Result<Box<dyn WalletDatabaseTransaction<'a, Self::Err> + Send + Sync + 'a>, Self::Err>
-    {
+    async fn begin_db_transaction(
+        &self,
+    ) -> Result<Box<dyn WalletDatabaseTransaction<Self::Err> + Send + Sync>, Self::Err> {
         Ok(Box::new(SQLWalletTransaction {
             inner: ConnectionWithTransaction::new(
                 self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,

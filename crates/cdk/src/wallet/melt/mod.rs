@@ -49,7 +49,7 @@ impl Wallet {
 
     pub(crate) async fn add_transaction_for_pending_melt(
         &self,
-        tx: &mut DynWalletDatabaseTransaction<'_>,
+        tx: &mut DynWalletDatabaseTransaction,
         quote: &MeltQuote,
         response: &MeltQuoteBolt11Response<String>,
     ) -> Result<(), Error> {
