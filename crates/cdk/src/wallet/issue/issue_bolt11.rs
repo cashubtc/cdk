@@ -49,16 +49,14 @@ impl Wallet {
         amount: Amount,
         description: Option<String>,
     ) -> Result<MintQuote, Error> {
+        let mint_info = self.load_mint_info().await?;
+
         let mint_url = self.mint_url.clone();
         let unit = self.unit.clone();
 
         // If we have a description, we check that the mint supports it.
         if description.is_some() {
-            let settings = self
-                .localstore
-                .get_mint(mint_url.clone())
-                .await?
-                .ok_or(Error::IncorrectMint)?
+            let settings = mint_info
                 .nuts
                 .nut04
                 .get_settings(&unit, &crate::nuts::PaymentMethod::Bolt11)
