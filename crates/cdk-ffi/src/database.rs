@@ -6,6 +6,7 @@ use std::sync::Arc;
 use cdk::cdk_database::WalletDatabase as CdkWalletDatabase;
 
 use crate::error::FfiError;
+#[cfg(feature = "postgres")]
 use crate::postgres::WalletPostgresDatabase;
 use crate::sqlite::WalletSqliteDatabase;
 use crate::types::*;
@@ -602,6 +603,7 @@ pub fn create_wallet_db(backend: WalletDbBackend) -> Result<Arc<dyn WalletDataba
             let sqlite = WalletSqliteDatabase::new(path)?;
             Ok(sqlite as Arc<dyn WalletDatabase>)
         }
+        #[cfg(feature = "postgres")]
         WalletDbBackend::Postgres { url } => {
             let pg = WalletPostgresDatabase::new(url)?;
             Ok(pg as Arc<dyn WalletDatabase>)
