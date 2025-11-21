@@ -243,6 +243,20 @@ impl MintMetadataCache {
             return Ok(current_metadata);
         }
 
+        // Load keys from database before fetching from HTTP
+        // This prevents re-fetching keys we already have and avoids duplicate insertions
+        if let Some(keysets) = storage.get_mint_keysets(self.mint_url.clone()).await? {
+            let mut updated_metadata = (*self.metadata.load().clone()).clone();
+            for keyset_info in keysets {
+                if let Some(keys) = storage.get_keys(&keyset_info.id).await? {
+                    tracing::trace!("Loaded keys for keyset {} from database", keyset_info.id);
+                    updated_metadata.keys.insert(keyset_info.id, Arc::new(keys));
+                }
+            }
+            // Update cache with database keys before HTTP fetch
+            self.metadata.store(Arc::new(updated_metadata));
+        }
+
         // Perform the fetch
         #[cfg(feature = "auth")]
         let metadata = self.fetch_from_http(Some(client), None).await?;
@@ -317,64 +331,6 @@ impl MintMetadataCache {
         self.load_from_mint(storage, client).await
     }
 
-    /// Load mint info and keys from storage.
-    ///
-    /// This function should be called without any competing transaction with the storage.
-    pub async fn load_from_storage(
-        &self,
-        storage: &Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
-    ) -> Result<(), Error> {
-        // Load keys from database before fetching from HTTP
-        // This prevents re-fetching keys we already have and avoids duplicate insertions
-        let mut updated_metadata = (*self.metadata.load().clone()).clone();
-
-        updated_metadata.mint_info = storage
-            .get_mint(self.mint_url.clone())
-            .await?
-            .ok_or(Error::UnknownKeySet)?;
-
-        let keysets = storage
-            .get_mint_keysets(self.mint_url.clone())
-            .await?
-            .ok_or(Error::UnknownKeySet)?
-            .into_iter()
-            .map(Arc::new)
-            .collect::<Vec<_>>();
-
-        for keyset_info in keysets.iter() {
-            if let Some(keys) = storage.get_keys(&keyset_info.id).await? {
-                tracing::trace!(
-                    "Loaded keys for keyset {} from database (auth)",
-                    keyset_info.id
-                );
-                updated_metadata.keys.insert(keyset_info.id, Arc::new(keys));
-            }
-            if keyset_info.active {
-                updated_metadata.active_keysets.push(keyset_info.clone());
-            }
-        }
-
-        updated_metadata.keysets = keysets
-            .into_iter()
-            .map(|keyset| (keyset.id, keyset))
-            .collect();
-        updated_metadata.status.is_populated = true;
-        updated_metadata.status.version += 1;
-        updated_metadata.status.updated_at = Instant::now();
-
-        #[cfg(feature = "auth")]
-        {
-            updated_metadata.auth_status.is_populated = true;
-            updated_metadata.auth_status.updated_at = Instant::now();
-            updated_metadata.auth_status.version += 1;
-        }
-
-        // Update cache with database keys before HTTP fetch
-        self.metadata.store(Arc::new(updated_metadata));
-
-        Ok(())
-    }
-
     /// Load auth keysets and keys (auth feature only)
     ///
     /// Fetches blind authentication keysets from the mint. Always performs
@@ -427,6 +383,23 @@ impl MintMetadataCache {
                 "Auth cache was updated while waiting for fetch lock, returning cached data"
             );
             return Ok(current_metadata);
+        }
+
+        // Load keys from database before fetching from HTTP
+        // This prevents re-fetching keys we already have and avoids duplicate insertions
+        if let Some(keysets) = storage.get_mint_keysets(self.mint_url.clone()).await? {
+            let mut updated_metadata = (*self.metadata.load().clone()).clone();
+            for keyset_info in keysets {
+                if let Some(keys) = storage.get_keys(&keyset_info.id).await? {
+                    tracing::trace!(
+                        "Loaded keys for keyset {} from database (auth)",
+                        keyset_info.id
+                    );
+                    updated_metadata.keys.insert(keyset_info.id, Arc::new(keys));
+                }
+            }
+            // Update cache with database keys before HTTP fetch
+            self.metadata.store(Arc::new(updated_metadata));
         }
 
         // Auth data not in cache - fetch from mint
