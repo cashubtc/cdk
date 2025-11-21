@@ -20,8 +20,8 @@ use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
 use cashu::mint_url::MintUrl;
 use cashu::{
-    CurrencyUnit, Id, MeltRequest, NotificationPayload, PreMintSecrets, ProofState, SecretKey,
-    SpendingConditions, State, SwapRequest,
+    CurrencyUnit, Id, MeltRequest, NotificationPayload, PaymentMethod, PreMintSecrets, ProofState,
+    SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
@@ -1161,35 +1161,6 @@ async fn test_wallet_quote_storage_with_nut20_locks() {
     );
 }
 
-/// REGRESSION TEST: Batch mint with mixed locked/unlocked quotes
-///
-/// This test verifies that the wallet can successfully batch mint multiple quotes
-/// with different NUT-20 locking states (some locked, some unlocked).
-///
-/// # Bug Context
-/// There is a known bug in batch minting (introduced in commit 152a4634):
-/// - Wallet creates multiple blinded outputs by splitting the total amount
-/// - Server expects exactly 1 output per quote
-///
-/// This test will **fail until the bug is fixed**. When you fix the batch minting
-/// implementation, this test should pass.
-///
-/// # Expected Behavior (once fixed)
-/// 1. Create 2 quotes (100 sats + 50 sats) - one locked, one unlocked
-/// 2. Mark both as PAID in the mint database
-/// 3. Call wallet.mint_batch() with both quote IDs
-/// 4. Receive proofs totaling 150 sats
-/// 5. Wallet balance should increase by 150 sats
-///
-/// # Currently Fails With
-/// `TransactionUnbalanced(100, 2, 0)` - Server receives wrong number of outputs
-///
-/// # Root Cause
-/// The wallet's batch mint implementation in `cdk/src/wallet/issue/batch.rs` splits
-/// the total amount (150 sats) into multiple blinded outputs (~4 outputs via binary split),
-/// but the server's batch handler in `cdk/src/mint/issue/mod.rs` assumes exactly
-/// 1 output per quote (expects 2 outputs for 2 quotes).
-
 #[tokio::test]
 async fn test_batch_mint_mixed_locked_unlocked() {
     setup_tracing();
@@ -1207,7 +1178,12 @@ async fn test_batch_mint_mixed_locked_unlocked() {
 
     // Mint both quotes in a batch
     let proofs = wallet
-        .mint_batch(vec![quote_1_id, quote_2_id], SplitTarget::default(), None)
+        .mint_batch(
+            vec![quote_1_id, quote_2_id],
+            SplitTarget::default(),
+            None,
+            PaymentMethod::Bolt11,
+        )
         .await
         .expect("Failed to mint batch");
 
@@ -1226,20 +1202,6 @@ async fn test_batch_mint_mixed_locked_unlocked() {
     );
 }
 
-/// REGRESSION TEST: Batch mint with two unlocked quotes
-///
-/// This test verifies batch minting with the simplest case: multiple unlocked quotes
-/// (no NUT-20 signature requirements).
-///
-/// # Bug Context
-/// Same as `test_batch_mint_mixed_locked_unlocked` - architectural mismatch in batch
-/// minting output structure.
-///
-/// # Expected Behavior (once bug is fixed)
-/// 1. Create 2 unlocked quotes (100 sats + 50 sats)
-/// 2. Mark both as PAID
-/// 3. Batch mint both quotes
-/// 4. Receive 150 sats in proofs
 #[tokio::test]
 async fn test_batch_mint_two_unlocked_quotes() {
     setup_tracing();
@@ -1256,7 +1218,12 @@ async fn test_batch_mint_two_unlocked_quotes() {
 
     // Batch mint
     let proofs = wallet
-        .mint_batch(vec![quote_1_id, quote_2_id], SplitTarget::default(), None)
+        .mint_batch(
+            vec![quote_1_id, quote_2_id],
+            SplitTarget::default(),
+            None,
+            PaymentMethod::Bolt11,
+        )
         .await
         .expect("Failed to mint batch");
 
@@ -1267,20 +1234,6 @@ async fn test_batch_mint_two_unlocked_quotes() {
     );
 }
 
-/// REGRESSION TEST: Batch mint with two locked quotes
-///
-/// This test verifies batch minting with NUT-20 locked quotes - all quotes require
-/// signatures.
-///
-/// # Bug Context
-/// Same as `test_batch_mint_mixed_locked_unlocked` - architectural mismatch in batch
-/// minting output structure.
-///
-/// # Expected Behavior (once bug is fixed)
-/// 1. Create 2 locked quotes (100 sats + 50 sats)
-/// 2. Mark both as PAID
-/// 3. Batch mint both quotes with proper NUT-20 signatures
-/// 4. Receive 150 sats in proofs
 #[tokio::test]
 async fn test_batch_mint_two_locked_quotes() {
     setup_tracing();
@@ -1303,7 +1256,12 @@ async fn test_batch_mint_two_locked_quotes() {
 
     // Batch mint
     let proofs = wallet
-        .mint_batch(vec![quote_1_id, quote_2_id], SplitTarget::default(), None)
+        .mint_batch(
+            vec![quote_1_id, quote_2_id],
+            SplitTarget::default(),
+            None,
+            PaymentMethod::Bolt11,
+        )
         .await
         .expect("Failed to mint batch");
 
