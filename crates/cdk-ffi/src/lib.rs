@@ -7,6 +7,7 @@
 pub mod database;
 pub mod error;
 pub mod multi_mint_wallet;
+#[cfg(feature = "postgres")]
 pub mod postgres;
 pub mod sqlite;
 pub mod token;

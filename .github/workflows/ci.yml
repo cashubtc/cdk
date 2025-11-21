@@ -132,7 +132,8 @@ jobs:
             
             # FFI bindings
             -p cdk-ffi,
-            
+            -p cdk-ffi --no-default-features,
+
             # Binaries
             --bin cdk-cli,
             --bin cdk-cli --features sqlcipher,
