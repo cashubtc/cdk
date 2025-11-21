@@ -23,12 +23,12 @@ pub struct MultiMintWallet {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl MultiMintWallet {
-    /// Create a new MultiMintWallet from mnemonic using WalletDatabase trait
+    /// Create a new MultiMintWallet from mnemonic using WalletDatabaseFfi trait
     #[uniffi::constructor]
     pub fn new(
         unit: CurrencyUnit,
         mnemonic: String,
-        db: Arc<dyn crate::database::WalletDatabase>,
+        db: crate::database::WalletDatabaseType,
     ) -> Result<Self, FfiError> {
         // Parse mnemonic and generate seed without passphrase
         let m = Mnemonic::parse(&mnemonic)
@@ -36,7 +36,7 @@ impl MultiMintWallet {
         let seed = m.to_seed_normalized("");
 
         // Convert the FFI database trait to a CDK database implementation
-        let localstore = crate::database::create_cdk_database_from_ffi(db);
+        let localstore = crate::database::create_cdk_database_from_ffi(db.as_trait());
 
         let wallet = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| {
@@ -66,7 +66,7 @@ impl MultiMintWallet {
     pub fn new_with_proxy(
         unit: CurrencyUnit,
         mnemonic: String,
-        db: Arc<dyn crate::database::WalletDatabase>,
+        db: crate::database::WalletDatabaseType,
         proxy_url: String,
     ) -> Result<Self, FfiError> {
         // Parse mnemonic and generate seed without passphrase
@@ -75,7 +75,7 @@ impl MultiMintWallet {
         let seed = m.to_seed_normalized("");
 
         // Convert the FFI database trait to a CDK database implementation
-        let localstore = crate::database::create_cdk_database_from_ffi(db);
+        let localstore = crate::database::create_cdk_database_from_ffi(db.as_trait());
 
         // Parse proxy URL
         let proxy_url =

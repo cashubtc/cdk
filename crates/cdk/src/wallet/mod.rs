@@ -371,7 +371,7 @@ impl Wallet {
     #[instrument(skip(self, tx))]
     pub(crate) async fn amounts_needed_for_state_target(
         &self,
-        tx: &mut DynWalletDatabaseTransaction<'_>,
+        tx: &mut DynWalletDatabaseTransaction,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Vec<Amount>, Error> {
         let unspent_proofs = self
@@ -409,7 +409,7 @@ impl Wallet {
     #[instrument(skip(self, tx))]
     async fn determine_split_target_values(
         &self,
-        tx: &mut DynWalletDatabaseTransaction<'_>,
+        tx: &mut DynWalletDatabaseTransaction,
         change_amount: Amount,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<SplitTarget, Error> {

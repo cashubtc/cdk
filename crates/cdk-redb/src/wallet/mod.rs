@@ -470,10 +470,10 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(transactions)
     }
 
-    async fn begin_db_transaction<'a>(
-        &'a self,
+    async fn begin_db_transaction(
+        &self,
     ) -> Result<
-        Box<dyn cdk_common::database::WalletDatabaseTransaction<'a, Self::Err> + Send + Sync + 'a>,
+        Box<dyn cdk_common::database::WalletDatabaseTransaction<Self::Err> + Send + Sync>,
         Self::Err,
     > {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
@@ -482,9 +482,7 @@ impl WalletDatabase for WalletRedbDatabase {
 }
 
 #[async_trait]
-impl<'a> cdk_common::database::WalletDatabaseTransaction<'a, database::Error>
-    for RedbWalletTransaction
-{
+impl cdk_common::database::WalletDatabaseTransaction<database::Error> for RedbWalletTransaction {
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keyset_by_id(
         &mut self,

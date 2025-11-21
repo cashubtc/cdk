@@ -47,7 +47,7 @@ impl Wallet {
     /// Get this wallet's [Proofs] that match the args
     pub async fn get_proofs_with(
         &self,
-        tx: Option<&mut DynWalletDatabaseTransaction<'_>>,
+        tx: Option<&mut DynWalletDatabaseTransaction>,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Proofs, Error> {
