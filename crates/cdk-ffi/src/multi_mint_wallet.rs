@@ -120,7 +120,6 @@ impl MultiMintWallet {
     ///
     /// * `mint_url` - The mint URL to set the TTL for
     /// * `ttl_secs` - Optional TTL in seconds. If None, cache never expires.
-    ///                If Some(seconds), cache is refreshed after this duration.
     pub async fn set_metadata_cache_ttl_for_mint(
         &self,
         mint_url: MintUrl,
@@ -148,7 +147,6 @@ impl MultiMintWallet {
     /// # Arguments
     ///
     /// * `ttl_secs` - Optional TTL in seconds. If None, cache never expires for any mint.
-    ///                If Some(seconds), cache is refreshed after this duration for all mints.
     pub async fn set_metadata_cache_ttl_for_all_mints(&self, ttl_secs: Option<u64>) {
         let wallets = self.inner.get_wallets().await;
         let ttl = ttl_secs.map(std::time::Duration::from_secs);

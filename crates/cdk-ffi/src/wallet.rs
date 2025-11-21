@@ -70,7 +70,6 @@ impl Wallet {
     /// # Arguments
     ///
     /// * `ttl_secs` - Optional TTL in seconds. If None, cache never expires and is always used.
-    ///                If Some(seconds), cache is refreshed after this duration.
     ///
     /// # Example
     ///
