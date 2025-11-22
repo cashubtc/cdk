@@ -741,6 +741,28 @@ impl WalletDatabase for WalletRedbDatabase {
         Ok(proofs)
     }
 
+    #[instrument(skip(self, ys))]
+    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, Self::Err> {
+        if ys.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let read_txn = self.db.begin_read().map_err(Error::from)?;
+        let table = read_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+
+        let mut proofs = Vec::new();
+
+        for y in ys {
+            if let Some(proof) = table.get(y.to_bytes().as_slice()).map_err(Error::from)? {
+                let proof_info =
+                    serde_json::from_str::<ProofInfo>(proof.value()).map_err(Error::from)?;
+                proofs.push(proof_info);
+            }
+        }
+
+        Ok(proofs)
+    }
+
     async fn get_balance(
         &self,
         mint_url: Option<MintUrl>,
