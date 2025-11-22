@@ -1,13 +1,13 @@
 //! Per-mint cryptographic key and metadata cache
 //!
 //! Provides on-demand fetching and caching of mint metadata (info, keysets, and keys)
-//! with atomic in-memory cache updates and deferred database persistence.
+//! with atomic in-memory cache updates and database persistence.
 //!
 //! # Architecture
 //!
 //! - **Pull-based loading**: Keys fetched on-demand from mint HTTP API
 //! - **Atomic cache**: Single `MintMetadata` snapshot updated via `ArcSwap`
-//! - **Deferred persistence**: Database writes happen asynchronously after cache update
+//! - **Synchronous persistence**: Database writes happen after cache update
 //! - **Multi-database support**: Tracks sync status per storage instance via pointer identity
 //!
 //! # Usage
@@ -34,7 +34,6 @@ use cdk_common::database::{self, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{KeySetInfo, Keys};
 use cdk_common::parking_lot::RwLock;
-use cdk_common::task::spawn;
 use cdk_common::{KeySet, MintInfo};
 use tokio::sync::Mutex;
 
@@ -99,11 +98,11 @@ pub struct MintMetadata {
     auth_status: FreshnessStatus,
 }
 
-/// On-demand mint metadata cache with deferred database persistence
+/// On-demand mint metadata cache with database persistence
 ///
 /// Manages a single mint's cryptographic keys and metadata. Fetches data from
-/// the mint's HTTP API on-demand and caches it in memory. Database writes are
-/// deferred to background tasks to avoid blocking operations.
+/// the mint's HTTP API on-demand and caches it in memory. Database writes
+/// occur synchronously to ensure persistence.
 ///
 /// # Thread Safety
 ///
@@ -198,8 +197,7 @@ impl MintMetadataCache {
     /// Load metadata from mint server and update cache
     ///
     /// Always performs an HTTP fetch from the mint server to get fresh data.
-    /// Updates the in-memory cache and spawns a background task to persist
-    /// to the database.
+    /// Updates the in-memory cache and persists to the database.
     ///
     /// Uses a mutex to ensure only one fetch runs at a time. If multiple
     /// callers request a fetch simultaneously, only one performs the HTTP
@@ -264,8 +262,8 @@ impl MintMetadataCache {
         #[cfg(not(feature = "auth"))]
         let metadata = self.fetch_from_http(Some(client)).await?;
 
-        // Spawn background task to persist to database (non-blocking)
-        self.spawn_database_sync(storage.clone(), metadata.clone());
+        // Persist to database
+        self.database_sync(storage.clone(), metadata.clone()).await;
 
         Ok(metadata)
     }
@@ -319,10 +317,9 @@ impl MintMetadataCache {
         {
             // Cache is ready - check if database needs updating
             if db_synced_version != cached_metadata.status.version {
-                // Database is stale - sync in background
-                // We spawn rather than await to avoid blocking the caller
-                // and to prevent deadlocks with any existing transactions
-                self.spawn_database_sync(storage.clone(), cached_metadata.clone());
+                // Database is stale - sync before returning
+                self.database_sync(storage.clone(), cached_metadata.clone())
+                    .await;
             }
             return Ok(cached_metadata);
         }
@@ -365,8 +362,9 @@ impl MintMetadataCache {
             && cached_metadata.auth_status.updated_at > Instant::now()
         {
             if db_synced_version != cached_metadata.status.version {
-                // Database needs updating - spawn background sync
-                self.spawn_database_sync(storage.clone(), cached_metadata.clone());
+                // Database needs updating - sync before returning
+                self.database_sync(storage.clone(), cached_metadata.clone())
+                    .await;
             }
             return Ok(cached_metadata);
         }
@@ -405,19 +403,19 @@ impl MintMetadataCache {
         // Auth data not in cache - fetch from mint
         let metadata = self.fetch_from_http(None, Some(auth_client)).await?;
 
-        // Spawn background task to persist
-        self.spawn_database_sync(storage.clone(), metadata.clone());
+        // Persist to database
+        self.database_sync(storage.clone(), metadata.clone()).await;
 
         Ok(metadata)
     }
 
-    /// Spawn a background task to sync metadata to database
+    /// Sync metadata to database
     ///
-    /// This is non-blocking and happens asynchronously. The task will:
+    /// This will:
     /// 1. Check if this sync is still needed (version may be superseded)
     /// 2. Save mint info, keysets, and keys to the database
     /// 3. Update the sync tracking to record this storage has been updated
-    fn spawn_database_sync(
+    async fn database_sync(
         &self,
         storage: Arc<dyn WalletDatabase<Err = database::Error> + Send + Sync>,
         metadata: Arc<MintMetadata>,
@@ -425,12 +423,10 @@ impl MintMetadataCache {
         let mint_url = self.mint_url.clone();
         let db_sync_versions = self.db_sync_versions.clone();
 
-        spawn(async move {
-            Self::persist_to_database(mint_url, storage, metadata, db_sync_versions).await
-        });
+        Self::persist_to_database(mint_url, storage, metadata, db_sync_versions).await
     }
 
-    /// Persist metadata to database (called from background task)
+    /// Persist metadata to database
     ///
     /// Saves mint info, keysets, and keys to the database. Checks version
     /// before writing to avoid redundant work if a newer version has already

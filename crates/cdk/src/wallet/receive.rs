@@ -26,6 +26,10 @@ impl Wallet {
         opts: ReceiveOptions,
         memo: Option<String>,
     ) -> Result<Amount, Error> {
+        // Incase the wallet is getting ecash for the first time
+        // we want to get the mint info for our db
+        let _mint_info = self.load_mint_info().await?;
+
         let mint_url = &self.mint_url;
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;

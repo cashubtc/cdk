@@ -111,6 +111,51 @@ impl MultiMintWallet {
         self.inner.unit().clone().into()
     }
 
+    /// Set metadata cache TTL (time-to-live) in seconds for a specific mint
+    ///
+    /// Controls how long cached mint metadata (keysets, keys, mint info) is considered fresh
+    /// before requiring a refresh from the mint server for a specific mint.
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint URL to set the TTL for
+    /// * `ttl_secs` - Optional TTL in seconds. If None, cache never expires.
+    pub async fn set_metadata_cache_ttl_for_mint(
+        &self,
+        mint_url: MintUrl,
+        ttl_secs: Option<u64>,
+    ) -> Result<(), FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let wallets = self.inner.get_wallets().await;
+
+        if let Some(wallet) = wallets.iter().find(|w| w.mint_url == cdk_mint_url) {
+            let ttl = ttl_secs.map(std::time::Duration::from_secs);
+            wallet.set_metadata_cache_ttl(ttl);
+            Ok(())
+        } else {
+            Err(FfiError::Generic {
+                msg: format!("Mint not found: {}", cdk_mint_url),
+            })
+        }
+    }
+
+    /// Set metadata cache TTL (time-to-live) in seconds for all mints
+    ///
+    /// Controls how long cached mint metadata is considered fresh for all mints
+    /// in this MultiMintWallet.
+    ///
+    /// # Arguments
+    ///
+    /// * `ttl_secs` - Optional TTL in seconds. If None, cache never expires for any mint.
+    pub async fn set_metadata_cache_ttl_for_all_mints(&self, ttl_secs: Option<u64>) {
+        let wallets = self.inner.get_wallets().await;
+        let ttl = ttl_secs.map(std::time::Duration::from_secs);
+
+        for wallet in wallets.iter() {
+            wallet.set_metadata_cache_ttl(ttl);
+        }
+    }
+
     /// Add a mint to this MultiMintWallet
     pub async fn add_mint(
         &self,
