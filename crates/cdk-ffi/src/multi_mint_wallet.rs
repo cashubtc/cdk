@@ -304,6 +304,88 @@ impl MultiMintWallet {
         Ok(quote.into())
     }
 
+    /// Get a melt quote for a BIP353 human-readable address
+    ///
+    /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Lightning offer
+    /// and then creates a melt quote for that offer at the specified mint.
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for creating the melt quote
+    /// * `bip353_address` - Human-readable address in the format "user@domain.com"
+    /// * `amount_msat` - Amount to pay in millisatoshis
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn melt_bip353_quote(
+        &self,
+        mint_url: MintUrl,
+        bip353_address: String,
+        amount_msat: u64,
+    ) -> Result<MeltQuote, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let cdk_amount = cdk::Amount::from(amount_msat);
+        let quote = self
+            .inner
+            .melt_bip353_quote(&cdk_mint_url, &bip353_address, cdk_amount)
+            .await?;
+        Ok(quote.into())
+    }
+
+    /// Get a melt quote for a Lightning address
+    ///
+    /// This method resolves a Lightning address (e.g., "alice@example.com") to a Lightning invoice
+    /// and then creates a melt quote for that invoice at the specified mint.
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for creating the melt quote
+    /// * `lightning_address` - Lightning address in the format "user@domain.com"
+    /// * `amount_msat` - Amount to pay in millisatoshis
+    pub async fn melt_lightning_address_quote(
+        &self,
+        mint_url: MintUrl,
+        lightning_address: String,
+        amount_msat: u64,
+    ) -> Result<MeltQuote, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let cdk_amount = cdk::Amount::from(amount_msat);
+        let quote = self
+            .inner
+            .melt_lightning_address_quote(&cdk_mint_url, &lightning_address, cdk_amount)
+            .await?;
+        Ok(quote.into())
+    }
+
+    /// Get a melt quote for a human-readable address
+    ///
+    /// This method accepts a human-readable address that could be either a BIP353 address
+    /// or a Lightning address. It intelligently determines which to try based on mint support:
+    ///
+    /// 1. If the mint supports Bolt12, it tries BIP353 first
+    /// 2. Falls back to Lightning address only if BIP353 DNS resolution fails
+    /// 3. If BIP353 resolves but fails at the mint, it does NOT fall back to Lightning address
+    /// 4. If the mint doesn't support Bolt12, it tries Lightning address directly
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for creating the melt quote
+    /// * `address` - Human-readable address (BIP353 or Lightning address)
+    /// * `amount_msat` - Amount to pay in millisatoshis
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn melt_human_readable_quote(
+        &self,
+        mint_url: MintUrl,
+        address: String,
+        amount_msat: u64,
+    ) -> Result<MeltQuote, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let cdk_amount = cdk::Amount::from(amount_msat);
+        let quote = self
+            .inner
+            .melt_human_readable_quote(&cdk_mint_url, &address, cdk_amount)
+            .await?;
+        Ok(quote.into())
+    }
+
     /// Melt tokens (pay a bolt11 invoice)
     pub async fn melt(
         &self,
