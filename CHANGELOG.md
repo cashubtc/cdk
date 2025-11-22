@@ -5,6 +5,21 @@
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
 
+## [0.14.1](https://github.com/cashubtc/cdk/releases/tag/v0.14.1)
+
+### Added
+- cdk: Add MultiMintWallet human-readable address melt quote support (BIP353 and Lightning address) ([thesimplekid]).
+- cdk-ffi: Add metadata cache TTL configuration methods ([thesimplekid]).
+
+### Changed
+- cdk: Ensure mint info is loaded before quote operations ([thesimplekid]).
+- cdk: Replace deferred database persistence with synchronous writes in mint metadata cache ([thesimplekid]).
+
+### Fixed
+- cdk-ldk-node: Account for Lightning fee ([thesimplekid]).
+- cdk-ffi: Fix postgres feature support ([thesimplekid]).
+- cdk: Revert database contention prevention that caused issues ([thesimplekid]).
+
 ## [0.14.0](https://github.com/cashubtc/cdk/releases/tag/v0.14.0)
 
 ### Summary
