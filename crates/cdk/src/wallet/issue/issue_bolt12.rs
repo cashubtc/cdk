@@ -121,6 +121,7 @@ impl Wallet {
                 &amount_split_target,
                 spending_conditions,
                 &fee_and_amounts,
+                false,
             )?,
             None => {
                 // Calculate how many secrets we'll need without generating them

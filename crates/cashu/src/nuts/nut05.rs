@@ -137,7 +137,7 @@ where
     pub fn new(quote: Q, inputs: Proofs, outputs: Option<Vec<BlindedMessage>>) -> Self {
         Self {
             quote,
-            inputs: inputs.without_dleqs(),
+            inputs: inputs.without_dleqs().without_p2pk_e(),
             outputs,
         }
     }

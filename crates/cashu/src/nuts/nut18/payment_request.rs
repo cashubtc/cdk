@@ -44,6 +44,9 @@ pub struct PaymentRequest {
     /// Nut10
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nut10: Option<Nut10SecretRequest>,
+    /// Nut26
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nut26: Option<bool>,
 }
 
 impl PaymentRequest {
@@ -96,6 +99,7 @@ pub struct PaymentRequestBuilder {
     description: Option<String>,
     transports: Vec<Transport>,
     nut10: Option<Nut10SecretRequest>,
+    nut26: Option<bool>,
 }
 
 impl PaymentRequestBuilder {
@@ -165,6 +169,12 @@ impl PaymentRequestBuilder {
         self
     }
 
+    /// Set Nut26 signal flag
+    pub fn nut26(mut self, nut26: bool) -> Self {
+        self.nut26 = Some(nut26);
+        self
+    }
+
     /// Build the PaymentRequest
     pub fn build(self) -> PaymentRequest {
         PaymentRequest {
@@ -176,6 +186,7 @@ impl PaymentRequestBuilder {
             description: self.description,
             transports: self.transports,
             nut10: self.nut10,
+            nut26: self.nut26,
         }
     }
 }
@@ -243,6 +254,7 @@ mod tests {
             description: None,
             transports: vec![transport.clone()],
             nut10: None,
+            nut26: Some(true),
         };
 
         let request_str = request.to_string();
