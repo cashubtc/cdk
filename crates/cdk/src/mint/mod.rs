@@ -1071,7 +1071,7 @@ mod tests {
         let first_keyset_id = keysets.keysets[0].id;
 
         // set the first keyset to inactive and generate a new keyset
-        mint.rotate_keyset(CurrencyUnit::default(), 1, 1)
+        mint.rotate_keyset(CurrencyUnit::default(), vec![1], 1)
             .await
             .expect("test");
 

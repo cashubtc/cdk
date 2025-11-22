@@ -122,7 +122,7 @@ message UpdateNut04QuoteRequest {
 
 message RotateNextKeysetRequest {
     string unit = 1;
-    optional uint32 max_order = 2;
+    repeated uint64 amounts = 2;
     optional uint64 input_fee_ppk = 3;
 }
 
@@ -130,6 +130,6 @@ message RotateNextKeysetRequest {
 message RotateNextKeysetResponse {
     string id = 1;
     string unit = 2;
-    uint32 max_order = 3;
+    repeated uint64 amounts = 3;
     uint64 input_fee_ppk = 4;
 }

@@ -16,9 +16,9 @@ pub struct RotateNextKeysetCommand {
     #[arg(short, long)]
     #[arg(default_value = "sat")]
     unit: String,
-    /// The maximum order (power of 2) for tokens that can be minted with this keyset
+    /// The amounts that can be minted with this keyset (e.g., "1,2,4,8,16")
     #[arg(short, long)]
-    max_order: Option<u8>,
+    amounts: Option<String>,
     /// The input fee in parts per thousand to apply when minting with this keyset
     #[arg(short, long)]
     input_fee_ppk: Option<u64>,
@@ -36,10 +36,19 @@ pub async fn rotate_next_keyset(
     client: &mut CdkMintClient<Channel>,
     sub_command_args: &RotateNextKeysetCommand,
 ) -> Result<()> {
+    let amounts = if let Some(amounts_str) = &sub_command_args.amounts {
+        amounts_str
+            .split(',')
+            .map(|s| s.trim().parse::<u64>())
+            .collect::<Result<Vec<u64>, _>>()?
+    } else {
+        vec![]
+    };
+
     let response = client
         .rotate_next_keyset(Request::new(RotateNextKeysetRequest {
             unit: sub_command_args.unit.clone(),
-            max_order: sub_command_args.max_order.map(|m| m.into()),
+            amounts,
             input_fee_ppk: sub_command_args.input_fee_ppk,
         }))
         .await?;
@@ -47,8 +56,8 @@ pub async fn rotate_next_keyset(
     let response = response.into_inner();
 
     println!(
-        "Rotated to new keyset {} for unit {} with a max order of {} and fee of {}",
-        response.id, response.unit, response.max_order, response.input_fee_ppk
+        "Rotated to new keyset {} for unit {} with amounts {:?} and fee of {}",
+        response.id, response.unit, response.amounts, response.input_fee_ppk
     );
 
     Ok(())

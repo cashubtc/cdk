@@ -36,9 +36,8 @@ where
         final_expiry: None,
         derivation_path: DerivationPath::from_str("m/0'/0'/0'").unwrap(),
         derivation_path_index: Some(0),
-        max_order: 32,
         input_fee_ppk: 0,
-        amounts: vec![],
+        amounts: (0..32).map(|n| 2u64.pow(n)).collect(),
     };
     let mut writer = db.begin_transaction().await.expect("db.begin()");
     writer.add_keyset_info(keyset_info).await.unwrap();

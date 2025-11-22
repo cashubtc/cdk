@@ -657,7 +657,7 @@ async fn test_swap_with_fees() {
         .expect("Failed to create test wallet");
 
     // Rotate to keyset with 1 sat per proof fee
-    mint.rotate_keyset(CurrencyUnit::Sat, 32, 1)
+    mint.rotate_keyset(CurrencyUnit::Sat, (0..32).map(|n| 2u64.pow(n)).collect(), 1)
         .await
         .expect("Failed to rotate keyset");
 
@@ -973,7 +973,7 @@ async fn test_wallet_multi_keyset_counter_updates() {
     let first_keyset_id = get_keyset_id(&mint).await;
 
     // Rotate to a second keyset
-    mint.rotate_keyset(CurrencyUnit::Sat, 32, 0)
+    mint.rotate_keyset(CurrencyUnit::Sat, (0..32).map(|n| 2u64.pow(n)).collect(), 0)
         .await
         .expect("Failed to rotate keyset");
 
