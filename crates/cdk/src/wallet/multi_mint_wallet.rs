@@ -1656,6 +1656,98 @@ impl MultiMintWallet {
 
         wallet.fetch_mint_info().await
     }
+
+    /// Melt Quote for BIP353 human-readable address
+    ///
+    /// This method resolves a BIP353 address (e.g., "alice@example.com") to a Lightning offer
+    /// and then creates a melt quote for that offer at the specified mint.
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for creating the melt quote
+    /// * `bip353_address` - Human-readable address in the format "user@domain.com"
+    /// * `amount_msat` - Amount to pay in millisatoshis
+    ///
+    /// # Returns
+    ///
+    /// A `MeltQuote` that can be used to execute the payment
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    #[instrument(skip(self, amount_msat))]
+    pub async fn melt_bip353_quote(
+        &self,
+        mint_url: &MintUrl,
+        bip353_address: &str,
+        amount_msat: impl Into<Amount>,
+    ) -> Result<crate::wallet::types::MeltQuote, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.melt_bip353_quote(bip353_address, amount_msat).await
+    }
+
+    /// Melt Quote for Lightning address
+    ///
+    /// This method resolves a Lightning address (e.g., "alice@example.com") to a Lightning invoice
+    /// and then creates a melt quote for that invoice at the specified mint.
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for creating the melt quote
+    /// * `lightning_address` - Lightning address in the format "user@domain.com"
+    /// * `amount_msat` - Amount to pay in millisatoshis
+    ///
+    /// # Returns
+    ///
+    /// A `MeltQuote` that can be used to execute the payment
+    #[instrument(skip(self, amount_msat))]
+    pub async fn melt_lightning_address_quote(
+        &self,
+        mint_url: &MintUrl,
+        lightning_address: &str,
+        amount_msat: impl Into<Amount>,
+    ) -> Result<crate::wallet::types::MeltQuote, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet
+            .melt_lightning_address_quote(lightning_address, amount_msat)
+            .await
+    }
+
+    /// Get a melt quote for a human-readable address
+    ///
+    /// This method accepts a human-readable address that could be either a BIP353 address
+    /// or a Lightning address. It intelligently determines which to try based on mint support:
+    ///
+    /// 1. If the mint supports Bolt12, it tries BIP353 first
+    /// 2. Falls back to Lightning address only if BIP353 DNS resolution fails
+    /// 3. If BIP353 resolves but fails at the mint, it does NOT fall back to Lightning address
+    /// 4. If the mint doesn't support Bolt12, it tries Lightning address directly
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for creating the melt quote
+    /// * `address` - Human-readable address (BIP353 or Lightning address)
+    /// * `amount_msat` - Amount to pay in millisatoshis
+    #[cfg(all(feature = "bip353", feature = "wallet", not(target_arch = "wasm32")))]
+    #[instrument(skip(self, amount_msat))]
+    pub async fn melt_human_readable_quote(
+        &self,
+        mint_url: &MintUrl,
+        address: &str,
+        amount_msat: impl Into<Amount>,
+    ) -> Result<crate::wallet::types::MeltQuote, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.melt_human_readable_quote(address, amount_msat).await
+    }
 }
 
 impl Drop for MultiMintWallet {
