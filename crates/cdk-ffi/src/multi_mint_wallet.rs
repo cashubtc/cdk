@@ -505,6 +505,24 @@ impl MultiMintWallet {
         wallets.iter().map(|w| w.mint_url.to_string()).collect()
     }
 
+    /// Get all wallets from MultiMintWallet
+    pub async fn get_wallets(&self) -> Vec<Arc<crate::wallet::Wallet>> {
+        let wallets = self.inner.get_wallets().await;
+        wallets
+            .into_iter()
+            .map(|w| Arc::new(crate::wallet::Wallet::from_inner(Arc::new(w))))
+            .collect()
+    }
+
+    /// Get a specific wallet from MultiMintWallet by mint URL
+    pub async fn get_wallet(&self, mint_url: MintUrl) -> Option<Arc<crate::wallet::Wallet>> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into().ok()?;
+        let wallet = self.inner.get_wallet(&cdk_mint_url).await?;
+        Some(Arc::new(crate::wallet::Wallet::from_inner(Arc::new(
+            wallet,
+        ))))
+    }
+
     /// Verify token DLEQ proofs
     pub async fn verify_token_dleq(&self, token: Arc<Token>) -> Result<(), FfiError> {
         let cdk_token = token.inner.clone();
