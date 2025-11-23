@@ -89,7 +89,9 @@ impl Wallet {
             payment_method: PaymentMethod::Bolt11,
         };
 
-        self.localstore.add_melt_quote(quote.clone()).await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        tx.add_melt_quote(quote.clone()).await?;
+        tx.commit().await?;
 
         Ok(quote)
     }
@@ -102,24 +104,28 @@ impl Wallet {
     ) -> Result<MeltQuoteBolt11Response<String>, Error> {
         let response = self.client.get_melt_quote_status(quote_id).await?;
 
-        match self.localstore.get_melt_quote(quote_id).await? {
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
+        match tx.get_melt_quote(quote_id).await? {
             Some(quote) => {
                 let mut quote = quote;
 
                 if let Err(e) = self
-                    .add_transaction_for_pending_melt(&quote, &response)
+                    .add_transaction_for_pending_melt(&mut tx, &quote, &response)
                     .await
                 {
                     tracing::error!("Failed to add transaction for pending melt: {}", e);
                 }
 
                 quote.state = response.state;
-                self.localstore.add_melt_quote(quote).await?;
+                tx.add_melt_quote(quote).await?;
             }
             None => {
                 tracing::info!("Quote melt {} unknown", quote_id);
             }
         }
+
+        tx.commit().await?;
 
         Ok(response)
     }
@@ -139,8 +145,8 @@ impl Wallet {
         proofs: Proofs,
         metadata: HashMap<String, String>,
     ) -> Result<Melted, Error> {
-        let quote_info = self
-            .localstore
+        let mut tx = self.localstore.begin_db_transaction().await?;
+        let quote_info = tx
             .get_melt_quote(quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
@@ -156,9 +162,7 @@ impl Wallet {
         }
 
         let ys = proofs.ys()?;
-        self.localstore
-            .update_proofs_state(ys, State::Pending)
-            .await?;
+        tx.update_proofs_state(ys, State::Pending).await?;
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
 
@@ -179,8 +183,7 @@ impl Wallet {
             );
 
             // Atomically get the counter range we need
-            let new_counter = self
-                .localstore
+            let new_counter = tx
                 .increment_keyset_counter(&active_keyset_id, num_secrets)
                 .await?;
 
@@ -194,6 +197,8 @@ impl Wallet {
             proofs.clone(),
             Some(premint_secrets.blinded_messages()),
         );
+
+        tx.commit().await?;
 
         let melt_response = match quote_info.payment_method {
             cdk_common::PaymentMethod::Bolt11 => {
@@ -274,30 +279,32 @@ impl Wallet {
             None => Vec::new(),
         };
 
-        self.localstore.remove_melt_quote(&quote_info.id).await?;
+        let mut tx = self.localstore.begin_db_transaction().await?;
+
+        tx.remove_melt_quote(&quote_info.id).await?;
 
         let deleted_ys = proofs.ys()?;
-        self.localstore
-            .update_proofs(change_proof_infos, deleted_ys)
-            .await?;
+
+        tx.update_proofs(change_proof_infos, deleted_ys).await?;
 
         // Add transaction to store
-        self.localstore
-            .add_transaction(Transaction {
-                mint_url: self.mint_url.clone(),
-                direction: TransactionDirection::Outgoing,
-                amount: melted.amount,
-                fee: melted.fee_paid,
-                unit: self.unit.clone(),
-                ys: proofs.ys()?,
-                timestamp: unix_time(),
-                memo: None,
-                metadata,
-                quote_id: Some(quote_id.to_string()),
-                payment_request: Some(quote_info.request),
-                payment_proof: payment_preimage,
-            })
-            .await?;
+        tx.add_transaction(Transaction {
+            mint_url: self.mint_url.clone(),
+            direction: TransactionDirection::Outgoing,
+            amount: melted.amount,
+            fee: melted.fee_paid,
+            unit: self.unit.clone(),
+            ys: proofs.ys()?,
+            timestamp: unix_time(),
+            memo: None,
+            metadata,
+            quote_id: Some(quote_id.to_string()),
+            payment_request: Some(quote_info.request),
+            payment_proof: payment_preimage,
+        })
+        .await?;
+
+        tx.commit().await?;
 
         Ok(melted)
     }

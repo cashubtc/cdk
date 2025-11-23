@@ -40,36 +40,41 @@ fn get_test_temp_dir() -> PathBuf {
     }
 }
 
-async fn get_notification<T: StreamExt<Item = Result<Message, E>> + Unpin, E: Debug>(
+async fn get_notifications<T: StreamExt<Item = Result<Message, E>> + Unpin, E: Debug>(
     reader: &mut T,
     timeout_to_wait: Duration,
-) -> (String, NotificationPayload<String>) {
-    let msg = timeout(timeout_to_wait, reader.next())
-        .await
-        .expect("timeout")
-        .unwrap()
-        .unwrap();
-
-    let mut response: serde_json::Value =
-        serde_json::from_str(msg.to_text().unwrap()).expect("valid json");
-
-    let mut params_raw = response
-        .as_object_mut()
-        .expect("object")
-        .remove("params")
-        .expect("valid params");
-
-    let params_map = params_raw.as_object_mut().expect("params is object");
-
-    (
-        params_map
-            .remove("subId")
+    total: usize,
+) -> Vec<(String, NotificationPayload<String>)> {
+    let mut results = Vec::new();
+    for _ in 0..total {
+        let msg = timeout(timeout_to_wait, reader.next())
+            .await
+            .expect("timeout")
             .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string(),
-        serde_json::from_value(params_map.remove("payload").unwrap()).unwrap(),
-    )
+            .unwrap();
+
+        let mut response: serde_json::Value =
+            serde_json::from_str(msg.to_text().unwrap()).expect("valid json");
+
+        let mut params_raw = response
+            .as_object_mut()
+            .expect("object")
+            .remove("params")
+            .expect("valid params");
+
+        let params_map = params_raw.as_object_mut().expect("params is object");
+
+        results.push((
+            params_map
+                .remove("subId")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string(),
+            serde_json::from_value(params_map.remove("payload").unwrap()).unwrap(),
+        ))
+    }
+    results
 }
 
 /// Tests a complete mint-melt round trip with WebSocket notifications
@@ -180,7 +185,11 @@ async fn test_happy_mint_melt_round_trip() {
     assert_eq!(tx.amount, melt.amount);
     assert_eq!(tx.metadata, metadata);
 
-    let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
+    let mut notifications = get_notifications(&mut reader, Duration::from_millis(15000), 3).await;
+    notifications.reverse();
+
+    let (sub_id, payload) = notifications.pop().unwrap();
+
     // first message is the current state
     assert_eq!("test-sub", sub_id);
     let payload = match payload {
@@ -193,7 +202,7 @@ async fn test_happy_mint_melt_round_trip() {
     assert_eq!(payload.state, MeltQuoteState::Unpaid);
 
     // get current state
-    let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
+    let (sub_id, payload) = notifications.pop().unwrap();
     assert_eq!("test-sub", sub_id);
     let payload = match payload {
         NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
@@ -203,7 +212,7 @@ async fn test_happy_mint_melt_round_trip() {
     assert_eq!(payload.state, MeltQuoteState::Pending);
 
     // get current state
-    let (sub_id, payload) = get_notification(&mut reader, Duration::from_millis(15000)).await;
+    let (sub_id, payload) = notifications.pop().unwrap();
     assert_eq!("test-sub", sub_id);
     let payload = match payload {
         NotificationPayload::MeltQuoteBolt11Response(melt) => melt,
