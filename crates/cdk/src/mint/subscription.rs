@@ -267,7 +267,6 @@ impl PubSubManager {
     ) {
         let mut quote = quote.into();
         quote.state = new_state;
-        quote.paid = Some(new_state == MeltQuoteState::Paid);
         quote.payment_preimage = payment_preimage;
         quote.change = change;
         self.publish(quote);
