@@ -673,7 +673,6 @@ impl From<&MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
             payment_preimage: None,
             change: None,
             state: melt_quote.state,
-            paid: Some(melt_quote.state == MeltQuoteState::Paid),
             expiry: melt_quote.expiry,
             amount: melt_quote.amount,
             fee_reserve: melt_quote.fee_reserve,
@@ -685,12 +684,10 @@ impl From<&MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
 
 impl From<MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
     fn from(melt_quote: MeltQuote) -> MeltQuoteBolt11Response<QuoteId> {
-        let paid = melt_quote.state == MeltQuoteState::Paid;
         MeltQuoteBolt11Response {
             quote: melt_quote.id.clone(),
             amount: melt_quote.amount,
             fee_reserve: melt_quote.fee_reserve,
-            paid: Some(paid),
             state: melt_quote.state,
             expiry: melt_quote.expiry,
             payment_preimage: melt_quote.payment_preimage,
