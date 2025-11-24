@@ -826,13 +826,24 @@ where
 
 /// Transaction wrapper for FFI
 pub(crate) struct FfiWalletTransaction {
-    tx: Mutex<Option<DynWalletDatabaseTransaction>>,
+    tx: Arc<Mutex<Option<DynWalletDatabaseTransaction>>>,
+}
+
+impl Drop for FfiWalletTransaction {
+    fn drop(&mut self) {
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            if let Some(s) = tx.lock().await.take() {
+                let _ = s.rollback().await;
+            }
+        });
+    }
 }
 
 impl FfiWalletTransaction {
     pub fn new(tx: DynWalletDatabaseTransaction) -> Arc<Self> {
         Arc::new(Self {
-            tx: Mutex::new(Some(tx)),
+            tx: Arc::new(Mutex::new(Some(tx))),
         })
     }
 }
