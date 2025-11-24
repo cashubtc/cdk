@@ -4,7 +4,7 @@ use std::sync::Arc;
 use cdk_common::amount::to_unit;
 use cdk_common::database::mint::MeltRequestInfo;
 use cdk_common::database::DynMintDatabase;
-use cdk_common::mint::{MeltSagaState, Operation, Saga};
+use cdk_common::mint::{MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
 use cdk_common::{Amount, Error, ProofsMethods, PublicKey, QuoteId, State};
@@ -63,14 +63,27 @@ mod tests;
 ///    - Triggers compensation if payment fails
 ///    - Special handling for pending/unknown states
 /// 3. **finalize**: Commits the melt, issues change, marks complete
-///    - Triggers compensation if finalization fails
+///    - Does NOT compensate if finalization fails (payment already confirmed)
+///    - Startup check will retry finalization on recovery
 ///    - Clears compensations on success (melt complete)
 ///
 /// # Failure Handling
 ///
-/// If any step fails after setup_melt, all compensating actions are executed in reverse
-/// order to restore the database to its pre-melt state. This ensures no partial melts
-/// leave the system in an inconsistent state.
+/// Failure handling depends on whether payment was attempted:
+///
+/// **Before payment attempt (SetupComplete state):**
+/// - All compensating actions are executed in reverse order
+/// - Database is restored to pre-melt state
+/// - User can retry with same proofs
+///
+/// **After payment attempt (PaymentAttempted state):**
+/// - Compensation is NOT executed (would cause fund loss)
+/// - Startup check will verify payment status with LN backend
+/// - If payment succeeded: finalize is retried
+/// - If payment failed: compensation runs
+///
+/// This two-phase approach prevents fund loss where the mint pays the LN invoice
+/// but returns the proofs to the user.
 ///
 /// # Payment State Complexity
 ///
@@ -78,7 +91,17 @@ mod tests;
 /// - **Paid**: Proceed to finalize
 /// - **Failed/Unpaid**: Compensate and return error
 /// - **Pending/Unknown**: Proofs remain pending, saga cannot complete
-///   (current behavior: leave proofs pending, return error for manual intervention)
+///   (leave proofs pending for startup check to resolve)
+///
+/// # Crash Recovery
+///
+/// The saga persists its state for crash recovery:
+/// - **SetupComplete**: Payment was never attempted → safe to compensate
+/// - **PaymentAttempted**: Payment may have succeeded → must check LN backend
+///
+/// On startup, the recovery process checks the persisted saga state and takes
+/// appropriate action to either finalize (if payment succeeded) or compensate
+/// (if payment was never sent or confirmed failed).
 ///
 /// # Typestate Pattern
 ///
@@ -470,6 +493,14 @@ impl MeltSaga<SetupComplete> {
             amount
         );
 
+        // Update saga state to PaymentAttempted BEFORE internal settlement commits
+        // This ensures crash recovery knows payment may have occurred
+        tx.update_saga(
+            self.operation.id(),
+            SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+        )
+        .await?;
+
         let total_paid = tx
             .increment_mint_quote_amount_paid(
                 &mint_quote.id,
@@ -500,9 +531,20 @@ impl MeltSaga<SetupComplete> {
     ///
     /// 1. Takes a SettlementDecision from attempt_internal_settlement
     /// 2. If Internal: creates payment result directly
-    /// 3. If RequiresExternalPayment: calls LN backend
+    /// 3. If RequiresExternalPayment:
+    ///    - Updates saga state to `PaymentAttempted` (for crash recovery)
+    ///    - Calls LN backend to make payment
     /// 4. Handles payment result states with idempotent verification
     /// 5. Transitions to PaymentConfirmed state on success
+    ///
+    /// # Crash Tolerance
+    ///
+    /// For external payments, the saga state is updated to `PaymentAttempted` BEFORE
+    /// calling the LN backend. This write-ahead logging ensures that if the process
+    /// crashes after payment but before finalize, the startup recovery will:
+    /// - See `PaymentAttempted` state
+    /// - Check with LN backend to determine if payment succeeded
+    /// - Finalize if paid, compensate if failed
     ///
     /// # Idempotent Payment Verification
     ///
@@ -573,6 +615,18 @@ impl MeltSaga<SetupComplete> {
                         );
                         Error::UnsupportedUnit
                     })?;
+
+                // Update saga state to PaymentAttempted BEFORE making payment
+                // This ensures crash recovery knows payment may have been attempted
+                {
+                    let mut tx = self.db.begin_transaction().await?;
+                    tx.update_saga(
+                        self.operation.id(),
+                        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+                    )
+                    .await?;
+                    tx.commit().await?;
+                }
 
                 // Make payment with idempotent verification
                 let payment_response = match ln
@@ -744,10 +798,23 @@ impl MeltSaga<PaymentConfirmed> {
     ///
     /// On success, compensations are cleared and the melt is complete.
     ///
+    /// # Failure Handling
+    ///
+    /// **Critical**: If finalization fails, compensation is NOT executed because
+    /// payment was already confirmed as Paid. Compensating would return proofs to
+    /// the user while the mint has already paid the Lightning invoice, causing fund loss.
+    ///
+    /// Instead, the error is returned and the saga remains in the database with
+    /// `PaymentAttempted` state. On startup, the recovery process will:
+    /// 1. Find the incomplete saga
+    /// 2. Check the LN backend (which will confirm payment as Paid)
+    /// 3. Retry finalization
+    ///
     /// # Errors
     ///
     /// - `TokenAlreadySpent`: Input proofs were already spent
     /// - `BlindedMessageAlreadySigned`: Change outputs already signed
+    /// - `UnitMismatch`: Failed to convert payment amount to quote unit
     #[instrument(skip_all)]
     pub async fn finalize(self) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
         tracing::info!("TX2: Finalizing melt (mark spent + change)");
@@ -757,7 +824,10 @@ impl MeltSaga<PaymentConfirmed> {
             &self.state_data.payment_result.unit,
             &self.state_data.quote.unit,
         )
-        .unwrap_or_default();
+        .map_err(|e| {
+            tracing::error!("Failed to convert total_spent to quote unit: {:?}", e);
+            Error::UnitMismatch
+        })?;
 
         let payment_preimage = self.state_data.payment_result.payment_proof.clone();
         let payment_lookup_id = &self.state_data.payment_result.payment_lookup_id;
@@ -788,8 +858,15 @@ impl MeltSaga<PaymentConfirmed> {
         )
         .await
         {
+            // Do NOT compensate here - payment was already confirmed as Paid
+            // Startup check will retry finalization on next recovery cycle
+            tracing::error!(
+                "Finalize failed for paid melt quote {} - will retry on startup: {}",
+                self.state_data.quote.id,
+                err
+            );
+
             tx.rollback().await?;
-            self.compensate_all().await?;
             return Err(err);
         }
 

@@ -127,10 +127,10 @@ impl MintPayment for PaymentProcessorClient {
         let proto_options = match options {
             // todo -- add support for custom options in payment processor
             CdkIncomingPaymentOptions::Custom(opts) => IncomingPaymentOptions {
-                options: Some(super::incoming_payment_options::Options::Bolt11(
-                    super::Bolt11IncomingPaymentOptions {
+                options: Some(super::incoming_payment_options::Options::Custom(
+                    super::CustomIncomingPaymentOptions {
                         description: opts.description,
-                        amount: opts.amount.into(),
+                        amount: Some(opts.amount.into()),
                         unix_expiry: opts.unix_expiry,
                     },
                 )),

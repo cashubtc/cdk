@@ -62,6 +62,29 @@ impl Wallet {
         self.inner.unit.clone().into()
     }
 
+    /// Set metadata cache TTL (time-to-live) in seconds
+    ///
+    /// Controls how long cached mint metadata (keysets, keys, mint info) is considered fresh
+    /// before requiring a refresh from the mint server.
+    ///
+    /// # Arguments
+    ///
+    /// * `ttl_secs` - Optional TTL in seconds. If None, cache never expires and is always used.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Cache expires after 5 minutes
+    /// wallet.set_metadata_cache_ttl(Some(300));
+    ///
+    /// // Cache never expires (default)
+    /// wallet.set_metadata_cache_ttl(None);
+    /// ```
+    pub fn set_metadata_cache_ttl(&self, ttl_secs: Option<u64>) {
+        let ttl = ttl_secs.map(std::time::Duration::from_secs);
+        self.inner.set_metadata_cache_ttl(ttl);
+    }
+
     /// Get total balance
     pub async fn total_balance(&self) -> Result<Amount, FfiError> {
         let balance = self.inner.total_balance().await?;
@@ -84,6 +107,14 @@ impl Wallet {
     pub async fn get_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
         let info = self.inner.fetch_mint_info().await?;
         Ok(info.map(Into::into))
+    }
+
+    /// Load mint info
+    ///
+    /// This will get mint info from cache if it is fresh
+    pub async fn load_mint_info(&self) -> Result<MintInfo, FfiError> {
+        let info = self.inner.load_mint_info().await?;
+        Ok(info.into())
     }
 
     /// Receive tokens
