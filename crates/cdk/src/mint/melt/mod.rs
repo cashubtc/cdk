@@ -390,7 +390,6 @@ impl Mint {
 
         let response = MeltQuoteBolt11Response {
             quote: quote.id,
-            paid: Some(quote.state == MeltQuoteState::Paid),
             state: quote.state,
             expiry: quote.expiry,
             amount: quote.amount,
@@ -543,7 +542,6 @@ impl Mint {
             amount: quote.amount,
             fee_reserve: quote.fee_reserve,
             state: quote.state,
-            paid: Some(false),
             expiry: quote.expiry,
             payment_preimage: None,
             change: None,

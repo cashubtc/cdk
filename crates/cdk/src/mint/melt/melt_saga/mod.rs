@@ -931,7 +931,6 @@ impl MeltSaga<PaymentConfirmed> {
 
         let response = MeltQuoteBolt11Response {
             amount: self.state_data.quote.amount,
-            paid: Some(true),
             payment_preimage,
             change,
             quote: self.state_data.quote.id,
