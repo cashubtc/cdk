@@ -731,7 +731,7 @@ impl CdkMint for MintRPCServer {
             .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
 
         let amounts = if request.amounts.is_empty() {
-            (0..32).map(|n| 2u64.pow(n)).collect()
+            return Err(Status::invalid_argument("amounts cannot be empty"));
         } else {
             request.amounts
         };
