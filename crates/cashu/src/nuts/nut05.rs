@@ -418,6 +418,20 @@ impl Settings {
     }
 }
 
+/// Custom payment method melt quote request
+///
+/// This is a generic request type for melting tokens with custom payment methods.
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct MeltQuoteCustomRequest {
+    /// Custom payment method name
+    pub method: String,
+    /// Payment request string (method-specific format)
+    pub request: String,
+    /// Currency unit
+    pub unit: CurrencyUnit,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{from_str, json, to_string};

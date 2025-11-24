@@ -12,11 +12,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
+use crate::nut23::QuoteState;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteIdError;
-use crate::Amount;
+use crate::{Amount, PublicKey};
 
 /// NUT04 Error
 #[derive(Debug, Error)]
@@ -307,6 +308,79 @@ impl Settings {
     }
 }
 
+/// Custom payment method mint quote request
+///
+/// This is a generic request type that works for any custom payment method.
+/// The method name is provided in the URL path, not in the request body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct MintQuoteCustomRequest {
+    /// Amount to mint
+    pub amount: Amount,
+    /// Currency unit
+    pub unit: CurrencyUnit,
+    /// Optional description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// NUT-19 Pubkey
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<PublicKey>,
+}
+
+/// Custom payment method mint quote response
+///
+/// This is a generic response type for custom payment methods.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+#[serde(bound = "Q: Serialize + for<'a> Deserialize<'a>")]
+pub struct MintQuoteCustomResponse<Q> {
+    /// Quote ID
+    pub quote: Q,
+    /// Payment request string (method-specific format)
+    pub request: String,
+    /// Amount
+    pub amount: Option<Amount>,
+    /// Currency unit
+    pub unit: Option<CurrencyUnit>,
+    /// Quote State
+    pub state: QuoteState,
+    /// Unix timestamp until the quote is valid
+    pub expiry: Option<u64>,
+    /// NUT-19 Pubkey
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<PublicKey>,
+}
+
+#[cfg(feature = "mint")]
+impl<Q: ToString> MintQuoteCustomResponse<Q> {
+    /// Convert the MintQuoteCustomResponse with a quote type Q to a String
+    pub fn to_string_id(&self) -> MintQuoteCustomResponse<String> {
+        MintQuoteCustomResponse {
+            quote: self.quote.to_string(),
+            request: self.request.clone(),
+            amount: self.amount,
+            state: self.state,
+            unit: self.unit.clone(),
+            expiry: self.expiry,
+            pubkey: self.pubkey,
+        }
+    }
+}
+
+#[cfg(feature = "mint")]
+impl From<MintQuoteCustomResponse<QuoteId>> for MintQuoteCustomResponse<String> {
+    fn from(value: MintQuoteCustomResponse<QuoteId>) -> Self {
+        Self {
+            quote: value.quote.to_string(),
+            request: value.request,
+            amount: value.amount,
+            unit: value.unit,
+            expiry: value.expiry,
+            state: value.state,
+            pubkey: value.pubkey,
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use serde_json::{from_str, json, to_string};

@@ -25,7 +25,6 @@ pub mod nut19;
 pub mod nut20;
 pub mod nut23;
 pub mod nut25;
-pub mod nut_custom;
 
 #[cfg(feature = "auth")]
 mod auth;
@@ -48,9 +47,13 @@ pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
 #[cfg(feature = "wallet")]
 pub use nut03::PreSwap;
 pub use nut03::{SwapRequest, SwapResponse};
-pub use nut04::{MintMethodSettings, MintRequest, MintResponse, Settings as NUT04Settings};
+pub use nut04::{
+    MintMethodSettings, MintQuoteCustomRequest, MintQuoteCustomResponse, MintRequest, MintResponse,
+    Settings as NUT04Settings,
+};
 pub use nut05::{
-    MeltMethodSettings, MeltRequest, QuoteState as MeltQuoteState, Settings as NUT05Settings,
+    MeltMethodSettings, MeltQuoteCustomRequest, MeltRequest, QuoteState as MeltQuoteState,
+    Settings as NUT05Settings,
 };
 pub use nut06::{ContactInfo, MintInfo, MintVersion, Nuts};
 pub use nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
@@ -70,4 +73,3 @@ pub use nut23::{
     MintQuoteBolt11Response, QuoteState as MintQuoteState,
 };
 pub use nut25::{MeltQuoteBolt12Request, MintQuoteBolt12Request, MintQuoteBolt12Response};
-pub use nut_custom::{MeltQuoteCustomRequest, MintQuoteCustomRequest, MintQuoteCustomResponse};
