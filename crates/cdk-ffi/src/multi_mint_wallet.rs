@@ -431,6 +431,17 @@ impl MultiMintWallet {
         Ok(quote.into())
     }
 
+    /// Melt tokens
+    pub async fn melt_with_mint(
+        &self,
+        mint_url: MintUrl,
+        quote_id: String,
+    ) -> Result<Melted, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let melted = self.inner.melt_with_mint(&cdk_mint_url, &quote_id).await?;
+        Ok(melted.into())
+    }
+
     /// Melt tokens (pay a bolt11 invoice)
     pub async fn melt(
         &self,
