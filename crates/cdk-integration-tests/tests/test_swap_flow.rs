@@ -657,9 +657,13 @@ async fn test_swap_with_fees() {
         .expect("Failed to create test wallet");
 
     // Rotate to keyset with 1 sat per proof fee
-    mint.rotate_keyset(CurrencyUnit::Sat, 32, 1)
-        .await
-        .expect("Failed to rotate keyset");
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        1,
+    )
+    .await
+    .expect("Failed to rotate keyset");
 
     // Fund with 1000 sats as individual 1-sat proofs using the fee-based keyset
     // Wait a bit for keyset to be available
@@ -973,9 +977,13 @@ async fn test_wallet_multi_keyset_counter_updates() {
     let first_keyset_id = get_keyset_id(&mint).await;
 
     // Rotate to a second keyset
-    mint.rotate_keyset(CurrencyUnit::Sat, 32, 0)
-        .await
-        .expect("Failed to rotate keyset");
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        0,
+    )
+    .await
+    .expect("Failed to rotate keyset");
 
     // Wait for keyset rotation to propagate
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;

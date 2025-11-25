@@ -151,7 +151,6 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
         final_expiry: keyset.final_expiry,
         derivation_path,
         derivation_path_index,
-        max_order: 0,
         amounts: amounts.to_owned(),
         input_fee_ppk,
     };
