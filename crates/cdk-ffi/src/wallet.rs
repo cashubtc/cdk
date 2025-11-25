@@ -16,6 +16,13 @@ pub struct Wallet {
     inner: Arc<CdkWallet>,
 }
 
+impl Wallet {
+    /// Create a Wallet from an existing CDK wallet (internal use only)
+    pub(crate) fn from_inner(inner: Arc<CdkWallet>) -> Self {
+        Self { inner }
+    }
+}
+
 #[uniffi::export(async_runtime = "tokio")]
 impl Wallet {
     /// Create a new Wallet from mnemonic using WalletDatabase trait
