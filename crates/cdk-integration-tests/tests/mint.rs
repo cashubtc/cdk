@@ -142,7 +142,7 @@ async fn test_concurrent_duplicate_payment_handling() {
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
-            PaymentMethod::Bolt11,
+            PaymentMethod::Known(KnownMethod::Bolt11),
             MintMeltLimits::new(1, 5_000),
             Arc::new(fake_wallet),
         )
@@ -169,7 +169,7 @@ async fn test_concurrent_duplicate_payment_handling() {
         None,
         Amount::ZERO,
         Amount::ZERO,
-        PaymentMethod::Bolt11,
+        PaymentMethod::Known(KnownMethod::Bolt11),
         current_time,
         vec![],
         vec![],
