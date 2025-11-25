@@ -31,7 +31,7 @@ impl Wallet {
         mint_url: String,
         unit: CurrencyUnit,
         mnemonic: String,
-        db: crate::database::WalletDatabaseType,
+        db: Arc<dyn crate::database::WalletDatabase>,
         config: WalletConfig,
     ) -> Result<Self, FfiError> {
         // Parse mnemonic and generate seed without passphrase
@@ -40,7 +40,7 @@ impl Wallet {
         let seed = m.to_seed_normalized("");
 
         // Convert the FFI database trait to a CDK database implementation
-        let localstore = crate::database::create_cdk_database_from_ffi(db.as_trait());
+        let localstore = crate::database::create_cdk_database_from_ffi(db);
 
         let wallet =
             CdkWalletBuilder::new()

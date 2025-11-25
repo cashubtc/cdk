@@ -7,7 +7,7 @@ use cdk_sqlite::SqliteConnectionManager;
 use crate::{
     CurrencyUnit, FfiError, FfiWalletSQLDatabase, Id, KeySetInfo, Keys, MeltQuote, MintInfo,
     MintQuote, MintUrl, ProofInfo, ProofState, SpendingConditions, Transaction,
-    TransactionDirection, TransactionId, WalletDatabaseFfi,
+    TransactionDirection, TransactionId, WalletDatabase,
 };
 
 /// FFI-compatible WalletSqliteDatabase implementation that implements the WalletDatabaseFfi trait
@@ -66,10 +66,10 @@ impl WalletSqliteDatabase {
 
 #[uniffi::export(async_runtime = "tokio")]
 #[async_trait::async_trait]
-impl WalletDatabaseFfi for WalletSqliteDatabase {
+impl WalletDatabase for WalletSqliteDatabase {
     async fn begin_db_transaction(
         &self,
-    ) -> Result<Arc<dyn crate::database::WalletDatabaseTransactionFfi>, FfiError> {
+    ) -> Result<crate::database::WalletDatabaseTransactionWrapper, FfiError> {
         self.inner.begin_db_transaction().await
     }
 

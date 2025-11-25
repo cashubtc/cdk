@@ -7,7 +7,7 @@ use cdk_postgres::PgConnectionPool;
 use crate::{
     CurrencyUnit, FfiError, FfiWalletSQLDatabase, Id, KeySetInfo, Keys, MeltQuote, MintInfo,
     MintQuote, MintUrl, ProofInfo, ProofState, SpendingConditions, Transaction,
-    TransactionDirection, TransactionId, WalletDatabaseFfi,
+    TransactionDirection, TransactionId, WalletDatabase, WalletDatabaseTransactionWrapper,
 };
 
 #[derive(uniffi::Object)]
@@ -61,10 +61,8 @@ impl WalletPostgresDatabase {
 
 #[uniffi::export(async_runtime = "tokio")]
 #[async_trait::async_trait]
-impl WalletDatabaseFfi for WalletPostgresDatabase {
-    async fn begin_db_transaction(
-        &self,
-    ) -> Result<Arc<dyn crate::database::WalletDatabaseTransactionFfi>, FfiError> {
+impl WalletDatabase for WalletPostgresDatabase {
+    async fn begin_db_transaction(&self) -> Result<WalletDatabaseTransactionWrapper, FfiError> {
         self.inner.begin_db_transaction().await
     }
 

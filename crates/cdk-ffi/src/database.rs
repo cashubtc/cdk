@@ -1,11 +1,9 @@
 //! FFI Database bindings
 
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::Arc;
 
-// Re-export the CDK database types for 100% compatibility
-pub use cdk_common::database::WalletDatabase;
-pub use cdk_common::database::WalletDatabaseTransaction as WalletDatabaseTx;
 use cdk_common::database::{
     DbTransactionFinalizer, DynWalletDatabaseTransaction, WalletDatabase as CdkWalletDatabase,
     WalletDatabaseTransaction as CdkWalletDatabaseTransaction,
@@ -22,11 +20,11 @@ use crate::types::*;
 
 /// FFI-compatible wallet database trait (read-only operations + begin_db_transaction)
 /// This trait mirrors the CDK WalletDatabase trait structure
+#[uniffi::export(with_foreign)]
 #[async_trait::async_trait]
-pub trait WalletDatabaseFfi: Send + Sync {
+pub trait WalletDatabase: Send + Sync {
     /// Begin a database transaction
-    async fn begin_db_transaction(&self)
-        -> Result<Arc<dyn WalletDatabaseTransactionFfi>, FfiError>;
+    async fn begin_db_transaction(&self) -> Result<WalletDatabaseTransactionWrapper, FfiError>;
 
     /// Get mint from storage
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, FfiError>;
@@ -94,7 +92,7 @@ pub trait WalletDatabaseFfi: Send + Sync {
 /// This trait mirrors the CDK WalletDatabaseTransaction trait but uses FFI-compatible types
 #[uniffi::export(with_foreign)]
 #[async_trait::async_trait]
-pub trait WalletDatabaseTransactionFfi: Send + Sync {
+pub trait WalletDatabaseTransaction: Send + Sync {
     /// Commit the transaction
     async fn commit(self: Arc<Self>) -> Result<(), FfiError>;
 
@@ -196,14 +194,36 @@ pub trait WalletDatabaseTransactionFfi: Send + Sync {
     async fn remove_transaction(&self, transaction_id: TransactionId) -> Result<(), FfiError>;
 }
 
+/// Wallet database transaction wrapper
+#[derive(uniffi::Record)]
+pub struct WalletDatabaseTransactionWrapper {
+    inner: Arc<dyn WalletDatabaseTransaction>,
+}
+
+#[uniffi::export]
+impl WalletDatabaseTransactionWrapper {
+    #[uniffi::constructor]
+    pub fn new(inner: Arc<dyn WalletDatabaseTransaction>) -> Self {
+        Self { inner }
+    }
+}
+
+impl Deref for WalletDatabaseTransactionWrapper {
+    type Target = Arc<dyn WalletDatabaseTransaction>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
 /// Internal bridge trait to convert from the FFI trait to the CDK database trait
 /// This allows us to bridge between the UniFFI trait and the CDK's internal database trait
 struct WalletDatabaseBridge {
-    ffi_db: Arc<dyn WalletDatabaseFfi>,
+    ffi_db: Arc<dyn WalletDatabase>,
 }
 
 impl WalletDatabaseBridge {
-    fn new(ffi_db: Arc<dyn WalletDatabaseFfi>) -> Self {
+    fn new(ffi_db: Arc<dyn WalletDatabase>) -> Self {
         Self { ffi_db }
     }
 }
@@ -488,7 +508,7 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
 
 /// Transaction bridge for FFI wallet database
 struct WalletDatabaseTransactionBridge {
-    ffi_tx: Arc<dyn WalletDatabaseTransactionFfi>,
+    ffi_tx: WalletDatabaseTransactionWrapper,
     is_finalized: bool,
 }
 
@@ -850,20 +870,20 @@ impl FfiWalletTransaction {
 
 // Implement WalletDatabaseFfi trait - only read methods + begin_db_transaction
 #[async_trait::async_trait]
-impl<RM> WalletDatabaseFfi for FfiWalletSQLDatabase<RM>
+impl<RM> WalletDatabase for FfiWalletSQLDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
-    async fn begin_db_transaction(
-        &self,
-    ) -> Result<Arc<dyn WalletDatabaseTransactionFfi>, FfiError> {
+    async fn begin_db_transaction(&self) -> Result<WalletDatabaseTransactionWrapper, FfiError> {
         let tx = self
             .inner
             .begin_db_transaction()
             .await
             .map_err(|e| FfiError::Database { msg: e.to_string() })?;
 
-        Ok(FfiWalletTransaction::new(tx))
+        Ok(WalletDatabaseTransactionWrapper {
+            inner: FfiWalletTransaction::new(tx),
+        })
     }
 
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, FfiError> {
@@ -1036,7 +1056,7 @@ where
 
 // Implement WalletDatabaseTransactionFfi trait - all write methods
 #[async_trait::async_trait]
-impl WalletDatabaseTransactionFfi for FfiWalletTransaction {
+impl WalletDatabaseTransaction for FfiWalletTransaction {
     async fn commit(self: Arc<Self>) -> Result<(), FfiError> {
         self.tx
             .lock()
@@ -1374,18 +1394,18 @@ pub enum WalletDatabaseType {
 }
 
 impl WalletDatabaseType {
-    pub fn as_trait(&self) -> Arc<dyn WalletDatabaseFfi> {
+    pub fn as_trait(&self) -> Arc<dyn WalletDatabase> {
         match self {
-            WalletDatabaseType::Sqlite { db } => db.clone() as Arc<dyn WalletDatabaseFfi>,
+            WalletDatabaseType::Sqlite { db } => db.clone() as Arc<dyn WalletDatabase>,
             #[cfg(feature = "postgres")]
-            WalletDatabaseType::Postgres { db } => db.clone() as Arc<dyn WalletDatabaseFfi>,
+            WalletDatabaseType::Postgres { db } => db.clone() as Arc<dyn WalletDatabase>,
         }
     }
 }
 
 /// Helper function to create a CDK database from the FFI trait
 pub fn create_cdk_database_from_ffi(
-    ffi_db: Arc<dyn WalletDatabaseFfi>,
+    ffi_db: Arc<dyn WalletDatabase>,
 ) -> Arc<dyn CdkWalletDatabase<Err = cdk::cdk_database::Error> + Send + Sync> {
     Arc::new(WalletDatabaseBridge::new(ffi_db))
 }
