@@ -12,7 +12,7 @@ use anyhow::Result;
 use cdk_common::database;
 use cdk_common::database::WalletDatabase;
 use cdk_common::task::spawn;
-use cdk_common::wallet::{Transaction, TransactionDirection};
+use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection};
 use tokio::sync::RwLock;
 use tracing::instrument;
 use zeroize::Zeroize;
@@ -1297,6 +1297,32 @@ impl MultiMintWallet {
         })?;
 
         wallet.melt(quote_id).await
+    }
+
+    /// Check a specific melt quote status
+    #[instrument(skip(self))]
+    pub async fn check_melt_quote(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+    ) -> Result<MeltQuote, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        // Check the quote state from the mint
+        wallet.melt_quote_status(quote_id).await?;
+
+        // Get the updated quote from local storage
+        let quote = wallet
+            .localstore
+            .get_melt_quote(quote_id)
+            .await
+            .map_err(Error::Database)?
+            .ok_or(Error::UnknownQuote)?;
+
+        Ok(quote)
     }
 
     /// Create MPP (Multi-Path Payment) melt quotes from multiple mints
