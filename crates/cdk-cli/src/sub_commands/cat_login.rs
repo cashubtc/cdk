@@ -61,11 +61,7 @@ pub async fn cat_login(
     Ok(())
 }
 
-async fn get_access_token(
-    mint_info: &MintInfo,
-    user: &str,
-    password: &str,
-) -> (String, String) {
+async fn get_access_token(mint_info: &MintInfo, user: &str, password: &str) -> (String, String) {
     let openid_discovery = mint_info
         .nuts
         .nut21
