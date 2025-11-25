@@ -438,53 +438,67 @@ impl Wallet {
         fees_and_keyset_amounts: &KeysetFeeAndAmounts,
     ) -> Result<Proofs, Error> {
         tracing::debug!("Including fees");
-        let fee = calculate_fee(
-            &selected_proofs.count_by_keyset(),
-            &fees_and_keyset_amounts
-                .iter()
-                .map(|(key, values)| (*key, values.fee()))
-                .collect(),
-        )
-        .unwrap_or_default();
-        let net_amount = selected_proofs.total_amount()? - fee;
-        tracing::debug!(
-            "Net amount={}, fee={}, total amount={}",
-            net_amount,
-            fee,
-            selected_proofs.total_amount()?
-        );
-        if net_amount >= amount {
+
+        let fee_map: HashMap<Id, u64> = fees_and_keyset_amounts
+            .iter()
+            .map(|(k, v)| (*k, v.fee()))
+            .collect();
+
+        // Max iterations bounded by total number of available proofs
+        let max_iterations = proofs.len();
+
+        for _ in 0..=max_iterations {
+            let fee =
+                calculate_fee(&selected_proofs.count_by_keyset(), &fee_map).unwrap_or_default();
+            let total = selected_proofs.total_amount()?;
+
             tracing::debug!(
-                "Selected proofs: {:?}",
-                selected_proofs
-                    .iter()
-                    .map(|p| p.amount.into())
-                    .collect::<Vec<u64>>(),
+                "Net amount={}, fee={}, total amount={}",
+                total.checked_sub(fee).unwrap_or_default(),
+                fee,
+                total
             );
-            return Ok(selected_proofs);
+
+            if total >= amount + fee {
+                tracing::debug!(
+                    "Selected proofs: {:?}",
+                    selected_proofs
+                        .iter()
+                        .map(|p| p.amount.into())
+                        .collect::<Vec<u64>>(),
+                );
+                return Ok(selected_proofs);
+            }
+
+            tracing::debug!("Net amount is less than the required amount");
+
+            let remaining_amount = (amount + fee) - total;
+            let remaining_proofs: Proofs = proofs
+                .iter()
+                .filter(|p| !selected_proofs.contains(p))
+                .cloned()
+                .collect();
+
+            if remaining_proofs.is_empty() {
+                return Err(Error::InsufficientFunds);
+            }
+
+            let additional = Wallet::select_proofs(
+                remaining_amount,
+                remaining_proofs,
+                active_keyset_ids,
+                fees_and_keyset_amounts,
+                false,
+            )?;
+
+            if additional.is_empty() {
+                return Err(Error::InsufficientFunds);
+            }
+
+            selected_proofs.extend(additional);
         }
 
-        tracing::debug!("Net amount is less than the required amount");
-        let remaining_amount = amount - net_amount;
-        let remaining_proofs = proofs
-            .into_iter()
-            .filter(|p| !selected_proofs.contains(p))
-            .collect::<Proofs>();
-        selected_proofs.extend(Wallet::select_proofs(
-            remaining_amount,
-            remaining_proofs,
-            active_keyset_ids,
-            &HashMap::new(), // Fees are already calculated
-            false,
-        )?);
-        tracing::debug!(
-            "Selected proofs: {:?}",
-            selected_proofs
-                .iter()
-                .map(|p| p.amount.into())
-                .collect::<Vec<u64>>(),
-        );
-        Ok(selected_proofs)
+        Err(Error::InsufficientFunds)
     }
 }
 
@@ -722,5 +736,145 @@ mod tests {
         .unwrap();
         assert_eq!(selected_proofs.len(), 1);
         assert_eq!(selected_proofs[0].amount, 32.into());
+    }
+
+    /// Test that select_proofs with include_fees=true correctly accounts for fees
+    /// when additional proofs are needed to cover the fee gap.
+    ///
+    /// This test demonstrates a bug where:
+    /// 1. Initial proof selection doesn't cover amount + fees
+    /// 2. Additional proofs are selected to cover the gap
+    /// 3. But those additional proofs also incur fees that aren't accounted for
+    ///
+    /// Example scenario with fee_ppk=1000 (1 sat fee per proof):
+    /// - Need: 100 sats
+    /// - Initial selection: 1 proof of 100 sats
+    /// - Fee for 1 proof: ceil(1000/1000) = 1 sat
+    /// - Net: 100 - 1 = 99 sats (short by 1)
+    /// - Add 1 more proof of 1 sat to cover the gap
+    /// - Total: 101 sats in 2 proofs
+    /// - BUT fee for 2 proofs: ceil(2000/1000) = 2 sats
+    /// - Net: 101 - 2 = 99 sats (STILL short!)
+    #[test]
+    fn test_select_proofs_include_fees_accounts_for_additional_proof_fees() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let fee_ppk = 1000; // 1 sat fee per proof
+
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active_id,
+            (fee_ppk, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+
+        // Create proofs: one 100 sat proof and several 1 sat proofs
+        // Note: We need 2 sat proofs to cover the fee gap properly
+        // With fee_ppk=1000, each proof costs 1 sat in fees
+        // To get net 100 sats, we need: amount + ceil(num_proofs * 1000 / 1000)
+        // With 1 proof of 100: net = 100 - 1 = 99 (short!)
+        // With 1 proof of 100 + 1 proof of 2: net = 102 - 2 = 100 (exact!)
+        let proofs = vec![proof(100), proof(2), proof(1), proof(1), proof(1)];
+
+        let amount_needed = Amount::from(100);
+
+        let selected_proofs = Wallet::select_proofs(
+            amount_needed,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true, // include_fees = true
+        )
+        .unwrap();
+
+        // Calculate the actual fee for the selected proofs
+        let fee_map: HashMap<Id, u64> = keyset_fee_and_amounts
+            .iter()
+            .map(|(k, v)| (*k, v.fee()))
+            .collect();
+        let actual_fee =
+            calculate_fee(&selected_proofs.count_by_keyset(), &fee_map).unwrap_or_default();
+
+        let total_amount = selected_proofs.total_amount().unwrap();
+        let net_amount = total_amount - actual_fee;
+
+        // The net amount after fees MUST be >= the amount we need
+        assert!(
+            net_amount >= amount_needed,
+            "Net amount {} after fee {} is less than needed {}. \
+             Selected {} proofs totaling {}. \
+             Bug: additional proofs' fees not accounted for.",
+            net_amount,
+            actual_fee,
+            amount_needed,
+            selected_proofs.len(),
+            total_amount
+        );
+    }
+
+    /// Additional test with higher fees to make the bug more apparent
+    #[test]
+    fn test_select_proofs_include_fees_high_fee_rate() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let active_id = id();
+        let fee_ppk = 2000; // 2 sats fee per proof
+
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active_id,
+            (fee_ppk, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+
+        // With fee_ppk=2000, each proof costs 2 sats in fees
+        // Need 100 sats net. Use power-of-2 denominations that the algorithm expects.
+        // 100 splits into [64, 32, 4]
+        // With 3 proofs (64+32+4): fee=6, total=100, net=94 (short!)
+        // Need to add more proofs to cover the gap
+        let proofs = vec![
+            proof(64),
+            proof(32),
+            proof(8),
+            proof(4),
+            proof(2),
+            proof(1),
+            proof(1),
+        ];
+
+        let amount_needed = Amount::from(100);
+
+        let selected_proofs = Wallet::select_proofs(
+            amount_needed,
+            proofs,
+            &vec![active_id],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        let fee_map: HashMap<Id, u64> = keyset_fee_and_amounts
+            .iter()
+            .map(|(k, v)| (*k, v.fee()))
+            .collect();
+        let actual_fee =
+            calculate_fee(&selected_proofs.count_by_keyset(), &fee_map).unwrap_or_default();
+
+        let total_amount = selected_proofs.total_amount().unwrap();
+        let net_amount = total_amount - actual_fee;
+
+        assert!(
+            net_amount >= amount_needed,
+            "Net amount {} after fee {} is less than needed {}. \
+             Selected {} proofs totaling {}.",
+            net_amount,
+            actual_fee,
+            amount_needed,
+            selected_proofs.len(),
+            total_amount
+        );
     }
 }
