@@ -13,6 +13,7 @@ use cdk::wallet::multi_mint_wallet::{
 
 use crate::error::FfiError;
 use crate::token::Token;
+use crate::types::payment_request::{CreateRequestParams, PaymentRequest};
 use crate::types::*;
 
 /// FFI-compatible MultiMintWallet
@@ -560,6 +561,49 @@ impl MultiMintWallet {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
         let mint_info = self.inner.fetch_mint_info(&cdk_mint_url).await?;
         Ok(mint_info.map(Into::into))
+    }
+}
+
+/// Payment request methods for MultiMintWallet
+#[uniffi::export(async_runtime = "tokio")]
+impl MultiMintWallet {
+    /// Create a NUT-18 payment request
+    ///
+    /// Creates a payment request that can be shared to receive Cashu tokens.
+    /// The request can include optional amount, description, and spending conditions.
+    ///
+    /// # Arguments
+    ///
+    /// * `params` - Parameters for creating the payment request
+    ///
+    /// # Transport Options
+    ///
+    /// - `"nostr"` - Uses Nostr relays for privacy-preserving delivery (requires nostr_relays)
+    /// - `"http"` - Uses HTTP POST for delivery (requires http_url)
+    /// - `"none"` - No transport; token must be delivered out-of-band
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let params = CreateRequestParams {
+    ///     amount: Some(100),
+    ///     unit: "sat".to_string(),
+    ///     description: Some("Coffee payment".to_string()),
+    ///     transport: "http".to_string(),
+    ///     http_url: Some("https://example.com/callback".to_string()),
+    ///     ..Default::default()
+    /// };
+    /// let request = wallet.create_request(params).await?;
+    /// println!("Share this request: {}", request.to_string_encoded());
+    /// ```
+    pub async fn create_request(
+        &self,
+        params: CreateRequestParams,
+    ) -> Result<std::sync::Arc<PaymentRequest>, FfiError> {
+        let payment_request = self.inner.create_request(params.into()).await?;
+        Ok(std::sync::Arc::new(PaymentRequest::from_inner(
+            payment_request,
+        )))
     }
 }
 
