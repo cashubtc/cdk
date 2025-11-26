@@ -146,6 +146,7 @@ impl PreMintSecrets {
                 secret: secret.clone(),
                 r,
                 amount,
+                p2pk_e: None,
             };
 
             pre_mint_secrets.secrets.push(pre_mint);
@@ -185,6 +186,7 @@ impl PreMintSecrets {
                 secret: secret.clone(),
                 r,
                 amount,
+                p2pk_e: None,
             };
 
             pre_mint_secrets.secrets.push(pre_mint);
@@ -217,6 +219,7 @@ impl PreMintSecrets {
                 secret: secret.clone(),
                 r,
                 amount: Amount::ZERO,
+                p2pk_e: None,
             };
 
             pre_mint_secrets.secrets.push(pre_mint);

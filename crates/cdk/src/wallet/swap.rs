@@ -20,6 +20,7 @@ impl Wallet {
         input_proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
+        use_p2bk: bool,
     ) -> Result<Option<Proofs>, Error> {
         tracing::info!("Swapping");
         let mint_url = &self.mint_url;
@@ -32,6 +33,7 @@ impl Wallet {
                 input_proofs.clone(),
                 spending_conditions.clone(),
                 include_fees,
+                use_p2bk,
             )
             .await?;
 
@@ -49,12 +51,24 @@ impl Wallet {
 
         let active_keys = self.load_keyset_keys(active_keyset_id).await?;
 
-        let post_swap_proofs = construct_proofs(
+        let mut post_swap_proofs = construct_proofs(
             swap_response.signatures,
             pre_swap.pre_mint_secrets.rs(),
             pre_swap.pre_mint_secrets.secrets(),
             &active_keys,
         )?;
+
+        // Add back p2pk_e to the proofs
+        if use_p2bk {
+            for (proof, pre_mint_secret) in post_swap_proofs
+                .iter_mut()
+                .rev()
+                .zip(pre_swap.pre_mint_secrets)
+            {
+                tracing::debug!("pre_mint_secret.p2pk_e: {:?}\n", pre_mint_secret.p2pk_e);
+                proof.p2pk_e = pre_mint_secret.p2pk_e
+            }
+        }
 
         let mut added_proofs = Vec::new();
         let change_proofs;
@@ -190,6 +204,7 @@ impl Wallet {
             proofs,
             conditions,
             include_fees,
+            false,
         )
         .await?
         .ok_or(Error::InsufficientFunds)
@@ -204,6 +219,7 @@ impl Wallet {
         proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
+        use_p2bk: bool,
     ) -> Result<PreSwap, Error> {
         tracing::info!("Creating swap");
         let active_keyset_id = self.fetch_active_keyset().await?.id;
@@ -328,6 +344,7 @@ impl Wallet {
                         &SplitTarget::default(),
                         &conditions,
                         &fee_and_amounts,
+                        use_p2bk,
                     )?,
                     change_premint_secrets,
                 )

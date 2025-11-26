@@ -54,10 +54,15 @@ pub struct SendSubCommand {
     /// Maximum amount to transfer from other mints
     #[arg(long)]
     max_transfer_amount: Option<u64>,
-
     /// Specific mints to exclude from transfers (can be specified multiple times)
     #[arg(long, action = clap::ArgAction::Append)]
     excluded_mints: Vec<String>,
+    /// Enable Pay-to-Blinded-Key (P2BK) for enhanced privacy
+    ///
+    /// This prevents the mint from learning the true public keys by blinding them.
+    /// Only used with P2PK transactions (when pubkeys are specified).
+    #[arg(long, default_value_t = false)]
+    use_p2bk: bool,
 }
 
 pub async fn send(
@@ -251,8 +256,20 @@ pub async fn send(
         send_kind,
         include_fee: sub_command_args.include_fee,
         conditions,
+        use_p2bk: sub_command_args.use_p2bk,
         ..Default::default()
     };
+
+    // Display P2BK notice if enabled and we're using P2PK conditions
+    if sub_command_args.use_p2bk {
+        if !sub_command_args.pubkey.is_empty() {
+            println!("✓ Pay-to-Blinded-Key (P2BK) privacy enhancement is enabled");
+        } else {
+            println!(
+                "⚠️  Warning: P2BK is enabled but no pubkeys specified. P2BK will have no effect."
+            );
+        }
+    }
 
     // Parse excluded mints from CLI arguments
     let excluded_mints: Result<Vec<MintUrl>, _> = sub_command_args
