@@ -192,10 +192,12 @@ pub enum PaymentMethod {
 
 impl From<cdk::nuts::PaymentMethod> for PaymentMethod {
     fn from(method: cdk::nuts::PaymentMethod) -> Self {
-        match method {
-            cdk::nuts::PaymentMethod::Bolt11 => Self::Bolt11,
-            cdk::nuts::PaymentMethod::Bolt12 => Self::Bolt12,
-            cdk::nuts::PaymentMethod::Custom(s) => Self::Custom { method: s },
+        match method.as_str() {
+            "bolt11" => Self::Bolt11,
+            "bolt12" => Self::Bolt12,
+            s => Self::Custom {
+                method: s.to_string(),
+            },
         }
     }
 }
@@ -203,9 +205,9 @@ impl From<cdk::nuts::PaymentMethod> for PaymentMethod {
 impl From<PaymentMethod> for cdk::nuts::PaymentMethod {
     fn from(method: PaymentMethod) -> Self {
         match method {
-            PaymentMethod::Bolt11 => Self::Bolt11,
-            PaymentMethod::Bolt12 => Self::Bolt12,
-            PaymentMethod::Custom { method } => Self::Custom(method),
+            PaymentMethod::Bolt11 => Self::from("bolt11"),
+            PaymentMethod::Bolt12 => Self::from("bolt12"),
+            PaymentMethod::Custom { method } => Self::from(method),
         }
     }
 }

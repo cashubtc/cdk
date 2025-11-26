@@ -14,6 +14,7 @@ mod tests {
     use std::str::FromStr;
 
     use cdk_common::database::WalletDatabase;
+    use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::{ProofDleq, State};
     use cdk_common::secret::Secret;
 
@@ -149,11 +150,10 @@ mod tests {
         // Test PaymentMethod variants
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
         let payment_methods = [
-            PaymentMethod::Bolt11,
-            PaymentMethod::Bolt12,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            PaymentMethod::Known(KnownMethod::Bolt11),
             PaymentMethod::Custom("custom".to_string()),
         ];
-
         for (i, payment_method) in payment_methods.iter().enumerate() {
             let quote = MintQuote {
                 id: format!("test_quote_{}", i),

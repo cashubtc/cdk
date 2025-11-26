@@ -325,7 +325,7 @@ impl<'de> Visitor<'de> for MeltMethodSettingsVisitor {
         let unit = unit.ok_or_else(|| de::Error::missing_field("unit"))?;
 
         // Create options based on the method and the amountless flag
-        let options = if method == PaymentMethod::Bolt11 && amountless.is_some() {
+        let options = if method == "bolt11" && amountless.is_some() {
             amountless.map(|amountless| MeltMethodOptions::Bolt11 { amountless })
         } else {
             None
@@ -418,6 +418,20 @@ impl Settings {
     }
 }
 
+/// Custom payment method melt quote request
+///
+/// This is a generic request type for melting tokens with custom payment methods.
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct MeltQuoteCustomRequest {
+    /// Custom payment method name
+    pub method: String,
+    /// Payment request string (method-specific format)
+    pub request: String,
+    /// Currency unit
+    pub unit: CurrencyUnit,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{from_str, json, to_string};
@@ -439,7 +453,7 @@ mod tests {
         let settings: MeltMethodSettings = from_str(json_str).unwrap();
 
         // Check that amountless was correctly moved to options
-        assert_eq!(settings.method, PaymentMethod::Bolt11);
+        assert_eq!(settings.method, PaymentMethod::from("bolt11"));
         assert_eq!(settings.unit, CurrencyUnit::Sat);
         assert_eq!(settings.min_amount, Some(Amount::from(0)));
         assert_eq!(settings.max_amount, Some(Amount::from(10000)));

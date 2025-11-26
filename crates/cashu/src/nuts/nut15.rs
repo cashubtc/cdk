@@ -73,14 +73,14 @@ mod tests {
         let array_json = r#"[{"method":"bolt11","unit":"sat"}]"#;
         let settings: Settings = serde_json::from_str(array_json).unwrap();
         assert_eq!(settings.methods.len(), 1);
-        assert_eq!(settings.methods[0].method, PaymentMethod::Bolt11);
+        assert_eq!(settings.methods[0].method, PaymentMethod::from("bolt11"));
         assert_eq!(settings.methods[0].unit, CurrencyUnit::Sat);
 
         // Test object format
         let object_json = r#"{"methods":[{"method":"bolt11","unit":"sat"}]}"#;
         let settings: Settings = serde_json::from_str(object_json).unwrap();
         assert_eq!(settings.methods.len(), 1);
-        assert_eq!(settings.methods[0].method, PaymentMethod::Bolt11);
+        assert_eq!(settings.methods[0].method, PaymentMethod::from("bolt11"));
         assert_eq!(settings.methods[0].unit, CurrencyUnit::Sat);
     }
 
@@ -88,7 +88,7 @@ mod tests {
     fn test_nut15_settings_serialization() {
         let settings = Settings {
             methods: vec![MppMethodSettings {
-                method: PaymentMethod::Bolt11,
+                method: PaymentMethod::from("bolt11"),
                 unit: CurrencyUnit::Sat,
             }],
         };
@@ -104,7 +104,7 @@ mod tests {
 
         let settings_with_data = Settings {
             methods: vec![MppMethodSettings {
-                method: PaymentMethod::Bolt11,
+                method: PaymentMethod::from("bolt11"),
                 unit: CurrencyUnit::Sat,
             }],
         };

@@ -86,7 +86,7 @@ impl Wallet {
             state: quote_res.state,
             expiry: quote_res.expiry,
             payment_preimage: quote_res.payment_preimage,
-            payment_method: PaymentMethod::Bolt11,
+            payment_method: PaymentMethod::from("bolt11"),
         };
 
         self.localstore.add_melt_quote(quote.clone()).await?;
@@ -195,23 +195,29 @@ impl Wallet {
             Some(premint_secrets.blinded_messages()),
         );
 
-        let melt_response = match quote_info.payment_method {
-            cdk_common::PaymentMethod::Bolt11 => {
+        let melt_response = match &quote_info.payment_method {
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
                 self.try_proof_operation_or_reclaim(
                     request.inputs().clone(),
                     self.client.post_melt(request),
                 )
                 .await?
             }
-            cdk_common::PaymentMethod::Bolt12 => {
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
                 self.try_proof_operation_or_reclaim(
                     request.inputs().clone(),
                     self.client.post_melt_bolt12(request),
                 )
                 .await?
             }
-            cdk_common::PaymentMethod::Custom(_) => {
-                return Err(Error::UnsupportedPaymentMethod);
+            cdk_common::PaymentMethod::Custom(_method) => {
+                // For now, custom methods will use the same post_melt endpoint
+                // This will be enhanced when custom HTTP client methods are added
+                self.try_proof_operation_or_reclaim(
+                    request.inputs().clone(),
+                    self.client.post_melt(request),
+                )
+                .await?
             }
         };
 
@@ -243,10 +249,11 @@ impl Wallet {
         };
 
         let payment_preimage = melt_response.payment_preimage.clone();
+        let state = melt_response.state;
 
         let melted = Melted::from_proofs(
-            melt_response.state,
-            melt_response.payment_preimage,
+            state,
+            payment_preimage.clone(),
             quote_info.amount,
             proofs.clone(),
             change_proofs.clone(),

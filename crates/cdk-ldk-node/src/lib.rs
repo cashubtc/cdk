@@ -467,15 +467,18 @@ impl MintPayment for CdkLdkNode {
     }
 
     /// Base Settings
-    async fn get_settings(&self) -> Result<serde_json::Value, Self::Err> {
-        let settings = Bolt11Settings {
-            mpp: false,
-            unit: CurrencyUnit::Msat,
-            invoice_description: true,
-            amountless: true,
-            bolt12: true,
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        let settings = SettingsResponse {
+            unit: CurrencyUnit::Msat.to_string(),
+            bolt11: Some(payment::Bolt11Settings {
+                mpp: false,
+                amountless: true,
+                invoice_description: true,
+            }),
+            bolt12: Some(payment::Bolt12Settings { amountless: true }),
+            custom: std::collections::HashMap::new(),
         };
-        Ok(serde_json::to_value(settings)?)
+        Ok(settings)
     }
 
     /// Create a new invoice
@@ -554,6 +557,9 @@ impl MintPayment for CdkLdkNode {
                     expiry: time.map(|a| a as u64),
                 })
             }
+            cdk_common::payment::IncomingPaymentOptions::Custom(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
         }
     }
 
@@ -566,6 +572,9 @@ impl MintPayment for CdkLdkNode {
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         match options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let bolt11 = bolt11_options.bolt11;
 
@@ -649,6 +658,9 @@ impl MintPayment for CdkLdkNode {
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         match options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
+                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            }
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let bolt11 = bolt11_options.bolt11;
 
