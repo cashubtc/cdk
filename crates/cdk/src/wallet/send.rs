@@ -954,14 +954,14 @@ mod tests {
         }
         let input_proofs = proofs(&input_amounts);
         // Total = 8*256 + 4*128 + 8*64 + 4*32 + 8*16 + 4*8 = 2048+512+512+128+128+32 = 3360
-        // Use send_amounts that exist in input
-        let send_amounts = amounts(&[256, 128, 64, 32, 16, 8]);
+        // Use send_amounts that DON'T all exist in input to force swap
+        let send_amounts = amounts(&[512, 256, 128, 64, 32, 8]);
         let keyset_fees = keyset_fees_with_ppk(200);
 
         let result = split_proofs_for_send(
             input_proofs,
             &send_amounts,
-            Amount::from(500),
+            Amount::from(1000),
             Amount::from(2),
             &keyset_fees,
             false,
@@ -969,7 +969,9 @@ mod tests {
         )
         .unwrap();
 
-        // 256, 128, 64, 32, 16, 8 exist in input
+        // 256, 128, 64, 32, 8 exist in input but 512 doesn't
+        // proofs_to_send = [256, 128, 64, 32, 8] = 488
+        // swap_output_needed = (1000 + 2) - 488 = 514
         let send_amounts_result: Vec<u64> = result
             .proofs_to_send
             .iter()
@@ -980,7 +982,7 @@ mod tests {
                 || send_amounts_result.contains(&128)
                 || send_amounts_result.contains(&32)
         );
-        // Most proofs need swapping
+        // Most proofs need swapping since we need to produce 514 from swap
         assert!(result.proofs_to_swap.len() > 10);
     }
 
@@ -1016,14 +1018,16 @@ mod tests {
 
     #[test]
     fn test_split_swap_barely_sufficient() {
-        let input_proofs = proofs(&[2048, 1024, 256, 128, 64, 32, 16, 8, 4, 2, 1]);
+        // Test where proofs_to_send doesn't fully cover amount+fee, requiring swap
+        let input_proofs = proofs(&[2048, 1024, 256, 128, 32, 16, 8, 4, 2, 1]);
+        // Note: removed 64 from input, so send_amounts won't fully match
         let send_amounts = amounts(&[2048, 1024, 256, 128, 64]);
         let keyset_fees = keyset_fees_with_ppk(200);
 
         let result = split_proofs_for_send(
             input_proofs,
             &send_amounts,
-            Amount::from(3500),
+            Amount::from(3520),
             Amount::from(1),
             &keyset_fees,
             false,
@@ -1031,8 +1035,19 @@ mod tests {
         )
         .unwrap();
 
-        // 32, 16, 8, 4, 2, 1 = 63 to swap, fee = 2, can produce 61
+        // proofs_to_send = [2048, 1024, 256, 128] = 3456 (no 64 in input)
+        // swap_output_needed = (3520 + 1) - 3456 = 65
+        // proofs_to_swap = [32, 16, 8, 4, 2, 1] = 63, fee = 2, can produce 61 < 65
+        // So swap needs more proofs moved from send
         assert!(!result.proofs_to_swap.is_empty());
+
+        let swap_total: u64 = result
+            .proofs_to_swap
+            .iter()
+            .map(|p| u64::from(p.amount))
+            .sum();
+        let swap_fee: u64 = result.swap_fee.into();
+        assert!(swap_total - swap_fee >= 65);
     }
 
     #[test]
