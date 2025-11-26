@@ -304,20 +304,35 @@ impl PreparedSend {
 
         // Swap proofs if necessary
         if !self.proofs_to_swap.is_empty() {
-            let swap_amount = total_send_amount - proofs_to_send.total_amount()?;
+            let swap_amount = total_send_amount
+                .checked_sub(proofs_to_send.total_amount()?)
+                .unwrap_or(Amount::ZERO);
             tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
-            if let Some(proofs) = self
-                .wallet
-                .swap(
-                    Some(swap_amount),
-                    SplitTarget::None,
-                    self.proofs_to_swap,
-                    self.options.conditions.clone(),
-                    false, // already included in swap_amount
-                )
-                .await?
-            {
-                proofs_to_send.extend(proofs);
+
+            if swap_amount > Amount::ZERO {
+                if let Some(proofs) = self
+                    .wallet
+                    .swap(
+                        Some(swap_amount),
+                        SplitTarget::None,
+                        self.proofs_to_swap,
+                        self.options.conditions.clone(),
+                        false, // already included in swap_amount
+                    )
+                    .await?
+                {
+                    proofs_to_send.extend(proofs);
+                }
+            } else {
+                // proofs_to_send already covers the full amount, unreserve the swap proofs
+                tracing::debug!(
+                    "No swap needed, unreserving {} proofs",
+                    self.proofs_to_swap.len()
+                );
+                self.wallet
+                    .localstore
+                    .update_proofs_state(self.proofs_to_swap.ys()?, State::Unspent)
+                    .await?;
             }
         }
         tracing::debug!(
