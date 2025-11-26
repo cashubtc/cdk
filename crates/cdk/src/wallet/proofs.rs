@@ -248,11 +248,6 @@ impl Wallet {
         fees_and_keyset_amounts: &KeysetFeeAndAmounts,
         include_fees: bool,
     ) -> Result<Proofs, Error> {
-        tracing::debug!(
-            "amount={}, proofs={:?}",
-            amount,
-            proofs.iter().map(|p| p.amount.into()).collect::<Vec<u64>>()
-        );
         if amount == Amount::ZERO {
             return Ok(vec![]);
         }
@@ -263,14 +258,18 @@ impl Wallet {
         proofs.sort_by(|a, b| a.cmp(b).reverse());
 
         // Track selected proofs and remaining amounts (include all inactive proofs first)
-        let mut selected_proofs: HashSet<Proof> = proofs
+        let inactive_proofs: Proofs = proofs
             .iter()
             .filter(|p| !p.is_active(active_keyset_ids))
             .cloned()
             .collect();
+        let mut selected_proofs: HashSet<Proof> = inactive_proofs.iter().cloned().collect();
         if selected_proofs.total_amount()? >= amount {
             tracing::debug!("All inactive proofs are sufficient");
-            return Ok(selected_proofs.into_iter().collect());
+            // Still need to filter to minimum set, not return all of them
+            let mut inactive_selected = selected_proofs.into_iter().collect::<Vec<_>>();
+            inactive_selected.sort_by(|a, b| a.cmp(b).reverse());
+            return Self::select_least_amount_over(inactive_selected, amount);
         }
         let mut remaining_amounts: Vec<Amount> = Vec::new();
 
@@ -297,9 +296,15 @@ impl Wallet {
             }
         };
 
-        // Select proofs with the optimal amounts
-        for (_, fee_and_amounts) in fees_and_keyset_amounts.iter() {
-            // Split the amount into optimal amounts
+        // Get fee_and_amounts for the first active keyset (use for optimal amount splitting)
+        // We only need to split once - iterating over all keysets would cause duplicate selections
+        let fee_and_amounts = active_keyset_ids
+            .iter()
+            .find_map(|id| fees_and_keyset_amounts.get(id))
+            .or_else(|| fees_and_keyset_amounts.values().next());
+
+        // Select proofs with the optimal amounts (only split once, not per keyset)
+        if let Some(fee_and_amounts) = fee_and_amounts {
             for optimal_amount in amount.split(fee_and_amounts) {
                 if !select_proof(&proofs, optimal_amount, true) {
                     // Add the remaining amount to the remaining amounts because proof with the optimal amount was not found
@@ -310,17 +315,22 @@ impl Wallet {
 
         // If all the optimal amounts are selected, return the selected proofs
         if remaining_amounts.is_empty() {
-            tracing::debug!("All optimal amounts are selected");
+            let result: Proofs = selected_proofs.into_iter().collect();
+            tracing::debug!(
+                "All optimal amounts are selected, returning {} proofs with total {}",
+                result.len(),
+                result.total_amount().unwrap_or_default()
+            );
             if include_fees {
                 return Self::include_fees(
                     amount,
                     proofs,
-                    selected_proofs.into_iter().collect(),
+                    result,
                     active_keyset_ids,
                     fees_and_keyset_amounts,
                 );
             } else {
-                return Ok(selected_proofs.into_iter().collect());
+                return Ok(result);
             }
         }
 
@@ -1867,5 +1877,216 @@ mod tests {
             total,
             fee
         );
+    }
+
+    // ========================================================================
+    // Inactive Keyset Tests
+    // ========================================================================
+
+    fn inactive_id() -> Id {
+        Id::from_bytes(&[0x00, 1, 1, 1, 1, 1, 1, 1]).unwrap()
+    }
+
+    fn proof_with_keyset(amount: u64, keyset_id: Id) -> Proof {
+        Proof::new(
+            Amount::from(amount),
+            keyset_id,
+            Secret::generate(),
+            PublicKey::from_hex(
+                "03deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn test_select_proofs_inactive_keyset_exact_amount() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        let inactive = inactive_id();
+        let active = id();
+
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active,
+            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+
+        let proofs = vec![
+            proof_with_keyset(1, inactive),
+            proof_with_keyset(1, inactive),
+            proof_with_keyset(2, inactive),
+            proof_with_keyset(4, inactive),
+            proof_with_keyset(8, inactive),
+            proof_with_keyset(16, inactive),
+        ];
+
+        let selected_proofs = Wallet::select_proofs(
+            4.into(),
+            proofs,
+            &vec![active],
+            &keyset_fee_and_amounts,
+            false,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        assert_eq!(
+            total,
+            4.into(),
+            "Should select exactly 4 sats worth of proofs from inactive keyset, got {}",
+            total
+        );
+    }
+
+    #[test]
+    fn test_select_proofs_inactive_keyset_minimum_over() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        let inactive = inactive_id();
+        let active = id();
+
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active,
+            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+
+        let proofs = vec![
+            proof_with_keyset(8, inactive),
+            proof_with_keyset(16, inactive),
+            proof_with_keyset(32, inactive),
+        ];
+
+        let selected_proofs = Wallet::select_proofs(
+            5.into(),
+            proofs,
+            &vec![active],
+            &keyset_fee_and_amounts,
+            false,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        assert_eq!(
+            total,
+            8.into(),
+            "Should select minimum amount (8) that covers 5 sats, got {}",
+            total
+        );
+        assert_eq!(selected_proofs.len(), 1, "Should select only 1 proof");
+    }
+
+    #[test]
+    fn test_select_proofs_active_keyset_exact_4_sats_with_fee() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        let active = id();
+
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active,
+            (100, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+
+        let proofs = vec![
+            proof(1),
+            proof(1),
+            proof(1),
+            proof(1),
+            proof(2),
+            proof(2),
+            proof(2),
+            proof(2),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(8),
+            proof(8),
+            proof(8),
+            proof(16),
+            proof(16),
+            proof(16),
+        ];
+
+        let selected_proofs = Wallet::select_proofs(
+            4.into(),
+            proofs,
+            &vec![active],
+            &keyset_fee_and_amounts,
+            false,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        assert_eq!(
+            total,
+            4.into(),
+            "Should select exactly 4 sats worth of proofs, got {}",
+            total
+        );
+        assert_eq!(
+            selected_proofs.len(),
+            1,
+            "Should select only 1 proof (the 4-sat one)"
+        );
+    }
+
+    #[test]
+    fn test_select_proofs_multiple_keysets_does_not_double_select() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        let active = id();
+        let other_keyset = inactive_id();
+
+        let mut keyset_fee_and_amounts = HashMap::new();
+        keyset_fee_and_amounts.insert(
+            active,
+            (100, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+        keyset_fee_and_amounts.insert(
+            other_keyset,
+            (100, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+
+        let proofs = vec![
+            proof(1),
+            proof(1),
+            proof(1),
+            proof(1),
+            proof(2),
+            proof(2),
+            proof(2),
+            proof(2),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(8),
+            proof(8),
+            proof(8),
+            proof(16),
+            proof(16),
+            proof(16),
+        ];
+
+        let selected_proofs = Wallet::select_proofs(
+            4.into(),
+            proofs,
+            &vec![active],
+            &keyset_fee_and_amounts,
+            false,
+        )
+        .unwrap();
+
+        let total = selected_proofs.total_amount().unwrap();
+        assert_eq!(
+            total,
+            4.into(),
+            "Should select exactly 4 sats worth even with multiple keysets in fee map, got {}",
+            total
+        );
+        assert_eq!(selected_proofs.len(), 1, "Should select only 1 proof");
     }
 }
