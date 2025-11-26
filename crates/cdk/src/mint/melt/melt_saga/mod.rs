@@ -290,10 +290,12 @@ impl MeltSaga<Initial> {
 
         if input_amount < required_total {
             tracing::info!(
-                "Melt request unbalanced: inputs {}, amount {}, fee {}",
+                "Melt request unbalanced: inputs {}, amount {}, fee_reserve {}, input_fee {}, required {}",
                 input_amount,
                 quote.amount,
-                fee
+                quote.fee_reserve,
+                fee,
+                required_total
             );
             tx.rollback().await?;
             return Err(Error::TransactionUnbalanced(

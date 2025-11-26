@@ -9,9 +9,15 @@ use cdk::wallet::{ReceiveOptions, SendKind, SendOptions, Wallet};
 use cdk_integration_tests::init_regtest::get_temp_dir;
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_swap() {
+    // Set up logging
+    let default_filter = "debug";
+    let sqlx_filter = "sqlx=warn,hyper_util=warn,reqwest=warn,rustls=warn";
+    let env_filter = EnvFilter::new(format!("{},{}", default_filter, sqlx_filter));
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
     let wallet = Wallet::new(
         &get_mint_url_from_env(),
@@ -38,6 +44,8 @@ async fn test_swap() {
         .expect("payment");
 
     println!("{:?}", proofs);
+
+    println!("{:?}", wallet.get_mint_keysets().await.unwrap());
 
     let send = wallet
         .prepare_send(

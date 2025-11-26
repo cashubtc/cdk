@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use cdk_common::amount::SplitTarget;
 use cdk_common::wallet::{Transaction, TransactionDirection};
 use cdk_common::PaymentMethod;
 use lightning_invoice::Bolt11Invoice;
@@ -390,31 +389,14 @@ impl Wallet {
             .map(|k| k.id)
             .collect();
         let keyset_fees = self.get_keyset_fees_and_amounts().await?;
-        let (mut input_proofs, mut exchange) = Wallet::select_exact_proofs(
+
+        let input_proofs = Wallet::select_proofs(
             inputs_needed_amount,
             available_proofs,
             &active_keyset_ids,
             &keyset_fees,
             true,
         )?;
-
-        if let Some((proof, exact_amount)) = exchange.take() {
-            let new_proofs = self
-                .swap(
-                    Some(exact_amount),
-                    SplitTarget::None,
-                    vec![proof],
-                    None,
-                    false,
-                )
-                .await?
-                .ok_or_else(|| {
-                    tracing::error!("Received empty proofs");
-                    Error::Internal
-                })?;
-
-            input_proofs.extend_from_slice(&new_proofs);
-        }
 
         self.melt_proofs_with_metadata(quote_id, input_proofs, metadata)
             .await

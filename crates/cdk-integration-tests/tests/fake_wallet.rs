@@ -15,6 +15,7 @@
 //! - Duplicate proof detection
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use bip39::Mnemonic;
 use cashu::Amount;
@@ -882,7 +883,7 @@ async fn test_fake_mint_multiple_unit_melt() {
 
     let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
-    let proofs = proof_streams
+    let mut proofs = proof_streams
         .next()
         .await
         .expect("payment")
@@ -905,11 +906,14 @@ async fn test_fake_mint_multiple_unit_melt() {
     let mut proof_streams =
         wallet_usd.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
 
-    let usd_proofs = proof_streams
+    let mut usd_proofs = proof_streams
         .next()
         .await
         .expect("payment")
         .expect("no error");
+
+    usd_proofs.reverse();
+    proofs.reverse();
 
     {
         let inputs: Proofs = vec![
@@ -1411,14 +1415,14 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
 
     // Mint 100 sats
     let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
-    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
-    let initial_proofs = proof_streams
-        .next()
-        .await
-        .expect("payment")
-        .expect("no error");
-
-    let initial_ys: Vec<_> = initial_proofs.iter().map(|p| p.y().unwrap()).collect();
+    let _roof_streams = wallet
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            Duration::from_secs(1000),
+        )
+        .await;
 
     assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
 
@@ -1442,16 +1446,6 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
         wallet.total_balance().await.unwrap(),
         Amount::from(100),
         "Balance should be recovered"
-    );
-
-    // Verify the proofs were swapped (different Ys)
-    let recovered_proofs = wallet.get_unspent_proofs().await.unwrap();
-    let recovered_ys: Vec<_> = recovered_proofs.iter().map(|p| p.y().unwrap()).collect();
-
-    // The Ys should be different (swapped to new proofs)
-    assert!(
-        initial_ys.iter().any(|y| !recovered_ys.contains(y)),
-        "Proofs should have been swapped to new ones"
     );
 
     // Verify we can still spend the recovered proofs
