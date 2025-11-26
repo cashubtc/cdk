@@ -1242,14 +1242,70 @@ mod tests {
 
         let proofs = vec![
             proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(4096),
+            proof(512),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(1024),
+            proof(1024),
             proof(1024),
             proof(512),
+            proof(512),
+            proof(512),
+            proof(512),
+            proof(512),
+            proof(512),
+            proof(256),
+            proof(256),
+            proof(256),
+            proof(256),
+            proof(256),
             proof(256),
             proof(128),
+            proof(128),
+            proof(128),
+            proof(128),
+            proof(128),
+            proof(128),
+            proof(128),
+            proof(8),
+            proof(8),
+            proof(8),
+            proof(8),
+            proof(8),
+            proof(8),
             proof(8),
             proof(4),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(4),
+            proof(2),
+            proof(2),
+            proof(2),
+            proof(2),
+            proof(2),
             proof(2),
             proof(1),
+            proof(1),
+            proof(1),
+            proof(1),
+            proof(1),
+            proof(4096),
         ];
         let amount: Amount = 5000.into();
 
@@ -1271,12 +1327,15 @@ mod tests {
                 .collect(),
         )
         .unwrap();
+
         let net = total - fee;
 
         assert!(
-            net >= amount,
+            net == amount,
             "Selected proofs should cover amount after fees"
         );
+        assert!(fee == Amount::from(selected_proofs.len() as u64));
+        assert!(fee > Amount::ZERO);
     }
 
     #[test]
