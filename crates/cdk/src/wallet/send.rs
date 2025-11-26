@@ -82,8 +82,34 @@ impl Wallet {
             .map(|k| k.id)
             .collect();
 
+        // When including fees, we need to account for both:
+        // 1. Input fees (to spend the selected proofs)
+        // 2. Output fees (send_fee - fee to redeem the token we create)
+        //
+        // If proofs don't exactly match the desired denominations, a swap is needed.
+        // The swap consumes the input fee, and the outputs must cover amount + send_fee.
+        // So we select proofs for (amount + send_fee) to ensure the swap can succeed.
+        let active_keyset_id = self.get_active_keyset().await?.id;
+        let fee_and_amounts = self
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await?;
+
+        let selection_amount = if opts.include_fee {
+            let send_split = amount.split_with_fee(&fee_and_amounts)?;
+            let send_fee = self
+                .get_proofs_fee_by_count(
+                    vec![(active_keyset_id, send_split.len() as u64)]
+                        .into_iter()
+                        .collect(),
+                )
+                .await?;
+            amount + send_fee
+        } else {
+            amount
+        };
+
         let selected_proofs = Wallet::select_proofs(
-            amount,
+            selection_amount,
             available_proofs,
             &active_keyset_ids,
             &keyset_fees,
@@ -181,6 +207,53 @@ impl Wallet {
                     remaining_send_amounts.remove(idx);
                 } else {
                     proofs_to_swap.push(proof);
+                }
+            }
+
+            // Ensure proofs_to_swap can cover the swap's input fee plus the needed output.
+            // The swap needs to produce: (amount + send_fee) - proofs_to_send.total()
+            // And it must pay input fees on proofs_to_swap.
+            // If proofs_to_swap is insufficient, move proofs from proofs_to_send to proofs_to_swap.
+            if !proofs_to_swap.is_empty() {
+                let swap_output_needed = (amount + send_fee)
+                    .checked_sub(proofs_to_send.total_amount()?)
+                    .unwrap_or(Amount::ZERO);
+
+                loop {
+                    let swap_input_fee = self.get_proofs_fee(&proofs_to_swap).await?;
+                    let swap_total = proofs_to_swap.total_amount()?;
+
+                    // The swap can produce: swap_total - swap_input_fee
+                    let swap_can_produce = swap_total.checked_sub(swap_input_fee);
+
+                    match swap_can_produce {
+                        Some(can_produce) if can_produce >= swap_output_needed => {
+                            // Swap has enough, we're done
+                            break;
+                        }
+                        _ => {
+                            // Swap doesn't have enough. Move a proof from send to swap.
+                            if proofs_to_send.is_empty() {
+                                // No more proofs to move, this shouldn't happen if select_proofs worked correctly
+                                tracing::warn!(
+                                    "Cannot satisfy swap fee requirements: swap_total={}, swap_input_fee={}, needed={}",
+                                    proofs_to_swap.total_amount()?,
+                                    self.get_proofs_fee(&proofs_to_swap).await?,
+                                    swap_output_needed
+                                );
+                                return Err(Error::InsufficientFunds);
+                            }
+
+                            // Move the smallest proof from send to swap to minimize disruption
+                            proofs_to_send.sort_by(|a, b| a.amount.cmp(&b.amount));
+                            let proof_to_move = proofs_to_send.remove(0);
+                            tracing::debug!(
+                                "Moving proof {} from send to swap to cover swap fees",
+                                proof_to_move.amount
+                            );
+                            proofs_to_swap.push(proof_to_move);
+                        }
+                    }
                 }
             }
         }

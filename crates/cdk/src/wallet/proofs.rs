@@ -736,8 +736,9 @@ mod tests {
 
     #[test]
     fn test_select_proofs_include_fees_accounts_for_additional_proof_fees() {
-        use crate::fees::calculate_fee;
         use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
 
         let active_id = id();
         let mut keyset_fee_and_amounts = HashMap::new();
@@ -792,8 +793,9 @@ mod tests {
 
     #[test]
     fn test_select_proofs_include_fees_iterates_until_stable() {
-        use crate::fees::calculate_fee;
         use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
 
         let active_id = id();
         let mut keyset_fee_and_amounts = HashMap::new();
