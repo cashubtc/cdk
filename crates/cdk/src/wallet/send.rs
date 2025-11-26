@@ -309,30 +309,18 @@ impl PreparedSend {
                 .unwrap_or(Amount::ZERO);
             tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
 
-            if swap_amount > Amount::ZERO {
-                if let Some(proofs) = self
-                    .wallet
-                    .swap(
-                        Some(swap_amount),
-                        SplitTarget::None,
-                        self.proofs_to_swap,
-                        self.options.conditions.clone(),
-                        false, // already included in swap_amount
-                    )
-                    .await?
-                {
-                    proofs_to_send.extend(proofs);
-                }
-            } else {
-                // proofs_to_send already covers the full amount, unreserve the swap proofs
-                tracing::debug!(
-                    "No swap needed, unreserving {} proofs",
-                    self.proofs_to_swap.len()
-                );
-                self.wallet
-                    .localstore
-                    .update_proofs_state(self.proofs_to_swap.ys()?, State::Unspent)
-                    .await?;
+            if let Some(proofs) = self
+                .wallet
+                .swap(
+                    Some(swap_amount),
+                    SplitTarget::None,
+                    self.proofs_to_swap,
+                    self.options.conditions.clone(),
+                    false, // already included in swap_amount
+                )
+                .await?
+            {
+                proofs_to_send.extend(proofs);
             }
         }
         tracing::debug!(
@@ -553,31 +541,40 @@ pub fn split_proofs_for_send(
             }
         }
 
-        // Ensure proofs_to_swap can cover the swap's input fee plus the needed output
+        // Check if swap is actually needed
         if !proofs_to_swap.is_empty() {
             let swap_output_needed = (amount + send_fee)
                 .checked_sub(proofs_to_send.total_amount()?)
                 .unwrap_or(Amount::ZERO);
 
-            loop {
-                let swap_input_fee = calculate_fee(&proofs_to_swap.count_by_keyset(), keyset_fees)?;
-                let swap_total = proofs_to_swap.total_amount()?;
+            if swap_output_needed == Amount::ZERO {
+                // proofs_to_send already covers the full amount, no swap needed
+                // Clear proofs_to_swap - these are just leftover proofs that don't match
+                // any send denomination but aren't needed for the send
+                proofs_to_swap.clear();
+            } else {
+                // Ensure proofs_to_swap can cover the swap's input fee plus the needed output
+                loop {
+                    let swap_input_fee =
+                        calculate_fee(&proofs_to_swap.count_by_keyset(), keyset_fees)?;
+                    let swap_total = proofs_to_swap.total_amount()?;
 
-                let swap_can_produce = swap_total.checked_sub(swap_input_fee);
+                    let swap_can_produce = swap_total.checked_sub(swap_input_fee);
 
-                match swap_can_produce {
-                    Some(can_produce) if can_produce >= swap_output_needed => {
-                        break;
-                    }
-                    _ => {
-                        if proofs_to_send.is_empty() {
-                            return Err(Error::InsufficientFunds);
+                    match swap_can_produce {
+                        Some(can_produce) if can_produce >= swap_output_needed => {
+                            break;
                         }
+                        _ => {
+                            if proofs_to_send.is_empty() {
+                                return Err(Error::InsufficientFunds);
+                            }
 
-                        // Move the smallest proof from send to swap
-                        proofs_to_send.sort_by(|a, b| a.amount.cmp(&b.amount));
-                        let proof_to_move = proofs_to_send.remove(0);
-                        proofs_to_swap.push(proof_to_move);
+                            // Move the smallest proof from send to swap
+                            proofs_to_send.sort_by(|a, b| a.amount.cmp(&b.amount));
+                            let proof_to_move = proofs_to_send.remove(0);
+                            proofs_to_swap.push(proof_to_move);
+                        }
                     }
                 }
             }
