@@ -191,86 +191,36 @@ impl Wallet {
             exact_proofs &= proofs.len() <= max_proofs;
         }
 
-        // Split proofs to swap and send
-        let mut proofs_to_swap = Proofs::new();
-        let mut proofs_to_send = Proofs::new();
-        if force_swap {
-            proofs_to_swap = proofs;
-        } else if exact_proofs || opts.send_kind.is_offline() || opts.send_kind.has_tolerance() {
-            proofs_to_send = proofs;
-        } else {
-            let mut remaining_send_amounts = send_amounts.clone();
-            for proof in proofs {
-                if let Some(idx) = remaining_send_amounts
-                    .iter()
-                    .position(|a| a == &proof.amount)
-                {
-                    proofs_to_send.push(proof);
-                    remaining_send_amounts.remove(idx);
-                } else {
-                    proofs_to_swap.push(proof);
-                }
-            }
+        // Determine if we should send all proofs directly
+        let is_exact_or_offline =
+            exact_proofs || opts.send_kind.is_offline() || opts.send_kind.has_tolerance();
 
-            // Ensure proofs_to_swap can cover the swap's input fee plus the needed output.
-            // The swap needs to produce: (amount + send_fee) - proofs_to_send.total()
-            // And it must pay input fees on proofs_to_swap.
-            // If proofs_to_swap is insufficient, move proofs from proofs_to_send to proofs_to_swap.
-            if !proofs_to_swap.is_empty() {
-                let swap_output_needed = (amount + send_fee)
-                    .checked_sub(proofs_to_send.total_amount()?)
-                    .unwrap_or(Amount::ZERO);
+        // Get keyset fees for the split function
+        let keyset_fees_and_amounts = self.get_keyset_fees_and_amounts().await?;
+        let keyset_fees: HashMap<Id, u64> = keyset_fees_and_amounts
+            .iter()
+            .map(|(key, values)| (*key, values.fee()))
+            .collect();
 
-                loop {
-                    let swap_input_fee = self.get_proofs_fee(&proofs_to_swap).await?;
-                    let swap_total = proofs_to_swap.total_amount()?;
-
-                    // The swap can produce: swap_total - swap_input_fee
-                    let swap_can_produce = swap_total.checked_sub(swap_input_fee);
-
-                    match swap_can_produce {
-                        Some(can_produce) if can_produce >= swap_output_needed => {
-                            // Swap has enough, we're done
-                            break;
-                        }
-                        _ => {
-                            // Swap doesn't have enough. Move a proof from send to swap.
-                            if proofs_to_send.is_empty() {
-                                // No more proofs to move, this shouldn't happen if select_proofs worked correctly
-                                tracing::warn!(
-                                    "Cannot satisfy swap fee requirements: swap_total={}, swap_input_fee={}, needed={}",
-                                    proofs_to_swap.total_amount()?,
-                                    self.get_proofs_fee(&proofs_to_swap).await?,
-                                    swap_output_needed
-                                );
-                                return Err(Error::InsufficientFunds);
-                            }
-
-                            // Move the smallest proof from send to swap to minimize disruption
-                            proofs_to_send.sort_by(|a, b| a.amount.cmp(&b.amount));
-                            let proof_to_move = proofs_to_send.remove(0);
-                            tracing::debug!(
-                                "Moving proof {} from send to swap to cover swap fees",
-                                proof_to_move.amount
-                            );
-                            proofs_to_swap.push(proof_to_move);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Calculate swap fee
-        let swap_fee = self.get_proofs_fee(&proofs_to_swap).await?;
+        // Split proofs between send and swap
+        let split_result = split_proofs_for_send(
+            proofs,
+            &send_amounts,
+            amount,
+            send_fee,
+            &keyset_fees,
+            force_swap,
+            is_exact_or_offline,
+        )?;
 
         // Return prepared send
         Ok(PreparedSend {
             wallet: self.clone(),
             amount,
             options: opts,
-            proofs_to_swap,
-            swap_fee,
-            proofs_to_send,
+            proofs_to_swap: split_result.proofs_to_swap,
+            swap_fee: split_result.swap_fee,
+            proofs_to_send: split_result.proofs_to_send,
             send_fee,
         })
     }
