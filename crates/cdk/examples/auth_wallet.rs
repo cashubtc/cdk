@@ -105,11 +105,16 @@ async fn get_access_token(mint_info: &MintInfo) -> String {
         .await
         .expect("Failed to get OIDC config")
         .token_endpoint;
+    let client_id = oidc_client
+        .get_oidc_config()
+        .await
+        .expect("Failed to get OIDC config")
+        .token_endpoint;
 
     // Create the request parameters
     let params = [
         ("grant_type", "password"),
-        ("client_id", "cashu-client"),
+        ("client_id", &client_id),
         ("username", TEST_USERNAME),
         ("password", TEST_PASSWORD),
     ];
