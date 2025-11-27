@@ -138,7 +138,7 @@ impl Wallet {
         proofs: Proofs,
         metadata: HashMap<String, String>,
     ) -> Result<Melted, Error> {
-        let quote_info = self
+        let mut quote_info = self
             .localstore
             .get_melt_quote(quote_id)
             .await?
@@ -273,7 +273,11 @@ impl Wallet {
             None => Vec::new(),
         };
 
-        self.localstore.remove_melt_quote(&quote_info.id).await?;
+        quote_info.state = cdk_common::MeltQuoteState::Paid;
+
+        let payment_request = quote_info.request.clone();
+
+        self.localstore.add_melt_quote(quote_info).await?;
 
         let deleted_ys = proofs.ys()?;
         self.localstore
@@ -293,7 +297,7 @@ impl Wallet {
                 memo: None,
                 metadata,
                 quote_id: Some(quote_id.to_string()),
-                payment_request: Some(quote_info.request),
+                payment_request: Some(payment_request),
                 payment_proof: payment_preimage,
             })
             .await?;
