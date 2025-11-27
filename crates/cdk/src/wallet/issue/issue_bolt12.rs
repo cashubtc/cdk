@@ -114,17 +114,24 @@ impl Wallet {
             return Err(Error::UnpaidQuote);
         }
 
+        let split_target = match amount_split_target {
+            SplitTarget::None => {
+                self.determine_split_target_values(amount, &fee_and_amounts)
+                    .await?
+            }
+            s => s,
+        };
+
         let premint_secrets = match &spending_conditions {
             Some(spending_conditions) => PreMintSecrets::with_conditions(
                 active_keyset_id,
                 amount,
-                &amount_split_target,
+                &split_target,
                 spending_conditions,
                 &fee_and_amounts,
             )?,
             None => {
-                // Calculate how many secrets we'll need without generating them
-                let amount_split = amount.split_targeted(&amount_split_target, &fee_and_amounts)?;
+                let amount_split = amount.split_targeted(&split_target, &fee_and_amounts)?;
                 let num_secrets = amount_split.len() as u32;
 
                 tracing::debug!(
@@ -146,7 +153,7 @@ impl Wallet {
                     count,
                     &self.seed,
                     amount,
-                    &amount_split_target,
+                    &split_target,
                     &fee_and_amounts,
                 )?
             }

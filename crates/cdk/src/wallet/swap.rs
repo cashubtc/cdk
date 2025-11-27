@@ -93,16 +93,6 @@ impl Wallet {
                     }
                 };
 
-                let send_amount = proofs_to_send.total_amount()?;
-
-                if send_amount.ne(&(amount + pre_swap.fee)) {
-                    tracing::warn!(
-                        "Send amount proofs is {:?} expected {:?}",
-                        send_amount,
-                        amount
-                    );
-                }
-
                 let send_proofs_info = proofs_to_send
                     .clone()
                     .into_iter()
