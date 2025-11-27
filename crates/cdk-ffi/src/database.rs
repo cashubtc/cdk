@@ -8,6 +8,7 @@ use cdk_common::database::{
     DbTransactionFinalizer, DynWalletDatabaseTransaction, WalletDatabase as CdkWalletDatabase,
     WalletDatabaseTransaction as CdkWalletDatabaseTransaction,
 };
+use cdk_common::task::spawn;
 use cdk_sql_common::pool::DatabasePool;
 use cdk_sql_common::SQLWalletDatabase;
 use tokio::sync::Mutex;
@@ -820,7 +821,7 @@ impl Drop for WalletDatabaseTransactionBridge {
     fn drop(&mut self) {
         if !self.is_finalized {
             let tx = self.ffi_tx.clone();
-            tokio::spawn(async move {
+            spawn(async move {
                 let _ = tx.rollback().await;
             });
         }
@@ -852,7 +853,7 @@ pub(crate) struct FfiWalletTransaction {
 impl Drop for FfiWalletTransaction {
     fn drop(&mut self) {
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        spawn(async move {
             if let Some(s) = tx.lock().await.take() {
                 let _ = s.rollback().await;
             }
