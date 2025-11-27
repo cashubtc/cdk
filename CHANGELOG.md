@@ -5,6 +5,21 @@
 <!-- and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). -->
 
 
+## [Unreleased]
+
+### Added
+- cdk-ffi: Add multimint melt with mint functionality ([thesimplekid]).
+- cdk-ffi: Add get wallets functionality ([thesimplekid]).
+
+### Changed
+- cdk: Remove swap before melt ([thesimplekid]).
+
+### Fixed
+- cdk-ffi: Check melt quote in FFI ([thesimplekid]).
+- cdk: Use the client id from mint configuration ([lescuer97]).
+- cdk: Fix proof selection with fees to ensure net amount meets target ([thesimplekid]).
+- cdk: Do not remove melt quote ([thesimplekid]).
+
 ## [0.14.1](https://github.com/cashubtc/cdk/releases/tag/v0.14.1)
 
 ### Added
