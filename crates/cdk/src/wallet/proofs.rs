@@ -811,7 +811,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -862,7 +863,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1007,7 +1009,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert_eq!(selected_proofs.len(), 1);
@@ -1063,7 +1066,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(net >= amount, "5120 - 1 = 5119 >= 5000");
@@ -1105,7 +1109,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1153,7 +1158,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1193,7 +1199,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1236,7 +1243,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1349,7 +1357,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
 
         let net = total - fee;
 
@@ -1396,7 +1405,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(net >= amount, "Net amount {} should be >= {}", net, amount);
@@ -1431,7 +1441,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert_eq!(selected_proofs.len(), 2);
@@ -1467,7 +1478,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1567,7 +1579,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(net >= amount, "Net {} should be >= {}", net, amount);
@@ -1632,7 +1645,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1681,7 +1695,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1724,7 +1739,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1767,7 +1783,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1821,7 +1838,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1898,7 +1916,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
@@ -1948,7 +1967,8 @@ mod tests {
                 .map(|(k, v)| (*k, v.fee()))
                 .collect(),
         )
-        .unwrap();
+        .unwrap()
+        .total;
         let net = total - fee;
 
         assert!(
