@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS completed_operations (
     total_redeemed BIGINT NOT NULL,
     fee_collected BIGINT NOT NULL,
     payment_amount BIGINT,
-    payment_fee BIGINT
+    payment_fee BIGINT,
+    payment_method TEXT
 );
 
 -- Create index for efficient querying by operation kind and time

@@ -174,6 +174,7 @@ impl<'a> SwapSaga<'a, Initial> {
             total_redeemed,
             fee_breakdown.total,
             None, // complete_at
+            None, // payment_method (not applicable for swap)
         );
 
         // Add input proofs to DB

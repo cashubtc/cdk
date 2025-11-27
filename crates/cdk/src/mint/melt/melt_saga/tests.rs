@@ -12,7 +12,7 @@ use std::str::FromStr;
 
 use cdk_common::mint::{MeltSagaState, OperationKind, Saga};
 use cdk_common::nuts::MeltQuoteState;
-use cdk_common::{Amount, ProofsMethods, State};
+use cdk_common::{Amount, PaymentMethod, ProofsMethods, State};
 
 use crate::mint::melt::melt_saga::MeltSaga;
 use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
@@ -52,7 +52,10 @@ async fn test_saga_state_persistence_after_setup() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
 
     let operation_id = *setup_saga.state_data.operation.id();
 
@@ -150,7 +153,10 @@ async fn test_saga_deletion_on_success() {
     );
 
     // Setup
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
     let operation_id = *setup_saga.state_data.operation.id();
 
     // Verify saga exists
@@ -224,7 +230,7 @@ async fn test_crash_recovery_setup_complete() {
         mint.pubsub_manager(),
     );
     let setup_saga = saga
-        .setup_melt(&melt_request, verification)
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
         .await
         .expect("Setup should succeed");
 
@@ -294,7 +300,10 @@ async fn test_crash_recovery_multiple_sagas() {
             mint.localstore(),
             mint.pubsub_manager(),
         );
-        let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+        let setup_saga = saga
+            .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+            .await
+            .unwrap();
 
         operation_ids.push(*setup_saga.state_data.operation.id());
         proof_ys_list.push(input_ys);
@@ -397,7 +406,10 @@ async fn test_crash_recovery_orphaned_saga() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
 
     let operation_id = *setup_saga.state_data.operation.id();
     let input_ys = proofs.ys().unwrap();
@@ -518,7 +530,10 @@ async fn test_crash_recovery_internal_settlement() {
         mint.pubsub_manager(),
     );
 
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
     let operation_id = *setup_saga.state_data.operation.id();
 
     // STEP 5: Attempt internal settlement - this will commit and update saga state
@@ -636,7 +651,10 @@ async fn test_startup_recovery_integration() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
 
     let operation_id = *setup_saga.state_data.operation.id();
     let input_ys = proofs.ys().unwrap();
@@ -673,7 +691,7 @@ async fn test_startup_recovery_integration() {
         mint.pubsub_manager(),
     );
     let _new_setup = new_saga
-        .setup_melt(&new_request, new_verification)
+        .setup_melt(&new_request, new_verification, PaymentMethod::Bolt11)
         .await
         .unwrap();
 
@@ -714,7 +732,10 @@ async fn test_compensation_removes_proofs() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
 
     let operation_id = *setup_saga.state_data.operation.id();
 
@@ -746,7 +767,7 @@ async fn test_compensation_removes_proofs() {
         mint.pubsub_manager(),
     );
     let new_setup = new_saga
-        .setup_melt(&new_request, new_verification)
+        .setup_melt(&new_request, new_verification, PaymentMethod::Bolt11)
         .await
         .expect("Should be able to reuse proofs after compensation");
 
@@ -794,7 +815,10 @@ async fn test_compensation_removes_change_outputs() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
 
     let operation_id = *setup_saga.state_data.operation.id();
 
@@ -872,7 +896,10 @@ async fn test_compensation_resets_quote_state() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
 
     let operation_id = *setup_saga.state_data.operation.id();
 
@@ -925,7 +952,7 @@ async fn test_compensation_resets_quote_state() {
         mint.pubsub_manager(),
     );
     let _new_setup = new_saga
-        .setup_melt(&new_request, new_verification)
+        .setup_melt(&new_request, new_verification, PaymentMethod::Bolt11)
         .await
         .expect("Should be able to reuse quote after compensation");
 
@@ -953,7 +980,10 @@ async fn test_compensation_idempotent() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
 
     let operation_id = *setup_saga.state_data.operation.id();
 
@@ -1044,7 +1074,10 @@ async fn test_saga_content_validation() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
 
     let operation_id = *setup_saga.state_data.operation.id();
 
@@ -1154,7 +1187,10 @@ async fn test_saga_state_updates_timestamp() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
 
     let operation_id = *setup_saga.state_data.operation.id();
 
@@ -1218,7 +1254,7 @@ async fn test_get_incomplete_sagas_filters_by_kind() {
         mint.pubsub_manager(),
     );
     let melt_setup = melt_saga
-        .setup_melt(&melt_request, melt_verification)
+        .setup_melt(&melt_request, melt_verification, PaymentMethod::Bolt11)
         .await
         .unwrap();
 
@@ -1343,7 +1379,10 @@ async fn test_concurrent_melt_operations() {
                 mint_clone.localstore(),
                 mint_clone.pubsub_manager(),
             );
-            let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+            let setup_saga = saga
+                .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+                .await
+                .unwrap();
             let operation_id = *setup_saga.state_data.operation.id();
             // Drop setup_saga before returning to avoid lifetime issues
             drop(setup_saga);
@@ -1403,7 +1442,7 @@ async fn test_concurrent_recovery_and_operations() {
         mint.pubsub_manager(),
     );
     let setup_saga1 = saga1
-        .setup_melt(&melt_request1, verification1)
+        .setup_melt(&melt_request1, verification1, PaymentMethod::Bolt11)
         .await
         .unwrap();
     let incomplete_operation_id = *setup_saga1.state_data.operation.id();
@@ -1441,7 +1480,7 @@ async fn test_concurrent_recovery_and_operations() {
             mint_for_new_op.pubsub_manager(),
         );
         let setup_saga2 = saga2
-            .setup_melt(&melt_request2, verification2)
+            .setup_melt(&melt_request2, verification2, PaymentMethod::Bolt11)
             .await
             .unwrap();
         *setup_saga2.state_data.operation.id()
@@ -1484,7 +1523,7 @@ async fn test_double_spend_detection() {
         mint.pubsub_manager(),
     );
     let _setup_saga1 = saga1
-        .setup_melt(&melt_request1, verification1)
+        .setup_melt(&melt_request1, verification1, PaymentMethod::Bolt11)
         .await
         .unwrap();
 
@@ -1504,7 +1543,9 @@ async fn test_double_spend_detection() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_result2 = saga2.setup_melt(&melt_request2, verification2).await;
+    let setup_result2 = saga2
+        .setup_melt(&melt_request2, verification2, PaymentMethod::Bolt11)
+        .await;
 
     // STEP 5: Verify second setup fails with appropriate error
     assert!(
@@ -1554,7 +1595,9 @@ async fn test_insufficient_funds() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_result = saga.setup_melt(&melt_request, verification).await;
+    let setup_result = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await;
 
     // With 10000 msats input and 9000 msats quote, this should succeed
     assert!(
@@ -1597,7 +1640,9 @@ async fn test_invalid_quote_id() {
             mint.localstore(),
             mint.pubsub_manager(),
         );
-        let setup_result = saga.setup_melt(&melt_request, verification).await;
+        let setup_result = saga
+            .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+            .await;
 
         // STEP 4: Verify setup fails with unknown quote error
         assert!(
@@ -1646,7 +1691,7 @@ async fn test_quote_already_paid() {
         mint.pubsub_manager(),
     );
     let setup_saga1 = saga1
-        .setup_melt(&melt_request1, verification1)
+        .setup_melt(&melt_request1, verification1, PaymentMethod::Bolt11)
         .await
         .unwrap();
 
@@ -1681,7 +1726,9 @@ async fn test_quote_already_paid() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_result2 = saga2.setup_melt(&melt_request2, verification2).await;
+    let setup_result2 = saga2
+        .setup_melt(&melt_request2, verification2, PaymentMethod::Bolt11)
+        .await;
 
     // STEP 4: Verify setup fails
     assert!(
@@ -1721,7 +1768,7 @@ async fn test_quote_already_pending() {
         mint.pubsub_manager(),
     );
     let _setup_saga1 = saga1
-        .setup_melt(&melt_request1, verification1)
+        .setup_melt(&melt_request1, verification1, PaymentMethod::Bolt11)
         .await
         .unwrap();
 
@@ -1748,7 +1795,9 @@ async fn test_quote_already_pending() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_result2 = saga2.setup_melt(&melt_request2, verification2).await;
+    let setup_result2 = saga2
+        .setup_melt(&melt_request2, verification2, PaymentMethod::Bolt11)
+        .await;
 
     // STEP 4: Verify second setup fails
     assert!(
@@ -1854,7 +1903,10 @@ async fn test_recovery_no_melt_request() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
 
     let operation_id = *setup_saga.state_data.operation.id();
     let input_ys = proofs.ys().unwrap();
@@ -1903,7 +1955,10 @@ async fn test_recovery_order_on_startup() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
 
     let operation_id = *setup_saga.state_data.operation.id();
     let input_ys = proofs.ys().unwrap();
@@ -1964,7 +2019,7 @@ async fn test_recovery_order_on_startup() {
         mint.pubsub_manager(),
     );
     let _new_setup = new_saga
-        .setup_melt(&new_request, new_verification)
+        .setup_melt(&new_request, new_verification, PaymentMethod::Bolt11)
         .await
         .unwrap();
 
@@ -1991,7 +2046,10 @@ async fn test_no_duplicate_recovery() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
 
     let operation_id = *setup_saga.state_data.operation.id();
     let input_ys = proofs.ys().unwrap();
@@ -2066,7 +2124,10 @@ async fn test_operation_id_uniqueness_and_tracking() {
             mint.localstore(),
             mint.pubsub_manager(),
         );
-        let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+        let setup_saga = saga
+            .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+            .await
+            .unwrap();
 
         let operation_id = *setup_saga.state_data.operation.id();
         operation_ids.push(operation_id);
@@ -2118,7 +2179,10 @@ async fn test_saga_drop_without_finalize() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
     let operation_id = *setup_saga.state_data.operation.id();
 
     // STEP 3: Drop saga without finalizing (simulates crash)
@@ -2153,7 +2217,10 @@ async fn test_saga_drop_after_payment() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
     let operation_id = *setup_saga.state_data.operation.id();
 
     // Verify proofs are PENDING after setup
@@ -2234,7 +2301,10 @@ async fn test_payment_attempted_state_triggers_ln_check() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
     let operation_id = *setup_saga.state_data.operation.id();
 
     // Check initial state is SetupComplete
@@ -2321,7 +2391,10 @@ async fn test_setup_complete_state_compensates() {
         mint.localstore(),
         mint.pubsub_manager(),
     );
-    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let setup_saga = saga
+        .setup_melt(&melt_request, verification, PaymentMethod::Bolt11)
+        .await
+        .unwrap();
     let operation_id = *setup_saga.state_data.operation.id();
 
     // Verify state is SetupComplete

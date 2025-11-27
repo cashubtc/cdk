@@ -190,6 +190,7 @@ impl MeltSaga<Initial> {
         self,
         melt_request: &MeltRequest<QuoteId>,
         input_verification: Verification,
+        payment_method: cdk_common::PaymentMethod,
     ) -> Result<MeltSaga<SetupComplete>, Error> {
         tracing::info!("TX1: Setting up melt (verify + inputs + outputs)");
 
@@ -209,10 +210,11 @@ impl MeltSaga<Initial> {
         let operation = Operation::new(
             self.state_data.operation_id,
             cdk_common::mint::OperationKind::Melt,
-            Amount::ZERO,        // total_issued (change will be calculated later)
-            input_amount,        // total_redeemed
-            fee_breakdown.total, // fee_collected
-            None,                // complete_at
+            Amount::ZERO,         // total_issued (change will be calculated later)
+            input_amount,         // total_redeemed
+            fee_breakdown.total,  // fee_collected
+            None,                 // complete_at
+            Some(payment_method), // payment_method
         );
 
         // Add proofs to the database

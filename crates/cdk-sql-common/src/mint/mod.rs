@@ -2301,9 +2301,9 @@ where
         query(
             r#"
             INSERT INTO completed_operations
-            (operation_id, operation_kind, completed_at, total_issued, total_redeemed, fee_collected, payment_amount, payment_fee)
+            (operation_id, operation_kind, completed_at, total_issued, total_redeemed, fee_collected, payment_amount, payment_fee, payment_method)
             VALUES
-            (:operation_id, :operation_kind, :completed_at, :total_issued, :total_redeemed, :fee_collected, :payment_amount, :payment_fee)
+            (:operation_id, :operation_kind, :completed_at, :total_issued, :total_redeemed, :fee_collected, :payment_amount, :payment_fee, :payment_method)
             "#,
         )?
         .bind("operation_id", operation.id().to_string())
@@ -2314,6 +2314,7 @@ where
         .bind("fee_collected", operation.fee_collected().to_u64() as i64)
         .bind("payment_amount", operation.payment_amount().map(|a| a.to_u64() as i64))
         .bind("payment_fee", operation.payment_fee().map(|a| a.to_u64() as i64))
+        .bind("payment_method", operation.payment_method().map(|m| m.to_string()))
         .execute(&self.inner)
         .await?;
 
@@ -2359,7 +2360,8 @@ where
                 completed_at,
                 total_issued,
                 total_redeemed,
-                fee_collected
+                fee_collected,
+                payment_method
             FROM
                 completed_operations
             WHERE
@@ -2386,7 +2388,8 @@ where
                 completed_at,
                 total_issued,
                 total_redeemed,
-                fee_collected
+                fee_collected,
+                payment_method
             FROM
                 completed_operations
             WHERE
@@ -2412,7 +2415,8 @@ where
                 completed_at,
                 total_issued,
                 total_redeemed,
-                fee_collected
+                fee_collected,
+                payment_method
             FROM
                 completed_operations
             ORDER BY completed_at DESC
@@ -2769,7 +2773,8 @@ fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, E
             completed_at,
             total_issued,
             total_redeemed,
-            fee_collected
+            fee_collected,
+            payment_method
         ) = row
     );
 
@@ -2790,6 +2795,11 @@ fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, E
     let total_redeemed = Amount::from(total_redeemed_u64);
     let fee_collected = Amount::from(fee_collected_u64);
 
+    let payment_method = column_as_nullable_string!(payment_method)
+        .map(|s| PaymentMethod::from_str(&s))
+        .transpose()
+        .map_err(|e| Error::Internal(format!("Invalid payment method: {e}")))?;
+
     Ok(mint::Operation::new(
         operation_id,
         operation_kind,
@@ -2797,6 +2807,7 @@ fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, E
         total_redeemed,
         fee_collected,
         Some(completed_at),
+        payment_method,
     ))
 }
 

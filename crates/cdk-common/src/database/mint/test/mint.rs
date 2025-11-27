@@ -438,7 +438,7 @@ where
     tx.add_blinded_messages(
         Some(&quote.id),
         &blinded_messages,
-        &Operation::new_melt(Amount::ZERO, Amount::ZERO),
+        &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11),
     )
     .await
     .unwrap();
@@ -504,7 +504,7 @@ where
         .add_blinded_messages(
             Some(&quote2.id),
             &blinded_messages,
-            &Operation::new_melt(Amount::ZERO, Amount::ZERO),
+            &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11),
         )
         .await;
     assert!(result.is_err() && matches!(result.unwrap_err(), Error::Duplicate));
@@ -541,7 +541,7 @@ where
         .add_blinded_messages(
             Some(&quote.id),
             &blinded_messages,
-            &Operation::new_melt(Amount::ZERO, Amount::ZERO)
+            &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11)
         )
         .await
         .is_ok());
@@ -558,7 +558,7 @@ where
         .add_blinded_messages(
             Some(&quote.id),
             &blinded_messages,
-            &Operation::new_melt(Amount::ZERO, Amount::ZERO),
+            &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11),
         )
         .await;
     // Expect a database error due to unique violation
@@ -595,7 +595,7 @@ where
     tx1.add_blinded_messages(
         Some(&quote.id),
         &blinded_messages,
-        &Operation::new_melt(Amount::ZERO, Amount::ZERO),
+        &Operation::new_melt(Amount::ZERO, Amount::ZERO, cashu::PaymentMethod::Bolt11),
     )
     .await
     .unwrap();

@@ -658,7 +658,7 @@ impl Mint {
         ensure_cdk!(unit == mint_quote.unit, Error::UnsupportedUnit);
 
         let amount_issued = mint_request.total_amount()?;
-        let operation = Operation::new_mint(amount_issued);
+        let operation = Operation::new_mint(amount_issued, mint_quote.payment_method.clone());
 
         tx.add_blinded_messages(Some(&mint_request.quote), &mint_request.outputs, &operation).await?;
 

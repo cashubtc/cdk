@@ -242,6 +242,8 @@ pub struct Operation {
     payment_amount: Option<Amount>,
     /// Payment fee (only for melt operations)
     payment_fee: Option<Amount>,
+    /// Payment method (only for mint/melt operations)
+    payment_method: Option<PaymentMethod>,
 }
 
 impl Operation {
@@ -253,6 +255,7 @@ impl Operation {
         total_redeemed: Amount,
         fee_collected: Amount,
         complete_at: Option<u64>,
+        payment_method: Option<PaymentMethod>,
     ) -> Self {
         Self {
             id,
@@ -263,11 +266,12 @@ impl Operation {
             complete_at,
             payment_amount: None,
             payment_fee: None,
+            payment_method,
         }
     }
 
     /// Mint
-    pub fn new_mint(total_issued: Amount) -> Self {
+    pub fn new_mint(total_issued: Amount, payment_method: PaymentMethod) -> Self {
         Self {
             id: Uuid::new_v4(),
             kind: OperationKind::Mint,
@@ -277,12 +281,17 @@ impl Operation {
             complete_at: None,
             payment_amount: None,
             payment_fee: None,
+            payment_method: Some(payment_method),
         }
     }
     /// Melt
     ///
     /// In the context of a melt total_issued refrests to the change
-    pub fn new_melt(total_redeemed: Amount, fee_collected: Amount) -> Self {
+    pub fn new_melt(
+        total_redeemed: Amount,
+        fee_collected: Amount,
+        payment_method: PaymentMethod,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             kind: OperationKind::Melt,
@@ -292,6 +301,7 @@ impl Operation {
             complete_at: None,
             payment_amount: None,
             payment_fee: None,
+            payment_method: Some(payment_method),
         }
     }
 
@@ -306,6 +316,7 @@ impl Operation {
             complete_at: None,
             payment_amount: None,
             payment_fee: None,
+            payment_method: None,
         }
     }
 
@@ -358,6 +369,11 @@ impl Operation {
     pub fn set_payment_details(&mut self, payment_amount: Amount, payment_fee: Amount) {
         self.payment_amount = Some(payment_amount);
         self.payment_fee = Some(payment_fee);
+    }
+
+    /// Payment method (only for mint/melt operations)
+    pub fn payment_method(&self) -> Option<PaymentMethod> {
+        self.payment_method.clone()
     }
 }
 
