@@ -62,6 +62,10 @@ pub trait Database: Debug {
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<WalletMintQuote>, Self::Err>;
     /// Get mint quotes from storage
     async fn get_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Self::Err>;
+    /// Get unissued mint quotes from storage
+    /// Returns bolt11 quotes where nothing has been issued yet (amount_issued = 0) and all bolt12 quotes.
+    /// Includes unpaid bolt11 quotes to allow checking with the mint if they've been paid (wallet state may be outdated).
+    async fn get_unissued_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Self::Err>;
     /// Remove mint quote from storage
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), Self::Err>;
 
