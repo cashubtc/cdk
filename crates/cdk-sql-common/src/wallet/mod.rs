@@ -837,6 +837,41 @@ ON CONFLICT(id) DO UPDATE SET
         .collect::<Vec<_>>())
     }
 
+    #[instrument(skip(self, ys))]
+    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, Self::Err> {
+        if ys.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT
+                amount,
+                unit,
+                keyset_id,
+                secret,
+                c,
+                witness,
+                dleq_e,
+                dleq_s,
+                dleq_r,
+                y,
+                mint_url,
+                state,
+                spending_condition
+            FROM proof
+            WHERE y IN (:ys)
+        "#,
+        )?
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .filter_map(|row| sql_row_to_proof_info(row).ok())
+        .collect::<Vec<_>>())
+    }
+
     async fn get_balance(
         &self,
         mint_url: Option<MintUrl>,

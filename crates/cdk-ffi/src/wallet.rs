@@ -367,6 +367,19 @@ impl Wallet {
         Ok(transaction.map(Into::into))
     }
 
+    /// Get proofs for a transaction by transaction ID
+    ///
+    /// This retrieves all proofs associated with a transaction by looking up
+    /// the transaction's Y values and fetching the corresponding proofs.
+    pub async fn get_proofs_for_transaction(
+        &self,
+        id: TransactionId,
+    ) -> Result<Vec<Proof>, FfiError> {
+        let cdk_id = id.try_into()?;
+        let proofs = self.inner.get_proofs_for_transaction(cdk_id).await?;
+        Ok(proofs.into_iter().map(Into::into).collect())
+    }
+
     /// Revert a transaction
     pub async fn revert_transaction(&self, id: TransactionId) -> Result<(), FfiError> {
         let cdk_id = id.try_into()?;
