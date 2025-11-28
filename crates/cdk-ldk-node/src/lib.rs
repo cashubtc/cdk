@@ -185,6 +185,74 @@ impl CdkLdkNode {
         })
     }
 
+    /// Create a CDK LDK Node from an existing LDK Node instance
+    ///
+    /// This constructor is useful when you want to reuse an existing LDK Node
+    /// that has already been configured and potentially started. This is particularly
+    /// useful in testing scenarios where you want to share a single node instance
+    /// with established channels across multiple components.
+    ///
+    /// # Arguments
+    /// * `node` - An already-constructed LDK Node instance wrapped in Arc
+    /// * `fee_reserve` - Fee reserve configuration for payments
+    /// * `runtime` - Optional Tokio runtime. If provided, it will be used when starting
+    ///   the node. If None, the node should already have its own runtime or be started.
+    ///
+    /// # Returns
+    /// A new `CdkLdkNode` instance wrapping the existing node
+    ///
+    /// # Notes
+    /// - The node is assumed to already be configured with the appropriate network,
+    ///   chain source, gossip source, and listening addresses
+    /// - If the node has not been started yet, you must call `start_ldk_node()` or
+    ///   `start()` (from the MintPayment trait) after creating the CdkLdkNode
+    /// - If the node is already started, calling `start_ldk_node()` may fail
+    ///
+    /// # Example
+    /// ```ignore
+    /// use std::sync::Arc;
+    /// use ldk_node::Node;
+    /// use cdk_ldk_node::CdkLdkNode;
+    /// use cdk_common::common::FeeReserve;
+    ///
+    /// // Assuming you have an existing node
+    /// let existing_node: Arc<Node> = get_existing_node();
+    /// let fee_reserve = FeeReserve::default();
+    ///
+    /// let cdk_node = CdkLdkNode::from_node(
+    ///     existing_node,
+    ///     fee_reserve,
+    ///     None
+    /// )?;
+    /// ```
+    pub fn from_node(
+        node: Arc<Node>,
+        fee_reserve: FeeReserve,
+        runtime: Option<Arc<Runtime>>,
+    ) -> Result<Self, Error> {
+        tracing::info!("Creating CdkLdkNode from existing Node instance");
+
+        // Create tokio channel for payment notifications
+        let (sender, receiver) = tokio::sync::broadcast::channel(8);
+
+        let id = node.node_id();
+        let adr = node.announcement_addresses();
+
+        tracing::info!("Wrapping existing node {} with addresses {:?}", id, adr);
+
+        Ok(Self {
+            inner: node,
+            fee_reserve,
+            wait_invoice_cancel_token: CancellationToken::new(),
+            wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
+            sender,
+            receiver: Arc::new(receiver),
+            events_cancel_token: CancellationToken::new(),
+            runtime,
+            web_addr: None,
+        })
+    }
+
     /// Set the web server address for the LDK node management interface
     ///
     /// # Arguments
@@ -212,21 +280,30 @@ impl CdkLdkNode {
     /// # Errors
     /// Returns an error if the LDK node fails to start or event handling setup fails
     pub fn start_ldk_node(&self) -> Result<(), Error> {
-        match &self.runtime {
-            Some(runtime) => {
-                tracing::info!("Starting cdk-ldk node with existing runtime");
-                self.inner.start_with_runtime(Arc::clone(runtime))?
-            }
-            None => {
-                tracing::info!("Starting cdk-ldk-node with new runtime");
-                self.inner.start()?
-            }
-        };
         let node_config = self.inner.config();
+        let node_status = self.inner.status();
 
-        tracing::info!("Starting node with network {}", node_config.network);
+        tracing::info!("Checking node status before starting: {:?}", node_status);
 
-        tracing::info!("Node status: {:?}", self.inner.status());
+        // Check if node is already running
+        // If it's running, skip the start call to avoid resetting the node
+        if node_status.is_running {
+            tracing::info!("Node is already running, skipping start() call");
+        } else {
+            match &self.runtime {
+                Some(runtime) => {
+                    tracing::info!("Starting cdk-ldk node with existing runtime");
+                    self.inner.start_with_runtime(Arc::clone(runtime))?
+                }
+                None => {
+                    tracing::info!("Starting cdk-ldk-node with new runtime");
+                    self.inner.start()?
+                }
+            };
+            tracing::info!("Node started with network {}", node_config.network);
+        }
+
+        tracing::info!("Final node status: {:?}", self.inner.status());
 
         self.handle_events()?;
 
