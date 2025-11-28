@@ -206,11 +206,11 @@ impl Wallet {
             .update_proofs_state(ys, State::Reserved)
             .await?;
 
-        let fee = self.get_proofs_fee(&proofs).await?;
+        let fee_breakdown = self.get_proofs_fee(&proofs).await?;
 
         let total_to_subtract = amount
             .unwrap_or(Amount::ZERO)
-            .checked_add(fee)
+            .checked_add(fee_breakdown.total)
             .ok_or(Error::AmountOverflow)?;
 
         let change_amount: Amount = proofs_total
@@ -360,7 +360,7 @@ impl Wallet {
             pre_mint_secrets: desired_messages,
             swap_request,
             derived_secret_count: derived_secret_count as u32,
-            fee,
+            fee: fee_breakdown.total,
         })
     }
 }

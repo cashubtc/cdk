@@ -236,18 +236,18 @@ impl Mint {
             return Err(Error::UnitMismatch);
         }
 
-        let fees = self.get_proofs_fee(inputs).await?;
+        let fee_breakdown = self.get_proofs_fee(inputs).await?;
 
         if output_verification.amount
             != input_verification
                 .amount
-                .checked_sub(fees)
+                .checked_sub(fee_breakdown.total)
                 .ok_or(Error::AmountOverflow)?
         {
             return Err(Error::TransactionUnbalanced(
                 input_verification.amount.into(),
                 output_verification.amount.into(),
-                fees.into(),
+                fee_breakdown.total.into(),
             ));
         }
 
