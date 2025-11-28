@@ -1239,11 +1239,9 @@ VALUES (:quote_id, :amount, :timestamp);
                 melt_quote
             WHERE
                 id=:id
-                AND state != :state
             "#,
         )?
         .bind("id", quote_id.to_string())
-        .bind("state", state.to_string())
         .fetch_one(&self.inner)
         .await?
         .map(sql_row_to_melt_quote)
