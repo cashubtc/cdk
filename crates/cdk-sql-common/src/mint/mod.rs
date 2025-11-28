@@ -1045,62 +1045,38 @@ where
         quote_id: &QuoteId,
         amount_issued: Amount,
     ) -> Result<Amount, Self::Err> {
-        // Get current amount_issued from quote
-        let current_amounts = query(
-            r#"
-            SELECT amount_issued, amount_paid
-            FROM mint_quote
-            WHERE id = :quote_id
-            FOR UPDATE
-            "#,
-        )?
-        .bind("quote_id", quote_id.to_string())
-        .fetch_one(&self.inner)
-        .await
-        .inspect_err(|err| {
-            tracing::error!("SQLite could not get mint quote amount_issued: {}", err);
-        })?
-        .ok_or(Error::QuoteNotFound)?;
-
-        let new_amount_issued = {
-            // Make sure the db protects issuing not paid quotes
-            unpack_into!(
-                let (current_amount_issued, current_amount_paid) = current_amounts
-            );
-
-            let current_amount_issued: u64 = column_as_number!(current_amount_issued);
-            let current_amount_paid: u64 = column_as_number!(current_amount_paid);
-
-            let current_amount_issued = Amount::from(current_amount_issued);
-            let current_amount_paid = Amount::from(current_amount_paid);
-
-            // Calculate new amount_issued with overflow check
-            let new_amount_issued = current_amount_issued
-                .checked_add(amount_issued)
-                .ok_or_else(|| database::Error::AmountOverflow)?;
-
-            current_amount_paid
-                .checked_sub(new_amount_issued)
-                .ok_or(Error::Internal("Over-issued not allowed".to_owned()))?;
-
-            new_amount_issued
-        };
-
         // Update the amount_issued
         query(
             r#"
             UPDATE mint_quote
-            SET amount_issued = :amount_issued
+            SET amount_issued = amount_issued + :amount_issued
             WHERE id = :quote_id
             "#,
         )?
-        .bind("amount_issued", new_amount_issued.to_i64())
+        .bind("amount_issued", amount_issued.to_i64())
         .bind("quote_id", quote_id.to_string())
         .execute(&self.inner)
         .await
         .inspect_err(|err| {
             tracing::error!("SQLite could not update mint quote amount_issued: {}", err);
         })?;
+
+        // Get current amount_issued from quote
+        let current_amount_issued = query(
+            r#"
+            SELECT amount_issued
+            FROM mint_quote
+            WHERE id = :quote_id
+            FOR UPDATE
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .pluck(&self.inner)
+        .await
+        .inspect_err(|err| {
+            tracing::error!("SQLite could not get mint quote amount_issued: {}", err);
+        })?
+        .ok_or(Error::QuoteNotFound)?;
 
         let current_time = unix_time();
 
@@ -1117,7 +1093,9 @@ VALUES (:quote_id, :amount, :timestamp);
         .execute(&self.inner)
         .await?;
 
-        Ok(new_amount_issued)
+        let current_amount_issued: u64 = column_as_number!(current_amount_issued);
+
+        Ok(Amount::from(current_amount_issued))
     }
 
     #[instrument(skip_all)]
