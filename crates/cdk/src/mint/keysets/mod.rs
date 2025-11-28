@@ -84,6 +84,7 @@ impl Mint {
                 unit,
                 amounts,
                 input_fee_ppk,
+                final_expiry: None,
             })
             .await?;
 
