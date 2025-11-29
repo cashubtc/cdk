@@ -1,4 +1,5 @@
 use cdk_common::wallet::{Transaction, TransactionDirection, TransactionId};
+use cdk_common::Proofs;
 
 use crate::{Error, Wallet};
 
@@ -27,6 +28,28 @@ impl Wallet {
         let transaction = self.localstore.get_transaction(id).await?;
 
         Ok(transaction)
+    }
+
+    /// Get proofs for a transaction by transaction ID
+    ///
+    /// This retrieves all proofs associated with a transaction by looking up
+    /// the transaction's Y values and fetching the corresponding proofs.
+    pub async fn get_proofs_for_transaction(&self, id: TransactionId) -> Result<Proofs, Error> {
+        let transaction = self
+            .localstore
+            .get_transaction(id)
+            .await?
+            .ok_or(Error::TransactionNotFound)?;
+
+        let proofs = self
+            .localstore
+            .get_proofs_by_ys(transaction.ys)
+            .await?
+            .into_iter()
+            .map(|p| p.proof)
+            .collect();
+
+        Ok(proofs)
     }
 
     /// Revert a transaction

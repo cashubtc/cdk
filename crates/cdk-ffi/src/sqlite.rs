@@ -6,7 +6,7 @@ use cdk_sqlite::SqliteConnectionManager;
 
 use crate::{
     CurrencyUnit, FfiError, FfiWalletSQLDatabase, Id, KeySetInfo, Keys, MeltQuote, MintInfo,
-    MintQuote, MintUrl, ProofInfo, ProofState, SpendingConditions, Transaction,
+    MintQuote, MintUrl, ProofInfo, ProofState, PublicKey, SpendingConditions, Transaction,
     TransactionDirection, TransactionId, WalletDatabase,
 };
 
@@ -122,6 +122,10 @@ impl WalletDatabase for WalletSqliteDatabase {
         self.inner
             .get_proofs(mint_url, unit, state, spending_conditions)
             .await
+    }
+
+    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, FfiError> {
+        self.inner.get_proofs_by_ys(ys).await
     }
 
     async fn get_balance(

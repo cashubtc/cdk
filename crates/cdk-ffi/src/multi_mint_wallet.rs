@@ -508,6 +508,30 @@ impl MultiMintWallet {
         Ok(transactions.into_iter().map(Into::into).collect())
     }
 
+    /// Get proofs for a transaction by transaction ID
+    ///
+    /// This retrieves all proofs associated with a transaction. If `mint_url` is provided,
+    /// it will only check that specific mint's wallet. Otherwise, it searches across all
+    /// wallets to find which mint the transaction belongs to.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The transaction ID
+    /// * `mint_url` - Optional mint URL to check directly, avoiding iteration over all wallets
+    pub async fn get_proofs_for_transaction(
+        &self,
+        id: TransactionId,
+        mint_url: Option<MintUrl>,
+    ) -> Result<Vec<Proof>, FfiError> {
+        let cdk_id = id.try_into()?;
+        let cdk_mint_url = mint_url.map(|url| url.try_into()).transpose()?;
+        let proofs = self
+            .inner
+            .get_proofs_for_transaction(cdk_id, cdk_mint_url)
+            .await?;
+        Ok(proofs.into_iter().map(Into::into).collect())
+    }
+
     /// Check all mint quotes and mint if paid
     pub async fn check_all_mint_quotes(
         &self,

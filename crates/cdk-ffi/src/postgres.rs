@@ -6,7 +6,7 @@ use cdk_postgres::PgConnectionPool;
 
 use crate::{
     CurrencyUnit, FfiError, FfiWalletSQLDatabase, Id, KeySetInfo, Keys, MeltQuote, MintInfo,
-    MintQuote, MintUrl, ProofInfo, ProofState, SpendingConditions, Transaction,
+    MintQuote, MintUrl, ProofInfo, ProofState, PublicKey, SpendingConditions, Transaction,
     TransactionDirection, TransactionId, WalletDatabase, WalletDatabaseTransactionWrapper,
 };
 
@@ -64,6 +64,10 @@ impl WalletPostgresDatabase {
 impl WalletDatabase for WalletPostgresDatabase {
     async fn begin_db_transaction(&self) -> Result<WalletDatabaseTransactionWrapper, FfiError> {
         self.inner.begin_db_transaction().await
+    }
+
+    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, FfiError> {
+        self.inner.get_proofs_by_ys(ys).await
     }
 
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, FfiError> {

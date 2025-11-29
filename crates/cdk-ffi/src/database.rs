@@ -66,6 +66,9 @@ pub trait WalletDatabase: Send + Sync {
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, FfiError>;
 
+    /// Get proofs by Y values
+    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, FfiError>;
+
     /// Get balance efficiently using SQL aggregation
     async fn get_balance(
         &self,
@@ -401,6 +404,48 @@ impl CdkWalletDatabase for WalletDatabaseBridge {
         let result = self
             .ffi_db
             .get_proofs(ffi_mint_url, ffi_unit, ffi_state, ffi_spending_conditions)
+            .await
+            .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+
+        // Convert back to CDK ProofInfo
+        let cdk_result: Result<Vec<cdk::types::ProofInfo>, cdk::cdk_database::Error> = result
+            .into_iter()
+            .map(|info| {
+                Ok(cdk::types::ProofInfo {
+                    proof: info.proof.try_into().map_err(|e: FfiError| {
+                        cdk::cdk_database::Error::Database(e.to_string().into())
+                    })?,
+                    y: info.y.try_into().map_err(|e: FfiError| {
+                        cdk::cdk_database::Error::Database(e.to_string().into())
+                    })?,
+                    mint_url: info.mint_url.try_into().map_err(|e: FfiError| {
+                        cdk::cdk_database::Error::Database(e.to_string().into())
+                    })?,
+                    state: info.state.into(),
+                    spending_condition: info
+                        .spending_condition
+                        .map(|sc| sc.try_into())
+                        .transpose()
+                        .map_err(|e: FfiError| {
+                            cdk::cdk_database::Error::Database(e.to_string().into())
+                        })?,
+                    unit: info.unit.into(),
+                })
+            })
+            .collect();
+
+        cdk_result
+    }
+
+    async fn get_proofs_by_ys(
+        &self,
+        ys: Vec<cdk::nuts::PublicKey>,
+    ) -> Result<Vec<cdk::types::ProofInfo>, Self::Err> {
+        let ffi_ys: Vec<PublicKey> = ys.into_iter().map(Into::into).collect();
+
+        let result = self
+            .ffi_db
+            .get_proofs_by_ys(ffi_ys)
             .await
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
 
@@ -885,6 +930,21 @@ where
         Ok(WalletDatabaseTransactionWrapper {
             inner: FfiWalletTransaction::new(tx),
         })
+    }
+
+    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, FfiError> {
+        let cdk_ys: Vec<cdk::nuts::PublicKey> = ys
+            .into_iter()
+            .map(|y| y.try_into())
+            .collect::<Result<Vec<_>, FfiError>>()?;
+
+        let result = self
+            .inner
+            .get_proofs_by_ys(cdk_ys)
+            .await
+            .map_err(|e| FfiError::Database { msg: e.to_string() })?;
+
+        Ok(result.into_iter().map(Into::into).collect())
     }
 
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, FfiError> {
