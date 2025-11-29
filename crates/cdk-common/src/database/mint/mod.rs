@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use cashu::quote_id::QuoteId;
 use cashu::Amount;
 
-use super::Error;
+use super::{DbTransactionFinalizer, Error};
 use crate::mint::{self, MintKeySetInfo, MintQuote as MintMintQuote, Operation};
 use crate::nuts::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
@@ -401,19 +401,6 @@ pub trait SagaDatabase {
         &self,
         operation_kind: mint::OperationKind,
     ) -> Result<Vec<mint::Saga>, Self::Err>;
-}
-
-#[async_trait]
-/// Commit and Rollback
-pub trait DbTransactionFinalizer {
-    /// Mint Signature Database Error
-    type Err: Into<Error> + From<Error>;
-
-    /// Commits all the changes into the database
-    async fn commit(self: Box<Self>) -> Result<(), Self::Err>;
-
-    /// Rollbacks the write transaction
-    async fn rollback(self: Box<Self>) -> Result<(), Self::Err>;
 }
 
 /// Key-Value Store Transaction trait
