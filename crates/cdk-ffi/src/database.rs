@@ -204,14 +204,6 @@ pub struct WalletDatabaseTransactionWrapper {
     inner: Arc<dyn WalletDatabaseTransaction>,
 }
 
-#[uniffi::export]
-impl WalletDatabaseTransactionWrapper {
-    #[uniffi::constructor]
-    pub fn new(inner: Arc<dyn WalletDatabaseTransaction>) -> Self {
-        Self { inner }
-    }
-}
-
 impl Deref for WalletDatabaseTransactionWrapper {
     type Target = Arc<dyn WalletDatabaseTransaction>;
 
