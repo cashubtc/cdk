@@ -1444,22 +1444,28 @@ impl WalletDatabaseTransaction for FfiWalletTransaction {
 
 /// FFI-safe database type enum
 #[derive(uniffi::Enum, Clone)]
-pub enum WalletDatabaseType {
+pub enum WalletDbBackend {
     Sqlite {
-        db: Arc<WalletSqliteDatabase>,
+        path: String,
     },
     #[cfg(feature = "postgres")]
     Postgres {
-        db: Arc<WalletPostgresDatabase>,
+        url: String,
     },
 }
 
-impl WalletDatabaseType {
-    pub fn as_trait(&self) -> Arc<dyn WalletDatabase> {
-        match self {
-            WalletDatabaseType::Sqlite { db } => db.clone() as Arc<dyn WalletDatabase>,
-            #[cfg(feature = "postgres")]
-            WalletDatabaseType::Postgres { db } => db.clone() as Arc<dyn WalletDatabase>,
+/// Factory helpers returning a CDK wallet database behind the FFI trait
+#[uniffi::export]
+pub fn create_wallet_db(backend: WalletDbBackend) -> Result<Arc<dyn WalletDatabase>, FfiError> {
+    match backend {
+        WalletDbBackend::Sqlite { path } => {
+            let sqlite = WalletSqliteDatabase::new(path)?;
+            Ok(sqlite as Arc<dyn WalletDatabase>)
+        }
+        #[cfg(feature = "postgres")]
+        WalletDbBackend::Postgres { url } => {
+            let pg = WalletPostgresDatabase::new(url)?;
+            Ok(pg as Arc<dyn WalletDatabase>)
         }
     }
 }
