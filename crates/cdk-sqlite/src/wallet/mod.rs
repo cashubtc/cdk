@@ -237,7 +237,9 @@ mod tests {
         }
 
         // Store all proofs in the database
-        db.update_proofs(proof_infos.clone(), vec![]).await.unwrap();
+        let mut tx = db.begin_db_transaction().await.unwrap();
+        tx.update_proofs(proof_infos.clone(), vec![]).await.unwrap();
+        tx.commit().await.unwrap();
 
         // Test 1: Retrieve all proofs by their Y values
         let retrieved_proofs = db.get_proofs_by_ys(expected_ys.clone()).await.unwrap();
