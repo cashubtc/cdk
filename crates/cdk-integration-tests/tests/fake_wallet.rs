@@ -1541,3 +1541,92 @@ async fn test_wallet_proof_recovery_after_failed_swap() {
         "Proofs should have been swapped to new ones"
     );
 }
+
+/// Tests that melt_proofs works correctly with proofs that are not already in the wallet's database.
+/// This is similar to the receive flow where proofs come from an external source.
+///
+/// Flow:
+/// 1. Wallet A mints proofs (proofs ARE in Wallet A's database)
+/// 2. Wallet B creates a melt quote
+/// 3. Wallet B calls melt_proofs with proofs from Wallet A (proofs are NOT in Wallet B's database)
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_proofs_external() {
+    // Create sender wallet (Wallet A) and mint some proofs
+    let wallet_sender = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create sender wallet");
+
+    let mint_quote = wallet_sender.mint_quote(100.into(), None).await.unwrap();
+
+    let mut proof_streams =
+        wallet_sender.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+
+    let proofs = proof_streams
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    assert_eq!(proofs.total_amount().unwrap(), Amount::from(100));
+
+    // Create receiver/melter wallet (Wallet B) with a separate database
+    // These proofs are NOT in Wallet B's database
+    let wallet_melter = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create melter wallet");
+
+    // Verify proofs are not in the melter wallet's database
+    let melter_proofs = wallet_melter.get_unspent_proofs().await.unwrap();
+    assert!(
+        melter_proofs.is_empty(),
+        "Melter wallet should have no proofs initially"
+    );
+
+    // Create a fake invoice for melting
+    let fake_description = FakeInvoiceDescription::default();
+    let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
+
+    // Wallet B creates a melt quote
+    let melt_quote = wallet_melter
+        .melt_quote(invoice.to_string(), None)
+        .await
+        .unwrap();
+
+    // Wallet B calls melt_proofs with external proofs (from Wallet A)
+    // These proofs are NOT in wallet_melter's database
+    let melted = wallet_melter
+        .melt_proofs(&melt_quote.id, proofs.clone())
+        .await
+        .unwrap();
+
+    // Verify the melt succeeded
+    assert_eq!(melted.amount, Amount::from(9));
+    assert_eq!(melted.fee_paid, 1.into());
+
+    // Verify change was returned (100 input - 9 melt amount = 91 change, minus fee reserve)
+    assert!(melted.change.is_some());
+    let change_amount = melted.change.unwrap().total_amount().unwrap();
+    assert!(change_amount > Amount::ZERO, "Should have received change");
+
+    // Verify the melter wallet now has the change proofs
+    let melter_balance = wallet_melter.total_balance().await.unwrap();
+    assert_eq!(melter_balance, change_amount);
+
+    // Verify a transaction was recorded
+    let transactions = wallet_melter
+        .list_transactions(Some(TransactionDirection::Outgoing))
+        .await
+        .unwrap();
+    assert_eq!(transactions.len(), 1);
+    assert_eq!(transactions[0].amount, Amount::from(9));
+}
