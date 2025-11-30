@@ -154,10 +154,13 @@ impl Wallet {
             return Err(Error::InsufficientFunds);
         }
 
-        let ys = proofs.ys()?;
-        self.localstore
-            .update_proofs_state(ys, State::Pending)
-            .await?;
+        // Since the proofs may be external (not in our database), add them first
+        let proofs_info = proofs
+            .clone()
+            .into_iter()
+            .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Pending, self.unit.clone()))
+            .collect::<Result<Vec<ProofInfo>, _>>()?;
+        self.localstore.update_proofs(proofs_info, vec![]).await?;
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
 

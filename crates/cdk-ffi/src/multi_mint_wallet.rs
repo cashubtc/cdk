@@ -442,6 +442,39 @@ impl MultiMintWallet {
         Ok(melted.into())
     }
 
+    /// Melt specific proofs from a specific mint
+    ///
+    /// This method allows melting proofs that may not be in the wallet's database,
+    /// similar to how `receive_proofs` handles external proofs. The proofs will be
+    /// added to the database and used for the melt operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for the melt operation
+    /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
+    /// * `proofs` - The proofs to melt (can be external proofs not in the wallet's database)
+    ///
+    /// # Returns
+    ///
+    /// A `Melted` result containing the payment details and any change proofs
+    pub async fn melt_proofs(
+        &self,
+        mint_url: MintUrl,
+        quote_id: String,
+        proofs: Proofs,
+    ) -> Result<Melted, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
+
+        let melted = self
+            .inner
+            .melt_proofs(&cdk_mint_url, &quote_id, cdk_proofs)
+            .await?;
+        Ok(melted.into())
+    }
+
     /// Check melt quote status
     pub async fn check_melt_quote(
         &self,
