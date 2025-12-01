@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use cdk_common::database::{self, WalletDatabase};
@@ -36,6 +36,7 @@ use cdk_common::nuts::{KeySetInfo, Keys};
 use cdk_common::parking_lot::RwLock;
 use cdk_common::{KeySet, MintInfo};
 use tokio::sync::Mutex;
+use web_time::Instant;
 
 use crate::nuts::Id;
 use crate::wallet::MintConnector;
