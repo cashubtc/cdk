@@ -36,4 +36,8 @@ exclude_re = [
 
     # amount.rs:331 - Sub returning Default/0 causes infinite loops
     "crates/cashu/src/amount.rs:331:.*replace.*sub.*with Default",
+
+    # Trivial getters - not worth testing
+    "FeeAndAmounts::fee",
+    "FeeAndAmounts::amounts",
 ]
