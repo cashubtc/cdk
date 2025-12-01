@@ -534,7 +534,7 @@ impl MultiMintWallet {
     /// Get keysets for a mint url
     pub async fn get_mint_keysets(&self, mint_url: &MintUrl) -> Result<Vec<KeySetInfo>, Error> {
         let wallets = self.wallets.read().await;
-        let target_wallet = wallets.get(&mint_url).ok_or(Error::UnknownMint {
+        let target_wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
             mint_url: mint_url.to_string(),
         })?;
 
