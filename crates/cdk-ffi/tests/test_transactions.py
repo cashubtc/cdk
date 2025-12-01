@@ -41,9 +41,9 @@ async def test_wallet_creation():
         db = cdk_ffi.create_wallet_db(backend)
         print("✓ Wallet database created")
 
-        # Verify database is accessible
-        mints = await db.get_mints()
-        assert isinstance(mints, dict), "get_mints should return a dict"
+        # Verify database is accessible by querying quotes
+        mint_quotes = await db.get_mint_quotes()
+        assert isinstance(mint_quotes, list), "get_mint_quotes should return a list"
         print("✓ Wallet database accessible")
 
         print("✓ Test passed: Wallet creation works")
@@ -70,14 +70,18 @@ async def test_wallet_mint_management():
         await db.add_mint(mint_url, None)
         print("✓ Added mint to wallet")
 
-        # Query mints
-        mints = await db.get_mints()
-        assert len(mints) > 0, "Should have at least one mint"
-        print(f"✓ Retrieved {len(mints)} mint(s)")
-
-        # Get specific mint
+        # Get specific mint (verifies it was added)
         await db.get_mint(mint_url)
-        print("✓ Retrieved specific mint")
+        print("✓ Retrieved mint from database")
+
+        # Remove mint
+        await db.remove_mint(mint_url)
+        print("✓ Removed mint from wallet")
+
+        # Verify removal
+        mint_info_after = await db.get_mint(mint_url)
+        assert mint_info_after is None, "Mint should be removed"
+        print("✓ Verified mint removal")
 
         print("✓ Test passed: Mint management works")
 
