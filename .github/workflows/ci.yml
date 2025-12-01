@@ -537,3 +537,32 @@ jobs:
         run: nix develop -i -L .#stable --command cargo test --doc
       - name: Check docs with strict warnings
         run: nix develop -i -L .#stable --command just docs-strict
+
+  ffi-tests:
+    name: "FFI Python tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run FFI tests
+        run: nix develop -i -L .#stable --command just ffi-test
