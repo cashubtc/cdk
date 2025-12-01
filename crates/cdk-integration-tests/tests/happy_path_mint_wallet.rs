@@ -20,9 +20,10 @@ use std::time::Duration;
 use bip39::Mnemonic;
 use cashu::{MeltRequest, PreMintSecrets};
 use cdk::amount::{Amount, SplitTarget};
+use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, State};
-use cdk::wallet::{HttpClient, MintConnector, Wallet};
+use cdk::wallet::{HttpClient, MintConnector, MultiMintWallet, Wallet};
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
 use cdk_sqlite::wallet::memory;
 use futures::{SinkExt, StreamExt};
@@ -356,6 +357,154 @@ async fn test_restore() {
     }
 }
 
+/// Tests that the melt quote status can be checked after a melt has completed
+///
+/// This test verifies:
+/// 1. Mint tokens
+/// 2. Create a melt quote and execute the melt
+/// 3. Check the melt quote status via the wallet
+/// 4. Verify the quote is in the Paid state
+///
+/// This ensures the mint correctly reports the melt quote status after completion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_quote_status_after_melt() {
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+
+    let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
+    pay_if_regtest(&get_test_temp_dir(), &invoice)
+        .await
+        .unwrap();
+
+    let proofs = wallet
+        .wait_and_mint_quote(
+            mint_quote.clone(),
+            SplitTarget::default(),
+            None,
+            tokio::time::Duration::from_secs(60),
+        )
+        .await
+        .expect("mint failed");
+
+    let mint_amount = proofs.total_amount().unwrap();
+    assert_eq!(mint_amount, 100.into());
+
+    let invoice = create_invoice_for_env(Some(50)).await.unwrap();
+
+    let melt_quote = wallet.melt_quote(invoice, None).await.unwrap();
+
+    let melt_response = wallet.melt(&melt_quote.id).await.unwrap();
+    assert_eq!(melt_response.state, MeltQuoteState::Paid);
+
+    let quote_status = wallet.melt_quote_status(&melt_quote.id).await.unwrap();
+    assert_eq!(
+        quote_status.state,
+        MeltQuoteState::Paid,
+        "Melt quote should be in Paid state after successful melt"
+    );
+
+    let db_quote = wallet
+        .localstore
+        .get_melt_quote(&melt_quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        db_quote.state,
+        MeltQuoteState::Paid,
+        "Melt quote should be in Paid state after successful melt"
+    );
+}
+
+/// Tests that the melt quote status can be checked via MultiMintWallet after a melt has completed
+///
+/// This test verifies the same flow as test_melt_quote_status_after_melt but using
+/// the MultiMintWallet abstraction:
+/// 1. Create a MultiMintWallet and add a mint
+/// 2. Mint tokens via the multi mint wallet
+/// 3. Create a melt quote and execute the melt
+/// 4. Check the melt quote status via check_melt_quote
+/// 5. Verify the quote is in the Paid state
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_quote_status_after_melt_multi_mint_wallet() {
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+    let localstore = Arc::new(memory::empty().await.unwrap());
+
+    let multi_mint_wallet = MultiMintWallet::new(localstore.clone(), seed, CurrencyUnit::Sat)
+        .await
+        .expect("failed to create multi mint wallet");
+
+    let mint_url = MintUrl::from_str(&get_mint_url_from_env()).expect("invalid mint url");
+    multi_mint_wallet
+        .add_mint(mint_url.clone())
+        .await
+        .expect("failed to add mint");
+
+    let mint_quote = multi_mint_wallet
+        .mint_quote(&mint_url, 100.into(), None)
+        .await
+        .unwrap();
+
+    let invoice = Bolt11Invoice::from_str(&mint_quote.request).unwrap();
+    pay_if_regtest(&get_test_temp_dir(), &invoice)
+        .await
+        .unwrap();
+
+    let _proofs = multi_mint_wallet
+        .wait_for_mint_quote(&mint_url, &mint_quote.id, SplitTarget::default(), None, 60)
+        .await
+        .expect("mint failed");
+
+    let balance = multi_mint_wallet.total_balance().await.unwrap();
+    assert_eq!(balance, 100.into());
+
+    let invoice = create_invoice_for_env(Some(50)).await.unwrap();
+
+    let melt_quote = multi_mint_wallet
+        .melt_quote(&mint_url, invoice, None)
+        .await
+        .unwrap();
+
+    let melt_response = multi_mint_wallet
+        .melt_with_mint(&mint_url, &melt_quote.id)
+        .await
+        .unwrap();
+    assert_eq!(melt_response.state, MeltQuoteState::Paid);
+
+    let quote_status = multi_mint_wallet
+        .check_melt_quote(&mint_url, &melt_quote.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        quote_status.state,
+        MeltQuoteState::Paid,
+        "Melt quote should be in Paid state after successful melt (via MultiMintWallet)"
+    );
+
+    use cdk_common::database::WalletDatabase;
+
+    let db_quote = localstore
+        .get_melt_quote(&melt_quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        db_quote.state,
+        MeltQuoteState::Paid,
+        "Melt quote should be in Paid state after successful melt"
+    );
+}
+
 /// Tests that change outputs in a melt quote are correctly handled
 ///
 /// This test verifies the following workflow:
@@ -479,17 +628,26 @@ async fn test_pay_invoice_twice() {
 
     let melt = wallet.melt(&melt_quote.id).await.unwrap();
 
-    let melt_two = wallet.melt_quote(invoice, None).await;
+    // Creating a second quote for the same invoice is allowed
+    let melt_quote_two = wallet.melt_quote(invoice, None).await.unwrap();
+
+    // But attempting to melt (pay) the second quote should fail
+    // since the first quote with the same lookup_id is already paid
+    let melt_two = wallet.melt(&melt_quote_two.id).await;
 
     match melt_two {
-        Err(err) => match err {
-            cdk::Error::RequestAlreadyPaid => (),
-            err => {
-                if !err.to_string().contains("Duplicate entry") {
-                    panic!("Wrong invoice already paid: {}", err.to_string());
-                }
+        Err(err) => {
+            let err_str = err.to_string().to_lowercase();
+            if !err_str.contains("duplicate")
+                && !err_str.contains("already paid")
+                && !err_str.contains("request already paid")
+            {
+                panic!(
+                    "Expected duplicate/already paid error, got: {}",
+                    err.to_string()
+                );
             }
-        },
+        }
         Ok(_) => {
             panic!("Should not have allowed second payment");
         }

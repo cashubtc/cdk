@@ -1462,6 +1462,110 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
     );
 }
 
+/// Tests that concurrent melt attempts for the same invoice result in exactly one success
+///
+/// This test verifies the race condition protection: when multiple melt quotes exist for the
+/// same invoice and all are attempted concurrently, only one should succeed due to
+/// the FOR UPDATE locking on quotes with the same request_lookup_id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_concurrent_melt_same_invoice() {
+    const NUM_WALLETS: usize = 4;
+
+    // Create multiple wallets to simulate concurrent requests
+    let mut wallets = Vec::with_capacity(NUM_WALLETS);
+    for i in 0..NUM_WALLETS {
+        let wallet = Arc::new(
+            Wallet::new(
+                MINT_URL,
+                CurrencyUnit::Sat,
+                Arc::new(memory::empty().await.unwrap()),
+                Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+                None,
+            )
+            .expect(&format!("failed to create wallet {}", i)),
+        );
+        wallets.push(wallet);
+    }
+
+    // Mint proofs for all wallets
+    for (i, wallet) in wallets.iter().enumerate() {
+        let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+        let mut proof_streams =
+            wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+        proof_streams
+            .next()
+            .await
+            .expect(&format!("payment for wallet {}", i))
+            .expect("no error");
+    }
+
+    // Create a single invoice that all wallets will try to pay
+    let fake_description = FakeInvoiceDescription::default();
+    let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
+
+    // All wallets create melt quotes for the same invoice
+    let mut melt_quotes = Vec::with_capacity(NUM_WALLETS);
+    for wallet in &wallets {
+        let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+        melt_quotes.push(melt_quote);
+    }
+
+    // Verify all quotes have the same request (same invoice = same lookup_id)
+    for quote in &melt_quotes[1..] {
+        assert_eq!(
+            melt_quotes[0].request, quote.request,
+            "All quotes should be for the same invoice"
+        );
+    }
+
+    // Attempt all melts concurrently
+    let mut handles = Vec::with_capacity(NUM_WALLETS);
+    for (wallet, quote) in wallets.iter().zip(melt_quotes.iter()) {
+        let wallet_clone = Arc::clone(wallet);
+        let quote_id = quote.id.clone();
+        handles.push(tokio::spawn(
+            async move { wallet_clone.melt(&quote_id).await },
+        ));
+    }
+
+    // Collect results
+    let mut results = Vec::with_capacity(NUM_WALLETS);
+    for handle in handles {
+        results.push(handle.await.expect("task panicked"));
+    }
+
+    // Count successes and failures
+    let success_count = results.iter().filter(|r| r.is_ok()).count();
+    let failure_count = results.iter().filter(|r| r.is_err()).count();
+
+    assert_eq!(
+        success_count, 1,
+        "Expected exactly one successful melt, got {}. Results: {:?}",
+        success_count, results
+    );
+    assert_eq!(
+        failure_count,
+        NUM_WALLETS - 1,
+        "Expected {} failed melts, got {}",
+        NUM_WALLETS - 1,
+        failure_count
+    );
+
+    // Verify all failures were due to duplicate detection
+    for result in &results {
+        if let Err(err) = result {
+            let err_str = err.to_string().to_lowercase();
+            assert!(
+                err_str.contains("duplicate")
+                    || err_str.contains("already paid")
+                    || err_str.contains("pending"),
+                "Expected duplicate/already paid/pending error, got: {}",
+                err
+            );
+        }
+    }
+}
+
 /// Tests that wallet automatically recovers proofs after a failed swap operation
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_wallet_proof_recovery_after_failed_swap() {
@@ -1540,4 +1644,93 @@ async fn test_wallet_proof_recovery_after_failed_swap() {
         initial_ys.iter().any(|y| !final_ys.contains(y)),
         "Proofs should have been swapped to new ones"
     );
+}
+
+/// Tests that melt_proofs works correctly with proofs that are not already in the wallet's database.
+/// This is similar to the receive flow where proofs come from an external source.
+///
+/// Flow:
+/// 1. Wallet A mints proofs (proofs ARE in Wallet A's database)
+/// 2. Wallet B creates a melt quote
+/// 3. Wallet B calls melt_proofs with proofs from Wallet A (proofs are NOT in Wallet B's database)
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_proofs_external() {
+    // Create sender wallet (Wallet A) and mint some proofs
+    let wallet_sender = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create sender wallet");
+
+    let mint_quote = wallet_sender.mint_quote(100.into(), None).await.unwrap();
+
+    let mut proof_streams =
+        wallet_sender.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+
+    let proofs = proof_streams
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    assert_eq!(proofs.total_amount().unwrap(), Amount::from(100));
+
+    // Create receiver/melter wallet (Wallet B) with a separate database
+    // These proofs are NOT in Wallet B's database
+    let wallet_melter = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create melter wallet");
+
+    // Verify proofs are not in the melter wallet's database
+    let melter_proofs = wallet_melter.get_unspent_proofs().await.unwrap();
+    assert!(
+        melter_proofs.is_empty(),
+        "Melter wallet should have no proofs initially"
+    );
+
+    // Create a fake invoice for melting
+    let fake_description = FakeInvoiceDescription::default();
+    let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
+
+    // Wallet B creates a melt quote
+    let melt_quote = wallet_melter
+        .melt_quote(invoice.to_string(), None)
+        .await
+        .unwrap();
+
+    // Wallet B calls melt_proofs with external proofs (from Wallet A)
+    // These proofs are NOT in wallet_melter's database
+    let melted = wallet_melter
+        .melt_proofs(&melt_quote.id, proofs.clone())
+        .await
+        .unwrap();
+
+    // Verify the melt succeeded
+    assert_eq!(melted.amount, Amount::from(9));
+    assert_eq!(melted.fee_paid, 1.into());
+
+    // Verify change was returned (100 input - 9 melt amount = 91 change, minus fee reserve)
+    assert!(melted.change.is_some());
+    let change_amount = melted.change.unwrap().total_amount().unwrap();
+    assert!(change_amount > Amount::ZERO, "Should have received change");
+
+    // Verify the melter wallet now has the change proofs
+    let melter_balance = wallet_melter.total_balance().await.unwrap();
+    assert_eq!(melter_balance, change_amount);
+
+    // Verify a transaction was recorded
+    let transactions = wallet_melter
+        .list_transactions(Some(TransactionDirection::Outgoing))
+        .await
+        .unwrap();
+    assert_eq!(transactions.len(), 1);
+    assert_eq!(transactions[0].amount, Amount::from(9));
 }

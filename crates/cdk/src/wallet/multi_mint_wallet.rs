@@ -12,7 +12,7 @@ use anyhow::Result;
 use cdk_common::database;
 use cdk_common::database::WalletDatabase;
 use cdk_common::task::spawn;
-use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection};
+use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection, TransactionId};
 use tokio::sync::RwLock;
 use tracing::instrument;
 use zeroize::Zeroize;
@@ -561,6 +561,50 @@ impl MultiMintWallet {
         transactions.sort();
 
         Ok(transactions)
+    }
+
+    /// Get proofs for a transaction by transaction ID
+    ///
+    /// This retrieves all proofs associated with a transaction. If `mint_url` is provided,
+    /// it will only check that specific mint's wallet. Otherwise, it searches across all
+    /// wallets to find which mint the transaction belongs to.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The transaction ID
+    /// * `mint_url` - Optional mint URL to check directly, avoiding iteration over all wallets
+    #[instrument(skip(self))]
+    pub async fn get_proofs_for_transaction(
+        &self,
+        id: TransactionId,
+        mint_url: Option<MintUrl>,
+    ) -> Result<Proofs, Error> {
+        let wallets = self.wallets.read().await;
+
+        // If mint_url is provided, try that wallet directly
+        if let Some(mint_url) = mint_url {
+            if let Some(wallet) = wallets.get(&mint_url) {
+                // Verify the transaction exists in this wallet
+                if wallet.get_transaction(id).await?.is_some() {
+                    return wallet.get_proofs_for_transaction(id).await;
+                }
+            }
+            // Transaction not found in specified mint
+            return Err(Error::TransactionNotFound);
+        }
+
+        // No mint_url provided, search across all wallets
+        for (mint_url, wallet) in wallets.iter() {
+            if let Some(transaction) = wallet.get_transaction(id).await? {
+                // Verify the transaction belongs to this wallet's mint
+                if &transaction.mint_url == mint_url {
+                    return wallet.get_proofs_for_transaction(id).await;
+                }
+            }
+        }
+
+        // Transaction not found in any wallet
+        Err(Error::TransactionNotFound)
     }
 
     /// Get total balance across all wallets (since all wallets use the same currency unit)
@@ -1297,6 +1341,36 @@ impl MultiMintWallet {
         })?;
 
         wallet.melt(quote_id).await
+    }
+
+    /// Melt specific proofs from a specific mint using a quote ID
+    ///
+    /// This method allows melting proofs that may not be in the wallet's database,
+    /// similar to how `receive_proofs` handles external proofs. The proofs will be
+    /// added to the database and used for the melt operation.
+    ///
+    /// # Arguments
+    ///
+    /// * `mint_url` - The mint to use for the melt operation
+    /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
+    /// * `proofs` - The proofs to melt (can be external proofs not in the wallet's database)
+    ///
+    /// # Returns
+    ///
+    /// A `Melted` result containing the payment details and any change proofs
+    #[instrument(skip(self, proofs))]
+    pub async fn melt_proofs(
+        &self,
+        mint_url: &MintUrl,
+        quote_id: &str,
+        proofs: Proofs,
+    ) -> Result<Melted, Error> {
+        let wallets = self.wallets.read().await;
+        let wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        wallet.melt_proofs(quote_id, proofs).await
     }
 
     /// Check a specific melt quote status

@@ -250,15 +250,22 @@ impl MeltSaga<Initial> {
             );
         }
 
+        // Update quote state to Pending
+        let (state, quote) = match tx
+            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending, None)
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(err.into());
+            }
+        };
+
         // Publish proof state changes
         for pk in input_ys.iter() {
             self.pubsub.proof_state((*pk, State::Pending));
         }
-
-        // Update quote state to Pending
-        let (state, quote) = tx
-            .update_melt_quote_state(melt_request.quote(), MeltQuoteState::Pending, None)
-            .await?;
 
         if input_unit != Some(quote.unit.clone()) {
             tx.rollback().await?;
