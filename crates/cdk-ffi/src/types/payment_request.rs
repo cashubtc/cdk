@@ -240,6 +240,53 @@ pub fn decode_create_request_params(json: String) -> Result<CreateRequestParams,
     Ok(serde_json::from_str(&json)?)
 }
 
+/// Information needed to wait for an incoming Nostr payment
+///
+/// Returned by `create_request` when the transport is `nostr`. Pass this to
+/// `wait_for_nostr_payment` to connect, subscribe, and receive the incoming
+/// payment on the specified relays.
+#[derive(uniffi::Object)]
+pub struct NostrWaitInfo {
+    inner: cdk::wallet::payment_request::NostrWaitInfo,
+}
+
+impl NostrWaitInfo {
+    /// Create from inner CDK type
+    pub(crate) fn from_inner(inner: cdk::wallet::payment_request::NostrWaitInfo) -> Self {
+        Self { inner }
+    }
+
+    /// Get inner reference
+    pub(crate) fn inner(&self) -> &cdk::wallet::payment_request::NostrWaitInfo {
+        &self.inner
+    }
+}
+
+#[uniffi::export]
+impl NostrWaitInfo {
+    /// Get the Nostr relays to connect to
+    pub fn relays(&self) -> Vec<String> {
+        self.inner.relays.clone()
+    }
+
+    /// Get the recipient public key as a hex string
+    pub fn pubkey(&self) -> String {
+        self.inner.pubkey.to_hex()
+    }
+}
+
+/// Result of creating a payment request
+///
+/// Contains the payment request and optionally the Nostr wait info
+/// if the transport was set to "nostr".
+#[derive(uniffi::Record)]
+pub struct CreateRequestResult {
+    /// The payment request to share with the payer
+    pub payment_request: Arc<PaymentRequest>,
+    /// Nostr wait info (present when transport is "nostr")
+    pub nostr_wait_info: Option<Arc<NostrWaitInfo>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

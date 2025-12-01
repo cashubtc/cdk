@@ -13,7 +13,9 @@ use cdk::wallet::multi_mint_wallet::{
 
 use crate::error::FfiError;
 use crate::token::Token;
-use crate::types::payment_request::{CreateRequestParams, PaymentRequest};
+use crate::types::payment_request::{
+    CreateRequestParams, CreateRequestResult, NostrWaitInfo, PaymentRequest,
+};
 use crate::types::*;
 
 /// FFI-compatible MultiMintWallet
@@ -593,17 +595,65 @@ impl MultiMintWallet {
     ///     http_url: Some("https://example.com/callback".to_string()),
     ///     ..Default::default()
     /// };
-    /// let request = wallet.create_request(params).await?;
-    /// println!("Share this request: {}", request.to_string_encoded());
+    /// let result = wallet.create_request(params).await?;
+    /// println!("Share this request: {}", result.payment_request.to_string_encoded());
+    ///
+    /// // If using Nostr transport, wait for payment:
+    /// if let Some(nostr_info) = result.nostr_wait_info {
+    ///     let amount = wallet.wait_for_nostr_payment(nostr_info).await?;
+    ///     println!("Received {} sats", amount);
+    /// }
     /// ```
     pub async fn create_request(
         &self,
         params: CreateRequestParams,
-    ) -> Result<std::sync::Arc<PaymentRequest>, FfiError> {
-        let payment_request = self.inner.create_request(params.into()).await?;
-        Ok(std::sync::Arc::new(PaymentRequest::from_inner(
-            payment_request,
-        )))
+    ) -> Result<CreateRequestResult, FfiError> {
+        let (payment_request, nostr_wait_info) = self.inner.create_request(params.into()).await?;
+        Ok(CreateRequestResult {
+            payment_request: Arc::new(PaymentRequest::from_inner(payment_request)),
+            nostr_wait_info: nostr_wait_info.map(|info| Arc::new(NostrWaitInfo::from_inner(info))),
+        })
+    }
+
+    /// Wait for a Nostr payment and receive it into the wallet
+    ///
+    /// This method connects to the Nostr relays specified in the `NostrWaitInfo`,
+    /// subscribes for incoming payment events, and receives the first valid
+    /// payment into the wallet.
+    ///
+    /// # Arguments
+    ///
+    /// * `info` - The Nostr wait info returned from `create_request` when using Nostr transport
+    ///
+    /// # Returns
+    ///
+    /// The amount received from the payment.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let result = wallet.create_request(params).await?;
+    /// if let Some(nostr_info) = result.nostr_wait_info {
+    ///     let amount = wallet.wait_for_nostr_payment(nostr_info).await?;
+    ///     println!("Received {} sats", amount);
+    /// }
+    /// ```
+    pub async fn wait_for_nostr_payment(
+        &self,
+        info: Arc<NostrWaitInfo>,
+    ) -> Result<Amount, FfiError> {
+        // We need to clone the inner NostrWaitInfo since we can't consume the Arc
+        let info_inner = cdk::wallet::payment_request::NostrWaitInfo {
+            keys: info.inner().keys.clone(),
+            relays: info.inner().relays.clone(),
+            pubkey: info.inner().pubkey,
+        };
+        let amount = self
+            .inner
+            .wait_for_nostr_payment(info_inner)
+            .await
+            .map_err(|e| FfiError::Generic { msg: e.to_string() })?;
+        Ok(amount.into())
     }
 }
 
