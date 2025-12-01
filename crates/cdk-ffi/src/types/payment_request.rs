@@ -270,7 +270,10 @@ mod tests {
         let decoded = PaymentRequest::from_string(encoded).unwrap();
 
         assert_eq!(req.payment_id(), decoded.payment_id());
-        assert_eq!(req.amount().map(|a| a.value), decoded.amount().map(|a| a.value));
+        assert_eq!(
+            req.amount().map(|a| a.value),
+            decoded.amount().map(|a| a.value)
+        );
     }
 
     #[test]
