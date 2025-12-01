@@ -208,14 +208,12 @@ where
 
             if self.in_use.load(Ordering::Relaxed) < self.max_size {
                 drop(resources);
-                self.increment_connection_counter();
                 let stale: Arc<AtomicBool> = Arc::new(false.into());
+                let new_resource = RM::new_resource(&self.config, stale.clone(), timeout)?;
+                self.increment_connection_counter();
 
                 return Ok(PooledResource {
-                    resource: Some((
-                        stale.clone(),
-                        RM::new_resource(&self.config, stale, timeout)?,
-                    )),
+                    resource: Some((stale, new_resource)),
                     pool: self.clone(),
                     #[cfg(feature = "prometheus")]
                     start_time: Instant::now(),
