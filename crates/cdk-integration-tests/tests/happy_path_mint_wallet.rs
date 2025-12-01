@@ -628,17 +628,26 @@ async fn test_pay_invoice_twice() {
 
     let melt = wallet.melt(&melt_quote.id).await.unwrap();
 
-    let melt_two = wallet.melt_quote(invoice, None).await;
+    // Creating a second quote for the same invoice is allowed
+    let melt_quote_two = wallet.melt_quote(invoice, None).await.unwrap();
+
+    // But attempting to melt (pay) the second quote should fail
+    // since the first quote with the same lookup_id is already paid
+    let melt_two = wallet.melt(&melt_quote_two.id).await;
 
     match melt_two {
-        Err(err) => match err {
-            cdk::Error::RequestAlreadyPaid => (),
-            err => {
-                if !err.to_string().contains("Duplicate entry") {
-                    panic!("Wrong invoice already paid: {}", err.to_string());
-                }
+        Err(err) => {
+            let err_str = err.to_string().to_lowercase();
+            if !err_str.contains("duplicate")
+                && !err_str.contains("already paid")
+                && !err_str.contains("request already paid")
+            {
+                panic!(
+                    "Expected duplicate/already paid error, got: {}",
+                    err.to_string()
+                );
             }
-        },
+        }
         Ok(_) => {
             panic!("Should not have allowed second payment");
         }

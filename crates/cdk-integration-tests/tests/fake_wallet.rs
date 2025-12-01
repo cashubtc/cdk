@@ -1462,6 +1462,110 @@ async fn test_wallet_proof_recovery_after_failed_melt() {
     );
 }
 
+/// Tests that concurrent melt attempts for the same invoice result in exactly one success
+///
+/// This test verifies the race condition protection: when multiple melt quotes exist for the
+/// same invoice and all are attempted concurrently, only one should succeed due to
+/// the FOR UPDATE locking on quotes with the same request_lookup_id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_concurrent_melt_same_invoice() {
+    const NUM_WALLETS: usize = 4;
+
+    // Create multiple wallets to simulate concurrent requests
+    let mut wallets = Vec::with_capacity(NUM_WALLETS);
+    for i in 0..NUM_WALLETS {
+        let wallet = Arc::new(
+            Wallet::new(
+                MINT_URL,
+                CurrencyUnit::Sat,
+                Arc::new(memory::empty().await.unwrap()),
+                Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+                None,
+            )
+            .expect(&format!("failed to create wallet {}", i)),
+        );
+        wallets.push(wallet);
+    }
+
+    // Mint proofs for all wallets
+    for (i, wallet) in wallets.iter().enumerate() {
+        let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+        let mut proof_streams =
+            wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+        proof_streams
+            .next()
+            .await
+            .expect(&format!("payment for wallet {}", i))
+            .expect("no error");
+    }
+
+    // Create a single invoice that all wallets will try to pay
+    let fake_description = FakeInvoiceDescription::default();
+    let invoice = create_fake_invoice(9000, serde_json::to_string(&fake_description).unwrap());
+
+    // All wallets create melt quotes for the same invoice
+    let mut melt_quotes = Vec::with_capacity(NUM_WALLETS);
+    for wallet in &wallets {
+        let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+        melt_quotes.push(melt_quote);
+    }
+
+    // Verify all quotes have the same request (same invoice = same lookup_id)
+    for quote in &melt_quotes[1..] {
+        assert_eq!(
+            melt_quotes[0].request, quote.request,
+            "All quotes should be for the same invoice"
+        );
+    }
+
+    // Attempt all melts concurrently
+    let mut handles = Vec::with_capacity(NUM_WALLETS);
+    for (wallet, quote) in wallets.iter().zip(melt_quotes.iter()) {
+        let wallet_clone = Arc::clone(wallet);
+        let quote_id = quote.id.clone();
+        handles.push(tokio::spawn(
+            async move { wallet_clone.melt(&quote_id).await },
+        ));
+    }
+
+    // Collect results
+    let mut results = Vec::with_capacity(NUM_WALLETS);
+    for handle in handles {
+        results.push(handle.await.expect("task panicked"));
+    }
+
+    // Count successes and failures
+    let success_count = results.iter().filter(|r| r.is_ok()).count();
+    let failure_count = results.iter().filter(|r| r.is_err()).count();
+
+    assert_eq!(
+        success_count, 1,
+        "Expected exactly one successful melt, got {}. Results: {:?}",
+        success_count, results
+    );
+    assert_eq!(
+        failure_count,
+        NUM_WALLETS - 1,
+        "Expected {} failed melts, got {}",
+        NUM_WALLETS - 1,
+        failure_count
+    );
+
+    // Verify all failures were due to duplicate detection
+    for result in &results {
+        if let Err(err) = result {
+            let err_str = err.to_string().to_lowercase();
+            assert!(
+                err_str.contains("duplicate")
+                    || err_str.contains("already paid")
+                    || err_str.contains("pending"),
+                "Expected duplicate/already paid/pending error, got: {}",
+                err
+            );
+        }
+    }
+}
+
 /// Tests that wallet automatically recovers proofs after a failed swap operation
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_wallet_proof_recovery_after_failed_swap() {
