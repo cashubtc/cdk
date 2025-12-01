@@ -6,7 +6,7 @@ on:
   pull_request:
     branches:
       - main
-      - 'v[0-9]*.[0-9]*.x'  # Match version branches like v0.13.x, v1.0.x, etc.
+      - "v[0-9]*.[0-9]*.x" # Match version branches like v0.13.x, v1.0.x, etc.
   release:
     types: [created]
 
@@ -48,14 +48,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        build-args:
-          [
-            mint-token,
-            melt-token,
-            p2pk,
-            proof-selection,
-            wallet
-          ]
+        build-args: [mint-token, melt-token, p2pk, proof-selection, wallet]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -84,8 +77,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        build-args:
-          [
+        build-args: [
             # Core crate testing
             -p cashu,
             -p cashu --no-default-features,
@@ -105,18 +97,18 @@ jobs:
             -p cdk-sql-common,
             -p cdk-sql-common --no-default-features --features wallet,
             -p cdk-sql-common --no-default-features --features mint,
-            
+
             # Database and infrastructure crates
             -p cdk-redb,
             -p cdk-sqlite,
             -p cdk-sqlite --features sqlcipher,
-            
+
             # HTTP/API layer - consolidated
             -p cdk-axum,
             -p cdk-axum --no-default-features,
             -p cdk-axum --no-default-features --features redis,
             -p cdk-axum --no-default-features --features "redis swagger",
-            
+
             # Lightning backends
             -p cdk-cln,
             -p cdk-lnd,
@@ -124,12 +116,12 @@ jobs:
             -p cdk-fake-wallet,
             -p cdk-payment-processor,
             -p cdk-ldk-node,
-            
+
             -p cdk-signatory,
             -p cdk-mint-rpc,
 
             -p cdk-prometheus,
-            
+
             # FFI bindings
             -p cdk-ffi,
             -p cdk-ffi --no-default-features,
@@ -187,15 +179,8 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        build-args:
-          [
-            -p cdk-integration-tests,
-          ]
-        database:
-          [
-            SQLITE,
-            POSTGRES
-          ]
+        build-args: [-p cdk-integration-tests]
+        database: [SQLITE, POSTGRES]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -234,14 +219,8 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        build-args:
-          [
-            -p cdk-integration-tests,
-          ]
-        database:
-          [
-          SQLITE,
-          ]
+        build-args: [-p cdk-integration-tests]
+        database: [SQLITE]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -282,12 +261,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        database:
-          [
-          memory,
-          sqlite,
-          redb
-          ]
+        database: [memory, sqlite, redb]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -322,7 +296,6 @@ jobs:
       - name: Test mint
         run: nix develop -i -L .#stable --command just test
 
-
   payment-processor-itests:
     name: "Payment processor tests"
     runs-on: ubuntu-latest
@@ -331,12 +304,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        ln:
-          [
-          FAKEWALLET,
-          CLN,
-          LND
-          ]
+        ln: [FAKEWALLET, CLN, LND]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -375,8 +343,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        build-args:
-          [
+        build-args: [
             # Core library - all features EXCEPT swagger (which breaks MSRV)
             '-p cdk --features "mint,wallet,auth,nostr,bip353,tor,prometheus"',
 
@@ -456,10 +423,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        database:
-          [
-          SQLITE,
-          ]
+        database: [SQLITE]
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -537,3 +501,28 @@ jobs:
         run: nix develop -i -L .#stable --command cargo test --doc
       - name: Check docs with strict warnings
         run: nix develop -i -L .#stable --command just docs-strict
+
+  ffi-tests:
+    name: "FFI Python tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Get flake hash
+        id: flake-hash
+        run: echo "hash=$(sha256sum flake.lock | cut -d' ' -f1 | cut -c1-8)" >> $GITHUB_OUTPUT
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          diagnostic-endpoint: ""
+          use-flakehub: false
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
+      - name: Run FFI tests
+        run: nix develop -i -L .#integration --command just ffi-test

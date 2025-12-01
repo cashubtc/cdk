@@ -236,6 +236,7 @@
                 buildInputs = buildInputs ++ [
                   stable_toolchain
                   pkgs.docker-client
+                  pkgs.python311
                 ];
                 inherit nativeBuildInputs;
               }

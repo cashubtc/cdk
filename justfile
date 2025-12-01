@@ -577,6 +577,14 @@ ffi-generate-all *ARGS="--release": ffi-build
   just ffi-generate kotlin {{ARGS}}
   @echo "✅ All bindings generated successfully!"
 
+# Run Python FFI tests
+ffi-test: ffi-generate-python
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "🧪 Running Python FFI tests..."
+  python3 crates/cdk-ffi/tests/test_transactions.py
+  echo "✅ Tests completed!"
+
 # Build debug version and generate Python bindings quickly (for development)
 ffi-dev-python:
   #!/usr/bin/env bash
