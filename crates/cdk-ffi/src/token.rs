@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use crate::error::FfiError;
-use crate::{Amount, CurrencyUnit, MintUrl, Proofs};
+use crate::{Amount, CurrencyUnit, KeySetInfo, MintUrl, Proofs};
 
 /// FFI-compatible Token
 #[derive(Debug, uniffi::Object)]
@@ -75,6 +75,13 @@ impl Token {
         // For now, return empty keysets to get all proofs
         let empty_keysets = vec![];
         let proofs = self.inner.proofs(&empty_keysets)?;
+        Ok(proofs.into_iter().map(|p| p.into()).collect())
+    }
+
+    /// Get proofs from the token
+    pub fn proofs(&self, mint_keysets: Vec<KeySetInfo>) -> Result<Proofs, FfiError> {
+        let mint_keysets: Vec<_> = mint_keysets.into_iter().map(|k| k.into()).collect();
+        let proofs = self.inner.proofs(&mint_keysets)?;
         Ok(proofs.into_iter().map(|p| p.into()).collect())
     }
 

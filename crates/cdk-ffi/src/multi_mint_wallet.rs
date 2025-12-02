@@ -8,7 +8,8 @@ use bip39::Mnemonic;
 use cdk::wallet::multi_mint_wallet::{
     MultiMintReceiveOptions as CdkMultiMintReceiveOptions,
     MultiMintSendOptions as CdkMultiMintSendOptions, MultiMintWallet as CdkMultiMintWallet,
-    TransferMode as CdkTransferMode, TransferResult as CdkTransferResult,
+    TokenData as CdkTokenData, TransferMode as CdkTransferMode,
+    TransferResult as CdkTransferResult,
 };
 
 use crate::error::FfiError;
@@ -197,6 +198,27 @@ impl MultiMintWallet {
         } else {
             false
         }
+    }
+
+    pub async fn get_mint_keysets(&self, mint_url: MintUrl) -> Result<Vec<KeySetInfo>, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let keysets = self.inner.get_mint_keysets(&cdk_mint_url).await?;
+
+        let keysets = keysets.into_iter().map(|k| k.into()).collect();
+
+        Ok(keysets)
+    }
+
+    /// Get token data (mint URL and proofs) from a token
+    ///
+    /// This method extracts the mint URL and proofs from a token. It will automatically
+    /// fetch the keysets from the mint if needed to properly decode the proofs.
+    ///
+    /// The mint must already be added to the wallet. If the mint is not in the wallet,
+    /// use `add_mint` first.
+    pub async fn get_token_data(&self, token: Arc<Token>) -> Result<TokenData, FfiError> {
+        let token_data = self.inner.get_token_data(&token.inner).await?;
+        Ok(token_data.into())
     }
 
     /// Get wallet balances for all mints
@@ -716,6 +738,27 @@ impl From<CdkTransferResult> for TransferResult {
             fees_paid: result.fees_paid.into(),
             source_balance_after: result.source_balance_after.into(),
             target_balance_after: result.target_balance_after.into(),
+        }
+    }
+}
+
+/// Data extracted from a token including mint URL, proofs, and memo
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TokenData {
+    /// The mint URL from the token
+    pub mint_url: MintUrl,
+    /// The proofs contained in the token
+    pub proofs: Proofs,
+    /// The memo from the token, if present
+    pub memo: Option<String>,
+}
+
+impl From<CdkTokenData> for TokenData {
+    fn from(data: CdkTokenData) -> Self {
+        Self {
+            mint_url: data.mint_url.into(),
+            proofs: data.proofs.into_iter().map(|p| p.into()).collect(),
+            memo: data.memo,
         }
     }
 }

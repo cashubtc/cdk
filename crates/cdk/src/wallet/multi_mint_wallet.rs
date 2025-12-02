@@ -9,10 +9,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Result;
-use cdk_common::database;
 use cdk_common::database::WalletDatabase;
 use cdk_common::task::spawn;
 use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection, TransactionId};
+use cdk_common::{database, KeySetInfo};
 use tokio::sync::RwLock;
 use tracing::instrument;
 use zeroize::Zeroize;
@@ -59,6 +59,17 @@ pub struct TransferResult {
     pub source_balance_after: Amount,
     /// New balance in target mint after transfer
     pub target_balance_after: Amount,
+}
+
+/// Data extracted from a token including mint URL, proofs, and memo
+#[derive(Debug, Clone)]
+pub struct TokenData {
+    /// The mint URL from the token
+    pub mint_url: MintUrl,
+    /// The proofs contained in the token
+    pub proofs: Proofs,
+    /// The memo from the token, if present
+    pub memo: Option<String>,
 }
 
 /// Configuration for individual wallets within MultiMintWallet
@@ -518,6 +529,66 @@ impl MultiMintWallet {
     /// Get the currency unit for this wallet
     pub fn unit(&self) -> &CurrencyUnit {
         &self.unit
+    }
+
+    /// Get keysets for a mint url
+    pub async fn get_mint_keysets(&self, mint_url: &MintUrl) -> Result<Vec<KeySetInfo>, Error> {
+        let wallets = self.wallets.read().await;
+        let target_wallet = wallets.get(mint_url).ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+
+        target_wallet.get_mint_keysets().await
+    }
+
+    /// Get token data (mint URL and proofs) from a token
+    ///
+    /// This method extracts the mint URL and proofs from a token. It will automatically
+    /// fetch the keysets from the mint if needed to properly decode the proofs.
+    ///
+    /// The mint must already be added to the wallet. If the mint is not in the wallet,
+    /// use `add_mint` first or set `allow_untrusted` in receive options.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The token to extract data from
+    ///
+    /// # Returns
+    ///
+    /// A `TokenData` struct containing the mint URL and proofs
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cdk::wallet::MultiMintWallet;
+    /// # use cdk::nuts::Token;
+    /// # use std::str::FromStr;
+    /// # async fn example(wallet: &MultiMintWallet) -> Result<(), Box<dyn std::error::Error>> {
+    /// let token = Token::from_str("cashuA...")?;
+    /// let token_data = wallet.get_token_data(&token).await?;
+    /// println!("Mint: {}", token_data.mint_url);
+    /// println!("Proofs: {} total", token_data.proofs.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[instrument(skip(self, token))]
+    pub async fn get_token_data(&self, token: &Token) -> Result<TokenData, Error> {
+        let mint_url = token.mint_url()?;
+
+        // Get the keysets for this mint
+        let keysets = self.get_mint_keysets(&mint_url).await?;
+
+        // Extract proofs using the keysets
+        let proofs = token.proofs(&keysets)?;
+
+        // Get the memo
+        let memo = token.memo().clone();
+
+        Ok(TokenData {
+            mint_url,
+            proofs,
+            memo,
+        })
     }
 
     /// Get wallet balances for all mints
@@ -2036,5 +2107,94 @@ mod tests {
         assert_eq!(options.max_transfer_amount, Some(Amount::from(500)));
         assert_eq!(options.allowed_mints, vec![mint1, mint2]);
         assert_eq!(options.excluded_mints, vec![mint3]);
+    }
+
+    #[tokio::test]
+    async fn test_get_mint_keysets_unknown_mint() {
+        use std::str::FromStr;
+
+        let multi_wallet = create_test_multi_wallet().await;
+        let mint_url = MintUrl::from_str("https://unknown-mint.example.com").unwrap();
+
+        // Should error when trying to get keysets for a mint that hasn't been added
+        let result = multi_wallet.get_mint_keysets(&mint_url).await;
+        assert!(result.is_err());
+
+        match result {
+            Err(Error::UnknownMint { mint_url: url }) => {
+                assert!(url.contains("unknown-mint.example.com"));
+            }
+            _ => panic!("Expected UnknownMint error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multi_mint_receive_options() {
+        use std::str::FromStr;
+
+        let mint_url = MintUrl::from_str("https://trusted.mint.example.com").unwrap();
+
+        // Test default options
+        let default_opts = MultiMintReceiveOptions::default();
+        assert!(!default_opts.allow_untrusted);
+        assert!(default_opts.transfer_to_mint.is_none());
+
+        // Test builder pattern
+        let opts = MultiMintReceiveOptions::new()
+            .allow_untrusted(true)
+            .transfer_to_mint(Some(mint_url.clone()));
+
+        assert!(opts.allow_untrusted);
+        assert_eq!(opts.transfer_to_mint, Some(mint_url));
+    }
+
+    #[tokio::test]
+    async fn test_get_token_data_unknown_mint() {
+        use std::str::FromStr;
+
+        let multi_wallet = create_test_multi_wallet().await;
+
+        // Create a token from a mint that isn't in the wallet
+        // This is a valid token structure pointing to an unknown mint
+        let token_str = "cashuBpGF0gaJhaUgArSaMTR9YJmFwgaNhYQFhc3hAOWE2ZGJiODQ3YmQyMzJiYTc2ZGIwZGYxOTcyMTZiMjlkM2I4Y2MxNDU1M2NkMjc4MjdmYzFjYzk0MmZlZGI0ZWFjWCEDhhhUP_trhpXfStS6vN6So0qWvc2X3O4NfM-Y1HISZ5JhZGlUaGFuayB5b3VhbXVodHRwOi8vbG9jYWxob3N0OjMzMzhhdWNzYXQ=";
+        let token = Token::from_str(token_str).unwrap();
+
+        // Should error because the mint (localhost:3338) hasn't been added
+        let result = multi_wallet.get_token_data(&token).await;
+        assert!(result.is_err());
+
+        match result {
+            Err(Error::UnknownMint { mint_url }) => {
+                assert!(mint_url.contains("localhost:3338"));
+            }
+            _ => panic!("Expected UnknownMint error"),
+        }
+    }
+
+    #[test]
+    fn test_token_data_struct() {
+        use std::str::FromStr;
+
+        let mint_url = MintUrl::from_str("https://example.mint.com").unwrap();
+        let proofs = vec![];
+        let memo = Some("Test memo".to_string());
+
+        let token_data = TokenData {
+            mint_url: mint_url.clone(),
+            proofs: proofs.clone(),
+            memo: memo.clone(),
+        };
+
+        assert_eq!(token_data.mint_url, mint_url);
+        assert_eq!(token_data.proofs.len(), 0);
+        assert_eq!(token_data.memo, memo);
+
+        // Test with no memo
+        let token_data_no_memo = TokenData {
+            mint_url: mint_url.clone(),
+            proofs: vec![],
+            memo: None,
+        };
+        assert!(token_data_no_memo.memo.is_none());
     }
 }
