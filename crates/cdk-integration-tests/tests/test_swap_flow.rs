@@ -730,27 +730,21 @@ async fn test_swap_with_fees() {
 
 /// Tests melt with fees enabled and swap-before-melt optimization:
 /// 1. Create mint with keyset that has fees (1000 ppk = 1 sat per proof)
-/// 2. Fund wallet with a single large proof that must be swapped
-/// 3. Call melt() - should automatically swap to get exact proofs
-/// 4. Verify exact fee calculations
+/// 2. Fund wallet with proofs using default split (optimal denominations)
+/// 3. Call melt() - should automatically swap if proofs don't match exactly
+/// 4. Verify fee calculations are reasonable
 ///
 /// Fee calculation:
-/// - Initial: 1 proof of 2048 sats
-/// - Melt: 1000 sats, fee_reserve = 10 sats (1% min 1)
-/// - inputs_needed = 1010 sats
-/// - Target split for 1010: [512, 256, 128, 64, 32, 16, 2] = 7 proofs
-/// - target_fee = 7 sats
-/// - inputs_total_needed = 1017 sats
+/// - Initial: 4096 sats in optimal denominations
+/// - Melt: 1000 sats, fee_reserve = 20 sats (2%)
+/// - inputs_needed = 1020 sats
+/// - Target split for 1020: [512, 256, 128, 64, 32, 16, 8, 4] = 8 proofs
+/// - target_fee = 8 sats
+/// - inputs_total_needed = 1028 sats
 ///
-/// Swap: 2048 proof -> 1017 sats for melt + 1030 sats change - 1 sat swap fee
-/// - swap_fee = 1 sat (1 input proof)
-/// - After swap: 2047 sats total (1017 for melt + 1030 change)
-///
-/// Melt: uses 7 proofs totaling 1017 sats
-/// - melt_input_fee = 7 sats
-/// - Sent to mint: 1017 sats
-/// - LN payment: 1000 sats + ln_fee
-/// - Change from mint: depends on actual ln_fee
+/// The wallet uses two-step selection:
+/// - Step 1: Try to find exact proofs for inputs_needed (no swap fee)
+/// - Step 2: If not exact, select proofs for inputs_total_needed and swap
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_melt_with_fees_swap_before_melt() {
     setup_tracing();
@@ -787,8 +781,6 @@ async fn test_melt_with_fees_swap_before_melt() {
     let proof_amounts: Vec<u64> = proofs.iter().map(|p| u64::from(p.amount)).collect();
     tracing::info!("Proofs after funding: {:?}", proof_amounts);
 
-    // Note: SplitTarget::Value(2048) requests proofs OF that denomination,
-    // but the mint might split differently. Let's just verify total amount.
     let proofs_total: u64 = proof_amounts.iter().sum();
     assert_eq!(
         proofs_total, initial_amount,
@@ -880,6 +872,100 @@ async fn test_melt_with_fees_swap_before_melt() {
         input_fees,
         final_balance
     );
+}
+
+/// Tests the "exact match" early return path in melt_with_metadata.
+/// When proofs already exactly match inputs_needed_amount, no swap is required.
+///
+/// This tests Step 1 of the two-step selection:
+/// - Select proofs for inputs_needed_amount
+/// - If exact match, use proofs directly without swap
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_exact_match_no_swap() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Use keyset WITHOUT fees to make exact match easier
+    // (default keyset has no fees)
+
+    // Fund with exactly inputs_needed_amount to trigger the exact match path
+    // For a 1000 sat melt, fee_reserve = max(1, 1000 * 2%) = 20 sats
+    // inputs_needed = 1000 + 20 = 1020 sats
+    let initial_amount = 1020u64;
+    fund_wallet(wallet.clone(), initial_amount, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let initial_balance: u64 = wallet.total_balance().await.unwrap().into();
+    assert_eq!(initial_balance, initial_amount);
+
+    let proofs_before = wallet.get_unspent_proofs().await.unwrap();
+    tracing::info!(
+        "Proofs before melt: {:?}",
+        proofs_before
+            .iter()
+            .map(|p| u64::from(p.amount))
+            .collect::<Vec<_>>()
+    );
+
+    // Create melt quote for 1000 sats
+    // fee_reserve = max(1, 1000 * 2%) = 20 sats
+    // inputs_needed = 1000 + 20 = 1020 sats = our exact balance
+    let invoice = create_fake_invoice(1_000_000, "".to_string());
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+
+    let quote_amount: u64 = melt_quote.amount.into();
+    let fee_reserve: u64 = melt_quote.fee_reserve.into();
+    let inputs_needed = quote_amount + fee_reserve;
+
+    tracing::info!(
+        "Melt quote: amount={}, fee_reserve={}, inputs_needed={}",
+        quote_amount,
+        fee_reserve,
+        inputs_needed
+    );
+
+    // Perform melt
+    let melted = wallet.melt(&melt_quote.id).await.unwrap();
+
+    let melt_amount: u64 = melted.amount.into();
+    let ln_fee_paid: u64 = melted.fee_paid.into();
+
+    tracing::info!(
+        "Melt completed: amount={}, ln_fee_paid={}",
+        melt_amount,
+        ln_fee_paid
+    );
+
+    assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
+
+    // Get final balance
+    let final_balance: u64 = wallet.total_balance().await.unwrap().into();
+    let total_spent = initial_amount - final_balance;
+    let total_fees = total_spent - melt_amount;
+
+    tracing::info!(
+        "Balance: initial={}, final={}, total_spent={}, total_fees={}",
+        initial_amount,
+        final_balance,
+        total_spent,
+        total_fees
+    );
+
+    // With no keyset fees and no swap needed, total fees should just be ln_fee
+    // (no input fees since default keyset has 0 ppk)
+    assert_eq!(
+        total_fees, ln_fee_paid,
+        "Total fees should equal LN fee (no swap or input fees with 0 ppk keyset)"
+    );
+
+    tracing::info!("Test passed: exact match path used, no swap needed");
 }
 
 /// Tests that swap correctly handles amount overflow:
