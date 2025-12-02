@@ -11,6 +11,7 @@ result
 Cargo.lock
 .aider*
 **/postgres_data/
+.pg_data/
 **/.env
 
 # Mutation testing artifacts

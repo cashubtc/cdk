@@ -291,10 +291,8 @@ jobs:
           shared-key: "stable-${{ steps.flake-hash.outputs.hash }}"
       - name: Test fake mint
         run: nix develop -i -L .#stable --command just test-pure ${{ matrix.database }}
-      - name: Install Postgres
-        run: bash -x crates/cdk-postgres/start_db_for_test.sh
-      - name: Test mint
-        run: nix develop -i -L .#stable --command just test
+      - name: Test mint with PostgreSQL
+        run: nix develop -i -L .#stable --command bash -c "start-postgres && just test"
 
   payment-processor-itests:
     name: "Payment processor tests"
