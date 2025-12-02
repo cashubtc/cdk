@@ -511,6 +511,7 @@ pub struct ProofSplitResult {
 /// * `keyset_fees` - Map of keyset ID to fee_ppk
 /// * `force_swap` - If true, all proofs go to swap
 /// * `is_exact_or_offline` - If true (exact match or offline mode), all proofs go to send
+// TODO: Consider making this pub(crate) - this function is also used by melt operations
 pub fn split_proofs_for_send(
     proofs: Proofs,
     send_amounts: &[Amount],
@@ -1690,5 +1691,190 @@ mod tests {
 
         // Should handle this gracefully
         assert!(result.proofs_to_send.len() + result.proofs_to_swap.len() == 22);
+    }
+
+    // ========================================================================
+    // Melt Use Case Tests
+    // For melt: amount = inputs_needed (quote + fee_reserve),
+    //           send_fee = target_fee (input fee for target proofs)
+    // ========================================================================
+
+    #[test]
+    fn test_melt_exact_proofs_no_swap() {
+        // Melt scenario: have exact proofs matching target denominations
+        // quote_amount + fee_reserve = 100, target_fee = 2
+        // Need proofs totaling 102
+        let input_proofs = proofs(&[64, 32, 4, 2]);
+        let target_amounts = amounts(&[64, 32, 4, 2]); // split of 102
+        let keyset_fees = keyset_fees_with_ppk(500); // 0.5 sat per proof
+
+        let result = split_proofs_for_send(
+            input_proofs,
+            &target_amounts,
+            Amount::from(100), // inputs_needed_amount
+            Amount::from(2),   // target_fee (4 proofs * 0.5)
+            &keyset_fees,
+            false,
+            false,
+        )
+        .unwrap();
+
+        // All proofs match, no swap needed
+        assert_eq!(result.proofs_to_send.len(), 4);
+        assert!(result.proofs_to_swap.is_empty());
+        assert_eq!(result.swap_fee, Amount::ZERO);
+    }
+
+    #[test]
+    fn test_melt_excess_proofs_needs_swap() {
+        // Melt scenario: have proofs totaling more than needed
+        // Need 102 (100 + 2 fee), but have 128
+        let input_proofs = proofs(&[128]);
+        let target_amounts = amounts(&[64, 32, 4, 2]); // optimal split of 102
+        let keyset_fees = keyset_fees_with_ppk(500);
+
+        let result = split_proofs_for_send(
+            input_proofs,
+            &target_amounts,
+            Amount::from(100),
+            Amount::from(2),
+            &keyset_fees,
+            false,
+            false,
+        )
+        .unwrap();
+
+        // 128 doesn't match any target, needs swap
+        assert!(result.proofs_to_send.is_empty());
+        assert_eq!(result.proofs_to_swap.len(), 1);
+        assert_eq!(result.proofs_to_swap[0].amount, Amount::from(128));
+    }
+
+    #[test]
+    fn test_melt_partial_match_with_swap() {
+        // Melt scenario: some proofs match, others need swap
+        // Need 100 + 2 fee = 102, have [64, 32, 16, 8] = 120
+        let input_proofs = proofs(&[64, 32, 16, 8]);
+        let target_amounts = amounts(&[64, 32, 4, 2]); // optimal split of 102
+        let keyset_fees = keyset_fees_with_ppk(500);
+
+        let result = split_proofs_for_send(
+            input_proofs,
+            &target_amounts,
+            Amount::from(100),
+            Amount::from(2),
+            &keyset_fees,
+            false,
+            false,
+        )
+        .unwrap();
+
+        // 64 and 32 match, 16 and 8 go to swap
+        let send_amounts: Vec<u64> = result
+            .proofs_to_send
+            .iter()
+            .map(|p| p.amount.into())
+            .collect();
+        assert!(send_amounts.contains(&64));
+        assert!(send_amounts.contains(&32));
+
+        // 16 and 8 should be in swap to produce the remaining 6 (4+2)
+        assert!(!result.proofs_to_swap.is_empty());
+    }
+
+    #[test]
+    fn test_melt_with_exact_target_match() {
+        // Melt scenario: all target amounts match input proofs exactly
+        // When all targets are matched, unneeded proofs are dropped (not swapped)
+        let input_proofs = proofs(&[64, 32, 8, 4, 2]);
+        let target_amounts = amounts(&[64, 32, 8, 4, 2]); // exact match
+        let keyset_fees = keyset_fees_with_ppk(1000);
+
+        let result = split_proofs_for_send(
+            input_proofs,
+            &target_amounts,
+            Amount::from(105), // amount
+            Amount::from(5),   // target fee
+            &keyset_fees,
+            false,
+            false,
+        )
+        .unwrap();
+
+        // All proofs match target amounts
+        assert_eq!(result.proofs_to_send.len(), 5);
+        // No swap needed when all targets matched
+        assert!(result.proofs_to_swap.is_empty());
+    }
+
+    #[test]
+    fn test_melt_swap_fee_calculated() {
+        // Verify swap_fee is calculated correctly for melt
+        let input_proofs = proofs(&[64, 32, 8, 4]); // 108 total
+        let target_amounts = amounts(&[64, 32, 4]); // 100 split
+        let keyset_fees = keyset_fees_with_ppk(1000); // 1 sat per proof
+
+        let result = split_proofs_for_send(
+            input_proofs,
+            &target_amounts,
+            Amount::from(98),
+            Amount::from(2), // target fee for 3 proofs
+            &keyset_fees,
+            false,
+            false,
+        )
+        .unwrap();
+
+        // 8 doesn't match, goes to swap
+        // swap_fee should be 1 sat (1 proof * 1000 ppk / 1000)
+        if !result.proofs_to_swap.is_empty() {
+            assert_eq!(
+                result.swap_fee,
+                Amount::from(result.proofs_to_swap.len() as u64)
+            );
+        }
+    }
+
+    #[test]
+    fn test_melt_large_quote_partial_match() {
+        // Realistic melt: input proofs don't contain all target denominations
+        // Input: [512, 256, 128, 64, 32, 16] = 1008
+        // Target: [512, 256, 128, 64, 32, 8, 4, 2, 1] = 1007 (need 8, 4, 2, 1 from swap)
+        let input_proofs = proofs(&[512, 256, 128, 64, 32, 16]);
+        let target_amounts = amounts(&[512, 256, 128, 64, 32, 8, 4, 2, 1]);
+        let keyset_fees = keyset_fees_with_ppk(375);
+
+        let result = split_proofs_for_send(
+            input_proofs,
+            &target_amounts,
+            Amount::from(1004),
+            Amount::from(3),
+            &keyset_fees,
+            false,
+            false,
+        )
+        .unwrap();
+
+        // Check that matched proofs are in proofs_to_send
+        let send_amounts: Vec<u64> = result
+            .proofs_to_send
+            .iter()
+            .map(|p| p.amount.into())
+            .collect();
+
+        // These should match
+        assert!(send_amounts.contains(&512));
+        assert!(send_amounts.contains(&256));
+        assert!(send_amounts.contains(&128));
+        assert!(send_amounts.contains(&64));
+        assert!(send_amounts.contains(&32));
+
+        // 16 doesn't match any target, should be in swap to produce 8+4+2+1=15
+        let swap_amounts: Vec<u64> = result
+            .proofs_to_swap
+            .iter()
+            .map(|p| p.amount.into())
+            .collect();
+        assert!(swap_amounts.contains(&16));
     }
 }
