@@ -1734,3 +1734,130 @@ async fn test_melt_proofs_external() {
     assert_eq!(transactions.len(), 1);
     assert_eq!(transactions[0].amount, Amount::from(9));
 }
+
+/// Tests that melt automatically performs a swap when proofs don't exactly match
+/// the required amount (quote + fee_reserve + input_fee).
+///
+/// This test verifies the swap-before-melt optimization:
+/// 1. Mint proofs that will NOT exactly match a melt amount
+/// 2. Create a melt quote for a specific amount
+/// 3. Call melt() - it should automatically swap proofs to get exact denominations
+/// 4. Verify the melt succeeded
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_with_swap_for_exact_amount() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    // Mint 100 sats - this will give us proofs in standard denominations
+    let mint_quote = wallet.mint_quote(100.into(), None).await.unwrap();
+
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+
+    let proofs = proof_streams
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let initial_balance = wallet.total_balance().await.unwrap();
+    assert_eq!(initial_balance, Amount::from(100));
+
+    // Log the proof denominations we received
+    let proof_amounts: Vec<u64> = proofs.iter().map(|p| u64::from(p.amount)).collect();
+    tracing::info!("Initial proof denominations: {:?}", proof_amounts);
+
+    // Create a melt quote for an amount that likely won't match our proof denominations exactly
+    // Using 7 sats (7000 msats) which requires specific denominations
+    let fake_description = FakeInvoiceDescription::default();
+    let invoice = create_fake_invoice(7000, serde_json::to_string(&fake_description).unwrap());
+
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+
+    tracing::info!(
+        "Melt quote: amount={}, fee_reserve={}",
+        melt_quote.amount,
+        melt_quote.fee_reserve
+    );
+
+    // Call melt() - this should trigger swap-before-melt if proofs don't match exactly
+    let melted = wallet.melt(&melt_quote.id).await.unwrap();
+
+    // Verify the melt succeeded
+    assert_eq!(melted.amount, Amount::from(7));
+
+    tracing::info!(
+        "Melt completed: amount={}, fee_paid={}",
+        melted.amount,
+        melted.fee_paid
+    );
+
+    // Verify final balance is correct (initial - melt_amount - fees)
+    let final_balance = wallet.total_balance().await.unwrap();
+    tracing::info!(
+        "Balance: initial={}, final={}, paid={}",
+        initial_balance,
+        final_balance,
+        melted.amount + melted.fee_paid
+    );
+
+    assert!(
+        final_balance < initial_balance,
+        "Balance should have decreased after melt"
+    );
+    assert_eq!(
+        final_balance,
+        initial_balance - melted.amount - melted.fee_paid,
+        "Final balance should be initial - amount - fees"
+    );
+}
+
+/// Tests that melt works correctly when proofs already exactly match the required amount.
+/// In this case, no swap should be needed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_exact_proofs_no_swap_needed() {
+    let wallet = Wallet::new(
+        MINT_URL,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    // Mint a larger amount to have more denomination options
+    let mint_quote = wallet.mint_quote(1000.into(), None).await.unwrap();
+
+    let mut proof_streams = wallet.proof_stream(mint_quote.clone(), SplitTarget::default(), None);
+
+    let _proofs = proof_streams
+        .next()
+        .await
+        .expect("payment")
+        .expect("no error");
+
+    let initial_balance = wallet.total_balance().await.unwrap();
+    assert_eq!(initial_balance, Amount::from(1000));
+
+    // Create a melt for a power-of-2 amount that's more likely to match existing denominations
+    let fake_description = FakeInvoiceDescription::default();
+    let invoice = create_fake_invoice(64_000, serde_json::to_string(&fake_description).unwrap()); // 64 sats
+
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+
+    // Melt should succeed
+    let melted = wallet.melt(&melt_quote.id).await.unwrap();
+
+    assert_eq!(melted.amount, Amount::from(64));
+
+    let final_balance = wallet.total_balance().await.unwrap();
+    assert_eq!(
+        final_balance,
+        initial_balance - melted.amount - melted.fee_paid
+    );
+}

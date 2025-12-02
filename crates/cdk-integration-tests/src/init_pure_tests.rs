@@ -258,7 +258,7 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
 
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
-        percent_fee_reserve: 1.0,
+        percent_fee_reserve: 0.02,
     };
 
     let ln_fake_backend = FakeWallet::new(

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use cdk_common::amount::SplitTarget;
 use cdk_common::wallet::{Transaction, TransactionDirection};
 use cdk_common::PaymentMethod;
 use lightning_invoice::Bolt11Invoice;
@@ -8,12 +9,14 @@ use tracing::instrument;
 
 use crate::amount::to_unit;
 use crate::dhke::construct_proofs;
+use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
     CurrencyUnit, MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest,
-    PreMintSecrets, Proofs, ProofsMethods, State,
+    PreMintSecrets, Proofs, State,
 };
 use crate::types::{Melted, ProofInfo};
 use crate::util::unix_time;
+use crate::wallet::send::split_proofs_for_send;
 use crate::wallet::MeltQuote;
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
@@ -164,7 +167,10 @@ impl Wallet {
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
 
-        let change_amount = proofs_total - quote_info.amount;
+        // Calculate change accounting for input fees
+        // The mint deducts input fees from available funds before calculating change
+        let input_fee = self.get_proofs_fee(&proofs).await?;
+        let change_amount = proofs_total - quote_info.amount - input_fee;
 
         let premint_secrets = if change_amount <= Amount::ZERO {
             PreMintSecrets::new(active_keyset_id)
@@ -387,25 +393,121 @@ impl Wallet {
 
         let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
 
-        let available_proofs = self.get_unspent_proofs().await?;
-
         let active_keyset_ids = self
             .get_mint_keysets()
             .await?
             .into_iter()
             .map(|k| k.id)
             .collect();
-        let keyset_fees = self.get_keyset_fees_and_amounts().await?;
+        let keyset_fees_and_amounts = self.get_keyset_fees_and_amounts().await?;
 
+        let available_proofs = self.get_unspent_proofs().await?;
+
+        // Two-step proof selection for melt:
+        // Step 1: Try to select proofs that exactly match inputs_needed_amount.
+        //         If successful, no swap is required and we avoid paying swap fees.
+        // Step 2: If exact match not possible, we need to swap to get optimal denominations.
+        //         In this case, we must select more proofs to cover the additional swap fees.
+        {
+            let input_proofs = Wallet::select_proofs(
+                inputs_needed_amount,
+                available_proofs.clone(),
+                &active_keyset_ids,
+                &keyset_fees_and_amounts,
+                true,
+            )?;
+            let proofs_total = input_proofs.total_amount()?;
+
+            // If exact match, use proofs directly without swap
+            if proofs_total == inputs_needed_amount {
+                return self
+                    .melt_proofs_with_metadata(quote_id, input_proofs, metadata)
+                    .await;
+            }
+        }
+
+        let active_keyset_id = self.get_active_keyset().await?.id;
+        let fee_and_amounts = self
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await?;
+
+        // Calculate optimal denomination split and the fee for those proofs
+        // First estimate based on inputs_needed_amount to get target_fee
+        let initial_split = inputs_needed_amount.split(&fee_and_amounts);
+        let target_fee = self
+            .get_proofs_fee_by_count(
+                vec![(active_keyset_id, initial_split.len() as u64)]
+                    .into_iter()
+                    .collect(),
+            )
+            .await?;
+
+        // Since we could not select the correct inputs amount needed for melting,
+        // we select again this time including the amount we will now have to pay as a fee for the swap.
+        let inputs_total_needed = inputs_needed_amount + target_fee;
+
+        // Recalculate target amounts based on the actual total we need (including fee)
+        let target_amounts = inputs_total_needed.split(&fee_and_amounts);
         let input_proofs = Wallet::select_proofs(
-            inputs_needed_amount,
+            inputs_total_needed,
             available_proofs,
             &active_keyset_ids,
-            &keyset_fees,
+            &keyset_fees_and_amounts,
             true,
         )?;
+        let proofs_total = input_proofs.total_amount()?;
 
-        self.melt_proofs_with_metadata(quote_id, input_proofs, metadata)
+        // Need to swap to get exact denominations
+        tracing::debug!(
+            "Proofs total {} != inputs needed {}, swapping to get exact amount",
+            proofs_total,
+            inputs_total_needed
+        );
+
+        let keyset_fees: HashMap<cdk_common::Id, u64> = keyset_fees_and_amounts
+            .iter()
+            .map(|(key, values)| (*key, values.fee()))
+            .collect();
+
+        let split_result = split_proofs_for_send(
+            input_proofs,
+            &target_amounts,
+            inputs_total_needed,
+            target_fee,
+            &keyset_fees,
+            false,
+            false,
+        )?;
+
+        let mut final_proofs = split_result.proofs_to_send;
+
+        if !split_result.proofs_to_swap.is_empty() {
+            let swap_amount = inputs_total_needed
+                .checked_sub(final_proofs.total_amount()?)
+                .ok_or(Error::AmountOverflow)?;
+
+            tracing::debug!(
+                "Swapping {} proofs to get {} sats (swap fee: {} sats)",
+                split_result.proofs_to_swap.len(),
+                swap_amount,
+                split_result.swap_fee
+            );
+
+            if let Some(swapped) = self
+                .swap(
+                    Some(swap_amount),
+                    SplitTarget::None,
+                    split_result.proofs_to_swap,
+                    None,
+                    false, // fees already accounted for in inputs_total_needed
+                )
+                .await?
+            {
+                final_proofs.extend(swapped);
+            }
+        }
+
+        self.melt_proofs_with_metadata(quote_id, final_proofs, metadata)
             .await
     }
 }
