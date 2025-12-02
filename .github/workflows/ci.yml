@@ -220,7 +220,7 @@ jobs:
       fail-fast: true
       matrix:
         build-args: [-p cdk-integration-tests]
-        database: [SQLITE]
+        database: [SQLITE, POSTGRES]
     steps:
       - name: checkout
         uses: actions/checkout@v4
