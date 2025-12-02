@@ -432,10 +432,11 @@ impl Wallet {
             .await?;
 
         // Calculate optimal denomination split and the fee for those proofs
-        let target_amounts = inputs_needed_amount.split(&fee_and_amounts);
+        // First estimate based on inputs_needed_amount to get target_fee
+        let initial_split = inputs_needed_amount.split(&fee_and_amounts);
         let target_fee = self
             .get_proofs_fee_by_count(
-                vec![(active_keyset_id, target_amounts.len() as u64)]
+                vec![(active_keyset_id, initial_split.len() as u64)]
                     .into_iter()
                     .collect(),
             )
@@ -444,6 +445,9 @@ impl Wallet {
         // Since we could not select the correct inputs amount needed for melting,
         // we select again this time including the amount we will now have to pay as a fee for the swap.
         let inputs_total_needed = inputs_needed_amount + target_fee;
+
+        // Recalculate target amounts based on the actual total we need (including fee)
+        let target_amounts = inputs_total_needed.split(&fee_and_amounts);
         let input_proofs = Wallet::select_proofs(
             inputs_total_needed,
             available_proofs,
@@ -468,7 +472,7 @@ impl Wallet {
         let split_result = split_proofs_for_send(
             input_proofs,
             &target_amounts,
-            inputs_needed_amount,
+            inputs_total_needed,
             target_fee,
             &keyset_fees,
             false,
@@ -495,7 +499,7 @@ impl Wallet {
                     SplitTarget::None,
                     split_result.proofs_to_swap,
                     None,
-                    true,
+                    false, // fees already accounted for in inputs_total_needed
                 )
                 .await?
             {

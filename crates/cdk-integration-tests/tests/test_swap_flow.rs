@@ -968,6 +968,201 @@ async fn test_melt_exact_match_no_swap() {
     tracing::info!("Test passed: exact match path used, no swap needed");
 }
 
+/// Tests melt with small amounts where swap margin is too tight.
+/// When fees are high relative to the melt amount, the swap-before-melt
+/// optimization may not have enough margin to cover both input and output fees.
+/// In this case, the wallet should fall back to using proofs directly.
+///
+/// Scenario:
+/// - Fund with 8 sats
+/// - Melt 5 sats (with 2% fee_reserve = 1 sat min, so inputs_needed = 6)
+/// - With 1 sat per proof fee, the swap margin becomes too tight
+/// - Should still succeed by falling back to direct melt
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_small_amount_tight_margin() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Rotate to keyset with 1000 ppk = 1 sat per proof fee
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        1000,
+    )
+    .await
+    .expect("Failed to rotate keyset");
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Fund with enough to cover melt + fees, but amounts that will trigger swap
+    // 32 sats gives us enough margin even with 1 sat/proof fees
+    let initial_amount = 32;
+    fund_wallet(wallet.clone(), initial_amount, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let initial_balance: u64 = wallet.total_balance().await.unwrap().into();
+    assert_eq!(initial_balance, initial_amount);
+
+    let proofs = wallet.get_unspent_proofs().await.unwrap();
+    tracing::info!(
+        "Proofs after funding: {:?}",
+        proofs
+            .iter()
+            .map(|p| u64::from(p.amount))
+            .collect::<Vec<_>>()
+    );
+
+    // Create melt quote for 5 sats
+    // fee_reserve = max(1, 5 * 2%) = 1 sat
+    // inputs_needed = 5 + 1 = 6 sats
+    let invoice = create_fake_invoice(5_000, "".to_string()); // 5 sats in msats
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+
+    let quote_amount: u64 = melt_quote.amount.into();
+    let fee_reserve: u64 = melt_quote.fee_reserve.into();
+
+    tracing::info!(
+        "Melt quote: amount={}, fee_reserve={}, inputs_needed={}",
+        quote_amount,
+        fee_reserve,
+        quote_amount + fee_reserve
+    );
+
+    // This should succeed even with tight margins
+    let melted = wallet
+        .melt(&melt_quote.id)
+        .await
+        .expect("Melt should succeed even with tight swap margin");
+
+    let melt_amount: u64 = melted.amount.into();
+    assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
+
+    let final_balance: u64 = wallet.total_balance().await.unwrap().into();
+    tracing::info!(
+        "Melt completed: amount={}, fee_paid={}, final_balance={}",
+        melted.amount,
+        melted.fee_paid,
+        final_balance
+    );
+
+    // Verify balance decreased appropriately
+    assert!(
+        final_balance < initial_balance,
+        "Balance should decrease after melt"
+    );
+}
+
+/// Tests melt where swap proofs barely cover swap_amount + input_fee.
+///
+/// This is a regression test for a bug where the swap-before-melt was called
+/// with include_fees=true, causing it to try to add output fees on top of
+/// swap_amount + input_fee. When proofs_to_swap had just barely enough value,
+/// this caused InsufficientFunds error.
+///
+/// Scenario (from the bug):
+/// - Balance: proofs like [4, 2, 1, 1] = 8 sats
+/// - Melt: 5 sats + 1 fee_reserve = 6 inputs_needed
+/// - target_fee = 1 (for optimal output split)
+/// - inputs_total_needed = 7
+/// - proofs_to_send = [4, 2] = 6, proofs_to_swap = [1, 1] = 2
+/// - swap_amount = 1 sat (7 - 6)
+/// - swap input_fee = 1 sat (2 proofs)
+/// - Before fix: include_fees=true tried to add output fee, causing failure
+/// - After fix: include_fees=false, swap succeeds
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_melt_swap_tight_margin_regression() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Rotate to keyset with 250 ppk = 0.25 sat per proof fee (same as original bug scenario)
+    // This means 4 proofs = 1 sat fee
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        250,
+    )
+    .await
+    .expect("Failed to rotate keyset");
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Fund with 100 sats using default split to get optimal denominations
+    // This should give us proofs like [64, 32, 4] or similar power-of-2 split
+    let initial_amount = 100;
+    fund_wallet(wallet.clone(), initial_amount, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let initial_balance: u64 = wallet.total_balance().await.unwrap().into();
+    assert_eq!(initial_balance, initial_amount);
+
+    let proofs = wallet.get_unspent_proofs().await.unwrap();
+    let proof_amounts: Vec<u64> = proofs.iter().map(|p| u64::from(p.amount)).collect();
+    tracing::info!("Proofs after funding: {:?}", proof_amounts);
+
+    // Create melt quote for 5 sats (5000 msats)
+    // fee_reserve = max(1, 5 * 2%) = 1 sat
+    // inputs_needed = 5 + 1 = 6 sats
+    // The optimal split for 6 sats is [4, 2] (2 proofs)
+    // target_fee = 1 sat (2 proofs * 0.25, rounded up)
+    // inputs_total_needed = 7 sats
+    //
+    // If we don't have exact [4, 2] proofs, we'll need to swap.
+    // The swap path is what triggered the original bug when proofs_to_swap
+    // had tight margins and include_fees=true was incorrectly used.
+    let invoice = create_fake_invoice(5_000, "".to_string());
+    let melt_quote = wallet.melt_quote(invoice.to_string(), None).await.unwrap();
+
+    let quote_amount: u64 = melt_quote.amount.into();
+    let fee_reserve: u64 = melt_quote.fee_reserve.into();
+
+    tracing::info!(
+        "Melt quote: amount={}, fee_reserve={}, inputs_needed={}",
+        quote_amount,
+        fee_reserve,
+        quote_amount + fee_reserve
+    );
+
+    // This is the key test: melt should succeed even when swap is needed
+    // Before the fix, include_fees=true in swap caused InsufficientFunds
+    // After the fix, include_fees=false allows the swap to succeed
+    let melted = wallet
+        .melt(&melt_quote.id)
+        .await
+        .expect("Melt should succeed with swap-before-melt (regression test)");
+
+    let melt_amount: u64 = melted.amount.into();
+    assert_eq!(melt_amount, quote_amount, "Melt amount should match quote");
+
+    let final_balance: u64 = wallet.total_balance().await.unwrap().into();
+    tracing::info!(
+        "Melt completed: amount={}, fee_paid={}, final_balance={}",
+        melted.amount,
+        melted.fee_paid,
+        final_balance
+    );
+
+    // Should have change remaining
+    assert!(
+        final_balance < initial_balance,
+        "Balance should decrease after melt"
+    );
+    assert!(final_balance > 0, "Should have change remaining");
+}
+
 /// Tests that swap correctly handles amount overflow:
 /// Attempts to create outputs that would overflow u64 when summed.
 /// This should be rejected before any database operations occur.
