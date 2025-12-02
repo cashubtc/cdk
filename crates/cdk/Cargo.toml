@@ -142,6 +142,10 @@ required-features = ["wallet"]
 name = "human_readable_payment"
 required-features = ["wallet", "bip353"]
 
+[[example]]
+name = "token-proofs"
+required-features = ["wallet"]
+
 [dev-dependencies]
 rand.workspace = true
 cdk-sqlite.workspace = true
