@@ -85,10 +85,10 @@ where
 
     // Add both signatures
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_blind_signatures(&[blinded_message1], &[sig1.clone()], None)
+    tx.add_blind_signatures(&[blinded_message1], std::slice::from_ref(&sig1), None)
         .await
         .unwrap();
-    tx.add_blind_signatures(&[blinded_message2], &[sig2.clone()], None)
+    tx.add_blind_signatures(&[blinded_message2], std::slice::from_ref(&sig2), None)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -141,14 +141,14 @@ where
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_blind_signatures(
         &[blinded_message1],
-        &[sig1.clone()],
+        std::slice::from_ref(&sig1),
         Some(quote_id1.clone()),
     )
     .await
     .unwrap();
     tx.add_blind_signatures(
         &[blinded_message2],
-        &[sig2.clone()],
+        std::slice::from_ref(&sig2),
         Some(quote_id2.clone()),
     )
     .await
@@ -252,7 +252,7 @@ where
 
     // Add signature first time
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_blind_signatures(&[blinded_message], &[sig.clone()], None)
+    tx.add_blind_signatures(&[blinded_message], std::slice::from_ref(&sig), None)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -260,7 +260,7 @@ where
     // Try to add duplicate - should fail
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let result = tx
-        .add_blind_signatures(&[blinded_message], &[sig], None)
+        .add_blind_signatures(&[blinded_message], std::slice::from_ref(&sig), None)
         .await;
     assert!(result.is_err());
     tx.rollback().await.unwrap();
