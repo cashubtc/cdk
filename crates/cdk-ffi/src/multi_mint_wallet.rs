@@ -248,6 +248,25 @@ impl MultiMintWallet {
         Ok(proofs_by_mint)
     }
 
+    /// Check the state of proofs at a specific mint
+    pub async fn check_proofs_state(
+        &self,
+        mint_url: MintUrl,
+        proofs: Proofs,
+    ) -> Result<Vec<ProofState>, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
+
+        let states = self
+            .inner
+            .check_proofs_state(&cdk_mint_url, cdk_proofs)
+            .await?;
+
+        Ok(states.into_iter().map(|s| s.into()).collect())
+    }
+
     /// Receive token
     pub async fn receive(
         &self,

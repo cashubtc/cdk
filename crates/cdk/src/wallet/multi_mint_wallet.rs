@@ -25,7 +25,7 @@ use crate::amount::SplitTarget;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut23::QuoteState;
-use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SpendingConditions, Token};
+use crate::nuts::{CurrencyUnit, MeltOptions, Proof, Proofs, SpendingConditions, State, Token};
 use crate::types::Melted;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 use crate::wallet::mint_connector::transport::tor_transport::TorAsync;
@@ -614,6 +614,20 @@ impl MultiMintWallet {
             mint_proofs.insert(mint_url.clone(), wallet_proofs);
         }
         Ok(mint_proofs)
+    }
+
+    /// NUT-07 Check the state of proofs with a specific mint
+    #[instrument(skip(self, proofs))]
+    pub async fn check_proofs_state(
+        &self,
+        mint_url: &MintUrl,
+        proofs: Proofs,
+    ) -> Result<Vec<State>, Error> {
+        let wallet = self.get_wallet(mint_url).await.ok_or(Error::UnknownMint {
+            mint_url: mint_url.to_string(),
+        })?;
+        let states = wallet.check_proofs_spent(proofs).await?;
+        Ok(states.into_iter().map(|s| s.state).collect())
     }
 
     /// List transactions
