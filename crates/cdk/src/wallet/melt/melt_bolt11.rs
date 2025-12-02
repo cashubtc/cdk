@@ -167,7 +167,10 @@ impl Wallet {
 
         let active_keyset_id = self.fetch_active_keyset().await?.id;
 
-        let change_amount = proofs_total - quote_info.amount;
+        // Calculate change accounting for input fees
+        // The mint deducts input fees from available funds before calculating change
+        let input_fee = self.get_proofs_fee(&proofs).await?;
+        let change_amount = proofs_total - quote_info.amount - input_fee;
 
         let premint_secrets = if change_amount <= Amount::ZERO {
             PreMintSecrets::new(active_keyset_id)
@@ -390,9 +393,6 @@ impl Wallet {
 
         let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
 
-        let available_proofs = self.get_unspent_proofs().await?;
-
-        let active_keyset_id = self.get_active_keyset().await?.id;
         let active_keyset_ids = self
             .get_mint_keysets()
             .await?
@@ -401,14 +401,32 @@ impl Wallet {
             .collect();
         let keyset_fees_and_amounts = self.get_keyset_fees_and_amounts().await?;
 
-        let input_proofs = Wallet::select_proofs(
-            inputs_needed_amount,
-            available_proofs,
-            &active_keyset_ids,
-            &keyset_fees_and_amounts,
-            true,
-        )?;
+        let available_proofs = self.get_unspent_proofs().await?;
 
+        // Two-step proof selection for melt:
+        // Step 1: Try to select proofs that exactly match inputs_needed_amount.
+        //         If successful, no swap is required and we avoid paying swap fees.
+        // Step 2: If exact match not possible, we need to swap to get optimal denominations.
+        //         In this case, we must select more proofs to cover the additional swap fees.
+        {
+            let input_proofs = Wallet::select_proofs(
+                inputs_needed_amount,
+                available_proofs.clone(),
+                &active_keyset_ids,
+                &keyset_fees_and_amounts,
+                true,
+            )?;
+            let proofs_total = input_proofs.total_amount()?;
+
+            // If exact match, use proofs directly without swap
+            if proofs_total == inputs_needed_amount {
+                return self
+                    .melt_proofs_with_metadata(quote_id, input_proofs, metadata)
+                    .await;
+            }
+        }
+
+        let active_keyset_id = self.get_active_keyset().await?.id;
         let fee_and_amounts = self
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
@@ -423,15 +441,17 @@ impl Wallet {
             )
             .await?;
 
+        // Since we could not select the correct inputs amount needed for melting,
+        // we select again this time including the amount we will now have to pay as a fee for the swap.
         let inputs_total_needed = inputs_needed_amount + target_fee;
+        let input_proofs = Wallet::select_proofs(
+            inputs_total_needed,
+            available_proofs,
+            &active_keyset_ids,
+            &keyset_fees_and_amounts,
+            true,
+        )?;
         let proofs_total = input_proofs.total_amount()?;
-
-        // If exact match, use proofs directly
-        if proofs_total == inputs_total_needed {
-            return self
-                .melt_proofs_with_metadata(quote_id, input_proofs, metadata)
-                .await;
-        }
 
         // Need to swap to get exact denominations
         tracing::debug!(
@@ -475,7 +495,7 @@ impl Wallet {
                     SplitTarget::None,
                     split_result.proofs_to_swap,
                     None,
-                    false,
+                    true,
                 )
                 .await?
             {
