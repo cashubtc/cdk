@@ -1257,7 +1257,7 @@ where
 
     // Add blind signature
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    tx.add_blind_signatures(&[blinded_message], &[sig.clone()], None)
+    tx.add_blind_signatures(&[blinded_message], std::slice::from_ref(&sig), None)
         .await
         .unwrap();
     tx.commit().await.unwrap();

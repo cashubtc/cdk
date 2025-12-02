@@ -468,19 +468,17 @@ where
 
     // Check that at least we get a proper response
     // States may or may not be present depending on how the database stores proofs
-    for state in &states {
-        if let Some(s) = state {
-            // If state is present, it should be a valid state
-            match s {
-                State::Unspent
-                | State::Reserved
-                | State::Pending
-                | State::Spent
-                | State::PendingSpent => {}
-            }
+    for s in states.iter().flatten() {
+        // If state is present, it should be a valid state
+        match s {
+            State::Unspent
+            | State::Reserved
+            | State::Pending
+            | State::Spent
+            | State::PendingSpent => {}
         }
-        // It's OK if state is None for some implementations
     }
+    // It's OK if state is None for some implementations
 }
 
 /// Test getting states for non-existent proofs
