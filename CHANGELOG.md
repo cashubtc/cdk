@@ -8,17 +8,25 @@
 ## [Unreleased]
 
 ### Added
+- cdk-ffi: Add Payment Requests support ([thesimplekid]).
 - cdk-ffi: Add multimint melt with mint functionality ([thesimplekid]).
 - cdk-ffi: Add get wallets functionality ([thesimplekid]).
+- cdk: Add MultiMintWallet function to check proofs state ([thesimplekid]).
+- cdk: Add get_token_data and get_mint_keysets to MultiMintWallet ([thesimplekid]).
+- cdk: Melt external support ([thesimplekid]).
 
 ### Changed
-- cdk: Remove swap before melt ([thesimplekid]).
+- cdk: Swap before melt ([thesimplekid]).
+- cdk: Use try proof in swap within melt ([thesimplekid]).
 
 ### Fixed
 - cdk-ffi: Check melt quote in FFI ([thesimplekid]).
 - cdk: Use the client id from mint configuration ([lescuer97]).
 - cdk: Fix proof selection with fees to ensure net amount meets target ([thesimplekid]).
 - cdk: Do not remove melt quote ([thesimplekid]).
+- cdk: Return TransactionUnbalanced error for empty swap inputs/outputs ([thesimplekid]).
+- cdk: Fix connection pool resource initialization and path validation ([thesimplekid]).
+- cdk: Fix WASM use web_time ([thesimplekid]).
 
 ## [0.14.1](https://github.com/cashubtc/cdk/releases/tag/v0.14.1)
 
@@ -706,3 +714,4 @@ Additionally, this release introduces a Mint binary cdk-mintd that uses the cdk-
 [erik]: https://github.com/swedishfrenchpress
 [SatsAndSports]: https://github.com/SatsAndSports
 [stefanbitcr]: https://github.com/stefanbitcr
+[lescuer97]: https://github.com/lescuer97
