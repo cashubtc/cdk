@@ -227,7 +227,25 @@ impl Mint {
             err
         })?;
 
-        if output_verification.unit != input_verification.unit {
+        let fees = self.get_proofs_fee(inputs).await?;
+
+        if output_verification
+            .unit
+            .as_ref()
+            .ok_or(Error::TransactionUnbalanced(
+                input_verification.amount.to_u64(),
+                output_verification.amount.to_u64(),
+                fees.into(),
+            ))?
+            != input_verification
+                .unit
+                .as_ref()
+                .ok_or(Error::TransactionUnbalanced(
+                    input_verification.amount.to_u64(),
+                    output_verification.amount.to_u64(),
+                    0,
+                ))?
+        {
             tracing::debug!(
                 "Output unit {:?} does not match input unit {:?}",
                 output_verification.unit,
@@ -235,8 +253,6 @@ impl Mint {
             );
             return Err(Error::UnitMismatch);
         }
-
-        let fees = self.get_proofs_fee(inputs).await?;
 
         if output_verification.amount
             != input_verification

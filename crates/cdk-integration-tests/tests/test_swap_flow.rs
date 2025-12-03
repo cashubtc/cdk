@@ -353,6 +353,67 @@ async fn test_swap_unbalanced_transaction_detection() {
     }
 }
 
+/// Tests that swap requests with empty inputs or outputs are rejected:
+/// Case 1: Empty outputs (inputs without outputs)
+/// Case 2: Empty inputs (outputs without inputs)
+/// Both should fail. Currently returns UnitMismatch (11010) instead of
+/// TransactionUnbalanced (11002) because there are no keyset IDs to determine units.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_swap_empty_inputs_or_outputs() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    // Fund wallet with 100 sats
+    fund_wallet(wallet.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let proofs = wallet
+        .get_unspent_proofs()
+        .await
+        .expect("Could not get proofs");
+
+    // Case 1: Swap request with inputs but empty outputs
+    // This represents trying to destroy tokens (inputs with no outputs)
+    let swap_request_empty_outputs = SwapRequest::new(proofs.clone(), vec![]);
+
+    match mint.process_swap_request(swap_request_empty_outputs).await {
+        Err(cdk::Error::TransactionUnbalanced(_, _, _)) => {
+            // This would be the more appropriate error
+        }
+        Err(err) => panic!("Wrong error type for empty outputs: {:?}", err),
+        Ok(_) => panic!("Swap with empty outputs should not succeed"),
+    }
+
+    // Case 2: Swap request with empty inputs but with outputs
+    // This represents trying to create tokens from nothing
+    let keyset_id = get_keyset_id(&mint).await;
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
+
+    let preswap = PreMintSecrets::random(
+        keyset_id,
+        100.into(),
+        &SplitTarget::default(),
+        &fee_and_amounts,
+    )
+    .expect("Failed to create preswap");
+
+    let swap_request_empty_inputs = SwapRequest::new(vec![], preswap.blinded_messages());
+
+    match mint.process_swap_request(swap_request_empty_inputs).await {
+        Err(cdk::Error::TransactionUnbalanced(_, _, _)) => {
+            // This would be the more appropriate error
+        }
+        Err(err) => panic!("Wrong error type for empty inputs: {:?}", err),
+        Ok(_) => panic!("Swap with empty inputs should not succeed"),
+    }
+}
+
 /// Tests P2PK (Pay-to-Public-Key) spending conditions:
 /// 1. Create proofs locked to a public key
 /// 2. Attempt swap without signature - should fail
