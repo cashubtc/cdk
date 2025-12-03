@@ -253,10 +253,11 @@ mod test {
 
     #[test]
     fn mint_mod_generate_keyset_from_seed() {
-        let seed = "test_seed".as_bytes();
+        let seed = hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
+            .unwrap();
         let keyset = MintKeySet::generate_from_seed(
             &Secp256k1::new(),
-            seed,
+            &seed,
             &[1, 2],
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
@@ -272,14 +273,14 @@ mod test {
             (
                 Amount::from(1),
                 PublicKey::from_hex(
-                    "0234802970000701c2b7d38b967b9106abce52fe7ee094ccab7d0f9f4c1bd734e7",
+                    "0380a4bb98d9bc5d5b11c7cf2b705dbc894b62ac99cf67e0ef1a3d47ea6dc54706",
                 )
                 .unwrap(),
             ),
             (
                 Amount::from(2),
                 PublicKey::from_hex(
-                    "025b949292cfffd5714a190484bdf5118188b657e7d0e42d57ca560b8693922b98",
+                    "022fe5e50a15d721014b538ca6a3ff20ee049b195ba0b1705f64829da8779b6940",
                 )
                 .unwrap(),
             ),
@@ -298,9 +299,10 @@ mod test {
 
     #[test]
     fn mint_mod_generate_keyset_from_xpriv() {
-        let seed = "test_seed".as_bytes();
+        let seed = hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
+            .unwrap();
         let network = Network::Bitcoin;
-        let xpriv = Xpriv::new_master(network, seed).expect("Failed to create xpriv");
+        let xpriv = Xpriv::new_master(network, &seed).expect("Failed to create xpriv");
         let keyset = MintKeySet::generate_from_xpriv(
             &Secp256k1::new(),
             xpriv,
@@ -319,14 +321,14 @@ mod test {
             (
                 Amount::from(1),
                 PublicKey::from_hex(
-                    "0234802970000701c2b7d38b967b9106abce52fe7ee094ccab7d0f9f4c1bd734e7",
+                    "0380a4bb98d9bc5d5b11c7cf2b705dbc894b62ac99cf67e0ef1a3d47ea6dc54706",
                 )
                 .unwrap(),
             ),
             (
                 Amount::from(2),
                 PublicKey::from_hex(
-                    "025b949292cfffd5714a190484bdf5118188b657e7d0e42d57ca560b8693922b98",
+                    "022fe5e50a15d721014b538ca6a3ff20ee049b195ba0b1705f64829da8779b6940",
                 )
                 .unwrap(),
             ),
