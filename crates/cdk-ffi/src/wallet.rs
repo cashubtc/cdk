@@ -8,6 +8,7 @@ use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
 
 use crate::error::FfiError;
 use crate::token::Token;
+use crate::types::payment_request::PaymentRequest;
 use crate::types::*;
 
 /// FFI-compatible Wallet
@@ -474,6 +475,29 @@ impl Wallet {
             .get_keyset_count_fee(&id, proof_count as u64)
             .await?;
         Ok(fee.into())
+    }
+
+    /// Pay a NUT-18 payment request
+    ///
+    /// This method prepares and sends a payment for the given payment request.
+    /// It will use the Nostr or HTTP transport specified in the request.
+    ///
+    /// # Arguments
+    ///
+    /// * `payment_request` - The NUT-18 payment request to pay
+    /// * `custom_amount` - Optional amount to pay (required if request has no amount)
+    pub async fn pay_request(
+        &self,
+        payment_request: std::sync::Arc<PaymentRequest>,
+        custom_amount: Option<Amount>,
+    ) -> Result<(), FfiError> {
+        self.inner
+            .pay_request(
+                payment_request.inner().clone(),
+                custom_amount.map(Into::into),
+            )
+            .await?;
+        Ok(())
     }
 }
 
