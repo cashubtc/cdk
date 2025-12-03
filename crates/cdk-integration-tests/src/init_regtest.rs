@@ -2,6 +2,7 @@ use std::env;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use cdk::types::FeeReserve;
@@ -188,6 +189,50 @@ pub async fn create_lnd_backend(lnd_client: &LndClient) -> Result<CdkLnd> {
     .await?)
 }
 
+/// Wait for an LN client's RPC to be ready, retrying with backoff.
+/// This handles the race condition where the RPC server is still starting up.
+pub async fn wait_for_ln_ready<C>(ln_client: &C) -> Result<()>
+where
+    C: LightningClient,
+{
+    let max_retries = 30;
+    let mut delay = Duration::from_millis(100);
+
+    for attempt in 1..=max_retries {
+        match ln_client.wait_chain_sync().await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                let err_str = e.to_string().to_lowercase();
+                // Check if this is a startup/connection error that might resolve
+                // LND: "starting up", "not yet ready" (gRPC)
+                // CLN: "connection refused", "no such file" (Unix socket not ready)
+                let is_startup_error = err_str.contains("starting up")
+                    || err_str.contains("not yet ready")
+                    || err_str.contains("connection refused")
+                    || err_str.contains("no such file")
+                    || err_str.contains("transport error");
+
+                if is_startup_error {
+                    tracing::debug!(
+                        "RPC server not ready yet (attempt {}/{}), retrying in {:?}...",
+                        attempt,
+                        max_retries,
+                        delay
+                    );
+                    tokio::time::sleep(delay).await;
+                    // Exponential backoff, capped at 2 seconds
+                    delay = std::cmp::min(delay * 2, Duration::from_secs(2));
+                } else {
+                    // For other errors, return immediately
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    anyhow::bail!("RPC server did not become ready after {max_retries} retries")
+}
+
 pub async fn fund_ln<C>(bitcoin_client: &BitcoinClient, ln_client: &C) -> Result<()>
 where
     C: LightningClient,
@@ -261,7 +306,7 @@ pub async fn start_regtest_end(
 
     let cln_client = ClnClient::new(cln_one_dir.clone(), None).await?;
 
-    cln_client.wait_chain_sync().await.unwrap();
+    wait_for_ln_ready(&cln_client).await?;
 
     fund_ln(&bitcoin_client, &cln_client).await.unwrap();
 
@@ -278,7 +323,7 @@ pub async fn start_regtest_end(
 
     let cln_two_client = ClnClient::new(cln_two_dir.clone(), None).await?;
 
-    cln_two_client.wait_chain_sync().await.unwrap();
+    wait_for_ln_ready(&cln_two_client).await?;
 
     fund_ln(&bitcoin_client, &cln_two_client).await.unwrap();
 
@@ -296,7 +341,7 @@ pub async fn start_regtest_end(
     )
     .await?;
 
-    lnd_client.wait_chain_sync().await.unwrap();
+    wait_for_ln_ready(&lnd_client).await?;
 
     if let Some(node) = ldk_node.as_ref() {
         tracing::info!("Starting ldk node");
@@ -327,7 +372,7 @@ pub async fn start_regtest_end(
     )
     .await?;
 
-    lnd_two_client.wait_chain_sync().await.unwrap();
+    wait_for_ln_ready(&lnd_two_client).await?;
 
     fund_ln(&bitcoin_client, &lnd_two_client).await.unwrap();
 
