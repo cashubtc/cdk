@@ -719,13 +719,9 @@ async fn test_swap_with_fees() {
         .expect("Failed to create test wallet");
 
     // Rotate to keyset with 1 sat per proof fee
-    mint.rotate_keyset(
-        CurrencyUnit::Sat,
-        cdk_integration_tests::standard_keyset_amounts(32),
-        100,
-    )
-    .await
-    .expect("Failed to rotate keyset");
+    mint.rotate_keyset(CurrencyUnit::Sat, 32, 100)
+        .await
+        .expect("Failed to rotate keyset");
 
     // Fund with 1000 sats as individual 1-sat proofs using the fee-based keyset
     // Wait a bit for keyset to be available
@@ -818,13 +814,9 @@ async fn test_melt_with_fees_swap_before_melt() {
         .expect("Failed to create test wallet");
 
     // Rotate to keyset with 1000 ppk = 1 sat per proof fee
-    mint.rotate_keyset(
-        CurrencyUnit::Sat,
-        cdk_integration_tests::standard_keyset_amounts(32),
-        1000, // 1 sat per proof
-    )
-    .await
-    .expect("Failed to rotate keyset");
+    mint.rotate_keyset(CurrencyUnit::Sat, 32, 1000) // 1 sat per proof
+        .await
+        .expect("Failed to rotate keyset");
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -1051,13 +1043,9 @@ async fn test_melt_small_amount_tight_margin() {
         .expect("Failed to create test wallet");
 
     // Rotate to keyset with 1000 ppk = 1 sat per proof fee
-    mint.rotate_keyset(
-        CurrencyUnit::Sat,
-        cdk_integration_tests::standard_keyset_amounts(32),
-        1000,
-    )
-    .await
-    .expect("Failed to rotate keyset");
+    mint.rotate_keyset(CurrencyUnit::Sat, 32, 1000)
+        .await
+        .expect("Failed to rotate keyset");
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -1150,13 +1138,9 @@ async fn test_melt_swap_tight_margin_regression() {
 
     // Rotate to keyset with 250 ppk = 0.25 sat per proof fee (same as original bug scenario)
     // This means 4 proofs = 1 sat fee
-    mint.rotate_keyset(
-        CurrencyUnit::Sat,
-        cdk_integration_tests::standard_keyset_amounts(32),
-        250,
-    )
-    .await
-    .expect("Failed to rotate keyset");
+    mint.rotate_keyset(CurrencyUnit::Sat, 32, 250)
+        .await
+        .expect("Failed to rotate keyset");
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
