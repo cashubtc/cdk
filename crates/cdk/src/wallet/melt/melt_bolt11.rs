@@ -494,12 +494,15 @@ impl Wallet {
             );
 
             if let Some(swapped) = self
-                .swap(
-                    Some(swap_amount),
-                    SplitTarget::None,
-                    split_result.proofs_to_swap,
-                    None,
-                    false, // fees already accounted for in inputs_total_needed
+                .try_proof_operation_or_reclaim(
+                    split_result.proofs_to_swap.clone(),
+                    self.swap(
+                        Some(swap_amount),
+                        SplitTarget::None,
+                        split_result.proofs_to_swap,
+                        None,
+                        false, // fees already accounted for in inputs_total_needed
+                    ),
                 )
                 .await?
             {
