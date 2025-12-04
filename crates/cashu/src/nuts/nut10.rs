@@ -71,7 +71,7 @@ impl SecretData {
         Self {
             nonce,
             data: data.into(),
-            tags: tags.map(|v| v.into()),
+            tags: tags.map(Into::into),
         }
     }
 

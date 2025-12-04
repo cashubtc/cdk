@@ -611,7 +611,7 @@ impl TokenV4Token {
         let short_id = ShortKeysetId::from(keyset_id);
         Self {
             keyset_id: short_id,
-            proofs: proofs.into_iter().map(|p| p.into()).collect(),
+            proofs: proofs.into_iter().map(Into::into).collect(),
         }
     }
 }
