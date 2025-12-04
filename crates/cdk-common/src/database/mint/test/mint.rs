@@ -1272,3 +1272,70 @@ where
     assert_eq!(retrieved_sig.c, sig.c);
     tx.commit().await.unwrap();
 }
+
+/// Test that duplicate payment IDs are rejected
+pub async fn reject_duplicate_payment_ids<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use crate::database::mint::test::unique_string;
+
+    let mint_quote = MintQuote::new(
+        None,
+        "".to_owned(),
+        cashu::CurrencyUnit::Sat,
+        None,
+        0,
+        PaymentIdentifier::CustomId(unique_string()),
+        None,
+        1000.into(),
+        0.into(),
+        cashu::PaymentMethod::Bolt11,
+        0,
+        vec![],
+        vec![],
+    );
+
+    // Add quote
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_mint_quote(mint_quote.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // First payment with payment_id "payment_1"
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let new_total = tx
+        .increment_mint_quote_amount_paid(&mint_quote.id, 300.into(), "payment_1".to_string())
+        .await
+        .unwrap();
+    assert_eq!(new_total, 300.into());
+    tx.commit().await.unwrap();
+
+    // Try to add the same payment_id again - should fail with Duplicate error
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx
+        .increment_mint_quote_amount_paid(&mint_quote.id, 300.into(), "payment_1".to_string())
+        .await;
+
+    assert!(
+        matches!(result.unwrap_err(), Error::Duplicate),
+        "Duplicate payment_id should be rejected"
+    );
+    tx.rollback().await.unwrap();
+
+    // Verify that the amount_paid is still 300 (not 600)
+    let retrieved = db.get_mint_quote(&mint_quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.amount_paid(), 300.into());
+
+    // A different payment_id should succeed
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let new_total = tx
+        .increment_mint_quote_amount_paid(&mint_quote.id, 200.into(), "payment_2".to_string())
+        .await
+        .unwrap();
+    assert_eq!(new_total, 500.into());
+    tx.commit().await.unwrap();
+
+    // Verify final state
+    let retrieved = db.get_mint_quote(&mint_quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.amount_paid(), 500.into());
+}

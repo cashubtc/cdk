@@ -73,11 +73,8 @@ where
     // Both behaviors are acceptable
     let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
     let result = tx.add_keyset_info(keyset_info).await;
-    if result.is_ok() {
-        tx.commit().await.unwrap();
-    } else {
-        tx.rollback().await.unwrap();
-    }
+    assert!(result.is_ok());
+    tx.commit().await.unwrap();
 
     // Verify keyset still exists
     let retrieved = db.get_keyset_info(&keyset_id).await.unwrap();
