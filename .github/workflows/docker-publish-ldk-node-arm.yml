@@ -40,7 +40,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=ldk-node-arm64,enable=${{ github.event_name == 'release' }}
+            type=raw,value=ldk-node-arm64,enable=${{ github.event_name == 'release' && !github.event.release.prerelease && !contains(github.ref_name, 'rc') }}
             type=semver,pattern={{version}}-ldk-node-arm64
             type=semver,pattern={{major}}.{{minor}}-ldk-node-arm64
             type=ref,event=branch,suffix=-ldk-node-arm64
