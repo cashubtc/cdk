@@ -49,6 +49,9 @@ pub enum Path {
     /// Bolt11 Mint
     #[serde(rename = "/v1/mint/bolt11")]
     MintBolt11,
+    /// Bolt11 Batch Mint
+    #[serde(rename = "/v1/mint/bolt11/batch")]
+    MintBolt11Batch,
     /// Bolt11 Melt
     #[serde(rename = "/v1/melt/bolt11")]
     MeltBolt11,
@@ -58,6 +61,9 @@ pub enum Path {
     /// Bolt12 Mint
     #[serde(rename = "/v1/mint/bolt12")]
     MintBolt12,
+    /// Bolt12 Batch Mint
+    #[serde(rename = "/v1/mint/bolt12/batch")]
+    MintBolt12Batch,
     /// Bolt12 Melt
     #[serde(rename = "/v1/melt/bolt12")]
     MeltBolt12,

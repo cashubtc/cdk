@@ -345,6 +345,12 @@ pub enum Error {
     /// Bolt12 quotes not supported for batch minting
     #[error("Bolt12 quotes are not supported for batch minting")]
     BatchBolt12NotSupported,
+    /// Bolt12 batch minting requires spending conditions
+    #[error("Bolt12 batch minting requires spending conditions")]
+    BatchBolt12RequiresSpendingConditions,
+    /// Bolt12 batch minting requires a secret key for each quote
+    #[error("Bolt12 batch minting requires secret keys for all quotes")]
+    BatchBolt12MissingSecretKey,
 
     /// Custom Error
     #[error("`{0}`")]

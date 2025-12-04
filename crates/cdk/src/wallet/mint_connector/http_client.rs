@@ -25,8 +25,8 @@ use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     AuthToken, CheckStateRequest, CheckStateResponse, Id, KeySet, KeysResponse, KeysetResponse,
     MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltRequest, MintInfo, MintQuoteBolt11Request,
-    MintQuoteBolt11Response, MintRequest, MintResponse, RestoreRequest, RestoreResponse,
-    SwapRequest, SwapResponse,
+    MintQuoteBolt11Response, MintRequest, MintResponse, PaymentMethod, RestoreRequest,
+    RestoreResponse, SwapRequest, SwapResponse,
 };
 #[cfg(feature = "auth")]
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
@@ -169,8 +169,10 @@ where
         loop {
             let url = self.mint_url.join_paths(&match path {
                 nut19::Path::MintBolt11 => vec!["v1", "mint", "bolt11"],
+                nut19::Path::MintBolt11Batch => vec!["v1", "mint", "bolt11", "batch"],
                 nut19::Path::MeltBolt11 => vec!["v1", "melt", "bolt11"],
                 nut19::Path::MintBolt12 => vec!["v1", "mint", "bolt12"],
+                nut19::Path::MintBolt12Batch => vec!["v1", "mint", "bolt12", "batch"],
 
                 nut19::Path::MeltBolt12 => vec!["v1", "melt", "bolt12"],
                 nut19::Path::Swap => vec!["v1", "swap"],
@@ -204,6 +206,167 @@ where
                 _ => unreachable!(),
             };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nuts::nut04::MintResponse;
+    use crate::nuts::nut23::QuoteState;
+    use crate::Amount;
+    use serde::Serialize;
+    use std::str::FromStr;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Debug, Default)]
+    struct RecordingTransport {
+        inner: Arc<RecordingTransportInner>,
+    }
+
+    #[derive(Debug)]
+    struct RecordingTransportInner {
+        last_url: Mutex<Option<String>>,
+        response_body: Mutex<String>,
+    }
+
+    impl Default for RecordingTransportInner {
+        fn default() -> Self {
+            Self {
+                last_url: Mutex::new(None),
+                response_body: Mutex::new(
+                    serde_json::to_string(&MintResponse {
+                        signatures: Vec::new(),
+                    })
+                    .expect("default response json"),
+                ),
+            }
+        }
+    }
+
+    impl RecordingTransport {
+        fn set_response<T: Serialize>(&self, value: &T) {
+            let mut response = self.inner.response_body.lock().expect("lock set response");
+            *response = serde_json::to_string(value).expect("serialize response");
+        }
+
+        fn last_url(&self) -> Option<String> {
+            self.inner.last_url.lock().expect("lock last url").clone()
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    impl Transport for RecordingTransport {
+        #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+        async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
+            Ok(vec![])
+        }
+
+        fn with_proxy(
+            &mut self,
+            _proxy: Url,
+            _host_matcher: Option<&str>,
+            _accept_invalid_certs: bool,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn http_get<R>(&self, url: Url, _auth: Option<AuthToken>) -> Result<R, Error>
+        where
+            R: DeserializeOwned,
+        {
+            *self.inner.last_url.lock().expect("lock http_get url") = Some(url.to_string());
+            let body = self
+                .inner
+                .response_body
+                .lock()
+                .expect("lock http_get body")
+                .clone();
+            serde_json::from_str(&body).map_err(|err| Error::Custom(err.to_string()))
+        }
+
+        async fn http_post<P, R>(
+            &self,
+            url: Url,
+            _auth_token: Option<AuthToken>,
+            _payload: &P,
+        ) -> Result<R, Error>
+        where
+            P: Serialize + ?Sized + Send + Sync,
+            R: DeserializeOwned,
+        {
+            *self.inner.last_url.lock().expect("lock http_post url") = Some(url.to_string());
+            let body = self
+                .inner
+                .response_body
+                .lock()
+                .expect("lock http_post body")
+                .clone();
+            serde_json::from_str(&body).map_err(|err| Error::Custom(err.to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn post_mint_batch_uses_bolt12_route() {
+        let transport = RecordingTransport::default();
+        transport.set_response(&MintResponse {
+            signatures: Vec::new(),
+        });
+
+        let mint_url = MintUrl::from_str("https://example.com").expect("url");
+        #[cfg(feature = "auth")]
+        let client = HttpClient::with_transport(mint_url.clone(), transport.clone(), None);
+        #[cfg(not(feature = "auth"))]
+        let client = HttpClient::with_transport(mint_url.clone(), transport.clone());
+
+        let request = BatchMintRequest {
+            quote: vec!["q1".to_string()],
+            outputs: Vec::new(),
+            signature: None,
+        };
+
+        client
+            .post_mint_batch(request, PaymentMethod::Bolt12)
+            .await
+            .expect("bolt12 batch call");
+
+        let last_url = transport.last_url().expect("recorded url");
+        assert!(last_url.ends_with("/v1/mint/bolt12/batch"));
+    }
+
+    #[tokio::test]
+    async fn batch_quote_status_uses_shared_route() {
+        let transport = RecordingTransport::default();
+        let quote_status = cdk_common::MintQuoteBolt11Response {
+            quote: "q1".to_string(),
+            request: "lnbc1".to_string(),
+            amount: Some(Amount::from(10)),
+            unit: Some(crate::nuts::CurrencyUnit::Sat),
+            state: QuoteState::Paid,
+            expiry: Some(1),
+            pubkey: None,
+        };
+        transport.set_response(&vec![quote_status]);
+
+        let mint_url = MintUrl::from_str("https://example.com").expect("url");
+        #[cfg(feature = "auth")]
+        let client = HttpClient::with_transport(mint_url.clone(), transport.clone(), None);
+        #[cfg(not(feature = "auth"))]
+        let client = HttpClient::with_transport(mint_url.clone(), transport.clone());
+
+        let request = BatchQuoteStatusRequest {
+            quote: vec!["q1".to_string()],
+        };
+
+        let response = client
+            .post_mint_batch_quote_status(request)
+            .await
+            .expect("batch status call");
+
+        assert_eq!(response.0.len(), 1);
+        let last_url = transport.last_url().expect("recorded url");
+        assert!(last_url.ends_with("/v1/mint/quote/batch"));
     }
 }
 
@@ -599,21 +762,25 @@ where
 
     /// Batch Mint [NUT-XX]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_mint_batch(&self, request: BatchMintRequest) -> Result<MintResponse, Error> {
+    async fn post_mint_batch(
+        &self,
+        request: BatchMintRequest,
+        payment_method: PaymentMethod,
+    ) -> Result<MintResponse, Error> {
+        let (nut19_path, auth_route) = match payment_method {
+            PaymentMethod::Bolt11 => (nut19::Path::MintBolt11Batch, RoutePath::MintBolt11),
+            PaymentMethod::Bolt12 => (nut19::Path::MintBolt12Batch, RoutePath::MintBolt12),
+            PaymentMethod::Custom(_) => return Err(Error::UnsupportedPaymentMethod),
+        };
+
         #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintBolt11)
-            .await?;
+        let auth_token = self.get_auth_token(Method::Post, auth_route).await?;
 
         #[cfg(not(feature = "auth"))]
         let auth_token = None;
-        self.retriable_http_request(
-            nut19::Method::Post,
-            nut19::Path::MintBolt11,
-            auth_token,
-            &request,
-        )
-        .await
+
+        self.retriable_http_request(nut19::Method::Post, nut19_path, auth_token, &request)
+            .await
     }
 }
 

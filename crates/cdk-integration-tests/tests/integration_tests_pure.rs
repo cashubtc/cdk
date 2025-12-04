@@ -1256,6 +1256,54 @@ async fn test_batch_mint_two_locked_quotes() {
     );
 }
 
+#[tokio::test]
+async fn test_batch_mint_bolt12_two_locked_quotes() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+
+    let secret_key_1 = SecretKey::generate();
+    let secret_key_2 = SecretKey::generate();
+    let quotes =
+        setup_bolt12_batch_mint_test(&mint, &wallet, &[(100, secret_key_1), (50, secret_key_2)])
+            .await;
+
+    let recipient_key = SecretKey::generate();
+    let spending_conditions =
+        SpendingConditions::new_p2pk(recipient_key.public_key(), None /* conditions */);
+
+    let proofs = wallet
+        .mint_batch(
+            quotes.clone(),
+            SplitTarget::default(),
+            Some(spending_conditions),
+            PaymentMethod::Bolt12,
+        )
+        .await
+        .expect("Failed to mint bolt12 batch");
+
+    assert_eq!(
+        proofs.total_amount().expect("Failed to get total amount"),
+        Amount::from(150),
+        "Bolt12 batch should mint 150 sats total",
+    );
+
+    for quote_id in quotes {
+        let quote = wallet
+            .localstore
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .expect("quote exists");
+        assert_eq!(quote.amount_issued, quote.amount_paid);
+        assert_eq!(quote.state, cashu::MintQuoteState::Issued);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_batch_mint_prevents_quote_reuse_across_batches() {
     setup_tracing();

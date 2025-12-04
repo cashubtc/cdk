@@ -244,10 +244,11 @@ impl MintConnector for DirectMintConnection {
     async fn post_mint_batch(
         &self,
         request: cdk_common::mint::BatchMintRequest,
+        payment_method: PaymentMethod,
     ) -> Result<MintResponse, Error> {
         // Process the batch mint request directly using the mint's batch handler
         self.mint
-            .process_batch_mint_request(request, cashu::PaymentMethod::Bolt11)
+            .process_batch_mint_request(request, payment_method)
             .await
     }
 }
@@ -509,6 +510,101 @@ pub async fn setup_batch_mint_test(
             .add_mint_quote(wallet_quote)
             .await
             .expect("Failed to add quote to wallet");
+    }
+
+    quote_ids
+}
+
+pub async fn setup_bolt12_batch_mint_test(
+    mint: &Mint,
+    wallet: &Wallet,
+    quote_amounts: &[(u64, cashu::SecretKey)],
+) -> Vec<String> {
+    use uuid::Uuid;
+
+    use cdk_common::mint::MintQuote as MintMintQuote;
+
+    let db = mint.localstore();
+    let mut quote_ids = Vec::new();
+    let mut mint_quotes = Vec::new();
+
+    for (idx, (amount, secret_key)) in quote_amounts.iter().enumerate() {
+        let quote_id_uuid = Uuid::new_v4();
+        let quote_id = quote_id_uuid.to_string();
+        quote_ids.push(quote_id.clone());
+
+        let request = format!("lnbolt12_offer_{idx}");
+        let mint_quote = MintMintQuote::new(
+            Some(quote_id_uuid.into()),
+            request.clone(),
+            CurrencyUnit::Sat,
+            None,
+            9999999999,
+            cdk_common::payment::PaymentIdentifier::new("custom", &format!("bolt12_{idx}"))
+                .expect("payment identifier"),
+            Some(secret_key.public_key()),
+            Amount::ZERO,
+            Amount::ZERO,
+            PaymentMethod::Bolt12,
+            0,
+            vec![],
+            vec![],
+        );
+
+        mint_quotes.push((
+            quote_id_uuid,
+            mint_quote,
+            quote_id,
+            *amount,
+            request,
+            secret_key.clone(),
+        ));
+    }
+
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("Failed to start transaction");
+    for (_, mint_quote, _, _, _, _) in &mint_quotes {
+        tx.add_mint_quote(mint_quote.clone())
+            .await
+            .expect("Failed to add bolt12 quote");
+    }
+    tx.commit().await.expect("Failed to commit bolt12 quotes");
+
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("Failed to start paid tx");
+    for (quote_id_uuid, _, _, amount, _, _) in &mint_quotes {
+        tx.increment_mint_quote_amount_paid(
+            &quote_id_uuid.clone().into(),
+            Amount::from(*amount),
+            format!("bolt12_payment_{}", quote_id_uuid),
+        )
+        .await
+        .expect("Failed to mark bolt12 quote paid");
+    }
+    tx.commit().await.expect("Failed to commit payments");
+
+    for (_, _, quote_id, amount, request, secret_key) in &mint_quotes {
+        let mut wallet_quote = cdk_common::wallet::MintQuote::new(
+            quote_id.clone(),
+            wallet.mint_url.clone(),
+            PaymentMethod::Bolt12,
+            None,
+            CurrencyUnit::Sat,
+            request.clone(),
+            9999999999,
+            Some(secret_key.clone()),
+        );
+        wallet_quote.state = cashu::MintQuoteState::Paid;
+        wallet_quote.amount_paid = Amount::from(*amount);
+        wallet
+            .localstore
+            .add_mint_quote(wallet_quote)
+            .await
+            .expect("Failed to add bolt12 quote to wallet");
     }
 
     quote_ids

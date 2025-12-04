@@ -15,7 +15,7 @@ use crate::nuts::{
 };
 use crate::types::ProofInfo;
 use crate::util::unix_time;
-use crate::wallet::MintQuote;
+use crate::wallet::{MintQuote, MintQuoteState};
 use crate::{Amount, Error, Wallet};
 
 impl Wallet {
@@ -214,6 +214,11 @@ impl Wallet {
             .await?
             .ok_or(Error::UnpaidQuote)?;
         quote_info.amount_issued += proofs.total_amount()?;
+        if quote_info.amount_paid > Amount::ZERO
+            && quote_info.amount_paid == quote_info.amount_issued
+        {
+            quote_info.state = MintQuoteState::Issued;
+        }
 
         tx.add_mint_quote(quote_info.clone()).await?;
 
