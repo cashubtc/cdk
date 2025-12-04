@@ -230,8 +230,7 @@ impl Wallet {
             true => {
                 let split_count = amount
                     .unwrap_or(Amount::ZERO)
-                    .split_targeted(&SplitTarget::default(), fee_and_amounts)
-                    .unwrap()
+                    .split_targeted(&SplitTarget::default(), &fee_and_amounts)?
                     .len();
 
                 let fee_to_redeem = self
