@@ -27,7 +27,12 @@ cleanup() {
     #     rm -rf "$CDK_ITESTS_DIR"
     #     echo "Temp directory removed: $CDK_ITESTS_DIR"
     # fi
-    
+
+    # Stop PostgreSQL if it was started
+    if [ -d "$PWD/.pg_data" ]; then
+        stop-postgres 2>/dev/null || true
+    fi
+
     # Unset all environment variables
     unset CDK_ITESTS_DIR
     unset CDK_ITESTS_MINT_ADDR
@@ -61,6 +66,13 @@ fi
 
 echo "Temp directory created: $CDK_ITESTS_DIR"
 export CDK_MINTD_DATABASE="$1"
+
+# Start PostgreSQL if needed
+if [ "${CDK_MINTD_DATABASE}" = "POSTGRES" ]; then
+    echo "Starting PostgreSQL via nix..."
+    start-postgres
+    echo "PostgreSQL is ready"
+fi
 
 cargo build --bin start_regtest_mints 
 
