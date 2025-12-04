@@ -38,17 +38,22 @@ mint_batch() - Main entry point
 
 #### 2. Mint-Side Batch Processing (`cdk/src/mint/issue/mod.rs`)
 ```
-process_batch_mint_request() - Handler
-├── Validates batch structure and constraints
+process_mint_request() / process_batch_mint_request()
+├── Wrapper-only: metrics + HTTP-specific caching requirements
+├── Both normalize into BatchMintRequest (single quote -> Vec len 1)
+└── Delegate to process_mint_workload()
+
+process_mint_workload()
+├── Validates batch structure and constraints (size, duplicates, origin-aware)
 ├── Generates blind signatures immediately
 ├── Begins transaction
-├── Loads all quotes in transaction
-├── Validates payment method consistency
+├── Loads and refreshes all quotes in transaction
+├── Validates payment method & unit consistency
 ├── NUT-20 signature verification (if present)
-├── Validates all quotes PAID
-├── Calculates total amounts
-├── Verifies blinded message count
-├── Stores state in transaction
+├── Validates all quotes PAID / not already issued
+├── Calculates per-quote & total mintable amounts
+├── Verifies blinded message totals
+├── Records outputs + signatures in the DB (single origin keeps quote association)
 ├── Increments per-quote amount_issued atomically
 ├── Commits transaction
 └── Publishes mint_quote_issue events
@@ -80,6 +85,7 @@ BatchQuoteStatusResponse
 - Quote state validation
 - Payment method/unit consistency
 - Protocol serialization
+- Dedicated unit test for the single-origin normalization path hitting `process_mint_workload`
 - ~32 comprehensive test cases
 
 ### What's NOT Implemented (BOLT12)
