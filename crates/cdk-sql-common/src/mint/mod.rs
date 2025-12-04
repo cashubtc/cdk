@@ -135,6 +135,8 @@ where
 {
     type Err = Error;
 
+    // FIXME: Replace unwrap with proper error handling
+    #[allow(clippy::unwrap_used)]
     async fn add_proofs(
         &mut self,
         proofs: Proofs,
@@ -2455,6 +2457,8 @@ fn sql_row_to_mint_quote(
     ))
 }
 
+// FIXME: Replace unwrap with proper error handling
+#[allow(clippy::unwrap_used)]
 fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
     unpack_into!(
         let (
