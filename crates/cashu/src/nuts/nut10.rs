@@ -302,12 +302,10 @@ pub trait SpendingConditionVerification {
     fn verify_all_inputs_match_for_sig_all(&self) -> Result<(), super::nut11::Error> {
         let inputs = self.inputs();
 
-        if inputs.is_empty() {
-            return Err(super::nut11::Error::SpendConditionsNotMet);
-        }
-
         // Get first input's properties
-        let first_input = inputs.first().unwrap();
+        let first_input = inputs
+            .first()
+            .ok_or(super::nut11::Error::SpendConditionsNotMet)?;
         let first_secret = Secret::try_from(&first_input.secret)
             .map_err(|_| super::nut11::Error::IncorrectSecretKind)?;
         let first_kind = first_secret.kind();

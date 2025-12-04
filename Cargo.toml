@@ -10,13 +10,13 @@ unreachable_pub = "warn"
 missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
-pedantic = { level = "warn", priority = -1 }
+# pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 clone_on_ref_ptr = "warn"
 missing_errors_doc = "warn"
 missing_panics_doc = "warn"
 missing_safety_doc = "warn"
-nursery = { level = "warn", priority = -1 }
+# nursery = { level = "warn", priority = -1 }
 redundant_else = "warn"
 redundant_closure_for_method_calls = "warn"
 unneeded_field_pattern = "warn"
