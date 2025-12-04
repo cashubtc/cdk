@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::{Error, PublicKey, QuoteId};
 use tracing::instrument;
+use uuid::Uuid;
 
 /// Trait for compensating actions in the saga pattern.
 ///
@@ -25,6 +26,7 @@ pub trait CompensatingAction: Send + Sync {
 /// - Input proofs (identified by input_ys)
 /// - Output blinded messages (identified by blinded_secrets)
 /// - Melt request tracking record
+/// - Saga state record
 ///
 ///   And resets:
 /// - Quote state from Pending back to Unpaid
@@ -37,6 +39,8 @@ pub struct RemoveMeltSetup {
     pub blinded_secrets: Vec<PublicKey>,
     /// Quote ID to reset state
     pub quote_id: QuoteId,
+    /// Operation ID (saga ID) to delete
+    pub operation_id: Uuid,
 }
 
 #[async_trait]
@@ -44,10 +48,11 @@ impl CompensatingAction for RemoveMeltSetup {
     #[instrument(skip_all)]
     async fn execute(&self, db: &DynMintDatabase) -> Result<(), Error> {
         tracing::info!(
-            "Compensation: Removing melt setup for quote {} ({} proofs, {} blinded messages)",
+            "Compensation: Removing melt setup for quote {} ({} proofs, {} blinded messages, saga {})",
             self.quote_id,
             self.input_ys.len(),
-            self.blinded_secrets.len()
+            self.blinded_secrets.len(),
+            self.operation_id
         );
 
         super::super::shared::rollback_melt_quote(
@@ -55,6 +60,7 @@ impl CompensatingAction for RemoveMeltSetup {
             &self.quote_id,
             &self.input_ys,
             &self.blinded_secrets,
+            &self.operation_id,
         )
         .await
     }
