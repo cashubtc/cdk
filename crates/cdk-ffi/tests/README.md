@@ -1,6 +1,6 @@
 # CDK FFI Python Tests
 
-This directory contains Python tests for the CDK FFI (Foreign Function Interface) bindings, focusing on wallet database operations.
+This directory contains Python tests for the CDK FFI (Foreign Function Interface) bindings, covering both transaction operations and wallet database operations.
 
 ## Running the Tests
 
@@ -34,25 +34,45 @@ python3 crates/cdk-ffi/tests/test_transactions.py
 The test script automatically:
 1. Locates the bindings in `target/bindings/python/`
 2. Copies the shared library from `target/release/` to the bindings directory
-3. Runs all wallet tests
+3. Runs all tests
 
 **No manual file copying required!**
 
 ## Test Suite
 
-### Wallet Tests (test_transactions.py)
+### Transaction Tests (explicit transaction management)
 
-Comprehensive tests for wallet database operations:
+Tests that use `begin_db_transaction()`, `commit()`, and `rollback()`:
 
-1. **Wallet Creation** - Tests creating a wallet with SQLite backend
-2. **Wallet Mint Management** - Tests adding and querying mints
-3. **Wallet Keyset Management** - Tests adding and querying keysets
-4. **Wallet Keyset Counter** - Tests keyset counter increment operations
-5. **Wallet Quote Operations** - Tests querying mint and melt quotes
-6. **Wallet Get Proofs by Y Values** - Tests retrieving proofs by Y values
+1. **Increment Counter with Commit** - Tests `increment_keyset_counter()` and persistence
+2. **Implicit Rollback on Drop** - Verifies automatic rollback when transactions are dropped
+3. **Explicit Rollback** - Tests manual `rollback()` calls
+4. **Transaction Reads** - Tests reading data within active transactions
+5. **Multiple Increments** - Tests sequential counter operations in one transaction
+6. **Transaction Atomicity** - Tests that rollback properly reverts ALL changes
+7. **Get Proofs by Y Values (Transaction)** - Tests retrieving proofs within transactions
+
+### Wallet Tests (direct wallet methods)
+
+Tests that use wallet database methods directly without explicit transactions:
+
+8. **Wallet Creation** - Tests creating a wallet with SQLite backend
+9. **Wallet Mint Management** - Tests adding, querying, and removing mints
+10. **Wallet Keyset Management** - Tests adding and querying keysets
+11. **Wallet Keyset Counter** - Tests keyset counter increment operations
+12. **Wallet Quote Operations** - Tests querying mint and melt quotes
+13. **Wallet Get Proofs by Y Values** - Tests retrieving proofs by Y values
 
 ### Key Features Tested
 
+**Transaction Features:**
+- ✅ **Transaction atomicity** - All-or-nothing commits/rollbacks
+- ✅ **Isolation** - Uncommitted changes not visible outside transaction
+- ✅ **Durability** - Committed changes persist
+- ✅ **Implicit rollback** - Automatic cleanup on transaction drop
+- ✅ **Explicit rollback** - Manual transaction rollback
+
+**Wallet Features:**
 - ✅ **Wallet creation** - SQLite backend initialization
 - ✅ **Mint management** - Add, query, and retrieve mint URLs
 - ✅ **Keyset operations** - Add keysets and query by ID or mint
@@ -66,11 +86,11 @@ Comprehensive tests for wallet database operations:
 Expected output for successful run:
 
 ```
-Starting CDK FFI Wallet Tests
+Starting CDK FFI Wallet and Transaction Tests
 ==================================================
 ... (test execution) ...
 ==================================================
-Test Results: 6 passed, 0 failed
+Test Results: 13 passed, 0 failed
 ==================================================
 ```
 
@@ -103,6 +123,7 @@ When adding new tests:
 2. Add test to the `tests` list in `main()`
 3. Use temporary databases for isolation
 4. Follow existing patterns for setup/teardown
+5. Clearly indicate if the test uses transactions or direct wallet methods
 
 ## Implementation Notes
 
@@ -110,3 +131,5 @@ When adding new tests:
 - Each test is fully isolated with its own database
 - Tests clean up automatically via `finally` blocks
 - The script handles path resolution and library loading automatically
+- Transaction tests demonstrate ACID properties
+- Wallet tests demonstrate direct database operations

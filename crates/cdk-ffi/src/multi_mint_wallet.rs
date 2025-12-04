@@ -27,7 +27,7 @@ pub struct MultiMintWallet {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl MultiMintWallet {
-    /// Create a new MultiMintWallet from mnemonic using WalletDatabase trait
+    /// Create a new MultiMintWallet from mnemonic using WalletDatabaseFfi trait
     #[uniffi::constructor]
     pub fn new(
         unit: CurrencyUnit,

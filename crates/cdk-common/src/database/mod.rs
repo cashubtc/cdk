@@ -7,18 +7,21 @@ mod wallet;
 
 #[cfg(feature = "mint")]
 pub use mint::{
-    Database as MintDatabase, DbTransactionFinalizer as MintDbWriterFinalizer, DynMintDatabase,
-    KVStore as MintKVStore, KVStoreDatabase as MintKVStoreDatabase,
-    KVStoreTransaction as MintKVStoreTransaction, KeysDatabase as MintKeysDatabase,
-    KeysDatabaseTransaction as MintKeyDatabaseTransaction, ProofsDatabase as MintProofsDatabase,
-    ProofsTransaction as MintProofsTransaction, QuotesDatabase as MintQuotesDatabase,
-    QuotesTransaction as MintQuotesTransaction, SignaturesDatabase as MintSignaturesDatabase,
+    Database as MintDatabase, DynMintDatabase, KVStore as MintKVStore,
+    KVStoreDatabase as MintKVStoreDatabase, KVStoreTransaction as MintKVStoreTransaction,
+    KeysDatabase as MintKeysDatabase, KeysDatabaseTransaction as MintKeyDatabaseTransaction,
+    ProofsDatabase as MintProofsDatabase, ProofsTransaction as MintProofsTransaction,
+    QuotesDatabase as MintQuotesDatabase, QuotesTransaction as MintQuotesTransaction,
+    SignaturesDatabase as MintSignaturesDatabase,
     SignaturesTransaction as MintSignatureTransaction, Transaction as MintTransaction,
 };
 #[cfg(all(feature = "mint", feature = "auth"))]
 pub use mint::{DynMintAuthDatabase, MintAuthDatabase, MintAuthTransaction};
 #[cfg(feature = "wallet")]
-pub use wallet::Database as WalletDatabase;
+pub use wallet::{
+    Database as WalletDatabase, DatabaseTransaction as WalletDatabaseTransaction,
+    DynWalletDatabaseTransaction,
+};
 
 /// Data conversion error
 #[derive(thiserror::Error, Debug)]
@@ -202,4 +205,17 @@ impl From<crate::state::Error> for Error {
             _ => Error::InvalidStateTransition(state),
         }
     }
+}
+
+#[async_trait::async_trait]
+/// Commit and Rollback
+pub trait DbTransactionFinalizer {
+    /// Mint Signature Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Commits all the changes into the database
+    async fn commit(self: Box<Self>) -> Result<(), Self::Err>;
+
+    /// Rollbacks the write transaction
+    async fn rollback(self: Box<Self>) -> Result<(), Self::Err>;
 }
