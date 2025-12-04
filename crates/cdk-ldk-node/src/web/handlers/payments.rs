@@ -377,7 +377,7 @@ pub async fn post_pay_bolt11(
                 .body(Body::from(
                     layout_with_status("Payment Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         }
     };
 
@@ -421,7 +421,7 @@ pub async fn post_pay_bolt11(
                 .body(Body::from(
                     layout_with_status("Payment Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         }
     };
 
@@ -508,7 +508,7 @@ pub async fn post_pay_bolt11(
         .body(Body::from(
             layout_with_status("Payment Result", content, true).into_string(),
         ))
-        .unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
 }
 
 pub async fn post_pay_bolt12(
@@ -531,7 +531,7 @@ pub async fn post_pay_bolt12(
                 .body(Body::from(
                     layout_with_status("Payment Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         }
     };
 
@@ -565,7 +565,7 @@ pub async fn post_pay_bolt12(
                         .body(Body::from(
                             layout_with_status("Payment Error", content, true).into_string(),
                         ))
-                        .unwrap());
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
                 }
             };
             let amount_msats = amount_btc * 1_000;
@@ -599,7 +599,7 @@ pub async fn post_pay_bolt12(
                 .body(Body::from(
                     layout_with_status("Payment Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         }
     };
 
@@ -693,5 +693,5 @@ pub async fn post_pay_bolt12(
         .body(Body::from(
             layout_with_status("Payment Result", content, true).into_string(),
         ))
-        .unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
 }

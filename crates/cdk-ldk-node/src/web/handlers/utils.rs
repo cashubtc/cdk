@@ -1,9 +1,21 @@
 use std::sync::Arc;
 
+use axum::body::Body;
+use axum::http::{Response, StatusCode};
 use ldk_node::payment::PaymentDirection;
 use serde::Deserialize;
 
 use crate::CdkLdkNode;
+
+/// Build a response, converting builder errors to INTERNAL_SERVER_ERROR
+pub fn build_response(
+    builder: axum::http::response::Builder,
+    body: Body,
+) -> Result<Response<Body>, StatusCode> {
+    builder
+        .body(body)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
 
 #[derive(Clone)]
 pub struct AppState {

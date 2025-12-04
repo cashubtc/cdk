@@ -234,7 +234,7 @@ pub async fn post_send_onchain(
         .status(StatusCode::FOUND)
         .header("Location", format!("/onchain/confirm?{}", encoded_form))
         .body(Body::empty())
-        .unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
 }
 
 pub async fn onchain_confirm_page(
@@ -264,7 +264,7 @@ pub async fn onchain_confirm_page(
                 .body(Body::from(
                     layout_with_status("Send On-chain Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         }
     };
 
@@ -290,7 +290,7 @@ pub async fn onchain_confirm_page(
                 .body(Body::from(
                     layout_with_status("Send On-chain Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         }
         (amount, false)
     };
@@ -364,7 +364,7 @@ pub async fn onchain_confirm_page(
         .body(Body::from(
             layout_with_status("Confirm Transaction", content, true).into_string(),
         ))
-        .unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
 }
 
 async fn execute_onchain_transaction(
@@ -397,7 +397,7 @@ async fn execute_onchain_transaction(
                 .body(Body::from(
                     layout_with_status("Send On-chain Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         }
     };
 
@@ -476,5 +476,5 @@ async fn execute_onchain_transaction(
         .body(Body::from(
             layout_with_status("Send On-chain Result", content, true).into_string(),
         ))
-        .unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
 }

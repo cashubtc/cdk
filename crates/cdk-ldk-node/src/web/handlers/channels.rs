@@ -41,7 +41,7 @@ pub async fn channels_page(State(_state): State<AppState>) -> Result<Response, S
         .status(StatusCode::FOUND)
         .header("Location", "/balance")
         .body(Body::empty())
-        .unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
 }
 
 pub async fn open_channel_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
@@ -112,7 +112,7 @@ pub async fn post_open_channel(
                 .body(Body::from(
                     layout_with_status("Open Channel Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         }
     };
 
@@ -132,7 +132,7 @@ pub async fn post_open_channel(
                 .body(Body::from(
                     layout_with_status("Open Channel Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         }
     };
 
@@ -156,7 +156,7 @@ pub async fn post_open_channel(
             .body(Body::from(
                 layout_with_status("Open Channel Error", content, true).into_string(),
             ))
-            .unwrap());
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
     }
 
     // Then open the channel
@@ -214,7 +214,7 @@ pub async fn post_open_channel(
         .body(Body::from(
             layout_with_status("Open Channel Result", content, true).into_string(),
         ))
-        .unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
 }
 
 pub async fn close_channel_page(
@@ -380,7 +380,7 @@ pub async fn post_close_channel(
                 .body(Body::from(
                     layout_with_status("Close Channel Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         }
     };
 
@@ -400,7 +400,7 @@ pub async fn post_close_channel(
                 .body(Body::from(
                     layout_with_status("Close Channel Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         }
     };
 
@@ -451,7 +451,7 @@ pub async fn post_close_channel(
         .body(Body::from(
             layout_with_status("Close Channel Result", content, true).into_string(),
         ))
-        .unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
 }
 
 pub async fn post_force_close_channel(
@@ -483,7 +483,7 @@ pub async fn post_force_close_channel(
                 .body(Body::from(
                     layout_with_status("Force Close Channel Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         }
     };
 
@@ -503,7 +503,7 @@ pub async fn post_force_close_channel(
                 .body(Body::from(
                     layout_with_status("Force Close Channel Error", content, true).into_string(),
                 ))
-                .unwrap());
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
         }
     };
 
@@ -556,5 +556,5 @@ pub async fn post_force_close_channel(
         .body(Body::from(
             layout_with_status("Force Close Channel Result", content, true).into_string(),
         ))
-        .unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
 }

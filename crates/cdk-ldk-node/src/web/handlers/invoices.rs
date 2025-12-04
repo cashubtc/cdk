@@ -151,7 +151,8 @@ pub async fn post_create_bolt11(
             Ok(desc) => Bolt11InvoiceDescription::Direct(desc),
             Err(_) => {
                 // Fallback to a minimal valid description
-                let desc = Description::new(" ".to_string()).unwrap();
+                let desc =
+                    Description::new(" ".to_string()).expect("single space is valid description");
                 Bolt11InvoiceDescription::Direct(desc)
             }
         }
@@ -175,7 +176,7 @@ pub async fn post_create_bolt11(
                     .body(Body::from(
                         layout_with_status(" Error", content, true).into_string(),
                     ))
-                    .unwrap());
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
             }
         }
     };
@@ -239,7 +240,7 @@ pub async fn post_create_bolt11(
         .body(Body::from(
             layout_with_status("BOLT11 Invoice Created", content, true).into_string(),
         ))
-        .unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
 }
 
 pub async fn post_create_bolt12(
@@ -326,5 +327,5 @@ pub async fn post_create_bolt12(
         .body(Body::from(
             layout_with_status("BOLT12 Offer Created", content, true).into_string(),
         ))
-        .unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
 }
