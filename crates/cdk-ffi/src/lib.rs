@@ -3,6 +3,7 @@
 //! UniFFI bindings for the CDK Wallet and related types.
 
 #![warn(clippy::unused_async)]
+#![deny(clippy::unwrap_used)]
 
 pub mod database;
 pub mod error;

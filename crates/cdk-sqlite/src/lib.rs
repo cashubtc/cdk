@@ -2,6 +2,7 @@
 
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
+#![deny(clippy::unwrap_used)]
 
 mod async_sqlite;
 mod common;

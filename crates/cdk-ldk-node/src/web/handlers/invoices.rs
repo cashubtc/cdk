@@ -170,13 +170,13 @@ pub async fn post_create_bolt11(
                         a href="/invoices" { button { "← Try Again" } }
                     }
                 };
-                return Ok(Response::builder()
+                return Response::builder()
                     .status(StatusCode::BAD_REQUEST)
                     .header("content-type", "text/html")
                     .body(Body::from(
                         layout_with_status(" Error", content, true).into_string(),
                     ))
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
             }
         }
     };
@@ -235,12 +235,12 @@ pub async fn post_create_bolt11(
         }
     };
 
-    Ok(Response::builder()
+    Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
             layout_with_status("BOLT11 Invoice Created", content, true).into_string(),
         ))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 pub async fn post_create_bolt12(
@@ -322,10 +322,10 @@ pub async fn post_create_bolt12(
         }
     };
 
-    Ok(Response::builder()
+    Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
             layout_with_status("BOLT12 Offer Created", content, true).into_string(),
         ))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }

@@ -1,4 +1,5 @@
 //! Cdk mintd lib
+#![deny(clippy::unwrap_used)]
 
 // std
 #[cfg(feature = "auth")]
@@ -322,7 +323,9 @@ async fn setup_sqlite_database(
     #[cfg(feature = "sqlcipher")]
     let db = {
         // Get password from command line arguments for sqlcipher
-        MintSqliteDatabase::new((sql_db_path, _password.unwrap())).await?
+        let password = _password
+            .ok_or_else(|| anyhow!("Password required when sqlcipher feature is enabled"))?;
+        MintSqliteDatabase::new((sql_db_path, password)).await?
     };
 
     Ok(Arc::new(db))
@@ -649,7 +652,10 @@ async fn setup_authentication(
                     #[cfg(feature = "sqlcipher")]
                     let sqlite_db = {
                         // Get password from command line arguments for sqlcipher
-                        MintSqliteAuthDatabase::new((sql_db_path, _password.unwrap())).await?
+                        let password = _password.clone().ok_or_else(|| {
+                            anyhow!("Password required when sqlcipher feature is enabled")
+                        })?;
+                        MintSqliteAuthDatabase::new((sql_db_path, password)).await?
                     };
 
                     Arc::new(sqlite_db)
@@ -1027,7 +1033,7 @@ async fn start_services_with_shutdown(
 
     let listener = tokio::net::TcpListener::bind(socket_addr).await?;
 
-    tracing::info!("listening on {}", listener.local_addr().unwrap());
+    tracing::info!("listening on {}", listener.local_addr()?);
 
     // Create a task to wait for the shutdown signal and broadcast it
     let shutdown_broadcast_task = {

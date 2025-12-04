@@ -1,3 +1,5 @@
+#![deny(clippy::unwrap_used)]
+
 use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};

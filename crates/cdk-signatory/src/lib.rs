@@ -7,6 +7,7 @@
 //! module, all communication is done through the Signatory trait and the signatory manager.
 #![deny(missing_docs)]
 #![deny(warnings)]
+#![deny(clippy::unwrap_used)]
 
 #[cfg(feature = "grpc")]
 mod proto;

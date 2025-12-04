@@ -230,11 +230,11 @@ pub async fn post_send_onchain(
     let encoded_form =
         serde_urlencoded::to_string(&form).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::FOUND)
         .header("Location", format!("/onchain/confirm?{}", encoded_form))
         .body(Body::empty())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 pub async fn onchain_confirm_page(
@@ -258,13 +258,13 @@ pub async fn onchain_confirm_page(
                     a href="/onchain?action=send" { button { "← Back" } }
                 }
             };
-            return Ok(Response::builder()
+            return Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
                     layout_with_status("Send On-chain Error", content, true).into_string(),
                 ))
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
@@ -284,13 +284,13 @@ pub async fn onchain_confirm_page(
                     a href="/onchain?action=send" { button { "← Back" } }
                 }
             };
-            return Ok(Response::builder()
+            return Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
                     layout_with_status("Send On-chain Error", content, true).into_string(),
                 ))
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
         }
         (amount, false)
     };
@@ -359,12 +359,12 @@ pub async fn onchain_confirm_page(
         }
     };
 
-    Ok(Response::builder()
+    Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
             layout_with_status("Confirm Transaction", content, true).into_string(),
         ))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn execute_onchain_transaction(
@@ -391,13 +391,13 @@ async fn execute_onchain_transaction(
                     a href="/onchain" { button { "← Back" } }
                 }
             };
-            return Ok(Response::builder()
+            return Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .header("content-type", "text/html")
                 .body(Body::from(
                     layout_with_status("Send On-chain Error", content, true).into_string(),
                 ))
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?);
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
@@ -471,10 +471,10 @@ async fn execute_onchain_transaction(
         }
     };
 
-    Ok(Response::builder()
+    Response::builder()
         .header("content-type", "text/html")
         .body(Body::from(
             layout_with_status("Send On-chain Result", content, true).into_string(),
         ))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }

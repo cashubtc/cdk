@@ -7,6 +7,7 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
+#![deny(clippy::unwrap_used)]
 
 pub mod task;
 

@@ -3,6 +3,7 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 #![warn(rustdoc::bare_urls)]
+#![deny(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -242,16 +243,17 @@ async fn cors_middleware(
     // Handle preflight requests
     if req.method() == axum::http::Method::OPTIONS {
         let mut response = Response::new("".into());
-        response
-            .headers_mut()
-            .insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+        response.headers_mut().insert(
+            "Access-Control-Allow-Origin",
+            "*".parse().expect("Valid header value"),
+        );
         response.headers_mut().insert(
             "Access-Control-Allow-Methods",
-            "GET, POST, OPTIONS".parse().unwrap(),
+            "GET, POST, OPTIONS".parse().expect("Valid header value"),
         );
         response.headers_mut().insert(
             "Access-Control-Allow-Headers",
-            allowed_headers.parse().unwrap(),
+            allowed_headers.parse().expect("Valid header value"),
         );
         return response;
     }
@@ -259,16 +261,17 @@ async fn cors_middleware(
     // Call the next handler
     let mut response = next.run(req).await;
 
-    response
-        .headers_mut()
-        .insert("Access-Control-Allow-Origin", "*".parse().unwrap());
+    response.headers_mut().insert(
+        "Access-Control-Allow-Origin",
+        "*".parse().expect("Valid header value"),
+    );
     response.headers_mut().insert(
         "Access-Control-Allow-Methods",
-        "GET, POST, OPTIONS".parse().unwrap(),
+        "GET, POST, OPTIONS".parse().expect("Valid header value"),
     );
     response.headers_mut().insert(
         "Access-Control-Allow-Headers",
-        allowed_headers.parse().unwrap(),
+        allowed_headers.parse().expect("Valid header value"),
     );
 
     response
