@@ -1012,6 +1012,107 @@ async fn test_compensation_idempotent() {
     // SUCCESS: Compensation is idempotent and safe to run multiple times!
 }
 
+/// Test: Saga is deleted after direct payment failure (not via recovery)
+///
+/// This test validates that when make_payment() fails and compensate_all()
+/// is called directly during normal operation (not through crash recovery),
+/// the saga is properly deleted from the database.
+///
+/// This is different from the recovery tests which simulate crashes - this
+/// tests the actual payment failure path in normal operation.
+#[tokio::test]
+async fn test_saga_deleted_after_payment_failure() {
+    use cdk_common::CurrencyUnit;
+    use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
+
+    // STEP 1: Setup test environment
+    let mint = create_test_mint().await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+
+    // STEP 2: Create a quote that will FAIL payment
+    let fake_description = FakeInvoiceDescription {
+        pay_invoice_state: MeltQuoteState::Failed, // Payment will fail
+        check_payment_state: MeltQuoteState::Failed, // Check will also show failed
+        pay_err: false,
+        check_err: false,
+    };
+
+    let amount_msats: u64 = Amount::from(9_000).into();
+    let invoice = create_fake_invoice(
+        amount_msats,
+        serde_json::to_string(&fake_description).unwrap(),
+    );
+
+    let bolt11_request = cdk_common::nuts::MeltQuoteBolt11Request {
+        request: invoice,
+        unit: CurrencyUnit::Sat,
+        options: None,
+    };
+
+    let request = cdk_common::melt::MeltQuoteRequest::Bolt11(bolt11_request);
+    let quote_response = mint.get_melt_quote(request).await.unwrap();
+    let quote = mint
+        .localstore
+        .get_melt_quote(&quote_response.quote)
+        .await
+        .unwrap()
+        .expect("Quote should exist");
+
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    // STEP 3: Setup melt saga
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup_saga = saga.setup_melt(&melt_request, verification).await.unwrap();
+    let operation_id = *setup_saga.operation.id();
+
+    // Verify saga exists after setup
+    assert_saga_exists(&mint, &operation_id).await;
+    assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
+
+    // STEP 4: Attempt internal settlement (will return RequiresExternalPayment)
+    let (payment_saga, decision) = setup_saga
+        .attempt_internal_settlement(&melt_request)
+        .await
+        .unwrap();
+
+    // STEP 5: Make payment - this should FAIL and trigger compensate_all()
+    let result = payment_saga.make_payment(decision).await;
+
+    // Payment should fail
+    assert!(
+        result.is_err(),
+        "Payment should fail with Failed status from FakeWallet"
+    );
+
+    // STEP 6: Verify saga was deleted after compensation
+    // This is the key assertion - the saga should be cleaned up after compensate_all()
+    assert_saga_not_exists(&mint, &operation_id).await;
+
+    // STEP 7: Verify proofs were returned (removed from database)
+    assert_proofs_state(&mint, &input_ys, None).await;
+
+    // STEP 8: Verify quote state was reset to Unpaid
+    let recovered_quote = mint
+        .localstore
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .expect("Quote should still exist");
+    assert_eq!(
+        recovered_quote.state,
+        MeltQuoteState::Unpaid,
+        "Quote state should be reset to Unpaid after compensation"
+    );
+
+    // SUCCESS: Saga properly deleted after direct payment failure!
+}
+
 // ============================================================================
 // Saga Content Validation Tests
 // ============================================================================

@@ -126,12 +126,14 @@ impl Mint {
             );
 
             // Use the same compensation logic as in-process failures
+            // Saga deletion is included in the compensation transaction
             let compensation = RemoveSwapSetup {
                 blinded_secrets: saga.blinded_secrets.clone(),
                 input_ys: saga.input_ys.clone(),
+                operation_id: saga.operation_id,
             };
 
-            // Execute compensation
+            // Execute compensation (includes saga deletion)
             if let Err(e) = compensation.execute(&self.localstore).await {
                 tracing::error!(
                     "Failed to compensate saga {}: {}. Continuing...",
@@ -140,15 +142,6 @@ impl Mint {
                 );
                 continue;
             }
-
-            // Delete saga after successful compensation
-            let mut tx = self.localstore.begin_transaction().await?;
-            if let Err(e) = tx.delete_saga(&saga.operation_id).await {
-                tracing::error!("Failed to delete saga for {}: {}", saga.operation_id, e);
-                tx.rollback().await?;
-                continue;
-            }
-            tx.commit().await?;
 
             tracing::info!("Successfully recovered saga {}", saga.operation_id);
         }

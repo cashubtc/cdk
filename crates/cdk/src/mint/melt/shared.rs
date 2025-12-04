@@ -76,16 +76,18 @@ pub async fn rollback_melt_quote(
     quote_id: &QuoteId,
     input_ys: &[PublicKey],
     blinded_secrets: &[PublicKey],
+    operation_id: &uuid::Uuid,
 ) -> Result<(), Error> {
     if input_ys.is_empty() && blinded_secrets.is_empty() {
         return Ok(());
     }
 
     tracing::info!(
-        "Rolling back melt quote {} ({} proofs, {} blinded messages)",
+        "Rolling back melt quote {} ({} proofs, {} blinded messages, saga {})",
         quote_id,
         input_ys.len(),
-        blinded_secrets.len()
+        blinded_secrets.len(),
+        operation_id
     );
 
     let mut tx = db.begin_transaction().await?;
@@ -115,9 +117,23 @@ pub async fn rollback_melt_quote(
     // Delete melt request tracking record
     tx.delete_melt_request(quote_id).await?;
 
+    // Delete saga state record
+    if let Err(e) = tx.delete_saga(operation_id).await {
+        tracing::warn!(
+            "Failed to delete saga {} during rollback: {}",
+            operation_id,
+            e
+        );
+        // Continue anyway - saga cleanup is best-effort
+    }
+
     tx.commit().await?;
 
-    tracing::info!("Successfully rolled back melt quote {}", quote_id);
+    tracing::info!(
+        "Successfully rolled back melt quote {} and deleted saga {}",
+        quote_id,
+        operation_id
+    );
 
     Ok(())
 }

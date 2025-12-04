@@ -258,6 +258,39 @@ where
         .await?;
 
         if total_deleted != ys.len() {
+            // Query current states to provide detailed logging
+            let current_states = get_current_states(&self.inner, ys).await?;
+
+            let missing_count = ys.len() - current_states.len();
+            let spent_count = current_states
+                .values()
+                .filter(|s| **s == State::Spent)
+                .count();
+
+            if missing_count > 0 {
+                tracing::warn!(
+                    "remove_proofs: {} of {} proofs do not exist in database (already removed?)",
+                    missing_count,
+                    ys.len()
+                );
+            }
+
+            if spent_count > 0 {
+                tracing::warn!(
+                    "remove_proofs: {} of {} proofs are in Spent state and cannot be removed",
+                    spent_count,
+                    ys.len()
+                );
+            }
+
+            tracing::debug!(
+                "remove_proofs details: requested={}, deleted={}, missing={}, spent={}",
+                ys.len(),
+                total_deleted,
+                missing_count,
+                spent_count
+            );
+
             return Err(Self::Err::AttemptRemoveSpentProof);
         }
 
