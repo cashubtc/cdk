@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::{Error, PublicKey};
 use tracing::instrument;
+use uuid::Uuid;
 
 #[async_trait]
 pub trait CompensatingAction: Send + Sync {
@@ -15,6 +16,7 @@ pub trait CompensatingAction: Send + Sync {
 /// the setup transaction has committed. It removes:
 /// - Output blinded messages (identified by blinded_secrets)
 /// - Input proofs (identified by input_ys)
+/// - Saga state record
 ///
 /// This restores the database to its pre-swap state.
 pub struct RemoveSwapSetup {
@@ -22,6 +24,8 @@ pub struct RemoveSwapSetup {
     pub blinded_secrets: Vec<PublicKey>,
     /// Y values (public keys) from the input proofs
     pub input_ys: Vec<PublicKey>,
+    /// Operation ID (saga ID) to delete
+    pub operation_id: Uuid,
 }
 
 #[async_trait]
@@ -33,9 +37,10 @@ impl CompensatingAction for RemoveSwapSetup {
         }
 
         tracing::info!(
-            "Compensation: Removing swap setup ({} blinded messages, {} proofs)",
+            "Compensation: Removing swap setup ({} blinded messages, {} proofs, saga {})",
             self.blinded_secrets.len(),
-            self.input_ys.len()
+            self.input_ys.len(),
+            self.operation_id
         );
 
         let mut tx = db.begin_transaction().await?;
@@ -50,7 +55,22 @@ impl CompensatingAction for RemoveSwapSetup {
             tx.remove_proofs(&self.input_ys, None).await?;
         }
 
+        // Delete saga state record
+        if let Err(e) = tx.delete_saga(&self.operation_id).await {
+            tracing::warn!(
+                "Failed to delete saga {} during compensation: {}",
+                self.operation_id,
+                e
+            );
+            // Continue anyway - saga cleanup is best-effort
+        }
+
         tx.commit().await?;
+
+        tracing::info!(
+            "Successfully compensated swap and deleted saga {}",
+            self.operation_id
+        );
 
         Ok(())
     }
