@@ -119,6 +119,82 @@
           ]
           ++ libsDarwin;
 
+        # PostgreSQL configuration
+        postgresConf = {
+          pgUser = "cdk_user";
+          pgPassword = "cdk_password";
+          pgDatabase = "cdk_mint";
+          pgPort = "5432";
+        };
+
+        # Script to start PostgreSQL
+        startPostgres = pkgs.writeShellScriptBin "start-postgres" ''
+          set -e
+          PGDATA="$PWD/.pg_data"
+          PGPORT="${postgresConf.pgPort}"
+          PGUSER="${postgresConf.pgUser}"
+          PGPASSWORD="${postgresConf.pgPassword}"
+          PGDATABASE="${postgresConf.pgDatabase}"
+
+          # Stop any existing instance first
+          if [ -d "$PGDATA" ] && ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" status > /dev/null 2>&1; then
+            echo "Stopping existing PostgreSQL instance..."
+            ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" stop > /dev/null 2>&1
+          fi
+
+          if [ ! -d "$PGDATA" ]; then
+            echo "Initializing PostgreSQL database..."
+            ${pkgs.postgresql_16}/bin/initdb -D "$PGDATA" --auth=trust --no-locale --encoding=UTF8
+
+            # Configure PostgreSQL
+            echo "listen_addresses = 'localhost'" >> "$PGDATA/postgresql.conf"
+            echo "port = $PGPORT" >> "$PGDATA/postgresql.conf"
+            echo "unix_socket_directories = '$PGDATA'" >> "$PGDATA/postgresql.conf"
+
+            # Start temporarily to create user and database
+            ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" -l "$PGDATA/logfile" start
+            sleep 2
+
+            # Create user and database
+            ${pkgs.postgresql_16}/bin/createuser -h localhost -p $PGPORT -s "$PGUSER" || true
+            ${pkgs.postgresql_16}/bin/psql -h localhost -p $PGPORT -c "ALTER USER $PGUSER WITH PASSWORD '$PGPASSWORD';" postgres
+            ${pkgs.postgresql_16}/bin/createdb -h localhost -p $PGPORT -O "$PGUSER" "$PGDATABASE" || true
+
+            ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" stop
+            echo "PostgreSQL initialized."
+          fi
+
+          echo "Starting PostgreSQL on port $PGPORT..."
+          ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" -l "$PGDATA/logfile" start
+          echo "PostgreSQL started. Connection URL: postgresql://$PGUSER:$PGPASSWORD@localhost:$PGPORT/$PGDATABASE"
+        '';
+
+        # Script to stop PostgreSQL
+        stopPostgres = pkgs.writeShellScriptBin "stop-postgres" ''
+          PGDATA="$PWD/.pg_data"
+          if [ -d "$PGDATA" ]; then
+            echo "Stopping PostgreSQL..."
+            ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" stop || echo "PostgreSQL was not running."
+          else
+            echo "No PostgreSQL data directory found."
+          fi
+        '';
+
+        # Script to check PostgreSQL status
+        pgStatus = pkgs.writeShellScriptBin "pg-status" ''
+          PGDATA="$PWD/.pg_data"
+          if [ -d "$PGDATA" ]; then
+            ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" status
+          else
+            echo "No PostgreSQL data directory found. Run 'start-postgres' first."
+          fi
+        '';
+
+        # Script to connect to PostgreSQL
+        pgConnect = pkgs.writeShellScriptBin "pg-connect" ''
+          ${pkgs.postgresql_16}/bin/psql "postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
+        '';
+
         # Common arguments can be set here to avoid repeating them later
         nativeBuildInputs = [
           #Add additional build inputs here
@@ -194,8 +270,26 @@
                       pkgs.zlib
                     ]
                   }:$LD_LIBRARY_PATH
+
+                  # PostgreSQL environment variables
+                  export CDK_MINTD_DATABASE_URL="postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
+
+                  echo ""
+                  echo "PostgreSQL commands available:"
+                  echo "  start-postgres  - Initialize and start PostgreSQL"
+                  echo "  stop-postgres   - Stop PostgreSQL (run before exiting)"
+                  echo "  pg-status       - Check PostgreSQL status"
+                  echo "  pg-connect      - Connect to PostgreSQL with psql"
+                  echo ""
                 '';
-                buildInputs = buildInputs ++ [ stable_toolchain ];
+                buildInputs = buildInputs ++ [
+                  stable_toolchain
+                  pkgs.postgresql_16
+                  startPostgres
+                  stopPostgres
+                  pgStatus
+                  pgConnect
+                ];
                 inherit nativeBuildInputs;
 
               }
